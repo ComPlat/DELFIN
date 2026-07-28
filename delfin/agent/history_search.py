@@ -12,10 +12,13 @@ This module is the library behind the ``history_search`` /
 ``history_get`` agent tools:
 
 - :func:`history_search` — BM25-ranked (substring fallback) search over
-  BOTH the live message list (the engine's ``self.messages``, supplied
-  by the caller — this module never imports the engine) AND every
-  archived pre-compaction record for the session.
-- :func:`history_get` — fetch the full text of one hit by its ``ref``.
+  the live message list (the engine's ``self.messages``, supplied by
+  the caller — this module never imports the engine), every archived
+  pre-compaction record for the session, AND the session's lossless
+  elision store (full originals of message bodies the sliding-window
+  trim / hard-clear stages shortened in place).
+- :func:`history_get` — fetch the full text of one hit by its ``ref``
+  (``live:<i>``, ``archive:<rec>:<i>``, or ``elided:<ref>``).
 
 It lives in its own module rather than in ``session_store`` because
 session_store is the persistence layer; this is retrieval/ranking built
@@ -44,7 +47,11 @@ from pathlib import Path
 from typing import Any
 
 from delfin.agent.memory_store import _tokenize, bm25_scores
-from delfin.agent.session_store import _transcript_archive_dir
+from delfin.agent.session_store import (
+    _transcript_archive_dir,
+    elided_store_path,
+    load_elided_record,
+)
 
 # Combined live+archive scan bound: only the most recent SCAN_CAP message
 # records are tokenised/scored. Refs stay stable under the cap because
@@ -96,10 +103,11 @@ def _collect_entries(
     the most recent ``cap``. Returns ``(entries, capped)``.
 
     Archive first (chronologically older than the live list), then the
-    live messages. The JSONL is streamed and each line parsed once;
-    corrupt lines are skipped but still consume their line number, so
-    ``record`` (the seq id inside archive refs) is a raw line index and
-    stays stable as the append-only file grows.
+    elided store (originals of bodies whose live stubs replaced them),
+    then the live messages. The JSONL is streamed and each line parsed
+    once; corrupt lines are skipped but still consume their line number,
+    so ``record`` (the seq id inside archive refs) is a raw line index
+    and stays stable as the append-only file grows.
     """
     seen = 0
     buf: deque[dict[str, Any]] = deque(maxlen=cap)
@@ -136,6 +144,43 @@ def _collect_entries(
                             "ts": ts,
                             "text": _msg_text(m)[:_MAX_TEXT_CHARS],
                         })
+        except OSError:
+            pass
+
+    # Elided store: full originals of message bodies the in-place trim
+    # stages shortened. Chronologically these predate the CURRENT live
+    # text (the stub replaced them), so they scan between archive and
+    # live. Torn/corrupt lines are skipped, same as the archive.
+    ep = elided_store_path(session_id)
+    if ep.is_file():
+        try:
+            with ep.open("r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict) or not rec.get("ref"):
+                        continue
+                    text = rec.get("content", "")
+                    if not isinstance(text, str):
+                        continue
+                    ts = rec.get("ts")
+                    if not isinstance(ts, (int, float)):
+                        ts = None
+                    seen += 1
+                    idx = rec.get("index")
+                    buf.append({
+                        "source": "elided",
+                        "ref_id": str(rec.get("ref")),
+                        "index": idx if isinstance(idx, int) else -1,
+                        "role": str(rec.get("role", "") or ""),
+                        "ts": ts,
+                        "text": text[:_MAX_TEXT_CHARS],
+                    })
         except OSError:
             pass
 
@@ -209,8 +254,8 @@ def history_search(
     list of dict
         Hits sorted by score desc (ties newest-first), each::
 
-            {"ref": "live:<i>" | "archive:<rec>:<i>",
-             "source": "live" | "archive",
+            {"ref": "live:<i>" | "archive:<rec>:<i>" | "elided:<ref>",
+             "source": "live" | "archive" | "elided",
              "index": <message index>,           # + "record" for archive
              "role": ..., "ts": <float | None>,
              "snippet": ~200 chars around the best match,
@@ -259,6 +304,8 @@ def history_search(
             e = entries[i]
             if e["source"] == "live":
                 hit: dict[str, Any] = {"ref": f"live:{e['index']}"}
+            elif e["source"] == "elided":
+                hit = {"ref": f"elided:{e['ref_id']}"}
             else:
                 hit = {
                     "ref": f"archive:{e['record']}:{e['index']}",
@@ -318,6 +365,44 @@ def _truncate(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:head] + marker + text[-tail:], True
 
 
+# Short ref ids minted by session_store.append_elided_record (uuid4 hex
+# prefix). Validated before the store is scanned so a malformed ref fails
+# fast with a readable error.
+_ELIDED_ID_RE = re.compile(r"^[A-Za-z0-9]{4,32}$")
+
+
+def _get_elided(sid: str, rid: str, max_chars: int) -> dict[str, Any]:
+    """Resolve an ``elided:<ref>`` hit to the full original message body."""
+    rid = str(rid or "").strip()
+    if not _ELIDED_ID_RE.match(rid):
+        return {"error": f"invalid elided ref id: {rid!r}"}
+    rec = load_elided_record(sid, rid)
+    if rec is None:
+        return {"error": (
+            f"no elided record '{rid}' for session '{sid}' — it may have "
+            "been dropped by the per-session store cap"
+        )}
+    full = rec.get("content", "")
+    if not isinstance(full, str):
+        full = str(full)
+    ts = rec.get("ts")
+    if not isinstance(ts, (int, float)):
+        ts = None
+    idx = rec.get("index")
+    text, truncated = _truncate(full, max_chars)
+    return {
+        "ref": f"elided:{rid}",
+        "source": "elided",
+        "index": idx if isinstance(idx, int) else -1,
+        "role": str(rec.get("role", "") or ""),
+        "ts": ts,
+        "reason": str(rec.get("reason", "") or ""),
+        "text": text,
+        "truncated": truncated,
+        "total_chars": len(full),
+    }
+
+
 def history_get(
     session_id: str,
     ref: str,
@@ -327,30 +412,38 @@ def history_get(
 ) -> dict[str, Any]:
     """Fetch the full text of ONE :func:`history_search` hit by its ref.
 
-    ``ref`` is the ``"live:<i>"`` / ``"archive:<rec>:<i>"`` string a
-    search hit carries. Archive lookups stream the JSONL only up to the
-    target line. Text longer than ``max_chars`` is returned head+tail
-    with a ``[truncated: N chars omitted]`` marker.
+    ``ref`` is the ``"live:<i>"`` / ``"archive:<rec>:<i>"`` /
+    ``"elided:<ref>"`` string a search hit carries (elided refs also
+    appear inside trim/clear markers in the live conversation). Archive
+    lookups stream the JSONL only up to the target line. Text longer
+    than ``max_chars`` is returned head+tail with a ``[truncated: N
+    chars omitted]`` marker.
 
     Returns ``{"ref", "source", "index", "role", "ts", "text",
-    "truncated", "total_chars"}`` (+``"record"`` for archive refs) or
-    ``{"error": ...}``. Never raises.
+    "truncated", "total_chars"}`` (+``"record"`` for archive refs,
+    +``"reason"`` for elided refs) or ``{"error": ...}``. Never raises.
     """
     try:
         sid = str(session_id or "")
         if not _valid_session_id(sid):
             return {"error": f"invalid session id: {sid!r}"}
-        parsed = _parse_ref(ref)
-        if parsed is None:
-            return {"error": (
-                f"invalid ref: {str(ref)!r} — expected 'live:<index>' or "
-                "'archive:<record>:<index>' as returned by history_search"
-            )}
-        source, rec_seq, idx = parsed
         try:
             max_chars = int(max_chars)
         except (TypeError, ValueError):
             max_chars = 4000
+
+        raw_ref = str(ref or "").strip()
+        if raw_ref.startswith("elided:"):
+            return _get_elided(sid, raw_ref[len("elided:"):], max_chars)
+
+        parsed = _parse_ref(raw_ref)
+        if parsed is None:
+            return {"error": (
+                f"invalid ref: {str(ref)!r} — expected 'live:<index>', "
+                "'archive:<record>:<index>', or 'elided:<ref>' as "
+                "returned by history_search"
+            )}
+        source, rec_seq, idx = parsed
 
         if source == "live":
             if messages is None:

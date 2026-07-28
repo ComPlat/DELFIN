@@ -361,6 +361,126 @@ def load_transcript_archive(session_id: str) -> list[dict[str, Any]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Lossless elision store — full originals of in-place-trimmed message bodies
+# ---------------------------------------------------------------------------
+#
+# The compaction ladder's sliding-window trim and hard-clear stages mutate
+# message content IN PLACE; unlike the summary path they never archived the
+# original, so the dropped middle was gone for good. Every destructive
+# in-place edit now first appends the full original body here, keyed by a
+# short ref id that the replacement marker carries, so history_search /
+# history_get('elided:<ref>') can page the text back in.
+
+# Documented cap: at most this many elision records are kept per session;
+# once exceeded the OLDEST records are dropped (newest always survive).
+_ELIDED_CAP = 2000
+
+
+def elided_store_path(session_id: str) -> Path:
+    """Path of the per-session elided-content JSONL (may not exist yet)."""
+    return _SESSIONS_DIR / f"{session_id}.elided.jsonl"
+
+
+def _enforce_elided_cap(path: Path, cap: int | None = None) -> None:
+    """Drop the oldest records once the store exceeds the cap.
+
+    Single streaming pass with a bounded tail buffer; the rewrite is
+    atomic (temp file + replace) so a crash never tears the store.
+    ``cap`` defaults to the module-level :data:`_ELIDED_CAP` at call time
+    so tests can shrink it.
+    """
+    if cap is None:
+        cap = _ELIDED_CAP
+    try:
+        from collections import deque
+        tail: deque[str] = deque(maxlen=max(1, int(cap)))
+        total = 0
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                total += 1
+                tail.append(line)
+        if total > len(tail):
+            text = "".join(tail)
+            if text and not text.endswith("\n"):
+                text += "\n"
+            _atomic_write_text(path, text)
+    except OSError:
+        pass
+
+
+def append_elided_record(
+    session_id: str,
+    *,
+    index: int,
+    role: str,
+    content: str,
+    reason: str = "",
+) -> str | None:
+    """Append one lossless-elision record; returns its short ref id.
+
+    Record fields: ``ref`` (short id the trim marker carries), ``ts``,
+    ``index`` (live message index at elision time), ``role``, ``reason``
+    (which compaction stage elided it), ``content`` (the FULL original).
+
+    Same append-mode pattern as the transcript archive: single-line
+    appends, and the readers skip torn lines. Best-effort by contract —
+    any failure returns ``None`` and the caller keeps a plain marker, so
+    a broken store can never break compaction.
+    """
+    if not session_id:
+        return None
+    import uuid
+    ref = uuid.uuid4().hex[:8]
+    rec = {
+        "ref": ref,
+        "ts": time.time(),
+        "index": int(index),
+        "role": str(role or ""),
+        "reason": str(reason or ""),
+        "content": content if isinstance(content, str) else str(content),
+    }
+    _ensure_dir()
+    p = elided_store_path(session_id)
+    try:
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        _chmod_user_only(p)
+        _enforce_elided_cap(p)
+    except OSError:
+        return None
+    return ref
+
+
+def load_elided_record(session_id: str, ref: str) -> dict[str, Any] | None:
+    """Resolve one elision record by its ref id (newest wins on duplicate).
+
+    Returns the record dict or ``None`` when the store or ref is missing;
+    torn/corrupt lines are skipped. Never raises on OS errors.
+    """
+    if not session_id or not ref:
+        return None
+    p = elided_store_path(session_id)
+    if not p.is_file():
+        return None
+    found: dict[str, Any] | None = None
+    try:
+        with p.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict) and rec.get("ref") == ref:
+                    found = rec
+    except OSError:
+        return None
+    return found
+
+
 def save_session(
     session_id: str,
     *,
@@ -536,9 +656,10 @@ def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
 def delete_session(session_id: str) -> bool:
     """Delete a session file. Returns True if deleted."""
     filepath = _SESSIONS_DIR / f"{session_id}.json"
-    # Companion files (writer lock, mid-turn checkpoint) go with it so a
-    # deleted session can't leave an orphan recovery note behind.
-    for side in (_lock_path(session_id), _turn_checkpoint_path(session_id)):
+    # Companion files (writer lock, mid-turn checkpoint, elided store) go
+    # with it so a deleted session can't leave orphan sidecars behind.
+    for side in (_lock_path(session_id), _turn_checkpoint_path(session_id),
+                 elided_store_path(session_id)):
         try:
             side.unlink()
         except OSError:

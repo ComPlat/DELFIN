@@ -1151,7 +1151,9 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Git", "/git branch", "Show branches", False),
     # Memory
     ("Memory", "/remember", "Save a typed memory ([user|feedback|project|reference:] <text>)", True),
-    ("Memory", "/memories", "List all memories", False),
+    ("Context", "/pin", "Pin a message against compaction (/pin last, /pin list)", False),
+  ("Memory", "/memories", "List project memories", False),
+  ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Memory", "/memorize", "Distill this session into durable memories (one cheap LLM call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
@@ -4887,6 +4889,26 @@ def create_tab(ctx):
                 todo_payload=state.get("current_todos") or [],
             )
             state["active_session_id"] = engine.session_id
+            # Episodic memory: one compact per-session record so a later
+            # session can recall similar past work (best-effort; mirrors
+            # the headless CLI hook in delfin/agent/cli.py).
+            try:
+                from delfin.agent.episodes import (
+                    build_episode_from_state,
+                    save_episode,
+                )
+                fields = build_episode_from_state(
+                    {**estate,
+                     "todo_payload": state.get("current_todos") or []},
+                    state.get("chat_messages") or [],
+                )
+                save_episode(
+                    engine.session_id,
+                    repo_root=getattr(engine, "repo_dir", Path.cwd()),
+                    **fields,
+                )
+            except Exception:
+                pass
             try:
                 kp = getattr(engine, "kit_permissions", None)
                 if kp is not None:
@@ -9105,12 +9127,65 @@ def create_tab(ctx):
                 _append_system_message("\n".join(lines))
             return True
 
-        if cmd == "/memories":
+        if cmd == "/pin" or cmd.startswith("/pin "):
+            engine = state["engine"]
+            if not engine or not getattr(engine, "messages", None):
+                _append_system_message("No active engine / no messages to pin.")
+                return True
+            arg = cmd[len("/pin "):].strip() if cmd.startswith("/pin ") else ""
+            if arg in ("", "list"):
+                idxs = engine.pinned_indices()
+                if not idxs:
+                    _append_system_message(
+                        "No pinned messages.\n"
+                        "Usage: /pin <index> | /pin last | /pin unpin <index> | /pin list")
+                    return True
+                lines = ["Pinned messages (excluded from compaction):"]
+                for i in idxs:
+                    c = engine.messages[i].get("content", "")
+                    preview = " ".join((c if isinstance(c, str) else str(c)).split())[:80]
+                    lines.append(f"  [{i}] {engine.messages[i].get('role', '?')}: {preview}")
+                _append_system_message("\n".join(lines))
+                return True
+            if arg.startswith("unpin"):
+                rest = arg[len("unpin"):].strip()
+                try:
+                    idx = len(engine.messages) - 1 if rest == "last" else int(rest)
+                except ValueError:
+                    _append_system_message(f"Not a message index: {rest!r}")
+                    return True
+                if engine.unpin_message(idx):
+                    _append_system_message(
+                        f"Unpinned message [{idx}] — compaction may trim it again.")
+                else:
+                    _append_system_message(
+                        f"No pin at index {idx} (out of range or not pinned).")
+                return True
+            try:
+                idx = len(engine.messages) - 1 if arg == "last" else int(arg)
+            except ValueError:
+                _append_system_message(f"Not a message index: {arg!r}")
+                return True
+            if engine.pin_message(idx):
+                _append_system_message(
+                    f"Pinned message [{idx}] — excluded from every compaction "
+                    f"stage (sliding-window trim, hard-clear, summary).")
+            else:
+                _append_system_message(
+                    f"Cannot pin index {idx} "
+                    f"(valid range: 0..{len(engine.messages) - 1}).")
+            return True
+
+        if cmd in ("/memories", "/memories global", "/memories all"):
             from delfin.agent.memory_store import list_typed_memories
-            mems = list_typed_memories(ctx.repo_dir or ".")
+            _scope = {"/memories": "project",
+                      "/memories global": "user",
+                      "/memories all": "all"}[cmd]
+            mems = list_typed_memories(ctx.repo_dir or ".", scope=_scope)
             if not mems:
                 _append_system_message(
-                    "No memories stored. Use /remember <text> to add one.")
+                    "No memories stored. Use /remember <text> to add one "
+                    "(global: prefix for cross-project memories).")
             else:
                 lines = []
                 _last_type = None
@@ -9119,7 +9194,8 @@ def create_tab(ctx):
                         lines.append(f"  [{m['type']}]")
                         _last_type = m["type"]
                     desc = m["description"] or m["body"][:80]
-                    lines.append(f"    • {m['name']} — {desc}")
+                    _tag = " (global)" if m.get("scope") == "user" else ""
+                    lines.append(f"    • {m['name']}{_tag} — {desc}")
                 _append_system_message("Agent memories:\n" + "\n".join(lines))
             return True
 
@@ -9152,9 +9228,17 @@ def create_tab(ctx):
 
         if cmd.startswith("/forget"):
             arg = text[7:].strip()
+            _scope = "project"
+            if arg.startswith("global "):
+                _scope, arg = "user", arg[7:].strip()
             if arg:
                 from delfin.agent.memory_store import delete_typed_memory
-                p = delete_typed_memory(ctx.repo_dir or ".", arg)
+                p = delete_typed_memory(ctx.repo_dir or ".", arg, scope=_scope)
+                if p is None and _scope == "project":
+                    # Convenience: fall back to the global store so a copied
+                    # name works without the explicit prefix.
+                    p = delete_typed_memory(ctx.repo_dir or ".", arg,
+                                            scope="user")
                 if p is not None:
                     _append_system_message(f"Memory '{arg}' deleted.")
                 else:
@@ -9162,7 +9246,8 @@ def create_tab(ctx):
                         f"No memory named '{arg}'. Use /memories for the list.")
             else:
                 _append_system_message(
-                    "Usage: /forget <name>  (see /memories for names)")
+                    "Usage: /forget [global] <name>  (see /memories, "
+                    "/memories global, /memories all)")
             return True
 
         # -- Workspace commands ------------------------------------------------

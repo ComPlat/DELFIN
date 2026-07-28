@@ -399,6 +399,31 @@ class PromptLoader:
             return joined
         return joined[:max_chars] + f"\n\n... [truncated, {len(joined) - max_chars} chars omitted]"
 
+    def _load_episode_recall_context(self, task_text: str = "") -> str:
+        """Best-effort recall of similar PAST SESSIONS (episodic memory).
+
+        Bridges the write-only session store: every session save also
+        writes a compact episode record (episodes.save_episode), and this
+        loader BM25-matches those records against the current task so the
+        agent can answer "have I worked on something like this before?".
+        Gated by the ``agent.episodes.enabled`` setting (default on).
+        Empty string on any failure or when nothing matches — this is
+        best-effort context, same contract as the External Memory block.
+        """
+        try:
+            from delfin.user_settings import load_settings
+            cfg = ((load_settings() or {}).get("agent") or {}).get(
+                "episodes") or {}
+            if not bool(cfg.get("enabled", True)):
+                return ""
+        except Exception:
+            pass
+        try:
+            from .episodes import recall_episodes
+            return recall_episodes(Path(self.repo_root), task_text)
+        except Exception:
+            return ""
+
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
 
@@ -1253,6 +1278,15 @@ class PromptLoader:
                 sections.append(f"--- External Memory ---\n{ext_mem}")
                 injected.append("external_memory")
 
+            # Layer 3c: Episodic recall — compact records of similar past
+            # sessions, so previously write-only session state becomes
+            # answerable ("have I worked on this before?").
+            episode_ctx = self._load_episode_recall_context(task_text)
+            if episode_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                sections.append(f"--- Past Sessions ---\n{episode_ctx}")
+                injected.append("episodes")
+
             # ----- Variable tail (changes per turn — kept at the bottom
             # so the cached prefix above doesn't get invalidated when
             # git status / live state / context_status drift) -----
@@ -1534,6 +1568,14 @@ class PromptLoader:
             if ext_mem and not self._should_skip_section("memory", role_id):
                 sections.append(f"--- External Memory ---\n{ext_mem}")
                 injected.append("external_memory")
+
+            # 8c. Episodic recall — same bridge as solo (Layer 3c), small
+            # by construction (<=2 entries / 1200 chars).
+            episode_ctx = self._load_episode_recall_context(task_text)
+            if episode_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                sections.append(f"--- Past Sessions ---\n{episode_ctx}")
+                injected.append("episodes")
 
         # 9. Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)

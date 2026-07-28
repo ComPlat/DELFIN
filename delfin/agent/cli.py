@@ -191,6 +191,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
     except Exception:
         pass
+    # Episodic memory: persist one compact per-session record so a future
+    # session can recall similar past work (best-effort, LLM-free) —
+    # without this the saved session state is write-only.
+    try:
+        from .episodes import build_episode_from_state, save_episode
+        fields = build_episode_from_state(engine.export_state(), [])
+        save_episode(
+            sid,
+            repo_root=repo,
+            verdict="FAIL" if out["error"] else "PASS",
+            **fields,
+        )
+    except Exception:
+        pass
     # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
     try:
         from .eval_loop import maybe_run_scheduled
