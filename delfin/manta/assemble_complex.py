@@ -28,7 +28,24 @@ def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     a = a / np.linalg.norm(a); b = b / np.linalg.norm(b)
     v = np.cross(a, b); s = np.linalg.norm(v); c = float(np.dot(a, b))
     if s < 1e-8:
-        return np.eye(3) if c > 0 else -np.eye(3)
+        if c > 0:
+            return np.eye(3)
+        # ANTIPARALLEL (a -> -a).  `-np.eye(3)` maps a to b correctly but has det = -1: it is an
+        # INVERSION, not a rotation.  Applied to a CHIRAL ligand it silently emits the ENANTIOMER --
+        # a different molecule that no dedup or mirror filter downstream catches, and that shows up
+        # in the eye as a lost CCDC isomer rather than as the placement bug it is.  The proper
+        # replacement is a 180 deg rotation about ANY axis perpendicular to a: R = 2*n n^T - I with
+        # n _|_ a.  It maps a -> -a exactly as well, but det = +1, so handedness is preserved.
+        # Env-gated (DELFIN_FFFREE_PROPER_ANTIPARALLEL, default OFF -> byte-identical) so the
+        # correction gets its own A/B; watch ccdc_isomer_lost, where the mirrored ligand surfaces.
+        if os.environ.get("DELFIN_FFFREE_PROPER_ANTIPARALLEL", "0") != "1":
+            return -np.eye(3)
+        _perp = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(_perp, a))) > 0.9:
+            _perp = np.array([0.0, 1.0, 0.0])
+        _n = np.cross(a, _perp)
+        _n = _n / np.linalg.norm(_n)
+        return 2.0 * np.outer(_n, _n) - np.eye(3)
     vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
 
