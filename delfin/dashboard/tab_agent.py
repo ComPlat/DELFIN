@@ -2536,7 +2536,7 @@ def create_tab(ctx):
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
     if _cli_available or _provider_key("ANTHROPIC_API_KEY"):
-        _available_providers.append(("Claude", "claude"))
+        _available_providers.append(("Anthropic", "claude"))
     if _codex_cli_available or _provider_key("OPENAI_API_KEY"):
         _available_providers.append(("OpenAI", "openai"))
     if _provider_key("KIT_TOOLBOX_API_KEY"):
@@ -2573,9 +2573,9 @@ def create_tab(ctx):
                     _available_providers.append(("Ollama (local)", "ollama"))
         except Exception:
             pass
-    # Fallback: always show at least Claude (will error with helpful message)
+    # Fallback: always show at least the Anthropic provider (will error with helpful message)
     if not _available_providers:
-        _available_providers.append(("Claude", "claude"))
+        _available_providers.append(("Anthropic", "claude"))
 
     # -- state -------------------------------------------------------------
     state = {
@@ -4751,7 +4751,7 @@ def create_tab(ctx):
         engine = state["engine"]
         if not engine:
             return
-        # The Claude CLI populates engine.session_id from its stream events,
+        # The CLI backend populates engine.session_id from its stream events,
         # but the OpenAI / KIT-Toolbox path emits no such event so the field
         # stays empty and the session would silently never persist. Mint a
         # UUID ourselves so auto-save works for every provider.
@@ -7790,7 +7790,7 @@ def create_tab(ctx):
                         f"`delfin/agent/pack/benchmark/tasks.yaml` (prompts/benchmark "
                         f"are freely editable; core code only with self-mod-guard "
                         f"approval).\n"
-                        f"• Or in **Claude CLI**: read the report and build fix/task there.\n"
+                        f"• Or in an external editor session: read the report and build fix/task there.\n"
                         f"The iteration loop then drives exactly this bug to zero."
                     )
                 except Exception as exc:
@@ -10962,7 +10962,7 @@ def create_tab(ctx):
         },
     }
 
-    # Map DELFIN profile → Claude CLI permission_mode.
+    # Map DELFIN profile → CLI-backend permission_mode.
     # Safety: never use bypassPermissions for ANY mode — all modes cap at
     # 'acceptEdits', which auto-approves file edits but still asks for Bash.
     # The DELFIN zone system is the primary safety layer; CLI permissions
@@ -10980,7 +10980,7 @@ def create_tab(ctx):
         return _PERM_PROFILES.get(profile, _PERM_PROFILES["ask_all"])
 
     def _active_cli_perm() -> str:
-        """Return the Claude CLI permission_mode for the active profile.
+        """Return the CLI-backend permission_mode for the active profile.
 
         Dashboard mode always uses 'default' (asks before write tools).
         All other modes map through _PROFILE_TO_CLI_PERM which caps at
@@ -11527,7 +11527,7 @@ def create_tab(ctx):
             return
         total_tokens = engine.token_usage.get("input", 0)
         n_msgs = len(engine.messages)
-        # Claude CLI auto-compacts internally, so we only do a silent
+        # The CLI backend auto-compacts internally, so we only do a silent
         # fallback compact on our engine messages if they get very large.
         if n_msgs > 30:
             old_count = n_msgs
@@ -12773,7 +12773,7 @@ def create_tab(ctx):
                         "Edit", "Write",
                         "edit_file", "write_file", "multi_edit",
                     ):
-                        # KIT-Toolbox uses 'path'; Claude CLI uses 'file_path'.
+                        # KIT-Toolbox uses 'path'; the CLI backend uses 'file_path'.
                         fpath = parsed.get("file_path") or parsed.get("path") or ""
                         sp = _short_path(fpath)
 
@@ -13293,7 +13293,7 @@ def create_tab(ctx):
                         )
                         _budget = min(int(_base_budget * _mult), _budget_cap)
 
-                    # Per-role model: switch to optimal model (Claude only)
+                    # Per-role model: switch to optimal model (CLI backend only)
                     _effective_model = model_dropdown.value
                     if provider_dropdown.value == "claude":
                         _role_model = _AE.model_for_role(_cur_role)
@@ -13321,8 +13321,8 @@ def create_tab(ctx):
                     # loader directly from the typed store (the single source
                     # of truth: ~/.delfin/projects/<slug>/memory/MEMORY.md +
                     # files, the "External Memory" block). Here we only load
-                    # the project instruction files (CLAUDE.md / AGENTS.md /
-                    # DELFIN.md) from cwd up.
+                    # the project instruction files (DELFIN.MD / AGENTS.md)
+                    # from cwd up.
                     from delfin.agent.project_memory import load_project_memory
                     _memory = ""
                     try:
@@ -14553,7 +14553,7 @@ def create_tab(ctx):
         advance_btn.layout.display = "none" if _is_minimal else "inline-flex"
 
     def _on_provider_change(change):
-        """Switch provider (Claude / OpenAI / KIT / Ollama), update model options."""
+        """Switch provider (Anthropic / OpenAI / KIT / Ollama), update model options."""
         if state["streaming"]:
             return
         provider = change["new"]

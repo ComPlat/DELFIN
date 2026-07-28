@@ -44,13 +44,13 @@ def test_workspace_override_wins(fake_home, tmp_path):
     assert "PROJECT" in x.body
 
 
-def test_canonical_commands_dir_also_discovered(fake_home):
-    """~/.claude/commands/ is read as a compat layer so users who had
-    files there don't lose them — but is the lowest-priority layer."""
-    _write(fake_home / ".claude" / "commands", "from-canonical",
-           "compat body")
+def test_foreign_commands_dir_not_discovered(fake_home):
+    """DELFIN only reads its own ~/.delfin namespace — command dirs of
+    other agent frameworks must not leak in."""
+    _write(fake_home / ".claude" / "commands", "from-foreign",
+           "foreign body")
     cmds = sc.discover_commands(None)
-    assert any(c.name == "from-canonical" for c in cmds)
+    assert not any(c.name == "from-foreign" for c in cmds)
 
 
 def test_invalid_filename_skipped(fake_home):

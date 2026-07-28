@@ -3832,7 +3832,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     agent_backend_input = widgets.Dropdown(
         options=[
-            ('CLI - Claude Code (uses your subscription, no key needed)', 'cli'),
+            ('CLI - Anthropic CLI (uses your subscription, no key needed)', 'cli'),
             ('API - Anthropic API (pay-per-token, needs key)', 'api'),
         ],
         value='cli' if _claude_cli_found else 'api',
@@ -3854,9 +3854,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     agent_status_html = widgets.HTML(value='')
     agent_cli_status = widgets.HTML(
         value=(
-            '<span style="color:#2e7d32;">&#x2705; Claude Code CLI found</span>'
+            '<span style="color:#2e7d32;">&#x2705; Anthropic CLI found</span>'
             if _claude_cli_found
-            else '<span style="color:#ef6c00;">&#x26a0; Claude Code CLI not found in PATH</span>'
+            else '<span style="color:#ef6c00;">&#x26a0; Anthropic CLI ('claude') not found in PATH</span>'
         ),
     )
 
@@ -3904,7 +3904,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     agent_env_hint = widgets.HTML(
         value=(
             '<span style="color:#757575;font-size:12px;">'
-            '<b>CLI backend</b> uses your Claude Pro/Max subscription via OAuth (no API key needed).<br>'
+            '<b>CLI backend</b> uses your Anthropic subscription via OAuth (no API key needed).<br>'
             '<b>API backend</b> requires the <code>ANTHROPIC_API_KEY</code> environment variable '
             '(set it in your shell before launching the dashboard). '
             'Keys are never stored on disk.'

@@ -112,7 +112,7 @@ def test_excerpt_drops_tool_noise():
 
 
 # ---------------------------------------------------------------------------
-# Typed project-memory store (repo_root) — "memory like Claude Code"
+# Typed project-memory store (repo_root) — typed persistent memory
 # ---------------------------------------------------------------------------
 
 

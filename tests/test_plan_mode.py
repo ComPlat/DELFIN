@@ -40,7 +40,7 @@ def test_solo_prompt_includes_plan_addendum_when_mode_is_plan():
 
 def test_solo_prompt_includes_plan_addendum_when_permission_is_plan():
     # Plan is a permission profile now: Code mode + Perms=plan must still get
-    # the full plan addendum (read-only-first → ExitPlanMode), like Claude Code.
+    # the full plan addendum (read-only-first → ExitPlanMode).
     loader = PromptLoader()
     prompt = loader.build_system_prompt(
         role_id="solo_agent",

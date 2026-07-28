@@ -1,4 +1,4 @@
-"""Client backends for the DELFIN Agent: Claude CLI, Anthropic API, OpenAI API, or Codex CLI."""
+"""Client backends for the DELFIN Agent: the Anthropic CLI, Anthropic API, OpenAI API, or Codex CLI."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class _BaseClient:
 # ---------------------------------------------------------------------------
 
 class CLIClient(_BaseClient):
-    """Persistent bidirectional Claude CLI client via ``--input-format stream-json``.
+    """Persistent bidirectional CLI-backend client via ``--input-format stream-json``.
 
     Spawns a single long-running ``claude -p`` process that accepts JSON
     messages on stdin and emits JSON events on stdout — identical to what
@@ -450,7 +450,7 @@ class CLIClient(_BaseClient):
                     )
                 if stderr.strip():
                     raise RuntimeError(
-                        f"Claude CLI error (exit {rc}): {stderr.strip()[:500]}"
+                        f"CLI backend error (exit {rc}): {stderr.strip()[:500]}"
                     )
 
     def switch_model(self, model: str) -> None:
@@ -1623,7 +1623,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "ongoing goal/decision/constraint NOT in the code or git), "
                 "'reference' (an external URL/ticket). Do NOT save transient "
                 "task details, secrets, or anything already in the code / "
-                "CLAUDE.md / git. One fact per memory; before saving, prefer "
+                "DELFIN.MD / git. One fact per memory; before saving, prefer "
                 "updating a similar existing memory over duplicating it; link "
                 "related ones in the text with [[their-slug]]."
             ),
@@ -8352,7 +8352,7 @@ class CodexCLIClient(_BaseClient):
     # Reuse OpenAI pricing table.
     _PRICING = OpenAIClient._PRICING
 
-    # Map Claude CLI permission names → Codex CLI flags
+    # Map permission-mode names → Codex CLI flags
     _PERM_TO_CODEX_FLAGS: dict[str, list[str]] = {
         "plan":                ["--sandbox", "read-only"],
         "default":             ["--sandbox", "workspace-write"],

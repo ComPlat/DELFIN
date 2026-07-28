@@ -56,7 +56,7 @@ def mock_client():
         yield StreamEvent(type="message_start", input_tokens=100)
         yield StreamEvent(type="text_delta", text="Hello ")
         yield StreamEvent(type="text_delta", text="from ")
-        yield StreamEvent(type="text_delta", text="Claude!")
+        yield StreamEvent(type="text_delta", text="DELFIN!")
         yield StreamEvent(type="message_delta", output_tokens=50, cost_usd=0.01)
 
     client = MagicMock()
@@ -96,8 +96,8 @@ def test_engine_stream_response(agent_tree, mock_client):
         on_token=lambda t: chunks.append(t),
     )
 
-    assert response == "Hello from Claude!"
-    assert chunks == ["Hello ", "from ", "Claude!"]
+    assert response == "Hello from DELFIN!"
+    assert chunks == ["Hello ", "from ", "DELFIN!"]
     assert len(engine.messages) == 2
     assert engine.messages[0]["role"] == "user"
     assert engine.messages[1]["role"] == "assistant"
@@ -125,7 +125,7 @@ def test_engine_records_turn_metrics(agent_tree, mock_client, monkeypatch, tmp_p
     entries = tm.read(engine.trace_session())
     assert entries, "a turn metric should be recorded"
     last = entries[-1]
-    assert last["output_chars"] == len("Hello from Claude!")
+    assert last["output_chars"] == len("Hello from DELFIN!")
     assert last["ttft_ms"] is not None        # text was emitted → ttft captured
     assert last["tool_calls"] == 0
     assert last["total_ms"] >= 0
@@ -517,7 +517,7 @@ def test_engine_restore_state(agent_tree, mock_client):
 
     # Verify streaming still works after restore
     response = engine.stream_response("Continue")
-    assert response == "Hello from Claude!"
+    assert response == "Hello from DELFIN!"
 
 
 def test_retry_from_builder(agent_tree, mock_client):
@@ -1261,8 +1261,8 @@ def test_compact_for_next_role_preserves_current_role_output_before_advance(agen
     engine.compact_for_next_role()
 
     assert engine.messages == []
-    assert engine.role_outputs["session_manager"] == "Hello from Claude!"
-    assert "Hello from Claude!" in engine.compaction_summaries["session_manager"]
+    assert engine.role_outputs["session_manager"] == "Hello from DELFIN!"
+    assert "Hello from DELFIN!" in engine.compaction_summaries["session_manager"]
 
 
 def test_create_client_api():

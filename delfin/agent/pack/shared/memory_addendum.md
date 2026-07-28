@@ -14,7 +14,7 @@ what matters — don't rely on the user repeating themselves.
 - `reference` — a pointer to an external resource (URL, ticket, dashboard).
 
 **Do NOT save:** transient details of this one task; anything already in the
-code, CLAUDE.md, or git history; secrets. If unsure whether it lasts beyond this
+code, DELFIN.MD, or git history; secrets. If unsure whether it lasts beyond this
 conversation, it probably doesn't — skip it.
 
 **Discipline:** one fact per memory. Before saving, recall whether a similar

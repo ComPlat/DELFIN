@@ -282,7 +282,7 @@ class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
     Manages conversation state, role transitions, session persistence,
-    and Claude communication via CLI or API backend.
+    and model communication via CLI or API backend.
 
     Parameters
     ----------
@@ -383,7 +383,7 @@ class AgentEngine:
         # delta is (current cost_usd - this). Reset together with cost_usd
         # in reset_cycle() so a fresh cycle starts at delta = full spend.
         self._last_outcome_cost: float = 0.0
-        # Session id. The Claude CLI fills this from its stream events; the
+        # Session id. The CLI backend fills this from its stream events; the
         # OpenAI / KIT / Ollama backends emit no such event, so without a value
         # here every API session collapses onto the same empty-id bucket —
         # task_list then falls back to "all workspace tasks", so a brand-new
@@ -1245,7 +1245,7 @@ class AgentEngine:
         OpenAI-compatible backend (Ollama / KIT / OpenAI), the pixels are sent
         as multimodal ``image_url`` content so the model actually SEES them.
         Otherwise a plain-text message (the caller adds a note about the
-        attached files). Claude uses a different image format → text fallback.
+        attached files). The CLI backend uses a different image format → text fallback.
         """
         if not images:
             return {"role": "user", "content": text}
@@ -2070,7 +2070,7 @@ class AgentEngine:
         self._live_state = text or ""
 
     def _fresh_session_id(self) -> str:
-        """A new session id for backends that supply none. The Claude CLI emits
+        """A new session id for backends that supply none. The CLI backend emits
         its own id via the stream, so it returns "" (filled in later); the
         OpenAI / KIT / Ollama backends get a minted UUID so each session is a
         distinct, stable bucket for task scoping and session save/load."""
