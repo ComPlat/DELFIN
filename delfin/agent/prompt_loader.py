@@ -174,6 +174,7 @@ class PromptLoader:
         self,
         max_chars: int = 6000,
         memory_root: Path | None = None,
+        task_text: str = "",
     ) -> str:
         """Load the user's per-project memory for the current repo.
 
@@ -182,6 +183,12 @@ class PromptLoader:
         ``[Title](file.md)`` references inside it.  Returns a flat
         markdown string suitable for prompt injection, capped at
         ``max_chars`` so it can never blow up the context.
+
+        With a non-empty ``task_text`` the referenced files are BM25-ranked
+        against it before the budget is spent, so the most task-relevant
+        memories are injected first instead of whatever happens to sit at
+        the top of MEMORY.md. Without task tokens (or on ties) the
+        MEMORY.md order is kept.
 
         The repo is mapped to a slug by replacing ``/`` with ``-``.
         Empty string if nothing is found.
@@ -226,17 +233,12 @@ class PromptLoader:
         # Pull in every "[Title](file.md)" target referenced from MEMORY.md
         import re as _re
         seen: set[str] = set()
-        injected: set[str] = set()
-        joined_chars = len(chunks[0])
+        entries: list[tuple[str, str, str]] = []  # (title, rel, body)
         for match in _re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)\)", index_text):
             title, rel = match.group(1), match.group(2).strip()
             if rel in seen:
                 continue
             seen.add(rel)
-            # The final string is prefix-truncated. Once even the separator
-            # would fall outside that prefix, later files cannot be recalled.
-            if joined_chars + 2 >= max_chars:
-                break
             target = (base / rel).resolve()
             try:
                 if not target.is_file():
@@ -254,6 +256,29 @@ class PromptLoader:
                 body = _resolve_wl(body, base)
             except Exception:
                 pass
+            entries.append((title, rel, body))
+
+        # Spend the char budget on what THIS task needs: BM25-rank the
+        # entries against the task text. Stable sort keeps MEMORY.md order
+        # for ties and for tasks with no query tokens (all scores 0).
+        if task_text and len(entries) > 1:
+            try:
+                from .memory_store import bm25_scores
+                scores = bm25_scores(
+                    task_text, [f"{t}\n{b}" for t, _, b in entries])
+                order = sorted(range(len(entries)),
+                               key=lambda i: scores[i], reverse=True)
+                entries = [entries[i] for i in order]
+            except Exception:
+                pass
+
+        injected: set[str] = set()
+        joined_chars = len(chunks[0])
+        for title, rel, body in entries:
+            # The final string is prefix-truncated. Once even the separator
+            # would fall outside that prefix, later files cannot be recalled.
+            if joined_chars + 2 >= max_chars:
+                break
             chunk = f"# {title} ({rel})\n{body}"
             chunks.append(chunk)
             injected.add(rel)
@@ -1072,7 +1097,8 @@ class PromptLoader:
             # ~/.claude/projects/<slug>/memory/MEMORY.md so dashboard
             # solo mode inherits the same memories the terminal CLI uses.
             try:
-                ext_mem = self._load_external_memory_context()
+                ext_mem = self._load_external_memory_context(
+                    task_text=task_text)
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):
@@ -1353,7 +1379,8 @@ class PromptLoader:
         # short and we don't want to drown a haiku-class model in memos.
         if role_id == "dashboard_agent":
             try:
-                ext_mem = self._load_external_memory_context(max_chars=2000)
+                ext_mem = self._load_external_memory_context(
+                    max_chars=2000, task_text=task_text)
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):

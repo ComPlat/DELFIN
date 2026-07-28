@@ -66,3 +66,21 @@ def test_remember_wired_end_to_end():
     pl = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
           / "prompt_loader.py").read_text(encoding="utf-8")
     assert "memory_addendum" in pl                   # injected into the prompt
+
+
+def test_remember_prunes_store_after_saving(tmp_path):
+    """The remember tool self-limits the store (auto-memory distill is
+    opt-in, so this is the only prune trigger many users ever hit)."""
+    home = tmp_path / "home2"
+    home.mkdir()
+    ws = tmp_path / "ws2"
+    ws.mkdir()
+    from delfin.agent import memory_store as ms
+    calls = []
+    with patch.object(Path, "home", lambda: home), \
+            patch.object(ms, "prune_memories",
+                         lambda root, **kw: calls.append(root) or []):
+        out = json.loads(A._doc_executor._execute_remember(
+            {"text": "project: keep the store bounded"}, _perms(ws)))
+    assert out["status"] == "ok"
+    assert calls == [ws]

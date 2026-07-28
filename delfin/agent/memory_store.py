@@ -86,6 +86,68 @@ def _set_file_perms(path: Path) -> None:
         pass
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Memory files are rewritten on every recall, and a dashboard session and
+    a CLI session can share one repo: a plain ``write_text`` truncates first,
+    so a reader racing the writer would observe an empty or torn file."""
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        _set_file_perms(path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+# Frontmatter fields the store owns and rewrites itself; anything else found
+# in an existing file (e.g. hand-added by the user) is carried through
+# rewrites unchanged via the ``extras`` mapping.
+_KNOWN_FRONT_FIELDS = frozenset({
+    "name", "description", "created_at", "updated_at", "use_count",
+    "superseded", "type",
+})
+
+
+def _compose_frontmatter(
+    *,
+    name: str,
+    description: str,
+    created_at: int,
+    updated_at: int,
+    use_count: int,
+    memory_type: str,
+    body: str,
+    superseded: str = "",
+    extras: dict[str, str] | None = None,
+) -> str:
+    """Serialise a typed memory file (frontmatter + body)."""
+    lines = [
+        "---",
+        f"name: {name}",
+        f"description: {description}",
+        f"created_at: {created_at}",
+        f"updated_at: {updated_at}",
+        f"use_count: {use_count}",
+    ]
+    if superseded:
+        lines.append(f"superseded: {superseded}")
+    for key, value in (extras or {}).items():
+        if key not in _KNOWN_FRONT_FIELDS:
+            lines.append(f"{key}: {value}")
+    lines += ["metadata:", f"  type: {memory_type}", "---", "", body, ""]
+    return "\n".join(lines)
+
+
 def _read(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -140,6 +202,38 @@ def delete_memory(index: int, path: Path | None = None) -> bool:
     return False
 
 
+def bm25_scores(task_text: str, texts: list[str]) -> list[float]:
+    """BM25 relevance of each text against ``task_text``.
+
+    Per-text score is the sum over the task's query tokens of
+    ``log((N - df + 0.5) / (df + 0.5) + 1)`` times a length-normalised
+    saturation factor (k1=1.2, b=0.75; term frequency is binary because
+    docs are token SETS). Returns all zeros when the task yields no tokens
+    after stopword removal. Deterministic and model-free."""
+    task_tokens = _tokenize(task_text)
+    if not task_tokens or not texts:
+        return [0.0] * len(texts)
+    import math as _math
+    docs = [_tokenize(t) for t in texts]
+    doc_lens = [max(1, len(d)) for d in docs]
+    avgdl = sum(doc_lens) / max(1, len(doc_lens))
+    N = len(docs)
+    df = {tok: sum(1 for d in docs if tok in d) for tok in task_tokens}
+    k1, b = 1.2, 0.75
+    scores: list[float] = []
+    for doc, dlen in zip(docs, doc_lens):
+        score = 0.0
+        for tok in task_tokens:
+            df_t = df.get(tok, 0)
+            if df_t == 0 or tok not in doc:
+                continue
+            idf = _math.log((N - df_t + 0.5) / (df_t + 0.5) + 1.0)
+            norm = (k1 + 1.0) / (1.0 + k1 * (1 - b + b * dlen / avgdl))
+            score += idf * norm
+        scores.append(score)
+    return scores
+
+
 def format_memory_context(
     path: Path | None = None,
     *,
@@ -168,32 +262,13 @@ def format_memory_context(
             for i, fact in enumerate(facts[-max_entries:])
         ]
     else:
-        import math as _math
-        N = len(facts)
-        # Pre-tokenize each fact + compute doc length / avg-doc length.
-        docs = [_tokenize(str(f.get("text", ""))) for f in facts]
-        doc_lens = [max(1, len(d)) for d in docs]
-        avgdl = sum(doc_lens) / max(1, len(doc_lens))
-        # Document frequency for each query token.
-        df: dict[str, int] = {}
-        for tok in task_tokens:
-            df[tok] = sum(1 for d in docs if tok in d)
-        k1, b = 1.2, 0.75
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for i, (fact, doc, dlen) in enumerate(zip(facts, docs, doc_lens)):
-            score = 0.0
-            for tok in task_tokens:
-                df_t = df.get(tok, 0)
-                if df_t == 0 or tok not in doc:
-                    continue
-                idf = _math.log((N - df_t + 0.5) / (df_t + 0.5) + 1.0)
-                # Token frequency is binary here (we don't track tf in a
-                # set), so the saturation curve simplifies to:
-                norm = (k1 + 1.0) / (1.0 + k1 * (1 - b + b * dlen / avgdl))
-                score += idf * norm
-            if score > 0:
-                # Tiebreak on recency: later facts win on equal score.
-                scored.append((score + 1e-6 * i, fact))
+        scores = bm25_scores(task_text, [str(f.get("text", "")) for f in facts])
+        scored: list[tuple[float, dict[str, Any]]] = [
+            # Tiebreak on recency: later facts win on equal score.
+            (score + 1e-6 * i, fact)
+            for i, (score, fact) in enumerate(zip(scores, facts))
+            if score > 0
+        ]
         scored.sort(key=lambda kv: kv[0], reverse=True)
         selected = scored[:max_entries]
 
@@ -510,23 +585,27 @@ def save_typed_memory(
         use_count = int(best.get("use_count", 0)) + 1
         created_at = int(best.get("created_at", now)) or now
         old_body = str(best.get("body", "")).strip()
-        superseded = " ".join(old_body.split())[:160] if old_body != body else ""
-        superseded_line = f"superseded: {superseded}\n" if superseded else ""
-        front = (
-            "---\n"
-            f"name: {slug}\n"
-            f"description: {description}\n"
-            f"created_at: {created_at}\n"
-            f"updated_at: {now}\n"
-            f"use_count: {use_count}\n"
-            f"{superseded_line}"
-            f"metadata:\n"
-            f"  type: {memory_type}\n"
-            "---\n\n"
-            f"{body}\n"
+        try:
+            old_meta, _ = _parse_frontmatter(fpath.read_text(encoding="utf-8"))
+        except OSError:
+            old_meta = {}
+        if old_body != body:
+            superseded = " ".join(old_body.split())[:160]
+        else:
+            superseded = " ".join(old_meta.get("superseded", "").split())[:160]
+        front = _compose_frontmatter(
+            name=slug, description=description, created_at=created_at,
+            updated_at=now, use_count=use_count, memory_type=memory_type,
+            body=body, superseded=superseded, extras=old_meta,
         )
-        fpath.write_text(front, encoding="utf-8")
-        _set_file_perms(fpath)
+        _atomic_write(fpath, front)
+        # Refresh the MEMORY.md pointer so its hook matches the merged body
+        # (also re-adds the line if the user hand-pruned it from the index).
+        _remove_memory_index_line(memory_dir, fpath.name)
+        _update_memory_index(
+            memory_dir, memory_type=memory_type, title=display_title,
+            filename=fpath.name, hook=description,
+        )
         return fpath, slug, memory_type
 
     # --- New memory -------------------------------------------------------
@@ -544,20 +623,11 @@ def save_typed_memory(
             fpath = memory_dir / fname
             counter += 1
 
-    front = (
-        "---\n"
-        f"name: {slug}\n"
-        f"description: {description}\n"
-        f"created_at: {now}\n"
-        f"updated_at: {now}\n"
-        f"use_count: 1\n"
-        f"metadata:\n"
-        f"  type: {memory_type}\n"
-        "---\n\n"
-        f"{body}\n"
+    front = _compose_frontmatter(
+        name=slug, description=description, created_at=now,
+        updated_at=now, use_count=1, memory_type=memory_type, body=body,
     )
-    fpath.write_text(front, encoding="utf-8")
-    _set_file_perms(fpath)
+    _atomic_write(fpath, front)
 
     _update_memory_index(
         memory_dir,
@@ -599,7 +669,7 @@ def _update_memory_index(
     else:
         content = content.rstrip() + f"\n\n{section_header}\n{line}\n"
 
-    index.write_text(content, encoding="utf-8")
+    _atomic_write(index, content)
 
 
 def _type_from_filename(fname: str) -> str:
@@ -688,7 +758,7 @@ def _remove_memory_index_line(memory_dir: Path, filename: str) -> None:
     kept = [ln for ln in lines if f"({filename})" not in ln]
     if len(kept) != len(lines):
         try:
-            index.write_text("".join(kept), encoding="utf-8")
+            _atomic_write(index, "".join(kept))
         except OSError:
             pass
 
@@ -815,23 +885,13 @@ def record_memory_recall(
         use_count = _meta_int(meta, "use_count", 0) + 1
         created_at = _meta_int(meta, "created_at", now) or now
         superseded = " ".join(meta.get("superseded", "").split())[:160]
-        superseded_line = f"superseded: {superseded}\n" if superseded else ""
-        front = (
-            "---\n"
-            f"name: {name}\n"
-            f"description: {description}\n"
-            f"created_at: {created_at}\n"
-            f"updated_at: {now}\n"
-            f"use_count: {use_count}\n"
-            f"{superseded_line}"
-            f"metadata:\n"
-            f"  type: {mtype}\n"
-            "---\n\n"
-            f"{body.strip()}\n"
+        front = _compose_frontmatter(
+            name=name, description=description, created_at=created_at,
+            updated_at=now, use_count=use_count, memory_type=mtype,
+            body=body.strip(), superseded=superseded, extras=meta,
         )
         try:
-            p.write_text(front, encoding="utf-8")
-            _set_file_perms(p)
+            _atomic_write(p, front)
             updated += 1
         except OSError:
             continue

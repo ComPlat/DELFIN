@@ -9034,10 +9034,19 @@ def create_tab(ctx):
             text_to_save = text[len("/remember "):].strip()
             if text_to_save:
                 try:
-                    from delfin.agent.memory_store import save_typed_memory
+                    from delfin.agent.memory_store import (
+                        prune_memories, save_typed_memory,
+                    )
                     fpath, slug, mem_type = save_typed_memory(
                         text_to_save, repo_root=ctx.repo_dir or ".",
                     )
+                    # Self-limit on every write path — auto-memory distill
+                    # is opt-in, so /remember alone must not grow the store
+                    # unbounded.
+                    try:
+                        prune_memories(ctx.repo_dir or ".")
+                    except Exception:
+                        pass
                     short = str(fpath).replace(str(Path.home()), "~")
                     _append_system_message(
                         f"Memory saved as {mem_type} → {short}")

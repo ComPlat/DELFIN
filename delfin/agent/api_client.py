@@ -4146,6 +4146,13 @@ class _DocToolExecutor:
                 text, repo_root=root, memory_type=memory_type, title=title)
         except Exception as exc:
             return json.dumps({"error": f"could not save memory: {exc}"})
+        # Self-limit the store on every write path — auto-memory distill is
+        # opt-in, so without this the remember tool could grow it unbounded.
+        try:
+            from .memory_store import prune_memories
+            prune_memories(root)
+        except Exception:
+            pass
         return json.dumps({
             "status": "ok",
             "type": mtype,

@@ -360,3 +360,53 @@ def test_record_memory_recall_rejects_parent_path(fake_home, tmp_path):
     outside.write_text("must stay unchanged\n", encoding="utf-8")
     assert ms.record_memory_recall(repo, ["../outside.md"]) == 0
     assert outside.read_text(encoding="utf-8") == "must stay unchanged\n"
+
+
+def test_rewrites_preserve_hand_added_frontmatter(fake_home, tmp_path):
+    """Unknown scalar frontmatter fields (hand-added by the user) survive
+    both a recall rewrite and a dedup merge."""
+    repo = tmp_path / "extras"; repo.mkdir()
+    p, _slug, _t = ms.save_typed_memory(
+        "project: emitters are optimised with CAM-B3LYP", repo_root=repo)
+    text = p.read_text(encoding="utf-8")
+    p.write_text(text.replace("metadata:", "source: hand-curated\nmetadata:"),
+                 encoding="utf-8")
+
+    ms.record_memory_recall(repo, [p.name])
+    assert "source: hand-curated" in p.read_text(encoding="utf-8")
+
+    ms.save_typed_memory(
+        "project: emitters are optimised with CAM-B3LYP today",
+        repo_root=repo)
+    after = p.read_text(encoding="utf-8")
+    assert "source: hand-curated" in after
+    assert "superseded:" in after
+
+
+def test_merge_refreshes_index_hook(fake_home, tmp_path):
+    """After a dedup merge the MEMORY.md pointer reflects the NEW text."""
+    repo = tmp_path / "hook"; repo.mkdir()
+    p1, _, _ = ms.save_typed_memory(
+        "project: scheduler uses PAL cores for parallel jobs", repo_root=repo)
+    p2, _, _ = ms.save_typed_memory(
+        "project: scheduler uses PAL cores for parallel jobs on niagara",
+        repo_root=repo)
+    assert p1 == p2
+    index = (ms._delfin_memory_dir(repo) / "MEMORY.md").read_text(
+        encoding="utf-8")
+    assert index.count(f"({p1.name})") == 1
+    assert "niagara" in index
+
+
+def test_memory_writes_leave_no_temp_files(fake_home, tmp_path):
+    """Atomic writes must clean up their temp files in the memory dir."""
+    repo = tmp_path / "tmpfiles"; repo.mkdir()
+    p, _, _ = ms.save_typed_memory(
+        "project: no temp file droppings please", repo_root=repo)
+    ms.save_typed_memory(
+        "project: no temp file droppings please again", repo_root=repo)
+    ms.record_memory_recall(repo, [p.name])
+    ms.prune_memories(repo, max_per_type=1)
+    leftovers = [f.name for f in ms._delfin_memory_dir(repo).iterdir()
+                 if f.name.endswith(".tmp")]
+    assert leftovers == []

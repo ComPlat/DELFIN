@@ -625,6 +625,48 @@ def test_external_memory_records_only_files_inside_prompt_limit(
     assert records[second.name]["use_count"] == 1
 
 
+def test_external_memory_ranks_task_relevant_files_first(
+    agent_tree, tmp_path, monkeypatch,
+):
+    """With task_text, the char budget goes to the BM25-relevant memory,
+    not to whatever sits at the top of MEMORY.md."""
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    dashboard, _, _ = ms.save_typed_memory(
+        "project: dashboard websocket runs on port 8050", repo_root=agent_tree)
+    orca, _, _ = ms.save_typed_memory(
+        "project: orca geometry convergence needs tightscf and slowconv",
+        repo_root=agent_tree)
+    memory_dir = ms._delfin_memory_dir(agent_tree)
+    index = memory_dir / "MEMORY.md"
+    # Dashboard listed FIRST — without ranking it would win the budget.
+    index.write_text(
+        "# Project Memory\n"
+        f"- [Dashboard]({dashboard.name})\n"
+        f"- [Orca]({orca.name})\n",
+        encoding="utf-8",
+    )
+    index_chunk = f"# MEMORY.md\n{index.read_text(encoding='utf-8').strip()}"
+    orca_chunk = (
+        f"# Orca ({orca.name})\n"
+        f"{orca.read_text(encoding='utf-8').strip()}"
+    )
+
+    out = loader._load_external_memory_context(
+        max_chars=len(index_chunk) + 2 + len(orca_chunk),
+        task_text="fix the orca geometry convergence failure in the run",
+    )
+
+    assert "tightscf" in out
+    assert "port 8050" not in out
+    records = {rec["file"]: rec for rec in ms.list_typed_memories(agent_tree)}
+    assert records[orca.name]["use_count"] == 2
+    assert records[dashboard.name]["use_count"] == 1
+
+
 def test_solo_prompt_includes_external_memory_when_present(
     agent_tree, tmp_path, monkeypatch,
 ):
@@ -645,9 +687,10 @@ def test_solo_prompt_includes_external_memory_when_present(
     loader = PromptLoader(agent_tree)
     monkeypatch.setattr(
         loader, "_load_external_memory_context",
-        lambda max_chars=6000, memory_root=None:
+        lambda max_chars=6000, memory_root=None, task_text="":
             loader.__class__._load_external_memory_context(
                 loader, memory_root=mem, max_chars=max_chars,
+                task_text=task_text,
             ),
     )
     prompt = loader.build_system_prompt(
@@ -679,9 +722,10 @@ def test_external_memory_injected_into_dashboard_prompt(agent_tree, tmp_path, mo
     captured: dict = {}
     real = loader._load_external_memory_context
 
-    def _spy(max_chars=6000, memory_root=None):
+    def _spy(max_chars=6000, memory_root=None, task_text=""):
         captured["max_chars"] = max_chars
-        return real.__func__(loader, memory_root=mem, max_chars=max_chars)
+        return real.__func__(loader, memory_root=mem, max_chars=max_chars,
+                             task_text=task_text)
 
     monkeypatch.setattr(loader, "_load_external_memory_context", _spy)
     prompt = loader.build_system_prompt(
@@ -708,9 +752,10 @@ def test_external_memory_not_injected_for_other_roles(agent_tree, tmp_path, monk
     loader = PromptLoader(agent_tree)
     monkeypatch.setattr(
         loader, "_load_external_memory_context",
-        lambda max_chars=6000, memory_root=None:
+        lambda max_chars=6000, memory_root=None, task_text="":
             loader.__class__._load_external_memory_context(
                 loader, memory_root=mem, max_chars=max_chars,
+                task_text=task_text,
             ),
     )
     prompt = loader.build_system_prompt(
