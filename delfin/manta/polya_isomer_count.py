@@ -274,6 +274,18 @@ CHELATE_CIS_MAX_DEG_TET = 111.0
 
 _GEOM_KEY_TO_SHAPE = {
     "linear": "L-2 linear",
+    # CN3 + TPR-6 were MISSING here (2026-07-28 backport; the eye's copy has carried the fix since
+    # 2026-07-07).  Both consumers resolve a geometry key to a reference polyhedron via .get():
+    # _chelate_cis_edges falls back when it is None, but _mer_triples does `if shape is None: return []`
+    # -- so for a trigonal prism or ANY CN3 field the MERIDIONAL triples came back EMPTY, no chelate
+    # config could be built, and converter_backend's `if not configs: return None` dropped the whole
+    # complex to the legacy path.  Silently: the KeyError/None is swallowed by a bare except.
+    # Population 723 TPR-6 + 1238 CN3 = 1961 systems degraded without a single log line.  All four
+    # shape names already exist in polyhedra.py (:30/:34/:52/:71) -- only the mapping was absent.
+    "trigonal_planar": "SP-3 trigonal planar",
+    "tshape": "T-3 T-shape",
+    "trigonal_pyramidal": "TPY-3 trigonal pyramidal",
+    "trigonal_prism": "TPR-6 trigonal prism",
     "octahedron": "OC-6 octahedron",
     "square_planar": "SP-4 square planar",
     "tetrahedron": "T-4 tetrahedron",
