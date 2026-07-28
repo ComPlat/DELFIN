@@ -99,3 +99,9 @@ scripts/ccdc_exploit/
 # Built fragment indexes (both COD + CCDC sind build-artefakte, nie ins repo)
 *fragment_index*.sqlite
 *fragment_index*.db
+
+# Pipeline step outputs (SMILES -> xtb opt -> thermo) dropped into the repo
+# root when tests run the workflow with a default cwd — never repo content.
+/00_smiles/
+/01_xtb_opt/
+/02_xtb_thermo/
