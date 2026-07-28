@@ -28208,6 +28208,17 @@ def _generate_alternative_binding_modes(
                 )
     except Exception:
         _alt_budget_s = 60.0
+    # DETERMINISM (2026-07-28): this was the ONLY isomer-generating path whose wall-clock budget was
+    # not gated on _deterministic_mode() -- every sibling already is (2-metal :27381, N-metal :27605,
+    # MM-augmentation, ETKDG multi-seed, embed joins).  Consequence: alternative binding modes are
+    # DROPPED under load, so the ISOMER SET itself became load-dependent.  Measured on LATTUW: 14
+    # frames under load vs 16 on a free box -- the two missing ones are alt-bind-C isomers.  It passes
+    # within-run determinism (both replica builds run under the same load) and only differs ACROSS
+    # runs, which is why the byte-determinism gate never caught it.  That violates both "Vollstaendigkeit
+    # heilig" and the deterministic-manifold claim.  0.0 disables the wall clock; termination falls back
+    # to the deterministic caps, exactly like the siblings.
+    if _deterministic_mode():
+        _alt_budget_s = 0.0
     _alt_t0 = _time_mod.monotonic() if _alt_budget_s > 0 else None
 
     for atom in mol.GetAtoms():
