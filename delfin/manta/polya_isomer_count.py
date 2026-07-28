@@ -282,10 +282,6 @@ _GEOM_KEY_TO_SHAPE = {
     # complex to the legacy path.  Silently: the KeyError/None is swallowed by a bare except.
     # Population 723 TPR-6 + 1238 CN3 = 1961 systems degraded without a single log line.  All four
     # shape names already exist in polyhedra.py (:30/:34/:52/:71) -- only the mapping was absent.
-    "trigonal_planar": "SP-3 trigonal planar",
-    "tshape": "T-3 T-shape",
-    "trigonal_pyramidal": "TPY-3 trigonal pyramidal",
-    "trigonal_prism": "TPR-6 trigonal prism",
     "octahedron": "OC-6 octahedron",
     "square_planar": "SP-4 square planar",
     "tetrahedron": "T-4 tetrahedron",
@@ -295,6 +291,30 @@ _GEOM_KEY_TO_SHAPE = {
     "square_antiprism": "SQAP-8 square antiprism",
     "tricapped_trigonal_prism": "TTP-9 tricapped trigonal prism",
 }
+
+# The CN3 fields and the trigonal prism were ABSENT from the map above (backport 2026-07-28; the eye's
+# copy, weddell/detectors/_polya_isomer_count.py, has carried them since 2026-07-07).  Both consumers
+# resolve a geometry key through _geom_shape(); _chelate_cis_edges falls back when it is None, but
+# _mer_triples does `if shape is None: return []` -- so on a trigonal prism or ANY CN3 field the
+# MERIDIONAL triples came back EMPTY, no chelate config could be built, and converter_backend's
+# `if not configs: return None` dropped the whole complex to the LEGACY path.  Silently: the None is
+# swallowed by a bare except, so nothing was ever logged.  Population 723 TPR-6 + 1238 CN3 = 1961
+# systems degraded without a trace (SOLZOL: 12 frames, all trigonal-prismatic, all broken).
+# Env-gated so the restoration gets a clean A/B; add to _CHAMPION_FLAGS once it proves never-worse.
+_GEOM_KEY_TO_SHAPE_CN3_TPR6 = {
+    "trigonal_planar": "SP-3 trigonal planar",
+    "tshape": "T-3 T-shape",
+    "trigonal_pyramidal": "TPY-3 trigonal pyramidal",
+    "trigonal_prism": "TPR-6 trigonal prism",
+}
+
+
+def _geom_shape(geometry):
+    """Reference-polyhedron name for a geometry key, or None when we have none."""
+    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    if shape is None and os.environ.get("DELFIN_FFFREE_POLYA_CN3_TPR6", "0") == "1":
+        shape = _GEOM_KEY_TO_SHAPE_CN3_TPR6.get(geometry)
+    return shape
 
 
 def _chelate_cis_edges(geometry: str, n: int):
@@ -311,7 +331,7 @@ def _chelate_cis_edges(geometry: str, n: int):
     ceiling = (CHELATE_CIS_MAX_DEG_TET
                if _delfin_env_int("DELFIN_FFFREE_TET_CHELATE", 0)
                else CHELATE_CIS_MAX_DEG)
-    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    shape = _geom_shape(geometry)
     if shape is not None:
         try:
             import math
@@ -343,7 +363,7 @@ def _meridional_triples(geometry: str, n: int):
     import math
     import itertools
     import numpy as np
-    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    shape = _geom_shape(geometry)
     if shape is None:
         return []
     try:
@@ -398,7 +418,7 @@ def _equatorial_squares(geometry: str, n: int):
     import math
     import itertools
     import numpy as np
-    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    shape = _geom_shape(geometry)
     if shape is None:
         return []
     try:
