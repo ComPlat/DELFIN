@@ -5281,6 +5281,22 @@ class _DocToolExecutor:
                     return f"confirm_callback raised: {exc}"
                 if ok:
                     return None
+                # Timeout is ABSENCE, not refusal — the two need different
+                # guidance (a "user denied, never retry" after every
+                # unattended 300s window poisoned whole sessions).
+                _timed_out = bool(getattr(
+                    getattr(perms.confirm_callback, "__self__", None),
+                    "last_timed_out", False))
+                if _timed_out:
+                    _record_security_event("approval_timeout", "bash", cmd[:80])
+                    return (
+                        f"approval request for '{cmd[:120]}' TIMED OUT — the "
+                        "user is away, this is NOT a denial. Do not retry the "
+                        "command now (each attempt blocks for the approval "
+                        "window). Continue with read-only work, or use "
+                        "ask_user_question / end your turn so the user can "
+                        "respond when back."
+                    )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
@@ -7106,10 +7122,21 @@ class _DocToolExecutor:
             )})
         if not multi_select and len(answers) > 1:
             answers = answers[:1]
-        return json.dumps({
+        payload: dict[str, Any] = {
             "answers": answers,
             "multiSelect": multi_select,
-        })
+        }
+        # Surface the UI's timeout flag: empty answers because the user is
+        # AWAY must not read like the user actively chose nothing (weak
+        # models re-ask the identical question in a loop otherwise).
+        if result.get("timed_out"):
+            payload["timed_out"] = True
+            payload["note"] = (
+                "The question timed out with no user present — the empty "
+                "answer list is NOT a choice. Do not re-ask now; proceed "
+                "with a sensible default or end your turn and wait."
+            )
+        return json.dumps(payload)
 
     # ------- Planning tools (TaskCreate / Update / List) ------------------
 

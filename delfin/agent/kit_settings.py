@@ -254,6 +254,13 @@ def persist_pattern(pattern: str, *, kind: str = "allow",
         raise ValueError(f"kind must be 'allow' or 'deny', got {kind!r}")
     if not pattern:
         raise ValueError("pattern must be non-empty")
+    # A malformed regex would silently disable matching (or crash the
+    # gate) on every later turn — reject it at persist time instead.
+    import re as _re
+    try:
+        _re.compile(pattern)
+    except _re.error as exc:
+        raise ValueError(f"invalid regex pattern: {exc}") from exc
     key = "allow_patterns" if kind == "allow" else "deny_patterns"
 
     def m(block: dict[str, Any]) -> None:
@@ -294,6 +301,18 @@ def persist_default_mode(mode: str, *,
 # Convenience: derive sensible bash auto-allow regex for a one-shot command
 # ---------------------------------------------------------------------------
 
+# Heads whose bare-head generalisation would be dangerous: one click on
+# "Allow + Permanent" for an innocuous 'rm build/tmp.txt' must NOT persist
+# a pattern that auto-allows every future rm/curl/ssh. These generalise to
+# the EXACT command instead.
+_NO_BARE_HEAD = frozenset({
+    "rm", "rmdir", "mv", "cp", "dd", "chmod", "chown", "chgrp", "ln",
+    "kill", "pkill", "killall", "curl", "wget", "nc", "ncat", "ssh",
+    "scp", "rsync", "sftp", "sudo", "su", "mkfs", "mount", "umount",
+    "truncate", "shred", "eval", "exec", "sh", "bash", "zsh",
+})
+
+
 def suggest_pattern_for_command(cmd: str) -> str:
     """Translate a shell command into a re-usable auto-allow regex.
 
@@ -302,8 +321,11 @@ def suggest_pattern_for_command(cmd: str) -> str:
         'pytest -xvs tests/foo.py'   -> '^\\s*pytest\\b'
         'git status'                 -> '^\\s*git status\\b'
         'python3 -m delfin.cli x'    -> '^\\s*python3\\s+-m\\s+delfin\\.cli\\b'
+        'rm build/tmp.txt'           -> exact-match pattern (no bare 'rm')
     """
-    parts = (cmd or "").strip().split()
+    import re as _re
+    cmd = (cmd or "").strip()
+    parts = cmd.split()
     if not parts:
         return ""
     head = parts[0]
@@ -313,4 +335,8 @@ def suggest_pattern_for_command(cmd: str) -> str:
     if head in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
         mod = parts[2].replace(".", r"\.")
         return rf"^\s*{head}\s+-m\s+{mod}\b"
+    if head in _NO_BARE_HEAD or "/" in head:
+        # Destructive/network/interpreter heads (and path-invoked binaries):
+        # allow exactly THIS command, nothing broader.
+        return r"^\s*" + _re.escape(cmd) + r"\s*$"
     return rf"^\s*{head}\b"

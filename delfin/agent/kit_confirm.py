@@ -96,6 +96,9 @@ class KitConfirmBroker:
         self._history: list[_ConfirmRequest] = []
         self._seq = 0
         self._timeout_s = default_timeout_s
+        # True when the most recent decision was a TIMEOUT (user absent),
+        # not an actual click on deny. Consumers distinguish the two.
+        self.last_timed_out = False
         self._on_request: Optional[Any] = None  # UI callback to refresh the panel
         # Optional persistence hook: callable(kind, pattern) -> (ok, msg).
         # When a remember_permission request goes through the broker and the
@@ -146,7 +149,15 @@ class KitConfirmBroker:
                 pass
             self._history.append(req)
             if not decided and req.decision is None:
-                req.decision = False  # timeout = deny
+                req.decision = False  # blocks the action…
+                # …but record that this was ABSENCE, not refusal. Callers
+                # inspect this flag (via the bound method's __self__) so the
+                # model is told "user away — ask later" instead of "user
+                # denied — never retry", which previously poisoned the rest
+                # of the session after every unattended 300s window.
+                self.last_timed_out = True
+            else:
+                self.last_timed_out = False
 
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
