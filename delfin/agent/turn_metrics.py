@@ -113,6 +113,83 @@ def is_stall(entry: dict) -> bool:
         return False
 
 
+def _percentile(sorted_vals: list[int], q: float) -> int:
+    """Nearest-rank percentile of a pre-sorted list (stdlib only)."""
+    if not sorted_vals:
+        return 0
+    k = int(round((q / 100.0) * (len(sorted_vals) - 1)))
+    k = max(0, min(len(sorted_vals) - 1, k))
+    return sorted_vals[k]
+
+
+def aggregate_turn_stats(
+    window_days: float = 7,
+    *,
+    dir_path: Path | None = None,
+    now: float | None = None,
+) -> dict:
+    """Windowed roll-up across ALL session files — the telemetry consumer
+    the per-turn logs have been missing.
+
+    Returns ``{turns, avg_ttft_ms, p90_ttft_ms, stalls, stopped_count}``
+    where ``stalls`` counts entries flagged by :func:`is_stall` and the
+    ttft numbers cover only turns that recorded a first token.  Entries
+    outside the last ``window_days`` are skipped (``window_days <= 0``
+    disables the window); entries without a parseable ``ts`` stay
+    visible.  Best-effort: never raises — corrupt lines/files skipped.
+    """
+    empty = {"turns": 0, "avg_ttft_ms": 0, "p90_ttft_ms": 0,
+             "stalls": 0, "stopped_count": 0}
+    try:
+        base = Path(dir_path) if dir_path else _DIR
+        cutoff: float | None = None
+        if window_days and float(window_days) > 0:
+            cutoff = ((now if now is not None else time.time())
+                      - float(window_days) * 86400.0)
+        turns = stalls = stopped = 0
+        ttfts: list[int] = []
+        for fp in sorted(base.glob("*.jsonl")):
+            try:
+                lines = fp.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for ln in lines:
+                try:
+                    e = json.loads(ln)
+                except Exception:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                if cutoff is not None:
+                    try:
+                        if float(e["ts"]) < cutoff:
+                            continue
+                    except (KeyError, TypeError, ValueError):
+                        pass                    # no/bad ts → keep visible
+                turns += 1
+                ttft = e.get("ttft_ms")
+                if ttft is not None:
+                    try:
+                        ttfts.append(int(ttft))
+                    except (TypeError, ValueError):
+                        pass
+                if is_stall(e):
+                    stalls += 1
+                if e.get("stopped"):
+                    stopped += 1
+        ttfts.sort()
+        return {
+            "turns": turns,
+            "avg_ttft_ms": (int(round(sum(ttfts) / len(ttfts)))
+                            if ttfts else 0),
+            "p90_ttft_ms": _percentile(ttfts, 90),
+            "stalls": stalls,
+            "stopped_count": stopped,
+        }
+    except Exception:
+        return empty
+
+
 def format_summary(entries: list[dict], *, limit: int = 30) -> str:
     """One line per turn; flags likely backend stalls. Empty when no entries."""
     if not entries:
@@ -131,4 +208,5 @@ def format_summary(entries: list[dict], *, limit: int = 30) -> str:
     return "\n".join(rows)
 
 
-__all__ = ["metrics_path", "record", "read", "is_stall", "format_summary"]
+__all__ = ["metrics_path", "record", "read", "is_stall", "format_summary",
+           "aggregate_turn_stats"]

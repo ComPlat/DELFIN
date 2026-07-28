@@ -576,12 +576,15 @@ class SubagentResult:
     error: str = ""
     worktree: dict = field(default_factory=dict)
     sa_id: str = ""
+    model: str = ""          # model the run actually used ("" = unknown)
+    model_tier: str = ""     # "cheap" when routed to the cheap tier, else "parent"
 
     def to_payload(self) -> dict:
         return {
             "subagent_type": self.subagent_type,
             "description": self.description,
             "sa_id": self.sa_id,
+            "model": self.model,
             "result": self.final_text,
             "tool_calls": [
                 {"name": tc.get("name"), "input": str(tc.get("input"))[:200]}
@@ -650,6 +653,75 @@ def _derive_perms(parent_perms, mode: str, workspace=None):
             return parent_perms
 
 
+def _cheap_tier_enabled() -> bool:
+    """Setting ``agent.subagents.cheap_tier`` — default ON.
+
+    Gates the automatic cheap-tier routing of read-only subagents. Missing
+    or unreadable settings mean the default (enabled) applies."""
+    try:
+        from delfin.user_settings import load_settings
+        cfg = (((load_settings() or {}).get("agent") or {})
+               .get("subagents") or {})
+        return bool(cfg.get("cheap_tier", True))
+    except Exception:
+        return True
+
+
+def _resolve_subagent_model(
+    parent_client, subagent_type: str, model_override: str = "",
+) -> tuple[str, str]:
+    """Pick the model a subagent should run on: ``(model, tier)``.
+
+    ``tier`` is ``"cheap"`` when the run routes to the parent provider's
+    cheap tier, else ``"parent"``. Read-only presets (explore / plan /
+    code-reviewer …) do their work fine on a cheap-tier model — running
+    them on the parent's expensive model just burns budget. Rules:
+
+      - writer presets ALWAYS keep the parent model (their edits are the
+        part that is expensive to redo);
+      - ``model_override="parent"`` pins the parent model for a hard
+        read-only task; ``"cheap"`` requests cheap routing even when the
+        ``agent.subagents.cheap_tier`` setting is off;
+      - otherwise the setting (default ON) gates routing;
+      - the cheap candidate must resolve for the parent's provider, differ
+        from the parent model, not be marked broken, and support tool
+        calling (subagents drive tools — a no-tools model returns prose
+        instead of doing the work).
+
+    Never raises: ANY failure keeps the parent model, so routing can
+    never break a subagent run.
+    """
+    parent_model = str(getattr(parent_client, "model", "") or "")
+    try:
+        override = (model_override or "").strip().lower()
+        if override == "parent":
+            return parent_model, "parent"
+        if is_writer_preset(subagent_type):
+            return parent_model, "parent"
+        if override != "cheap" and not _cheap_tier_enabled():
+            return parent_model, "parent"
+        provider = str(
+            getattr(parent_client, "_provider", "")
+            or getattr(parent_client, "provider", "") or ""
+        ).strip().lower()
+        if not provider:
+            return parent_model, "parent"
+        from .model_routing import is_known_broken, tier_model
+        candidate = (tier_model(provider, "cheap", None) or "").strip()
+        if not candidate or candidate == parent_model:
+            return parent_model, "parent"
+        if is_known_broken(candidate):
+            return parent_model, "parent"
+        from .model_capabilities import resolve as _resolve_caps
+        base_url = str(getattr(parent_client, "_base_url", "") or "")
+        caps = _resolve_caps(provider, candidate, base_url)
+        if not getattr(caps, "supports_tools", False):
+            return parent_model, "parent"
+        return candidate, "cheap"
+    except Exception:
+        return parent_model, "parent"
+
+
 def run_subagent(
     *,
     subagent_type: str,
@@ -663,6 +735,7 @@ def run_subagent(
     isolation: str = "",
     resume_from: str = "",
     sa_id: str = "",
+    model: str = "",
 ) -> SubagentResult:
     """Run a sub-agent loop and return its final assistant message.
 
@@ -682,6 +755,12 @@ def run_subagent(
     in front of the new prompt, and the stored ``subagent_type`` wins so
     permissions match the original preset. The session file accumulates
     across resumes under the same id.
+
+    ``model`` is a per-call override for the cheap-tier routing of
+    read-only presets: ``"parent"`` pins the parent's model (for a hard
+    read-only task), ``"cheap"`` requests the cheap tier even when the
+    ``agent.subagents.cheap_tier`` setting is off. Empty (the default)
+    keeps the setting-driven behaviour. See ``_resolve_subagent_model``.
 
     Returns a SubagentResult; never raises.
     """
@@ -765,6 +844,32 @@ def run_subagent(
                 parent_client.set_permissions(sub_perms)
             except Exception:
                 pass
+
+    # Cheap-tier routing: read-only presets run fine on the provider's cheap
+    # model. Switch the ISOLATED copy only — the legacy fallback above shares
+    # the parent client, so it must never have its model touched. Any failure
+    # keeps the parent model (routing must never break a subagent run).
+    sub_model = str(getattr(parent_client, "model", "") or "")
+    model_tier = "parent"
+    if not restore_parent:
+        try:
+            _routed, _routed_tier = _resolve_subagent_model(
+                parent_client, subagent_type, model)
+            if _routed_tier == "cheap" and _routed:
+                try:
+                    if hasattr(sub_client, "switch_model"):
+                        sub_client.switch_model(_routed)
+                    else:
+                        sub_client.model = _routed
+                except Exception:
+                    pass
+                # Record the routed model only if the client actually took it
+                # (the OpenAI path reads self.model per request).
+                if str(getattr(sub_client, "model", "") or "") == _routed:
+                    sub_model = _routed
+                    model_tier = "cheap"
+        except Exception:
+            pass
 
     system_prompt = (
         preset.system_prompt
@@ -960,6 +1065,8 @@ def run_subagent(
         "subagent_type": subagent_type,
         "description": description,
         "isolation": isolation,
+        "model": sub_model,
+        "model_tier": model_tier,
         "elapsed_s": round(elapsed_s, 3),
         "input_tokens": in_tokens,
         "output_tokens": out_tokens,
@@ -979,6 +1086,8 @@ def run_subagent(
         error=error,
         worktree=worktree_summary,
         sa_id=_sa_id,
+        model=sub_model,
+        model_tier=model_tier,
     )
 
 

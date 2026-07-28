@@ -165,15 +165,18 @@ DEFAULT_SETTINGS = {
         # a deliberate manual command. Opt-in.
         # Auto-memory (Roadmap B1): one cheap LLM turn when a session
         # ends distills durable facts into the memory store (BM25 recall
-        # already injects them into future turns). Opt-in — costs one
-        # small call per session; /memorize triggers it manually anytime.
+        # already injects them into future turns). On by default — one
+        # small cheap-tier call per session whose saved memories compound;
+        # /memorize triggers it manually anytime, enabled: false opts out.
         "auto_memory": {
-            "enabled": False,
+            "enabled": True,
             "model": "",
             "max_facts": 5,
         },
+        # LLM-free daily health pass (outcome mining + telemetry report);
+        # on by default, enabled: false opts out.
         "eval_loop": {
-            "enabled": False,
+            "enabled": True,
             "window": 200,
             "threshold": 3,
         },

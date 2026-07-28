@@ -154,7 +154,7 @@ def test_user_prompt_submit_hook():
             "UserPromptSubmit": [
                 {"matcher": "",
                  "hooks": [{"type": "command",
-                            "command": f"echo $CLAUDE_USER_PROMPT > {marker}"}]}
+                            "command": f"echo $DELFIN_USER_PROMPT > {marker}"}]}
             ]
         })
         cfg = H.load_hooks(ws)
@@ -246,8 +246,8 @@ def test_env_vars_set():
                 {"matcher": ".*",
                  "hooks": [{"type": "command",
                             "command": (
-                                f"echo $CLAUDE_HOOK_EVENT $CLAUDE_TOOL_NAME "
-                                f"$CLAUDE_WORKSPACE > {out}"
+                                f"echo $DELFIN_HOOK_EVENT $DELFIN_TOOL_NAME "
+                                f"$DELFIN_WORKSPACE > {out}"
                             )}]}
             ]
         })

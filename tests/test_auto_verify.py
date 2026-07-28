@@ -129,3 +129,101 @@ def test_auto_verify_still_catches_failure_inside_the_package(tmp_path):
     prob = _run_auto_verify([str(pkg / "tests" / "test_x.py")], "smart", "",
                             str(tmp_path))
     assert prob != ""
+
+
+# --- Honest auto-verify: timeout → scoped fallback, no silent clean ---------
+
+
+def _ws_with_matching_test(tmp_path):
+    (tmp_path / "mod.py").write_text("def val():\n    return 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from mod import val\ndef test_val():\n    assert val() == 1\n")
+    return tmp_path
+
+
+def test_timeout_falls_back_to_scoped_run(tmp_path, monkeypatch):
+    """A full-suite timeout used to blacklist the workspace and return ''
+    (clean) forever after — verification silently OFF. Now it retries scoped
+    to the edited modules' tests and remembers that command."""
+    from delfin.agent import api_client as A
+    ws = _ws_with_matching_test(tmp_path)
+    calls = []
+
+    def fake_run(cmd, workspace, timeout):
+        calls.append(cmd)
+        if "test_mod.py" in cmd:
+            return f"`{cmd}` failed (exit 1):\nboom", False
+        return "", True                       # full suite: timeout
+
+    monkeypatch.setattr(A, "_run_test_command", fake_run)
+    status: dict = {}
+    prob = A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
+                              status=status)
+    try:
+        assert "failed" in prob               # scoped result, NOT silent clean
+        assert status.get("scoped") is True
+        assert "test_mod.py" in status.get("command", "")
+        assert str(ws) in A._SLOW_TEST_WS     # full suite stays blacklisted
+        assert "test_mod.py" in A._SLOW_WS_SCOPED_CMD[str(ws)]
+        assert len(calls) == 2                # full (timed out) + scoped
+    finally:
+        A._SLOW_TEST_WS.discard(str(ws))
+        A._SLOW_WS_SCOPED_CMD.pop(str(ws), None)
+
+
+def test_blacklisted_workspace_runs_scoped_not_silent_clean(tmp_path, monkeypatch):
+    from delfin.agent import api_client as A
+    ws = _ws_with_matching_test(tmp_path)
+    A._SLOW_TEST_WS.add(str(ws))
+    monkeypatch.setattr(
+        A, "_run_test_command",
+        lambda cmd, workspace, timeout: (f"`{cmd}` failed (exit 1):\nred", False))
+    try:
+        status: dict = {}
+        prob = A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
+                                  status=status)
+        assert prob != ""                     # the old behaviour returned ""
+        assert status.get("scoped") is True
+    finally:
+        A._SLOW_TEST_WS.discard(str(ws))
+        A._SLOW_WS_SCOPED_CMD.pop(str(ws), None)
+
+
+def test_blacklisted_workspace_without_scoped_match_reports_skip(tmp_path):
+    from delfin.agent import api_client as A
+    (tmp_path / "lonely.py").write_text("x = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_other.py").write_text(
+        "def test_other():\n    assert True\n")
+    A._SLOW_TEST_WS.add(str(tmp_path))
+    try:
+        status: dict = {}
+        prob = A._run_auto_verify([str(tmp_path / "lonely.py")], "smart", "",
+                                  str(tmp_path), status=status)
+        assert prob == ""
+        assert status.get("skipped") is True  # visible, not silent
+    finally:
+        A._SLOW_TEST_WS.discard(str(tmp_path))
+
+
+def test_no_test_suite_reports_skip_status(tmp_path):
+    from delfin.agent import api_client as A
+    ok = tmp_path / "ok.py"
+    ok.write_text("def f():\n    return 1\n")
+    status: dict = {}
+    assert A._run_auto_verify([str(ok)], "smart", "", str(tmp_path),
+                              status=status) == ""
+    assert status.get("skipped") is True
+    assert "no test suite" in status.get("reason", "")
+
+
+def test_scoped_cmd_resolves_conventional_test_files(tmp_path):
+    from delfin.agent.api_client import _scoped_test_cmd_for_edits
+    ws = _ws_with_matching_test(tmp_path)
+    cmd = _scoped_test_cmd_for_edits([str(ws / "mod.py")], str(ws))
+    assert "pytest" in cmd and "test_mod.py" in cmd
+    # No matching test anywhere → no scoped command.
+    (ws / "orphan.py").write_text("y = 2\n")
+    assert _scoped_test_cmd_for_edits([str(ws / "orphan.py")], str(ws)) \
+        .count("orphan") == 0

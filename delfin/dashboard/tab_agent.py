@@ -2390,6 +2390,99 @@ def _compute_turn_verdict(
     return "PASS"
 
 
+def _check_acceptance_gate(eng) -> str:
+    """Cycle-end acceptance verdict from the test agent's turn.
+
+    Mechanics first, prose second:
+    - a structured ``report_verdict`` (``eng.role_verdicts``) beats
+      regex-counting PASS/FAIL tokens in the test agent's prose;
+    - the turn's test-evidence ledger beats BOTH — recorded failures or a
+      non-zero exit code veto a claimed PASS, and a PASS with NO recorded
+      test execution is downgraded to UNTESTED. (Previously a test agent
+      could claim green without running anything and the fabricated success
+      was written into cycle memory + the provider profile.)
+    """
+    test_out = eng.role_outputs.get("test_agent", "")
+    verdict = None
+    evidence: list = []
+    try:
+        verdict = (getattr(eng, "role_verdicts", None) or {}).get("test_agent")
+        evidence = list(
+            (getattr(eng, "role_test_evidence", None) or {}).get("test_agent")
+            or []
+        )
+    except Exception:
+        verdict, evidence = None, []
+    if not test_out and not isinstance(verdict, dict):
+        return ""
+
+    pass_count = fail_count = untested = 0
+    has_approve = has_reject = False
+    structured_status = (
+        str(verdict.get("status", "")).strip().lower()
+        if isinstance(verdict, dict) else ""
+    )
+    if structured_status in ("approve", "approve_with_risks", "reject"):
+        has_approve = structured_status in ("approve", "approve_with_risks")
+        has_reject = structured_status == "reject"
+        for crit in verdict.get("criteria") or []:
+            state = (str(crit.get("state", "")).strip().upper()
+                     if isinstance(crit, dict) else "")
+            if state == "PASS":
+                pass_count += 1
+            elif state == "FAIL":
+                fail_count += 1
+            elif state == "UNTESTED":
+                untested += 1
+    else:
+        # Prose fallback: count PASS / FAIL / UNTESTED tokens + status line.
+        pass_count = len(re.findall(r"\bPASS\b", test_out))
+        fail_count = len(re.findall(r"\bFAIL\b", test_out))
+        untested = len(re.findall(r"\bUNTESTED\b", test_out))
+        has_approve = bool(
+            re.search(r"\*\*status:\*\*\s*approve", test_out, re.I))
+        has_reject = bool(
+            re.search(r"\*\*status:\*\*\s*reject", test_out, re.I))
+
+    parts = []
+    if pass_count:
+        parts.append(f"{pass_count} PASS")
+    if fail_count:
+        parts.append(f"{fail_count} FAIL")
+    if untested:
+        parts.append(f"{untested} UNTESTED")
+    summary = f"({', '.join(parts)})" if parts else ""
+
+    # Evidence entries that actually RAN tests. Skips don't count, and a
+    # bash entry must have executed something ("N passed"/"N failed") —
+    # `pytest --version` exiting 0 is not test execution.
+    ran = [
+        e for e in evidence
+        if isinstance(e, dict) and e.get("status") != "skipped"
+        and (e.get("tool") != "bash"
+             or (e.get("passed") or 0) + (e.get("failed") or 0) > 0)
+    ]
+    evidence_red = any(
+        (e.get("failed") or 0) > 0
+        or (isinstance(e.get("exit_code"), int) and e.get("exit_code") != 0)
+        for e in ran
+    )
+    # Exit codes / failure counts beat prose claims.
+    if evidence_red and not fail_count and not has_reject:
+        return (f"❌ {summary} — test evidence shows failures "
+                "despite the reported verdict")
+
+    if has_reject or fail_count > 0:
+        return f"❌ {summary}"
+    if has_approve:
+        if not ran:
+            # PASS claimed, nothing executed → the verdict is worthless.
+            return (f"⚠ UNTESTED {summary} — verdict claimed PASS "
+                    "but no test execution was recorded this cycle")
+        return f"✅ {summary}"
+    return summary
+
+
 def _build_inline_diff(old: str, new: str, _e, soft_cap: int = 60) -> str:
     """Render a +/- diff for a write/edit operation, always visible in chat.
 
@@ -2536,7 +2629,7 @@ def create_tab(ctx):
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
     if _cli_available or _provider_key("ANTHROPIC_API_KEY"):
-        _available_providers.append(("Claude", "claude"))
+        _available_providers.append(("Anthropic", "claude"))
     if _codex_cli_available or _provider_key("OPENAI_API_KEY"):
         _available_providers.append(("OpenAI", "openai"))
     if _provider_key("KIT_TOOLBOX_API_KEY"):
@@ -2573,9 +2666,9 @@ def create_tab(ctx):
                     _available_providers.append(("Ollama (local)", "ollama"))
         except Exception:
             pass
-    # Fallback: always show at least Claude (will error with helpful message)
+    # Fallback: always show at least the Anthropic provider (will error with helpful message)
     if not _available_providers:
-        _available_providers.append(("Claude", "claude"))
+        _available_providers.append(("Anthropic", "claude"))
 
     # -- state -------------------------------------------------------------
     state = {
@@ -4751,7 +4844,7 @@ def create_tab(ctx):
         engine = state["engine"]
         if not engine:
             return
-        # The Claude CLI populates engine.session_id from its stream events,
+        # The CLI backend populates engine.session_id from its stream events,
         # but the OpenAI / KIT-Toolbox path emits no such event so the field
         # stays empty and the session would silently never persist. Mint a
         # UUID ourselves so auto-save works for every provider.
@@ -7790,7 +7883,7 @@ def create_tab(ctx):
                         f"`delfin/agent/pack/benchmark/tasks.yaml` (prompts/benchmark "
                         f"are freely editable; core code only with self-mod-guard "
                         f"approval).\n"
-                        f"• Or in **Claude CLI**: read the report and build fix/task there.\n"
+                        f"• Or in an external editor session: read the report and build fix/task there.\n"
                         f"The iteration loop then drives exactly this bug to zero."
                     )
                 except Exception as exc:
@@ -10962,7 +11055,7 @@ def create_tab(ctx):
         },
     }
 
-    # Map DELFIN profile → Claude CLI permission_mode.
+    # Map DELFIN profile → CLI-backend permission_mode.
     # Safety: never use bypassPermissions for ANY mode — all modes cap at
     # 'acceptEdits', which auto-approves file edits but still asks for Bash.
     # The DELFIN zone system is the primary safety layer; CLI permissions
@@ -10980,7 +11073,7 @@ def create_tab(ctx):
         return _PERM_PROFILES.get(profile, _PERM_PROFILES["ask_all"])
 
     def _active_cli_perm() -> str:
-        """Return the Claude CLI permission_mode for the active profile.
+        """Return the CLI-backend permission_mode for the active profile.
 
         Dashboard mode always uses 'default' (asks before write tools).
         All other modes map through _PROFILE_TO_CLI_PERM which caps at
@@ -11527,7 +11620,7 @@ def create_tab(ctx):
             return
         total_tokens = engine.token_usage.get("input", 0)
         n_msgs = len(engine.messages)
-        # Claude CLI auto-compacts internally, so we only do a silent
+        # The CLI backend auto-compacts internally, so we only do a silent
         # fallback compact on our engine messages if they get very large.
         if n_msgs > 30:
             old_count = n_msgs
@@ -12124,6 +12217,7 @@ def create_tab(ctx):
                 error_text=str(state.get("_last_turn_error", "") or ""),
                 denied_commands=list(state.get("_denied_commands", []) or []),
                 referenced_files=sorted(state.get("_turn_files", []) or []),
+                workspace=str(getattr(engine, "repo_dir", "") or "") or None,
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
             )
             short = str(report_dir).replace(str(Path.home()), "~")
@@ -12238,36 +12332,9 @@ def create_tab(ctx):
 
         return "\n".join(findings[:15])  # max 15 findings
 
-    def _check_acceptance_gate(eng):
-        """Check test agent output for acceptance criteria results."""
-        test_out = eng.role_outputs.get("test_agent", "")
-        if not test_out:
-            return ""
-
-        # Count PASS / FAIL / UNTESTED
-        pass_count = len(re.findall(r"\bPASS\b", test_out))
-        fail_count = len(re.findall(r"\bFAIL\b", test_out))
-        untested = len(re.findall(r"\bUNTESTED\b", test_out))
-
-        # Check for approve/reject verdict
-        has_approve = bool(re.search(r"\*\*status:\*\*\s*approve", test_out, re.I))
-        has_reject = bool(re.search(r"\*\*status:\*\*\s*reject", test_out, re.I))
-
-        parts = []
-        if pass_count:
-            parts.append(f"{pass_count} PASS")
-        if fail_count:
-            parts.append(f"{fail_count} FAIL")
-        if untested:
-            parts.append(f"{untested} UNTESTED")
-
-        summary = f"({', '.join(parts)})" if parts else ""
-
-        if has_reject or fail_count > 0:
-            return f"\u274c {summary}"
-        if has_approve:
-            return f"\u2705 {summary}"
-        return summary
+    # (acceptance gate: module-level _check_acceptance_gate \u2014 it consults
+    # the structured verdict + test-evidence ledger before falling back to
+    # prose token counting, and lives at module scope so it is testable.)
 
     # -- main event handlers -----------------------------------------------
 
@@ -12773,7 +12840,7 @@ def create_tab(ctx):
                         "Edit", "Write",
                         "edit_file", "write_file", "multi_edit",
                     ):
-                        # KIT-Toolbox uses 'path'; Claude CLI uses 'file_path'.
+                        # KIT-Toolbox uses 'path'; the CLI backend uses 'file_path'.
                         fpath = parsed.get("file_path") or parsed.get("path") or ""
                         sp = _short_path(fpath)
 
@@ -13293,7 +13360,7 @@ def create_tab(ctx):
                         )
                         _budget = min(int(_base_budget * _mult), _budget_cap)
 
-                    # Per-role model: switch to optimal model (Claude only)
+                    # Per-role model: switch to optimal model (CLI backend only)
                     _effective_model = model_dropdown.value
                     if provider_dropdown.value == "claude":
                         _role_model = _AE.model_for_role(_cur_role)
@@ -13321,8 +13388,8 @@ def create_tab(ctx):
                     # loader directly from the typed store (the single source
                     # of truth: ~/.delfin/projects/<slug>/memory/MEMORY.md +
                     # files, the "External Memory" block). Here we only load
-                    # the project instruction files (CLAUDE.md / AGENTS.md /
-                    # DELFIN.md) from cwd up.
+                    # the project instruction files (DELFIN.MD / AGENTS.md)
+                    # from cwd up.
                     from delfin.agent.project_memory import load_project_memory
                     _memory = ""
                     try:
@@ -13742,8 +13809,11 @@ def create_tab(ctx):
                         _schema_retry_counts.pop(prev_role_id, None)
 
                     # --- Communication gate: explicit review for risky/partial handoffs ---
+                    # The structured verdict from this turn's report_verdict
+                    # tool call (if any) wins over prose parsing.
                     _gate_action, _gate_type, _gate_message = engine.evaluate_role_gate(
-                        prev_role_id, last_out
+                        prev_role_id, last_out,
+                        getattr(engine, "_last_structured_verdict", None),
                     )
                     if _gate_action == "pause":
                         _append_gate_message(
@@ -14553,7 +14623,7 @@ def create_tab(ctx):
         advance_btn.layout.display = "none" if _is_minimal else "inline-flex"
 
     def _on_provider_change(change):
-        """Switch provider (Claude / OpenAI / KIT / Ollama), update model options."""
+        """Switch provider (Anthropic / OpenAI / KIT / Ollama), update model options."""
         if state["streaming"]:
             return
         provider = change["new"]

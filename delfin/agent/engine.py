@@ -282,7 +282,7 @@ class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
     Manages conversation state, role transitions, session persistence,
-    and Claude communication via CLI or API backend.
+    and model communication via CLI or API backend.
 
     Parameters
     ----------
@@ -341,6 +341,11 @@ class AgentEngine:
         self.provider = provider
         AgentEngine._active_provider = provider  # class-level for static methods
         self.loader._active_provider = provider
+        # Inject-once gating of stable prompt sections is only sound on the
+        # persistent claude CLI process (its first system prompt stays alive
+        # across turns). Codex CLI spawns per turn and the chat-API backends
+        # rebuild every request, so the loader re-injects there (its default).
+        self.loader.stateful_backend = (backend == "cli" and provider == "claude")
         self.mode = mode
         self._agent_workspace_dir = agent_workspace_dir
         self.route: list[str] = []
@@ -349,6 +354,15 @@ class AgentEngine:
         self.messages: list[dict[str, Any]] = []
         self.role_outputs: dict[str, str] = {}
         self.compaction_summaries: dict[str, str] = {}
+        # Mechanical verification state (verdict tool + evidence ledger),
+        # copied from the backend client after each turn and snapshotted
+        # per role. Gates consult THESE first; prose regex is only the
+        # fallback — a formatting slip must never flip a reject into an
+        # auto-continue.
+        self.role_verdicts: dict[str, dict] = {}
+        self.role_test_evidence: dict[str, list] = {}
+        self._last_structured_verdict: dict | None = None
+        self._last_test_evidence: list = []
         self.token_usage = {"input": 0, "output": 0, "cached": 0}
         self.cost_usd: float = 0.0
         # Exact system prompt of the most recent turn (for bug reports).
@@ -370,6 +384,15 @@ class AgentEngine:
         # request (from message_start). Used as the ground-truth floor of the
         # compaction estimate so system prompt + tool schemas are never missed.
         self._last_input_tokens: int = 0
+        # Chars removed from self.messages by in-place trims since the floor
+        # above was last set. The floor is a PRE-trim provider count, so the
+        # estimator must credit these removals or the trim/hard-clear stop
+        # conditions can never be reached once the floor is the binding term.
+        self._trimmed_chars_since_floor: int = 0
+        # Whether the current turn delivered a message_start (authoritative
+        # input count). Backends that only report usage in message_delta get
+        # an accounting-only fallback there.
+        self._saw_message_start: bool = False
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
@@ -383,7 +406,7 @@ class AgentEngine:
         # delta is (current cost_usd - this). Reset together with cost_usd
         # in reset_cycle() so a fresh cycle starts at delta = full spend.
         self._last_outcome_cost: float = 0.0
-        # Session id. The Claude CLI fills this from its stream events; the
+        # Session id. The CLI backend fills this from its stream events; the
         # OpenAI / KIT / Ollama backends emit no such event, so without a value
         # here every API session collapses onto the same empty-id bucket —
         # task_list then falls back to "all workspace tasks", so a brand-new
@@ -699,6 +722,19 @@ class AgentEngine:
         else:
             last_line = "- Last compaction: (none this session)"
         warn = " — WARNING: nearing auto-compaction" if pct >= 80.0 else ""
+        # Prompt-cache health: a collapsing hit rate is the earliest signal
+        # that something destabilised the cached prefix (and doubled prefill
+        # cost) — surface it where it gets seen every turn.
+        cache_line = ""
+        try:
+            _in = int(self.token_usage.get("input", 0) or 0)
+            _cached = int(self.token_usage.get("cached", 0) or 0)
+            if _in > 0 and _cached > 0:
+                cache_line = (
+                    f"\n- Prompt cache: {_cached:,} of {_in:,} input tokens "
+                    f"served from cache ({_cached / _in * 100.0:.0f}%)")
+        except Exception:
+            cache_line = ""
         return (
             "# Context status (auto-injected each turn)\n"
             f"- Compaction trigger: {compact_pct*100:.0f}% of window "
@@ -706,6 +742,7 @@ class AgentEngine:
             f"- Current usage: {n_msgs} msgs, ~{tokens:,} tokens "
             f"({pct:.1f}% of {window:,}){warn}\n"
             f"{last_line}"
+            f"{cache_line}"
         )
 
     def _build_open_tasks_block(self) -> str:
@@ -768,6 +805,55 @@ class AgentEngine:
                 "to the end."
             )
         return "\n".join(lines)
+
+    def _build_finished_jobs_block(self) -> str:
+        """Event-driven completion notice for background work.
+
+        Drains jobs that finished since the previous turn (persistent
+        bash-job registry + agent-watched SLURM jobs) into a compact block,
+        so the model reacts to a finished multi-hour calculation on its next
+        turn instead of babysitting it with blocking status polls.
+        Best-effort; empty string when nothing finished."""
+        try:
+            perms = self.kit_permissions
+            ws = getattr(perms, "workspace", None) if perms else None
+            if not ws:
+                return ""
+        except Exception:
+            return ""
+        events: list[str] = []
+        try:
+            from delfin.agent.bash_jobs import drain_finished_events
+            for ev in drain_finished_events(ws) or []:
+                rc = ev.get("exit_code")
+                state = "ok" if rc == 0 else (
+                    f"exit {rc}" if rc is not None else "finished (exit unknown)")
+                tail = (ev.get("stderr_tail") if rc not in (0, None)
+                        else ev.get("stdout_tail")) or ""
+                tail = " ".join(str(tail).split())[:200]
+                events.append(
+                    f"- bash job {ev.get('job_id')} [{state}, "
+                    f"{ev.get('runtime_s', 0):.0f}s] "
+                    f"{str(ev.get('command', ''))[:100]}"
+                    + (f" → {tail}" if tail else ""))
+        except Exception:
+            pass
+        try:
+            from delfin.agent.job_monitor import check_agent_jobs
+            for ev in check_agent_jobs(ws) or []:
+                sig = ", ".join(ev.get("signatures") or [])
+                events.append(
+                    f"- {ev.get('kind', 'job')} {ev.get('job_id')} "
+                    f"[{ev.get('state', '?')}] "
+                    f"{str(ev.get('description', ''))[:80]}"
+                    + (f" — signatures: {sig}" if sig else ""))
+        except Exception:
+            pass
+        if not events:
+            return ""
+        return "\n".join(
+            ["# Background jobs finished since your last turn "
+             "(act on these results now)"] + events)
 
     _MUTATE_TOOLS_FOR_PIN = frozenset({
         "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
@@ -851,6 +937,9 @@ class AgentEngine:
             tasks_block = self._build_open_tasks_block()
             if tasks_block:
                 extra_blocks.append(tasks_block)
+            jobs_block = self._build_finished_jobs_block()
+            if jobs_block:
+                extra_blocks.append(jobs_block)
             if extra_blocks:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
@@ -992,6 +1081,12 @@ class AgentEngine:
         _turn_t0 = _time.monotonic()
         _turn_ttft: float | None = None
         _turn_tool_calls = 0
+        # Mid-turn crash-checkpoint throttle: first write fires 10 tool
+        # results or 60s into the tool loop, whichever comes first — short
+        # turns never touch disk. See session_store.save_turn_checkpoint.
+        _ckpt_events = 0
+        _ckpt_last = _turn_t0
+        self._saw_message_start = False
         # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
         # single turn's tool-loop can't run away forever. Resets every turn — it
         # is NOT a cumulative session budget. (_MAX_TOOL_ROUNDS already bounds
@@ -1076,6 +1171,27 @@ class AgentEngine:
                         on_tool_result(event.tool_name, event.tool_output)
                     self._record_tool_trace(
                         event.tool_name, event.tool_output or "", ok=True)
+                    # Crash insurance: full session saves happen only at
+                    # turn boundaries, but one turn can run hundreds of
+                    # tool rounds — persist a cheap checkpoint (throttled,
+                    # best-effort) so a SIGKILL mid-loop costs the last few
+                    # rounds, not the whole turn. Cleared at turn end.
+                    _ckpt_events += 1
+                    _ckpt_now = _time.monotonic()
+                    if _ckpt_events >= 10 or (_ckpt_now - _ckpt_last) >= 60.0:
+                        _ckpt_events = 0
+                        _ckpt_last = _ckpt_now
+                        try:
+                            from . import session_store as _ss_ckpt
+                            _ss_ckpt.save_turn_checkpoint(
+                                self.session_id or "", {
+                                    "user_message": user_message[:2000],
+                                    "partial_response": "".join(chunks)[-20000:],
+                                    "tool_calls": _turn_tool_calls,
+                                    "ts": _time.time(),
+                                })
+                        except Exception:
+                            pass
 
                 elif event.type == "permission_denied":
                     if on_permission_denied:
@@ -1093,12 +1209,16 @@ class AgentEngine:
                     # including cache).  Do NOT also add in message_delta.
                     with self._lock:
                         self.token_usage["input"] += event.input_tokens
+                        self._saw_message_start = True
                         # Snapshot the real per-request input count so the
                         # compaction budget can use it as a ground-truth floor
                         # (it includes the system prompt + tool schemas that
                         # self.messages omits).
                         if event.input_tokens:
                             self._last_input_tokens = int(event.input_tokens)
+                            # Fresh provider count -> trims applied since the
+                            # previous floor are already reflected in it.
+                            self._trimmed_chars_since_floor = 0
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.
@@ -1111,6 +1231,15 @@ class AgentEngine:
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
                         self.cost_usd += event.cost_usd
+                        # Accounting fallback for backends that never emit
+                        # message_start: count the turn's input here so
+                        # /context and the self-monitoring block show real
+                        # numbers. NOT used as the compaction floor — this
+                        # value is cumulative across tool rounds and would
+                        # overestimate a single request.
+                        if (not self._saw_message_start
+                                and getattr(event, "input_tokens", 0)):
+                            self.token_usage["input"] += event.input_tokens
                         # OpenAI/vLLM report cached prompt tokens here.
                         self.token_usage["cached"] = self.token_usage.get(
                             "cached", 0) + (getattr(event, "cached_tokens", 0) or 0)
@@ -1136,9 +1265,28 @@ class AgentEngine:
                     if event.text and not self.session_id:
                         self.session_id = event.text
 
-        except Exception:
+        except Exception as _turn_exc:
             if not chunks:
                 self.messages.pop()
+            # The FAIL side of the learning loop: errored turns previously
+            # recorded NO outcome at all, so provider profiles only ever
+            # learned from successes. Classify + record before re-raising.
+            try:
+                _etype = type(_turn_exc).__name__
+                try:
+                    from .api_client import (_is_context_length_error,
+                                             _is_transient_api_error)
+                    if _is_context_length_error(_turn_exc):
+                        _etype = "context_overflow"
+                    elif _is_transient_api_error(_turn_exc):
+                        _etype = "transient_api"
+                except Exception:
+                    pass
+                self.record_cycle_outcome(
+                    "FAIL", user_message, error_type=_etype,
+                    start_time=_turn_t0)
+            except Exception:
+                pass
             raise
         finally:
             # Stop hooks — fire after the stream finishes (success or
@@ -1169,6 +1317,35 @@ class AgentEngine:
                 )
             except Exception:
                 pass
+            # Turn is over (normally or with a surfaced error) — the
+            # mid-turn crash checkpoint is obsolete. Only an unclean
+            # process death (which skips this finally) leaves one behind
+            # for the next session load to recover from.
+            try:
+                from . import session_store as _ss_ckpt
+                _ss_ckpt.clear_turn_checkpoint(self.session_id or "")
+            except Exception:
+                pass
+
+        # Copy the per-turn verification mechanics from the backend client
+        # (report_verdict tool + test-evidence ledger) and snapshot them for
+        # the role that just ran, so the acceptance gate can still consult
+        # the TEST role's turn after later roles have overwritten the
+        # per-turn state. Best-effort: CLI backends have neither attribute.
+        try:
+            self._last_structured_verdict = getattr(
+                self.client, "_last_structured_verdict", None)
+            self._last_test_evidence = list(
+                getattr(self.client, "_test_evidence", None) or [])
+            _v_role = self.current_role
+            if _v_role:
+                if isinstance(self._last_structured_verdict, dict):
+                    self.role_verdicts[_v_role] = self._last_structured_verdict
+                if self._last_test_evidence:
+                    self.role_test_evidence.setdefault(_v_role, []).extend(
+                        self._last_test_evidence)
+        except Exception:
+            pass
 
         full_response = "".join(chunks)
         # Repair corrupted output (harmony tool-channel leaks + glitch
@@ -1245,7 +1422,7 @@ class AgentEngine:
         OpenAI-compatible backend (Ollama / KIT / OpenAI), the pixels are sent
         as multimodal ``image_url`` content so the model actually SEES them.
         Otherwise a plain-text message (the caller adds a note about the
-        attached files). Claude uses a different image format → text fallback.
+        attached files). The CLI backend uses a different image format → text fallback.
         """
         if not images:
             return {"role": "user", "content": text}
@@ -1335,7 +1512,13 @@ class AgentEngine:
                         total_chars += len(str(part))
         est = total_chars // 4
         est += len(getattr(self, "last_system_prompt", "") or "") // 4
-        return max(est, int(getattr(self, "_last_input_tokens", 0) or 0))
+        # The provider floor is a PRE-trim snapshot; credit chars that
+        # in-place trims removed since it was taken, or the trim loops'
+        # stop conditions ("estimate <= budget") could never be reached
+        # and the paid LLM summary would always fire at the 95% cliff.
+        floor = int(getattr(self, "_last_input_tokens", 0) or 0)
+        floor -= int(getattr(self, "_trimmed_chars_since_floor", 0) or 0) // 4
+        return max(est, max(0, floor))
 
     def _should_auto_compact(self) -> bool:
         """True if estimated context exceeds the configured fraction."""
@@ -1395,6 +1578,9 @@ class AgentEngine:
                 + content[-tail_len:]
             )
             msg["content"] = new_content
+            self._trimmed_chars_since_floor = (
+                getattr(self, "_trimmed_chars_since_floor", 0)
+                + max(0, len(content) - len(new_content)))
             trimmed += 1
         return trimmed
 
@@ -1431,6 +1617,9 @@ class AgentEngine:
                 f"[cleared: {len(content)} chars of old tool output elided "
                 f"to save context]\n{head}"
             )
+            self._trimmed_chars_since_floor = (
+                getattr(self, "_trimmed_chars_since_floor", 0)
+                + max(0, len(content) - len(msg["content"])))
             cleared += 1
         return cleared
 
@@ -1711,6 +1900,7 @@ class AgentEngine:
         # floor so the estimate reflects the compacted size immediately (the
         # next request's message_start repopulates the real count).
         self._last_input_tokens = 0
+        self._trimmed_chars_since_floor = 0
 
         tokens_after = self._estimate_context_tokens()
         self.last_compaction_info = {
@@ -2070,7 +2260,7 @@ class AgentEngine:
         self._live_state = text or ""
 
     def _fresh_session_id(self) -> str:
-        """A new session id for backends that supply none. The Claude CLI emits
+        """A new session id for backends that supply none. The CLI backend emits
         its own id via the stream, so it returns "" (filled in later); the
         OpenAI / KIT / Ollama backends get a minted UUID so each session is a
         distinct, stable bucket for task scoping and session save/load."""
@@ -2127,6 +2317,8 @@ class AgentEngine:
         if not preserve_messages:
             self.messages.clear()
             self.role_outputs.clear()
+            self.role_verdicts.clear()
+            self.role_test_evidence.clear()
             self._project_dir = ""   # new conversation → re-pin on first write
             self.compaction_summaries.clear()
             self.current_role_index = 0
@@ -2142,6 +2334,8 @@ class AgentEngine:
             # route. role_outputs and compaction_summaries are
             # role-keyed and stale for the new mode — drop them.
             self.role_outputs.clear()
+            self.role_verdicts.clear()
+            self.role_test_evidence.clear()
             self.compaction_summaries.clear()
             self.current_role_index = 0
         self.loader.reset_session_prompt_state(
@@ -2164,6 +2358,10 @@ class AgentEngine:
             "token_usage": dict(self.token_usage),
             "cost_usd": self.cost_usd,
             "session_id": self.session_id,
+            # Round-tripped by restore_state so resume doesn't lose the
+            # project-directory pin or the compaction estimator's floor.
+            "project_dir": self._project_dir,
+            "last_input_tokens": self._last_input_tokens,
         }
 
     def restore_state(self, data: dict) -> None:
@@ -2182,6 +2380,32 @@ class AgentEngine:
         self.token_usage.setdefault("cached", 0)   # old sessions predate this key
         self.cost_usd = data.get("cost_usd", 0.0)
         self.session_id = data.get("session_id", "")
+        # Round-trip state that used to be silently dropped on resume:
+        # the project-directory pin (keeps a long session writing into the
+        # same folder) and the last authoritative input-token count (the
+        # compaction estimator's ground-truth floor).
+        self._project_dir = str(data.get("project_dir", "") or "")
+        try:
+            self._last_input_tokens = int(data.get("last_input_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            self._last_input_tokens = 0
+        # Crash recovery: a surviving mid-turn checkpoint means the
+        # previous process died inside a turn, so that turn's work was
+        # never committed. Inject the recovery note using the house
+        # user-note + assistant-ack pair (same shape as the compaction
+        # summary) so message alternation survives _sanitize_messages.
+        try:
+            from . import session_store as _ss_ckpt
+            _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
+            if _note:
+                self.messages.append({"role": "user", "content": _note})
+                self.messages.append({
+                    "role": "assistant",
+                    "content": "Understood. I will verify the workspace "
+                               "state before continuing.",
+                })
+        except Exception:
+            pass
 
     def available_modes(self) -> list[str]:
         """Return list of available mode IDs."""
@@ -2843,13 +3067,24 @@ class AgentEngine:
 
     @staticmethod
     def extract_status_field(agent_output: str) -> str:
-        """Extract the canonical ``**status:**`` verdict if present."""
+        """Extract the canonical ``**status:**`` verdict if present.
+
+        Deliberately tolerant: trailing text ("reject — see findings") and
+        word variants ("rejected"/"approved") still count. The old
+        end-anchored regex extracted '' for those, and an empty status made
+        a REJECTING critic auto-continue — the gate failed OPEN on exactly
+        the format slips weak models make most.
+        """
         match = re.search(
-            r"^\*\*status:\*\*\s*(approve_with_risks|approve|reject)\s*$",
+            r"^\*\*status:\*\*\s*"
+            r"(approve_with_risks|approved|approve|rejected|reject)\b",
             agent_output or "",
             flags=re.IGNORECASE | re.MULTILINE,
         )
-        return match.group(1).lower() if match else ""
+        if not match:
+            return ""
+        value = match.group(1).lower()
+        return {"approved": "approve", "rejected": "reject"}.get(value, value)
 
     @staticmethod
     def extract_named_verdict(agent_output: str, label: str) -> str:
@@ -2882,15 +3117,30 @@ class AgentEngine:
         return results
 
     @staticmethod
-    def evaluate_role_gate(role_id: str, output: str) -> tuple[str, str, str]:
+    def evaluate_role_gate(
+        role_id: str,
+        output: str,
+        structured_verdict: dict | None = None,
+    ) -> tuple[str, str, str]:
         """Return a communication-gate decision for a completed role.
 
         Returns ``(action, gate_type, message)`` where action is one of:
         - ``continue``: safe to auto-advance
         - ``pause``: stop and ask the user to review/approve
+
+        ``structured_verdict`` is the parsed ``report_verdict`` tool call
+        from the role's turn, when one was made. It wins over prose: a tool
+        argument cannot suffer the formatting slips that used to make a
+        rejecting critic auto-continue.
         """
         text = output or ""
-        status = AgentEngine.extract_status_field(text)
+        status = ""
+        if isinstance(structured_verdict, dict):
+            sv = str(structured_verdict.get("status", "")).strip().lower()
+            if sv in ("approve", "approve_with_risks", "reject"):
+                status = sv
+        if not status:
+            status = AgentEngine.extract_status_field(text)
 
         # Session Manager: validate plan completeness before routing work.
         # Conversational responses (greetings, clarifications) are not plan
@@ -2953,6 +3203,12 @@ class AgentEngine:
                     "pause",
                     "goal-lock",
                     "flagged goal-lock issues; review whether the builder solved the correct problem.",
+                )
+            if status == "reject":
+                return (
+                    "pause",
+                    "review",
+                    "reported `status: reject`; review the findings before continuing.",
                 )
 
         return ("continue", "", "")

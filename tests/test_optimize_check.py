@@ -68,6 +68,67 @@ def test_prompts_present():
     assert [i for i in issues if i.severity == "error"] == []
 
 
+# ---------------------------------------------------------------------------
+# Strict mode — TODO ground truth is a FAILURE, not a warning
+# ---------------------------------------------------------------------------
+
+def _patch_todo_task(monkeypatch):
+    monkeypatch.setattr(
+        "delfin.agent.benchmark.load_tasks",
+        lambda: [_task("todo_task", expected=[_sig("TODO-fill-me")])],
+    )
+
+
+def test_strict_escalates_todo_to_error(monkeypatch):
+    _patch_todo_task(monkeypatch)
+    strict = oc.check_benchmark_tasks(strict=True)
+    assert any("TODO" in i.message and i.severity == "error" for i in strict)
+    # default stays a warning — normal pre-commit flow is unchanged
+    lax = oc.check_benchmark_tasks()
+    assert any("TODO" in i.message and i.severity == "warn" for i in lax)
+    assert not any("TODO" in i.message and i.severity == "error" for i in lax)
+
+
+def test_run_checks_passes_strict_through(monkeypatch):
+    _patch_todo_task(monkeypatch)
+    assert any(i.severity == "error" and "TODO" in i.message
+               for i in oc.run_checks(strict=True))
+    assert not any(i.severity == "error" and "TODO" in i.message
+                   for i in oc.run_checks())
+
+
+def test_strict_from_env_parsing(monkeypatch):
+    monkeypatch.delenv("DELFIN_OPTIMIZE_STRICT", raising=False)
+    assert oc.strict_from_env() is False
+    for truthy in ("1", "true", "YES", " On "):
+        monkeypatch.setenv("DELFIN_OPTIMIZE_STRICT", truthy)
+        assert oc.strict_from_env() is True, truthy
+    for falsy in ("0", "false", "off", ""):
+        monkeypatch.setenv("DELFIN_OPTIMIZE_STRICT", falsy)
+        assert oc.strict_from_env() is False, falsy
+
+
+def test_main_exit_codes_todo_vs_strict(monkeypatch, capsys):
+    _patch_todo_task(monkeypatch)
+    monkeypatch.delenv("DELFIN_OPTIMIZE_STRICT", raising=False)
+    assert oc.main([]) == 0                       # warning only → safe
+    monkeypatch.setenv("DELFIN_OPTIMIZE_STRICT", "1")
+    assert oc.main([]) == 1                       # env gate → failure
+    out = capsys.readouterr().out
+    assert "strict mode" in out
+    assert "NOT safe to ship" in out
+
+
+def test_main_strict_flag_without_env(monkeypatch):
+    _patch_todo_task(monkeypatch)
+    monkeypatch.delenv("DELFIN_OPTIMIZE_STRICT", raising=False)
+    assert oc.main(["--strict"]) == 1
+    # a clean suite passes even in strict mode
+    monkeypatch.setattr("delfin.agent.benchmark.load_tasks",
+                        lambda: [_task("clean")])
+    assert oc.main(["--strict"]) == 0
+
+
 def test_ground_truth_intact():
     issues = oc.check_ground_truth()
     assert [i for i in issues if i.severity == "error"] == []

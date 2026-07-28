@@ -1,6 +1,6 @@
 """Tests for save_typed_memory + parse_memory_type.
 
-The Claude-Code-style memory mirror lives under
+The typed per-project memory store lives under
 ``~/.claude/projects/<slug>/memory/`` — we monkey-patch ``Path.home`` so
 the test never touches the real home directory.
 """
@@ -179,7 +179,7 @@ def test_delete_typed_memory_unknown_returns_none(fake_home, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Store lives under DELFIN's OWN ~/.delfin (not Claude Code's ~/.claude)
+# Store lives under DELFIN's OWN ~/.delfin (not the legacy ~/.claude namespace)
 # ---------------------------------------------------------------------------
 
 

@@ -23,6 +23,20 @@ caller — the bash gate in api_client.py — is responsible for
 running the same auto-allow / deny / secret-scan checks BEFORE any
 job is started; this module trusts its inputs.
 
+Crash safety: every started job is additionally persisted to
+``<workspace>/.delfin/bash_jobs.json`` (atomic temp-file + ``os.replace``
+writes, same pattern as ``memory_store._atomic_write``). A dashboard or
+kernel restart used to orphan every running calculation — the setsid
+child survives, but the new process had no record of job ids, output
+paths, or start times. Now an unknown job id re-attaches from that file:
+a live pid (guarded against pid reuse via the process start time in
+``/proc/<pid>/stat``) reports running with its output files reconnected;
+a dead pid reports finished with ``exit_code=None`` (the real status is
+unrecoverable once init reaped the orphan). ``drain_finished_events()``
+turns the registry into a cheap, restart-safe completion-event source:
+the watchdog marks the exit in the file at the moment it happens, and
+each finished job is reported exactly once across drains and restarts.
+
 The job's stdout / stderr tempfiles are opened with ``unbuffered=False``
 in line-buffered mode so the agent can read partial progress while a
 script is still running. Tempfiles are removed when the job is
@@ -32,6 +46,7 @@ crash so post-mortem inspection is possible.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import signal
@@ -48,6 +63,20 @@ _DEFAULT_BG_TIMEOUT_S = 24 * 3600    # 24 h hard cap
 _OUTPUT_HEAD_DEFAULT = 60            # lines kept from head
 _OUTPUT_TAIL_DEFAULT = 200           # lines kept from tail
 _KILL_GRACE_S = 3.0                  # SIGTERM → SIGKILL gap
+
+# --- Persistent registry (crash-safe re-attach + completion events) ------
+_REGISTRY_DIRNAME = ".delfin"        # per-workspace state directory
+_REGISTRY_FILENAME = "bash_jobs.json"
+_REGISTRY_MAX_AGE_S = 7 * 24 * 3600  # prune records older than ~7 days
+_EVENT_TAIL_CHARS = 500              # stdout/stderr tail carried per event
+_RC_UNKNOWN = -257                   # poll() sentinel: finished, code unknown
+# Per-user locator: job_id -> workspace, so a NEW process can find the right
+# <workspace>/.delfin/bash_jobs.json from a bare job_id (bash_status /
+# bash_output / bash_kill carry no workspace argument).
+_INDEX_PATH = Path.home() / ".delfin" / "bash_jobs_index.json"
+# Serializes read-modify-write cycles on the registry/index files within
+# this process (watchdog threads vs. drain/status calls).
+_FILE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -91,6 +120,237 @@ class BashJob:
         }
 
 
+# ---------------------------------------------------------------------------
+# Persistent registry file (crash-safe re-attach)
+# ---------------------------------------------------------------------------
+
+
+def _registry_path(workspace: str | Path) -> Path:
+    return Path(workspace).expanduser() / _REGISTRY_DIRNAME / _REGISTRY_FILENAME
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON atomically (temp file + ``os.replace``).
+
+    Same crash-safe pattern as ``memory_store._atomic_write``: a reader
+    racing the writer (dashboard vs. watchdog thread vs. a second CLI
+    session) must never observe an empty or torn registry file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _load_registry_file(workspace: str | Path) -> dict:
+    try:
+        data = json.loads(_registry_path(workspace).read_text(encoding="utf-8"))
+    except Exception:
+        return {"jobs": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("jobs"), dict):
+        return {"jobs": {}}
+    return data
+
+
+def _prune_old_records(jobs: dict, now: float) -> bool:
+    """Drop records started more than ~7 days ago. The 24 h hard timeout
+    guarantees any such job is long over. Returns True when pruned."""
+    cutoff = now - _REGISTRY_MAX_AGE_S
+    stale = [jid for jid, rec in jobs.items()
+             if float((rec or {}).get("started_at") or 0.0) < cutoff]
+    for jid in stale:
+        jobs.pop(jid, None)
+    return bool(stale)
+
+
+def _persist_job_start(workspace: str, record: dict) -> None:
+    """Write the just-started job into the workspace registry. Best-effort —
+    persistence must never prevent a job from starting."""
+    try:
+        with _FILE_LOCK:
+            data = _load_registry_file(workspace)
+            _prune_old_records(data["jobs"], time.time())
+            data["jobs"][record["job_id"]] = record
+            _atomic_write_json(_registry_path(workspace), data)
+    except Exception:
+        pass
+
+
+def _update_job_record(workspace: str | Path, job_id: str, **fields) -> None:
+    """Merge ``fields`` into one job's persisted record. Best-effort."""
+    try:
+        with _FILE_LOCK:
+            data = _load_registry_file(workspace)
+            rec = data["jobs"].get(job_id)
+            if rec is None:
+                return
+            rec.update(fields)
+            _atomic_write_json(_registry_path(workspace), data)
+    except Exception:
+        pass
+
+
+def _proc_start_ticks(pid: int) -> Optional[int]:
+    """Process start time in clock ticks (``/proc/<pid>/stat`` field 22).
+
+    Recorded at job start and compared on re-attach as a pid-reuse guard:
+    a recycled pid carries a different start time. Best-effort — returns
+    None off Linux, in which case only the aliveness check applies."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        # comm (field 2) may contain spaces/parens — split after the LAST ')'.
+        return int(stat[stat.rindex(")") + 1:].split()[19])
+    except Exception:
+        return None
+
+
+def _pid_alive(pid: int, start_ticks: Optional[int] = None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass         # exists but owned by another user — ticks check decides
+    except Exception:
+        return False
+    if start_ticks:
+        current = _proc_start_ticks(pid)
+        if current is not None and current != start_ticks:
+            return False   # pid was reused by an unrelated process
+    return True
+
+
+def _note_job_workspace(job_id: str, workspace: str) -> None:
+    """Record job_id → workspace in the per-user locator index (pruned to
+    the same ~7-day horizon as the registry). Best-effort."""
+    try:
+        with _FILE_LOCK:
+            try:
+                data = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            jobs = data.get("jobs") if isinstance(data, dict) else None
+            if not isinstance(jobs, dict):
+                jobs = {}
+            now = time.time()
+            jobs = {j: e for j, e in jobs.items()
+                    if float((e or {}).get("ts") or 0.0) >= now - _REGISTRY_MAX_AGE_S}
+            jobs[job_id] = {"workspace": workspace, "ts": now}
+            _atomic_write_json(_INDEX_PATH, {"jobs": jobs})
+    except Exception:
+        pass
+
+
+def _lookup_job_workspace(job_id: str) -> Optional[str]:
+    try:
+        data = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))
+        ws = ((data.get("jobs") or {}).get(job_id) or {}).get("workspace")
+        return str(ws) if ws else None
+    except Exception:
+        return None
+
+
+@dataclass
+class _ReattachedProc:
+    """Minimal Popen stand-in for a re-attached job — ``pid`` and
+    ``returncode`` are all the registry's kill path touches."""
+
+    pid: int
+    returncode: Optional[int] = None
+
+    def poll(self) -> Optional[int]:
+        return self.returncode
+
+
+class ReattachedJob:
+    """A job recovered from the persistent registry after a restart.
+
+    Duck-types the parts of :class:`BashJob` the tool layer uses (``poll``,
+    ``elapsed_s``, ``status_dict``, output paths, ``proc.pid``). The child
+    is no longer OUR child, so once it dies its exit status is gone (init
+    reaped it) — a finished re-attached job reports ``exit_code=None``
+    unless a previous session's watchdog recorded the real code."""
+
+    def __init__(self, workspace: str, record: dict) -> None:
+        self.workspace = str(workspace)
+        self.job_id = str(record.get("job_id", ""))
+        self.command = str(record.get("command", ""))
+        self.description = str(record.get("description", ""))
+        self.cwd = str(record.get("cwd", ""))
+        self.timeout_s = int(record.get("timeout_s") or _DEFAULT_BG_TIMEOUT_S)
+        self.stdout_path = Path(record.get("stdout_path") or "")
+        self.stderr_path = Path(record.get("stderr_path") or "")
+        self.started_at = float(record.get("started_at") or 0.0)   # epoch
+        self.finished_at = record.get("finished_at")               # epoch|None
+        self.exit_code = record.get("exit_code")
+        self._start_ticks = record.get("proc_start_ticks")
+        self.proc = _ReattachedProc(int(record.get("pid") or 0), self.exit_code)
+
+    def poll(self) -> Optional[int]:
+        if self.finished_at is None:
+            if _pid_alive(self.proc.pid, self._start_ticks):
+                return None
+            # Died while no agent process was attached — record the moment we
+            # noticed; the real exit status is unrecoverable.
+            self.finished_at = time.time()
+            _update_job_record(self.workspace, self.job_id,
+                               finished_at=self.finished_at,
+                               exit_code=self.exit_code)
+        self.proc.returncode = self.exit_code
+        return self.exit_code if self.exit_code is not None else _RC_UNKNOWN
+
+    def elapsed_s(self) -> float:
+        # Epoch-based (monotonic clocks do not survive a restart).
+        end = self.finished_at if self.finished_at is not None else time.time()
+        return round(max(0.0, end - self.started_at), 3)
+
+    def status_dict(self) -> dict:
+        rc = self.poll()
+        status = {
+            "job_id": self.job_id,
+            "running": rc is None,
+            "exit_code": self.exit_code,
+            "elapsed_s": self.elapsed_s(),
+            "command": self.command[:300],
+            "description": self.description,
+            "cwd": self.cwd,
+            "stdout_path": str(self.stdout_path),
+            "stderr_path": str(self.stderr_path),
+            "reattached": True,
+        }
+        if rc is not None and self.exit_code is None:
+            status["note"] = (
+                "exit code unknown — the job outlived the process that "
+                "started it (recovered from the persistent registry)")
+        return status
+
+
+def _reattach(job_id: str, workspace: str | Path | None = None) -> Optional[ReattachedJob]:
+    """Rebuild a job view from ``<workspace>/.delfin/bash_jobs.json``.
+
+    Called for job ids the in-memory registry does not know — i.e. after a
+    dashboard/kernel restart orphaned a running calculation. The workspace
+    comes from the caller when available, else from the locator index."""
+    ws = str(workspace) if workspace else _lookup_job_workspace(job_id)
+    if not ws:
+        return None
+    rec = _load_registry_file(ws).get("jobs", {}).get(job_id)
+    if not rec:
+        return None
+    return ReattachedJob(ws, rec)
+
+
 class _Registry:
     """Thread-safe job registry. Singleton via module-level instance."""
 
@@ -115,6 +375,7 @@ class _Registry:
         description: str = "",
         timeout_s: int = _DEFAULT_BG_TIMEOUT_S,
         env: Optional[dict] = None,
+        workspace: str | Path | None = None,
     ) -> BashJob:
         if not command.strip():
             raise ValueError("command must be non-empty")
@@ -166,7 +427,32 @@ class _Registry:
             )
             self._jobs[jid] = job
 
-        # Watchdog: enforces timeout + closes log file handles when done.
+        # Persist the job BEFORE the watchdog starts, so its exit update can
+        # never race the initial write. After a restart this record is the
+        # only map back to the (setsid-surviving) child's pid, output files,
+        # and start time.
+        ws = str(Path(workspace).expanduser()) if workspace else cwd
+        _persist_job_start(ws, {
+            "job_id": jid,
+            "pid": proc.pid,
+            "proc_start_ticks": _proc_start_ticks(proc.pid),
+            "command": command,
+            "description": description,
+            "cwd": cwd,
+            "workspace": ws,
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "started_at": time.time(),      # epoch — survives restarts
+            "timeout_s": timeout_s,
+            "exit_code": None,
+            "finished_at": None,
+            "acknowledged": False,
+        })
+        _note_job_workspace(jid, ws)
+
+        # Watchdog: enforces timeout, closes log file handles when done, and
+        # marks the exit in the persistent registry the moment it happens —
+        # the completion-event source for drain_finished_events().
         def _watch():
             try:
                 rc = proc.wait(timeout=timeout_s)
@@ -180,6 +466,12 @@ class _Registry:
                 except Exception:
                     pass
             finally:
+                # Reap (instant on the normal path; after a timeout-kill the
+                # child needs one more wait to yield its return code).
+                try:
+                    rc_final = proc.wait(timeout=_KILL_GRACE_S)
+                except Exception:
+                    rc_final = proc.poll()
                 try:
                     sout.close()
                     serr.close()
@@ -187,15 +479,25 @@ class _Registry:
                     pass
                 if job.finished_at is None:
                     job.finished_at = time.monotonic()
+                _update_job_record(ws, jid,
+                                   exit_code=rc_final,
+                                   finished_at=time.time())
 
         t = threading.Thread(target=_watch, daemon=True, name=f"bashjob-{jid}")
         t.start()
         job._watchdog = t
         return job
 
-    def get(self, job_id: str) -> Optional[BashJob]:
+    def get(
+        self, job_id: str, workspace: str | Path | None = None,
+    ) -> Optional["BashJob | ReattachedJob"]:
         with self._lock:
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+        if job is not None:
+            return job
+        # Unknown to THIS process — e.g. after a dashboard/kernel restart.
+        # Re-attach from the persistent workspace registry.
+        return _reattach(job_id, workspace)
 
     def list_jobs(self, include_finished: bool = True) -> list[BashJob]:
         with self._lock:
@@ -236,6 +538,78 @@ _REGISTRY = _Registry()
 def get_registry() -> _Registry:
     """Return the process-wide job registry singleton."""
     return _REGISTRY
+
+
+# ---------------------------------------------------------------------------
+# Completion events (restart-safe, exactly-once)
+# ---------------------------------------------------------------------------
+
+
+def _tail_chars(path: str | Path, limit: int = _EVENT_TAIL_CHARS) -> str:
+    """Last ``limit`` characters of a job output file, best-effort."""
+    try:
+        p = Path(path)
+        size = p.stat().st_size
+        with p.open("rb") as fh:
+            if size > limit * 4:
+                # Over-read to keep a full tail after multi-byte repair.
+                fh.seek(-limit * 4, os.SEEK_END)
+            text = fh.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    return text[-limit:]
+
+
+def drain_finished_events(workspace: str | Path) -> list[dict]:
+    """Return jobs that finished since the last drain — exactly once.
+
+    The acknowledged flag lives in the registry file, so the exactly-once
+    contract survives restarts: a new process only sees what no previous
+    process drained. Jobs whose pid vanished while nobody was attached
+    (agent restart during a multi-hour ORCA/xtb run) are folded in with
+    ``exit_code=None``. This gives the engine an event-driven "job
+    finished" signal to inject into the next turn — no blocking
+    ``bash_status(wait_seconds=...)`` poll needed.
+
+    Each event: ``job_id``, ``command`` (truncated), ``description``,
+    ``exit_code`` (None when unrecoverable), ``runtime_s``, and ~500-char
+    ``stdout_tail`` / ``stderr_tail``."""
+    events: list[dict] = []
+    try:
+        with _FILE_LOCK:
+            data = _load_registry_file(workspace)
+            jobs = data.get("jobs", {})
+            now = time.time()
+            changed = _prune_old_records(jobs, now)
+            for jid, rec in jobs.items():
+                if rec.get("acknowledged"):
+                    continue
+                finished_at = rec.get("finished_at")
+                if finished_at is None:
+                    if _pid_alive(int(rec.get("pid") or 0),
+                                  rec.get("proc_start_ticks")):
+                        continue                    # still running
+                    # Orphan died unattached — exit moment approximated now.
+                    finished_at = rec["finished_at"] = now
+                rec["acknowledged"] = True
+                changed = True
+                started = float(rec.get("started_at") or finished_at)
+                events.append({
+                    "job_id": jid,
+                    "command": str(rec.get("command") or "")[:300],
+                    "description": str(rec.get("description") or ""),
+                    "exit_code": rec.get("exit_code"),
+                    "runtime_s": round(max(0.0, finished_at - started), 3),
+                    "stdout_tail": _tail_chars(rec.get("stdout_path") or ""),
+                    "stderr_tail": _tail_chars(rec.get("stderr_path") or ""),
+                })
+            if changed:
+                _atomic_write_json(_registry_path(workspace), data)
+    except Exception:
+        # Event delivery is best-effort; a broken registry file must never
+        # take the tool layer down.
+        return events
+    return events
 
 
 def read_output(

@@ -95,7 +95,7 @@ def test_malformed_arguments_default_to_empty(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Live-panel registry (Claude-Code-style subagent monitoring)
+# Live-panel registry (subagent monitoring)
 # ---------------------------------------------------------------------------
 
 def test_running_registry_roundtrip(tmp_path, monkeypatch):
@@ -148,7 +148,7 @@ def test_background_flag_in_subagent_schema():
 
 
 # ---------------------------------------------------------------------------
-# Finished-subagent sessions + resume (Claude-Code SendMessage analog)
+# Finished-subagent sessions + resume (follow-up messages to finished subagents)
 # ---------------------------------------------------------------------------
 
 def _ev(**kw):

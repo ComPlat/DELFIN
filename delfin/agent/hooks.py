@@ -38,11 +38,11 @@ to deliver a structured block reason back to the agent.
 
 Environment variables passed to every hook:
 
-    CLAUDE_HOOK_EVENT      e.g. "PreToolUse"
-    CLAUDE_TOOL_NAME       tool name on tool-use events
-    CLAUDE_TOOL_INPUT      JSON-serialised arguments
-    CLAUDE_WORKSPACE       resolved workspace root
-    CLAUDE_USER_PROMPT     user message on UserPromptSubmit
+    DELFIN_HOOK_EVENT      e.g. "PreToolUse"
+    DELFIN_TOOL_NAME       tool name on tool-use events
+    DELFIN_TOOL_INPUT      JSON-serialised arguments
+    DELFIN_WORKSPACE       resolved workspace root
+    DELFIN_USER_PROMPT     user message on UserPromptSubmit
 
 Inside the ``command`` template, ``${file}`` and ``${cwd}`` are
 expanded from the tool arguments so simple linter hooks don't need
@@ -207,18 +207,18 @@ def _build_env(
     workspace: Path | str | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
-    env["CLAUDE_HOOK_EVENT"] = event
+    env["DELFIN_HOOK_EVENT"] = event
     if tool_name:
-        env["CLAUDE_TOOL_NAME"] = tool_name
+        env["DELFIN_TOOL_NAME"] = tool_name
     if arguments is not None:
         try:
-            env["CLAUDE_TOOL_INPUT"] = json.dumps(arguments, default=str)[:8000]
+            env["DELFIN_TOOL_INPUT"] = json.dumps(arguments, default=str)[:8000]
         except (TypeError, ValueError):
-            env["CLAUDE_TOOL_INPUT"] = ""
+            env["DELFIN_TOOL_INPUT"] = ""
     if user_prompt:
-        env["CLAUDE_USER_PROMPT"] = user_prompt[:8000]
+        env["DELFIN_USER_PROMPT"] = user_prompt[:8000]
     if workspace:
-        env["CLAUDE_WORKSPACE"] = str(workspace)
+        env["DELFIN_WORKSPACE"] = str(workspace)
     return env
 
 

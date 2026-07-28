@@ -327,7 +327,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'default_visible': _agent_backend_available,
             'available': True,
             'fixed': False,
-            'reason': '' if _agent_backend_available else 'Install Claude Code CLI or set ANTHROPIC_API_KEY.',
+            'reason': '' if _agent_backend_available else 'Install the Anthropic CLI or set ANTHROPIC_API_KEY.',
         },
         {
             'id': 'agent_activity',
@@ -337,7 +337,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'default_visible': _agent_backend_available,
             'available': True,
             'fixed': False,
-            'reason': '' if _agent_backend_available else 'Install Claude Code CLI or set ANTHROPIC_API_KEY.',
+            'reason': '' if _agent_backend_available else 'Install the Anthropic CLI or set ANTHROPIC_API_KEY.',
         },
         {
             'id': 'job_status',

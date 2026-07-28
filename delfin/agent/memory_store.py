@@ -406,8 +406,9 @@ def _delfin_plans_dir(repo_root: Path) -> Path:
     return new
 
 
-# Back-compat aliases — the per-project store moved from ~/.claude (Claude
-# Code's namespace) into DELFIN's own ~/.delfin. Old callers/tests keep working.
+# Back-compat aliases — the per-project store moved from the legacy
+# ~/.claude location (another tool's namespace) into DELFIN's own ~/.delfin.
+# Old callers/tests keep working.
 _claude_memory_dir = _delfin_memory_dir
 _claude_plans_dir = _delfin_plans_dir
 

@@ -7,9 +7,10 @@ session ends (new/loaded session) one cheap LLM turn extracts the few
 facts worth keeping across sessions (user preferences, project
 constraints, recurring failure→fix pairs) and stores them.
 
-Cost & consent: opt-in via ``agent.auto_memory.enabled`` (default False —
-it costs one small LLM call per session). The model defaults to the
-provider's cheap tier; manual trigger via ``/memorize`` works regardless.
+Cost & consent: on by default (``agent.auto_memory.enabled: false``
+disables it — the cost is one small cheap-tier LLM call per session and
+the memories it saves compound across sessions). Manual trigger via
+``/memorize`` works regardless.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ def auto_memory_settings(settings: dict | None = None) -> dict:
     if max_age_days is not None and max_age_days < 0:
         max_age_days = None
     return {
-        "enabled": bool(cfg.get("enabled", False)),
+        "enabled": bool(cfg.get("enabled", True)),
         "model": str(cfg.get("model", "") or ""),
         "max_facts": int(cfg.get("max_facts", 5) or 5),
         "min_user_msgs": int(cfg.get("min_user_msgs", 3) or 3),

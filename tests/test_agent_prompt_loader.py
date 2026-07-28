@@ -342,9 +342,8 @@ def test_caching(agent_tree):
     assert len(loader._cache) > 0
 
 
-def test_build_system_prompt_skips_duplicate_profile_in_same_session(agent_tree):
-    from delfin.agent.prompt_loader import PromptLoader
-
+def _write_profile(agent_tree):
+    """Shared profiles.json fixture for the inject-gating tests."""
     profile_path = agent_tree / "profiles.json"
     profile_path.write_text(
         json.dumps(
@@ -360,10 +359,43 @@ def test_build_system_prompt_skips_duplicate_profile_in_same_session(agent_tree)
         ),
         encoding="utf-8",
     )
+    return profile_path
+
+
+def test_stateless_backend_reinjects_profile_on_second_build(agent_tree):
+    """Chat-API backends rebuild every request from scratch — an earlier
+    injection is NOT still in the conversation, so unchanged stable sections
+    must appear in EVERY build (stateful_backend defaults to False)."""
+    from delfin.agent.prompt_loader import PromptLoader
 
     loader = PromptLoader(agent_tree)
     loader._active_provider = "openai"
-    loader._profile_path = profile_path
+    loader._profile_path = _write_profile(agent_tree)
+
+    prompt1 = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="quick",
+        session_key="s1",
+    )
+    prompt2 = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="quick",
+        session_key="s1",
+    )
+
+    assert "Provider Profile" in prompt1
+    assert "Provider Profile" in prompt2
+
+
+def test_stateful_cli_backend_injects_profile_once_per_session(agent_tree):
+    """The persistent CLI process keeps the first system prompt alive across
+    turns, so the unchanged profile is gated after the first injection."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader(agent_tree)
+    loader._active_provider = "openai"
+    loader._profile_path = _write_profile(agent_tree)
+    loader.stateful_backend = True
 
     prompt1 = loader.build_system_prompt(
         role_id="builder_agent",
@@ -378,6 +410,118 @@ def test_build_system_prompt_skips_duplicate_profile_in_same_session(agent_tree)
 
     assert "Provider Profile" in prompt1
     assert "Provider Profile" not in prompt2
+
+
+def test_stateful_gating_resets_with_session_state(agent_tree):
+    """After reset_session_prompt_state the stateful loader injects again."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader(agent_tree)
+    loader._active_provider = "openai"
+    loader._profile_path = _write_profile(agent_tree)
+    loader.stateful_backend = True
+
+    prompt1 = loader.build_system_prompt(
+        role_id="builder_agent", mode_id="quick", session_key="s1",
+    )
+    assert "Provider Profile" in prompt1
+    loader.reset_session_prompt_state("s1")
+    prompt2 = loader.build_system_prompt(
+        role_id="builder_agent", mode_id="quick", session_key="s1",
+    )
+    assert "Provider Profile" in prompt2
+
+
+def test_engine_marks_only_claude_cli_backend_stateful(agent_tree):
+    """The engine threads backend statefulness to the loader: persistent
+    claude CLI → True; chat-API backends → False (re-inject every build)."""
+    from unittest.mock import MagicMock, patch
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+        cli = AgentEngine(
+            repo_dir=agent_tree, backend="cli", provider="claude",
+            mode="quick", pack_dir=agent_tree,
+        )
+        api = AgentEngine(
+            repo_dir=agent_tree, backend="api", provider="openai",
+            mode="quick", pack_dir=agent_tree,
+        )
+    assert cli.loader.stateful_backend is True
+    assert api.loader.stateful_backend is False
+
+
+# ---------------------------------------------------------------------------
+# Sticky lazy-module set — modules never deactivate mid-session
+# ---------------------------------------------------------------------------
+
+_MODULE_TEXT = (
+    "## Intro\n"
+    "Always kept.\n"
+    "\n"
+    "<!-- module:chemistry -->\n"
+    "## Chemistry\n"
+    "chemistry module body\n"
+    "\n"
+    "## Tail\n"
+    "tail body\n"
+)
+
+
+def test_lazy_module_stays_active_without_trigger_keywords(agent_tree):
+    """A module activated by turn 1 must survive a trigger-free follow-up
+    ('ja, mach weiter') in the same session — the active set is monotonic."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader(agent_tree)
+    out1 = loader._strip_lazy_modules(
+        _MODULE_TEXT, task_text="run an orca dft job", mode_id="solo",
+        session_key="s1", role_id="solo_agent",
+    )
+    assert "chemistry module body" in out1
+    out2 = loader._strip_lazy_modules(
+        _MODULE_TEXT, task_text="ja, mach weiter", mode_id="solo",
+        session_key="s1", role_id="solo_agent",
+    )
+    assert "chemistry module body" in out2
+    assert "tail body" in out2
+    # A different session has no sticky history — the module is stripped.
+    out3 = loader._strip_lazy_modules(
+        _MODULE_TEXT, task_text="ja, mach weiter", mode_id="solo",
+        session_key="s2", role_id="solo_agent",
+    )
+    assert "chemistry module body" not in out3
+
+
+def test_lazy_module_without_session_key_stays_per_turn(agent_tree):
+    """No session_key (direct callers/tests) keeps the old per-turn detection."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader(agent_tree)
+    out1 = loader._strip_lazy_modules(
+        _MODULE_TEXT, task_text="run an orca dft job", mode_id="solo",
+    )
+    assert "chemistry module body" in out1
+    out2 = loader._strip_lazy_modules(
+        _MODULE_TEXT, task_text="ja, mach weiter", mode_id="solo",
+    )
+    assert "chemistry module body" not in out2
+
+
+def test_reset_session_prompt_state_clears_sticky_modules(agent_tree):
+    """reset_session_prompt_state must clear the sticky module union."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader(agent_tree)
+    active = loader._detect_active_modules(
+        "run an orca dft job", "solo", session_key="s1", role_id="solo_agent",
+    )
+    assert "chemistry" in active
+    loader.reset_session_prompt_state("s1")
+    after = loader._detect_active_modules(
+        "ja, mach weiter", "solo", session_key="s1", role_id="solo_agent",
+    )
+    assert "chemistry" not in after
 
 
 # ---------------------------------------------------------------------------

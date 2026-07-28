@@ -13,8 +13,8 @@ Cost & consent rules (same philosophy as the job monitor):
   outcome mining, task scaffolding and report writing are pure file work.
 - Running the live benchmark suite costs tokens, so it is NOT part of
   the default run — the report just prints the command for it.
-- The entrypoint is gated by ``agent.eval_loop.enabled`` (default False)
-  so nothing runs on anyone's machine without an explicit opt-in.
+- The entrypoint is gated by ``agent.eval_loop.enabled`` (default on —
+  the default pass is LLM-free file analytics; set false to disable).
 
 Run once (cron / dashboard scheduler / by hand)::
 
@@ -58,7 +58,7 @@ def eval_settings(settings: dict | None = None) -> dict:
             settings = {}
     cfg = ((settings or {}).get("agent") or {}).get("eval_loop") or {}
     return {
-        "enabled": bool(cfg.get("enabled", False)),
+        "enabled": bool(cfg.get("enabled", True)),
         "window": int(cfg.get("window", 200) or 200),
         "threshold": int(cfg.get("threshold", _RECURRENCE_THRESHOLD)
                          or _RECURRENCE_THRESHOLD),
@@ -171,6 +171,75 @@ def write_pattern_drafts(patterns: list[FailurePattern],
 # Report
 # ---------------------------------------------------------------------------
 
+# Telemetry window the report summarises (days).
+_HEALTH_WINDOW_DAYS = 7
+
+
+def _tool_health_lines(window_days: int = _HEALTH_WINDOW_DAYS) -> list[str]:
+    """"Tool health" report section: top tools by error rate over the
+    window — the consumer the tool-trace telemetry has been missing."""
+    lines = [f"## Tool health (last {window_days} days)"]
+    try:
+        from delfin.agent.tool_trace import aggregate_tool_stats
+        stats = aggregate_tool_stats(window_days)
+    except Exception:
+        stats = {}
+    rows = [(tool, s) for tool, s in stats.items() if s.get("calls")]
+    if not rows:
+        lines.append("- no tool calls recorded in window")
+        return lines
+    total_calls = sum(s["calls"] for _, s in rows)
+    total_errors = sum(s.get("errors", 0) for _, s in rows)
+    lines.append(f"- {total_calls} call(s), {total_errors} error(s) "
+                 f"across {len(rows)} tool(s)")
+    rows.sort(key=lambda kv: (kv[1].get("error_rate", 0.0),
+                              kv[1].get("calls", 0)), reverse=True)
+    for tool, s in rows[:5]:
+        snips = s.get("top_error_snippets") or []
+        extra = f" — e.g. \"{snips[0]}\"" if snips else ""
+        lines.append(
+            f"- **{tool}**: {s.get('error_rate', 0.0) * 100:.0f}% errors "
+            f"({s.get('errors', 0)}/{s['calls']} calls), "
+            f"avg {s.get('avg_duration_ms', 0)}ms{extra}")
+    return lines
+
+
+def _turn_health_lines(window_days: int = _HEALTH_WINDOW_DAYS) -> list[str]:
+    """"Turn health" report section: ttft/stall summary from turn_metrics."""
+    lines = [f"## Turn health (last {window_days} days)"]
+    try:
+        from delfin.agent.turn_metrics import aggregate_turn_stats
+        s = aggregate_turn_stats(window_days)
+    except Exception:
+        s = {}
+    if not s.get("turns"):
+        lines.append("- no turns recorded in window")
+        return lines
+    lines.append(f"- turns: {s['turns']}, stalls: {s.get('stalls', 0)}, "
+                 f"stopped: {s.get('stopped_count', 0)}")
+    lines.append(f"- ttft: avg {s.get('avg_ttft_ms', 0) / 1000:.1f}s, "
+                 f"p90 {s.get('p90_ttft_ms', 0) / 1000:.1f}s")
+    return lines
+
+
+def _benchmark_drift_lines() -> list[str]:
+    """"Benchmark drift" note: latest vs previous persisted run. Empty when
+    fewer than two runs exist or anything fails (best-effort)."""
+    try:
+        from delfin.agent import benchmark as bm
+        runs = bm.list_runs()
+        if len(runs) < 2:
+            return []
+        ab = bm.ab_compare(str(runs[-2]), str(runs[-1]))
+        note = bm.format_ab_note(ab)
+        lines = ["## Benchmark drift (latest vs previous run)"]
+        lines.append(f"- runs: `{runs[-2].name}` → `{runs[-1].name}`")
+        lines += [f"- {ln}" for ln in note.splitlines() if ln.strip()]
+        return lines
+    except Exception:
+        return []
+
+
 def build_report(
     *,
     outcomes: list[Any] | None = None,
@@ -228,6 +297,13 @@ def build_report(
     else:
         lines.append("- none — no recurring failure above threshold")
     lines += ["", "## Benchmark suite integrity", f"- {integrity}", ""]
+    # Telemetry consumption: surface the collected tool-trace / turn-metric
+    # health plus benchmark drift, so the daily pass reads what is recorded.
+    lines += _tool_health_lines() + [""]
+    lines += _turn_health_lines() + [""]
+    drift = _benchmark_drift_lines()
+    if drift:
+        lines += drift + [""]
     if drafts:
         lines.append("## Draft tasks scaffolded (review before committing)")
         lines += [f"- `{d}`" for d in drafts]
@@ -259,6 +335,43 @@ def run_eval(
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"eval_{time.strftime('%Y%m%d')}.md"
     path.write_text(report, encoding="utf-8")
+    return path
+
+
+def maybe_run_scheduled(
+    settings: dict | None = None,
+    *,
+    min_interval_hours: float = 24.0,
+    reports_dir: Path | None = None,
+) -> Path | None:
+    """Opportunistic scheduled pass: run the LLM-free eval at most once per
+    ``min_interval_hours``, gated by the same opt-in.
+
+    Called from session-end paths (CLI run, dashboard) so the loop
+    actually closes without anyone remembering a cron job — previously
+    the module had NO automatic caller at all. Never raises; returns the
+    report path when a pass ran, else None."""
+    cfg = eval_settings(settings)
+    if not cfg["enabled"]:
+        return None
+    d = reports_dir or _REPORTS_DIR
+    stamp = d / ".last_run"
+    now = time.time()
+    try:
+        last = float(stamp.read_text(encoding="utf-8").strip() or 0.0)
+    except (OSError, ValueError):
+        last = 0.0
+    if now - last < min_interval_hours * 3600.0:
+        return None
+    try:
+        path = run_eval(settings=settings, reports_dir=d)
+    except Exception:
+        return None
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(now), encoding="utf-8")
+    except OSError:
+        pass
     return path
 
 

@@ -20,10 +20,10 @@ _CHAT = [
 ]
 
 
-def test_default_settings_disabled():
+def test_default_settings_enabled():
     from delfin.user_settings import DEFAULT_SETTINGS
     cfg = DEFAULT_SETTINGS["agent"]["auto_memory"]
-    assert cfg["enabled"] is False
+    assert cfg["enabled"] is True
     assert cfg["max_facts"] >= 1
 
 
@@ -112,7 +112,7 @@ def test_excerpt_drops_tool_noise():
 
 
 # ---------------------------------------------------------------------------
-# Typed project-memory store (repo_root) — "memory like Claude Code"
+# Typed project-memory store (repo_root) — typed persistent memory
 # ---------------------------------------------------------------------------
 
 

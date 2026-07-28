@@ -116,7 +116,23 @@ def load_watched(path: Path | None = None) -> dict:
 def save_watched(data: dict, path: Path | None = None) -> None:
     p = path or _WATCHED_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # Atomic (temp file + os.replace, the memory_store._atomic_write
+    # pattern): daemon and dashboard share this file — a reader racing a
+    # plain truncate-write would observe an empty or torn watch list.
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{p.name}.", suffix=".tmp", dir=str(p.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2))
+        os.replace(tmp, p)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def add_watch(job_id: str, folder: str = "", path: Path | None = None) -> dict:
@@ -242,6 +258,130 @@ def check_once(
             ))
     save_watched(data, path)
     return findings
+
+
+# ---------------------------------------------------------------------------
+# Agent-registered jobs (per-workspace watch list for the tool layer)
+# ---------------------------------------------------------------------------
+
+_AGENT_WATCH_FILENAME = "agent_watched_jobs.json"
+_AGENT_WATCH_MAX_AGE_S = 7 * 24 * 3600   # prune abandoned entries (~7 days)
+
+
+def _agent_watch_path(workspace: str | Path) -> Path:
+    return Path(workspace).expanduser() / ".delfin" / _AGENT_WATCH_FILENAME
+
+
+def register_agent_job(
+    workspace: str | Path,
+    job_id_or_slurm_id: str,
+    description: str = "",
+) -> dict:
+    """Add a watch entry for a job the agent itself started. LLM-free.
+
+    Per-workspace sibling of the daemon's ``~/.delfin/watched_jobs.json``
+    (same ``{"jobs": {...}}`` structure, same load/save helpers), stored
+    in ``<workspace>/.delfin/agent_watched_jobs.json``. Numeric ids are
+    SLURM jobs (squeue/sacct); anything else is a background-bash job id
+    from :mod:`delfin.agent.bash_jobs`. Returns the stored entry."""
+    jid = str(job_id_or_slurm_id).strip()
+    if not jid:
+        raise ValueError("job id must be non-empty")
+    kind = "slurm" if jid.isdigit() else "bash"
+    path = _agent_watch_path(workspace)
+    data = load_watched(path)
+    entry = {
+        "kind": kind,
+        "description": str(description or "")[:300],
+        "folder": str(Path(workspace).expanduser()),
+        "added_at": time.time(),
+        "last_state": "",
+    }
+    data.setdefault("jobs", {})[jid] = entry
+    save_watched(data, path)
+    return entry
+
+
+def check_agent_jobs(
+    workspace: str | Path,
+    run_fn: Callable[[list[str]], str] = _default_run,
+) -> list[dict]:
+    """Report agent-registered jobs that reached a terminal state — once.
+
+    LLM-free like :func:`check_once`. Terminal entries are removed from the
+    persistent watch file (atomic write), so each completion/failure is
+    reported exactly once, even across restarts. Entries older than ~7 days
+    are pruned (a lost SLURM id must not be polled forever).
+
+    Each result: ``job_id``, ``kind`` ("slurm"/"bash"), ``description``,
+    ``state``, ``ok``, ``exit_code`` (bash only; None when the code was
+    unrecoverable after a restart), ``signatures`` (failed SLURM jobs
+    only, via :func:`scan_error_signatures`)."""
+    path = _agent_watch_path(workspace)
+    data = load_watched(path)
+    jobs = data.get("jobs", {})
+    if not jobs:
+        return []
+
+    def _kind(jid: str, entry: dict) -> str:
+        return entry.get("kind") or ("slurm" if jid.isdigit() else "bash")
+
+    slurm_ids = [j for j, e in jobs.items() if _kind(j, e or {}) == "slurm"]
+    states = query_job_states(slurm_ids, run_fn) if slurm_ids else {}
+    done: list[dict] = []
+    changed = False
+    now = time.time()
+    for jid, entry in list(jobs.items()):
+        entry = entry or {}
+        if float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S:
+            jobs.pop(jid)
+            changed = True
+            continue
+        if _kind(jid, entry) == "slurm":
+            state = states.get(jid, "")
+            if state and state != entry.get("last_state"):
+                entry["last_state"] = state
+                changed = True
+            if state in _OK_TERMINAL_STATES or state in _FAILURE_STATES:
+                done.append({
+                    "job_id": jid,
+                    "kind": "slurm",
+                    "description": entry.get("description", ""),
+                    "state": state,
+                    "ok": state in _OK_TERMINAL_STATES,
+                    "exit_code": None,
+                    "signatures": (scan_error_signatures(entry.get("folder", ""))
+                                   if state in _FAILURE_STATES else []),
+                })
+                jobs.pop(jid)
+                changed = True
+        else:
+            # Background-bash job: the bash_jobs registry is the source of
+            # truth — in-memory in the same process, re-attached from
+            # <workspace>/.delfin/bash_jobs.json after a restart.
+            try:
+                from delfin.agent import bash_jobs as _bj
+                job = _bj.get_registry().get(jid, workspace)
+            except Exception:
+                job = None
+            if job is None or job.poll() is None:
+                continue        # unknown yet (age prune applies) or running
+            status = job.status_dict()
+            rc = status.get("exit_code")
+            done.append({
+                "job_id": jid,
+                "kind": "bash",
+                "description": entry.get("description", ""),
+                "state": "FINISHED",
+                "ok": rc == 0,
+                "exit_code": rc,
+                "signatures": [],
+            })
+            jobs.pop(jid)
+            changed = True
+    if changed:
+        save_watched(data, path)
+    return done
 
 
 # ---------------------------------------------------------------------------

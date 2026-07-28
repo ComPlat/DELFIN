@@ -213,8 +213,8 @@ SequenceMatcher resolves at ratio ≥ 0.6 still go through silently
 
 ## How `ACTION:` works
 
-The dashboard agent runs through the chosen provider's backend (Claude
-CLI, Anthropic API, OpenAI API, or KIT-Toolbox). You cannot run
+The dashboard agent runs through the chosen provider's backend (Anthropic
+CLI/API, OpenAI API, or KIT-Toolbox). You cannot run
 slash-commands yourself — emit them as `ACTION: /command arg` on
 their own lines. The dashboard intercepts, executes, and feeds the
 result back as a system message. The `ACTION:` lines are stripped

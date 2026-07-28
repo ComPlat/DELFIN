@@ -1,4 +1,4 @@
-"""Client backends for the DELFIN Agent: Claude CLI, Anthropic API, OpenAI API, or Codex CLI."""
+"""Client backends for the DELFIN Agent: the Anthropic CLI, Anthropic API, OpenAI API, or Codex CLI."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class _BaseClient:
 # ---------------------------------------------------------------------------
 
 class CLIClient(_BaseClient):
-    """Persistent bidirectional Claude CLI client via ``--input-format stream-json``.
+    """Persistent bidirectional CLI-backend client via ``--input-format stream-json``.
 
     Spawns a single long-running ``claude -p`` process that accepts JSON
     messages on stdin and emits JSON events on stdout — identical to what
@@ -450,7 +450,7 @@ class CLIClient(_BaseClient):
                     )
                 if stderr.strip():
                     raise RuntimeError(
-                        f"Claude CLI error (exit {rc}): {stderr.strip()[:500]}"
+                        f"CLI backend error (exit {rc}): {stderr.strip()[:500]}"
                     )
 
     def switch_model(self, model: str) -> None:
@@ -574,10 +574,22 @@ class APIClient(_BaseClient):
 
         Handles text, thinking, tool_use, and cost events.
         """
+        # Explicit prompt-cache breakpoint on the system prompt: the prompt
+        # loader keeps it byte-stable across turns precisely so the provider
+        # can serve it from cache — without the marker none of that
+        # engineering pays off on this backend. cache_read_input_tokens is
+        # already folded into the metrics above/below.
+        _system_param: Any = system
+        if system:
+            _system_param = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "system": system,
+            "system": _system_param,
             "messages": messages,
         }
         if thinking_budget > 0:
@@ -888,9 +900,12 @@ _ROLE_EXEC_ALLOWLIST: dict[str, frozenset[str]] = {
 }
 
 # Meta/plumbing tools with no side effects or scope concern — always permitted
-# even for a role that carries an allow-list.
+# even for a role that carries an allow-list. report_verdict is pure data
+# (the gate reads it) and must reach EVERY review-ish role, however locked
+# down its execution surface is.
 _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "exit_plan_mode", "ask_user_question", "subagent_result",
+    "report_verdict",
 })
 
 
@@ -1623,7 +1638,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "ongoing goal/decision/constraint NOT in the code or git), "
                 "'reference' (an external URL/ticket). Do NOT save transient "
                 "task details, secrets, or anything already in the code / "
-                "CLAUDE.md / git. One fact per memory; before saving, prefer "
+                "DELFIN.MD / git. One fact per memory; before saving, prefer "
                 "updating a similar existing memory over duplicating it; link "
                 "related ones in the text with [[their-slug]]."
             ),
@@ -2323,6 +2338,59 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "report_verdict",
+            "description": (
+                "Report your final review/test verdict as STRUCTURED "
+                "data. Call this ONCE at the end of a critic / test / "
+                "review turn, after your prose findings — the pipeline "
+                "gate reads this tool call directly, so a formatting "
+                "slip in prose can never flip a reject into an "
+                "auto-continue. The result echoes your verdict back."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["approve", "approve_with_risks",
+                                 "reject"],
+                        "description": "Your final verdict.",
+                    },
+                    "criteria": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "state": {
+                                    "type": "string",
+                                    "enum": ["PASS", "FAIL",
+                                             "UNTESTED"],
+                                },
+                            },
+                            "required": ["name", "state"],
+                        },
+                        "description": (
+                            "Per-acceptance-criterion result. Mark a "
+                            "criterion UNTESTED if you did not run it "
+                            "— never guess PASS."
+                        ),
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": (
+                            "Concrete evidence backing the verdict: "
+                            "commands run, exit codes, output seen."
+                        ),
+                    },
+                },
+                "required": ["status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "apply_patch",
             "description": (
                 "Apply a unified-diff patch to files in the "
@@ -2703,6 +2771,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "that should not block the main task."
                         ),
                     },
+                    "model": {
+                        "type": "string",
+                        "enum": ["parent", "cheap"],
+                        "description": (
+                            "Model pin for this run: 'parent' forces the "
+                            "main model even for read-only presets; "
+                            "'cheap' requests the provider's cheap tier. "
+                            "Omit for the default (read-only presets "
+                            "route to the cheap tier automatically)."
+                        ),
+                    },
                     "resume_id": {
                         "type": "string",
                         "description": (
@@ -3013,6 +3092,37 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "watch_job",
+            "description": (
+                "Register a long-running job for background watching: a "
+                "SLURM job id (from sbatch) or a bash_background job id. "
+                "When the job completes or fails, the result appears in a "
+                "future turn's context automatically — so after submitting "
+                "a multi-hour calculation, call watch_job and END your "
+                "turn instead of polling bash_status in a loop."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": ("SLURM job id (numeric) or "
+                                        "bash_background job id."),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": ("Short label, e.g. 'ORCA opt of "
+                                        "emitter S1' (shown in the "
+                                        "completion notice)."),
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
 ]
 
 
@@ -3109,21 +3219,98 @@ _TOOL_KEEP_RECENT = 8               # most recent tool results kept verbatim
 _ELIDED_PREFIX = "[earlier tool output elided to free context"
 
 
-def _resolve_max_tool_rounds() -> int:
-    """Per-turn tool-round budget (``agent.max_tool_rounds``, default 500).
+def _resolve_max_tool_rounds(model: str = "", caps=None) -> int:
+    """Per-turn tool-round budget.
 
-    A value of 0 (or negative) disables the round cap — the per-turn cost
-    circuit-breaker and the consecutive-failure abort then remain the only
-    stops. Reads defensively so a missing/corrupt settings file falls back
-    to the 500 default rather than throwing inside the stream loop.
+    Precedence: an explicit ``agent.max_tool_rounds`` setting wins; without
+    one the per-model profile budget applies (weak models get far fewer
+    rounds than frontier ones, so a degenerate loop dies early instead of
+    burning hundreds of rounds); 500 only as the last-resort fallback when
+    the profile registry is unavailable. A turn that hits the cap with open
+    tasks resumes via auto-continue, so the cap bounds a single turn, not
+    the work. A setting of 0 (or negative) disables the round cap — the
+    per-turn cost circuit-breaker and the consecutive-failure abort then
+    remain the only stops. Reads defensively so a missing/corrupt settings
+    file never throws inside the stream loop.
     """
+    raw = None
     try:
         from delfin import user_settings
-        val = int((user_settings.load_settings().get("agent", {}) or {})
-                  .get("max_tool_rounds", 500))
+        raw = (user_settings.load_settings().get("agent", {}) or {}).get(
+            "max_tool_rounds")
     except Exception:
-        return 500
-    return 100_000 if val <= 0 else val
+        raw = None
+    if raw is not None:
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            val = 500
+        return 100_000 if val <= 0 else val
+    if model:
+        try:
+            from .model_profiles import get_profile
+            val = int(getattr(get_profile(model, caps),
+                              "max_tool_rounds", 0) or 0)
+            if val > 0:
+                return val
+        except Exception:
+            pass
+    return 500
+
+
+def _repair_json_args(raw) -> dict | None:
+    """Deterministic repair for near-JSON tool arguments from weak models.
+
+    Handles fenced blocks, trailing commas, single-quoted objects and
+    Python-literal dicts. Returns a dict on success, None when the text is
+    beyond mechanical repair (the caller then returns a structured error
+    instead of silently dispatching with ``{}``, which would produce a
+    misleading 'X is required' error and an identical broken retry)."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.strip("`").strip()
+        if s.lower().startswith("json"):
+            s = s[4:]
+    if "{" in s and "}" in s:
+        s = s[s.find("{"): s.rfind("}") + 1]
+    candidates = [s, re.sub(r",\s*([}\]])", r"\1", s)]
+    if "'" in s and '"' not in s:
+        candidates.append(s.replace("'", '"'))
+    for cand in candidates:
+        try:
+            val = json.loads(cand)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if isinstance(val, dict):
+            return val
+    try:
+        import ast
+        val = ast.literal_eval(s)
+    except (ValueError, SyntaxError):
+        return None
+    if isinstance(val, dict):
+        return {str(k): v for k, v in val.items()}
+    return None
+
+
+def _resolve_tool_result_cap(model: str = "", caps=None) -> int:
+    """Context-bound tool-result truncation cap in chars, per model.
+
+    Weak models choke on 5 KB tool results; their profile carries a
+    smaller ``tool_result_cap_kb``. Falls back to the legacy 5000 chars
+    when the profile registry is unavailable."""
+    if model:
+        try:
+            from .model_profiles import get_profile
+            kb = int(getattr(get_profile(model, caps),
+                             "tool_result_cap_kb", 0) or 0)
+            if kb > 0:
+                return kb * 1024
+        except Exception:
+            pass
+    return 5000
 
 
 def _resolve_auto_verify() -> tuple[str, str]:
@@ -3176,9 +3363,87 @@ def _detect_test_command(workspace) -> str:
         return ""
 
 
-# Workspaces whose test suite ran too slow to auto-verify per turn — probed
-# once, then skipped (syntax-only) so a slow suite isn't re-run every turn.
+# Workspaces whose FULL test suite ran too slow to auto-verify per turn —
+# probed once, then never re-run whole. Verification does NOT go dark for
+# them: a scoped fallback command (just the tests matching the edited
+# modules, remembered in _SLOW_WS_SCOPED_CMD) keeps running per turn.
+# Previously a timeout here silently disabled verification for the rest of
+# the process — on DELFIN's own repo it turned itself off after the first
+# edit turn and every later turn reported "clean" without checking anything.
 _SLOW_TEST_WS: set = set()
+
+# ws_key -> scoped pytest command used instead of the blacklisted full suite.
+_SLOW_WS_SCOPED_CMD: dict = {}
+
+
+def _test_candidate_paths(resolved: Path, root: Path) -> list[Path]:
+    """Conventional test-file locations for an edited source file, in match
+    order. Shared by the post-edit test hint (_suggest_test_for_edit) and the
+    auto-verify timeout fallback, so both resolve candidates the same way.
+
+        edited        →  test candidate
+        ----------------+------------------------
+        foo/bar.py    →  tests/test_bar.py
+                         tests/foo/test_bar.py
+                         foo/tests/test_bar.py
+                         test_bar.py (next to source)
+    """
+    stem = resolved.stem
+    candidates = [
+        root / "tests" / f"test_{stem}.py",
+        root / "tests" / f"{stem}_test.py",
+        root / "test" / f"test_{stem}.py",
+        resolved.parent / f"test_{stem}.py",
+        resolved.parent / "tests" / f"test_{stem}.py",
+    ]
+    # Mirror the source layout under tests/, e.g.
+    # delfin/agent/api_client.py → tests/agent/test_api_client.py.
+    try:
+        rel = resolved.relative_to(root)
+        if len(rel.parts) > 1:
+            candidates.insert(2, root / "tests" / rel.parent / f"test_{stem}.py")
+    except ValueError:
+        pass
+    return candidates
+
+
+def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
+    """A pytest command covering just the test files that match the edited
+    modules — the fallback when the full suite is too slow to run per turn.
+    Returns "" when no matching test file exists on disk."""
+    import shlex
+    try:
+        root = Path(scope).resolve()
+        files: list[str] = []
+        for p in edited_paths:
+            if not p:
+                continue
+            rp = Path(p)
+            try:
+                rp = rp.resolve()
+            except OSError:
+                pass
+            if rp.suffix != ".py":
+                continue
+            if rp.name.startswith("test_") or rp.name.endswith("_test.py"):
+                cands = [rp]
+            else:
+                cands = _test_candidate_paths(rp, root)
+            for cand in cands:
+                try:
+                    if cand.is_file():
+                        s = str(cand)
+                        if s not in files:
+                            files.append(s)
+                        break
+                except OSError:
+                    continue
+        if not files:
+            return ""
+        return "python -m pytest -x -q " + " ".join(
+            shlex.quote(f) for f in files[:10])
+    except Exception:
+        return ""
 
 
 def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, bool]:
@@ -3234,21 +3499,32 @@ def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
 
 
 def _run_auto_verify(edited_paths: list, mode: str, command: str,
-                     workspace) -> str:
+                     workspace, status: Optional[dict] = None) -> str:
     """Verify code the agent just edited. Returns a short problem summary when
     something is wrong (→ force a fix round), or "" when clean. Never raises —
     verification failing closed would be worse than not verifying.
 
     Modes: ``syntax`` (py_compile only), ``command`` (run ``command``),
     ``smart`` (syntax first; then, if the workspace has a detectable test
-    suite, run it with a timeout — and remember a too-slow suite so it isn't
-    re-run every turn), ``off``.
+    suite, run it with a timeout — a too-slow FULL suite is remembered and
+    replaced by a scoped run of just the edited modules' tests), ``off``.
+
+    ``status`` (optional dict) is filled with how verification actually ran:
+    ``skipped``/``reason``/``command``/``scoped``/``timed_out`` — so the
+    caller can SAY when a turn went unverified instead of returning ""
+    (which reads as "verified clean") in silence.
     """
+    st = status if isinstance(status, dict) else {}
     try:
         if mode == "off":
             return ""
         if mode == "command" and command:
-            prob, _ = _run_test_command(command, workspace, 180)
+            st["command"] = command
+            prob, timed_out = _run_test_command(command, workspace, 180)
+            if timed_out:
+                st["skipped"] = True
+                st["timed_out"] = True
+                st["reason"] = f"`{command}` timed out (180s)"
             return prob
         if mode in ("syntax", "smart"):
             syn = _syntax_check(edited_paths)
@@ -3256,18 +3532,55 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 return syn
             # smart: syntax clean → try the project's tests (bounded + adaptive)
             ws_key = str(workspace)
-            if ws_key in _SLOW_TEST_WS:
-                return ""
             # Scope the run to the package the agent edited, not the whole
             # workspace — otherwise stale/broken tests in a sibling dir falsely
             # fail and flag clean code (bug 2026-06-25).
             scope = _scoped_test_dir(edited_paths, workspace) or Path(workspace)
+            if ws_key in _SLOW_TEST_WS:
+                # The FULL suite already proved too slow. Run the remembered /
+                # derivable SCOPED command instead of silently returning clean
+                # — "no signal" must never masquerade as "verified".
+                scoped = (_SLOW_WS_SCOPED_CMD.get(ws_key)
+                          or _scoped_test_cmd_for_edits(edited_paths, scope))
+                if scoped:
+                    _SLOW_WS_SCOPED_CMD[ws_key] = scoped
+                    st["command"] = scoped
+                    st["scoped"] = True
+                    prob, timed_out = _run_test_command(scoped, scope, 60)
+                    if timed_out:
+                        st["skipped"] = True
+                        st["timed_out"] = True
+                        st["reason"] = "scoped test run timed out (60s)"
+                        return ""
+                    return prob
+                st["skipped"] = True
+                st["reason"] = ("test suite too slow for per-turn runs and "
+                                "no scoped test match for the edited files")
+                return ""
             cmd = command or _detect_test_command(scope)
             if not cmd:
+                st["skipped"] = True
+                st["reason"] = "no test suite detected (syntax check only)"
                 return ""
+            st["command"] = cmd
             prob, timed_out = _run_test_command(cmd, scope, 60)
             if timed_out:
-                _SLOW_TEST_WS.add(ws_key)    # don't re-run a slow suite each turn
+                # Full suite too slow: never re-run it per turn — but before
+                # going dark, retry SCOPED to just the tests matching the
+                # edited modules and remember that command for later turns.
+                _SLOW_TEST_WS.add(ws_key)
+                scoped = _scoped_test_cmd_for_edits(edited_paths, scope)
+                if scoped:
+                    _SLOW_WS_SCOPED_CMD[ws_key] = scoped
+                    st["command"] = scoped
+                    st["scoped"] = True
+                    prob2, timed2 = _run_test_command(scoped, scope, 60)
+                    if not timed2:
+                        return prob2
+                st["skipped"] = True
+                st["timed_out"] = True
+                st["reason"] = ("test suite timed out (60s); full runs "
+                                "disabled for this workspace")
                 return ""
             return prob
     except Exception:
@@ -3295,6 +3608,204 @@ def _record_security_event(kind: str, tool: str, detail: str,
         security_events.record(kind, tool, detail, blocked=blocked)
     except Exception:
         pass
+
+
+# --- Verification mechanics: test-evidence ledger + test-tamper gate --------
+# A test/critic agent's PASS claim is only trusted when the turn actually RAN
+# something: whenever run_tests executes or a bash command invokes pytest/
+# unittest, the parsed outcome (exit code + pass/fail counts) is appended to
+# the client's per-turn evidence ledger, which the engine copies after the
+# turn so gates can check mechanics instead of prose (a fabricated "all
+# green" used to flow straight into cycle memory / the provider profile).
+# The same observation drives the tamper gate: an edit that rewrites a test
+# file which was RED earlier this turn is recorded as a security event and
+# must be justified — a known real incident had a model edit a failing
+# test's expected value to go green, invisible to every check.
+
+# The test runner must be the COMMAND (start of line / after ;&|( ), not a
+# mere argument — otherwise `echo pytest` (exit 0) would count as a green
+# run and clear the tamper gate's red state.
+_TEST_BASH_CMD_RE = re.compile(
+    r"(?:^|[;&|(])\s*(?:python[\d.]*\s+-m\s+(?:pytest|unittest)\b"
+    r"|pytest\b|py\.test\b)"
+)
+
+# pytest console summary ("3 passed, 1 failed, 2 errors in 0.2s") +
+# unittest trailer ("FAILED (failures=2, errors=1)").
+_PYTEST_PASSED_RE = re.compile(r"(\d+)\s+passed\b")
+_PYTEST_FAILED_RE = re.compile(r"(\d+)\s+failed\b")
+_PYTEST_ERROR_RE = re.compile(r"(\d+)\s+errors?\b")
+_UNITTEST_FAIL_RE = re.compile(
+    r"FAILED\s*\((?:failures=(\d+))?(?:,\s*)?(?:errors=(\d+))?\)")
+
+# "FAILED tests/test_x.py::test_y" / "ERROR tests/test_x.py" summary lines.
+_PYTEST_FAILED_LINE_RE = re.compile(
+    r"^(?:FAILED|ERROR)\s+([\w./\\-]+\.py)", re.MULTILINE)
+
+
+def _parse_test_counts(output: str) -> tuple[int, int]:
+    """(passed, failed+errors) parsed from pytest/unittest console output.
+    (0, 0) when nothing matched — combine with the exit code."""
+    text = output or ""
+    passed = failed = errors = 0
+    m = _PYTEST_PASSED_RE.search(text)
+    if m:
+        passed = int(m.group(1))
+    m = _PYTEST_FAILED_RE.search(text)
+    if m:
+        failed = int(m.group(1))
+    m = _PYTEST_ERROR_RE.search(text)
+    if m:
+        errors = int(m.group(1))
+    m = _UNITTEST_FAIL_RE.search(text)
+    if m:
+        failed += int(m.group(1) or 0)
+        errors += int(m.group(2) or 0)
+    return passed, failed + errors
+
+
+def _failing_test_files(text: str) -> set[str]:
+    """Test FILE paths parsed from failure summary lines
+    ('FAILED tests/test_x.py::test_y')."""
+    return {m.group(1) for m in _PYTEST_FAILED_LINE_RE.finditer(text or "")}
+
+
+def _paths_from_diff(diff: str) -> list[str]:
+    """File paths a unified diff touches (from its '+++ b/…' headers)."""
+    out: list[str] = []
+    for m in re.finditer(r"^\+\+\+\s+(?:b/)?(\S+)", diff or "", re.MULTILINE):
+        p = m.group(1)
+        if p and p != "/dev/null" and p not in out:
+            out.append(p)
+    return out
+
+
+def _same_test_file(a: str, b: str) -> bool:
+    """Whether two path spellings (absolute vs workspace-relative) plausibly
+    name the same file."""
+    an = a.replace("\\", "/").lstrip("./")
+    bn = b.replace("\\", "/").lstrip("./")
+    if not an or not bn:
+        return False
+    return an == bn or an.endswith("/" + bn) or bn.endswith("/" + an)
+
+
+def _looks_like_test_file(path: str) -> bool:
+    base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return ((base.startswith("test_") and base.endswith(".py"))
+            or base.endswith("_test.py"))
+
+
+def _clear_green_targets(red_files: set, ran: str) -> None:
+    """A green run clears red state — fully for a broad run, per-file for a
+    targeted one (a green single-file run must not clear OTHER red files)."""
+    mentioned = re.findall(r"([\w./\\-]+\.py)", ran or "")
+    if not mentioned:
+        red_files.clear()
+        return
+    for m in mentioned:
+        for r in list(red_files):
+            if _same_test_file(m, r):
+                red_files.discard(r)
+
+
+def _observe_test_evidence(
+    evidence: list, red_files: set,
+    fn_name: str, fn_args: Any, result: str,
+) -> str:
+    """Update the per-turn evidence ledger + red-test-file set from one tool
+    result. Returns a tamper-gate note to PREPEND to the result when the call
+    edited a test file that was failing earlier this turn ('' otherwise).
+    Pure over its two mutable args — testable without a client."""
+    is_err = str(result or "").lstrip().startswith('{"error"')
+    args = fn_args if isinstance(fn_args, dict) else {}
+
+    if fn_name == "run_tests" and not is_err:
+        try:
+            data = json.loads(result)
+        except (TypeError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        summary = data.get("summary") or {}
+        failed = (int(summary.get("failed", 0) or 0)
+                  + int(summary.get("errors", 0) or 0))
+        run_status = str(data.get("status", "") or "")
+        exit_code = data.get("exit_code")
+        target = str(args.get("target", "") or "")
+        evidence.append({
+            "tool": "run_tests", "command": target, "exit_code": exit_code,
+            "status": run_status, "passed": int(summary.get("passed", 0) or 0),
+            "failed": failed, "ts": time.time(),
+        })
+        if failed or run_status in ("failed", "error"):
+            for f in data.get("failures") or []:
+                node = str(f.get("node_id", "") or "")
+                if "::" in node:
+                    red_files.add(node.split("::", 1)[0])
+        elif run_status == "ok" and exit_code in (0, None):
+            _clear_green_targets(red_files, target)
+        return ""
+
+    if fn_name == "bash":
+        cmd = str(args.get("command", "") or "")
+        if cmd and _TEST_BASH_CMD_RE.search(cmd):
+            exit_code = None
+            out_text = str(result or "")
+            try:
+                data = json.loads(result)
+                if isinstance(data, dict) and "exit_code" in data:
+                    exit_code = data.get("exit_code")
+                    out_text = (str(data.get("stdout", "")) + "\n"
+                                + str(data.get("stderr", "")))
+            except (TypeError, ValueError):
+                pass
+            passed, failed = _parse_test_counts(out_text)
+            if failed == 0 and isinstance(exit_code, int) and exit_code != 0:
+                failed = 1     # non-zero exit beats a missing summary line
+            evidence.append({
+                "tool": "bash", "command": cmd[:300], "exit_code": exit_code,
+                "status": ("failed" if failed
+                           else ("ok" if exit_code == 0 else "unknown")),
+                "passed": passed, "failed": failed, "ts": time.time(),
+            })
+            if failed:
+                red_files.update(_failing_test_files(out_text))
+            elif exit_code == 0 and passed > 0:
+                # Only a run that demonstrably executed tests ("N passed")
+                # clears red state — a bare exit-0 (--version, -h) must not.
+                _clear_green_targets(red_files, cmd)
+        return ""
+
+    if (fn_name in ("edit_file", "write_file", "multi_edit", "apply_patch")
+            and not is_err and red_files):
+        targets: list[str] = []
+        p = args.get("path")
+        if p:
+            targets.append(str(p))
+        if fn_name == "apply_patch":
+            targets.extend(_paths_from_diff(str(args.get("diff", "") or "")))
+        hits = [
+            t for t in targets
+            if any(_same_test_file(t, r) for r in red_files)
+            or _looks_like_test_file(t)
+        ]
+        if hits:
+            _record_security_event(
+                "test_tamper", fn_name,
+                "test-expectation edit after red run: " + ", ".join(hits[:3]),
+                blocked=False,
+            )
+            return (
+                "⚠ TEST-TAMPER GATE: this edit touches a test file while "
+                "tests were RED earlier this turn ("
+                + ", ".join(hits[:3]) +
+                "). Rewriting a failing test's expectations to go green is "
+                "only legitimate when the TEST itself was wrong — your "
+                "final answer MUST state explicitly why the test (not the "
+                "code) was wrong. This edit has been recorded."
+            )
+    return ""
 
 
 def _tool_context_char_budget(caps) -> int:
@@ -3680,7 +4191,8 @@ class _DocToolExecutor:
 
         # Record failure for retrospective learning — agents that hit the
         # same (tool, command-shape, error-shape) >=3 times in 1 h get a
-        # heads-up via the failure log so they can change approach.
+        # heads-up appended to the error so they change approach (the
+        # detector existed but was never consumed until now).
         try:
             if (result or "").lstrip().startswith('{"error"'):
                 from . import failure_log as _fl
@@ -3695,6 +4207,24 @@ class _DocToolExecutor:
                     error=str(result)[:300],
                     session_id=getattr(permissions, "task_session_id", "") or "",
                 )
+                repeats = _fl.detect_repeat_for_current_task(
+                    name, str(cmd_repr)[:300], str(result)[:300])
+                if repeats >= 3:
+                    # Static text (no varying count) embedded as a JSON field
+                    # so error payloads stay machine-parseable; plain-text
+                    # results get a suffix. The consecutive-error detector
+                    # strips both forms before comparing signatures.
+                    _note = (
+                        "This exact (tool, target, error) has failed "
+                        "repeatedly within the last hour — repeating it "
+                        "will fail again. Change approach: different "
+                        "tool/arguments, or ask the user.")
+                    try:
+                        _obj = json.loads(result)
+                        _obj["heads_up"] = _note
+                        result = json.dumps(_obj)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        result = result.rstrip() + f"\n[heads-up] {_note}"
         except Exception:
             pass
 
@@ -3781,6 +4311,32 @@ class _DocToolExecutor:
             if name == "bash_kill":
                 return self._execute_bash_kill(arguments)
 
+        if name == "watch_job":
+            # Register a long-running job (SLURM id or bash job id) for the
+            # LLM-free watcher; completion is injected into a later turn's
+            # context, so no blocking status polls are needed.
+            job_id = str(arguments.get("job_id", "") or "").strip()
+            if not job_id:
+                return json.dumps({"error": "job_id is required"})
+            ws = getattr(permissions, "workspace", None) if permissions else None
+            if not ws:
+                return json.dumps({"error": (
+                    "watch_job requires permissions to be configured.")})
+            try:
+                from .job_monitor import register_agent_job
+                entry = register_agent_job(
+                    ws, job_id,
+                    str(arguments.get("description", "") or "")[:200])
+            except Exception as exc:
+                return json.dumps({"error": f"could not watch job: {exc}"})
+            return json.dumps({
+                "status": "watching", "job_id": job_id,
+                "kind": entry.get("kind", ""),
+                "note": ("You will be notified in a future turn's context "
+                         "when this job completes — end your turn instead "
+                         "of polling."),
+            })
+
         # Notebook tools — file-level operations, sandbox + Self-Mod-Guard
         # apply for the write side via the same gate as edit_file.
         if name in ("notebook_read", "notebook_edit"):
@@ -3853,6 +4409,11 @@ class _DocToolExecutor:
             return self._execute_apply_patch(arguments, permissions)
         if name in ("find_definition", "find_references"):
             return self._execute_code_nav(name, arguments, permissions)
+
+        # Structured verdict: pure data for the pipeline gates — no side
+        # effects here; the client stores the parsed dict per turn.
+        if name == "report_verdict":
+            return self._execute_report_verdict(arguments)
 
         # Planning tools — metadata operations on the workspace's task store
         # (the JSON file lives under the workspace, sandboxed by definition).
@@ -3973,7 +4534,22 @@ class _DocToolExecutor:
                 })
             return json.dumps(sections, indent=2, ensure_ascii=False)
 
-        return json.dumps({"error": f"Unknown tool: {name}"})
+        # Weak models hallucinate tool names ("read_fle", "run_bash");
+        # a near-miss suggestion converts the dead round into a recovery.
+        hint = ""
+        try:
+            import difflib
+            known = sorted({
+                t.get("function", {}).get("name", "")
+                for t in _DOC_TOOLS_OPENAI
+                if t.get("function", {}).get("name")
+            })
+            close = difflib.get_close_matches(name, known, n=3, cutoff=0.5)
+            if close:
+                hint = f" Did you mean: {', '.join(close)}?"
+        except Exception:
+            hint = ""
+        return json.dumps({"error": f"Unknown tool: {name}.{hint}"})
 
     def _execute_calc(self, name: str, arguments: dict) -> str:
         """Execute a calc search tool."""
@@ -4728,6 +5304,22 @@ class _DocToolExecutor:
                     return f"confirm_callback raised: {exc}"
                 if ok:
                     return None
+                # Timeout is ABSENCE, not refusal — the two need different
+                # guidance (a "user denied, never retry" after every
+                # unattended 300s window poisoned whole sessions).
+                _timed_out = bool(getattr(
+                    getattr(perms.confirm_callback, "__self__", None),
+                    "last_timed_out", False))
+                if _timed_out:
+                    _record_security_event("approval_timeout", "bash", cmd[:80])
+                    return (
+                        f"approval request for '{cmd[:120]}' TIMED OUT — the "
+                        "user is away, this is NOT a denial. Do not retry the "
+                        "command now (each attempt blocks for the approval "
+                        "window). Continue with read-only work, or use "
+                        "ask_user_question / end your turn so the user can "
+                        "respond when back."
+                    )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
@@ -5193,25 +5785,13 @@ class _DocToolExecutor:
             root = None
         if root is None:
             return ""
-        stem = resolved.stem
-        # Subpath of the edited file relative to its workspace root, used
-        # to locate sibling tests/ dirs and mirrored test trees.
+        # Convention-based candidates, shared with auto-verify's scoped
+        # timeout fallback so both features resolve tests identically.
         try:
-            rel = resolved.relative_to(root)
-        except Exception:
+            resolved.relative_to(root)
+        except ValueError:
             return ""
-        candidates = [
-            root / "tests" / f"test_{stem}.py",
-            root / "tests" / f"{stem}_test.py",
-            root / "test" / f"test_{stem}.py",
-            resolved.parent / f"test_{stem}.py",
-            resolved.parent / "tests" / f"test_{stem}.py",
-        ]
-        # Mirror the source layout under tests/, e.g.
-        # delfin/agent/api_client.py → tests/agent/test_api_client.py.
-        if len(rel.parts) > 1:
-            mirror = root / "tests" / rel.parent / f"test_{stem}.py"
-            candidates.insert(2, mirror)
+        candidates = _test_candidate_paths(resolved, root)
 
         for cand in candidates:
             try:
@@ -5872,6 +6452,43 @@ class _DocToolExecutor:
 
     # ------- Phase 6: tests / patch / code nav ----------------------------
 
+    def _execute_report_verdict(self, arguments: dict) -> str:
+        """Echo a structured review/test verdict back as JSON.
+
+        The tool exists so the pipeline gate reads a MACHINE verdict instead
+        of regex-parsing prose (where '**status:** reject — see findings'
+        used to extract as '' and auto-continue). Validation is strict on
+        ``status`` but lenient on the rest — a weak model's sloppy criteria
+        must not void its (valid) verdict.
+        """
+        status = str(arguments.get("status", "") or "").strip().lower()
+        aliases = {"approved": "approve", "rejected": "reject"}
+        status = aliases.get(status, status)
+        if status not in ("approve", "approve_with_risks", "reject"):
+            return json.dumps({"error": (
+                f"invalid status {status!r}: must be one of "
+                "approve | approve_with_risks | reject"
+            )})
+        criteria_in = arguments.get("criteria")
+        criteria: list[dict] = []
+        if isinstance(criteria_in, list):
+            for item in criteria_in:
+                if not isinstance(item, dict):
+                    continue
+                state = str(item.get("state", "") or "").strip().upper()
+                if state not in ("PASS", "FAIL", "UNTESTED"):
+                    state = "UNTESTED"
+                criteria.append({
+                    "name": str(item.get("name", "") or "")[:200],
+                    "state": state,
+                })
+        return json.dumps({
+            "status": status,
+            "criteria": criteria,
+            "evidence": str(arguments.get("evidence", "") or "")[:2000],
+            "recorded": True,
+        }, ensure_ascii=False)
+
     def _execute_run_tests(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -6238,6 +6855,11 @@ class _DocToolExecutor:
         # Only pass resume_from when set — externally attached runners
         # (tests, custom embeddings) may predate the parameter.
         _resume_kw = {"resume_from": resume_id} if resume_id else {}
+        # Optional model pin ("parent"|"cheap") — passed through to the
+        # cheap-tier routing in run_subagent; absent = setting-driven.
+        _model_pin = (arguments.get("model") or "").strip()
+        if _model_pin:
+            _resume_kw["model"] = _model_pin
         # Background mode: spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
@@ -6357,6 +6979,25 @@ class _DocToolExecutor:
 
     _VALID_POST_PLAN_MODES = ("default", "acceptEdits", "bypassPermissions")
 
+    _PLAN_STEP_RE = re.compile(r"^\s{0,3}(?:\d+[.)]\s+|[-*]\s+\[ \]\s+)(.+)$")
+
+    @classmethod
+    def _plan_steps(cls, plan: str, cap: int = 12) -> list[str]:
+        """Actionable step lines from an approved plan: top-level numbered
+        items and unchecked checkboxes. Weak models re-derive steps from
+        prose badly — scaffolding the task list from the plan removes that
+        failure point."""
+        steps: list[str] = []
+        for line in (plan or "").splitlines():
+            m = cls._PLAN_STEP_RE.match(line)
+            if m:
+                s = m.group(1).strip().rstrip(".")
+                if len(s) >= 8:
+                    steps.append(s[:140])
+            if len(steps) >= cap:
+                break
+        return steps
+
     def _execute_exit_plan_mode(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -6436,6 +7077,27 @@ class _DocToolExecutor:
         if approved:
             perms.mode = new_mode
             perms.last_approved_plan = plan
+            # Bridge the approved plan into durable state: persist it to the
+            # plans store on EVERY approval path (previously dashboard-only —
+            # a headless-approved plan survived nowhere and died at the next
+            # compaction), and scaffold the task list from its steps so
+            # execution is tracked instead of re-derived from prose.
+            try:
+                from .memory_store import save_plan
+                save_plan(plan, repo_root=perms.workspace)
+            except Exception:
+                pass
+            _scaffolded = 0
+            try:
+                _steps = self._plan_steps(plan)
+                if len(_steps) >= 2:
+                    _store = self._task_store(perms)
+                    _sid = getattr(perms, "task_session_id", "") or ""
+                    for _s in _steps:
+                        _store.create(_s, "", "", session_id=_sid)
+                        _scaffolded += 1
+            except Exception:
+                _scaffolded = 0
             # Re-state the approved plan as the authoritative, MOST-RECENT
             # instruction so execution anchors on it — not on stale context.
             # Bug 2026-06-25: in a session whose context still held an earlier
@@ -6445,16 +7107,23 @@ class _DocToolExecutor:
             # context. A recency-anchored "execute exactly THIS plan, ignore
             # any earlier different task" curbs that drift.
             _anchor = plan if len(plan) <= 8000 else plan[:8000] + " …[truncated]"
+            _task_note = (
+                f" The plan's {_scaffolded} steps are ALREADY in your task "
+                "list — work through them in order and mark each completed; "
+                "do NOT create duplicate tasks."
+            ) if _scaffolded else ""
             return json.dumps({
                 "status": "approved",
                 "new_mode": new_mode,
                 "plan_chars": len(plan),
+                "tasks_created": _scaffolded,
                 "instruction": (
                     "Plan APPROVED — execute EXACTLY this approved plan and "
                     "nothing else. If anything EARLIER in the conversation "
                     "describes a DIFFERENT task or project (a different app, "
                     "different file names), IGNORE it: this approved plan is "
-                    "the single source of truth for what to build now.\n\n"
+                    "the single source of truth for what to build now."
+                    + _task_note + "\n\n"
                     + _anchor
                 ),
             })
@@ -6528,10 +7197,21 @@ class _DocToolExecutor:
             )})
         if not multi_select and len(answers) > 1:
             answers = answers[:1]
-        return json.dumps({
+        payload: dict[str, Any] = {
             "answers": answers,
             "multiSelect": multi_select,
-        })
+        }
+        # Surface the UI's timeout flag: empty answers because the user is
+        # AWAY must not read like the user actively chose nothing (weak
+        # models re-ask the identical question in a loop otherwise).
+        if result.get("timed_out"):
+            payload["timed_out"] = True
+            payload["note"] = (
+                "The question timed out with no user present — the empty "
+                "answer list is NOT a choice. Do not re-ask now; proceed "
+                "with a sensible default or end your turn and wait."
+            )
+        return json.dumps(payload)
 
     # ------- Planning tools (TaskCreate / Update / List) ------------------
 
@@ -7161,6 +7841,7 @@ class OpenAIClient(_BaseClient):
         def _runner(
             *, subagent_type: str, description: str, prompt: str,
             isolation: str = "", resume_from: str = "", sa_id: str = "",
+            model: str = "",
         ) -> dict:
             res = _sa.run_subagent(
                 subagent_type=subagent_type,
@@ -7171,6 +7852,7 @@ class OpenAIClient(_BaseClient):
                 isolation=isolation,
                 resume_from=resume_from,
                 sa_id=sa_id,
+                model=model,
             )
             return res.to_payload()
 
@@ -7295,6 +7977,7 @@ class OpenAIClient(_BaseClient):
                               "push_notification",
                               "remote_trigger",
                               "run_tests",
+                              "watch_job",
                               "apply_patch",
                               "find_definition",
                               "find_references",
@@ -7510,6 +8193,15 @@ class OpenAIClient(_BaseClient):
         # check them before the model is allowed to finish.
         _edited_py: dict = {}
         _verify_attempts = 0
+        _last_verify_problem = ""   # last red auto-verify summary this turn
+        _verify_gave_up_notified = False
+        # Per-turn verification mechanics, read by the engine after the turn:
+        # the structured verdict from the report_verdict tool, the
+        # test-evidence ledger (every real test execution this turn), and the
+        # red-test-file set that drives the test-tamper gate.
+        self._last_structured_verdict = None
+        self._test_evidence: list[dict] = []
+        self._red_test_files: set[str] = set()
         _stream_attempt = 0    # transient-API-error retries (reset per response)
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
@@ -7522,7 +8214,9 @@ class OpenAIClient(_BaseClient):
         # below remain the real safety nets. 0 → uncapped. If a turn still
         # exhausts the budget, the message_delta below surfaces
         # "max_tool_rounds" and the user can resume with a "continue".
-        _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds()
+        _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds(self.model, _caps)
+        # Context-bound tool-result cap, per model (weak models get less).
+        _tool_result_cap = _resolve_tool_result_cap(self.model, _caps)
         # Per-turn OUTPUT-token backstop, independent of _MAX_TOOL_ROUNDS: a
         # loop that keeps emitting (successful or varied-error calls that dodge
         # the round / consecutive-fail limits) could otherwise run up unbounded
@@ -7549,6 +8243,12 @@ class OpenAIClient(_BaseClient):
         # successful calls (e.g. polling bash_status) don't trip it.
         _CONSECUTIVE_FAIL_LIMIT = 3
         _last_error_signature: str | None = None
+        # Window of recent all-error round signatures (catches A/B/A/B
+        # alternation) + identical-successful-round tracking (no-progress
+        # loops that the error-based detector cannot see).
+        _recent_error_signatures: list[str] = []
+        _last_round_signature: str = ""
+        _identical_round_count = 0
         _consecutive_failure_count = 0
         # Thrash detector state (cleanup loops, same-file rewrites) — soft
         # nudges the model to change approach when it's spinning. Per turn.
@@ -7643,6 +8343,10 @@ class OpenAIClient(_BaseClient):
             # Accumulate streamed tool calls (may arrive in chunks)
             _tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments_parts}
             _text_chunks: list[str] = []
+            # This round's own prompt-token count (one round = one request).
+            # Emitted as message_start below so the engine's compaction floor
+            # and input accounting run on provider truth, not chars//4.
+            _round_in = 0
 
             finish_reason = None
             try:
@@ -7651,6 +8355,7 @@ class OpenAIClient(_BaseClient):
                     for chunk in stream:
                         if chunk.usage:
                             _total_in += chunk.usage.prompt_tokens or 0
+                            _round_in += chunk.usage.prompt_tokens or 0
                             _total_out += chunk.usage.completion_tokens or 0
                             _total_cached += _cached_tokens_of(chunk.usage)
 
@@ -7698,22 +8403,32 @@ class OpenAIClient(_BaseClient):
                     stream.close()
             except Exception as _stream_exc:
                 if not _is_stream_unsupported_error(_stream_exc):
-                    # Not a stream-format issue. If it's a transient shared-proxy
-                    # hiccup (timeout / 5xx / rate-limit) and nothing was emitted
-                    # this round yet, back off and retry the round — the request
-                    # state is identical, so there's no risk of duplicated
-                    # output. Anything else (bad request, auth, mid-stream after
-                    # partial output) re-raises as before.
+                    # Not a stream-format issue. A transient shared-proxy
+                    # hiccup (timeout / 5xx / rate-limit) retries the round —
+                    # ALSO after partial output: the round's api_messages are
+                    # only appended once it completes, so the request state is
+                    # identical on retry. Any partial text this round was
+                    # already shown to the user; a visible marker separates it
+                    # from the regenerated answer, and the partial round state
+                    # is discarded so nothing duplicates into the context.
+                    # Killing the generator here instead would discard EVERY
+                    # completed round's progress mid-turn.
                     if (_is_transient_api_error(_stream_exc)
-                            and not _text_chunks and not _tool_calls
                             and _stream_attempt < _STREAM_RETRY_MAX):
+                        _had_partial = bool(_text_chunks or _tool_calls)
+                        _text_chunks = []
+                        _tool_calls = {}
+                        _round_in = 0
+                        finish_reason = None
                         _stream_attempt += 1
                         _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
+                        _note = (" — connection lost mid-answer, the reply "
+                                 "restarts below" if _had_partial else "")
                         yield StreamEvent(type="text_delta", text=(
                             f"\n⏳ Transient API error "
                             f"({type(_stream_exc).__name__}); retrying "
                             f"{_stream_attempt}/{_STREAM_RETRY_MAX} in "
-                            f"{_delay:.0f}s…\n"))
+                            f"{_delay:.0f}s{_note}…\n"))
                         time.sleep(_delay)
                         continue
                     # Context-window overflow is deterministic — retrying the
@@ -7742,6 +8457,7 @@ class OpenAIClient(_BaseClient):
                 resp = self.client.chat.completions.create(**nk)
                 if getattr(resp, "usage", None):
                     _total_in += resp.usage.prompt_tokens or 0
+                    _round_in += resp.usage.prompt_tokens or 0
                     _total_out += resp.usage.completion_tokens or 0
                     _total_cached += _cached_tokens_of(resp.usage)
                 if getattr(resp, "choices", None):
@@ -7766,6 +8482,15 @@ class OpenAIClient(_BaseClient):
             # budget so a later hiccup in this same (possibly long) turn gets a
             # fresh set of retries rather than inheriting an exhausted count.
             _stream_attempt = 0
+
+            # Authoritative per-round input count -> message_start, so the
+            # engine's compaction floor and token accounting run on the
+            # provider's own number (it includes the system prompt and the
+            # advertised tool schemas that a chars//4 estimate misses).
+            # cached_tokens stays on the final message_delta only, to avoid
+            # double counting.
+            if _round_in:
+                yield StreamEvent(type="message_start", input_tokens=_round_in)
 
             # Harmony tool-channel recovery: gpt-5.x via the OpenAI-compatible
             # endpoint sometimes leaks its tool calls ("to=<tool> {json}") into
@@ -7857,13 +8582,23 @@ class OpenAIClient(_BaseClient):
                     # arguments.get(...), so anything but a dict must become {}
                     # here or it raises AttributeError and crashes the whole turn.
                     _raw_args = tc["function"]["arguments"]
+                    _args_parse_error = ""
                     if isinstance(_raw_args, dict):
                         fn_args = _raw_args
                     else:
                         try:
                             fn_args = json.loads(_raw_args or "{}")
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            fn_args = {}
+                        except (json.JSONDecodeError, TypeError, ValueError) as _je:
+                            # Weak models emit near-JSON (trailing commas,
+                            # single quotes, fences). Repair deterministically;
+                            # only if that fails report the REAL problem
+                            # instead of dispatching {} and letting a
+                            # misleading "'X' is required" error send the
+                            # model into an identical broken retry.
+                            fn_args = _repair_json_args(_raw_args)
+                            if fn_args is None:
+                                fn_args = {}
+                                _args_parse_error = str(_je)[:200]
                     if not isinstance(fn_args, dict):
                         fn_args = {}
 
@@ -7884,6 +8619,29 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name="<malformed>",
+                            tool_output=result[:2000],
+                        )
+                        api_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        })
+                        _round_results.append(result)
+                        continue
+
+                    # Unrepairable argument JSON: report the parse problem
+                    # itself rather than dispatching {} (which yields a
+                    # misleading downstream error naming a missing field).
+                    if _args_parse_error:
+                        result = json.dumps({"error": (
+                            f"invalid JSON in arguments for '{fn_name}': "
+                            f"{_args_parse_error}. Re-emit the call as ONE "
+                            "JSON object with double-quoted keys/strings and "
+                            "no trailing commas."
+                        )})
+                        yield StreamEvent(
+                            type="tool_result",
+                            tool_name=fn_name,
                             tool_output=result[:2000],
                         )
                         api_messages.append({
@@ -7926,6 +8684,7 @@ class OpenAIClient(_BaseClient):
                                             "push_notification",
                                             "remote_trigger",
                                             "run_tests",
+                                            "watch_job",
                                             "apply_patch",
                                             "find_definition",
                                             "find_references",
@@ -8041,6 +8800,28 @@ class OpenAIClient(_BaseClient):
                                 "error": f"tool '{fn_name}' failed: {exc}"
                             })
 
+                    # Verification mechanics: capture the structured verdict,
+                    # feed the test-evidence ledger, and run the test-tamper
+                    # gate (which may prepend a justification requirement to
+                    # an edit that rewrote a red test). Best-effort — must
+                    # never break the tool loop. _raw_result stays unprefixed
+                    # so later JSON parsing of the result still works.
+                    _raw_result = result
+                    try:
+                        if (fn_name == "report_verdict"
+                                and not str(result).lstrip().startswith(
+                                    '{"error"')):
+                            _sv = json.loads(result)
+                            if isinstance(_sv, dict):
+                                self._last_structured_verdict = _sv
+                        _tamper_note = _observe_test_evidence(
+                            self._test_evidence, self._red_test_files,
+                            fn_name, fn_args, result)
+                        if _tamper_note:
+                            result = _tamper_note + "\n\n" + result
+                    except Exception:
+                        pass
+
                     # Emit tool_result event for UI display
                     yield StreamEvent(
                         type="tool_result",
@@ -8056,7 +8837,7 @@ class OpenAIClient(_BaseClient):
                     # marker so tracebacks survive. JSON-error blobs and
                     # short results pass through untouched.
                     context_result = _smart_truncate(
-                        result, cap=5000, label="tool_result"
+                        result, cap=_tool_result_cap, label="tool_result"
                     )
                     # Thrash detector: prepend a one-time progress nudge when a
                     # low-progress loop (repeated cleanup, same-file rewrites) is
@@ -8087,6 +8868,29 @@ class OpenAIClient(_BaseClient):
                                 _abs = (str(_ep) if os.path.isabs(str(_ep))
                                         else os.path.join(_ws, str(_ep)))
                                 _edited_py[_abs] = True
+                            except Exception:
+                                pass
+
+                    # apply_patch edits carry no "path" argument — harvest
+                    # the .py files its diff touches so the verify gate sees
+                    # them too (bulk-patch turns used to end unverified).
+                    if (_av_mode != "off" and fn_name == "apply_patch"
+                            and isinstance(fn_args, dict)
+                            and not fn_args.get("check_only")):
+                        try:
+                            _pr = json.loads(_raw_result)
+                        except (TypeError, ValueError):
+                            _pr = {}
+                        if isinstance(_pr, dict) and _pr.get("status") == "ok":
+                            try:
+                                _ws = str(getattr(self._permissions,
+                                                  "workspace", ".") or ".")
+                                for _pp in _paths_from_diff(
+                                        str(fn_args.get("diff", "") or "")):
+                                    if _pp.endswith(".py"):
+                                        _abs = (_pp if os.path.isabs(_pp)
+                                                else os.path.join(_ws, _pp))
+                                        _edited_py[_abs] = True
                             except Exception:
                                 pass
 
@@ -8163,12 +8967,24 @@ class OpenAIClient(_BaseClient):
                 def _is_error_result(s: str) -> bool:
                     return s.lstrip().startswith('{"error"')
                 if _round_results and all(_is_error_result(r) for r in _round_results):
-                    signature = "|".join(_round_results)
-                    if signature == _last_error_signature:
+                    # Signature over the RAW error (heads-up stripped in
+                    # both its JSON-field and text-suffix forms): the advice
+                    # must not mask an identical-error loop.
+                    signature = "|".join(
+                        re.sub(r', "heads_up": "[^"]*"', "",
+                               r.split("\n[heads-up]")[0])
+                        for r in _round_results)
+                    # A model alternating between TWO error shapes (A,B,A,B…)
+                    # previously reset the counter every round and looped to
+                    # the round cap — track a small recent-signature window
+                    # instead of only the immediately previous round.
+                    if signature in _recent_error_signatures:
                         _consecutive_failure_count += 1
                     else:
                         _consecutive_failure_count = 1
-                        _last_error_signature = signature
+                    _recent_error_signatures.append(signature)
+                    del _recent_error_signatures[:-2]
+                    _last_error_signature = signature
                     if _consecutive_failure_count >= _CONSECUTIVE_FAIL_LIMIT:
                         yield StreamEvent(
                             type="text_delta",
@@ -8198,6 +9014,47 @@ class OpenAIClient(_BaseClient):
                     # errors mixed with success.
                     _last_error_signature = None
                     _consecutive_failure_count = 0
+                    del _recent_error_signatures[:]
+
+                # No-net-progress check: the SAME tool calls (names + args)
+                # repeated round after round — successfully — is the other
+                # degenerate loop shape (identical reads return identical
+                # data; nothing new can come of round 4). Steer once, then
+                # abort cleanly instead of bleeding to the round cap.
+                try:
+                    _round_sig = "|".join(sorted(
+                        f"{tc['function']['name']}:{tc['function']['arguments']}"
+                        for tc in tc_list))
+                except Exception:
+                    _round_sig = ""
+                if _round_sig and _round_sig == _last_round_signature:
+                    _identical_round_count += 1
+                else:
+                    _identical_round_count = 1
+                    _last_round_signature = _round_sig
+                if _identical_round_count == 3:
+                    api_messages.append({"role": "user", "content": (
+                        "[system] You have issued the IDENTICAL tool call(s) "
+                        "3 rounds in a row. Repeating them again returns the "
+                        "same data. Use what you already have: change "
+                        "approach, call a different tool, or finish with "
+                        "your answer now."
+                    )})
+                elif _identical_round_count >= 5:
+                    yield StreamEvent(type="text_delta", text=(
+                        "\n\n⚠ Aborting tool loop: the identical tool "
+                        "call(s) were repeated 5 rounds in a row without "
+                        "new information. Send 'continue' to resume.\n"))
+                    cost = self._estimate_cost(_total_in, _total_out)
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in,
+                        output_tokens=_total_out,
+                        cost_usd=cost,
+                        cached_tokens=_total_cached,
+                        stop_reason="no_progress_loop",
+                    )
+                    return
 
                 # Loop back to get the model's next response
                 continue
@@ -8211,9 +9068,39 @@ class OpenAIClient(_BaseClient):
             # off. Bounded so a genuinely unfixable failure can't loop forever.
             if (_edited_py and _av_mode != "off" and _verify_attempts < 2):
                 _verify_attempts += 1
+                _av_status: dict = {}
                 _problems = _run_auto_verify(
                     list(_edited_py), _av_mode, _av_cmd,
-                    getattr(self._permissions, "workspace", "."))
+                    getattr(self._permissions, "workspace", "."),
+                    status=_av_status)
+                _last_verify_problem = _problems
+                # Evidence ledger: auto-verify runs AND skips are recorded —
+                # a skipped verification must never read as a green one.
+                try:
+                    self._test_evidence.append({
+                        "tool": "auto_verify",
+                        "command": str(_av_status.get("command", "") or ""),
+                        "exit_code": None,
+                        "status": ("skipped" if _av_status.get("skipped")
+                                   else ("failed" if _problems else "ok")),
+                        "passed": (0 if (_problems
+                                         or _av_status.get("skipped")) else 1),
+                        "failed": 1 if _problems else 0,
+                        "ts": time.time(),
+                    })
+                    if _problems:
+                        self._red_test_files.update(
+                            _failing_test_files(_problems))
+                except Exception:
+                    pass
+                if _av_status.get("skipped"):
+                    # Visible one-liner: silence here used to make an
+                    # UNVERIFIED turn look verified-clean (slow-suite
+                    # workspaces switched verification off after turn 1).
+                    yield StreamEvent(type="text_delta", text=(
+                        "\n\n⚠️ Auto-verify skipped: "
+                        f"{_av_status.get('reason', 'no verification ran')}"
+                        " — this turn's edits are NOT machine-verified.\n"))
                 if _problems:
                     _record_security_event(
                         "auto_verify", "verify", _problems[:80], blocked=False)
@@ -8229,6 +9116,30 @@ class OpenAIClient(_BaseClient):
                             f"{_problems}"),
                     })
                     continue        # force a fix round instead of ending
+            elif (_edited_py and _av_mode != "off"
+                    and _verify_attempts >= 2 and _last_verify_problem
+                    and not _verify_gave_up_notified):
+                # Fix-round budget exhausted while the last check was RED.
+                # Say so visibly and put it on the ledger — the old code
+                # finished silently, letting an unverified result read as
+                # success.
+                _verify_gave_up_notified = True
+                yield StreamEvent(type="text_delta", text=(
+                    "\n\n⚠️ Auto-verify gave up after "
+                    f"{_verify_attempts} fix rounds — the last check was "
+                    "still RED and the final state was NOT re-verified:\n"
+                    + _last_verify_problem[:400] + "\n"))
+                try:
+                    self._test_evidence.append({
+                        "tool": "auto_verify", "command": "",
+                        "exit_code": None, "status": "gave_up",
+                        "passed": 0, "failed": 1, "ts": time.time(),
+                    })
+                except Exception:
+                    pass
+                _record_security_event(
+                    "auto_verify_exhausted", "verify",
+                    _last_verify_problem[:80], blocked=False)
 
             # Mid-loop steering at turn end: the model gave a final answer (no
             # tool calls), but if the user steered while it ran, respond to that
@@ -8352,7 +9263,7 @@ class CodexCLIClient(_BaseClient):
     # Reuse OpenAI pricing table.
     _PRICING = OpenAIClient._PRICING
 
-    # Map Claude CLI permission names → Codex CLI flags
+    # Map permission-mode names → Codex CLI flags
     _PERM_TO_CODEX_FLAGS: dict[str, list[str]] = {
         "plan":                ["--sandbox", "read-only"],
         "default":             ["--sandbox", "workspace-write"],

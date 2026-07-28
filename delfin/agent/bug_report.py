@@ -162,9 +162,60 @@ def recent_outcomes(limit: int = 10) -> list:
         return []
 
 
-def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
+def _resolve_referenced(
+    original: str, workspace: Path | None = None
+) -> tuple[Path | None, str]:
+    """Resolve one referenced-file entry against its possible bases.
+
+    The dashboard collects RAW tool-input path strings, which are usually
+    *workspace-relative* (``tetris.py``) — resolving them against the
+    report-writer's CWD silently loses exactly the files the report should
+    preserve.  Resolution order:
+
+    1. absolute path — taken as-is,
+    2. ``workspace / relative`` (the session workspace, when known),
+    3. ``cwd / relative`` (legacy behaviour, kept as fallback).
+
+    A relative candidate must stay INSIDE its base after normalising
+    ``..`` and symlinks — a traversal entry like ``../../etc/passwd``
+    is refused instead of bundled.
+
+    Returns ``(path, via)``: ``via`` is ``"absolute"`` / ``"workspace"`` /
+    ``"cwd"`` on success, ``(None, "outside-workspace")`` for a refused
+    escape, and ``(None, "")`` when no base yields an existing file.
+    """
+    raw = Path(original).expanduser()
+    if raw.is_absolute():
+        return (raw, "absolute") if raw.is_file() else (None, "")
+    bases: list[tuple[str, Path]] = []
+    if workspace is not None:
+        bases.append(("workspace", Path(workspace).expanduser()))
+    bases.append(("cwd", Path.cwd()))
+    escaped = False
+    for via, base in bases:
+        try:
+            base_res = base.resolve()
+            candidate = (base / raw).resolve()
+        except Exception:
+            continue
+        if not candidate.is_file():
+            continue
+        if candidate.is_relative_to(base_res):
+            return candidate, via
+        escaped = True
+    return (None, "outside-workspace") if escaped else (None, "")
+
+
+def _bundle_files(
+    referenced: list, report_dir: Path,
+    *, workspace: str | Path | None = None,
+) -> list[dict]:
     """Copy the files the agent touched into ``report_dir/workspace`` so a
     maintainer has the real inputs for replay, not just the path names.
+
+    Relative entries are resolved via :func:`_resolve_referenced`
+    (absolute → workspace → cwd); each record carries ``resolved_via``
+    so the report shows WHICH base produced the bundled copy.
 
     Size-capped (per-file, count, total) and never raises.  Returns one
     record per referenced path with its bundling ``status``.  A unique
@@ -172,6 +223,8 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
     maps bundled name → original absolute path.
     """
     import shutil
+
+    ws_base = Path(workspace).expanduser() if workspace else None
 
     records: list[dict] = []
     paths = [str(p) for p in (referenced or []) if str(p).strip()]
@@ -187,13 +240,15 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
     bundled = 0
     used_names: set[str] = set()
     for original in paths:
-        rec = {"original": original, "status": "", "bytes": 0, "bundled": ""}
+        rec = {"original": original, "status": "", "bytes": 0, "bundled": "",
+               "resolved_via": ""}
         try:
-            src = Path(original).expanduser()
-            if not src.is_file():
-                rec["status"] = "missing-or-not-a-file"
+            src, via = _resolve_referenced(original, workspace=ws_base)
+            if src is None:
+                rec["status"] = via or "missing-or-not-a-file"
                 records.append(rec)
                 continue
+            rec["resolved_via"] = via
             size = src.stat().st_size
             rec["bytes"] = size
             if bundled >= _MAX_FILES:
@@ -265,7 +320,7 @@ def _render_markdown(
     _mode_display = {"solo": "Code", "dashboard": "Dashboard"}
     for key in ("created_at", "user", "host", "mode", "provider", "model",
                 "effort", "perms", "backend", "role", "session_id",
-                "input_tokens", "output_tokens", "cost_usd",
+                "workspace", "input_tokens", "output_tokens", "cost_usd",
                 "delfin_version", "git_head", "python"):
         if key in meta and meta[key] not in (None, ""):
             shown = (_mode_display.get(str(meta[key]), str(meta[key]))
@@ -279,10 +334,12 @@ def _render_markdown(
         lines += [f"- `{c}`" for c in denied_commands]
     if referenced_files:
         lines += ["", "## Referenced workspace files", "",
-                   "| File | Status | Size | bundled |", "|---|---|---|---|"]
+                   "| File | Status | Via | Size | bundled |",
+                   "|---|---|---|---|---|"]
         for r in referenced_files:
             lines.append(
                 f"| `{r.get('original','')}` | {r.get('status','')} | "
+                f"{r.get('resolved_via','') or '—'} | "
                 f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
             )
     if tool_trace:
@@ -354,6 +411,7 @@ def write_bug_report(
     error_text: str = "",
     denied_commands: list | None = None,
     referenced_files: list | None = None,
+    workspace: str | Path | None = None,
     repo_dir: str | None = None,
     extra: dict | None = None,
     settings: dict | None = None,
@@ -364,6 +422,11 @@ def write_bug_report(
     Produces ``report.json`` (machine-readable, full payload incl. the
     raw engine message list) and ``report.md`` (human-readable) inside a
     fresh collision-free sub-directory of the resolved archive root.
+
+    ``workspace`` is the SESSION workspace the agent ran in — relative
+    ``referenced_files`` entries (raw tool-input strings) resolve against
+    it before falling back to the report-writer's CWD (legacy).  When
+    omitted, behaviour is unchanged (cwd-relative only).
     """
     user = _current_user()
     root = Path(archive_dir).expanduser() if archive_dir else resolve_archive_dir(settings)
@@ -418,6 +481,7 @@ def write_bug_report(
         "backend": backend,
         "role": role,
         "session_id": session_id,
+        "workspace": str(workspace) if workspace else "",
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": round(float(cost_usd or 0.0), 4),
@@ -430,7 +494,10 @@ def write_bug_report(
         meta["extra"] = extra
 
     # Bundle the actual files the agent touched (copied under workspace/).
-    bundled_files = _bundle_files(referenced_files or [], report_dir)
+    # Relative entries resolve against the SESSION workspace first — the
+    # report-writer's CWD is not where the agent created them.
+    bundled_files = _bundle_files(referenced_files or [], report_dir,
+                                  workspace=workspace)
 
     # Tool-call trace: the exact sequence of tools the agent ran this session
     # (name / input / output / duration / ok). Shipped so a failed session can

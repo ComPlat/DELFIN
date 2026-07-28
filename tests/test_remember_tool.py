@@ -1,5 +1,5 @@
 """The agent `remember` tool — proactively save durable facts to project memory
-(mirrors Claude Code's memory behaviour: the agent itself, not just the user,
+(the agent itself, not just the user,
 can persist a typed memory mid-conversation)."""
 
 from __future__ import annotations

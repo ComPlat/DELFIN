@@ -395,3 +395,139 @@ def test_report_dir_is_setgid(tmp_path):
     import stat as _stat
     d = _write(tmp_path)
     assert d.stat().st_mode & _stat.S_ISGID, "report dir must be setgid"
+
+
+# ---------------------------------------------------------------------------
+# Workspace-aware referenced-file resolution.  Regression for an archived
+# report where EVERY workspace-relative entry ("tetris.py",
+# "delfin/agent/engine.py") landed as missing-or-not-a-file: the dashboard
+# collects raw tool-input path strings, and the bundler resolved them against
+# the report-writer CWD instead of the session workspace.  Order now:
+# absolute as-is → workspace/relative → cwd/relative (legacy); traversal
+# entries that escape every base are refused, not bundled.
+# ---------------------------------------------------------------------------
+
+
+def _mk_workspace(tmp_path):
+    ws = tmp_path / "session_ws"
+    (ws / "delfin" / "agent").mkdir(parents=True)
+    (ws / "tetris.py").write_text("print('tetris')\n")
+    (ws / "delfin" / "agent" / "engine.py").write_text("ENGINE = True\n")
+    return ws
+
+
+def test_relative_paths_resolve_against_workspace_not_cwd(tmp_path, monkeypatch):
+    ws = _mk_workspace(tmp_path)
+    elsewhere = tmp_path / "writer_cwd"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)          # report writer runs somewhere else
+    d = _write(tmp_path,
+               referenced_files=["tetris.py", "delfin/agent/engine.py"],
+               workspace=str(ws))
+    js = json.loads((d / "report.json").read_text())
+    recs = {r["original"]: r for r in js["referenced_files"]}
+    assert recs["tetris.py"]["status"] == "bundled"
+    assert recs["tetris.py"]["resolved_via"] == "workspace"
+    assert recs["delfin/agent/engine.py"]["status"] == "bundled"
+    assert recs["delfin/agent/engine.py"]["resolved_via"] == "workspace"
+    # real content preserved, not just the path names
+    assert (d / recs["tetris.py"]["bundled"]).read_text() == "print('tetris')\n"
+    assert (d / recs["delfin/agent/engine.py"]["bundled"]).read_text() == "ENGINE = True\n"
+    # the session workspace is recorded in the report metadata
+    assert js["workspace"] == str(ws)
+
+
+def test_absolute_paths_still_bundle(tmp_path, monkeypatch):
+    ws = _mk_workspace(tmp_path)
+    src = tmp_path / "outside_ws.log"
+    src.write_text("FINAL SINGLE POINT ENERGY -76.4\n")
+    monkeypatch.chdir(tmp_path)
+    d = _write(tmp_path, referenced_files=[str(src)], workspace=str(ws))
+    js = json.loads((d / "report.json").read_text())
+    rec = js["referenced_files"][0]
+    assert rec["status"] == "bundled"
+    assert rec["resolved_via"] == "absolute"
+    assert "-76.4" in (d / rec["bundled"]).read_text()
+
+
+def test_traversal_escape_is_refused(tmp_path, monkeypatch):
+    ws = _mk_workspace(tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("s3cr3t")
+    # cwd == workspace: '../secret.txt' escapes BOTH bases → refused.
+    monkeypatch.chdir(ws)
+    d = _write(tmp_path / "arch", referenced_files=["../secret.txt"],
+               workspace=str(ws))
+    js = json.loads((d / "report.json").read_text())
+    rec = js["referenced_files"][0]
+    assert rec["status"] == "outside-workspace"
+    assert rec["bundled"] == ""
+    # nothing copied — the secret never lands in the archive
+    assert not (d / "workspace").exists()
+    assert "outside-workspace" in (d / "report.md").read_text()
+
+
+def test_etc_passwd_traversal_refused(tmp_path):
+    if not _pathlib.Path("/etc/passwd").is_file():
+        pytest.skip("no /etc/passwd on this platform")
+    ws = _mk_workspace(tmp_path)
+    rep = tmp_path / "rep"
+    rep.mkdir()
+    rel = _os.path.relpath("/etc/passwd", ws)
+    assert rel.startswith("..")
+    recs = br._bundle_files([rel], rep, workspace=ws)
+    assert recs[0]["status"] == "outside-workspace"
+    assert not (rep / "workspace").exists()
+
+
+def test_legacy_cwd_relative_fallback_still_resolves(tmp_path, monkeypatch):
+    cwd = tmp_path / "legacy_cwd"
+    cwd.mkdir()
+    (cwd / "note.txt").write_text("legacy resolution\n")
+    monkeypatch.chdir(cwd)
+    # no workspace passed — old call sites keep the cwd-relative behaviour
+    d = _write(tmp_path, referenced_files=["note.txt"])
+    js = json.loads((d / "report.json").read_text())
+    rec = js["referenced_files"][0]
+    assert rec["status"] == "bundled"
+    assert rec["resolved_via"] == "cwd"
+    assert (d / rec["bundled"]).read_text() == "legacy resolution\n"
+
+
+def test_workspace_miss_falls_back_to_cwd(tmp_path, monkeypatch):
+    ws = _mk_workspace(tmp_path)
+    cwd = tmp_path / "elsewhere"
+    cwd.mkdir()
+    (cwd / "local.txt").write_text("cwd file\n")
+    monkeypatch.chdir(cwd)
+    d = _write(tmp_path, referenced_files=["local.txt"], workspace=str(ws))
+    js = json.loads((d / "report.json").read_text())
+    rec = js["referenced_files"][0]
+    assert rec["status"] == "bundled"
+    assert rec["resolved_via"] == "cwd"
+
+
+def test_workspace_wins_over_cwd_when_both_have_the_file(tmp_path, monkeypatch):
+    ws = _mk_workspace(tmp_path)
+    (ws / "dup.txt").write_text("workspace version\n")
+    cwd = tmp_path / "other_cwd"
+    cwd.mkdir()
+    (cwd / "dup.txt").write_text("cwd version\n")
+    monkeypatch.chdir(cwd)
+    d = _write(tmp_path, referenced_files=["dup.txt"], workspace=str(ws))
+    js = json.loads((d / "report.json").read_text())
+    rec = js["referenced_files"][0]
+    assert rec["resolved_via"] == "workspace"
+    assert (d / rec["bundled"]).read_text() == "workspace version\n"
+
+
+def test_missing_everywhere_stays_missing(tmp_path, monkeypatch):
+    ws = _mk_workspace(tmp_path)
+    elsewhere = tmp_path / "nowhere_cwd"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    d = _write(tmp_path, referenced_files=["ghost.xyz"], workspace=str(ws))
+    js = json.loads((d / "report.json").read_text())
+    rec = js["referenced_files"][0]
+    assert rec["status"] == "missing-or-not-a-file"
+    assert rec["resolved_via"] == ""
