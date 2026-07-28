@@ -14,15 +14,20 @@ restart. The Scheduler runs a background thread that polls every
 the callback is set by the dashboard once it knows how to dispatch
 into the agent loop. Without a callback, due entries are still
 recorded as overdue but not executed — they fire as soon as a
-callback is bound.
+callback is bound. Headless execution without any dashboard is
+provided by :mod:`delfin.agent.scheduler_daemon`, which passes its
+own fire callback straight into :meth:`Scheduler.tick`.
 
 Failures are isolated: a buggy callback never crashes the
-scheduler thread.
+scheduler thread. Consecutive callback failures are counted per
+entry; after ``_MAX_CONSECUTIVE_FAILURES`` the entry is disabled
+(persisted, with a reason) instead of retrying forever.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -33,6 +38,20 @@ from typing import Callable, Optional
 
 _DEFAULT_PATH = Path.home() / ".delfin" / "cron.json"
 _POLL_S = 30.0
+_MAX_CONSECUTIVE_FAILURES = 3
+
+
+class DisableEntry(Exception):
+    """Raised by a fire callback to disable the entry immediately.
+
+    ``tick`` persists the ``disabled`` flag + reason instead of counting
+    the raise as an ordinary (retryable) failure. Used by the headless
+    daemon, e.g. when an entry's workspace no longer exists.
+    """
+
+    def __init__(self, reason: str = ""):
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass
@@ -47,6 +66,12 @@ class ScheduleEntry:
     next_fire_at: float = 0.0
     last_fired_at: float = 0.0
     fire_count: int = 0
+    # Headless-execution metadata (scheduler_daemon):
+    workspace: str = ""             # directory the prompt runs in headlessly
+    budget_usd: float = 0.0         # optional per-run cost cap (0 = default)
+    fail_count: int = 0             # consecutive fire failures
+    disabled: bool = False          # never fired while set (persisted)
+    disabled_reason: str = ""
 
     def is_due(self, now: float | None = None) -> bool:
         return (now or time.time()) >= self.next_fire_at
@@ -102,6 +127,7 @@ class Scheduler:
 
     def schedule_once(
         self, *, delay_seconds: int, prompt: str, reason: str = "",
+        workspace: str = "", budget_usd: float = 0.0,
     ) -> ScheduleEntry:
         if delay_seconds < 1:
             raise ValueError("delay_seconds must be >= 1")
@@ -112,6 +138,10 @@ class Scheduler:
             reason=reason,
             delay_seconds=delay_seconds,
             next_fire_at=time.time() + delay_seconds,
+            # Recorded so the headless daemon knows where to run the
+            # prompt; the creating process's cwd is the best default.
+            workspace=str(workspace or os.getcwd()),
+            budget_usd=max(0.0, float(budget_usd or 0.0)),
         )
         with self._lock:
             self._entries[ent.id] = ent
@@ -121,6 +151,7 @@ class Scheduler:
     def schedule_interval(
         self, *, every_seconds: int, prompt: str, reason: str = "",
         fire_immediately: bool = False,
+        workspace: str = "", budget_usd: float = 0.0,
     ) -> ScheduleEntry:
         if every_seconds < 60:
             raise ValueError("every_seconds must be >= 60 (be sensible)")
@@ -132,6 +163,8 @@ class Scheduler:
             reason=reason,
             every_seconds=every_seconds,
             next_fire_at=first_fire,
+            workspace=str(workspace or os.getcwd()),
+            budget_usd=max(0.0, float(budget_usd or 0.0)),
         )
         with self._lock:
             self._entries[ent.id] = ent
@@ -167,29 +200,54 @@ class Scheduler:
         if self._thread is not None:
             self._thread.join(timeout=2)
 
-    def tick(self) -> int:
-        """Run a single polling pass. Returns number of fires.
+    def tick(
+        self,
+        fire_callback: Callable[[ScheduleEntry], None] | None = None,
+    ) -> int:
+        """Run a single polling pass. Returns number of successful fires.
+
+        ``fire_callback`` overrides the bound callback for this pass — the
+        headless daemon passes its executor here without touching the
+        dashboard binding. Disabled entries are never fired. A callback
+        exception counts as a consecutive failure (entry retried next
+        pass; disabled with a reason after ``_MAX_CONSECUTIVE_FAILURES``);
+        raising :class:`DisableEntry` disables the entry immediately.
 
         Exposed separately so tests don't have to wait for the thread.
         """
         fired = 0
+        changed = False
         now = time.time()
         with self._lock:
             for ent in list(self._entries.values()):
-                if not ent.is_due(now):
+                if ent.disabled or not ent.is_due(now):
                     continue
-                cb = self._fire_callback
+                cb = fire_callback or self._fire_callback
                 if cb is None:
                     continue
                 try:
                     cb(ent)
-                except Exception:
+                except DisableEntry as exc:
+                    ent.disabled = True
+                    ent.disabled_reason = (
+                        exc.reason or "disabled by fire callback")
+                    changed = True
                     continue
+                except Exception as exc:
+                    ent.fail_count += 1
+                    if ent.fail_count >= _MAX_CONSECUTIVE_FAILURES:
+                        ent.disabled = True
+                        ent.disabled_reason = (
+                            f"disabled after {ent.fail_count} consecutive "
+                            f"failures (last: {str(exc)[:160]})")
+                    changed = True
+                    continue
+                ent.fail_count = 0
                 fired += 1
                 still_active = ent.reschedule(now)
                 if not still_active:
                     self._entries.pop(ent.id, None)
-            if fired:
+            if fired or changed:
                 self._save()
         return fired
 
@@ -238,6 +296,7 @@ def reset_scheduler() -> None:
 
 
 __all__ = [
+    "DisableEntry",
     "ScheduleEntry",
     "Scheduler",
     "get_scheduler",
