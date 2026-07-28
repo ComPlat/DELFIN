@@ -13640,8 +13640,8 @@ def create_tab(ctx):
                             )
                         except Exception:
                             _vflags = []
-                        # Code-claim citation check ("nachschauen statt
-                        # behaupten"): cited paths that don't exist force a
+                        # Code-claim citation check: cited paths that
+                        # don't exist force a
                         # correction turn via the same machinery; existing-
                         # but-unread paths only soft-warn (injected context
                         # legitimately surfaces paths).

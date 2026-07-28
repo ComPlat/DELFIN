@@ -2,7 +2,7 @@
 trust boundary — three foundation mechanisms:
 
 - citations in answers are cross-checked against the filesystem and the
-  observed-files ledger ("nachschauen statt behaupten"),
+  observed-files ledger,
 - autonomous runs get a cumulative budget with graceful wind-down,
 - attacker-controlled text (web/MCP) enters the transcript only inside
   explicit untrusted-data markers.

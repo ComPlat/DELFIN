@@ -240,7 +240,7 @@ def correction_feedback(flags: list[VerifyFlag]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Code-claim grounding — "nachschauen statt behaupten" for CODE statements
+# Code-claim grounding — verify statements about code against reality
 # ---------------------------------------------------------------------------
 #
 # The honesty addendum demands file:line citations, and the framework checks
