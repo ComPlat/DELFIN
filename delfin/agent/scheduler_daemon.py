@@ -194,8 +194,32 @@ def make_fire_callback(
             raise DisableEntry(f"workspace no longer exists: {ws}")
         log(f"[scheduler-daemon] firing entry {entry.id} "
             f"({entry.kind}) in {ws}")
-        result = run_entry(
-            entry, settings=settings, engine_factory=engine_factory)
+        try:
+            result = run_entry(
+                entry, settings=settings, engine_factory=engine_factory)
+        except Exception as exc:
+            try:
+                from .attention import emit_attention
+                emit_attention(
+                    "run_failed",
+                    title=f"Scheduled run {entry.id} failed",
+                    detail=f"{entry.reason or entry.prompt[:120]} — {exc}"[:400],
+                    workspace=ws,
+                )
+            except Exception:
+                pass
+            raise
+        try:
+            from .attention import emit_attention
+            emit_attention(
+                "run_finished",
+                session_id=str(result.get("session_id", "") or ""),
+                title=f"Scheduled run {entry.id} finished",
+                detail=(result.get("text", "") or "")[:400],
+                workspace=ws,
+            )
+        except Exception:
+            pass
         log(f"[scheduler-daemon] entry {entry.id} done — "
             f"session {result.get('session_id', '')}")
 

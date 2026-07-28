@@ -858,6 +858,37 @@ class AgentEngine:
             ["# Background jobs finished since your last turn "
              "(act on these results now)"] + events)
 
+    def _build_answered_attention_block(self) -> str:
+        """Late answers to parked questions/confirms (attention inbox).
+
+        A question/confirm that timed out unattended was parked in
+        ~/.delfin/attention_inbox.jsonl; once the user resolves it, the
+        answer is injected here exactly once — mirroring
+        _build_finished_jobs_block."""
+        try:
+            perms = self.kit_permissions
+            sid = str(getattr(perms, "task_session_id", "") or "") if perms else ""
+        except Exception:
+            sid = ""
+        lines: list[str] = []
+        try:
+            from delfin.agent.attention import drain_resolved
+            for ev in drain_resolved(sid) or []:
+                ans = ev.get("answer")
+                ans_txt = ", ".join(map(str, ans)) if isinstance(ans, list) \
+                    else str(ans or "").strip()
+                what = str(ev.get("kind", "question")).replace("_pending", "")
+                lines.append(
+                    f"- The user answered your earlier {what} "
+                    f"\"{str(ev.get('title', ''))[:120]}\": {ans_txt or '(no text)'}")
+        except Exception:
+            return ""
+        if not lines:
+            return ""
+        return "\n".join(
+            ["# Answers to requests that previously timed out "
+             "(act on them now — do not re-ask)"] + lines)
+
     _MUTATE_TOOLS_FOR_PIN = frozenset({
         "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
     })
@@ -946,6 +977,9 @@ class AgentEngine:
             budget_block = self._build_budget_block()
             if budget_block:
                 extra_blocks.append(budget_block)
+            answers_block = self._build_answered_attention_block()
+            if answers_block:
+                extra_blocks.append(answers_block)
             if extra_blocks:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
@@ -1389,6 +1423,32 @@ class AgentEngine:
                 full_response = sanitize_agent_text(full_response).text
             except Exception:
                 pass
+        # Output-guard stage: redact credential material from the FINAL
+        # answer before it enters the transcript. Known limitation: the
+        # individual tokens were already streamed out via on_token, so a
+        # secret may have been displayed once live — this stage protects the
+        # stored history and every downstream consumer (context replay,
+        # session files, subagent reports, memory distillation). Guarding
+        # the live stream as well would require buffering the whole
+        # response before emitting anything, which is deliberately not done.
+        _guard_note = ""
+        if full_response:
+            try:
+                from delfin.agent.output_guard import run_output_guards
+                _guard = run_output_guards(full_response)
+                if _guard.changed:
+                    full_response = _guard.text
+                    _redactions = [f for f in _guard.findings
+                                   if f.get("check") == "secret_redaction"]
+                    if _redactions:
+                        _kinds = sorted({f.get("detail", "")
+                                         for f in _redactions})
+                        _guard_note = (
+                            f"\n[output-guard] {len(_redactions)} finding(s): "
+                            f"{', '.join(_kinds)} — sensitive content "
+                            f"redacted.")
+            except Exception:
+                pass
         if full_response:
             self.messages.append({"role": "assistant", "content": full_response})
 
@@ -1414,7 +1474,7 @@ class AgentEngine:
             if self.messages and self.messages[-1].get("role") == "user":
                 self.messages.pop()
 
-        return full_response
+        return full_response + _guard_note
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session

@@ -139,6 +139,23 @@ class KitConfirmBroker:
             pass
         self._refresh_panel()
 
+        # Durable out-of-band attention event: an unattended user learns a
+        # confirm is waiting (desktop/webhook/notify_command) instead of
+        # discovering it in chat scrollback. Best-effort — the confirm
+        # dialog must work even when the inbox cannot be written.
+        attn_id = ""
+        try:
+            from .attention import emit_attention
+            summary = (str(args.get("command", ""))
+                       if tool_name == "bash" else str(args.get("path", "")))
+            attn_id = emit_attention(
+                "confirm_pending",
+                title=f"Confirmation required: {tool_name}",
+                detail=(preview or summary or "")[:400],
+            )
+        except Exception:
+            attn_id = ""
+
         # Block worker thread until decided or timeout.
         decided = req.event.wait(timeout=self._timeout_s)
 
@@ -158,11 +175,26 @@ class KitConfirmBroker:
                 self.last_timed_out = True
             else:
                 self.last_timed_out = False
+            timed_out = self.last_timed_out
 
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
             persist_kind = req.persist_kind
             session_dir = req.session_dir
+
+        # A real click resolves the inbox event; a TIMEOUT parks it (the
+        # event stays pending) so the user can still act on it later from
+        # the attention inbox in the dashboard. Best-effort.
+        if attn_id and not timed_out:
+            try:
+                from .attention import resolve as _attn_resolve
+                _attn_resolve(
+                    attn_id,
+                    answer="approved" if req.decision else "denied",
+                    acknowledged=True,   # decision already delivered in-band
+                )
+            except Exception:
+                pass
 
         # If the user clicked "Erlauben + Dauerhaft", forward the value
         # to the engine's persist hook so it lands in settings.json AND

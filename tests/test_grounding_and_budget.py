@@ -67,6 +67,90 @@ def test_flag_cap_and_feedback(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Unsourced physical-quantity scanner
+# ---------------------------------------------------------------------------
+
+def test_quantity_units_detected():
+    text = ("The S1 energy is 2.31 eV, the barrier 14.2 kcal/mol, the "
+            "stretch at 1650 cm-1 and the bond length 1.54 Å.")
+    flags = vg.scan_for_unsourced_quantities(text)
+    qtys = [f.quantity for f in flags]
+    assert "2.31 eV" in qtys
+    assert "14.2 kcal/mol" in qtys
+    assert "1650 cm-1" in qtys
+    assert "1.54 Å" in qtys
+    assert all("state the source or verify first" in f.message()
+               for f in flags)
+
+
+def test_quantity_more_unit_forms():
+    text = ("gap 0.12 Hartree, total -310.5 Eh, peak 450 nm, "
+            "moment 2.1 Debye, lifetime 150 fs, decay 2 ps, at 298 K, "
+            "rotation 12.3 GHz, strain 3 kcal on top, drop 25 kJ/mol")
+    flags = vg.scan_for_unsourced_quantities(text, max_flags=20)
+    units = {f.unit for f in flags}
+    assert {"Hartree", "nm", "Debye", "fs", "ps", "K", "GHz",
+            "kcal", "kJ/mol"} <= units
+    # Eh maps onto the Hartree tag as a distinct claim.
+    assert "-310.5 Eh" in {f.quantity for f in flags}
+
+
+def test_quantity_not_flagged_with_calc_output_observed():
+    flags = vg.scan_for_unsourced_quantities(
+        "The S1 energy is 2.31 eV.",
+        observed_files={"runs/job1/tddft.out"})
+    assert flags == []
+
+
+def test_quantity_not_flagged_with_evidence_tool():
+    flags = vg.scan_for_unsourced_quantities(
+        "The S1 energy is 2.31 eV.",
+        evidence_tools_used={"search_docs"})
+    assert flags == []
+
+
+def test_quantity_evidence_tool_mcp_prefix():
+    flags = vg.scan_for_unsourced_quantities(
+        "The S1 energy is 2.31 eV.",
+        evidence_tools_used={"mcp__delfin__get_calc"})
+    assert flags == []
+
+
+def test_quantity_non_evidence_turn_still_flags():
+    # A read .py file and an edit tool are not evidence for numbers.
+    flags = vg.scan_for_unsourced_quantities(
+        "The S1 energy is 2.31 eV.",
+        observed_files={"delfin/agent/engine.py"},
+        evidence_tools_used={"edit_file", "bash"})
+    assert len(flags) == 1
+    assert flags[0].quantity == "2.31 eV"
+
+
+def test_quantity_backticks_blockquotes_percent_skipped():
+    text = ("Set `TDDFT NROOTS 5` and check `peak at 450 nm` later.\n"
+            "> quoted source says the gap is 3.1 eV\n"
+            "Yield improved by 25% overall; version 6.0.1 shipped.\n"
+            "```\nE(S1) = 2.31 eV\n```\n")
+    assert vg.scan_for_unsourced_quantities(text) == []
+
+
+def test_quantity_cap_and_dedupe():
+    text = " ".join(f"{i}.5 eV" for i in range(10)) + " and again 0.5 eV"
+    flags = vg.scan_for_unsourced_quantities(text)
+    assert len(flags) == 6  # default cap
+    assert len({f.quantity for f in flags}) == 6  # de-duplicated
+
+
+def test_quantity_feedback_and_empty():
+    assert vg.scan_for_unsourced_quantities("") == []
+    assert vg.scan_for_unsourced_quantities("no numeric claims here") == []
+    flags = vg.scan_for_unsourced_quantities("a gap of 2.31 eV")
+    fb = vg.quantity_claim_feedback(flags)
+    assert "2.31 eV" in fb
+    assert "unverified" in fb
+
+
+# ---------------------------------------------------------------------------
 # Observed-files capture
 # ---------------------------------------------------------------------------
 
