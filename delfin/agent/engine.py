@@ -1389,6 +1389,32 @@ class AgentEngine:
                 full_response = sanitize_agent_text(full_response).text
             except Exception:
                 pass
+        # Output-guard stage: redact credential material from the FINAL
+        # answer before it enters the transcript. Known limitation: the
+        # individual tokens were already streamed out via on_token, so a
+        # secret may have been displayed once live — this stage protects the
+        # stored history and every downstream consumer (context replay,
+        # session files, subagent reports, memory distillation). Guarding
+        # the live stream as well would require buffering the whole
+        # response before emitting anything, which is deliberately not done.
+        _guard_note = ""
+        if full_response:
+            try:
+                from delfin.agent.output_guard import run_output_guards
+                _guard = run_output_guards(full_response)
+                if _guard.changed:
+                    full_response = _guard.text
+                    _redactions = [f for f in _guard.findings
+                                   if f.get("check") == "secret_redaction"]
+                    if _redactions:
+                        _kinds = sorted({f.get("detail", "")
+                                         for f in _redactions})
+                        _guard_note = (
+                            f"\n[output-guard] {len(_redactions)} finding(s): "
+                            f"{', '.join(_kinds)} — sensitive content "
+                            f"redacted.")
+            except Exception:
+                pass
         if full_response:
             self.messages.append({"role": "assistant", "content": full_response})
 
@@ -1414,7 +1440,7 @@ class AgentEngine:
             if self.messages and self.messages[-1].get("role") == "user":
                 self.messages.pop()
 
-        return full_response
+        return full_response + _guard_note
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session
