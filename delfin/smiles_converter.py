@@ -26440,6 +26440,7 @@ def _generate_topological_isomers(
 
     Returns [(xyz_string, label), …].
     """
+    import numpy as np
     results: List[Tuple[str, str]] = []
     dtype_map = _donor_type_map(mol)
 
@@ -29356,6 +29357,7 @@ def _emit_d8_sp4_variants(mol, results, apply_uff, max_isomers):
     of the donors into their common plane; ligand internals preserved).  The final graph-topology
     gate downstream drops any variant whose flattening introduced a ligand-ligand contact, so this
     is strictly ADDITIVE / never-worse.  Toggle DELFIN_D8_SP4_SEAT (default 0 -> byte-identical)."""
+    import numpy as np
     if not _delfin_env_int("DELFIN_D8_SP4_SEAT", 0):
         return 0
     try:
