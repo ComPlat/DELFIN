@@ -354,6 +354,15 @@ class AgentEngine:
         self.messages: list[dict[str, Any]] = []
         self.role_outputs: dict[str, str] = {}
         self.compaction_summaries: dict[str, str] = {}
+        # Mechanical verification state (verdict tool + evidence ledger),
+        # copied from the backend client after each turn and snapshotted
+        # per role. Gates consult THESE first; prose regex is only the
+        # fallback — a formatting slip must never flip a reject into an
+        # auto-continue.
+        self.role_verdicts: dict[str, dict] = {}
+        self.role_test_evidence: dict[str, list] = {}
+        self._last_structured_verdict: dict | None = None
+        self._last_test_evidence: list = []
         self.token_usage = {"input": 0, "output": 0, "cached": 0}
         self.cost_usd: float = 0.0
         # Exact system prompt of the most recent turn (for bug reports).
@@ -1197,6 +1206,26 @@ class AgentEngine:
                 )
             except Exception:
                 pass
+
+        # Copy the per-turn verification mechanics from the backend client
+        # (report_verdict tool + test-evidence ledger) and snapshot them for
+        # the role that just ran, so the acceptance gate can still consult
+        # the TEST role's turn after later roles have overwritten the
+        # per-turn state. Best-effort: CLI backends have neither attribute.
+        try:
+            self._last_structured_verdict = getattr(
+                self.client, "_last_structured_verdict", None)
+            self._last_test_evidence = list(
+                getattr(self.client, "_test_evidence", None) or [])
+            _v_role = self.current_role
+            if _v_role:
+                if isinstance(self._last_structured_verdict, dict):
+                    self.role_verdicts[_v_role] = self._last_structured_verdict
+                if self._last_test_evidence:
+                    self.role_test_evidence.setdefault(_v_role, []).extend(
+                        self._last_test_evidence)
+        except Exception:
+            pass
 
         full_response = "".join(chunks)
         # Repair corrupted output (harmony tool-channel leaks + glitch
@@ -2168,6 +2197,8 @@ class AgentEngine:
         if not preserve_messages:
             self.messages.clear()
             self.role_outputs.clear()
+            self.role_verdicts.clear()
+            self.role_test_evidence.clear()
             self._project_dir = ""   # new conversation → re-pin on first write
             self.compaction_summaries.clear()
             self.current_role_index = 0
@@ -2183,6 +2214,8 @@ class AgentEngine:
             # route. role_outputs and compaction_summaries are
             # role-keyed and stale for the new mode — drop them.
             self.role_outputs.clear()
+            self.role_verdicts.clear()
+            self.role_test_evidence.clear()
             self.compaction_summaries.clear()
             self.current_role_index = 0
         self.loader.reset_session_prompt_state(
@@ -2884,13 +2917,24 @@ class AgentEngine:
 
     @staticmethod
     def extract_status_field(agent_output: str) -> str:
-        """Extract the canonical ``**status:**`` verdict if present."""
+        """Extract the canonical ``**status:**`` verdict if present.
+
+        Deliberately tolerant: trailing text ("reject — see findings") and
+        word variants ("rejected"/"approved") still count. The old
+        end-anchored regex extracted '' for those, and an empty status made
+        a REJECTING critic auto-continue — the gate failed OPEN on exactly
+        the format slips weak models make most.
+        """
         match = re.search(
-            r"^\*\*status:\*\*\s*(approve_with_risks|approve|reject)\s*$",
+            r"^\*\*status:\*\*\s*"
+            r"(approve_with_risks|approved|approve|rejected|reject)\b",
             agent_output or "",
             flags=re.IGNORECASE | re.MULTILINE,
         )
-        return match.group(1).lower() if match else ""
+        if not match:
+            return ""
+        value = match.group(1).lower()
+        return {"approved": "approve", "rejected": "reject"}.get(value, value)
 
     @staticmethod
     def extract_named_verdict(agent_output: str, label: str) -> str:
@@ -2923,15 +2967,30 @@ class AgentEngine:
         return results
 
     @staticmethod
-    def evaluate_role_gate(role_id: str, output: str) -> tuple[str, str, str]:
+    def evaluate_role_gate(
+        role_id: str,
+        output: str,
+        structured_verdict: dict | None = None,
+    ) -> tuple[str, str, str]:
         """Return a communication-gate decision for a completed role.
 
         Returns ``(action, gate_type, message)`` where action is one of:
         - ``continue``: safe to auto-advance
         - ``pause``: stop and ask the user to review/approve
+
+        ``structured_verdict`` is the parsed ``report_verdict`` tool call
+        from the role's turn, when one was made. It wins over prose: a tool
+        argument cannot suffer the formatting slips that used to make a
+        rejecting critic auto-continue.
         """
         text = output or ""
-        status = AgentEngine.extract_status_field(text)
+        status = ""
+        if isinstance(structured_verdict, dict):
+            sv = str(structured_verdict.get("status", "")).strip().lower()
+            if sv in ("approve", "approve_with_risks", "reject"):
+                status = sv
+        if not status:
+            status = AgentEngine.extract_status_field(text)
 
         # Session Manager: validate plan completeness before routing work.
         # Conversational responses (greetings, clarifications) are not plan
@@ -2994,6 +3053,12 @@ class AgentEngine:
                     "pause",
                     "goal-lock",
                     "flagged goal-lock issues; review whether the builder solved the correct problem.",
+                )
+            if status == "reject":
+                return (
+                    "pause",
+                    "review",
+                    "reported `status: reject`; review the findings before continuing.",
                 )
 
         return ("continue", "", "")

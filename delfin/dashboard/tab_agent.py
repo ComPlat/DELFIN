@@ -2390,6 +2390,99 @@ def _compute_turn_verdict(
     return "PASS"
 
 
+def _check_acceptance_gate(eng) -> str:
+    """Cycle-end acceptance verdict from the test agent's turn.
+
+    Mechanics first, prose second:
+    - a structured ``report_verdict`` (``eng.role_verdicts``) beats
+      regex-counting PASS/FAIL tokens in the test agent's prose;
+    - the turn's test-evidence ledger beats BOTH — recorded failures or a
+      non-zero exit code veto a claimed PASS, and a PASS with NO recorded
+      test execution is downgraded to UNTESTED. (Previously a test agent
+      could claim green without running anything and the fabricated success
+      was written into cycle memory + the provider profile.)
+    """
+    test_out = eng.role_outputs.get("test_agent", "")
+    verdict = None
+    evidence: list = []
+    try:
+        verdict = (getattr(eng, "role_verdicts", None) or {}).get("test_agent")
+        evidence = list(
+            (getattr(eng, "role_test_evidence", None) or {}).get("test_agent")
+            or []
+        )
+    except Exception:
+        verdict, evidence = None, []
+    if not test_out and not isinstance(verdict, dict):
+        return ""
+
+    pass_count = fail_count = untested = 0
+    has_approve = has_reject = False
+    structured_status = (
+        str(verdict.get("status", "")).strip().lower()
+        if isinstance(verdict, dict) else ""
+    )
+    if structured_status in ("approve", "approve_with_risks", "reject"):
+        has_approve = structured_status in ("approve", "approve_with_risks")
+        has_reject = structured_status == "reject"
+        for crit in verdict.get("criteria") or []:
+            state = (str(crit.get("state", "")).strip().upper()
+                     if isinstance(crit, dict) else "")
+            if state == "PASS":
+                pass_count += 1
+            elif state == "FAIL":
+                fail_count += 1
+            elif state == "UNTESTED":
+                untested += 1
+    else:
+        # Prose fallback: count PASS / FAIL / UNTESTED tokens + status line.
+        pass_count = len(re.findall(r"\bPASS\b", test_out))
+        fail_count = len(re.findall(r"\bFAIL\b", test_out))
+        untested = len(re.findall(r"\bUNTESTED\b", test_out))
+        has_approve = bool(
+            re.search(r"\*\*status:\*\*\s*approve", test_out, re.I))
+        has_reject = bool(
+            re.search(r"\*\*status:\*\*\s*reject", test_out, re.I))
+
+    parts = []
+    if pass_count:
+        parts.append(f"{pass_count} PASS")
+    if fail_count:
+        parts.append(f"{fail_count} FAIL")
+    if untested:
+        parts.append(f"{untested} UNTESTED")
+    summary = f"({', '.join(parts)})" if parts else ""
+
+    # Evidence entries that actually RAN tests. Skips don't count, and a
+    # bash entry must have executed something ("N passed"/"N failed") —
+    # `pytest --version` exiting 0 is not test execution.
+    ran = [
+        e for e in evidence
+        if isinstance(e, dict) and e.get("status") != "skipped"
+        and (e.get("tool") != "bash"
+             or (e.get("passed") or 0) + (e.get("failed") or 0) > 0)
+    ]
+    evidence_red = any(
+        (e.get("failed") or 0) > 0
+        or (isinstance(e.get("exit_code"), int) and e.get("exit_code") != 0)
+        for e in ran
+    )
+    # Exit codes / failure counts beat prose claims.
+    if evidence_red and not fail_count and not has_reject:
+        return (f"❌ {summary} — test evidence shows failures "
+                "despite the reported verdict")
+
+    if has_reject or fail_count > 0:
+        return f"❌ {summary}"
+    if has_approve:
+        if not ran:
+            # PASS claimed, nothing executed → the verdict is worthless.
+            return (f"⚠ UNTESTED {summary} — verdict claimed PASS "
+                    "but no test execution was recorded this cycle")
+        return f"✅ {summary}"
+    return summary
+
+
 def _build_inline_diff(old: str, new: str, _e, soft_cap: int = 60) -> str:
     """Render a +/- diff for a write/edit operation, always visible in chat.
 
@@ -12238,36 +12331,9 @@ def create_tab(ctx):
 
         return "\n".join(findings[:15])  # max 15 findings
 
-    def _check_acceptance_gate(eng):
-        """Check test agent output for acceptance criteria results."""
-        test_out = eng.role_outputs.get("test_agent", "")
-        if not test_out:
-            return ""
-
-        # Count PASS / FAIL / UNTESTED
-        pass_count = len(re.findall(r"\bPASS\b", test_out))
-        fail_count = len(re.findall(r"\bFAIL\b", test_out))
-        untested = len(re.findall(r"\bUNTESTED\b", test_out))
-
-        # Check for approve/reject verdict
-        has_approve = bool(re.search(r"\*\*status:\*\*\s*approve", test_out, re.I))
-        has_reject = bool(re.search(r"\*\*status:\*\*\s*reject", test_out, re.I))
-
-        parts = []
-        if pass_count:
-            parts.append(f"{pass_count} PASS")
-        if fail_count:
-            parts.append(f"{fail_count} FAIL")
-        if untested:
-            parts.append(f"{untested} UNTESTED")
-
-        summary = f"({', '.join(parts)})" if parts else ""
-
-        if has_reject or fail_count > 0:
-            return f"\u274c {summary}"
-        if has_approve:
-            return f"\u2705 {summary}"
-        return summary
+    # (acceptance gate: module-level _check_acceptance_gate \u2014 it consults
+    # the structured verdict + test-evidence ledger before falling back to
+    # prose token counting, and lives at module scope so it is testable.)
 
     # -- main event handlers -----------------------------------------------
 
@@ -13742,8 +13808,11 @@ def create_tab(ctx):
                         _schema_retry_counts.pop(prev_role_id, None)
 
                     # --- Communication gate: explicit review for risky/partial handoffs ---
+                    # The structured verdict from this turn's report_verdict
+                    # tool call (if any) wins over prose parsing.
                     _gate_action, _gate_type, _gate_message = engine.evaluate_role_gate(
-                        prev_role_id, last_out
+                        prev_role_id, last_out,
+                        getattr(engine, "_last_structured_verdict", None),
                     )
                     if _gate_action == "pause":
                         _append_gate_message(

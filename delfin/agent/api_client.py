@@ -888,9 +888,12 @@ _ROLE_EXEC_ALLOWLIST: dict[str, frozenset[str]] = {
 }
 
 # Meta/plumbing tools with no side effects or scope concern — always permitted
-# even for a role that carries an allow-list.
+# even for a role that carries an allow-list. report_verdict is pure data
+# (the gate reads it) and must reach EVERY review-ish role, however locked
+# down its execution surface is.
 _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "exit_plan_mode", "ask_user_question", "subagent_result",
+    "report_verdict",
 })
 
 
@@ -2323,6 +2326,59 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "report_verdict",
+            "description": (
+                "Report your final review/test verdict as STRUCTURED "
+                "data. Call this ONCE at the end of a critic / test / "
+                "review turn, after your prose findings — the pipeline "
+                "gate reads this tool call directly, so a formatting "
+                "slip in prose can never flip a reject into an "
+                "auto-continue. The result echoes your verdict back."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["approve", "approve_with_risks",
+                                 "reject"],
+                        "description": "Your final verdict.",
+                    },
+                    "criteria": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "state": {
+                                    "type": "string",
+                                    "enum": ["PASS", "FAIL",
+                                             "UNTESTED"],
+                                },
+                            },
+                            "required": ["name", "state"],
+                        },
+                        "description": (
+                            "Per-acceptance-criterion result. Mark a "
+                            "criterion UNTESTED if you did not run it "
+                            "— never guess PASS."
+                        ),
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": (
+                            "Concrete evidence backing the verdict: "
+                            "commands run, exit codes, output seen."
+                        ),
+                    },
+                },
+                "required": ["status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "apply_patch",
             "description": (
                 "Apply a unified-diff patch to files in the "
@@ -3253,9 +3309,87 @@ def _detect_test_command(workspace) -> str:
         return ""
 
 
-# Workspaces whose test suite ran too slow to auto-verify per turn — probed
-# once, then skipped (syntax-only) so a slow suite isn't re-run every turn.
+# Workspaces whose FULL test suite ran too slow to auto-verify per turn —
+# probed once, then never re-run whole. Verification does NOT go dark for
+# them: a scoped fallback command (just the tests matching the edited
+# modules, remembered in _SLOW_WS_SCOPED_CMD) keeps running per turn.
+# Previously a timeout here silently disabled verification for the rest of
+# the process — on DELFIN's own repo it turned itself off after the first
+# edit turn and every later turn reported "clean" without checking anything.
 _SLOW_TEST_WS: set = set()
+
+# ws_key -> scoped pytest command used instead of the blacklisted full suite.
+_SLOW_WS_SCOPED_CMD: dict = {}
+
+
+def _test_candidate_paths(resolved: Path, root: Path) -> list[Path]:
+    """Conventional test-file locations for an edited source file, in match
+    order. Shared by the post-edit test hint (_suggest_test_for_edit) and the
+    auto-verify timeout fallback, so both resolve candidates the same way.
+
+        edited        →  test candidate
+        ----------------+------------------------
+        foo/bar.py    →  tests/test_bar.py
+                         tests/foo/test_bar.py
+                         foo/tests/test_bar.py
+                         test_bar.py (next to source)
+    """
+    stem = resolved.stem
+    candidates = [
+        root / "tests" / f"test_{stem}.py",
+        root / "tests" / f"{stem}_test.py",
+        root / "test" / f"test_{stem}.py",
+        resolved.parent / f"test_{stem}.py",
+        resolved.parent / "tests" / f"test_{stem}.py",
+    ]
+    # Mirror the source layout under tests/, e.g.
+    # delfin/agent/api_client.py → tests/agent/test_api_client.py.
+    try:
+        rel = resolved.relative_to(root)
+        if len(rel.parts) > 1:
+            candidates.insert(2, root / "tests" / rel.parent / f"test_{stem}.py")
+    except ValueError:
+        pass
+    return candidates
+
+
+def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
+    """A pytest command covering just the test files that match the edited
+    modules — the fallback when the full suite is too slow to run per turn.
+    Returns "" when no matching test file exists on disk."""
+    import shlex
+    try:
+        root = Path(scope).resolve()
+        files: list[str] = []
+        for p in edited_paths:
+            if not p:
+                continue
+            rp = Path(p)
+            try:
+                rp = rp.resolve()
+            except OSError:
+                pass
+            if rp.suffix != ".py":
+                continue
+            if rp.name.startswith("test_") or rp.name.endswith("_test.py"):
+                cands = [rp]
+            else:
+                cands = _test_candidate_paths(rp, root)
+            for cand in cands:
+                try:
+                    if cand.is_file():
+                        s = str(cand)
+                        if s not in files:
+                            files.append(s)
+                        break
+                except OSError:
+                    continue
+        if not files:
+            return ""
+        return "python -m pytest -x -q " + " ".join(
+            shlex.quote(f) for f in files[:10])
+    except Exception:
+        return ""
 
 
 def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, bool]:
@@ -3311,21 +3445,32 @@ def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
 
 
 def _run_auto_verify(edited_paths: list, mode: str, command: str,
-                     workspace) -> str:
+                     workspace, status: Optional[dict] = None) -> str:
     """Verify code the agent just edited. Returns a short problem summary when
     something is wrong (→ force a fix round), or "" when clean. Never raises —
     verification failing closed would be worse than not verifying.
 
     Modes: ``syntax`` (py_compile only), ``command`` (run ``command``),
     ``smart`` (syntax first; then, if the workspace has a detectable test
-    suite, run it with a timeout — and remember a too-slow suite so it isn't
-    re-run every turn), ``off``.
+    suite, run it with a timeout — a too-slow FULL suite is remembered and
+    replaced by a scoped run of just the edited modules' tests), ``off``.
+
+    ``status`` (optional dict) is filled with how verification actually ran:
+    ``skipped``/``reason``/``command``/``scoped``/``timed_out`` — so the
+    caller can SAY when a turn went unverified instead of returning ""
+    (which reads as "verified clean") in silence.
     """
+    st = status if isinstance(status, dict) else {}
     try:
         if mode == "off":
             return ""
         if mode == "command" and command:
-            prob, _ = _run_test_command(command, workspace, 180)
+            st["command"] = command
+            prob, timed_out = _run_test_command(command, workspace, 180)
+            if timed_out:
+                st["skipped"] = True
+                st["timed_out"] = True
+                st["reason"] = f"`{command}` timed out (180s)"
             return prob
         if mode in ("syntax", "smart"):
             syn = _syntax_check(edited_paths)
@@ -3333,18 +3478,55 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 return syn
             # smart: syntax clean → try the project's tests (bounded + adaptive)
             ws_key = str(workspace)
-            if ws_key in _SLOW_TEST_WS:
-                return ""
             # Scope the run to the package the agent edited, not the whole
             # workspace — otherwise stale/broken tests in a sibling dir falsely
             # fail and flag clean code (bug 2026-06-25).
             scope = _scoped_test_dir(edited_paths, workspace) or Path(workspace)
+            if ws_key in _SLOW_TEST_WS:
+                # The FULL suite already proved too slow. Run the remembered /
+                # derivable SCOPED command instead of silently returning clean
+                # — "no signal" must never masquerade as "verified".
+                scoped = (_SLOW_WS_SCOPED_CMD.get(ws_key)
+                          or _scoped_test_cmd_for_edits(edited_paths, scope))
+                if scoped:
+                    _SLOW_WS_SCOPED_CMD[ws_key] = scoped
+                    st["command"] = scoped
+                    st["scoped"] = True
+                    prob, timed_out = _run_test_command(scoped, scope, 60)
+                    if timed_out:
+                        st["skipped"] = True
+                        st["timed_out"] = True
+                        st["reason"] = "scoped test run timed out (60s)"
+                        return ""
+                    return prob
+                st["skipped"] = True
+                st["reason"] = ("test suite too slow for per-turn runs and "
+                                "no scoped test match for the edited files")
+                return ""
             cmd = command or _detect_test_command(scope)
             if not cmd:
+                st["skipped"] = True
+                st["reason"] = "no test suite detected (syntax check only)"
                 return ""
+            st["command"] = cmd
             prob, timed_out = _run_test_command(cmd, scope, 60)
             if timed_out:
-                _SLOW_TEST_WS.add(ws_key)    # don't re-run a slow suite each turn
+                # Full suite too slow: never re-run it per turn — but before
+                # going dark, retry SCOPED to just the tests matching the
+                # edited modules and remember that command for later turns.
+                _SLOW_TEST_WS.add(ws_key)
+                scoped = _scoped_test_cmd_for_edits(edited_paths, scope)
+                if scoped:
+                    _SLOW_WS_SCOPED_CMD[ws_key] = scoped
+                    st["command"] = scoped
+                    st["scoped"] = True
+                    prob2, timed2 = _run_test_command(scoped, scope, 60)
+                    if not timed2:
+                        return prob2
+                st["skipped"] = True
+                st["timed_out"] = True
+                st["reason"] = ("test suite timed out (60s); full runs "
+                                "disabled for this workspace")
                 return ""
             return prob
     except Exception:
@@ -3372,6 +3554,204 @@ def _record_security_event(kind: str, tool: str, detail: str,
         security_events.record(kind, tool, detail, blocked=blocked)
     except Exception:
         pass
+
+
+# --- Verification mechanics: test-evidence ledger + test-tamper gate --------
+# A test/critic agent's PASS claim is only trusted when the turn actually RAN
+# something: whenever run_tests executes or a bash command invokes pytest/
+# unittest, the parsed outcome (exit code + pass/fail counts) is appended to
+# the client's per-turn evidence ledger, which the engine copies after the
+# turn so gates can check mechanics instead of prose (a fabricated "all
+# green" used to flow straight into cycle memory / the provider profile).
+# The same observation drives the tamper gate: an edit that rewrites a test
+# file which was RED earlier this turn is recorded as a security event and
+# must be justified — a known real incident had a model edit a failing
+# test's expected value to go green, invisible to every check.
+
+# The test runner must be the COMMAND (start of line / after ;&|( ), not a
+# mere argument — otherwise `echo pytest` (exit 0) would count as a green
+# run and clear the tamper gate's red state.
+_TEST_BASH_CMD_RE = re.compile(
+    r"(?:^|[;&|(])\s*(?:python[\d.]*\s+-m\s+(?:pytest|unittest)\b"
+    r"|pytest\b|py\.test\b)"
+)
+
+# pytest console summary ("3 passed, 1 failed, 2 errors in 0.2s") +
+# unittest trailer ("FAILED (failures=2, errors=1)").
+_PYTEST_PASSED_RE = re.compile(r"(\d+)\s+passed\b")
+_PYTEST_FAILED_RE = re.compile(r"(\d+)\s+failed\b")
+_PYTEST_ERROR_RE = re.compile(r"(\d+)\s+errors?\b")
+_UNITTEST_FAIL_RE = re.compile(
+    r"FAILED\s*\((?:failures=(\d+))?(?:,\s*)?(?:errors=(\d+))?\)")
+
+# "FAILED tests/test_x.py::test_y" / "ERROR tests/test_x.py" summary lines.
+_PYTEST_FAILED_LINE_RE = re.compile(
+    r"^(?:FAILED|ERROR)\s+([\w./\\-]+\.py)", re.MULTILINE)
+
+
+def _parse_test_counts(output: str) -> tuple[int, int]:
+    """(passed, failed+errors) parsed from pytest/unittest console output.
+    (0, 0) when nothing matched — combine with the exit code."""
+    text = output or ""
+    passed = failed = errors = 0
+    m = _PYTEST_PASSED_RE.search(text)
+    if m:
+        passed = int(m.group(1))
+    m = _PYTEST_FAILED_RE.search(text)
+    if m:
+        failed = int(m.group(1))
+    m = _PYTEST_ERROR_RE.search(text)
+    if m:
+        errors = int(m.group(1))
+    m = _UNITTEST_FAIL_RE.search(text)
+    if m:
+        failed += int(m.group(1) or 0)
+        errors += int(m.group(2) or 0)
+    return passed, failed + errors
+
+
+def _failing_test_files(text: str) -> set[str]:
+    """Test FILE paths parsed from failure summary lines
+    ('FAILED tests/test_x.py::test_y')."""
+    return {m.group(1) for m in _PYTEST_FAILED_LINE_RE.finditer(text or "")}
+
+
+def _paths_from_diff(diff: str) -> list[str]:
+    """File paths a unified diff touches (from its '+++ b/…' headers)."""
+    out: list[str] = []
+    for m in re.finditer(r"^\+\+\+\s+(?:b/)?(\S+)", diff or "", re.MULTILINE):
+        p = m.group(1)
+        if p and p != "/dev/null" and p not in out:
+            out.append(p)
+    return out
+
+
+def _same_test_file(a: str, b: str) -> bool:
+    """Whether two path spellings (absolute vs workspace-relative) plausibly
+    name the same file."""
+    an = a.replace("\\", "/").lstrip("./")
+    bn = b.replace("\\", "/").lstrip("./")
+    if not an or not bn:
+        return False
+    return an == bn or an.endswith("/" + bn) or bn.endswith("/" + an)
+
+
+def _looks_like_test_file(path: str) -> bool:
+    base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return ((base.startswith("test_") and base.endswith(".py"))
+            or base.endswith("_test.py"))
+
+
+def _clear_green_targets(red_files: set, ran: str) -> None:
+    """A green run clears red state — fully for a broad run, per-file for a
+    targeted one (a green single-file run must not clear OTHER red files)."""
+    mentioned = re.findall(r"([\w./\\-]+\.py)", ran or "")
+    if not mentioned:
+        red_files.clear()
+        return
+    for m in mentioned:
+        for r in list(red_files):
+            if _same_test_file(m, r):
+                red_files.discard(r)
+
+
+def _observe_test_evidence(
+    evidence: list, red_files: set,
+    fn_name: str, fn_args: Any, result: str,
+) -> str:
+    """Update the per-turn evidence ledger + red-test-file set from one tool
+    result. Returns a tamper-gate note to PREPEND to the result when the call
+    edited a test file that was failing earlier this turn ('' otherwise).
+    Pure over its two mutable args — testable without a client."""
+    is_err = str(result or "").lstrip().startswith('{"error"')
+    args = fn_args if isinstance(fn_args, dict) else {}
+
+    if fn_name == "run_tests" and not is_err:
+        try:
+            data = json.loads(result)
+        except (TypeError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        summary = data.get("summary") or {}
+        failed = (int(summary.get("failed", 0) or 0)
+                  + int(summary.get("errors", 0) or 0))
+        run_status = str(data.get("status", "") or "")
+        exit_code = data.get("exit_code")
+        target = str(args.get("target", "") or "")
+        evidence.append({
+            "tool": "run_tests", "command": target, "exit_code": exit_code,
+            "status": run_status, "passed": int(summary.get("passed", 0) or 0),
+            "failed": failed, "ts": time.time(),
+        })
+        if failed or run_status in ("failed", "error"):
+            for f in data.get("failures") or []:
+                node = str(f.get("node_id", "") or "")
+                if "::" in node:
+                    red_files.add(node.split("::", 1)[0])
+        elif run_status == "ok" and exit_code in (0, None):
+            _clear_green_targets(red_files, target)
+        return ""
+
+    if fn_name == "bash":
+        cmd = str(args.get("command", "") or "")
+        if cmd and _TEST_BASH_CMD_RE.search(cmd):
+            exit_code = None
+            out_text = str(result or "")
+            try:
+                data = json.loads(result)
+                if isinstance(data, dict) and "exit_code" in data:
+                    exit_code = data.get("exit_code")
+                    out_text = (str(data.get("stdout", "")) + "\n"
+                                + str(data.get("stderr", "")))
+            except (TypeError, ValueError):
+                pass
+            passed, failed = _parse_test_counts(out_text)
+            if failed == 0 and isinstance(exit_code, int) and exit_code != 0:
+                failed = 1     # non-zero exit beats a missing summary line
+            evidence.append({
+                "tool": "bash", "command": cmd[:300], "exit_code": exit_code,
+                "status": ("failed" if failed
+                           else ("ok" if exit_code == 0 else "unknown")),
+                "passed": passed, "failed": failed, "ts": time.time(),
+            })
+            if failed:
+                red_files.update(_failing_test_files(out_text))
+            elif exit_code == 0 and passed > 0:
+                # Only a run that demonstrably executed tests ("N passed")
+                # clears red state — a bare exit-0 (--version, -h) must not.
+                _clear_green_targets(red_files, cmd)
+        return ""
+
+    if (fn_name in ("edit_file", "write_file", "multi_edit", "apply_patch")
+            and not is_err and red_files):
+        targets: list[str] = []
+        p = args.get("path")
+        if p:
+            targets.append(str(p))
+        if fn_name == "apply_patch":
+            targets.extend(_paths_from_diff(str(args.get("diff", "") or "")))
+        hits = [
+            t for t in targets
+            if any(_same_test_file(t, r) for r in red_files)
+            or _looks_like_test_file(t)
+        ]
+        if hits:
+            _record_security_event(
+                "test_tamper", fn_name,
+                "test-expectation edit after red run: " + ", ".join(hits[:3]),
+                blocked=False,
+            )
+            return (
+                "⚠ TEST-TAMPER GATE: this edit touches a test file while "
+                "tests were RED earlier this turn ("
+                + ", ".join(hits[:3]) +
+                "). Rewriting a failing test's expectations to go green is "
+                "only legitimate when the TEST itself was wrong — your "
+                "final answer MUST state explicitly why the test (not the "
+                "code) was wrong. This edit has been recorded."
+            )
+    return ""
 
 
 def _tool_context_char_budget(caps) -> int:
@@ -3930,6 +4310,11 @@ class _DocToolExecutor:
             return self._execute_apply_patch(arguments, permissions)
         if name in ("find_definition", "find_references"):
             return self._execute_code_nav(name, arguments, permissions)
+
+        # Structured verdict: pure data for the pipeline gates — no side
+        # effects here; the client stores the parsed dict per turn.
+        if name == "report_verdict":
+            return self._execute_report_verdict(arguments)
 
         # Planning tools — metadata operations on the workspace's task store
         # (the JSON file lives under the workspace, sandboxed by definition).
@@ -5285,25 +5670,13 @@ class _DocToolExecutor:
             root = None
         if root is None:
             return ""
-        stem = resolved.stem
-        # Subpath of the edited file relative to its workspace root, used
-        # to locate sibling tests/ dirs and mirrored test trees.
+        # Convention-based candidates, shared with auto-verify's scoped
+        # timeout fallback so both features resolve tests identically.
         try:
-            rel = resolved.relative_to(root)
-        except Exception:
+            resolved.relative_to(root)
+        except ValueError:
             return ""
-        candidates = [
-            root / "tests" / f"test_{stem}.py",
-            root / "tests" / f"{stem}_test.py",
-            root / "test" / f"test_{stem}.py",
-            resolved.parent / f"test_{stem}.py",
-            resolved.parent / "tests" / f"test_{stem}.py",
-        ]
-        # Mirror the source layout under tests/, e.g.
-        # delfin/agent/api_client.py → tests/agent/test_api_client.py.
-        if len(rel.parts) > 1:
-            mirror = root / "tests" / rel.parent / f"test_{stem}.py"
-            candidates.insert(2, mirror)
+        candidates = _test_candidate_paths(resolved, root)
 
         for cand in candidates:
             try:
@@ -5963,6 +6336,43 @@ class _DocToolExecutor:
         return json.dumps(report, ensure_ascii=False)
 
     # ------- Phase 6: tests / patch / code nav ----------------------------
+
+    def _execute_report_verdict(self, arguments: dict) -> str:
+        """Echo a structured review/test verdict back as JSON.
+
+        The tool exists so the pipeline gate reads a MACHINE verdict instead
+        of regex-parsing prose (where '**status:** reject — see findings'
+        used to extract as '' and auto-continue). Validation is strict on
+        ``status`` but lenient on the rest — a weak model's sloppy criteria
+        must not void its (valid) verdict.
+        """
+        status = str(arguments.get("status", "") or "").strip().lower()
+        aliases = {"approved": "approve", "rejected": "reject"}
+        status = aliases.get(status, status)
+        if status not in ("approve", "approve_with_risks", "reject"):
+            return json.dumps({"error": (
+                f"invalid status {status!r}: must be one of "
+                "approve | approve_with_risks | reject"
+            )})
+        criteria_in = arguments.get("criteria")
+        criteria: list[dict] = []
+        if isinstance(criteria_in, list):
+            for item in criteria_in:
+                if not isinstance(item, dict):
+                    continue
+                state = str(item.get("state", "") or "").strip().upper()
+                if state not in ("PASS", "FAIL", "UNTESTED"):
+                    state = "UNTESTED"
+                criteria.append({
+                    "name": str(item.get("name", "") or "")[:200],
+                    "state": state,
+                })
+        return json.dumps({
+            "status": status,
+            "criteria": criteria,
+            "evidence": str(arguments.get("evidence", "") or "")[:2000],
+            "recorded": True,
+        }, ensure_ascii=False)
 
     def _execute_run_tests(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
@@ -7602,6 +8012,15 @@ class OpenAIClient(_BaseClient):
         # check them before the model is allowed to finish.
         _edited_py: dict = {}
         _verify_attempts = 0
+        _last_verify_problem = ""   # last red auto-verify summary this turn
+        _verify_gave_up_notified = False
+        # Per-turn verification mechanics, read by the engine after the turn:
+        # the structured verdict from the report_verdict tool, the
+        # test-evidence ledger (every real test execution this turn), and the
+        # red-test-file set that drives the test-tamper gate.
+        self._last_structured_verdict = None
+        self._test_evidence: list[dict] = []
+        self._red_test_files: set[str] = set()
         _stream_attempt = 0    # transient-API-error retries (reset per response)
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
@@ -8183,6 +8602,28 @@ class OpenAIClient(_BaseClient):
                                 "error": f"tool '{fn_name}' failed: {exc}"
                             })
 
+                    # Verification mechanics: capture the structured verdict,
+                    # feed the test-evidence ledger, and run the test-tamper
+                    # gate (which may prepend a justification requirement to
+                    # an edit that rewrote a red test). Best-effort — must
+                    # never break the tool loop. _raw_result stays unprefixed
+                    # so later JSON parsing of the result still works.
+                    _raw_result = result
+                    try:
+                        if (fn_name == "report_verdict"
+                                and not str(result).lstrip().startswith(
+                                    '{"error"')):
+                            _sv = json.loads(result)
+                            if isinstance(_sv, dict):
+                                self._last_structured_verdict = _sv
+                        _tamper_note = _observe_test_evidence(
+                            self._test_evidence, self._red_test_files,
+                            fn_name, fn_args, result)
+                        if _tamper_note:
+                            result = _tamper_note + "\n\n" + result
+                    except Exception:
+                        pass
+
                     # Emit tool_result event for UI display
                     yield StreamEvent(
                         type="tool_result",
@@ -8229,6 +8670,29 @@ class OpenAIClient(_BaseClient):
                                 _abs = (str(_ep) if os.path.isabs(str(_ep))
                                         else os.path.join(_ws, str(_ep)))
                                 _edited_py[_abs] = True
+                            except Exception:
+                                pass
+
+                    # apply_patch edits carry no "path" argument — harvest
+                    # the .py files its diff touches so the verify gate sees
+                    # them too (bulk-patch turns used to end unverified).
+                    if (_av_mode != "off" and fn_name == "apply_patch"
+                            and isinstance(fn_args, dict)
+                            and not fn_args.get("check_only")):
+                        try:
+                            _pr = json.loads(_raw_result)
+                        except (TypeError, ValueError):
+                            _pr = {}
+                        if isinstance(_pr, dict) and _pr.get("status") == "ok":
+                            try:
+                                _ws = str(getattr(self._permissions,
+                                                  "workspace", ".") or ".")
+                                for _pp in _paths_from_diff(
+                                        str(fn_args.get("diff", "") or "")):
+                                    if _pp.endswith(".py"):
+                                        _abs = (_pp if os.path.isabs(_pp)
+                                                else os.path.join(_ws, _pp))
+                                        _edited_py[_abs] = True
                             except Exception:
                                 pass
 
@@ -8353,9 +8817,39 @@ class OpenAIClient(_BaseClient):
             # off. Bounded so a genuinely unfixable failure can't loop forever.
             if (_edited_py and _av_mode != "off" and _verify_attempts < 2):
                 _verify_attempts += 1
+                _av_status: dict = {}
                 _problems = _run_auto_verify(
                     list(_edited_py), _av_mode, _av_cmd,
-                    getattr(self._permissions, "workspace", "."))
+                    getattr(self._permissions, "workspace", "."),
+                    status=_av_status)
+                _last_verify_problem = _problems
+                # Evidence ledger: auto-verify runs AND skips are recorded —
+                # a skipped verification must never read as a green one.
+                try:
+                    self._test_evidence.append({
+                        "tool": "auto_verify",
+                        "command": str(_av_status.get("command", "") or ""),
+                        "exit_code": None,
+                        "status": ("skipped" if _av_status.get("skipped")
+                                   else ("failed" if _problems else "ok")),
+                        "passed": (0 if (_problems
+                                         or _av_status.get("skipped")) else 1),
+                        "failed": 1 if _problems else 0,
+                        "ts": time.time(),
+                    })
+                    if _problems:
+                        self._red_test_files.update(
+                            _failing_test_files(_problems))
+                except Exception:
+                    pass
+                if _av_status.get("skipped"):
+                    # Visible one-liner: silence here used to make an
+                    # UNVERIFIED turn look verified-clean (slow-suite
+                    # workspaces switched verification off after turn 1).
+                    yield StreamEvent(type="text_delta", text=(
+                        "\n\n⚠️ Auto-verify skipped: "
+                        f"{_av_status.get('reason', 'no verification ran')}"
+                        " — this turn's edits are NOT machine-verified.\n"))
                 if _problems:
                     _record_security_event(
                         "auto_verify", "verify", _problems[:80], blocked=False)
@@ -8371,6 +8865,30 @@ class OpenAIClient(_BaseClient):
                             f"{_problems}"),
                     })
                     continue        # force a fix round instead of ending
+            elif (_edited_py and _av_mode != "off"
+                    and _verify_attempts >= 2 and _last_verify_problem
+                    and not _verify_gave_up_notified):
+                # Fix-round budget exhausted while the last check was RED.
+                # Say so visibly and put it on the ledger — the old code
+                # finished silently, letting an unverified result read as
+                # success.
+                _verify_gave_up_notified = True
+                yield StreamEvent(type="text_delta", text=(
+                    "\n\n⚠️ Auto-verify gave up after "
+                    f"{_verify_attempts} fix rounds — the last check was "
+                    "still RED and the final state was NOT re-verified:\n"
+                    + _last_verify_problem[:400] + "\n"))
+                try:
+                    self._test_evidence.append({
+                        "tool": "auto_verify", "command": "",
+                        "exit_code": None, "status": "gave_up",
+                        "passed": 0, "failed": 1, "ts": time.time(),
+                    })
+                except Exception:
+                    pass
+                _record_security_event(
+                    "auto_verify_exhausted", "verify",
+                    _last_verify_problem[:80], blocked=False)
 
             # Mid-loop steering at turn end: the model gave a final answer (no
             # tool calls), but if the user steered while it ran, respond to that
