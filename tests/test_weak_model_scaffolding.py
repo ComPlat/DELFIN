@@ -161,3 +161,15 @@ def test_unknown_tool_without_near_miss_has_no_hint():
     out = json.loads(A._doc_executor.execute("zzqqxx", {}))
     assert "Unknown tool" in out["error"]
     assert "Did you mean" not in out["error"]
+
+
+def test_unknown_tool_error_wins_over_missing_doc_index(monkeypatch):
+    """CI hosts have no prebuilt docs index — an unknown tool name must
+    still produce the unknown-tool error + hint, not the index error."""
+    monkeypatch.setattr(A._doc_executor, "_ensure_loaded", lambda: False)
+    out = json.loads(A._doc_executor.execute("read_fle", {}))
+    assert "Unknown tool" in out["error"]
+    assert "read_file" in out["error"]
+    # Real docs tools still surface the index problem.
+    out2 = json.loads(A._doc_executor.execute("search_docs", {"query": "x"}))
+    assert "Doc index not available" in out2["error"]

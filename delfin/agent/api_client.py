@@ -4478,8 +4478,13 @@ class _DocToolExecutor:
             return self._execute_list_files(arguments, permissions)
 
         # Doc-index tools below (search_docs / read_section / list_docs /
-        # list_sections) require the prebuilt index.
-        if not self._ensure_loaded():
+        # list_sections) require the prebuilt index. Gate ONLY those names:
+        # an UNKNOWN tool must fall through to the unknown-tool error with
+        # its near-miss hint — on hosts without a docs index (CI), the index
+        # gate used to mask every unknown name as 'Doc index not available'.
+        _doc_index_tools = ("search_docs", "read_section",
+                            "list_docs", "list_sections")
+        if name in _doc_index_tools and not self._ensure_loaded():
             return json.dumps({"error": "Doc index not available. Run delfin-docs-index."})
 
         if name == "search_docs":
