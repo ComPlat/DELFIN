@@ -3069,6 +3069,37 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "watch_job",
+            "description": (
+                "Register a long-running job for background watching: a "
+                "SLURM job id (from sbatch) or a bash_background job id. "
+                "When the job completes or fails, the result appears in a "
+                "future turn's context automatically — so after submitting "
+                "a multi-hour calculation, call watch_job and END your "
+                "turn instead of polling bash_status in a loop."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": ("SLURM job id (numeric) or "
+                                        "bash_background job id."),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": ("Short label, e.g. 'ORCA opt of "
+                                        "emitter S1' (shown in the "
+                                        "completion notice)."),
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
 ]
 
 
@@ -4137,7 +4168,8 @@ class _DocToolExecutor:
 
         # Record failure for retrospective learning — agents that hit the
         # same (tool, command-shape, error-shape) >=3 times in 1 h get a
-        # heads-up via the failure log so they can change approach.
+        # heads-up appended to the error so they change approach (the
+        # detector existed but was never consumed until now).
         try:
             if (result or "").lstrip().startswith('{"error"'):
                 from . import failure_log as _fl
@@ -4152,6 +4184,24 @@ class _DocToolExecutor:
                     error=str(result)[:300],
                     session_id=getattr(permissions, "task_session_id", "") or "",
                 )
+                repeats = _fl.detect_repeat_for_current_task(
+                    name, str(cmd_repr)[:300], str(result)[:300])
+                if repeats >= 3:
+                    # Static text (no varying count) embedded as a JSON field
+                    # so error payloads stay machine-parseable; plain-text
+                    # results get a suffix. The consecutive-error detector
+                    # strips both forms before comparing signatures.
+                    _note = (
+                        "This exact (tool, target, error) has failed "
+                        "repeatedly within the last hour — repeating it "
+                        "will fail again. Change approach: different "
+                        "tool/arguments, or ask the user.")
+                    try:
+                        _obj = json.loads(result)
+                        _obj["heads_up"] = _note
+                        result = json.dumps(_obj)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        result = result.rstrip() + f"\n[heads-up] {_note}"
         except Exception:
             pass
 
@@ -4237,6 +4287,32 @@ class _DocToolExecutor:
                 return self._execute_bash_output(arguments)
             if name == "bash_kill":
                 return self._execute_bash_kill(arguments)
+
+        if name == "watch_job":
+            # Register a long-running job (SLURM id or bash job id) for the
+            # LLM-free watcher; completion is injected into a later turn's
+            # context, so no blocking status polls are needed.
+            job_id = str(arguments.get("job_id", "") or "").strip()
+            if not job_id:
+                return json.dumps({"error": "job_id is required"})
+            ws = getattr(permissions, "workspace", None) if permissions else None
+            if not ws:
+                return json.dumps({"error": (
+                    "watch_job requires permissions to be configured.")})
+            try:
+                from .job_monitor import register_agent_job
+                entry = register_agent_job(
+                    ws, job_id,
+                    str(arguments.get("description", "") or "")[:200])
+            except Exception as exc:
+                return json.dumps({"error": f"could not watch job: {exc}"})
+            return json.dumps({
+                "status": "watching", "job_id": job_id,
+                "kind": entry.get("kind", ""),
+                "note": ("You will be notified in a future turn's context "
+                         "when this job completes — end your turn instead "
+                         "of polling."),
+            })
 
         # Notebook tools — file-level operations, sandbox + Self-Mod-Guard
         # apply for the write side via the same gate as edit_file.
@@ -7797,6 +7873,7 @@ class OpenAIClient(_BaseClient):
                               "push_notification",
                               "remote_trigger",
                               "run_tests",
+                              "watch_job",
                               "apply_patch",
                               "find_definition",
                               "find_references",
@@ -8062,6 +8139,12 @@ class OpenAIClient(_BaseClient):
         # successful calls (e.g. polling bash_status) don't trip it.
         _CONSECUTIVE_FAIL_LIMIT = 3
         _last_error_signature: str | None = None
+        # Window of recent all-error round signatures (catches A/B/A/B
+        # alternation) + identical-successful-round tracking (no-progress
+        # loops that the error-based detector cannot see).
+        _recent_error_signatures: list[str] = []
+        _last_round_signature: str = ""
+        _identical_round_count = 0
         _consecutive_failure_count = 0
         # Thrash detector state (cleanup loops, same-file rewrites) — soft
         # nudges the model to change approach when it's spinning. Per turn.
@@ -8216,22 +8299,32 @@ class OpenAIClient(_BaseClient):
                     stream.close()
             except Exception as _stream_exc:
                 if not _is_stream_unsupported_error(_stream_exc):
-                    # Not a stream-format issue. If it's a transient shared-proxy
-                    # hiccup (timeout / 5xx / rate-limit) and nothing was emitted
-                    # this round yet, back off and retry the round — the request
-                    # state is identical, so there's no risk of duplicated
-                    # output. Anything else (bad request, auth, mid-stream after
-                    # partial output) re-raises as before.
+                    # Not a stream-format issue. A transient shared-proxy
+                    # hiccup (timeout / 5xx / rate-limit) retries the round —
+                    # ALSO after partial output: the round's api_messages are
+                    # only appended once it completes, so the request state is
+                    # identical on retry. Any partial text this round was
+                    # already shown to the user; a visible marker separates it
+                    # from the regenerated answer, and the partial round state
+                    # is discarded so nothing duplicates into the context.
+                    # Killing the generator here instead would discard EVERY
+                    # completed round's progress mid-turn.
                     if (_is_transient_api_error(_stream_exc)
-                            and not _text_chunks and not _tool_calls
                             and _stream_attempt < _STREAM_RETRY_MAX):
+                        _had_partial = bool(_text_chunks or _tool_calls)
+                        _text_chunks = []
+                        _tool_calls = {}
+                        _round_in = 0
+                        finish_reason = None
                         _stream_attempt += 1
                         _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
+                        _note = (" — connection lost mid-answer, the reply "
+                                 "restarts below" if _had_partial else "")
                         yield StreamEvent(type="text_delta", text=(
                             f"\n⏳ Transient API error "
                             f"({type(_stream_exc).__name__}); retrying "
                             f"{_stream_attempt}/{_STREAM_RETRY_MAX} in "
-                            f"{_delay:.0f}s…\n"))
+                            f"{_delay:.0f}s{_note}…\n"))
                         time.sleep(_delay)
                         continue
                     # Context-window overflow is deterministic — retrying the
@@ -8487,6 +8580,7 @@ class OpenAIClient(_BaseClient):
                                             "push_notification",
                                             "remote_trigger",
                                             "run_tests",
+                                            "watch_job",
                                             "apply_patch",
                                             "find_definition",
                                             "find_references",
@@ -8769,12 +8863,24 @@ class OpenAIClient(_BaseClient):
                 def _is_error_result(s: str) -> bool:
                     return s.lstrip().startswith('{"error"')
                 if _round_results and all(_is_error_result(r) for r in _round_results):
-                    signature = "|".join(_round_results)
-                    if signature == _last_error_signature:
+                    # Signature over the RAW error (heads-up stripped in
+                    # both its JSON-field and text-suffix forms): the advice
+                    # must not mask an identical-error loop.
+                    signature = "|".join(
+                        re.sub(r', "heads_up": "[^"]*"', "",
+                               r.split("\n[heads-up]")[0])
+                        for r in _round_results)
+                    # A model alternating between TWO error shapes (A,B,A,B…)
+                    # previously reset the counter every round and looped to
+                    # the round cap — track a small recent-signature window
+                    # instead of only the immediately previous round.
+                    if signature in _recent_error_signatures:
                         _consecutive_failure_count += 1
                     else:
                         _consecutive_failure_count = 1
-                        _last_error_signature = signature
+                    _recent_error_signatures.append(signature)
+                    del _recent_error_signatures[:-2]
+                    _last_error_signature = signature
                     if _consecutive_failure_count >= _CONSECUTIVE_FAIL_LIMIT:
                         yield StreamEvent(
                             type="text_delta",
@@ -8804,6 +8910,47 @@ class OpenAIClient(_BaseClient):
                     # errors mixed with success.
                     _last_error_signature = None
                     _consecutive_failure_count = 0
+                    del _recent_error_signatures[:]
+
+                # No-net-progress check: the SAME tool calls (names + args)
+                # repeated round after round — successfully — is the other
+                # degenerate loop shape (identical reads return identical
+                # data; nothing new can come of round 4). Steer once, then
+                # abort cleanly instead of bleeding to the round cap.
+                try:
+                    _round_sig = "|".join(sorted(
+                        f"{tc['function']['name']}:{tc['function']['arguments']}"
+                        for tc in tc_list))
+                except Exception:
+                    _round_sig = ""
+                if _round_sig and _round_sig == _last_round_signature:
+                    _identical_round_count += 1
+                else:
+                    _identical_round_count = 1
+                    _last_round_signature = _round_sig
+                if _identical_round_count == 3:
+                    api_messages.append({"role": "user", "content": (
+                        "[system] You have issued the IDENTICAL tool call(s) "
+                        "3 rounds in a row. Repeating them again returns the "
+                        "same data. Use what you already have: change "
+                        "approach, call a different tool, or finish with "
+                        "your answer now."
+                    )})
+                elif _identical_round_count >= 5:
+                    yield StreamEvent(type="text_delta", text=(
+                        "\n\n⚠ Aborting tool loop: the identical tool "
+                        "call(s) were repeated 5 rounds in a row without "
+                        "new information. Send 'continue' to resume.\n"))
+                    cost = self._estimate_cost(_total_in, _total_out)
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in,
+                        output_tokens=_total_out,
+                        cost_usd=cost,
+                        cached_tokens=_total_cached,
+                        stop_reason="no_progress_loop",
+                    )
+                    return
 
                 # Loop back to get the model's next response
                 continue

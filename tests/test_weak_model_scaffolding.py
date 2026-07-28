@@ -19,6 +19,14 @@ from delfin.agent import text_sanitize as ts
 from delfin.agent.model_profiles import ModelProfile
 
 
+@pytest.fixture(autouse=True)
+def _isolate_failure_log(monkeypatch, tmp_path):
+    """Keep the cross-session failure log out of the user's real home so
+    repeat-failure heads-ups can't leak into unrelated assertions."""
+    from delfin.agent import failure_log as _fl
+    monkeypatch.setattr(_fl, "_LOG_PATH", tmp_path / "failure_log.jsonl")
+
+
 # ---------------------------------------------------------------------------
 # Per-model budgets
 # ---------------------------------------------------------------------------

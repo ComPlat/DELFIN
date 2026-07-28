@@ -792,6 +792,55 @@ class AgentEngine:
             )
         return "\n".join(lines)
 
+    def _build_finished_jobs_block(self) -> str:
+        """Event-driven completion notice for background work.
+
+        Drains jobs that finished since the previous turn (persistent
+        bash-job registry + agent-watched SLURM jobs) into a compact block,
+        so the model reacts to a finished multi-hour calculation on its next
+        turn instead of babysitting it with blocking status polls.
+        Best-effort; empty string when nothing finished."""
+        try:
+            perms = self.kit_permissions
+            ws = getattr(perms, "workspace", None) if perms else None
+            if not ws:
+                return ""
+        except Exception:
+            return ""
+        events: list[str] = []
+        try:
+            from delfin.agent.bash_jobs import drain_finished_events
+            for ev in drain_finished_events(ws) or []:
+                rc = ev.get("exit_code")
+                state = "ok" if rc == 0 else (
+                    f"exit {rc}" if rc is not None else "finished (exit unknown)")
+                tail = (ev.get("stderr_tail") if rc not in (0, None)
+                        else ev.get("stdout_tail")) or ""
+                tail = " ".join(str(tail).split())[:200]
+                events.append(
+                    f"- bash job {ev.get('job_id')} [{state}, "
+                    f"{ev.get('runtime_s', 0):.0f}s] "
+                    f"{str(ev.get('command', ''))[:100]}"
+                    + (f" → {tail}" if tail else ""))
+        except Exception:
+            pass
+        try:
+            from delfin.agent.job_monitor import check_agent_jobs
+            for ev in check_agent_jobs(ws) or []:
+                sig = ", ".join(ev.get("signatures") or [])
+                events.append(
+                    f"- {ev.get('kind', 'job')} {ev.get('job_id')} "
+                    f"[{ev.get('state', '?')}] "
+                    f"{str(ev.get('description', ''))[:80]}"
+                    + (f" — signatures: {sig}" if sig else ""))
+        except Exception:
+            pass
+        if not events:
+            return ""
+        return "\n".join(
+            ["# Background jobs finished since your last turn "
+             "(act on these results now)"] + events)
+
     _MUTATE_TOOLS_FOR_PIN = frozenset({
         "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
     })
@@ -874,6 +923,9 @@ class AgentEngine:
             tasks_block = self._build_open_tasks_block()
             if tasks_block:
                 extra_blocks.append(tasks_block)
+            jobs_block = self._build_finished_jobs_block()
+            if jobs_block:
+                extra_blocks.append(jobs_block)
             if extra_blocks:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
@@ -1173,9 +1225,28 @@ class AgentEngine:
                     if event.text and not self.session_id:
                         self.session_id = event.text
 
-        except Exception:
+        except Exception as _turn_exc:
             if not chunks:
                 self.messages.pop()
+            # The FAIL side of the learning loop: errored turns previously
+            # recorded NO outcome at all, so provider profiles only ever
+            # learned from successes. Classify + record before re-raising.
+            try:
+                _etype = type(_turn_exc).__name__
+                try:
+                    from .api_client import (_is_context_length_error,
+                                             _is_transient_api_error)
+                    if _is_context_length_error(_turn_exc):
+                        _etype = "context_overflow"
+                    elif _is_transient_api_error(_turn_exc):
+                        _etype = "transient_api"
+                except Exception:
+                    pass
+                self.record_cycle_outcome(
+                    "FAIL", user_message, error_type=_etype,
+                    start_time=_turn_t0)
+            except Exception:
+                pass
             raise
         finally:
             # Stop hooks — fire after the stream finishes (success or

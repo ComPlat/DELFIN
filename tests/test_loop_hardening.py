@@ -82,6 +82,14 @@ class _EmptyReg:
     def discover_prompts(self): return []
 
 
+@pytest.fixture(autouse=True)
+def _isolate_failure_log(monkeypatch, tmp_path):
+    """Keep the cross-session failure log out of the user's real home so
+    repeat-failure heads-ups are deterministic in tests."""
+    from delfin.agent import failure_log as _fl
+    monkeypatch.setattr(_fl, "_LOG_PATH", tmp_path / "failure_log.jsonl")
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     from delfin.agent import model_capabilities as mc
