@@ -7450,10 +7450,29 @@ class _DocToolExecutor:
         # models re-ask the identical question in a loop otherwise).
         if result.get("timed_out"):
             payload["timed_out"] = True
+            # Park the question in the durable attention inbox so the user
+            # can answer it later; the engine injects that answer into a
+            # following turn via attention.drain_resolved().
+            _attn_id = ""
+            try:
+                from .attention import emit_attention
+                _attn_id = emit_attention(
+                    "question_pending",
+                    session_id=str(getattr(perms, "task_session_id", "") or ""),
+                    title=f"Question waiting: {question[:80]}",
+                    detail=question,
+                    options=[o["label"] for o in norm_options],
+                    workspace=str(getattr(perms, "workspace", "") or ""),
+                )
+            except Exception:
+                _attn_id = ""
             payload["note"] = (
                 "The question timed out with no user present — the empty "
                 "answer list is NOT a choice. Do not re-ask now; proceed "
                 "with a sensible default or end your turn and wait."
+                + ((" The question was parked in the attention inbox "
+                    f"(event {_attn_id}); a later user answer is injected "
+                    "into a following turn.") if _attn_id else "")
             )
         return json.dumps(payload)
 

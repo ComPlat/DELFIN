@@ -7,12 +7,26 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 widgets = pytest.importorskip("ipywidgets")
 
 from delfin.agent.kit_confirm import KitConfirmBroker
+
+
+@pytest.fixture(autouse=True)
+def _isolated_attention_home(tmp_path_factory, monkeypatch):
+    """The confirm broker emits durable attention-inbox events on enqueue
+    (delfin.agent.attention); keep them — and desktop notifications — out
+    of the real user home when broker callbacks run in this suite. The
+    fake home is a SIBLING of the tests' tmp_path workspaces — the
+    workspace floor refuses any workspace that is an ancestor of $HOME."""
+    home = tmp_path_factory.mktemp("attn_home")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    import delfin.agent.notify as _notify
+    monkeypatch.setattr(_notify, "send_notification", lambda *a, **k: True)
 
 
 def _broker_with_recorder():
