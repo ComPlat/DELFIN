@@ -22,6 +22,36 @@ def _chmod_user_only(path: Path) -> None:
     except OSError:
         pass
 
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Same pattern as ``memory_store._atomic_write``: a plain ``write_text``
+    truncates the file first, so a crash mid-write (or a reader racing the
+    writer — two dashboards can share one sessions dir) leaves a torn or
+    empty session file. With replace, the file on disk is always either
+    the complete old version or the complete new one.
+
+    The transcript archive (``*.jsonl``) intentionally stays append-mode:
+    appends can't be replaced atomically without rewriting the whole file,
+    and its reader already skips a torn last line.
+    """
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        _chmod_user_only(path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
 # Legacy mode name migration
 _LEGACY_MODE_MAP = {
     "default": "quick",
@@ -41,6 +71,199 @@ _SESSIONS_DIR = Path.home() / ".delfin" / "agent_sessions"
 def _ensure_dir() -> Path:
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     return _SESSIONS_DIR
+
+
+# ---------------------------------------------------------------------------
+# Single-writer guard — one live process per session id
+# ---------------------------------------------------------------------------
+#
+# Two dashboards (or a dashboard + CLI) resuming the SAME session id used
+# to silently clobber each other's saves turn-by-turn: last writer wins,
+# the other's turns vanish on its next reload. A tiny per-session lock
+# file (pid + timestamp) makes the second writer's save fail loudly
+# instead of corrupting the first writer's history.
+
+_LOCK_MAX_AGE_S = 3600.0   # locks older than 1h are stale regardless of pid
+
+
+class SessionLockedError(RuntimeError):
+    """Another live process holds the writer lock for this session.
+
+    Raised by :func:`save_session` (via :func:`acquire_session_lock`)
+    instead of overwriting a session another dashboard/CLI is actively
+    writing. Callers that wrap saves in try/except surface it as a
+    save-failed warning; the session file itself is left untouched.
+    """
+
+    def __init__(self, session_id: str, holder_pid: int) -> None:
+        super().__init__(
+            f"session '{session_id}' is locked by live pid {holder_pid}; "
+            f"save skipped so two writers don't clobber each other")
+        self.session_id = session_id
+        self.holder_pid = holder_pid
+
+
+def _lock_path(session_id: str) -> Path:
+    return _SESSIONS_DIR / f"{session_id}.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when ``pid`` is a live process (EPERM counts as alive)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+def acquire_session_lock(session_id: str) -> Path:
+    """Acquire or refresh the per-session single-writer lock.
+
+    The lock file holds ``{"pid": ..., "ts": ...}``. Our own pid just
+    refreshes the timestamp. A DIFFERENT pid that is still alive and
+    whose lock is younger than :data:`_LOCK_MAX_AGE_S` raises
+    :class:`SessionLockedError`. Stale locks (dead pid, or older than
+    1h) are broken silently.
+    """
+    d = _ensure_dir()
+    p = d / f"{session_id}.lock"
+    me = os.getpid()
+    holder, ts = 0, 0.0
+    try:
+        info = json.loads(p.read_text(encoding="utf-8"))
+        holder = int(info.get("pid", 0) or 0)
+        ts = float(info.get("ts", 0) or 0)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    if holder and holder != me:
+        if (time.time() - ts) < _LOCK_MAX_AGE_S and _pid_alive(holder):
+            raise SessionLockedError(session_id, holder)
+        # Stale lock (dead pid or >1h old): break silently.
+    _atomic_write_text(p, json.dumps({"pid": me, "ts": time.time()}))
+    return p
+
+
+def release_session_lock(session_id: str) -> None:
+    """Drop the lock if THIS process holds it. Best-effort, never raises."""
+    p = _lock_path(session_id)
+    try:
+        info = json.loads(p.read_text(encoding="utf-8"))
+        if int(info.get("pid", 0) or 0) == os.getpid():
+            p.unlink()
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Mid-turn checkpoints — crash insurance inside a single long turn
+# ---------------------------------------------------------------------------
+#
+# Full session saves happen only at turn boundaries, but one turn can run
+# hundreds of tool rounds over hours. The engine writes this lightweight
+# checkpoint (throttled, best-effort) during the tool loop and clears it
+# at normal turn end — so a ``<sid>.turn.json`` left on disk is proof of
+# an unclean process death, and feeds a recovery note on the next load.
+
+
+def _turn_checkpoint_path(session_id: str) -> Path:
+    return _SESSIONS_DIR / f"{session_id}.turn.json"
+
+
+def save_turn_checkpoint(session_id: str, payload: dict[str, Any]) -> Path | None:
+    """Atomically persist a lightweight mid-turn checkpoint.
+
+    ``payload`` should stay cheap: the turn's user message, the partial
+    response text so far, the tool-call count and a timestamp. Returns
+    the checkpoint path, or ``None`` when there is no session id or the
+    write failed (callers treat this as best-effort).
+    """
+    if not session_id:
+        return None
+    _ensure_dir()
+    data = dict(payload or {})
+    data.setdefault("ts", time.time())
+    data["session_id"] = session_id
+    p = _turn_checkpoint_path(session_id)
+    try:
+        _atomic_write_text(p, json.dumps(data, ensure_ascii=False))
+    except OSError:
+        return None
+    return p
+
+
+def load_turn_checkpoint(session_id: str) -> dict[str, Any] | None:
+    """Return the mid-turn checkpoint dict, or ``None`` if absent/corrupt."""
+    if not session_id:
+        return None
+    p = _turn_checkpoint_path(session_id)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def clear_turn_checkpoint(session_id: str) -> bool:
+    """Remove the mid-turn checkpoint. True if a file was removed."""
+    if not session_id:
+        return False
+    p = _turn_checkpoint_path(session_id)
+    try:
+        if p.exists():
+            p.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def consume_crash_recovery_note(session_id: str) -> str | None:
+    """One-shot: turn a surviving mid-turn checkpoint into a recovery note.
+
+    Called on session load. If a checkpoint exists AND is newer than the
+    session's last full save, the previous process died mid-turn — build
+    the "[recovered] ..." note (interrupted task, tool-call count, the
+    partial answer) for injection into the restored conversation. The
+    checkpoint is cleared in every case (stale ones silently), so the
+    note fires exactly once. Returns ``None`` when there is nothing to
+    recover.
+    """
+    ck = load_turn_checkpoint(session_id)
+    if not ck:
+        return None
+    clear_turn_checkpoint(session_id)
+    saved_at = 0.0
+    saved = load_session(session_id)
+    if saved:
+        try:
+            saved_at = float(saved.get("updated_at", 0) or 0)
+        except (TypeError, ValueError):
+            saved_at = 0.0
+    try:
+        ck_ts = float(ck.get("ts", 0) or 0)
+    except (TypeError, ValueError):
+        ck_ts = 0.0
+    if ck_ts <= saved_at:
+        return None   # stale — a full save landed after this checkpoint
+    user_msg = str(ck.get("user_message", "") or "").strip()
+    n_tools = int(ck.get("tool_calls", 0) or 0)
+    partial = str(ck.get("partial_response", "") or "").strip()
+    note = (
+        "[recovered] The previous session ended mid-turn while working on: "
+        f"{user_msg or '(unknown task)'}. Partial progress ({n_tools} tool "
+        "calls, partial answer below) was not committed — verify state "
+        "before continuing."
+    )
+    if partial:
+        note += "\n\n" + partial
+    return note
 
 
 def _transcript_archive_dir() -> Path:
@@ -194,11 +417,22 @@ def save_session(
     -------
     Path
         Path to the saved session file.
+
+    Raises
+    ------
+    SessionLockedError
+        When another live process holds this session's writer lock —
+        the save is skipped entirely so two writers on the same session
+        id can't silently clobber each other.
     """
     if not session_id:
         return Path(os.devnull)
 
     d = _ensure_dir()
+
+    # Single-writer guard: acquire/refresh our lock, or bail loudly if a
+    # different live process is writing this session id right now.
+    acquire_session_lock(session_id)
 
     # Auto-title from first user message
     if not title and chat_messages:
@@ -247,8 +481,7 @@ def save_session(
     else:
         data["created_at"] = data["updated_at"]
 
-    filepath.write_text(json.dumps(data, ensure_ascii=False, indent=1))
-    _chmod_user_only(filepath)
+    _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
     return filepath
 
 
@@ -277,6 +510,8 @@ def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
 
     sessions = []
     for f in d.glob("*.json"):
+        if f.name.endswith(".turn.json"):
+            continue   # mid-turn crash checkpoint, not a session
         try:
             data = json.loads(f.read_text())
             sessions.append({
@@ -301,6 +536,13 @@ def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
 def delete_session(session_id: str) -> bool:
     """Delete a session file. Returns True if deleted."""
     filepath = _SESSIONS_DIR / f"{session_id}.json"
+    # Companion files (writer lock, mid-turn checkpoint) go with it so a
+    # deleted session can't leave an orphan recovery note behind.
+    for side in (_lock_path(session_id), _turn_checkpoint_path(session_id)):
+        try:
+            side.unlink()
+        except OSError:
+            pass
     if filepath.exists():
         filepath.unlink()
         return True
@@ -361,8 +603,7 @@ def fork_session(
 
     out_path = base_dir / f"{new_id}.json"
     base_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(data, ensure_ascii=False, indent=1))
-    _chmod_user_only(out_path)
+    _atomic_write_text(out_path, json.dumps(data, ensure_ascii=False, indent=1))
     return new_id
 
 
@@ -578,8 +819,7 @@ def save_handoff_brief(session_id: str, brief: str) -> Path:
     ts = time.strftime("%Y%m%d_%H%M%S")
     safe_sid = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id or "session")[:40]
     p = d / f"{safe_sid}_{ts}.md"
-    p.write_text(brief, encoding="utf-8")
-    _chmod_user_only(p)
+    _atomic_write_text(p, brief)
     return p
 
 
@@ -661,14 +901,12 @@ def import_bundle(bundle_path: Path | str, *, new_id: str | None = None) -> str 
         data["title"] = f"{src_title} (imported)"
 
     d = _ensure_dir()
-    (d / f"{sid}.json").write_text(
-        json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+    _atomic_write_text(
+        d / f"{sid}.json", json.dumps(data, ensure_ascii=False, indent=1)
     )
-    _chmod_user_only(d / f"{sid}.json")
     if transcript.strip():
         arch = _transcript_archive_dir() / f"{sid}.jsonl"
-        arch.write_text(transcript, encoding="utf-8")
-        _chmod_user_only(arch)
+        _atomic_write_text(arch, transcript)
     return sid
 
 

@@ -1067,6 +1067,11 @@ class AgentEngine:
         _turn_t0 = _time.monotonic()
         _turn_ttft: float | None = None
         _turn_tool_calls = 0
+        # Mid-turn crash-checkpoint throttle: first write fires 10 tool
+        # results or 60s into the tool loop, whichever comes first — short
+        # turns never touch disk. See session_store.save_turn_checkpoint.
+        _ckpt_events = 0
+        _ckpt_last = _turn_t0
         self._saw_message_start = False
         # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
         # single turn's tool-loop can't run away forever. Resets every turn — it
@@ -1152,6 +1157,27 @@ class AgentEngine:
                         on_tool_result(event.tool_name, event.tool_output)
                     self._record_tool_trace(
                         event.tool_name, event.tool_output or "", ok=True)
+                    # Crash insurance: full session saves happen only at
+                    # turn boundaries, but one turn can run hundreds of
+                    # tool rounds — persist a cheap checkpoint (throttled,
+                    # best-effort) so a SIGKILL mid-loop costs the last few
+                    # rounds, not the whole turn. Cleared at turn end.
+                    _ckpt_events += 1
+                    _ckpt_now = _time.monotonic()
+                    if _ckpt_events >= 10 or (_ckpt_now - _ckpt_last) >= 60.0:
+                        _ckpt_events = 0
+                        _ckpt_last = _ckpt_now
+                        try:
+                            from . import session_store as _ss_ckpt
+                            _ss_ckpt.save_turn_checkpoint(
+                                self.session_id or "", {
+                                    "user_message": user_message[:2000],
+                                    "partial_response": "".join(chunks)[-20000:],
+                                    "tool_calls": _turn_tool_calls,
+                                    "ts": _time.time(),
+                                })
+                        except Exception:
+                            pass
 
                 elif event.type == "permission_denied":
                     if on_permission_denied:
@@ -1275,6 +1301,15 @@ class AgentEngine:
                     tool_calls=_turn_tool_calls,
                     stopped=self._stop_requested,
                 )
+            except Exception:
+                pass
+            # Turn is over (normally or with a surfaced error) — the
+            # mid-turn crash checkpoint is obsolete. Only an unclean
+            # process death (which skips this finally) leaves one behind
+            # for the next session load to recover from.
+            try:
+                from . import session_store as _ss_ckpt
+                _ss_ckpt.clear_turn_checkpoint(self.session_id or "")
             except Exception:
                 pass
 
@@ -2309,6 +2344,10 @@ class AgentEngine:
             "token_usage": dict(self.token_usage),
             "cost_usd": self.cost_usd,
             "session_id": self.session_id,
+            # Round-tripped by restore_state so resume doesn't lose the
+            # project-directory pin or the compaction estimator's floor.
+            "project_dir": self._project_dir,
+            "last_input_tokens": self._last_input_tokens,
         }
 
     def restore_state(self, data: dict) -> None:
@@ -2327,6 +2366,32 @@ class AgentEngine:
         self.token_usage.setdefault("cached", 0)   # old sessions predate this key
         self.cost_usd = data.get("cost_usd", 0.0)
         self.session_id = data.get("session_id", "")
+        # Round-trip state that used to be silently dropped on resume:
+        # the project-directory pin (keeps a long session writing into the
+        # same folder) and the last authoritative input-token count (the
+        # compaction estimator's ground-truth floor).
+        self._project_dir = str(data.get("project_dir", "") or "")
+        try:
+            self._last_input_tokens = int(data.get("last_input_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            self._last_input_tokens = 0
+        # Crash recovery: a surviving mid-turn checkpoint means the
+        # previous process died inside a turn, so that turn's work was
+        # never committed. Inject the recovery note using the house
+        # user-note + assistant-ack pair (same shape as the compaction
+        # summary) so message alternation survives _sanitize_messages.
+        try:
+            from . import session_store as _ss_ckpt
+            _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
+            if _note:
+                self.messages.append({"role": "user", "content": _note})
+                self.messages.append({
+                    "role": "assistant",
+                    "content": "Understood. I will verify the workspace "
+                               "state before continuing.",
+                })
+        except Exception:
+            pass
 
     def available_modes(self) -> list[str]:
         """Return list of available mode IDs."""
