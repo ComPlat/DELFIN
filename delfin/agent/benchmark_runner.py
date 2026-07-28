@@ -153,6 +153,18 @@ def _run_task_once(
         return score_outcome(
             task, traj, model=model, profile_name=profile_name, ts=clock(),
         )
+    # Run budget from the task caps: a benchmark task must not burn an
+    # unbounded multiple of its declared cost/duration budget (observed:
+    # one task at 27x its cost cap). Generous factors keep legitimate
+    # thoroughness possible; the engine's wind-down asks the agent to
+    # wrap up at 80% and refuses new turns past 110%.
+    try:
+        if float(task.max_cost_usd or 0) > 0:
+            engine.run_budget_usd = max(1.0, float(task.max_cost_usd) * 4.0)
+        if float(task.max_duration_s or 0) > 0:
+            engine.run_budget_s = max(120.0, float(task.max_duration_s) * 4.0)
+    except Exception:
+        pass
     cost_before = float(getattr(engine, "cost_usd", 0.0) or 0.0)
     t0 = clock()
     try:

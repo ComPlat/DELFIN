@@ -229,7 +229,32 @@ def _load_one(p: Path) -> list[Task]:
 _SIGNAL_AGAINST_VALUES = {"text", "action", "tool_name", "any"}
 
 
-def _signal_matches(signal: Signal, traj: Trajectory) -> bool:
+# Negation markers that waive a forbidden-pattern hit when they appear
+# close to the match: the answer is REJECTING the term, not recommending
+# it. Window is deliberately tight so a negation elsewhere in a long
+# paragraph cannot launder a genuine recommendation.
+# Word-boundary matching: "cannot" must NOT count as a negation of a
+# nearby term (refusal detectors rely on it), while "NOT", "nicht",
+# "never" etc. as standalone words do.
+_NEGATION_RE = re.compile(
+    r"(?i)\b(?:not|nicht|never|niemals|kein|keine|falsch|wrong|"
+    r"invalid|statt|avoid|vermeide|no such)\b|instead of")
+_NEGATION_WINDOW = 160
+
+
+def _match_is_negated(haystack: str, start: int, end: int) -> bool:
+    """True when a forbidden-pattern match sits in an explicit negation
+    context within the surrounding window. The matched span itself is
+    excluded so a pattern can never self-negate."""
+    lo = max(0, start - _NEGATION_WINDOW)
+    hi = min(len(haystack), end + _NEGATION_WINDOW)
+    ctx = haystack[lo:start] + " " + haystack[end:hi]
+    return bool(_NEGATION_RE.search(ctx))
+
+
+def _signal_matches(
+    signal: Signal, traj: Trajectory, *, waive_negated: bool = False,
+) -> bool:
     pat = signal.pattern
     if not pat:
         return False
@@ -247,7 +272,13 @@ def _signal_matches(signal: Signal, traj: Trajectory) -> bool:
         haystacks = [c.get("name", "") for c in traj.tool_calls]
     else:                                                       # any
         haystacks = [traj.as_string()]
-    return any(rx.search(h or "") for h in haystacks)
+    if not waive_negated:
+        return any(rx.search(h or "") for h in haystacks)
+    for h in haystacks:
+        for m in rx.finditer(h or ""):
+            if not _match_is_negated(h or "", m.start(), m.end()):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -559,10 +590,14 @@ def score_outcome(
         if sig.optional:
             optional_total += 1
 
-    # 2. Forbidden signals — any match flips success to False.
+    # 2. Forbidden signals — any match flips success to False. A match
+    # inside an explicit NEGATION context is waived: an answer that names
+    # a fake keyword in order to warn against it ("the keywords are NOT
+    # Nactel/Nactorb") shows exactly the grounded behavior the suite
+    # rewards, and must not score as if it recommended the fake.
     for idx, sig in enumerate(task.forbidden_signals):
         label = f"{task.id}.forbidden[{idx}]"
-        if _signal_matches(sig, traj):
+        if _signal_matches(sig, traj, waive_negated=True):
             violated.append(label)
 
     success = bool(success_required_ok and not violated and not traj.error)

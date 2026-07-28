@@ -907,3 +907,78 @@ def test_list_runs_sorted_oldest_first(tmp_path):
     assert [p.name for p in bm.list_runs(tmp_path)] == [
         "older.jsonl", "newer.jsonl"]
     assert bm.list_runs(tmp_path / "missing") == []
+
+
+# ---------------------------------------------------------------------------
+# Negation-aware forbidden scoring + task-cap run budgets
+# ---------------------------------------------------------------------------
+
+def _forbidden_task(pattern):
+    from delfin.agent.benchmark import Task, Signal
+    return Task(
+        id="t_forbid", task_class="fact", mode="solo", prompt="p",
+        expected_signals=(Signal(pattern="(?i)nel", against="text"),),
+        forbidden_signals=(Signal(pattern=pattern, against="text"),),
+        max_duration_s=60, max_cost_usd=0.3, max_tool_calls=8,
+    )
+
+
+def test_forbidden_hit_still_fails_plain_recommendation():
+    from delfin.agent.benchmark import Trajectory, score_outcome
+    traj = Trajectory(text="Use the keyword Nactel 6 and nel 6 here.")
+    res = score_outcome(_forbidden_task(r"(?i)\bnactel\b"), traj,
+                        model="m", profile_name="p", ts=0.0)
+    assert res.violated_signals
+
+
+def test_forbidden_hit_waived_in_negation_context():
+    """An answer that names a fake keyword to WARN against it shows the
+    grounded behavior the suite rewards — no violation."""
+    from delfin.agent.benchmark import Trajectory, score_outcome
+    traj = Trajectory(text=(
+        "Die Keywords sind `nel` und `norb`. Wichtig: Die Keywords "
+        "heißen NICHT `Nactel` oder `Nactorb` — das sind erfundene "
+        "Namen, die es im Manual nicht gibt."))
+    res = score_outcome(_forbidden_task(r"(?i)\bnactel\b"), traj,
+                        model="m", profile_name="p", ts=0.0)
+    assert not res.violated_signals
+
+
+def test_forbidden_negation_elsewhere_does_not_launder():
+    """A negation far away in the text must not waive a genuine
+    recommendation of the forbidden term."""
+    from delfin.agent.benchmark import Trajectory, score_outcome
+    traj = Trajectory(text=(
+        "This approach is not ideal for large systems. " + "x" * 300 +
+        " Set Nactel 6 in the %casscf block to configure it, "
+        "then run the calculation with the usual settings and confirm "
+        "the reference weights afterwards."))
+    res = score_outcome(_forbidden_task(r"(?i)\bnactel\b"), traj,
+                        model="m", profile_name="p", ts=0.0)
+    assert res.violated_signals
+
+
+def test_runner_sets_task_cap_budgets(monkeypatch):
+    from delfin.agent import benchmark_runner as br
+    from delfin.agent.benchmark import Task
+
+    class _Eng:
+        cost_usd = 0.0
+    captured = {}
+
+    def _factory(model, backend, provider, mode):
+        e = _Eng(); captured["engine"] = e; return e
+
+    def _run_once(engine, prompt, max_tokens=4096):
+        return {"text": "nel 6", "tool_calls": [], "error": "",
+                "input_tokens": 1, "output_tokens": 1}
+
+    task = Task(id="t_b", task_class="fact", mode="solo", prompt="p",
+                expected_signals=(), forbidden_signals=(),
+                max_duration_s=90, max_cost_usd=0.3, max_tool_calls=8)
+    br.run_task(task, model="m", backend="api", provider="kit",
+                profile_name="p", engine_factory=_factory,
+                max_tokens=100, run_once=_run_once)
+    eng = captured["engine"]
+    assert abs(eng.run_budget_usd - 1.2) < 1e-9
+    assert eng.run_budget_s == 360.0
