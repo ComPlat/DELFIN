@@ -37,6 +37,30 @@ _DISTILL_SYSTEM = (
 )
 
 
+# Structured-path variant of the distillation briefing: same fact types
+# and scope prefix, but the reply shape is enforced by the JSON schema
+# contract that request_structured appends (a {"facts": [...]} object).
+_DISTILL_SYSTEM_STRUCTURED = (
+    "You extract durable memories from an assistant work session. "
+    "Produce up to {max_facts} short, self-contained facts worth keeping "
+    "for FUTURE sessions. PREFIX each fact with its type (feedback: / "
+    "project: / reference: / user:), with a leading 'global: ' when it "
+    "holds for this user across ALL projects. Skip anything the repo "
+    "already records (code structure, git history, past fixes). English. "
+    "Return the facts in the 'facts' array; an empty array when nothing "
+    "durable emerged."
+)
+
+# Schema for the structured distillation reply.
+_FACTS_SCHEMA: dict = {
+    "type": "object",
+    "required": ["facts"],
+    "properties": {
+        "facts": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
 def auto_memory_settings(settings: dict | None = None) -> dict:
     if settings is None:
         try:
@@ -58,6 +82,10 @@ def auto_memory_settings(settings: dict | None = None) -> dict:
         "max_facts": int(cfg.get("max_facts", 5) or 5),
         "min_user_msgs": int(cfg.get("min_user_msgs", 3) or 3),
         "max_age_days": max_age_days,
+        # Off by default: the structured path routes the distillation
+        # through the schema-validated output service instead of the
+        # free-text parse. Legacy behavior is unchanged until enabled.
+        "structured": bool(cfg.get("structured", False)),
     }
 
 
@@ -76,8 +104,8 @@ def _transcript_excerpt(chat_messages: list[dict], cap: int = 8000) -> str:
     return text[-cap:]
 
 
-def _default_llm(prompt: str, system: str, settings: dict | None) -> str:
-    """One cheap completion via the same credential path the agent uses."""
+def _build_client(settings: dict | None):
+    """Cheap-tier streaming client on the agent's credential path."""
     from delfin.agent.job_monitor import _resolve_provider_and_key
     from delfin.agent.model_routing import tier_model
     cfg = auto_memory_settings(settings)
@@ -87,8 +115,13 @@ def _default_llm(prompt: str, system: str, settings: dict | None) -> str:
         model = tier_model(provider, "cheap", settings) or ""
         provider, api_key = _resolve_provider_and_key(model, provider)
     from delfin.agent.api_client import create_client
-    client = create_client(backend="api", provider=provider,
-                           api_key=api_key, model=model)
+    return create_client(backend="api", provider=provider,
+                         api_key=api_key, model=model)
+
+
+def _default_llm(prompt: str, system: str, settings: dict | None) -> str:
+    """One cheap completion via the same credential path the agent uses."""
+    client = _build_client(settings)
     chunks: list[str] = []
     for ev in client.stream_message(
         system=system,
@@ -98,6 +131,50 @@ def _default_llm(prompt: str, system: str, settings: dict | None) -> str:
         if getattr(ev, "type", "") == "text_delta" and getattr(ev, "text", ""):
             chunks.append(ev.text)
     return "".join(chunks)
+
+
+class _FnClient:
+    """Adapt an ``llm_fn(prompt, system, settings) -> str`` callable to the
+    ``stream_message`` client surface ``request_structured`` expects, so the
+    structured path stays injectable in tests exactly like the legacy one."""
+
+    def __init__(self, fn, settings: dict | None):
+        self._fn = fn
+        self._settings = settings
+
+    def stream_message(self, *, messages, system="", max_tokens=0, **_kw):
+        from types import SimpleNamespace
+        prompt = str((messages or [{}])[-1].get("content", ""))
+        text = self._fn(prompt, system, self._settings)
+        yield SimpleNamespace(type="text_delta", text=str(text or ""))
+
+
+def _structured_facts(excerpt: str, cfg: dict, settings: dict | None,
+                      llm_fn) -> list[str] | None:
+    """Distill via the schema-validated output service.
+
+    Returns the (parse_facts-filtered) fact list on success, or ``None``
+    when the structured call failed — the caller then falls back to the
+    legacy free-text parse. Uses the injected ``llm_fn`` when given (wrapped
+    as a streaming client), else a real cheap-tier client.
+    """
+    from delfin.agent.structured_output import request_structured
+    client = _FnClient(llm_fn, settings) if llm_fn else _build_client(settings)
+    system = _DISTILL_SYSTEM_STRUCTURED.format(max_facts=cfg["max_facts"])
+    res = request_structured(
+        client,
+        prompt=excerpt,
+        schema=_FACTS_SCHEMA,
+        system=system,
+        retries=1,
+        max_tokens=400,
+    )
+    data = res.get("data")
+    if not isinstance(data, dict):
+        return None
+    lines = "\n".join(str(f) for f in (data.get("facts") or []))
+    # Same sanity filters (length bounds, NONE, cap) as the legacy path.
+    return parse_facts(lines, cfg["max_facts"])
 
 
 def parse_facts(raw: str, max_facts: int = 5) -> list[str]:
@@ -258,6 +335,16 @@ def distill_and_save(
         excerpt = _transcript_excerpt(chat_messages)
         if not excerpt.strip():
             return 0
+        # Optional structured path (agent.auto_memory.structured, default
+        # off): request {"facts": [...]} via the schema-validated output
+        # service; any failure falls through to the legacy free-text parse.
+        if cfg.get("structured"):
+            try:
+                facts = _structured_facts(excerpt, cfg, settings, llm_fn)
+            except Exception:
+                facts = None
+            if facts is not None:
+                return save_facts(facts, repo_root=repo_root)
         system = _DISTILL_SYSTEM.format(max_facts=cfg["max_facts"])
         raw = (llm_fn or _default_llm)(excerpt, system, settings)
         return save_facts(parse_facts(raw, cfg["max_facts"]), repo_root=repo_root)

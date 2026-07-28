@@ -44,7 +44,18 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
+
+# Structured returns — the JSON-Schema subset validator, JSON extraction
+# and the schema-contract instruction moved to ``structured_output`` as a
+# reusable harness service (any caller can request schema-validated JSON,
+# not just this module). Re-imported (and re-exported via __all__) here so
+# existing import paths stay valid.
+from .structured_output import (
+    extract_json_object,
+    schema_instruction as _schema_instruction,
+    validate_json_schema,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .api_client import KitToolPermissions, OpenAIClient
@@ -173,113 +184,10 @@ def _inherited_context(workspace, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Structured returns — a tiny dependency-free JSON-Schema subset validator.
-#
-# Supported subset (deliberately small; anything else in a schema is
-# IGNORED, never enforced):
-#   - "type": object / array / string / number / integer / boolean
-#   - "required" (on objects)
-#   - "properties" (on objects; validated only for keys that are present)
-#   - "enum"
-#   - "items" (single-schema form, applied to every array element)
+# Structured returns: validate_json_schema / extract_json_object /
+# _schema_instruction moved to ``structured_output`` (imported at the top,
+# still re-exported via __all__).
 # ---------------------------------------------------------------------------
-
-_SCHEMA_TYPES: dict[str, Any] = {
-    "object": dict,
-    "array": list,
-    "string": str,
-    "boolean": bool,
-    "integer": int,
-    "number": (int, float),
-}
-
-
-def validate_json_schema(value, schema: dict, path: str = "$") -> list[str]:
-    """Validate ``value`` against the supported JSON-Schema subset.
-
-    Returns a list of human-readable error strings; empty list = valid.
-    Unknown/unsupported schema keywords are ignored (subset documented
-    above). Never raises on malformed schemas — they just validate less.
-    """
-    errors: list[str] = []
-    if not isinstance(schema, dict):
-        return errors
-    t = schema.get("type")
-    if isinstance(t, str) and t:
-        expected = _SCHEMA_TYPES.get(t)
-        if expected is not None:
-            ok = isinstance(value, expected)
-            # bool is an int subclass in Python — a boolean must not
-            # satisfy integer/number.
-            if t in ("integer", "number") and isinstance(value, bool):
-                ok = False
-            # ...and an integer/number must not satisfy boolean.
-            if t == "boolean" and not isinstance(value, bool):
-                ok = False
-            if not ok:
-                errors.append(
-                    f"{path}: expected {t}, got {type(value).__name__}")
-                return errors  # wrong type — descending would only cascade
-    if "enum" in schema and isinstance(schema.get("enum"), list):
-        if value not in schema["enum"]:
-            errors.append(
-                f"{path}: value {value!r} not in enum {schema['enum']!r}")
-    if isinstance(value, dict):
-        req = schema.get("required")
-        if isinstance(req, list):
-            for k in req:
-                if k not in value:
-                    errors.append(f"{path}: missing required property {k!r}")
-        props = schema.get("properties")
-        if isinstance(props, dict):
-            for k, sub in props.items():
-                if k in value and isinstance(sub, dict):
-                    errors.extend(
-                        validate_json_schema(value[k], sub, f"{path}.{k}"))
-    if isinstance(value, list):
-        items = schema.get("items")
-        if isinstance(items, dict):
-            for i, item in enumerate(value):
-                errors.extend(
-                    validate_json_schema(item, items, f"{path}[{i}]"))
-    return errors
-
-
-def extract_json_object(text: str) -> dict | None:
-    """First JSON *object* embedded in ``text``, or None.
-
-    Tolerates markdown fences and surrounding prose: scans for ``{``
-    candidates and raw-decodes from each until one parses to a dict.
-    """
-    if not isinstance(text, str) or not text.strip():
-        return None
-    dec = json.JSONDecoder()
-    i = text.find("{")
-    while i != -1:
-        try:
-            obj, _end = dec.raw_decode(text, i)
-        except json.JSONDecodeError:
-            i = text.find("{", i + 1)
-            continue
-        if isinstance(obj, dict):
-            return obj
-        i = text.find("{", i + 1)
-    return None
-
-
-def _schema_instruction(schema: dict) -> str:
-    """System-prompt clause enforcing a schema-shaped final message."""
-    try:
-        compact = json.dumps(schema, separators=(",", ":"),
-                             ensure_ascii=False)
-    except (TypeError, ValueError):
-        compact = "{}"
-    return (
-        "\n\nStructured output contract: your FINAL message must be exactly "
-        "one JSON object that validates against the JSON Schema below. No "
-        "prose before or after it (a ```json fence around it is tolerated).\n"
-        "Schema: " + compact
-    )
 
 
 def _stream_text_only(sub_client, messages: list[dict], system_prompt: str,
