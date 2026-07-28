@@ -3109,21 +3109,98 @@ _TOOL_KEEP_RECENT = 8               # most recent tool results kept verbatim
 _ELIDED_PREFIX = "[earlier tool output elided to free context"
 
 
-def _resolve_max_tool_rounds() -> int:
-    """Per-turn tool-round budget (``agent.max_tool_rounds``, default 500).
+def _resolve_max_tool_rounds(model: str = "", caps=None) -> int:
+    """Per-turn tool-round budget.
 
-    A value of 0 (or negative) disables the round cap — the per-turn cost
-    circuit-breaker and the consecutive-failure abort then remain the only
-    stops. Reads defensively so a missing/corrupt settings file falls back
-    to the 500 default rather than throwing inside the stream loop.
+    Precedence: an explicit ``agent.max_tool_rounds`` setting wins; without
+    one the per-model profile budget applies (weak models get far fewer
+    rounds than frontier ones, so a degenerate loop dies early instead of
+    burning hundreds of rounds); 500 only as the last-resort fallback when
+    the profile registry is unavailable. A turn that hits the cap with open
+    tasks resumes via auto-continue, so the cap bounds a single turn, not
+    the work. A setting of 0 (or negative) disables the round cap — the
+    per-turn cost circuit-breaker and the consecutive-failure abort then
+    remain the only stops. Reads defensively so a missing/corrupt settings
+    file never throws inside the stream loop.
     """
+    raw = None
     try:
         from delfin import user_settings
-        val = int((user_settings.load_settings().get("agent", {}) or {})
-                  .get("max_tool_rounds", 500))
+        raw = (user_settings.load_settings().get("agent", {}) or {}).get(
+            "max_tool_rounds")
     except Exception:
-        return 500
-    return 100_000 if val <= 0 else val
+        raw = None
+    if raw is not None:
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            val = 500
+        return 100_000 if val <= 0 else val
+    if model:
+        try:
+            from .model_profiles import get_profile
+            val = int(getattr(get_profile(model, caps),
+                              "max_tool_rounds", 0) or 0)
+            if val > 0:
+                return val
+        except Exception:
+            pass
+    return 500
+
+
+def _repair_json_args(raw) -> dict | None:
+    """Deterministic repair for near-JSON tool arguments from weak models.
+
+    Handles fenced blocks, trailing commas, single-quoted objects and
+    Python-literal dicts. Returns a dict on success, None when the text is
+    beyond mechanical repair (the caller then returns a structured error
+    instead of silently dispatching with ``{}``, which would produce a
+    misleading 'X is required' error and an identical broken retry)."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.strip("`").strip()
+        if s.lower().startswith("json"):
+            s = s[4:]
+    if "{" in s and "}" in s:
+        s = s[s.find("{"): s.rfind("}") + 1]
+    candidates = [s, re.sub(r",\s*([}\]])", r"\1", s)]
+    if "'" in s and '"' not in s:
+        candidates.append(s.replace("'", '"'))
+    for cand in candidates:
+        try:
+            val = json.loads(cand)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if isinstance(val, dict):
+            return val
+    try:
+        import ast
+        val = ast.literal_eval(s)
+    except (ValueError, SyntaxError):
+        return None
+    if isinstance(val, dict):
+        return {str(k): v for k, v in val.items()}
+    return None
+
+
+def _resolve_tool_result_cap(model: str = "", caps=None) -> int:
+    """Context-bound tool-result truncation cap in chars, per model.
+
+    Weak models choke on 5 KB tool results; their profile carries a
+    smaller ``tool_result_cap_kb``. Falls back to the legacy 5000 chars
+    when the profile registry is unavailable."""
+    if model:
+        try:
+            from .model_profiles import get_profile
+            kb = int(getattr(get_profile(model, caps),
+                             "tool_result_cap_kb", 0) or 0)
+            if kb > 0:
+                return kb * 1024
+        except Exception:
+            pass
+    return 5000
 
 
 def _resolve_auto_verify() -> tuple[str, str]:
@@ -3973,7 +4050,22 @@ class _DocToolExecutor:
                 })
             return json.dumps(sections, indent=2, ensure_ascii=False)
 
-        return json.dumps({"error": f"Unknown tool: {name}"})
+        # Weak models hallucinate tool names ("read_fle", "run_bash");
+        # a near-miss suggestion converts the dead round into a recovery.
+        hint = ""
+        try:
+            import difflib
+            known = sorted({
+                t.get("function", {}).get("name", "")
+                for t in _DOC_TOOLS_OPENAI
+                if t.get("function", {}).get("name")
+            })
+            close = difflib.get_close_matches(name, known, n=3, cutoff=0.5)
+            if close:
+                hint = f" Did you mean: {', '.join(close)}?"
+        except Exception:
+            hint = ""
+        return json.dumps({"error": f"Unknown tool: {name}.{hint}"})
 
     def _execute_calc(self, name: str, arguments: dict) -> str:
         """Execute a calc search tool."""
@@ -7522,7 +7614,9 @@ class OpenAIClient(_BaseClient):
         # below remain the real safety nets. 0 → uncapped. If a turn still
         # exhausts the budget, the message_delta below surfaces
         # "max_tool_rounds" and the user can resume with a "continue".
-        _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds()
+        _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds(self.model, _caps)
+        # Context-bound tool-result cap, per model (weak models get less).
+        _tool_result_cap = _resolve_tool_result_cap(self.model, _caps)
         # Per-turn OUTPUT-token backstop, independent of _MAX_TOOL_ROUNDS: a
         # loop that keeps emitting (successful or varied-error calls that dodge
         # the round / consecutive-fail limits) could otherwise run up unbounded
@@ -7872,13 +7966,23 @@ class OpenAIClient(_BaseClient):
                     # arguments.get(...), so anything but a dict must become {}
                     # here or it raises AttributeError and crashes the whole turn.
                     _raw_args = tc["function"]["arguments"]
+                    _args_parse_error = ""
                     if isinstance(_raw_args, dict):
                         fn_args = _raw_args
                     else:
                         try:
                             fn_args = json.loads(_raw_args or "{}")
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            fn_args = {}
+                        except (json.JSONDecodeError, TypeError, ValueError) as _je:
+                            # Weak models emit near-JSON (trailing commas,
+                            # single quotes, fences). Repair deterministically;
+                            # only if that fails report the REAL problem
+                            # instead of dispatching {} and letting a
+                            # misleading "'X' is required" error send the
+                            # model into an identical broken retry.
+                            fn_args = _repair_json_args(_raw_args)
+                            if fn_args is None:
+                                fn_args = {}
+                                _args_parse_error = str(_je)[:200]
                     if not isinstance(fn_args, dict):
                         fn_args = {}
 
@@ -7899,6 +8003,29 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name="<malformed>",
+                            tool_output=result[:2000],
+                        )
+                        api_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        })
+                        _round_results.append(result)
+                        continue
+
+                    # Unrepairable argument JSON: report the parse problem
+                    # itself rather than dispatching {} (which yields a
+                    # misleading downstream error naming a missing field).
+                    if _args_parse_error:
+                        result = json.dumps({"error": (
+                            f"invalid JSON in arguments for '{fn_name}': "
+                            f"{_args_parse_error}. Re-emit the call as ONE "
+                            "JSON object with double-quoted keys/strings and "
+                            "no trailing commas."
+                        )})
+                        yield StreamEvent(
+                            type="tool_result",
+                            tool_name=fn_name,
                             tool_output=result[:2000],
                         )
                         api_messages.append({
@@ -8071,7 +8198,7 @@ class OpenAIClient(_BaseClient):
                     # marker so tracebacks survive. JSON-error blobs and
                     # short results pass through untouched.
                     context_result = _smart_truncate(
-                        result, cap=5000, label="tool_result"
+                        result, cap=_tool_result_cap, label="tool_result"
                     )
                     # Thrash detector: prepend a one-time progress nudge when a
                     # low-progress loop (repeated cleanup, same-file rewrites) is
