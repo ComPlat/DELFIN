@@ -8,7 +8,8 @@ what matters — don't rely on the user repeating themselves.
 **Save the moment you learn something durable**, without being asked:
 - `user` — who the user is: role, expertise, preferences, environment.
 - `feedback` — guidance on HOW to work (a correction, or a confirmed approach).
-  Include **why**, and **how to apply** it next time.
+  Structure the body: the fact first, then a `**Why:**` line and a
+  `**How to apply:**` line (same for `project` when it encodes a decision).
 - `project` — an ongoing goal, decision, or constraint that is NOT derivable
   from the code or git history. Convert relative dates to absolute.
 - `reference` — a pointer to an external resource (URL, ticket, dashboard).
@@ -18,9 +19,13 @@ code, DELFIN.MD, or git history; secrets. If unsure whether it lasts beyond this
 conversation, it probably doesn't — skip it.
 
 **Discipline:** one fact per memory. Before saving, recall whether a similar
-memory already exists — prefer updating the relevant one over creating a
-duplicate. Link related memories in the text with `[[their-slug]]`. In chat the
-user can also manage memory with `/remember`, `/memories`, `/forget`.
+memory already exists — re-saving the same fact updates it in place, so prefer
+that over wording a near-duplicate. Link related memories liberally with
+`[[their-slug]]` — a link to a not-yet-existing slug marks something worth
+saving later. When a memory turns out to be WRONG, delete it with the
+`forget` tool immediately — a stale memory misleads every future session.
+In chat the user can also manage memory with `/remember`, `/memories`,
+`/forget`.
 
 **Before acting on something *from* memory, verify it still holds** — files get
 renamed, flags get removed. "The memory says X exists" ≠ "X exists now."

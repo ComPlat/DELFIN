@@ -1673,6 +1673,30 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "forget",
+            "description": (
+                "Delete a persistent memory that is WRONG or obsolete (by "
+                "its slug or filename, as shown in the recalled External "
+                "Memory block). Keeping memory truthful matters as much as "
+                "filling it — delete immediately when reality contradicts a "
+                "recalled fact; to UPDATE a fact, just remember the "
+                "corrected version instead (same fact merges in place)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Memory slug or filename to delete.",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grep_file",
             "description": (
                 "Search for a regex pattern in files under the DELFIN repository. "
@@ -4623,6 +4647,8 @@ class _DocToolExecutor:
             return self._execute_read_file(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
+        elif name == "forget":
+            return self._execute_forget(arguments, permissions)
         elif name == "remember":
             return self._execute_remember(arguments, permissions)
         elif name == "grep_file":
@@ -4863,6 +4889,31 @@ class _DocToolExecutor:
             "note": ("The image is shown to you in the next message — look at "
                      "it and describe / use what you SEE."),
         })
+
+    def _execute_forget(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        """Delete a memory that turned out to be wrong or obsolete.
+
+        Counterpart of `remember`: keeping the store truthful matters as
+        much as filling it — a stale memory misleads every future session.
+        """
+        name = (arguments.get("name") or "").strip()
+        if not name:
+            return json.dumps({"error": "name (slug or filename) is required"})
+        root = perms.workspace if perms is not None else self._repo_root()
+        try:
+            from .memory_store import delete_typed_memory
+            deleted = delete_typed_memory(root, name)
+        except Exception as exc:
+            return json.dumps({"error": f"could not delete memory: {exc}"})
+        if deleted is None:
+            return json.dumps({"error": (
+                f"no memory named '{name}' — list current names via the "
+                "recalled External Memory block or ask the user to run "
+                "/memories."
+            )})
+        return json.dumps({"status": "deleted", "name": name})
 
     def _execute_remember(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None

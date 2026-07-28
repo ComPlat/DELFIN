@@ -182,56 +182,26 @@ class PromptLoader:
         except Exception:
             return ""
 
-    def _load_external_memory_context(
+    def _gather_memory_entries(
         self,
-        max_chars: int = 6000,
-        memory_root: Path | None = None,
-        task_text: str = "",
-    ) -> str:
-        """Load the user's per-project memory for the current repo.
+        base: Path,
+        task_text: str,
+        label: str = "MEMORY.md",
+    ) -> tuple[str, list[tuple[str, str, str]]]:
+        """Read one memory store (MEMORY.md index + referenced files).
 
-        Looks at ``~/.delfin/projects/<slug>/memory/MEMORY.md`` (DELFIN's own
-        namespace — migrated from the legacy ~/.claude location) and the
-        ``[Title](file.md)`` references inside it.  Returns a flat
-        markdown string suitable for prompt injection, capped at
-        ``max_chars`` so it can never blow up the context.
-
-        With a non-empty ``task_text`` the referenced files are BM25-ranked
-        against it before the budget is spent, so the most task-relevant
-        memories are injected first instead of whatever happens to sit at
-        the top of MEMORY.md. Without task tokens (or on ties) the
-        MEMORY.md order is kept.
-
-        The repo is mapped to a slug by replacing ``/`` with ``-``.
-        Empty string if nothing is found.
-
-        Failures (no home dir, missing files, encoding issues) degrade
-        silently to an empty string — this is best-effort context.
+        Returns ``(index_chunk, entries)`` where each entry is
+        ``(title, rel_filename, raw_file_text)`` in BM25-ranked order
+        against ``task_text`` (MEMORY.md order kept on ties / without task
+        tokens). An empty index_chunk means the store contributes nothing.
         """
-        try:
-            home = Path.home()
-        except Exception:
-            return ""
-        repo_root = Path(self.repo_root).resolve()
-        if memory_root is not None:
-            base = memory_root
-        else:
-            # DELFIN's own per-project store under ~/.delfin (migrated from the
-            # legacy ~/.claude location by _delfin_memory_dir).
-            try:
-                from .memory_store import _delfin_memory_dir
-                base = _delfin_memory_dir(repo_root)
-            except Exception:
-                slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
-                base = home / ".delfin" / "projects" / slug / "memory"
         index = base / "MEMORY.md"
         if not index.exists():
-            return ""
-
+            return "", []
         try:
             index_text = index.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return ""
+            return "", []
 
         # Resolve [[name]] wiki-style cross-links to inline markdown links
         # so the agent sees concrete targets instead of opaque braces.
@@ -241,7 +211,6 @@ class PromptLoader:
         except Exception:
             pass
 
-        chunks: list[str] = [f"# MEMORY.md\n{index_text.strip()}"]
         # Pull in every "[Title](file.md)" target referenced from MEMORY.md
         import re as _re
         seen: set[str] = set()
@@ -283,29 +252,147 @@ class PromptLoader:
                 entries = [entries[i] for i in order]
             except Exception:
                 pass
+        return f"# {label}\n{index_text.strip()}", entries
 
-        injected: set[str] = set()
-        joined_chars = len(chunks[0])
-        for title, rel, body in entries:
-            # The final string is prefix-truncated. Once even the separator
-            # would fall outside that prefix, later files cannot be recalled.
-            if joined_chars + 2 >= max_chars:
-                break
-            chunk = f"# {title} ({rel})\n{body}"
-            chunks.append(chunk)
-            injected.add(rel)
-            joined_chars += 2 + len(chunk)
+    def _load_external_memory_context(
+        self,
+        max_chars: int = 6000,
+        memory_root: Path | None = None,
+        task_text: str = "",
+    ) -> str:
+        """Load the user's memory for the current repo — global store first.
 
-        # Record recall usage on the memory files we actually injected, so the
-        # LRU decay signal reflects what the agent SAW (not just what was
-        # written). Best-effort and bounded by the recall size; `injected`
-        # holds only filenames whose content reaches that prompt.
-        if injected:
+        Merges TWO stores under one ``max_chars`` budget:
+        - ``~/.delfin/memory/`` — the user-wide global store (identity,
+          standing feedback). Injected first, with a guaranteed floor of
+          25% of the budget when it has entries, so a fat project store
+          can never starve it.
+        - ``~/.delfin/projects/<slug>/memory/MEMORY.md`` (DELFIN's own
+          namespace — migrated from the legacy ~/.claude location) and the
+          ``[Title](file.md)`` references inside it.
+
+        With a non-empty ``task_text`` the referenced files are BM25-ranked
+        against it (within each store) before the budget is spent, so the
+        most task-relevant memories are injected first instead of whatever
+        happens to sit at the top of MEMORY.md.
+
+        Project entries get a recall-time provenance check: ``path[:line]``
+        references to files that vanished are annotated ``[stale: …]`` and
+        anchored references whose cited line moved away ``[drifted: …]``,
+        so a rotted memory is not replayed as authoritative ground truth.
+
+        An explicit ``memory_root`` (tests) reads that single store only.
+        Empty string if nothing is found. Failures (no home dir, missing
+        files, encoding issues) degrade silently to an empty string — this
+        is best-effort context.
+        """
+        try:
+            home = Path.home()
+        except Exception:
+            return ""
+        repo_root = Path(self.repo_root).resolve()
+        global_base: Path | None = None
+        if memory_root is not None:
+            base = memory_root
+        else:
+            # DELFIN's own per-project store under ~/.delfin (migrated from the
+            # legacy ~/.claude location by _delfin_memory_dir).
             try:
-                from .memory_store import record_memory_recall
-                record_memory_recall(repo_root, injected)
+                from .memory_store import _delfin_memory_dir
+                base = _delfin_memory_dir(repo_root)
             except Exception:
-                pass
+                slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
+                base = home / ".delfin" / "projects" / slug / "memory"
+            try:
+                from .memory_store import _delfin_global_memory_dir
+                global_base = _delfin_global_memory_dir()
+            except Exception:
+                global_base = None
+
+        proj_index, proj_entries = self._gather_memory_entries(base, task_text)
+        glob_index: str = ""
+        glob_entries: list[tuple[str, str, str]] = []
+        if global_base is not None:
+            try:
+                glob_index, glob_entries = self._gather_memory_entries(
+                    global_base, task_text,
+                    label="GLOBAL MEMORY.md (applies across all projects)",
+                )
+            except Exception:
+                glob_index, glob_entries = "", []
+        if not proj_index and not glob_index:
+            return ""
+
+        chunks: list[str] = []
+        used = 0
+        glob_injected: set[str] = set()
+        proj_injected: set[str] = set()
+        proj_rotted: set[str] = set()
+
+        if glob_index:
+            # Guaranteed floor for the global store; anything the project
+            # store won't need flows back to it.
+            if proj_index:
+                proj_need = len(proj_index) + sum(
+                    2 + len(f"# {t} ({r})\n{b}")
+                    for t, r, b in proj_entries)
+                glob_cap = max(int(max_chars * 0.25), max_chars - proj_need)
+            else:
+                glob_cap = max_chars
+            chunks.append(glob_index)
+            used = len(glob_index)
+            for title, rel, body in glob_entries:
+                if used + 2 >= glob_cap:
+                    break
+                chunk = f"# {title} ({rel})\n{body}"
+                chunks.append(chunk)
+                glob_injected.add(rel)
+                used += 2 + len(chunk)
+
+        if proj_index:
+            if chunks:
+                used += 2
+            chunks.append(proj_index)
+            used += len(proj_index)
+            for title, rel, body in proj_entries:
+                # The final string is prefix-truncated. Once even the
+                # separator would fall outside that prefix, later files
+                # cannot be recalled.
+                if used + 2 >= max_chars:
+                    break
+                # Recall-time provenance check: annotate refs to code that
+                # vanished (stale) or whose anchored line moved (drifted) so
+                # a rotted memory is not replayed as ground truth. Bounded:
+                # only entries that made it into the budget are probed.
+                try:
+                    from .memory_store import recall_reference_notes
+                    notes = recall_reference_notes(body, repo_root)
+                except Exception:
+                    notes = []
+                chunk = f"# {title} ({rel})\n{body}"
+                if notes:
+                    chunk += "\n" + "\n".join(notes)
+                    proj_rotted.add(rel)
+                else:
+                    proj_injected.add(rel)
+                chunks.append(chunk)
+                used += 2 + len(chunk)
+
+        # Record recall usage per store so the LRU decay signal reflects
+        # what the agent SAW (not just what was written). Rotted entries
+        # deliberately get NO recall bump — their stale_hits counter rises
+        # instead, so prune ranking prefers evicting them. Best-effort and
+        # bounded by the recall size.
+        try:
+            from .memory_store import record_memory_recall, record_stale_hits
+            if proj_injected:
+                record_memory_recall(repo_root, proj_injected)
+            if proj_rotted:
+                record_stale_hits(repo_root, proj_rotted)
+            if glob_injected:
+                record_memory_recall(repo_root, glob_injected, scope="user")
+        except Exception:
+            pass
 
         joined = "\n\n".join(chunks).strip()
         if len(joined) <= max_chars:
@@ -1048,6 +1135,18 @@ class PromptLoader:
             if _gitwf:
                 sections.append(_gitwf)
                 injected.append("git_workflow_addendum")
+        except Exception:
+            pass
+        # Scientific integrity: DELFIN's defining contract — provenance for
+        # every claim, no fabrication, reproducible methods, uncertainty
+        # honesty, no selective reporting. Injected for every role.
+        try:
+            _sci = self._cached_read(
+                self.agent_dir / "shared" / "scientific_integrity_addendum.md"
+            )
+            if _sci:
+                sections.append(_sci)
+                injected.append("scientific_integrity_addendum")
         except Exception:
             pass
 

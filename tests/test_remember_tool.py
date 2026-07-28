@@ -84,3 +84,37 @@ def test_remember_prunes_store_after_saving(tmp_path):
             {"text": "project: keep the store bounded"}, _perms(ws)))
     assert out["status"] == "ok"
     assert calls == [ws]
+
+
+def test_forget_deletes_wrong_memory(tmp_path):
+    """The agent can delete a memory that proved wrong — keeping the store
+    truthful is part of the memory discipline."""
+    home = tmp_path / "home3"
+    home.mkdir()
+    ws = tmp_path / "ws3"
+    ws.mkdir()
+    with patch.object(Path, "home", lambda: home):
+        out = json.loads(A._doc_executor._execute_remember(
+            {"text": "project: the flag --fast exists"}, _perms(ws)))
+        assert out["status"] == "ok"
+        slug = out["slug"]
+        gone = json.loads(A._doc_executor._execute_forget(
+            {"name": slug}, _perms(ws)))
+        assert gone["status"] == "deleted"
+        from delfin.agent.memory_store import list_typed_memories
+        assert list_typed_memories(ws) == []
+        missing = json.loads(A._doc_executor._execute_forget(
+            {"name": "never-existed"}, _perms(ws)))
+        assert "error" in missing
+
+
+def test_scientific_integrity_addendum_ships_and_injects(tmp_path):
+    pack = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
+            / "pack" / "shared" / "scientific_integrity_addendum.md")
+    text = pack.read_text(encoding="utf-8")
+    assert "Provenance" in text
+    assert "Never fabricate" in text
+    assert "Reproducibility" in text
+    pl = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
+          / "prompt_loader.py").read_text(encoding="utf-8")
+    assert "scientific_integrity_addendum" in pl
