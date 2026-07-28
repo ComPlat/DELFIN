@@ -2,6 +2,7 @@
 
 import base64
 import html
+import os
 import importlib.resources
 import json
 import re
