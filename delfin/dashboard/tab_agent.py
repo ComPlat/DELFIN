@@ -13640,6 +13640,49 @@ def create_tab(ctx):
                             )
                         except Exception:
                             _vflags = []
+                        # Code-claim citation check ("nachschauen statt
+                        # behaupten"): cited paths that don't exist force a
+                        # correction turn via the same machinery; existing-
+                        # but-unread paths only soft-warn (injected context
+                        # legitimately surfaces paths).
+                        _cflags = []
+                        try:
+                            _cflags = _vg.scan_for_ungrounded_code_claims(
+                                "".join(chunks),
+                                repo_root=getattr(engine, "repo_dir", None),
+                                observed_files=getattr(
+                                    engine, "_last_observed_files", None),
+                            )
+                        except Exception:
+                            _cflags = []
+                        for _cf in _cflags:
+                            _append_system_message(_cf.message())
+                        _c_hard = [c for c in _cflags
+                                   if c.kind == "nonexistent"]
+                        if _c_hard and not _vflags:
+                            _cfeedback = (
+                                "[Verify] " + _vg.code_claim_feedback(_c_hard)
+                            )
+                            engine.messages.append(
+                                {"role": "user", "content": _cfeedback}
+                            )
+                            chunks.clear()
+                            thinking_chunks.clear()
+                            engine.stream_response(
+                                user_message=_cfeedback,
+                                on_token=_on_token,
+                                on_tool_use=_on_tool_use,
+                                on_tool_result=_on_tool_result,
+                                on_permission_denied=_on_permission_denied,
+                                on_thinking=_on_thinking,
+                                thinking_budget=_budget,
+                                memory_context=_memory,
+                            )
+                            if chunks:
+                                _update_last_assistant(
+                                    "".join(chunks), role_label,
+                                    finalize=True,
+                                )
                         if _vflags:
                             for _vf in _vflags:
                                 _append_system_message(_vf.message())
