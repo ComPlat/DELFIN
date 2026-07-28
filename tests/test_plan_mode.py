@@ -165,3 +165,73 @@ def test_empty_plan_body_skips_save():
     assert saved == []                             # nothing to persist
     assert st["_plan_approval_result"]["approved"] is True
     assert msgs == []
+
+
+# ---------------------------------------------------------------------------
+# Plan -> durable state bridge (approval persists the plan + scaffolds tasks)
+# ---------------------------------------------------------------------------
+
+import json
+
+
+def _approving_perms(tmp_path):
+    from delfin.agent.api_client import KitToolPermissions
+    perms = KitToolPermissions(workspace=tmp_path, mode="plan")
+    perms.plan_approval_callback = lambda plan: {
+        "approved": True, "new_mode": "acceptEdits"}
+    perms.task_session_id = "plan-bridge-test"
+    return perms
+
+
+_PLAN = """# Build the spectrum exporter
+
+## Steps
+1. Create exporter module with CSV writer
+2. Wire exporter into the dashboard download button
+3. Add regression tests for the exporter
+"""
+
+
+def test_approved_plan_is_persisted_and_scaffolds_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    from delfin.agent import api_client as A
+    ws = tmp_path / "ws"; ws.mkdir()
+    perms = _approving_perms(ws)
+    out = json.loads(A._doc_executor._execute_exit_plan_mode(
+        {"plan": _PLAN}, perms))
+    assert out["status"] == "approved"
+    assert out["tasks_created"] == 3
+    assert "ALREADY in your task list" in out["instruction"]
+    # Plan persisted to the workspace plans store.
+    from delfin.agent.memory_store import list_plans
+    plans = list_plans(ws)
+    assert plans and "spectrum exporter" in str(plans).lower()
+    # Tasks scaffolded from the numbered steps.
+    from delfin.agent.agent_tasks import get_store
+    tasks = get_store(ws).list(session_id="plan-bridge-test")
+    subjects = [t["subject"] for t in tasks]
+    assert any("exporter module" in s for s in subjects)
+    assert len(tasks) == 3
+
+
+def test_plan_without_steps_creates_no_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    from delfin.agent import api_client as A
+    ws = tmp_path / "ws"; ws.mkdir()
+    perms = _approving_perms(ws)
+    out = json.loads(A._doc_executor._execute_exit_plan_mode(
+        {"plan": "Just prose, no numbered steps in this plan at all."},
+        perms))
+    assert out["status"] == "approved"
+    assert out["tasks_created"] == 0
+    from delfin.agent.agent_tasks import get_store
+    assert get_store(ws).list(session_id="plan-bridge-test") == []
+
+
+def test_plan_steps_parser_handles_checkboxes_and_cap():
+    from delfin.agent.api_client import _DocToolExecutor
+    plan = "\n".join([f"- [ ] step number {i} does a thing"
+                      for i in range(20)])
+    steps = _DocToolExecutor._plan_steps(plan)
+    assert len(steps) == 12                      # capped
+    assert steps[0].startswith("step number 0")

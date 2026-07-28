@@ -2759,6 +2759,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "that should not block the main task."
                         ),
                     },
+                    "model": {
+                        "type": "string",
+                        "enum": ["parent", "cheap"],
+                        "description": (
+                            "Model pin for this run: 'parent' forces the "
+                            "main model even for read-only presets; "
+                            "'cheap' requests the provider's cheap tier. "
+                            "Omit for the default (read-only presets "
+                            "route to the cheap tier automatically)."
+                        ),
+                    },
                     "resume_id": {
                         "type": "string",
                         "description": (
@@ -6832,6 +6843,11 @@ class _DocToolExecutor:
         # Only pass resume_from when set — externally attached runners
         # (tests, custom embeddings) may predate the parameter.
         _resume_kw = {"resume_from": resume_id} if resume_id else {}
+        # Optional model pin ("parent"|"cheap") — passed through to the
+        # cheap-tier routing in run_subagent; absent = setting-driven.
+        _model_pin = (arguments.get("model") or "").strip()
+        if _model_pin:
+            _resume_kw["model"] = _model_pin
         # Background mode: spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
@@ -6951,6 +6967,25 @@ class _DocToolExecutor:
 
     _VALID_POST_PLAN_MODES = ("default", "acceptEdits", "bypassPermissions")
 
+    _PLAN_STEP_RE = re.compile(r"^\s{0,3}(?:\d+[.)]\s+|[-*]\s+\[ \]\s+)(.+)$")
+
+    @classmethod
+    def _plan_steps(cls, plan: str, cap: int = 12) -> list[str]:
+        """Actionable step lines from an approved plan: top-level numbered
+        items and unchecked checkboxes. Weak models re-derive steps from
+        prose badly — scaffolding the task list from the plan removes that
+        failure point."""
+        steps: list[str] = []
+        for line in (plan or "").splitlines():
+            m = cls._PLAN_STEP_RE.match(line)
+            if m:
+                s = m.group(1).strip().rstrip(".")
+                if len(s) >= 8:
+                    steps.append(s[:140])
+            if len(steps) >= cap:
+                break
+        return steps
+
     def _execute_exit_plan_mode(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -7030,6 +7065,27 @@ class _DocToolExecutor:
         if approved:
             perms.mode = new_mode
             perms.last_approved_plan = plan
+            # Bridge the approved plan into durable state: persist it to the
+            # plans store on EVERY approval path (previously dashboard-only —
+            # a headless-approved plan survived nowhere and died at the next
+            # compaction), and scaffold the task list from its steps so
+            # execution is tracked instead of re-derived from prose.
+            try:
+                from .memory_store import save_plan
+                save_plan(plan, repo_root=perms.workspace)
+            except Exception:
+                pass
+            _scaffolded = 0
+            try:
+                _steps = self._plan_steps(plan)
+                if len(_steps) >= 2:
+                    _store = self._task_store(perms)
+                    _sid = getattr(perms, "task_session_id", "") or ""
+                    for _s in _steps:
+                        _store.create(_s, "", "", session_id=_sid)
+                        _scaffolded += 1
+            except Exception:
+                _scaffolded = 0
             # Re-state the approved plan as the authoritative, MOST-RECENT
             # instruction so execution anchors on it — not on stale context.
             # Bug 2026-06-25: in a session whose context still held an earlier
@@ -7039,16 +7095,23 @@ class _DocToolExecutor:
             # context. A recency-anchored "execute exactly THIS plan, ignore
             # any earlier different task" curbs that drift.
             _anchor = plan if len(plan) <= 8000 else plan[:8000] + " …[truncated]"
+            _task_note = (
+                f" The plan's {_scaffolded} steps are ALREADY in your task "
+                "list — work through them in order and mark each completed; "
+                "do NOT create duplicate tasks."
+            ) if _scaffolded else ""
             return json.dumps({
                 "status": "approved",
                 "new_mode": new_mode,
                 "plan_chars": len(plan),
+                "tasks_created": _scaffolded,
                 "instruction": (
                     "Plan APPROVED — execute EXACTLY this approved plan and "
                     "nothing else. If anything EARLIER in the conversation "
                     "describes a DIFFERENT task or project (a different app, "
                     "different file names), IGNORE it: this approved plan is "
-                    "the single source of truth for what to build now.\n\n"
+                    "the single source of truth for what to build now."
+                    + _task_note + "\n\n"
                     + _anchor
                 ),
             })
@@ -7766,6 +7829,7 @@ class OpenAIClient(_BaseClient):
         def _runner(
             *, subagent_type: str, description: str, prompt: str,
             isolation: str = "", resume_from: str = "", sa_id: str = "",
+            model: str = "",
         ) -> dict:
             res = _sa.run_subagent(
                 subagent_type=subagent_type,
@@ -7776,6 +7840,7 @@ class OpenAIClient(_BaseClient):
                 isolation=isolation,
                 resume_from=resume_from,
                 sa_id=sa_id,
+                model=model,
             )
             return res.to_payload()
 
