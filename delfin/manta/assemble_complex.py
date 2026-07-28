@@ -2201,6 +2201,20 @@ def assemble_hapto(metal, geometry, d, variant=None):
     nonprimary_eta_blocks = []   # (start, end) of η faces 2..n  -> rotated with the rest
     sigma_blocks = []        # (start, end) of σ ligands
 
+    # LENGTH-GATED HAPTO EXEMPTION (DELFIN_FFFREE_HAPTO_EXEMPT_LENGTH, default OFF -> byte-identical).
+    # The hapto path collects every heavy-heavy bond of order >= 1.5 into a LIST, and
+    # converter_backend._is_exempt reads the list form as an UNCONDITIONAL pass ("if key in _ex:
+    # return True") -- so once a bond is multiple/aromatic, ANY length survives the collapse
+    # self-gate, however crushed.  Measured: AJUWUY ships a C-C at 0.495 A through this door.
+    # The dict form is already implemented on the reading side (_ex_len + DELFIN_FFFREE_MULTIBOND_TOL
+    # 0.15) and gates on `d >= ideal - tol`, which still passes every genuine short multiple bond
+    # (C=O 1.13, C#N 1.16, aromatic C~C 1.39) while catching the collapses.  Class: 908 systems,
+    # 86.6% of them no_valid -- it tracks the W 69% / Re 53% / Rh 48% / Mo 44% failure rates.
+    # Pairs with no known ideal map to 0.0 = unconditional, i.e. exactly today's behaviour.
+    _hapto_len_gate = os.environ.get("DELFIN_FFFREE_HAPTO_EXEMPT_LENGTH", "0") == "1"
+    if _hapto_len_gate:
+        exempt_pairs = {}
+
     def _collect_exempt(frag_mol, lig_offset):
         """Local heavy-atom double/triple bonds -> global index pairs (the AddHs
         ligand block starts at lig_offset+1 in the assembled coords)."""
@@ -2208,11 +2222,17 @@ def assemble_hapto(metal, geometry, d, variant=None):
             bt = b.GetBondTypeAsDouble()
             if bt >= 1.5:                       # aromatic(1.5)/double(2)/triple(3)
                 a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
-                if (frag_mol.GetAtomWithIdx(a1).GetAtomicNum() > 1
-                        and frag_mol.GetAtomWithIdx(a2).GetAtomicNum() > 1):
+                at1 = frag_mol.GetAtomWithIdx(a1)
+                at2 = frag_mol.GetAtomWithIdx(a2)
+                if at1.GetAtomicNum() > 1 and at2.GetAtomicNum() > 1:
                     g1 = lig_offset + 1 + a1
                     g2 = lig_offset + 1 + a2
-                    exempt_pairs.append((min(g1, g2), max(g1, g2)))
+                    key = (min(g1, g2), max(g1, g2))
+                    if _hapto_len_gate:
+                        from delfin.manta.converter_backend import multibond_ideal as _mbi
+                        exempt_pairs[key] = _mbi(at1.GetSymbol(), at2.GetSymbol(), bt) or 0.0
+                    else:
+                        exempt_pairs.append(key)
     for li in order:
         lg = ligands[li]
         lig_offset = pos - 1

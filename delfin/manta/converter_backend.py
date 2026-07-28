@@ -512,6 +512,32 @@ def _seat_via_conformers(metal, lig_groups, base_syms, base_P,
     return None
 
 
+# Ideal heavy-heavy multiple/aromatic bond lengths (A) per element pair, LONGEST-BOND-ORDER FIRST:
+# (triple, double, aromatic) where known.  Single source of truth -- the collapse self-gate reads it
+# for its length-based exemption, and the hapto path (assemble_complex._collect_exempt) reads it to
+# emit a LENGTH-GATED exemption instead of an unconditional one.
+MULTIBOND_IDEALS = {("C", "C"): (1.20, 1.34, 1.39), ("C", "N"): (1.16, 1.28, 1.34),
+                    ("C", "O"): (1.13, 1.21, 1.28), ("N", "N"): (1.10, 1.25),
+                    ("N", "O"): (1.21, 1.24), ("C", "S"): (1.55, 1.60),
+                    ("O", "O"): (1.21,), ("N", "S"): (1.54,), ("C", "P"): (1.66, 1.55)}
+
+
+def multibond_ideal(e1, e2, order):
+    """Ideal length (A) for a bond of `order` between elements e1/e2, or None if unknown.
+
+    order >= 2.5 -> triple, >= 1.75 -> double, else aromatic (falling back to the double
+    entry when the pair has no separate aromatic ideal).  Returning None lets the caller
+    keep the historic UNCONDITIONAL exemption for pairs we have no ideal for -- never-worse
+    by construction: an unknown pair behaves exactly as it does today."""
+    tup = MULTIBOND_IDEALS.get((min(e1, e2), max(e1, e2)))
+    if not tup:
+        return None
+    idx = 0 if order >= 2.5 else (1 if order >= 1.75 else 2)
+    if idx >= len(tup):
+        idx = len(tup) - 1
+    return float(tup[idx])
+
+
 def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
@@ -600,10 +626,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
     # 0.38 A) sits far below every multibond ideal and is still caught.  Tolerance reuses
     # DELFIN_FFFREE_MULTIBOND_TOL.
     _mb_len_exempt = os.environ.get("DELFIN_FFFREE_MULTIBOND_LENGTH_EXEMPT", "0") == "1"
-    _MB_LEN = {("C", "C"): (1.20, 1.34, 1.39), ("C", "N"): (1.16, 1.28, 1.34),
-               ("C", "O"): (1.13, 1.21, 1.28), ("N", "N"): (1.10, 1.25),
-               ("N", "O"): (1.21, 1.24), ("C", "S"): (1.55, 1.60),
-               ("O", "O"): (1.21,), ("N", "S"): (1.54,), ("C", "P"): (1.66, 1.55)}
+    _MB_LEN = MULTIBOND_IDEALS          # hoisted to module level so the hapto path can share it
 
     def _len_is_multibond(a, b, d):
         key = (min(a, b), max(a, b))
