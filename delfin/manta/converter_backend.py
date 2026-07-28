@@ -82,6 +82,37 @@ def _exempt_from_blocks(block_mols_offsets):
     return ex
 
 
+def _local_heavy_bonds(mol):
+    """Local heavy-heavy bond index pairs of one ligand fragment."""
+    out = []
+    for b in mol.GetBonds():
+        a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        if mol.GetAtomWithIdx(a1).GetAtomicNum() > 1 and mol.GetAtomWithIdx(a2).GetAtomicNum() > 1:
+            out.append((min(a1, a2), max(a1, a2)))
+    return out
+
+
+def _graph_bonds_from_blocks(block_mols_offsets):
+    """GLOBAL heavy-heavy bonds the SMILES graph REQUIRES, from the same
+    (ligand_mol, block_offset) layout _exempt_from_blocks uses.
+
+    This is the missing half of the self-gate.  `_build_is_clean` perceives its bonds
+    GEOMETRICALLY (`bonds = _bd._geometric_bonds(syms, P)`), so it can only judge bonds
+    that ARE there -- it asks "is this contact too short?" and never "is a bond the
+    molecule requires MISSING?".  A torn ligand is therefore invisible BY CONSTRUCTION:
+    once two bonded atoms drift apart, perception simply stops reporting the bond and
+    there is nothing left to fail.  Measured consequence: `smiles_topology` fires on
+    816 of 941 champion systems (87 %) and `core_torn` on 699, while the construction
+    self-gate reports the build clean.  Anchoring against the graph closes the only
+    direction the gate was blind in."""
+    out = set()
+    for mol, off in block_mols_offsets:
+        for (i, j) in _local_heavy_bonds(mol):
+            gi, gj = off + int(i), off + int(j)
+            out.add((min(gi, gj), max(gi, gj)))
+    return out
+
+
 def _heteroleptic_block_offsets(vertex_specs):
     """Deterministic per-ligand block offsets for the monodentate heteroleptic build
     order (assemble_heteroleptic_from_mols / _ensemble / _enumerate_geometry): metal at
@@ -538,7 +569,8 @@ def multibond_ideal(e1, e2, order):
     return float(tup[idx])
 
 
-def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None) -> bool:
+def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
+                    graph_bonds=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
     (a non-coordinating atom intruding into the metal's first shell) — so fffree
@@ -649,6 +681,24 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
         n_coll += 1
     if n_coll > 0:
         return False
+    # GRAPH ANCHOR (DELFIN_FFFREE_TORN_GATE, default OFF -> byte-identical).  Everything above
+    # judges bonds that geometric perception FOUND -- "is this contact too short?".  Nothing asks
+    # the opposite question: "is a bond the MOLECULE REQUIRES missing?".  A torn ligand is therefore
+    # invisible by construction: once two bonded atoms drift apart, _geometric_bonds stops reporting
+    # them and there is nothing left to fail.  Measured: smiles_topology fires on 816 of 941 champion
+    # systems (87 %) and core_torn on 699, while this gate calls the same builds clean -- it is the
+    # single largest blind direction we have.  The bound mirrors the eye's own torn criterion
+    # (_isolated_reseat._frame_topology_valid: broken above 1.4x the covalent sum); metal bonds are
+    # excluded because M-D distances legitimately vary far more than covalent radii predict.
+    if graph_bonds and os.environ.get("DELFIN_FFFREE_TORN_GATE", "0") == "1":
+        _torn_f = float(os.environ.get("DELFIN_FFFREE_TORN_FACTOR", "1.4"))
+        for i, j in graph_bonds:
+            if i >= len(syms) or j >= len(syms):
+                continue
+            if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
+                continue
+            if float(np.linalg.norm(P[i] - P[j])) > _torn_f * _bd._ideal_bond(syms[i], syms[j]):
+                return False                              # the graph requires this bond; it is torn
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
     for i in range(n):
@@ -803,6 +853,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         # places ligands in first-appearance config order; offsets mirror that exactly.
         # Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-identical.
         _ex = _exempt_from_blocks(_config_block_offsets(config, ligands))
+        _gb = _graph_bonds_from_blocks(_config_block_offsets(config, ligands))
         if _sig_ens:
             # NEVER-WORSE GUARD: emit the ensemble for a config ONLY IF its
             # single-frame (clash-minimal) build ALSO passes the self-gate.  This
@@ -823,7 +874,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             ssyms, sP, sdonors = single
             ssyms, sP = _maybe_relax(ssyms, sP)
             if not _build_is_clean(ssyms, sP, cn=d.get("cn"), geom=d.get("geometry"),
-                                   donors=sdonors, exempt_pairs=_ex):
+                                   donors=sdonors, exempt_pairs=_ex, graph_bonds=_gb):
                 continue                                 # single-frame would skip -> skip
             try:
                 built = AC.assemble_from_config(d["metal"], d["geometry"], config,
@@ -845,7 +896,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             for fi, (syms, P, donors) in enumerate(built):
                 syms, P = _maybe_relax(syms, P)
                 if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                                       donors=donors, exempt_pairs=_ex):   # per-frame self-gate
+                                       donors=donors, exempt_pairs=_ex, graph_bonds=_gb):   # per-frame self-gate
                     continue                             # skip a bad frame, keep clean ones
                 lab = f"{geom_tag}-chelate-{k+1}" + (f"-conf{fi+1}" if fi else "")
                 results.append((_xyz(syms, P), lab))
@@ -857,7 +908,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         syms, P = _maybe_relax(syms, P)
         _clg = _lig_groups_from_config(config, ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                               donors=donors, exempt_pairs=_ex):   # donor-aware self-gate
+                               donors=donors, exempt_pairs=_ex, graph_bonds=_gb):   # donor-aware self-gate
             # Decollapse (DELFIN_FFFREE_CHELATE_DECOLLAPSE, default OFF, byte-id):
             # the seating can squeeze a backbone bond into the metal's shell; the
             # safe firewall mover pulls it back to ideal length (metals+donors frozen,
@@ -867,7 +918,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             _dc_s, _dc_P = _maybe_decollapse(syms, P)
             if (_dc_P is not P) and _build_is_clean(
                     _dc_s, _dc_P, cn=d.get("cn"), geom=d.get("geometry"),
-                    donors=donors, exempt_pairs=_ex):
+                    donors=donors, exempt_pairs=_ex, graph_bonds=_gb):
                 syms, P = _dc_s, _dc_P
             else:
                 # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
