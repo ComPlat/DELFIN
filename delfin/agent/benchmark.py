@@ -1190,6 +1190,137 @@ def format_compare_markdown(
 
 
 # ---------------------------------------------------------------------------
+# A/B convenience — compact drift view over two runs
+# ---------------------------------------------------------------------------
+
+
+def list_runs(runs_dir: Path | None = None) -> list[Path]:
+    """All persisted benchmark run files, oldest first (mtime, then name).
+
+    Convenience for "compare the two most recent runs" flows.  Never
+    raises — a missing/unreadable directory yields ``[]``.
+    """
+    base = runs_dir or _DEFAULT_RUNS_DIR
+    try:
+        files = [p for p in base.glob("*.jsonl") if p.is_file()]
+    except Exception:
+        return []
+
+    def _key(p: Path) -> tuple[float, str]:
+        try:
+            return (p.stat().st_mtime, p.name)
+        except OSError:
+            return (0.0, p.name)
+
+    return sorted(files, key=_key)
+
+
+def _resolve_run_path(run: str, base: Path) -> Path:
+    """Accept a full path, a filename in ``base``, or a bare run id."""
+    p = Path(run)
+    if p.exists():
+        return p
+    cand = base / run
+    if cand.exists():
+        return cand
+    return base / f"{run}.jsonl"
+
+
+def ab_compare(
+    run_a: str,
+    run_b: str,
+    *,
+    runs_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Compact A/B view over two persisted runs (A = baseline, B = candidate).
+
+    ``run_a`` / ``run_b`` may be full paths, filenames, or bare run ids
+    resolved against the runs directory.  Built on :func:`compare_runs`
+    plus :func:`behavior_rates`; missing files behave like empty runs
+    (verdict ``thin``).  Returns::
+
+        {run_a, run_b, verdict, n_overlap, n_better, n_worse, n_neutral,
+         per_task_delta:  {task_id: {d_quality, d_cost_usd, class}},
+         score_delta:     candidate avg_quality − baseline avg_quality,
+         cost_delta:      candidate total cost  − baseline total cost,
+         behaviour_flag_changes: {flag: {old, new, delta}}}   # changed only
+    """
+    base = runs_dir or _DEFAULT_RUNS_DIR
+    path_a = _resolve_run_path(run_a, base)
+    path_b = _resolve_run_path(run_b, base)
+    rec_a = read_run(path_a)
+    rec_b = read_run(path_b)
+    cmp_result = compare_runs(rec_a, rec_b)
+    summary = cmp_result["summary"]
+
+    per_task_delta = {
+        row["task_id"]: {
+            "d_quality": row["d_quality"],
+            "d_cost_usd": row["d_cost_usd"],
+            "class": row["class"],
+        }
+        for row in cmp_result["per_task"]
+    }
+
+    rates_a = behavior_rates(rec_a)
+    rates_b = behavior_rates(rec_b)
+    flag_changes: dict[str, dict[str, float]] = {}
+    for flag in sorted(set(rates_a) | set(rates_b)):
+        old = float(rates_a.get(flag, {}).get("rate", 0.0))
+        new = float(rates_b.get(flag, {}).get("rate", 0.0))
+        if abs(new - old) > 1e-9:
+            flag_changes[flag] = {"old": old, "new": new, "delta": new - old}
+
+    return {
+        "run_a": str(path_a),
+        "run_b": str(path_b),
+        "verdict": cmp_result["verdict"],
+        "n_overlap": summary["n_overlap"],
+        "n_better": summary["n_better"],
+        "n_worse": summary["n_worse"],
+        "n_neutral": summary["n_neutral"],
+        "per_task_delta": per_task_delta,
+        "score_delta": (float(summary["new"]["avg_quality"])
+                        - float(summary["old"]["avg_quality"])),
+        "cost_delta": (float(summary["new"]["total_cost_usd"])
+                       - float(summary["old"]["total_cost_usd"])),
+        "behaviour_flag_changes": flag_changes,
+    }
+
+
+def format_ab_note(ab: dict) -> str:
+    """Short plain-text rendering of an :func:`ab_compare` result — the
+    "Benchmark drift" note for the eval report (and chat)."""
+    verdict = str(ab.get("verdict") or "neutral")
+    lines = [
+        f"verdict: {verdict.upper()} "
+        f"({int(ab.get('n_better') or 0)} better / "
+        f"{int(ab.get('n_worse') or 0)} worse / "
+        f"{int(ab.get('n_neutral') or 0)} neutral, "
+        f"n={int(ab.get('n_overlap') or 0)})",
+        f"score delta: {float(ab.get('score_delta') or 0.0):+.1f} avg quality; "
+        f"cost delta: ${float(ab.get('cost_delta') or 0.0):+.4f}",
+    ]
+    flags = ab.get("behaviour_flag_changes") or {}
+    if flags:
+        parts = [
+            f"{flag} {float(v.get('old') or 0.0):.0%}→"
+            f"{float(v.get('new') or 0.0):.0%}"
+            for flag, v in sorted(flags.items())
+        ]
+        lines.append("behaviour: " + ", ".join(parts))
+    regressed = sorted(
+        tid for tid, d in (ab.get("per_task_delta") or {}).items()
+        if d.get("class") == "worse"
+    )
+    if regressed:
+        head = ", ".join(regressed[:5])
+        more = f" (+{len(regressed) - 5} more)" if len(regressed) > 5 else ""
+        lines.append(f"regressed: {head}{more}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Audit — pattern-bug-vs-real-fail diagnosis
 # ---------------------------------------------------------------------------
 
@@ -1336,6 +1467,9 @@ __all__ = [
     "summarise_run",
     "compare_runs",
     "aggregate_replicates",
+    "list_runs",
+    "ab_compare",
+    "format_ab_note",
     "runs_dir",
     "run_timestamp",
     "find_profile_commits_between",

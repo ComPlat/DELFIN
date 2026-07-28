@@ -251,13 +251,14 @@ def test_load_settings_normalizes_ui_tabs_payload(tmp_path):
     assert loaded["ui"]["tabs"]["hidden"] == ["archive"]
 
 
-def test_agent_extras_default_off_and_roundtrip(tmp_path):
+def test_agent_extras_default_on_and_roundtrip(tmp_path):
     settings_path = tmp_path / "settings.json"
 
-    # Token-costing agent features are strictly opt-in (default OFF).
+    # The learning loops are on by default (auto-memory is one cheap-tier
+    # call per session, eval_loop is LLM-free); enabled: false opts out.
     defaults = _MODULE.DEFAULT_SETTINGS["agent"]
-    assert defaults["auto_memory"]["enabled"] is False
-    assert defaults["eval_loop"]["enabled"] is False
+    assert defaults["auto_memory"]["enabled"] is True
+    assert defaults["eval_loop"]["enabled"] is True
 
     # Toggle them on the way the Settings tab's save handlers do —
     # merge into the existing dict instead of replacing it.

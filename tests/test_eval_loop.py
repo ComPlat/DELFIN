@@ -25,10 +25,10 @@ def _o(verdict="FAIL", task_class="chemistry", error_type="timeout",
 # Opt-in
 # ---------------------------------------------------------------------------
 
-def test_default_settings_disabled():
+def test_default_settings_enabled():
     from delfin.user_settings import DEFAULT_SETTINGS
     cfg = DEFAULT_SETTINGS["agent"]["eval_loop"]
-    assert cfg["enabled"] is False
+    assert cfg["enabled"] is True
     assert cfg["threshold"] >= 2
 
 
@@ -92,6 +92,79 @@ def test_report_contains_outcomes_patterns_and_integrity():
     assert "chemistry|timeout|solo" in report
     assert "Benchmark suite integrity" in report
     assert "OK — 0 errors" in report            # committed suite is clean
+
+
+def _patch_telemetry_dirs(monkeypatch, tmp_path):
+    """Point every telemetry reader the report consumes at tmp dirs."""
+    from delfin.agent import benchmark as bm
+    from delfin.agent import tool_trace as tt
+    from delfin.agent import turn_metrics as tm
+    monkeypatch.setattr(tt, "_DIR", tmp_path / "traces")
+    monkeypatch.setattr(tm, "_DIR", tmp_path / "turns")
+    monkeypatch.setattr(bm, "_DEFAULT_RUNS_DIR", tmp_path / "runs")
+    return tmp_path / "traces", tmp_path / "turns", tmp_path / "runs"
+
+
+def test_report_contains_tool_and_turn_health(tmp_path, monkeypatch):
+    import json
+    import time
+    traces, turns, _runs = _patch_telemetry_dirs(monkeypatch, tmp_path)
+    traces.mkdir(parents=True)
+    turns.mkdir(parents=True)
+    now = time.time()
+    (traces / "s.jsonl").write_text(
+        json.dumps({"ts": now, "tool": "bash", "ok": False,
+                    "duration_ms": 10, "error": "exit 1"}) + "\n"
+        + json.dumps({"ts": now, "tool": "read_file", "ok": True,
+                      "duration_ms": 5}) + "\n",
+        encoding="utf-8")
+    (turns / "s.jsonl").write_text(
+        json.dumps({"ts": now, "model": "m", "total_ms": 90000,
+                    "ttft_ms": 89000, "output_chars": 5, "tool_calls": 0,
+                    "stopped": True}) + "\n",
+        encoding="utf-8")
+    report = ev.build_report(outcomes=[])
+    assert "## Tool health" in report
+    assert "**bash**: 100% errors (1/1 calls)" in report
+    assert 'e.g. "exit 1"' in report
+    assert "## Turn health" in report
+    assert "turns: 1, stalls: 1, stopped: 1" in report
+    assert "p90 89.0s" in report
+    # fewer than two benchmark runs → no drift section
+    assert "## Benchmark drift" not in report
+
+
+def test_report_health_sections_present_without_telemetry(tmp_path, monkeypatch):
+    _patch_telemetry_dirs(monkeypatch, tmp_path)        # dirs never created
+    report = ev.build_report(outcomes=[])
+    assert "## Tool health" in report
+    assert "no tool calls recorded in window" in report
+    assert "## Turn health" in report
+    assert "no turns recorded in window" in report
+
+
+def test_report_benchmark_drift_with_two_runs(tmp_path, monkeypatch):
+    import os
+    from delfin.agent import benchmark as bm
+    _traces, _turns, runs = _patch_telemetry_dirs(monkeypatch, tmp_path)
+
+    def _results(quality, success):
+        return [bm.BenchmarkResult(task_id=f"t{i}", task_class="x",
+                                   model="m", success=success,
+                                   quality_0_100=quality, cost_usd=0.01)
+                for i in range(3)]
+
+    pa = bm.write_run(_results(50, False), model="m", runs_dir=runs,
+                      run_id="a_base")
+    pb = bm.write_run(_results(80, True), model="m", runs_dir=runs,
+                      run_id="b_cand")
+    os.utime(pa, (1000, 1000))                          # force mtime order
+    os.utime(pb, (2000, 2000))
+    report = ev.build_report(outcomes=[])
+    assert "## Benchmark drift" in report
+    assert "`a_base.jsonl` → `b_cand.jsonl`" in report
+    assert "verdict: BETTER" in report
+    assert "score delta: +30.0" in report
 
 
 def test_run_eval_writes_report(tmp_path, monkeypatch):

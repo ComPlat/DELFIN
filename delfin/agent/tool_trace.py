@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,84 @@ def aggregate_tools(*, dir_path: Path | None = None) -> list[dict]:
     return out
 
 
+def aggregate_tool_stats(
+    window_days: float = 7,
+    *,
+    dir_path: Path | None = None,
+    now: float | None = None,
+    top_n_errors: int = 3,
+) -> dict[str, dict]:
+    """Windowed per-tool health stats across ALL session traces.
+
+    The telemetry consumer the traces have been missing: answers "which
+    tool fails most often, and how?" without hand-grepping JSONL. Returns
+    ``{tool: {calls, errors, error_rate, avg_duration_ms,
+    top_error_snippets}}`` where ``top_error_snippets`` lists the most
+    frequent error texts (truncated) for that tool.
+
+    Only entries whose ``ts`` falls inside the last ``window_days`` count
+    (``window_days <= 0`` disables the window); entries without a
+    parseable ``ts`` stay visible.  Best-effort: never raises — a corrupt
+    line, non-object line, or unreadable file is skipped.
+    """
+    try:
+        base = Path(dir_path) if dir_path else _DIR
+        cutoff: float | None = None
+        if window_days and float(window_days) > 0:
+            cutoff = ((now if now is not None else time.time())
+                      - float(window_days) * 86400.0)
+        acc: dict[str, dict] = {}
+        for fp in sorted(base.glob("*.jsonl")):
+            try:
+                lines = fp.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for ln in lines:
+                try:
+                    e = json.loads(ln)
+                except Exception:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                if cutoff is not None:
+                    try:
+                        if float(e["ts"]) < cutoff:
+                            continue
+                    except (KeyError, TypeError, ValueError):
+                        pass                    # no/bad ts → keep visible
+                tool = str(e.get("tool") or "?")
+                d = acc.setdefault(tool, {
+                    "calls": 0, "errors": 0,
+                    "dur_sum": 0, "dur_n": 0, "errs": Counter(),
+                })
+                d["calls"] += 1
+                try:
+                    d["dur_sum"] += int(e.get("duration_ms") or 0)
+                    d["dur_n"] += 1
+                except (TypeError, ValueError):
+                    pass
+                if not e.get("ok", True):
+                    d["errors"] += 1
+                    snip = str(e.get("error") or "").strip()[:120]
+                    if snip:
+                        d["errs"][snip] += 1
+        out: dict[str, dict] = {}
+        for tool, d in acc.items():
+            calls = d["calls"]
+            out[tool] = {
+                "calls": calls,
+                "errors": d["errors"],
+                "error_rate": (d["errors"] / calls) if calls else 0.0,
+                "avg_duration_ms": (int(round(d["dur_sum"] / d["dur_n"]))
+                                    if d["dur_n"] else 0),
+                "top_error_snippets": [s for s, _ in
+                                       d["errs"].most_common(top_n_errors)],
+            }
+        return out
+    except Exception:
+        return {}
+
+
 def format_tool_stats(rows: list[dict], *, limit: int = 40) -> str:
     """Human table for ``/agents tools``: tool | calls | err% | p50 | p95 | max."""
     if not rows:
@@ -239,4 +318,5 @@ def format_panel_html(entries: list[dict], *, limit: int = 12) -> str:
 
 
 __all__ = ["record", "read", "clear", "trace_path", "format_summary",
-           "format_panel_html"]
+           "format_panel_html", "aggregate_tools", "aggregate_tool_stats",
+           "format_tool_stats"]

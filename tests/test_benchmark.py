@@ -807,3 +807,103 @@ def test_summarise_run_computes_basic_aggregates():
     assert s["avg_quality"] == pytest.approx((80 + 60 + 90) / 3)
     assert s["total_cost_usd"] == pytest.approx(0.06)
     assert s["total_duration_s"] == pytest.approx(6.0)
+
+
+# ---------------------------------------------------------------------------
+# ab_compare — compact A/B convenience over two persisted runs
+# ---------------------------------------------------------------------------
+
+
+def _write_ab_runs(tmp_path):
+    """Two synthetic runs: candidate lifts quality on all 3 tasks, spends
+    more, and flips the 'planned' behaviour flag on."""
+    base = []
+    cand = []
+    for i in range(3):
+        b = _make_result(f"t{i}", quality=50, success=False, cost=0.01)
+        c = _make_result(f"t{i}", quality=80, success=True, cost=0.02)
+        b.behavior = {"planned": 0.0}
+        c.behavior = {"planned": 1.0}
+        base.append(b)
+        cand.append(c)
+    pa = bm.write_run(base, model="m", runs_dir=tmp_path, run_id="base")
+    pb = bm.write_run(cand, model="m", runs_dir=tmp_path, run_id="cand")
+    return pa, pb
+
+
+def test_ab_compare_on_two_synthetic_runs(tmp_path):
+    _write_ab_runs(tmp_path)
+    ab = bm.ab_compare("base", "cand", runs_dir=tmp_path)   # bare run ids
+    assert ab["verdict"] == "better"
+    assert ab["n_overlap"] == 3 and ab["n_better"] == 3
+    assert ab["per_task_delta"]["t0"] == {
+        "d_quality": 30, "d_cost_usd": pytest.approx(0.01), "class": "better",
+    }
+    assert ab["score_delta"] == pytest.approx(30.0)
+    assert ab["cost_delta"] == pytest.approx(0.03)
+    ch = ab["behaviour_flag_changes"]["planned"]
+    assert ch["old"] == 0.0 and ch["new"] == 1.0
+    assert ch["delta"] == pytest.approx(1.0)
+
+
+def test_ab_compare_accepts_full_paths_and_filenames(tmp_path):
+    pa, pb = _write_ab_runs(tmp_path)
+    by_path = bm.ab_compare(str(pa), str(pb), runs_dir=tmp_path / "elsewhere")
+    by_name = bm.ab_compare("base.jsonl", "cand.jsonl", runs_dir=tmp_path)
+    assert by_path["verdict"] == by_name["verdict"] == "better"
+    assert by_path["per_task_delta"] == by_name["per_task_delta"]
+
+
+def test_ab_compare_missing_runs_is_thin_not_crash(tmp_path):
+    ab = bm.ab_compare("nope_a", "nope_b", runs_dir=tmp_path)
+    assert ab["verdict"] == "thin"
+    assert ab["per_task_delta"] == {}
+    assert ab["behaviour_flag_changes"] == {}
+    assert ab["score_delta"] == 0.0 and ab["cost_delta"] == 0.0
+
+
+def test_ab_compare_unchanged_flags_are_omitted(tmp_path):
+    base = [_make_result("t", quality=50)]
+    cand = [_make_result("t", quality=60)]
+    base[0].behavior = {"scouted": 1.0}
+    cand[0].behavior = {"scouted": 1.0}                 # no change
+    bm.write_run(base, model="m", runs_dir=tmp_path, run_id="a")
+    bm.write_run(cand, model="m", runs_dir=tmp_path, run_id="b")
+    ab = bm.ab_compare("a", "b", runs_dir=tmp_path)
+    assert ab["behaviour_flag_changes"] == {}
+
+
+def test_format_ab_note_renders_verdict_deltas_and_flags(tmp_path):
+    _write_ab_runs(tmp_path)
+    note = bm.format_ab_note(bm.ab_compare("base", "cand", runs_dir=tmp_path))
+    assert "verdict: BETTER (3 better / 0 worse / 0 neutral, n=3)" in note
+    assert "score delta: +30.0" in note
+    assert "cost delta: $+0.0300" in note
+    assert "planned 0%→100%" in note
+    assert "regressed" not in note                      # nothing regressed
+
+
+def test_format_ab_note_lists_regressed_tasks():
+    ab = {
+        "verdict": "worse", "n_better": 0, "n_worse": 1, "n_neutral": 2,
+        "n_overlap": 3, "score_delta": -12.0, "cost_delta": 0.0,
+        "per_task_delta": {"bad_task": {"d_quality": -30, "d_cost_usd": 0.0,
+                                        "class": "worse"}},
+        "behaviour_flag_changes": {},
+    }
+    note = bm.format_ab_note(ab)
+    assert "verdict: WORSE" in note
+    assert "regressed: bad_task" in note
+
+
+def test_list_runs_sorted_oldest_first(tmp_path):
+    import os
+    pa = bm.write_run([_make_result("t", quality=1)], model="m",
+                      runs_dir=tmp_path, run_id="newer")
+    pb = bm.write_run([_make_result("t", quality=1)], model="m",
+                      runs_dir=tmp_path, run_id="older")
+    os.utime(pa, (2000, 2000))
+    os.utime(pb, (1000, 1000))
+    assert [p.name for p in bm.list_runs(tmp_path)] == [
+        "older.jsonl", "newer.jsonl"]
+    assert bm.list_runs(tmp_path / "missing") == []
