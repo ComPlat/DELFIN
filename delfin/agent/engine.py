@@ -341,6 +341,11 @@ class AgentEngine:
         self.provider = provider
         AgentEngine._active_provider = provider  # class-level for static methods
         self.loader._active_provider = provider
+        # Inject-once gating of stable prompt sections is only sound on the
+        # persistent claude CLI process (its first system prompt stays alive
+        # across turns). Codex CLI spawns per turn and the chat-API backends
+        # rebuild every request, so the loader re-injects there (its default).
+        self.loader.stateful_backend = (backend == "cli" and provider == "claude")
         self.mode = mode
         self._agent_workspace_dir = agent_workspace_dir
         self.route: list[str] = []
@@ -1424,8 +1429,9 @@ class AgentEngine:
                 + content[-tail_len:]
             )
             msg["content"] = new_content
-            self._trimmed_chars_since_floor += max(
-                0, len(content) - len(new_content))
+            self._trimmed_chars_since_floor = (
+                getattr(self, "_trimmed_chars_since_floor", 0)
+                + max(0, len(content) - len(new_content)))
             trimmed += 1
         return trimmed
 
@@ -1462,8 +1468,9 @@ class AgentEngine:
                 f"[cleared: {len(content)} chars of old tool output elided "
                 f"to save context]\n{head}"
             )
-            self._trimmed_chars_since_floor += max(
-                0, len(content) - len(msg["content"]))
+            self._trimmed_chars_since_floor = (
+                getattr(self, "_trimmed_chars_since_floor", 0)
+                + max(0, len(content) - len(msg["content"])))
             cleared += 1
         return cleared
 

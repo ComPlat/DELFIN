@@ -121,14 +121,26 @@ class PromptLoader:
             self.agent_lite_dir = self._MODULE_DIR / "pack_lite"
             self.repo_root = self._MODULE_DIR.parent.parent
         self._cache: dict[str, str] = {}
-        self._prompt_state: dict[tuple[str, str], dict[str, str]] = {}
+        self._prompt_state: dict[tuple[str, str], dict[str, Any]] = {}
         self._context_tracker: Any = None  # set by AgentEngine
         self._progressive_disclosure: bool = False  # set by AgentEngine
+        # Backend statefulness (set by AgentEngine). Only the persistent CLI
+        # process keeps the first system prompt alive across turns, so stable
+        # sections may be injected once per session there. Stateless chat-API
+        # backends (OpenAI/KIT/Ollama, Anthropic API) rebuild every request
+        # from scratch — "inject once" would silently delete those sections
+        # from turn 2 onward, so the default is to re-inject on every build
+        # (identical bytes in a stable position are what prefix caching
+        # makes nearly free).
+        self.stateful_backend: bool = False
         # Track which sections were injected in the last build (for usage tracking)
         self._last_injected_sections: list[str] = []
 
     def reset_session_prompt_state(self, session_key: str) -> None:
-        """Forget prompt-injection state for a session."""
+        """Forget prompt-injection state for a session.
+
+        Clears both the inject-once digests and the sticky lazy-module set
+        (they live in the same per-(session, role) state dict)."""
         if not session_key:
             return
         stale = [key for key in self._prompt_state if key[0] == session_key]
@@ -457,10 +469,17 @@ class PromptLoader:
         state = self._prompt_state.setdefault((session_key, role_id), {})
         digest = str(hash(value))
         state_key = f"{key}_digest"
-        if state.get(state_key) == digest:
-            return False
+        seen_before = state.get(state_key) == digest
         state[state_key] = digest
-        return True
+        # Inject-once is only valid on a STATEFUL backend (persistent CLI
+        # process) where the earlier system prompt is still part of the
+        # conversation. Stateless chat-API backends rebuild every request
+        # from scratch — skipping an unchanged section there would make it
+        # vanish from turn 2 onward, so those always re-inject. The digest
+        # is still recorded either way to track content change.
+        if not self.stateful_backend:
+            return True
+        return not seen_before
 
     def _should_inject_profile_context(
         self,
@@ -629,12 +648,20 @@ class PromptLoader:
 
     def _detect_active_modules(
         self, task_text: str, mode_id: str = "",
+        session_key: str = "", role_id: str = "",
     ) -> set[str]:
         """Pick which lazy modules survive stripping for this task.
 
         Solo + plan mode honour the trigger heuristic; other modes get
         everything (they're pipeline roles that usually need the full
         context anyway and are sensitive to subtle prompt changes).
+
+        With a session_key the set is sticky and monotonic: the UNION of
+        every module that ever triggered in this session stays active, so
+        a trigger-free follow-up ("yes, continue") can't strip modules
+        the model is actively using mid-task — and the prompt prefix
+        stops oscillating (which would kill prefix caching). The union
+        is cleared by ``reset_session_prompt_state``.
         """
         if mode_id not in ("solo", "plan"):
             return set(self._MODULE_TRIGGERS)
@@ -643,6 +670,11 @@ class PromptLoader:
         for name, triggers in self._MODULE_TRIGGERS.items():
             if any(t in s for t in triggers):
                 active.add(name)
+        if session_key:
+            state = self._prompt_state.setdefault((session_key, role_id), {})
+            sticky: set[str] = state.setdefault("active_modules", set())
+            sticky |= active
+            return set(sticky)
         return active
 
     # Models whose attention degrades quickly past 4 k of system prompt.
@@ -781,10 +813,12 @@ class PromptLoader:
 
     def _strip_lazy_modules(
         self, text: str, *, task_text: str, mode_id: str,
-        model: str = "",
+        model: str = "", session_key: str = "", role_id: str = "",
     ) -> str:
         """Drop ``<!-- module:X -->``-marked sections whose triggers
-        didn't match the current task text.
+        didn't match the current task text (nor any earlier task text in
+        this session — the active set is session-sticky, see
+        ``_detect_active_modules``).
 
         Each marker starts the module; the module extends until the next
         ``<!-- module:Y -->`` marker OR the next ``## `` H2 header (so
@@ -828,7 +862,9 @@ class PromptLoader:
             or self._is_weak_model(model)
         )
 
-        active = self._detect_active_modules(task_text, mode_id)
+        active = self._detect_active_modules(
+            task_text, mode_id, session_key=session_key, role_id=role_id,
+        )
         lines = text.splitlines(keepends=True)
         out: list[str] = []
         i = 0
@@ -1027,7 +1063,7 @@ class PromptLoader:
                 try:
                     role_prompt = self._strip_lazy_modules(
                         role_prompt, task_text=task_text, mode_id=mode_id,
-                        model=model,
+                        model=model, session_key=session_key, role_id=role_id,
                     )
                 except Exception:
                     pass
