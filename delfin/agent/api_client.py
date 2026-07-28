@@ -1180,6 +1180,10 @@ class KitToolPermissions:
     # holding a back-reference to the client. Signature:
     #   (subagent_type: str, description: str, prompt: str) -> dict payload
     subagent_runner: Optional[Callable[..., dict]] = None
+    # Orchestration runner: bound by the client alongside subagent_runner so
+    # the 'orchestrate' tool can drive run_orchestration without the executor
+    # holding a client back-reference. Signature: (spec) -> dict.
+    orchestration_runner: Optional[Callable[..., dict]] = None
     read_tracker: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -2793,6 +2797,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "description from the original run win."
                         ),
                     },
+                    "output_schema": {
+                        "type": "object",
+                        "description": (
+                            "Optional JSON Schema the sub-agent's FINAL "
+                            "message must match (subset: type object/array/"
+                            "string/number/integer/boolean, required, "
+                            "properties, enum, items). The child gets one "
+                            "correction round; the validated object is "
+                            "returned as 'structured_output' in the payload."
+                        ),
+                    },
                     "isolation": {
                         "type": "string",
                         "enum": ["", "worktree"],
@@ -3120,6 +3135,39 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "orchestrate",
+            "description": (
+                "Run a declarative multi-stage subagent plan with a "
+                "deterministic library driver. Stages run in order with a "
+                "barrier; calls inside a stage fan out in parallel (cap 4); "
+                "a later stage's prompts may embed a finished stage's "
+                "results via {{stage:NAME}}; an optional verify step runs "
+                "skeptic votes over the final stage's results and rejects "
+                "majority-refuted ones. Hard limits: 3 stages, 6 calls per "
+                "stage, 3 votes, no nesting inside a sub-agent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec": {
+                        "type": "object",
+                        "description": (
+                            "{'stages': [{'name': str, 'parallel': "
+                            "[{'subagent_type': str, 'description': str, "
+                            "'prompt': str, 'output_schema'?: object, "
+                            "'isolation'?: 'worktree'}]}], 'verify'?: "
+                            "{'prompt_template': str containing {{result}}, "
+                            "'votes': int 1-3, 'subagent_type'?: str}}"
+                        ),
+                    },
+                },
+                "required": ["spec"],
             },
         },
     },
@@ -4476,6 +4524,8 @@ class _DocToolExecutor:
 
         # Sub-agent delegation: spawn an isolated tool-calling loop
         # via the runner the parent OpenAIClient attached.
+        if name == "orchestrate":
+            return self._execute_orchestrate(arguments, permissions)
         if name == "subagent":
             return self._execute_subagent(arguments, permissions)
         if name == "subagent_result":
@@ -6917,6 +6967,32 @@ class _DocToolExecutor:
 
     # ------- Sub-agent delegation -----------------------------------------
 
+    def _execute_orchestrate(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        spec = arguments.get("spec")
+        if isinstance(spec, str):
+            try:
+                spec = json.loads(spec)
+            except json.JSONDecodeError as exc:
+                return json.dumps({"error": f"spec is not valid JSON: {exc}"})
+        if not isinstance(spec, dict):
+            return json.dumps({"error": "spec must be a JSON object"})
+        if perms is None or getattr(perms, "orchestration_runner", None) is None:
+            return json.dumps({"error": "orchestration runner not attached"})
+        # Same nesting guard as subagent spawning: run_orchestration also
+        # refuses depth >= 1 itself (defense in depth).
+        if getattr(perms, "subagent_depth", 0) >= _max_subagent_depth():
+            return json.dumps({"error": (
+                "orchestration nesting limit reached: a sub-agent may not "
+                "drive an orchestration."
+            )})
+        try:
+            out = perms.orchestration_runner(spec)
+        except Exception as exc:
+            return json.dumps({"error": f"orchestration runner raised: {exc}"})
+        return json.dumps(out, ensure_ascii=False)
+
     def _execute_subagent(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -6967,6 +7043,11 @@ class _DocToolExecutor:
         _model_pin = (arguments.get("model") or "").strip()
         if _model_pin:
             _resume_kw["model"] = _model_pin
+        # Optional structured-return schema — validated inside run_subagent
+        # (subset validator; one correction round on mismatch).
+        _out_schema = arguments.get("output_schema")
+        if isinstance(_out_schema, dict) and _out_schema:
+            _resume_kw["output_schema"] = _out_schema
         # Background mode: spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
@@ -8003,7 +8084,7 @@ class OpenAIClient(_BaseClient):
         def _runner(
             *, subagent_type: str, description: str, prompt: str,
             isolation: str = "", resume_from: str = "", sa_id: str = "",
-            model: str = "",
+            model: str = "", output_schema: dict | None = None,
         ) -> dict:
             res = _sa.run_subagent(
                 subagent_type=subagent_type,
@@ -8015,11 +8096,17 @@ class OpenAIClient(_BaseClient):
                 resume_from=resume_from,
                 sa_id=sa_id,
                 model=model,
+                output_schema=output_schema,
             )
             return res.to_payload()
 
         try:
             permissions.subagent_runner = _runner
+
+            def _orchestrate(spec: dict) -> dict:
+                return _sa.run_orchestration(spec, self, self._permissions)
+
+            permissions.orchestration_runner = _orchestrate
         except Exception:
             pass
 
@@ -8142,6 +8229,7 @@ class OpenAIClient(_BaseClient):
                               "watch_job",
                               "history_search",
                               "history_get",
+                              "orchestrate",
                               "apply_patch",
                               "find_definition",
                               "find_references",
@@ -8857,6 +8945,7 @@ class OpenAIClient(_BaseClient):
                                             "watch_job",
                                             "history_search",
                                             "history_get",
+                                            "orchestrate",
                                             "apply_patch",
                                             "find_definition",
                                             "find_references",

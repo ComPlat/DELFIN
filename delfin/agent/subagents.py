@@ -92,6 +92,225 @@ def _subagent_limits() -> dict:
 _TELEMETRY_PATH = Path.home() / ".delfin" / "subagent_telemetry.jsonl"
 _TELEMETRY_MAX_LINES = 5000
 
+# Context-inheritance budgets. A spawned child used to start with a bare
+# preset prompt — no DELFIN.MD/AGENTS.md project rules, no typed memories —
+# so it could cheerfully violate standing project conventions the parent
+# knows about. Both blocks are appended to the child's system prompt (unless
+# ``inherit_context=False``) and are hard-capped so they can't crowd out the
+# actual task briefing.
+_INHERIT_RULES_MAX_CHARS = 2000
+_INHERIT_MEMORY_MAX_CHARS = 1500
+# Only these typed-memory kinds are inherited: they encode durable
+# user/project preferences. Task-scoped or auto-distilled kinds stay out.
+_INHERIT_MEMORY_TYPES = ("feedback", "user")
+
+
+def _inherited_context(workspace, prompt: str) -> str:
+    """Project rules + standing memories for a child's system prompt.
+
+    (a) Project rules: ``load_project_memory`` walking up from the child's
+        workspace (DELFIN.MD / AGENTS.md), capped at
+        ``_INHERIT_RULES_MAX_CHARS``.
+    (b) Standing memory: feedback/user typed memories from the child
+        workspace's store, BM25-ranked against the subagent prompt so the
+        most task-relevant ones survive the ``_INHERIT_MEMORY_MAX_CHARS``
+        cap (ties broken by recency).
+
+    Every step is best-effort: a memory failure must never break a spawn,
+    so ANY exception collapses to omitting that block. Returns "" when the
+    workspace is unknown or nothing is found.
+    """
+    if workspace is None:
+        return ""
+    parts: list[str] = []
+    try:
+        from .project_memory import load_project_memory
+        rules = load_project_memory(
+            cwd=workspace, max_chars=_INHERIT_RULES_MAX_CHARS)
+        if rules and rules.strip():
+            parts.append(
+                "## Project rules (inherited from the parent workspace)\n"
+                + rules.strip())
+    except Exception:
+        pass
+    try:
+        from . import memory_store as _ms
+        recs = [r for r in _ms.list_typed_memories(workspace)
+                if (r.get("type") or "") in _INHERIT_MEMORY_TYPES]
+        if recs:
+            texts = [
+                " ".join(x for x in (r.get("name"), r.get("description"),
+                                     r.get("body")) if x)
+                for r in recs
+            ]
+            try:
+                scores = _ms.bm25_scores(prompt or "", texts)
+            except Exception:
+                scores = [0.0] * len(recs)
+            order = sorted(
+                range(len(recs)),
+                key=lambda i: (-scores[i],
+                               -int(recs[i].get("updated_at") or 0)))
+            lines: list[str] = []
+            used = 0
+            for i in order:
+                r = recs[i]
+                body = " ".join(
+                    str(r.get("body") or r.get("description") or "").split())
+                line = f"- [{r.get('type', 'user')}] {r.get('name', '')}: {body[:300]}"
+                if used + len(line) > _INHERIT_MEMORY_MAX_CHARS and lines:
+                    break
+                lines.append(line)
+                used += len(line) + 1
+            if lines:
+                parts.append("## Standing memory (inherited)\n"
+                             + "\n".join(lines))
+    except Exception:
+        pass
+    if not parts:
+        return ""
+    return "\n\n" + "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Structured returns — a tiny dependency-free JSON-Schema subset validator.
+#
+# Supported subset (deliberately small; anything else in a schema is
+# IGNORED, never enforced):
+#   - "type": object / array / string / number / integer / boolean
+#   - "required" (on objects)
+#   - "properties" (on objects; validated only for keys that are present)
+#   - "enum"
+#   - "items" (single-schema form, applied to every array element)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_TYPES: dict[str, Any] = {
+    "object": dict,
+    "array": list,
+    "string": str,
+    "boolean": bool,
+    "integer": int,
+    "number": (int, float),
+}
+
+
+def validate_json_schema(value, schema: dict, path: str = "$") -> list[str]:
+    """Validate ``value`` against the supported JSON-Schema subset.
+
+    Returns a list of human-readable error strings; empty list = valid.
+    Unknown/unsupported schema keywords are ignored (subset documented
+    above). Never raises on malformed schemas — they just validate less.
+    """
+    errors: list[str] = []
+    if not isinstance(schema, dict):
+        return errors
+    t = schema.get("type")
+    if isinstance(t, str) and t:
+        expected = _SCHEMA_TYPES.get(t)
+        if expected is not None:
+            ok = isinstance(value, expected)
+            # bool is an int subclass in Python — a boolean must not
+            # satisfy integer/number.
+            if t in ("integer", "number") and isinstance(value, bool):
+                ok = False
+            # ...and an integer/number must not satisfy boolean.
+            if t == "boolean" and not isinstance(value, bool):
+                ok = False
+            if not ok:
+                errors.append(
+                    f"{path}: expected {t}, got {type(value).__name__}")
+                return errors  # wrong type — descending would only cascade
+    if "enum" in schema and isinstance(schema.get("enum"), list):
+        if value not in schema["enum"]:
+            errors.append(
+                f"{path}: value {value!r} not in enum {schema['enum']!r}")
+    if isinstance(value, dict):
+        req = schema.get("required")
+        if isinstance(req, list):
+            for k in req:
+                if k not in value:
+                    errors.append(f"{path}: missing required property {k!r}")
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for k, sub in props.items():
+                if k in value and isinstance(sub, dict):
+                    errors.extend(
+                        validate_json_schema(value[k], sub, f"{path}.{k}"))
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for i, item in enumerate(value):
+                errors.extend(
+                    validate_json_schema(item, items, f"{path}[{i}]"))
+    return errors
+
+
+def extract_json_object(text: str) -> dict | None:
+    """First JSON *object* embedded in ``text``, or None.
+
+    Tolerates markdown fences and surrounding prose: scans for ``{``
+    candidates and raw-decodes from each until one parses to a dict.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    dec = json.JSONDecoder()
+    i = text.find("{")
+    while i != -1:
+        try:
+            obj, _end = dec.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(obj, dict):
+            return obj
+        i = text.find("{", i + 1)
+    return None
+
+
+def _schema_instruction(schema: dict) -> str:
+    """System-prompt clause enforcing a schema-shaped final message."""
+    try:
+        compact = json.dumps(schema, separators=(",", ":"),
+                             ensure_ascii=False)
+    except (TypeError, ValueError):
+        compact = "{}"
+    return (
+        "\n\nStructured output contract: your FINAL message must be exactly "
+        "one JSON object that validates against the JSON Schema below. No "
+        "prose before or after it (a ```json fence around it is tolerated).\n"
+        "Schema: " + compact
+    )
+
+
+def _stream_text_only(sub_client, messages: list[dict], system_prompt: str,
+                      max_output_tokens: int, deadline: float):
+    """One extra text-only model round (used for the schema correction).
+
+    Ignores tool activity — the correction round only reformats an answer
+    the child already produced. Returns ``(text, in_tokens, out_tokens,
+    error)`` and never raises.
+    """
+    parts: list[str] = []
+    in_tok = out_tok = 0
+    err = ""
+    try:
+        for event in sub_client.stream_message(
+            messages=messages,
+            system=system_prompt,
+            max_tokens=max_output_tokens,
+        ):
+            if time.monotonic() > deadline:
+                err = "wall-clock budget exhausted during schema correction"
+                break
+            if event.type == "text_delta" and event.text:
+                parts.append(event.text)
+            elif event.type == "message_delta":
+                in_tok = max(in_tok, event.input_tokens)
+                out_tok = max(out_tok, event.output_tokens)
+    except Exception as exc:
+        err = f"schema correction round raised: {exc}"
+    return "".join(parts).strip(), in_tok, out_tok, err
+
 
 # One file PER running subagent (not a shared dict file): 6+ parallel
 # subagents update their live status on every tool call, and a shared
@@ -578,9 +797,15 @@ class SubagentResult:
     sa_id: str = ""
     model: str = ""          # model the run actually used ("" = unknown)
     model_tier: str = ""     # "cheap" when routed to the cheap tier, else "parent"
+    # Schema-validated returns (only meaningful when run_subagent was given
+    # an output_schema): the parsed+validated dict, or None with
+    # schema_error explaining why validation failed after the one
+    # correction round. final_text stays available either way.
+    structured_output: Optional[dict] = None
+    schema_error: str = ""
 
     def to_payload(self) -> dict:
-        return {
+        payload = {
             "subagent_type": self.subagent_type,
             "description": self.description,
             "sa_id": self.sa_id,
@@ -597,6 +822,11 @@ class SubagentResult:
             "error": self.error,
             "worktree": self.worktree or {},
         }
+        if self.structured_output is not None:
+            payload["structured_output"] = self.structured_output
+        if self.schema_error:
+            payload["schema_error"] = self.schema_error
+        return payload
 
 
 # Permission modes ordered from most to least restrictive. Used to clamp a
@@ -736,6 +966,8 @@ def run_subagent(
     resume_from: str = "",
     sa_id: str = "",
     model: str = "",
+    inherit_context: bool = True,
+    output_schema: Optional[dict] = None,
 ) -> SubagentResult:
     """Run a sub-agent loop and return its final assistant message.
 
@@ -761,6 +993,19 @@ def run_subagent(
     read-only task), ``"cheap"`` requests the cheap tier even when the
     ``agent.subagents.cheap_tier`` setting is off. Empty (the default)
     keeps the setting-driven behaviour. See ``_resolve_subagent_model``.
+
+    ``inherit_context=True`` (default) appends the parent workspace's
+    project rules (DELFIN.MD/AGENTS.md) and BM25-selected feedback/user
+    typed memories to the child's system prompt — see
+    ``_inherited_context``. Opt out with ``inherit_context=False``.
+    Best-effort: memory failures never break the spawn.
+
+    ``output_schema`` (a JSON-Schema dict, subset documented at
+    ``validate_json_schema``) enforces a structured return: the child is
+    instructed to end with exactly one matching JSON object; the final
+    text is parsed and validated, with ONE correction round on mismatch.
+    Success → ``SubagentResult.structured_output``; persistent mismatch →
+    ``structured_output=None`` + ``schema_error`` (text stays available).
 
     Returns a SubagentResult; never raises.
     """
@@ -876,6 +1121,17 @@ def run_subagent(
         + f"\n\nWorkspace: {sub_perms.workspace if sub_perms else '(none)'}"
         + f"\nTask label: {description}"
     )
+    # Context inheritance: project rules + standing memories, best-effort
+    # (a failure inside _inherited_context degrades to "" — spawning must
+    # never depend on the memory subsystem being healthy).
+    if inherit_context:
+        try:
+            system_prompt += _inherited_context(
+                getattr(sub_perms, "workspace", None), prompt)
+        except Exception:
+            pass
+    if output_schema and isinstance(output_schema, dict):
+        system_prompt += _schema_instruction(output_schema)
     # On resume, inject a faithful recap (earlier conversation + the tool
     # outputs the subagent actually saw) as one context block, then the
     # new request. The system prompt is rebuilt fresh so workspace paths
@@ -1035,6 +1291,51 @@ def run_subagent(
     final_text = "".join(final_text_parts).strip()
     if not final_text and not error:
         error = "sub-agent returned no text"
+
+    # Schema-validated return: parse + validate the final message, with
+    # exactly ONE correction round (a second text-only turn carrying the
+    # validation errors) before giving up. A failed/truncated run skips
+    # validation — there is nothing trustworthy to validate.
+    structured_output: Optional[dict] = None
+    schema_error = ""
+    if (output_schema and isinstance(output_schema, dict)
+            and final_text and not error and not truncated):
+        obj = extract_json_object(final_text)
+        errs = (validate_json_schema(obj, output_schema)
+                if obj is not None
+                else ["no JSON object found in the final message"])
+        if not errs:
+            structured_output = obj
+        else:
+            correction = (
+                "Your final message did not satisfy the required output "
+                "schema: " + "; ".join(errs)[:600]
+                + "\nReply again with ONLY one JSON object matching the "
+                "schema from your instructions — no prose, no explanation."
+            )
+            messages.append({"role": "assistant", "content": final_text})
+            messages.append({"role": "user", "content": correction})
+            fixed, c_in, c_out, c_err = _stream_text_only(
+                sub_client, messages, system_prompt,
+                max_output_tokens, deadline=t0 + max_wall_s)
+            in_tokens += c_in
+            out_tokens += c_out
+            if fixed:
+                final_text = fixed  # the corrected message IS the report
+                obj2 = extract_json_object(fixed)
+                errs2 = (validate_json_schema(obj2, output_schema)
+                         if obj2 is not None
+                         else ["no JSON object found in the corrected "
+                               "message"])
+                if not errs2:
+                    structured_output = obj2
+                else:
+                    schema_error = "; ".join(errs2)
+            else:
+                schema_error = "; ".join(errs)
+                if c_err:
+                    schema_error += f" (correction round failed: {c_err})"
+
     elapsed_s = time.monotonic() - t0
     # Persist the conversation so the parent can resume this subagent
     # later via ``resume_id`` (resume-by-id). Store the
@@ -1088,6 +1389,8 @@ def run_subagent(
         sa_id=_sa_id,
         model=sub_model,
         model_tier=model_tier,
+        structured_output=structured_output,
+        schema_error=schema_error,
     )
 
 
@@ -1097,6 +1400,313 @@ def is_writer_preset(subagent_type: str) -> bool:
     parallel writers into separate worktrees so they can't clobber each other."""
     p = SUBAGENT_PRESETS.get((subagent_type or "").strip())
     return bool(p) and (p.mode or "").strip().lower() != "plan"
+
+
+# ---------------------------------------------------------------------------
+# Declarative orchestration — a deterministic multi-stage executor.
+#
+# The DRIVER is pure library code: the model only fills in the spec (via the
+# 'orchestrate' tool) and does the work inside the spawned children. Stage
+# order, barriers, template substitution, verification votes and majority
+# arithmetic are all deterministic Python — no model in the driver seat.
+# ---------------------------------------------------------------------------
+
+_ORCH_MAX_STAGES = 3
+_ORCH_MAX_CALLS_PER_STAGE = 6
+_ORCH_MAX_VOTES = 3
+# Mirrors the api_client fan-out ThreadPool cap (4 workers).
+_ORCH_MAX_WORKERS = 4
+
+# The skeptic ballot every verify vote must return (schema mechanics from
+# run_subagent's output_schema path).
+_ORCH_VERIFY_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "refuted": {"type": "boolean"},
+        "note": {"type": "string"},
+    },
+    "required": ["refuted"],
+}
+
+
+def _substitute_stage_refs(prompt: str, stage_results: dict) -> str:
+    """Replace ``{{stage:NAME}}`` placeholders with that stage's results.
+
+    Substitution value is the JSON-compact list of the named stage's
+    payloads. Placeholders naming an unknown (or not-yet-run) stage are
+    left untouched — stages only see PRIOR stages (barrier semantics).
+    """
+    out = str(prompt or "")
+    if "{{stage:" not in out:
+        return out
+    for name, payloads in stage_results.items():
+        token = "{{stage:" + name + "}}"
+        if token in out:
+            try:
+                rendered = json.dumps(payloads, separators=(",", ":"),
+                                      ensure_ascii=False)
+            except (TypeError, ValueError):
+                rendered = "[]"
+            out = out.replace(token, rendered)
+    return out
+
+
+def _validate_orchestration_spec(spec, parent_perms) -> tuple[list, dict, str]:
+    """Check spec shape + hard limits. Returns ``(stages, verify, error)``."""
+    if not isinstance(spec, dict):
+        return [], {}, "spec must be a JSON object with a 'stages' list"
+    # No nested orchestration: children of an orchestration run at subagent
+    # depth 1 (same cap as any spawned subagent) and an orchestration driven
+    # FROM inside a subagent would multiply fan-out beyond the depth cap.
+    if int(getattr(parent_perms, "subagent_depth", 0) or 0) >= 1:
+        return [], {}, (
+            "orchestration cannot be nested: it may only be driven by the "
+            "top-level agent (orchestration children already run at "
+            "subagent depth 1)")
+    stages = spec.get("stages")
+    if not isinstance(stages, list) or not stages:
+        return [], {}, "spec.stages must be a non-empty list"
+    if len(stages) > _ORCH_MAX_STAGES:
+        return [], {}, (
+            f"too many stages: {len(stages)} > max {_ORCH_MAX_STAGES}")
+    seen_names: set[str] = set()
+    for idx, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            return [], {}, f"stage #{idx + 1} must be an object"
+        name = str(stage.get("name") or "").strip()
+        if not name:
+            return [], {}, f"stage #{idx + 1} needs a non-empty 'name'"
+        if name in seen_names:
+            return [], {}, (
+                f"duplicate stage name {name!r} — template references "
+                "would be ambiguous")
+        seen_names.add(name)
+        calls = stage.get("parallel")
+        if not isinstance(calls, list) or not calls:
+            return [], {}, (
+                f"stage {name!r} needs a non-empty 'parallel' list")
+        if len(calls) > _ORCH_MAX_CALLS_PER_STAGE:
+            return [], {}, (
+                f"stage {name!r} has {len(calls)} calls > max "
+                f"{_ORCH_MAX_CALLS_PER_STAGE} per stage")
+        for cidx, call in enumerate(calls):
+            if not isinstance(call, dict):
+                return [], {}, (
+                    f"stage {name!r} call #{cidx + 1} must be an object")
+            for req_key in ("subagent_type", "description", "prompt"):
+                if not str(call.get(req_key) or "").strip():
+                    return [], {}, (
+                        f"stage {name!r} call #{cidx + 1} is missing "
+                        f"{req_key!r}")
+    verify = spec.get("verify") or {}
+    if verify:
+        if not isinstance(verify, dict):
+            return [], {}, "spec.verify must be an object"
+        if not str(verify.get("prompt_template") or "").strip():
+            return [], {}, "spec.verify needs a 'prompt_template'"
+    return stages, verify, ""
+
+
+def _run_stage_calls(jobs: list[dict], parent_client, parent_perms) -> list[dict]:
+    """Run one batch of subagent-call dicts, fanned out on a thread pool.
+
+    ``jobs`` carry FINAL kwargs (prompts already substituted). Results come
+    back in submission order — deterministic regardless of completion
+    order. A single job runs inline (no pool). run_subagent never raises,
+    but a raise anywhere still degrades to an error payload.
+    """
+    def _one(job: dict) -> dict:
+        try:
+            return run_subagent(
+                subagent_type=str(job.get("subagent_type") or ""),
+                description=str(job.get("description") or ""),
+                prompt=str(job.get("prompt") or ""),
+                parent_client=parent_client,
+                parent_perms=parent_perms,
+                isolation=str(job.get("isolation") or ""),
+                output_schema=(job.get("output_schema")
+                               if isinstance(job.get("output_schema"), dict)
+                               else None),
+            ).to_payload()
+        except Exception as exc:
+            return {
+                "subagent_type": str(job.get("subagent_type") or ""),
+                "description": str(job.get("description") or ""),
+                "result": "",
+                "error": f"orchestration call raised: {exc}",
+            }
+
+    if len(jobs) == 1:
+        return [_one(jobs[0])]
+    import concurrent.futures as _cf
+    with _cf.ThreadPoolExecutor(
+        max_workers=min(len(jobs), _ORCH_MAX_WORKERS),
+        thread_name_prefix="orchestration",
+    ) as pool:
+        futures = [pool.submit(_one, j) for j in jobs]
+        return [f.result() for f in futures]
+
+
+def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
+    """Execute a declarative multi-stage subagent plan. Never raises.
+
+    ``spec`` shape::
+
+        {"stages": [{"name": str,
+                     "parallel": [{"subagent_type": str, "prompt": str,
+                                   "description": str, "output_schema"?: {},
+                                   "isolation"?: "worktree"}, ...]},
+                    ...],
+         "verify": {"prompt_template": str,   # optional
+                    "votes": int,             # clamped to 1..3
+                    "subagent_type"?: str}}   # default "explore"
+
+    Semantics:
+      - stages run strictly in order with a barrier between them;
+      - within a stage, calls fan out on a thread pool (cap 4 workers,
+        matching the api_client fan-out); writers in a multi-call stage
+        auto-isolate into worktrees unless the call pins isolation;
+      - ``{{stage:NAME}}`` in a later stage's prompt is replaced with the
+        JSON-compact results list of that finished stage;
+      - the optional verify step runs ``votes`` parallel skeptic subagents
+        per FINAL-stage result (prompt_template with ``{{result}}``
+        substituted), each returning ``{refuted, note}`` via the
+        output-schema mechanism; a strict majority of the valid ballots
+        marking ``refuted=true`` moves the result to ``rejected``.
+
+    Hard limits: max 3 stages, max 6 calls per stage, max 3 votes;
+    children run at subagent depth 1 (so they cannot fan out further) and
+    orchestration itself refuses to run from inside a subagent.
+
+    Returns ``{"stages": {name: [payloads]}, "verified": [...],
+    "rejected": [...]}`` — or ``{"error": ...}`` on a spec violation.
+    Writes ONE summary telemetry record for the whole run.
+    """
+    t0 = time.monotonic()
+    stages, verify, spec_err = _validate_orchestration_spec(spec, parent_perms)
+    if spec_err:
+        return {"error": spec_err}
+
+    stage_results: dict[str, list[dict]] = {}
+    stage_names: list[str] = []
+    for stage in stages:
+        name = str(stage.get("name")).strip()
+        calls = stage.get("parallel")
+        jobs: list[dict] = []
+        for call in calls:
+            job = {
+                "subagent_type": str(call.get("subagent_type") or "").strip(),
+                "description": str(call.get("description") or "").strip(),
+                # Substitute against COMPLETED stages only (barrier: this
+                # stage's own name is not in stage_results yet).
+                "prompt": _substitute_stage_refs(
+                    str(call.get("prompt") or ""), stage_results),
+                "isolation": str(call.get("isolation") or "").strip(),
+                "output_schema": call.get("output_schema"),
+            }
+            # Same auto-isolation rule as the api_client fan-out: parallel
+            # WRITERS each get their own worktree so concurrent edits can't
+            # clobber one another; read-only presets need none.
+            try:
+                if (len(calls) >= 2 and not job["isolation"]
+                        and is_writer_preset(job["subagent_type"])):
+                    job["isolation"] = "worktree"
+            except Exception:
+                pass
+            jobs.append(job)
+        stage_results[name] = _run_stage_calls(jobs, parent_client,
+                                               parent_perms)
+        stage_names.append(name)
+
+    # ---- optional verification votes over the FINAL stage ---------------
+    final_payloads = stage_results[stage_names[-1]]
+    verified: list[dict] = []
+    rejected: list[dict] = []
+    vote_payloads_all: list[dict] = []
+    if verify:
+        try:
+            votes = int(verify.get("votes") or 1)
+        except (TypeError, ValueError):
+            votes = 1
+        votes = max(1, min(_ORCH_MAX_VOTES, votes))
+        template = str(verify.get("prompt_template") or "")
+        skeptic_type = (str(verify.get("subagent_type") or "").strip()
+                        or "explore")
+        vote_jobs: list[dict] = []
+        for ridx, payload in enumerate(final_payloads):
+            result_repr = json.dumps(
+                {"description": payload.get("description", ""),
+                 "result": payload.get("result", ""),
+                 "structured_output": payload.get("structured_output")},
+                separators=(",", ":"), ensure_ascii=False)
+            for v in range(votes):
+                vote_jobs.append({
+                    "subagent_type": skeptic_type,
+                    "description": f"verify result #{ridx + 1} "
+                                   f"(vote {v + 1}/{votes})",
+                    "prompt": template.replace("{{result}}", result_repr),
+                    "isolation": "",
+                    "output_schema": _ORCH_VERIFY_SCHEMA,
+                    "_ridx": ridx,
+                })
+        ballots = _run_stage_calls(vote_jobs, parent_client, parent_perms)
+        vote_payloads_all = ballots
+        for ridx, payload in enumerate(final_payloads):
+            mine = [b for j, b in zip(vote_jobs, ballots)
+                    if j.get("_ridx") == ridx]
+            valid = [b["structured_output"] for b in mine
+                     if isinstance(b.get("structured_output"), dict)]
+            refuted_n = sum(1 for s in valid if s.get("refuted") is True)
+            notes = [str(s.get("note") or "") for s in valid
+                     if s.get("note")]
+            payload["verify"] = {
+                "votes": votes,
+                "valid_votes": len(valid),
+                "refuted": refuted_n,
+                "notes": notes[:_ORCH_MAX_VOTES],
+            }
+            # Strict majority of VALID ballots. No valid ballots → the
+            # result stands (a broken skeptic must not veto real work),
+            # but valid_votes=0 in the payload flags it for the caller.
+            if valid and refuted_n * 2 > len(valid):
+                rejected.append(payload)
+            else:
+                verified.append(payload)
+    else:
+        verified = list(final_payloads)
+
+    # ---- one summary telemetry record for the whole orchestration --------
+    all_payloads = [p for plist in stage_results.values() for p in plist]
+    all_payloads += vote_payloads_all
+    first_error = next((p.get("error") for p in all_payloads
+                        if p.get("error")), "")
+    _write_telemetry({
+        "ts": time.time(),
+        "subagent_type": "orchestration",
+        "description": (f"{len(stage_names)} stage(s), "
+                        f"{sum(len(stage_results[n]) for n in stage_names)} "
+                        f"call(s), {len(vote_payloads_all)} vote(s)"),
+        "isolation": "",
+        "model": str(getattr(parent_client, "model", "") or ""),
+        "model_tier": "parent",
+        "elapsed_s": round(time.monotonic() - t0, 3),
+        "input_tokens": sum(int(p.get("input_tokens") or 0)
+                            for p in all_payloads),
+        "output_tokens": sum(int(p.get("output_tokens") or 0)
+                             for p in all_payloads),
+        "tool_calls_count": sum(len(p.get("tool_calls") or [])
+                                for p in all_payloads),
+        "truncated": any(p.get("truncated") for p in all_payloads),
+        "error": str(first_error or ""),
+        "stages": stage_names,
+        "verified": len(verified),
+        "rejected": len(rejected),
+    })
+    return {
+        "stages": stage_results,
+        "verified": verified,
+        "rejected": rejected,
+    }
 
 
 def get_subagent_result(sa_id: str) -> dict:
@@ -1141,6 +1751,9 @@ __all__ = [
     "reload_subagent_presets",
     "SubagentResult",
     "run_subagent",
+    "run_orchestration",
+    "validate_json_schema",
+    "extract_json_object",
     "load_subagent_session",
     "list_finished",
     "get_subagent_result",
