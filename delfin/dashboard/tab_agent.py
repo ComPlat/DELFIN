@@ -13716,6 +13716,55 @@ def create_tab(ctx):
                                         finalize=True,
                                     )
 
+                        # Quantity-claim check: physical quantities stated
+                        # without any evidence act this turn (no calculation
+                        # output observed, no docs/calc lookup) soft-warn;
+                        # when the turn used no grounding tool at all, force
+                        # one self-correction turn via the same machinery.
+                        _qflags = []
+                        try:
+                            _qflags = _vg.scan_for_unsourced_quantities(
+                                "".join(chunks),
+                                observed_files=getattr(
+                                    engine, "_last_observed_files", None),
+                                evidence_tools_used=turn_tools,
+                            )
+                        except Exception:
+                            _qflags = []
+                        for _qf in _qflags:
+                            _append_system_message(_qf.message())
+                        if _qflags and not _vflags and not _c_hard:
+                            _qgrounded = any(
+                                re.search(r"(?i)search|read|grep|fetch|docs",
+                                          _t or "")
+                                for _t in turn_tools
+                            )
+                            if not _qgrounded:
+                                _qfeedback = (
+                                    "[Verify] "
+                                    + _vg.quantity_claim_feedback(_qflags)
+                                )
+                                engine.messages.append(
+                                    {"role": "user", "content": _qfeedback}
+                                )
+                                chunks.clear()
+                                thinking_chunks.clear()
+                                engine.stream_response(
+                                    user_message=_qfeedback,
+                                    on_token=_on_token,
+                                    on_tool_use=_on_tool_use,
+                                    on_tool_result=_on_tool_result,
+                                    on_permission_denied=_on_permission_denied,
+                                    on_thinking=_on_thinking,
+                                    thinking_budget=_budget,
+                                    memory_context=_memory,
+                                )
+                                if chunks:
+                                    _update_last_assistant(
+                                        "".join(chunks), role_label,
+                                        finalize=True,
+                                    )
+
                     # -- Interactive question detection (solo/dashboard) --
                     # After the agent finishes a turn, check if the response
                     # ends with a question and show option buttons if applicable.

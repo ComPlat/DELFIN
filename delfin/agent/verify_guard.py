@@ -369,3 +369,182 @@ def code_claim_feedback(flags: list[CodeClaimFlag]) -> str:
         f"{', '.join(bad)}. Read or grep the actual files and correct the "
         "answer — cite only paths you have verified."
     )
+
+
+# ---------------------------------------------------------------------------
+# Physical-quantity grounding — numbers with units need an evidence act
+# ---------------------------------------------------------------------------
+#
+# The citation ledger above covers claims about CODE; nothing covered a
+# chemistry agent's most consequential claim type: PHYSICAL QUANTITIES.
+# Without this scanner an answer could state a numeric result ("the S1
+# energy is 2.31 eV") in a turn that never read any calculation output and
+# never performed a docs/calc lookup. This scanner detects unit-anchored
+# numeric claims and flags them when the turn shows NO evidence act at all.
+#
+# Scope: this is a TURN-LEVEL gate, deliberately. Attributing individual
+# numbers to individual files (did 2.31 eV really come from tddft.out?) is
+# out of scope — once at least one evidence act exists this turn (any
+# calculation-output-like file observed, or any lookup tool used), nothing
+# is flagged. The gate only catches the zero-evidence case, which is the
+# unambiguous hallucination signature.
+
+# File extensions that mark an observed file as calculation output —
+# reading one counts as an evidence act for numeric claims.
+_CALC_OUTPUT_EXTS = frozenset({
+    "out", "log", "json", "xyz", "hess", "gbw",
+})
+
+# Tool names whose use counts as an evidence act (docs / calc / file /
+# history lookups). Compared against bare names; mcp__ns__name forms are
+# reduced to their tail before comparison.
+_EVIDENCE_TOOLS = frozenset({
+    "search_docs", "read_section", "search_calcs", "get_calc",
+    "read_file", "grep_file", "history_search", "web_fetch",
+})
+
+# Number token for unit-anchored claims. The lookbehind stops mid-token
+# matches (dotted version strings like 6.0.1 can never contribute their
+# tail digits); the sign class includes the Unicode minus.
+_QTY_NUM = r"(?<![\w.])[-+−]?\d+(?:\.\d+)?"
+
+# Unit-anchored claim patterns: a number IMMEDIATELY before the unit
+# (at most one whitespace char between them). Percentages and bare
+# version numbers never match because every pattern requires a unit
+# token. Order is significant only for readability — matches are sorted
+# by text position afterwards; bare 'kcal' excludes 'kcal/mol' via a
+# lookahead so the two patterns never double-flag one claim.
+_QUANTITY_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
+    (unit, re.compile(pattern, re.MULTILINE))
+    for unit, pattern in (
+        ("eV",       rf"{_QTY_NUM}\s?eV\b"),
+        ("kcal/mol", rf"{_QTY_NUM}\s?kcal\s?/\s?mol\b"),
+        ("kJ/mol",   rf"{_QTY_NUM}\s?kJ\s?/\s?mol\b"),
+        ("Hartree",  rf"{_QTY_NUM}\s?(?:[Hh]artrees?|Eh)\b"),
+        ("nm",       rf"{_QTY_NUM}\s?nm\b"),
+        ("cm-1",     rf"{_QTY_NUM}\s?cm(?:\^-1|-1|⁻¹|−1)(?!\d)"),
+        ("Debye",    rf"{_QTY_NUM}\s?[Dd]ebye\b"),
+        ("Angstrom", rf"{_QTY_NUM}\s?(?:[Åå](?:ngstr(?:ö|o)ms?)?"
+                     rf"|[Aa]ngstr(?:ö|o)ms?)\b"),
+        ("ps",       rf"{_QTY_NUM}\s?ps\b"),
+        ("fs",       rf"{_QTY_NUM}\s?fs\b"),
+        # Kelvin: only the standalone-uppercase-K form directly after a
+        # number, terminated by punctuation/whitespace/end — the loosest
+        # anchor in the set, so it gets the strictest boundary.
+        ("K",        rf"{_QTY_NUM}\s?K(?=$|[\s.,;:)\]!?])"),
+        ("kcal",     rf"{_QTY_NUM}\s?kcal\b(?!\s?/)"),
+        ("GHz",      rf"{_QTY_NUM}\s?GHz\b"),
+    )
+)
+
+# Fenced code blocks (``` ... ```): never claims.
+_FENCED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class QuantityClaimFlag:
+    """One physical-quantity claim stated without any evidence act."""
+
+    quantity: str      # matched text, whitespace-normalized ("2.31 eV")
+    unit: str          # canonical unit tag ("eV", "kcal/mol", ...)
+
+    def message(self) -> str:
+        return (f"⚠️ Verify: quantity '{self.quantity}' stated without any "
+                f"calculation output or docs lookup this turn — state the "
+                f"source or verify first.")
+
+
+def _strip_non_claim_regions(text: str) -> str:
+    """Blank out regions that are not the agent's own claims: fenced code
+    blocks, inline backtick spans, and blockquoted lines ('> ...')."""
+    t = _FENCED_BLOCK.sub(" ", text)
+    t = _BACKTICK_SPAN.sub(" ", t)
+    return "\n".join(
+        "" if ln.lstrip().startswith(">") else ln
+        for ln in t.split("\n")
+    )
+
+
+def _observed_calc_output(observed) -> bool:
+    """True when any observed file looks like calculation output (.out,
+    .log, .json, .xyz, .hess, .gbw, or an ORCA property file)."""
+    for p in observed or ():
+        name = str(p).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        ext = name.rsplit(".", 1)[-1] if "." in name else ""
+        if ext in _CALC_OUTPUT_EXTS or "property" in name:
+            return True
+    return False
+
+
+def _used_evidence_tool(tools) -> bool:
+    """True when any tool name (bare or mcp__ns__name) is a lookup tool."""
+    for t in tools or ():
+        name = str(t).strip().lower()
+        if name in _EVIDENCE_TOOLS or name.rsplit("__", 1)[-1] in _EVIDENCE_TOOLS:
+            return True
+    return False
+
+
+def scan_for_unsourced_quantities(
+    text: str,
+    *,
+    observed_files: Optional[frozenset[str] | set[str]] = None,
+    evidence_tools_used: Optional[frozenset[str] | set[str]] = None,
+    max_flags: int = 6,
+) -> list[QuantityClaimFlag]:
+    """Scan ``text`` for physical-quantity claims made in a turn with no
+    evidence act.
+
+    A claim is a number immediately followed by a physical unit (eV,
+    kcal/mol, kJ/mol, Hartree/Eh, nm, cm-1, Debye, Angstrom/Å, ps, fs,
+    K, kcal, GHz). Backticked spans, fenced code blocks, blockquoted
+    lines, percentages and version strings never count.
+
+    Turn-level gate (documented design decision): when ``observed_files``
+    contains any calculation-output-like file OR ``evidence_tools_used``
+    contains any lookup tool, the turn had an evidence act and NOTHING is
+    flagged — per-number attribution to per-file sources is out of scope.
+    Only the zero-evidence turn is flagged.
+
+    Deterministic, order-stable (text position), de-duplicated, capped at
+    ``max_flags``. Never raises.
+    """
+    flags: list[QuantityClaimFlag] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        if _observed_calc_output(observed_files):
+            return []
+        if _used_evidence_tool(evidence_tools_used):
+            return []
+        scrubbed = _strip_non_claim_regions(text)
+        matches: list[tuple[int, str, str]] = []
+        for unit, rx in _QUANTITY_PATTERNS:
+            for m in rx.finditer(scrubbed):
+                qty = " ".join(m.group(0).split())
+                matches.append((m.start(), qty, unit))
+        matches.sort(key=lambda t: (t[0], t[2]))
+        seen: set[str] = set()
+        for _pos, qty, unit in matches:
+            key = qty.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            flags.append(QuantityClaimFlag(quantity=qty, unit=unit))
+            if len(flags) >= max_flags:
+                break
+    except Exception:
+        return flags
+    return flags
+
+
+def quantity_claim_feedback(flags: list[QuantityClaimFlag]) -> str:
+    """Feedback message for the forced self-correction turn."""
+    qtys = ", ".join(f"'{f.quantity}'" for f in flags)
+    return (
+        f"The following physical quantities were stated without any "
+        f"evidence act this turn: {qtys}. Either read the source now "
+        "(calculation output via get_calc/read_file, or the docs via "
+        "search_docs) and cite it next to each value, or restate each "
+        "value as unverified and say what would confirm it."
+    )
