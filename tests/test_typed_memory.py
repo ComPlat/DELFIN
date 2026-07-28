@@ -410,3 +410,31 @@ def test_memory_writes_leave_no_temp_files(fake_home, tmp_path):
     leftovers = [f.name for f in ms._delfin_memory_dir(repo).iterdir()
                  if f.name.endswith(".tmp")]
     assert leftovers == []
+
+
+def test_fresh_memory_survives_post_save_prune(
+        fake_home, tmp_path, monkeypatch):
+    """A just-saved memory must survive the prune that runs right after its
+    save, even when a saturated store holds older entries with far higher
+    use_counts (recency ranks before use_count)."""
+    repo = tmp_path / "fresh"; repo.mkdir()
+    clock = {"now": 1_000_000}
+    monkeypatch.setattr(ms.time, "time", lambda: clock["now"])
+    paths = []
+    for i in range(3):
+        p, _, _ = ms.save_typed_memory(
+            f"reference: established source number {i} delta{i}",
+            repo_root=repo)
+        paths.append(p)
+    # Established entries get recalled often -> high use_count.
+    for _ in range(5):
+        ms.record_memory_recall(repo, [p.name for p in paths])
+    clock["now"] += 60
+    fresh, _, _ = ms.save_typed_memory(
+        "reference: brand new source worth keeping", repo_root=repo)
+
+    deleted = ms.prune_memories(repo, max_per_type=3)
+
+    assert len(deleted) == 1
+    assert fresh.name not in deleted
+    assert fresh.exists()

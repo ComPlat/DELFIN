@@ -806,12 +806,17 @@ def prune_memories(
 
     For each non-protected type, remove entries older than ``max_age_days``
     (when configured), then keep at most ``max_per_type`` entries. Relevance
-    is ranked by use_count first and updated_at second, so frequently recalled
-    memories survive before the stale tail. ``feedback`` and ``user`` types
-    receive a larger cap and are exempt from age-based pruning.
+    is ranked by updated_at first and use_count second: recall bumps keep
+    frequently injected memories fresh, while ranking recency first means a
+    just-written memory (use_count 1) always survives the prune that runs
+    right after its save — with use_count first, a saturated store would
+    evict every new memory immediately and fossilise. ``feedback`` and
+    ``user`` types receive a larger cap and are exempt from age-based
+    pruning.
 
-    Called at session end (see memory_distill) so the store self-limits
-    instead of growing unbounded and drowning BM25 recall in look-alikes.
+    Called after every write path (remember tool, /remember, auto-memory
+    distill) so the store self-limits instead of growing unbounded and
+    drowning BM25 recall in look-alikes.
     """
     cutoff = None
     if max_age_days is not None and max_age_days >= 0:
@@ -831,7 +836,7 @@ def prune_memories(
         stale_files = {rec["file"] for rec in stale}
         survivors = [rec for rec in recs if rec["file"] not in stale_files]
         survivors.sort(
-            key=lambda r: (int(r.get("use_count", 0)), int(r.get("updated_at", 0))),
+            key=lambda r: (int(r.get("updated_at", 0)), int(r.get("use_count", 0))),
             reverse=True,
         )
         over_cap = survivors[max(type_cap, 0):]
