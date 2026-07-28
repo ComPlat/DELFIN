@@ -3123,6 +3123,69 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "history_search",
+            "description": (
+                "Search THIS session's full conversation history: the live "
+                "messages plus every archived pre-compaction transcript. "
+                "Long sessions are compacted — older turns get summarised "
+                "out of your context, so your memory of them is lossy. "
+                "Before claiming what was said, decided, or produced "
+                "earlier in this session, search it instead of relying on "
+                "the summary. Returns ranked hits with snippets and a ref "
+                "for history_get."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to look for. Keywords rank via BM25; very "
+                            "short or exact strings (e.g. 'S1') fall back to "
+                            "substring matching."),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum hits to return (default 8).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "history_get",
+            "description": (
+                "Fetch the FULL text of one earlier conversation message "
+                "found via history_search, by its ref (e.g. 'live:12' or "
+                "'archive:0:3'). Use when a search snippet is not enough — "
+                "e.g. to quote an earlier decision, error message, or user "
+                "instruction exactly instead of reconstructing it from "
+                "memory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "Hit ref exactly as returned by history_search.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": ("Return at most this many chars "
+                                        "(head+tail with a truncation "
+                                        "marker; default 4000)."),
+                    },
+                },
+                "required": ["ref"],
+            },
+        },
+    },
 ]
 
 
@@ -4516,6 +4579,10 @@ class _DocToolExecutor:
             return self._execute_grep_file(arguments, permissions)
         elif name == "list_files":
             return self._execute_list_files(arguments, permissions)
+        elif name == "history_search":
+            return self._execute_history_search(arguments, permissions)
+        elif name == "history_get":
+            return self._execute_history_get(arguments, permissions)
 
         # Doc-index tools below (search_docs / read_section / list_docs /
         # list_sections) require the prebuilt index.
@@ -7401,6 +7468,42 @@ class _DocToolExecutor:
 
     # ------- Web tools (search + fetch) -----------------------------------
 
+    def _execute_history_search(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        from delfin.agent import history_search as _hs
+        sid = getattr(perms, "task_session_id", "") or ""
+        if not sid:
+            return json.dumps({"error": (
+                "history_search needs an active session id — this run has "
+                "no session attached, so there is no history to search."
+            )})
+        hits = _hs.history_search(
+            sid,
+            str(arguments.get("query", "") or ""),
+            messages=getattr(self, "live_messages", None),
+            max_results=_as_int(arguments.get("max_results"), 8),
+        )
+        return json.dumps(hits, indent=2, ensure_ascii=False)
+
+    def _execute_history_get(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        from delfin.agent import history_search as _hs
+        sid = getattr(perms, "task_session_id", "") or ""
+        if not sid:
+            return json.dumps({"error": (
+                "history_get needs an active session id — this run has "
+                "no session attached."
+            )})
+        rec = _hs.history_get(
+            sid,
+            str(arguments.get("ref", "") or ""),
+            messages=getattr(self, "live_messages", None),
+            max_chars=_as_int(arguments.get("max_chars"), 4000),
+        )
+        return json.dumps(rec, indent=2, ensure_ascii=False)
+
     def _execute_web_search(self, arguments: dict) -> str:
         query = (arguments.get("query", "") or "").strip()
         max_results = int(arguments.get("max_results", 8) or 8)
@@ -8037,6 +8140,8 @@ class OpenAIClient(_BaseClient):
                               "remote_trigger",
                               "run_tests",
                               "watch_job",
+                              "history_search",
+                              "history_get",
                               "apply_patch",
                               "find_definition",
                               "find_references",
@@ -8750,6 +8855,8 @@ class OpenAIClient(_BaseClient):
                                             "remote_trigger",
                                             "run_tests",
                                             "watch_job",
+                                            "history_search",
+                                            "history_get",
                                             "apply_patch",
                                             "find_definition",
                                             "find_references",
@@ -8860,6 +8967,11 @@ class OpenAIClient(_BaseClient):
                         # every round's ephemeral progress. A per-tool failure
                         # must degrade to a recoverable error the model can see.
                         try:
+                            # Bind THIS turn's live conversation just-in-time
+                            # so history_search/history_get resolve live:<i>
+                            # refs against the caller's messages even when a
+                            # nested subagent stream ran in between.
+                            _doc_executor.live_messages = messages
                             result = _doc_executor.execute(
                                 fn_name, fn_args, permissions=self._permissions
                             )
