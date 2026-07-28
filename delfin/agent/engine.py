@@ -384,6 +384,9 @@ class AgentEngine:
         # request (from message_start). Used as the ground-truth floor of the
         # compaction estimate so system prompt + tool schemas are never missed.
         self._last_input_tokens: int = 0
+        # Run start timestamp for the session-scoped run budget.
+        import time as _time_mod
+        self._run_started_at: float = _time_mod.time()
         # Chars removed from self.messages by in-place trims since the floor
         # above was last set. The floor is a PRE-trim provider count, so the
         # estimator must credit these removals or the trim/hard-clear stop
@@ -940,6 +943,9 @@ class AgentEngine:
             jobs_block = self._build_finished_jobs_block()
             if jobs_block:
                 extra_blocks.append(jobs_block)
+            budget_block = self._build_budget_block()
+            if budget_block:
+                extra_blocks.append(budget_block)
             if extra_blocks:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
@@ -1030,6 +1036,27 @@ class AgentEngine:
         except Exception:
             _hooks_cfg = None
             _ws = None
+
+        # Run-budget hard gate: past 110% of the configured budget no new
+        # turn starts (the 80-100% band already told the agent to wind
+        # down). The session is intact — raise the budget or start a new
+        # run to continue.
+        try:
+            _bfrac, _ = self._run_budget_status()
+            if _bfrac >= 1.1:
+                _msg = (
+                    "🛑 Run budget exhausted (>110%). No further turns will "
+                    "run in this session. State is saved — raise "
+                    "agent.run_budget_usd / run_budget_s or start a new run "
+                    "to continue.")
+                if on_token:
+                    try:
+                        on_token(_msg)
+                    except Exception:
+                        pass
+                return _msg
+        except Exception:
+            pass
 
         self.messages.append(self._build_user_message(user_message, images))
         # Sanitize message history: ensure proper user/assistant alternation.
@@ -1337,6 +1364,10 @@ class AgentEngine:
                 self.client, "_last_structured_verdict", None)
             self._last_test_evidence = list(
                 getattr(self.client, "_test_evidence", None) or [])
+            # Observed-files ledger (session-cumulative) for the code-claim
+            # citation check — files the model actually read/grepped.
+            self._last_observed_files = set(
+                getattr(self.client, "_observed_files_session", None) or set())
             _v_role = self.current_role
             if _v_role:
                 if isinstance(self._last_structured_verdict, dict):
@@ -2279,6 +2310,69 @@ class AgentEngine:
                 kp.task_session_id = self.session_id or ""
         except Exception:
             pass
+
+    def _run_budget(self) -> tuple[float, float]:
+        """(usd, seconds) run-scoped budget for this SESSION — the cumulative
+        ceiling that makes unattended runs deployable (the per-turn cap below
+        only stops a single runaway turn; turns compose into unbounded run
+        cost without this). 0 disables either dimension. An explicit
+        ``self.run_budget_usd``/``self.run_budget_s`` attribute (set e.g. by
+        the scheduler daemon per entry) overrides the settings values."""
+        usd = float(getattr(self, "run_budget_usd", 0.0) or 0.0)
+        secs = float(getattr(self, "run_budget_s", 0.0) or 0.0)
+        if usd <= 0 or secs <= 0:
+            try:
+                from delfin.user_settings import load_settings as _ls
+                ag = (_ls() or {}).get("agent", {}) or {}
+                if usd <= 0:
+                    usd = max(0.0, float(ag.get("run_budget_usd", 0.0) or 0.0))
+                if secs <= 0:
+                    secs = max(0.0, float(ag.get("run_budget_s", 0.0) or 0.0))
+            except Exception:
+                pass
+        return usd, secs
+
+    def _run_budget_status(self) -> tuple[float, bool]:
+        """(worst fraction spent, exhausted). Fraction is max over the
+        enabled dimensions; (0.0, False) when no budget is configured."""
+        usd, secs = self._run_budget()
+        frac = 0.0
+        if usd > 0:
+            frac = max(frac, float(self.cost_usd) / usd)
+        if secs > 0:
+            import time as _t
+            started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
+            if started > 0:
+                frac = max(frac, (_t.time() - started) / secs)
+        return frac, frac >= 1.0
+
+    def _build_budget_block(self) -> str:
+        """Per-turn budget status for the prompt: silent when unconfigured
+        or comfortably below the wind-down threshold; from 80% it instructs
+        the agent to wrap up gracefully instead of being cut off mid-work."""
+        try:
+            frac, exhausted = self._run_budget_status()
+        except Exception:
+            return ""
+        if frac < 0.8:
+            return ""
+        pct = min(999, int(frac * 100))
+        if exhausted:
+            return (
+                "# Run budget EXHAUSTED\n"
+                f"- {pct}% of this run's budget is spent. Finish your "
+                "CURRENT sentence of work only: save state, mark task "
+                "statuses honestly, and summarise what remains. No new "
+                "work."
+            )
+        return (
+            "# Run budget wind-down (auto-injected)\n"
+            f"- {pct}% of this run's budget is spent. Start wrapping up "
+            "NOW: complete or checkpoint the current step, commit/save "
+            "state, mark tasks, and summarise open work. If a follow-up "
+            "run makes sense, note exactly where to resume. Do not start "
+            "new large work items."
+        )
 
     def _cost_hard_cap(self) -> float:
         """Per-turn hard cost ceiling in USD — a runaway circuit-breaker, NOT a

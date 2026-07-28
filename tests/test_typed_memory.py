@@ -438,3 +438,245 @@ def test_fresh_memory_survives_post_save_prune(
     assert len(deleted) == 1
     assert fresh.name not in deleted
     assert fresh.exists()
+
+
+# ---------------------------------------------------------------------------
+# Recall-time provenance: content anchors, stale/drifted refs, stale_hits
+# ---------------------------------------------------------------------------
+
+
+def test_save_captures_content_anchors(fake_home, tmp_path):
+    """A body with a file:line reference gets the cited line's text stored
+    as a content anchor in the frontmatter."""
+    repo = tmp_path / "anchors"; repo.mkdir()
+    src = repo / "src"; src.mkdir()
+    (src / "app.py").write_text(
+        "import os\ndef retry_loop():\n    return 42\n", encoding="utf-8")
+    fpath, _, _ = ms.save_typed_memory(
+        "project: the retry loop lives in src/app.py:2 and buffers writes",
+        repo_root=repo)
+    text = fpath.read_text(encoding="utf-8")
+    assert "anchors:" in text
+    meta, _ = ms._parse_frontmatter(text)
+    assert ms._parse_anchors(meta) == {"src/app.py:2": "def retry_loop():"}
+
+
+def test_save_without_line_refs_writes_no_anchors(fake_home, tmp_path):
+    """Refs without a :line suffix (or to unreadable files) get no anchor."""
+    repo = tmp_path / "anchors2"; repo.mkdir()
+    fpath, _, _ = ms.save_typed_memory(
+        "project: config lives in conf/settings.yaml near the top",
+        repo_root=repo)
+    assert "anchors:" not in fpath.read_text(encoding="utf-8")
+
+
+def test_find_stale_references_flat_list_back_compat(fake_home, tmp_path):
+    """Legacy call shape: flat list of dead refs, healthy refs excluded."""
+    repo = tmp_path / "flat"; repo.mkdir()
+    (repo / "still_here.py").write_text("x = 1\n", encoding="utf-8")
+    refs = ms.find_stale_references(
+        "see still_here.py and gone_module.py for details", repo)
+    assert refs == ["gone_module.py"]
+
+
+def test_drifted_anchor_detected(fake_home, tmp_path):
+    """File exists but the anchored line moved out of the ±20 window."""
+    repo = tmp_path / "drift"; repo.mkdir()
+    src = repo / "src"; src.mkdir()
+    original = "\n".join(f"line_{i} = {i}" for i in range(1, 61))
+    (src / "core.py").write_text(original, encoding="utf-8")
+    fpath, _, _ = ms.save_typed_memory(
+        "project: the counter init sits at src/core.py:5 exactly",
+        repo_root=repo)
+    meta, body = ms._parse_frontmatter(fpath.read_text(encoding="utf-8"))
+    anchors = ms._parse_anchors(meta)
+    assert anchors["src/core.py:5"] == "line_5 = 5"
+
+    # Healthy: anchor still at the cited line -> no findings.
+    assert ms.find_stale_references(
+        body, repo, anchors=anchors, with_status=True) == []
+
+    # Shifted a little (still within ±20 lines) -> healthy, not drifted.
+    (src / "core.py").write_text("# new\n# new\n# new\n" + original,
+                                 encoding="utf-8")
+    assert ms.find_stale_references(
+        body, repo, anchors=anchors, with_status=True) == []
+
+    # Fully rewritten -> the anchor is gone -> drifted.
+    (src / "core.py").write_text(
+        "\n".join(f"other_{i} = {i}" for i in range(1, 61)), encoding="utf-8")
+    statuses = ms.find_stale_references(
+        body, repo, anchors=anchors, with_status=True)
+    assert ("src/core.py:5", "drifted") in statuses
+
+
+def test_verify_typed_memories_reports_stale_and_drifted(fake_home, tmp_path):
+    repo = tmp_path / "verify"; repo.mkdir()
+    (repo / "mod.py").write_text("alpha = 1\nbeta = 2\n", encoding="utf-8")
+    ms.save_typed_memory("project: beta is defined in mod.py:2 today",
+                         repo_root=repo)
+    ms.save_typed_memory("project: legacy notes sit in old/notes.txt still",
+                         repo_root=repo)
+    (repo / "mod.py").write_text("gamma = 3\n", encoding="utf-8")
+    results = ms.verify_typed_memories(repo)
+    stale = [r for rec in results for r in rec["stale_refs"]]
+    drifted = [r for rec in results for r in rec["drifted_refs"]]
+    assert "old/notes.txt" in stale
+    assert "mod.py:2" in drifted
+
+
+def test_record_stale_hits_bumps_counter_not_usage(fake_home, tmp_path):
+    """stale_hits rises; use_count and updated_at stay untouched so the
+    rotted entry keeps decaying like an unused one."""
+    repo = tmp_path / "rot"; repo.mkdir()
+    p, _, _ = ms.save_typed_memory(
+        "project: helper lived in gone/helper.py once", repo_root=repo)
+    before = [r for r in ms.list_typed_memories(repo) if r["file"] == p.name][0]
+    assert ms.record_stale_hits(repo, [p.name]) == 1
+    rec = [r for r in ms.list_typed_memories(repo) if r["file"] == p.name][0]
+    assert rec["stale_hits"] == 1
+    assert rec["use_count"] == before["use_count"]        # NOT bumped
+    assert rec["updated_at"] == before["updated_at"]      # NOT bumped
+    ms.record_stale_hits(repo, [p.name])
+    rec = [r for r in ms.list_typed_memories(repo) if r["file"] == p.name][0]
+    assert rec["stale_hits"] == 2
+    # A later healthy recall must not clobber the rot counter.
+    ms.record_memory_recall(repo, [p.name])
+    rec = [r for r in ms.list_typed_memories(repo) if r["file"] == p.name][0]
+    assert rec["stale_hits"] == 2
+    assert rec["use_count"] == 2
+
+
+def test_stale_hits_influence_prune_order(fake_home, tmp_path, monkeypatch):
+    """On an updated_at/use_count tie the rotted entry is evicted first."""
+    repo = tmp_path / "rotprune"; repo.mkdir()
+    clock = {"now": 1_000_000}
+    monkeypatch.setattr(ms.time, "time", lambda: clock["now"])
+    paths = []
+    for i in range(3):
+        p, _, _ = ms.save_typed_memory(
+            f"reference: distinct pointer number {i} rho{i}", repo_root=repo)
+        paths.append(p)
+    rotted = paths[1]
+    ms.record_stale_hits(repo, [rotted.name])
+
+    deleted = ms.prune_memories(repo, max_per_type=2)
+
+    assert deleted == [rotted.name]
+    assert not rotted.exists()
+    assert all(p.exists() for p in paths if p is not rotted)
+
+
+# ---------------------------------------------------------------------------
+# User-scoped global store (~/.delfin/memory)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_memory_scope():
+    assert ms.parse_memory_scope("global: feedback: be terse") == (
+        "user", "feedback: be terse")
+    assert ms.parse_memory_scope("feedback: be terse") == (
+        "project", "feedback: be terse")
+    # Colon-only prefix: hyphenated words must survive untouched.
+    assert ms.parse_memory_scope("global-warming data is rising") == (
+        "project", "global-warming data is rising")
+
+
+def test_parse_memory_type_global_prefix():
+    assert ms.parse_memory_type("global: feedback: never guess APIs") == (
+        "feedback", "never guess APIs")
+    # A bare global fact defaults to the user (identity) type.
+    assert ms.parse_memory_type("global: answers come back in German") == (
+        "user", "answers come back in German")
+
+
+def test_global_prefix_routes_to_user_store(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    fpath, _, mtype = ms.save_typed_memory(
+        "global: feedback: never add attribution trailers", repo_root=repo)
+    assert mtype == "feedback"
+    gdir = tmp_path / ".delfin" / "memory"
+    assert fpath.parent == gdir
+    index = (gdir / "MEMORY.md").read_text(encoding="utf-8")
+    assert "Global Memory" in index
+    assert "attribution" in index
+    # The project store stays untouched.
+    assert ms.list_typed_memories(repo) == []
+
+
+def test_scope_param_routes_to_user_store(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    fpath, _, _ = ms.save_typed_memory(
+        "user: Max is a quantum chemist", repo_root=repo, scope="user")
+    assert fpath.parent == tmp_path / ".delfin" / "memory"
+
+
+def test_global_memory_skips_anchor_capture(fake_home, tmp_path):
+    """Global facts outlive any single checkout — no repo-relative anchors."""
+    repo = tmp_path / "repo"; repo.mkdir()
+    (repo / "mod.py").write_text("alpha = 1\n", encoding="utf-8")
+    fpath, _, _ = ms.save_typed_memory(
+        "global: reference: interesting bits in mod.py:1 sometimes",
+        repo_root=repo)
+    assert "anchors:" not in fpath.read_text(encoding="utf-8")
+
+
+def test_list_typed_memories_scopes(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    ms.save_typed_memory("project: repo-local fact alpha", repo_root=repo)
+    ms.save_typed_memory("global: user: cross-repo identity beta",
+                         repo_root=repo)
+    proj = ms.list_typed_memories(repo)
+    assert [r["scope"] for r in proj] == ["project"]
+    glob = ms.list_typed_memories(repo, scope="user")
+    assert [r["scope"] for r in glob] == ["user"]
+    assert "beta" in glob[0]["body"]
+    both = ms.list_typed_memories(repo, scope="all")
+    assert [r["scope"] for r in both] == ["user", "project"]   # global first
+
+
+def test_delete_typed_memory_user_scope(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    fpath, slug, _ = ms.save_typed_memory(
+        "global: user: deletable identity fact", repo_root=repo)
+    # The default (project) scope cannot see it ...
+    assert ms.delete_typed_memory(repo, slug) is None
+    # ... the user scope can, and the global index pointer goes with it.
+    assert ms.delete_typed_memory(repo, slug, scope="user") == fpath
+    assert not fpath.exists()
+    index = (tmp_path / ".delfin" / "memory" / "MEMORY.md").read_text(
+        encoding="utf-8")
+    assert fpath.name not in index
+
+
+def test_delete_typed_memory_scope_all_reaches_both(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    gpath, gslug, _ = ms.save_typed_memory(
+        "global: user: reachable via scope all", repo_root=repo)
+    assert ms.delete_typed_memory(repo, gslug, scope="all") == gpath
+    assert not gpath.exists()
+
+
+def test_prune_user_store_gets_protected_caps(fake_home, tmp_path):
+    """In the global store even prunable types get the protected 4x cap
+    and are exempt from age-based decay."""
+    repo = tmp_path / "repo"; repo.mkdir()
+    for i in range(6):
+        ms.save_typed_memory(
+            f"global: reference: distinct global source {i} sigma{i}",
+            repo_root=repo)
+    deleted = ms.prune_memories(repo, max_per_type=1, max_age_days=0,
+                                scope="user")
+    assert len(deleted) == 2
+    assert len(ms.list_typed_memories(repo, scope="user")) == 4
+    # The project store is a separate prune domain — untouched.
+    assert ms.list_typed_memories(repo) == []
+
+
+def test_record_memory_recall_user_scope(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    p, _, _ = ms.save_typed_memory(
+        "global: user: recallable identity fact", repo_root=repo)
+    assert ms.record_memory_recall(repo, [p.name], scope="user") == 1
+    rec = ms.list_typed_memories(repo, scope="user")[0]
+    assert rec["use_count"] == 2

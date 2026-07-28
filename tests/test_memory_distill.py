@@ -194,3 +194,49 @@ def test_distill_and_save_threads_repo_root(monkeypatch, tmp_path):
     assert n == 1
     mdir = ms._claude_memory_dir(repo)
     assert any(p.name.startswith("feedback_") for p in mdir.glob("*.md"))
+
+
+# ---------------------------------------------------------------------------
+# "global:"-prefixed facts route to the user-wide ~/.delfin/memory store
+# ---------------------------------------------------------------------------
+
+
+def test_save_facts_routes_global_prefix_to_user_store(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    repo = tmp_path / "repo"; repo.mkdir()
+    n = md.save_facts(
+        ["global: feedback: never guess ORCA keywords",
+         "project: benchmark suite lands this week"],
+        repo_root=repo,
+    )
+    assert n == 2
+    gfiles = [p.name for p in (tmp_path / ".delfin" / "memory").glob("*.md")]
+    assert any(f.startswith("feedback_") for f in gfiles)
+    pfiles = [p.name for p in ms._delfin_memory_dir(repo).glob("*.md")]
+    assert any(f.startswith("project_") for f in pfiles)
+    # The global fact must NOT leak into the project store.
+    assert not any(f.startswith("feedback_") for f in pfiles)
+
+
+def test_save_facts_global_dedups_against_user_store(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    repo = tmp_path / "repo"; repo.mkdir()
+    assert md.save_facts(["global: user: Max works at KIT Karlsruhe"],
+                         repo_root=repo) == 1
+    # Same fact again (with or without the scope prefix) is skipped.
+    assert md.save_facts(["global: user: Max works at KIT Karlsruhe"],
+                         repo_root=repo) == 0
+    assert md.save_facts(["Max works at KIT Karlsruhe"],
+                         repo_root=repo) == 0
+
+
+def test_save_facts_global_works_without_repo_root(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    n = md.save_facts(["global: user: identity fact without a repo"])
+    assert n == 1
+    gdir = tmp_path / ".delfin" / "memory"
+    assert any(p.name.startswith("user_") for p in gdir.glob("*.md"))

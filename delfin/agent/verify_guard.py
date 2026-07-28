@@ -38,6 +38,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 
 _HERE = Path(__file__).resolve().parent
@@ -235,4 +236,136 @@ def correction_feedback(flags: list[VerifyFlag]) -> str:
         f"The following keywords are not backed by the ORCA manual: {kws}. "
         "Look them up via search_docs and correct or remove them. Only "
         "mention keywords that actually exist in the manual."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Code-claim grounding — verify statements about code against reality
+# ---------------------------------------------------------------------------
+#
+# The honesty addendum demands file:line citations, and the framework checks
+# test claims (evidence ledger) and ORCA keywords (above) mechanically — but
+# nothing checked claims ABOUT CODE. This closes that gap: citations in a
+# final answer are cross-checked against (a) the filesystem and (b) the set
+# of files the agent actually observed (read/grepped) this session.
+
+# Extensions that make a dotted token a plausible FILE citation. Guards the
+# path regex against dotted module names ("delfin.agent.memory_store") and
+# version numbers, which must never be flagged.
+_CODE_FILE_EXTS = frozenset({
+    "py", "md", "json", "yaml", "yml", "toml", "cfg", "ini", "txt", "sh",
+    "js", "ts", "html", "css", "csv", "xyz", "inp", "out", "mol", "hess",
+    "gbw", "ipynb", "rst", "lock", "sql", "c", "h", "cpp", "hpp", "rs",
+})
+
+
+@dataclass(frozen=True)
+class CodeClaimFlag:
+    """One ungrounded code citation found in an answer."""
+
+    path: str
+    line: Optional[int]
+    kind: str          # "nonexistent" | "unread"
+
+    def message(self) -> str:
+        ref = f"{self.path}:{self.line}" if self.line else self.path
+        if self.kind == "nonexistent":
+            return (f"⚠️ Verify: '{ref}' is cited but does not exist in the "
+                    f"workspace — never invent file paths.")
+        return (f"⚠️ Verify: '{ref}' is cited but was not read or grepped "
+                f"this session — open it before describing it.")
+
+
+def _iter_path_citations(text: str):
+    """Yield (path, line|None) citations that plausibly reference files."""
+    from delfin.agent.memory_store import _PATH_REF_RE
+    for m in _PATH_REF_RE.finditer(text or ""):
+        raw = m.group(1).strip().rstrip(".,;:")
+        line = int(m.group(2)) if m.group(2) else None
+        ext = raw.rsplit(".", 1)[-1].lower() if "." in raw else ""
+        if "/" not in raw and ext not in _CODE_FILE_EXTS:
+            continue
+        if "/" in raw and "." in raw.rsplit("/", 1)[-1]:
+            tail_ext = raw.rsplit(".", 1)[-1].lower()
+            if tail_ext not in _CODE_FILE_EXTS:
+                continue
+        if raw.startswith(("http", "www.")) or "://" in raw:
+            continue
+        yield raw, line
+
+
+def _is_observed(path: str, observed: frozenset[str]) -> bool:
+    """True when a cited path matches any observed file (suffix-tolerant:
+    observed entries may be absolute while the answer cites repo-relative,
+    or vice versa)."""
+    if not observed:
+        return False
+    norm = path.lstrip("./")
+    for o in observed:
+        on = str(o).replace("\\", "/").lstrip("./")
+        if on == norm or on.endswith("/" + norm) or norm.endswith("/" + on):
+            return True
+    return False
+
+
+def scan_for_ungrounded_code_claims(
+    text: str,
+    *,
+    repo_root: Path | str | None = None,
+    observed_files: Optional[frozenset[str] | set[str]] = None,
+    max_flags: int = 8,
+) -> list[CodeClaimFlag]:
+    """Cross-check file citations in ``text`` against reality.
+
+    - a cited path that exists nowhere in the workspace  -> "nonexistent"
+      (hard flag: drives the forced self-correction turn)
+    - a cited path that exists but was never observed via read/grep this
+      session -> "unread" (soft flag only: injected context such as the
+      repo map legitimately surfaces paths the model may mention)
+
+    Deterministic, order-stable, capped at ``max_flags``. Never raises.
+    """
+    flags: list[CodeClaimFlag] = []
+    seen: set[str] = set()
+    obs = frozenset(str(p) for p in (observed_files or ()))
+    root = Path(repo_root) if repo_root else None
+    try:
+        for path, line in _iter_path_citations(text):
+            key = f"{path}:{line}"
+            if key in seen or len(flags) >= max_flags:
+                continue
+            seen.add(key)
+            if _is_observed(path, obs):
+                continue
+            exists = False
+            try:
+                p = Path(path)
+                if p.is_absolute():
+                    exists = p.is_file()
+                elif root is not None:
+                    exists = (root / path).is_file()
+                else:
+                    exists = Path(path).is_file()
+            except OSError:
+                exists = False
+            if not exists:
+                flags.append(CodeClaimFlag(path=path, line=line,
+                                           kind="nonexistent"))
+            else:
+                flags.append(CodeClaimFlag(path=path, line=line,
+                                           kind="unread"))
+    except Exception:
+        return flags
+    return flags
+
+
+def code_claim_feedback(flags: list[CodeClaimFlag]) -> str:
+    """Feedback message for the forced self-correction turn (nonexistent
+    citations only — 'unread' stays a soft warning)."""
+    bad = [f"'{f.path}:{f.line}'" if f.line else f"'{f.path}'"
+           for f in flags if f.kind == "nonexistent"]
+    return (
+        f"The following cited paths do not exist in the workspace: "
+        f"{', '.join(bad)}. Read or grep the actual files and correct the "
+        "answer — cite only paths you have verified."
     )

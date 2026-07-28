@@ -644,6 +644,80 @@ def cmd_session(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_scheduler(args: argparse.Namespace) -> int:
+    """Control the headless scheduler daemon: start / status / stop.
+
+    The daemon executes ``schedule_wakeup`` / ``cron_create`` entries
+    (``~/.delfin/cron.json``) without an open dashboard. It only runs
+    entries the user explicitly created — see
+    :mod:`delfin.agent.scheduler_daemon` for the full contract.
+    """
+    from . import scheduler_daemon as _sd
+
+    action = getattr(args, "scheduler_action", "") or "status"
+
+    if action == "start":
+        st = _sd.daemon_status()
+        if st["running"]:
+            print(f"Scheduler daemon already running (PID {st['pid']}).")
+            return 0
+        import subprocess as _sp
+        log = Path.home() / ".delfin" / "scheduler_daemon.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as lf:
+            _sp.Popen(
+                [sys.executable, "-m", "delfin.agent.scheduler_daemon"],
+                stdout=lf, stderr=lf,
+                start_new_session=True,  # survives shell/dashboard close
+            )
+        print(f"Scheduler daemon started (detached); log: {log}")
+        print("It executes ONLY entries you explicitly scheduled "
+              "(schedule_wakeup / cron_create) — each fire is one paid "
+              "agent turn.")
+        return 0
+
+    if action == "stop":
+        st = _sd.daemon_status()
+        if not st["running"]:
+            print("No scheduler daemon running.")
+            return 0
+        import signal as _sig
+        try:
+            os.kill(st["pid"], _sig.SIGTERM)
+        except OSError as exc:
+            print(f"ERROR: stop failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"SIGTERM sent to scheduler daemon (PID {st['pid']}); "
+              "it exits after the current turn.")
+        return 0
+
+    # status (default)
+    import time as _time
+    from .scheduler import Scheduler
+    st = _sd.daemon_status()
+    state = f"running (PID {st['pid']})" if st["running"] else "not running"
+    print(f"Scheduler daemon: {state}")
+    entries = sorted(Scheduler().list_entries(), key=lambda e: e.next_fire_at)
+    if not entries:
+        print("No scheduled entries (~/.delfin/cron.json is empty).")
+        return 0
+    print(f"{len(entries)} entries ({st['disabled']} disabled):")
+    now = _time.time()
+    for e in entries:
+        if e.disabled:
+            due = f"DISABLED — {e.disabled_reason or 'no reason recorded'}"
+        else:
+            dt = int(e.next_fire_at - now)
+            due = f"due in {dt}s" if dt > 0 else f"overdue by {-dt}s"
+        prompt = (e.prompt or "").strip().replace("\n", " ")
+        if len(prompt) > 60:
+            prompt = prompt[:57] + "..."
+        every = f", every {e.every_seconds}s" if e.kind == "interval" else ""
+        ws = f" @ {e.workspace}" if e.workspace else ""
+        print(f"  {e.id}  [{e.kind}{every}]  {due}{ws}  — {prompt}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m delfin.agent.cli",
@@ -811,6 +885,28 @@ def build_parser() -> argparse.ArgumentParser:
     bug_watch.set_defaults(bug_action="watch")
 
     bug.set_defaults(func=cmd_bug, bug_action="ls")
+
+    # scheduler — headless executor for schedule_wakeup / cron entries
+    sched = sub.add_parser(
+        "scheduler",
+        help="Headless daemon that executes scheduled entries "
+             "(~/.delfin/cron.json) without the dashboard",
+    )
+    sched_sub = sched.add_subparsers(dest="scheduler_action", required=False)
+
+    sched_start = sched_sub.add_parser(
+        "start", help="Start the daemon (detached; survives shell close)")
+    sched_start.set_defaults(scheduler_action="start")
+
+    sched_status = sched_sub.add_parser(
+        "status", help="Daemon state + entries sorted by next fire time")
+    sched_status.set_defaults(scheduler_action="status")
+
+    sched_stop = sched_sub.add_parser(
+        "stop", help="Stop the daemon (SIGTERM; finishes the current turn)")
+    sched_stop.set_defaults(scheduler_action="stop")
+
+    sched.set_defaults(func=cmd_scheduler, scheduler_action="status")
 
     return p
 
