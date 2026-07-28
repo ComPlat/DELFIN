@@ -1151,7 +1151,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Git", "/git branch", "Show branches", False),
     # Memory
     ("Memory", "/remember", "Save a typed memory ([user|feedback|project|reference:] <text>)", True),
-    ("Memory", "/memories", "List all memories", False),
+    ("Memory", "/memories", "List project memories", False),
+  ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Memory", "/memorize", "Distill this session into durable memories (one cheap LLM call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
@@ -9105,12 +9106,16 @@ def create_tab(ctx):
                 _append_system_message("\n".join(lines))
             return True
 
-        if cmd == "/memories":
+        if cmd in ("/memories", "/memories global", "/memories all"):
             from delfin.agent.memory_store import list_typed_memories
-            mems = list_typed_memories(ctx.repo_dir or ".")
+            _scope = {"/memories": "project",
+                      "/memories global": "user",
+                      "/memories all": "all"}[cmd]
+            mems = list_typed_memories(ctx.repo_dir or ".", scope=_scope)
             if not mems:
                 _append_system_message(
-                    "No memories stored. Use /remember <text> to add one.")
+                    "No memories stored. Use /remember <text> to add one "
+                    "(global: prefix for cross-project memories).")
             else:
                 lines = []
                 _last_type = None
@@ -9119,7 +9124,8 @@ def create_tab(ctx):
                         lines.append(f"  [{m['type']}]")
                         _last_type = m["type"]
                     desc = m["description"] or m["body"][:80]
-                    lines.append(f"    • {m['name']} — {desc}")
+                    _tag = " (global)" if m.get("scope") == "user" else ""
+                    lines.append(f"    • {m['name']}{_tag} — {desc}")
                 _append_system_message("Agent memories:\n" + "\n".join(lines))
             return True
 
@@ -9152,9 +9158,17 @@ def create_tab(ctx):
 
         if cmd.startswith("/forget"):
             arg = text[7:].strip()
+            _scope = "project"
+            if arg.startswith("global "):
+                _scope, arg = "user", arg[7:].strip()
             if arg:
                 from delfin.agent.memory_store import delete_typed_memory
-                p = delete_typed_memory(ctx.repo_dir or ".", arg)
+                p = delete_typed_memory(ctx.repo_dir or ".", arg, scope=_scope)
+                if p is None and _scope == "project":
+                    # Convenience: fall back to the global store so a copied
+                    # name works without the explicit prefix.
+                    p = delete_typed_memory(ctx.repo_dir or ".", arg,
+                                            scope="user")
                 if p is not None:
                     _append_system_message(f"Memory '{arg}' deleted.")
                 else:
@@ -9162,7 +9176,8 @@ def create_tab(ctx):
                         f"No memory named '{arg}'. Use /memories for the list.")
             else:
                 _append_system_message(
-                    "Usage: /forget <name>  (see /memories for names)")
+                    "Usage: /forget [global] <name>  (see /memories, "
+                    "/memories global, /memories all)")
             return True
 
         # -- Workspace commands ------------------------------------------------
