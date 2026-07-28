@@ -738,6 +738,17 @@ class AgentEngine:
                     f"served from cache ({_cached / _in * 100.0:.0f}%)")
         except Exception:
             cache_line = ""
+        # Pinned messages are exempt from every compaction stage — surface
+        # the count so the agent knows part of the window is reserved.
+        pin_line = ""
+        try:
+            _n_pins = len(self.pinned_indices())
+            if _n_pins:
+                pin_line = (
+                    f"\n- Pins: {_n_pins} pinned message(s) excluded "
+                    f"from compaction")
+        except Exception:
+            pin_line = ""
         return (
             "# Context status (auto-injected each turn)\n"
             f"- Compaction trigger: {compact_pct*100:.0f}% of window "
@@ -746,6 +757,7 @@ class AgentEngine:
             f"({pct:.1f}% of {window:,}){warn}\n"
             f"{last_line}"
             f"{cache_line}"
+            f"{pin_line}"
         )
 
     def _build_open_tasks_block(self) -> str:
@@ -1158,7 +1170,10 @@ class AgentEngine:
         try:
             for event in self.client.stream_message(
                 system=system_prompt,
-                messages=self.messages,
+                # Wire view: identical to self.messages except private
+                # bookkeeping keys (e.g. _pinned) are stripped — strict
+                # backends reject unknown message fields.
+                messages=self._wire_messages(),
                 max_tokens=effective_max,
                 session_id=self.session_id,
                 thinking_budget=thinking_budget,
@@ -1545,21 +1560,142 @@ class AgentEngine:
         Concurrent stop/send can leave consecutive user messages or other
         structural issues.  This removes duplicates and ensures the
         conversation can be sent to the API without errors.
+
+        Pinned messages (``msg["_pinned"]``) are never merged away: when a
+        pinned message would be replaced by a newer same-role message, a
+        short opposite-role filler is inserted instead so BOTH survive
+        verbatim and alternation still holds for strict chat templates.
         """
         if len(self.messages) < 2:
             return
         cleaned: list[dict] = [self.messages[0]]
         for msg in self.messages[1:]:
-            if msg.get("role") == cleaned[-1].get("role") == "user":
-                # Consecutive user messages: merge into the latest one
-                cleaned[-1] = msg
-            elif msg.get("role") == cleaned[-1].get("role") == "assistant":
-                # Consecutive assistant messages: keep the latest
-                cleaned[-1] = msg
+            role = msg.get("role")
+            if role == cleaned[-1].get("role") and role in ("user", "assistant"):
+                if cleaned[-1].get("_pinned"):
+                    # The older message is pinned — keep it verbatim and
+                    # restore alternation with a filler instead of merging.
+                    filler_role = "assistant" if role == "user" else "user"
+                    cleaned.append({
+                        "role": filler_role,
+                        "content": "[alternation filler - pinned message "
+                                   "above kept verbatim]",
+                    })
+                    cleaned.append(msg)
+                else:
+                    # Consecutive same-role messages: keep the latest
+                    # (also keeps a pinned NEWER message automatically).
+                    cleaned[-1] = msg
             else:
                 cleaned.append(msg)
-        if len(cleaned) != len(self.messages):
+        if cleaned != self.messages:
             self.messages[:] = cleaned
+
+    # -- Pinned context regions --------------------------------------------
+    #
+    # A pin (``msg["_pinned"] = True``) protects one message from EVERY
+    # destructive compaction stage: the sliding-window trim, the hard-clear
+    # of old tool results, and the full summary compaction (the message is
+    # carried verbatim into the kept set instead of being summarised). The
+    # flag lives on the message dict itself so it survives export_state /
+    # save_session / load_session / restore_state unchanged; the backend
+    # request path strips private keys (see _wire_messages) so providers
+    # never see it.
+
+    def pin_message(self, index: int) -> bool:
+        """Pin the message at ``index`` so compaction never alters it.
+
+        ``index`` addresses ``self.messages``; negative values resolve
+        Python-style (``-1`` = newest). Returns True when the pin was set,
+        False for an out-of-range or malformed index/message.
+        """
+        msgs = getattr(self, "messages", None) or []
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            return False
+        if idx < 0:
+            idx += len(msgs)
+        if not (0 <= idx < len(msgs)) or not isinstance(msgs[idx], dict):
+            return False
+        msgs[idx]["_pinned"] = True
+        return True
+
+    def unpin_message(self, index: int) -> bool:
+        """Remove the pin at ``index``.
+
+        Returns True when a pin was actually removed; False when the index
+        is out of range or the message was not pinned.
+        """
+        msgs = getattr(self, "messages", None) or []
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            return False
+        if idx < 0:
+            idx += len(msgs)
+        if not (0 <= idx < len(msgs)) or not isinstance(msgs[idx], dict):
+            return False
+        return msgs[idx].pop("_pinned", None) is not None
+
+    def pinned_indices(self) -> list[int]:
+        """Indices of all currently pinned messages, ascending."""
+        msgs = getattr(self, "messages", None) or []
+        return [
+            i for i, m in enumerate(msgs)
+            if isinstance(m, dict) and m.get("_pinned")
+        ]
+
+    def _wire_messages(self) -> list[dict[str, Any]]:
+        """The message list as sent to the backend.
+
+        Private (underscore-prefixed) bookkeeping keys such as ``_pinned``
+        must never reach a provider: the Anthropic backend forwards the
+        dicts verbatim and strict APIs reject unknown fields. Returns
+        ``self.messages`` itself when no message carries a private key (the
+        common case — preserves list identity for backends that bind the
+        live list); otherwise a shallow per-message copy with private keys
+        stripped (same length and indices, so ``live:<i>`` refs stay valid).
+        """
+        msgs = self.messages
+        if not any(
+            isinstance(m, dict) and any(str(k).startswith("_") for k in m)
+            for m in msgs
+        ):
+            return msgs
+        out: list[dict[str, Any]] = []
+        for m in msgs:
+            if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
+                out.append({k: v for k, v in m.items()
+                            if not str(k).startswith("_")})
+            else:
+                out.append(m)
+        return out
+
+    def _elide_original(
+        self, index: int, role: str, content: str, *, reason: str,
+    ) -> str:
+        """Best-effort lossless-elision write before a destructive trim.
+
+        Appends the FULL original ``content`` to this session's elided
+        store (``<sessions_dir>/<session_id>.elided.jsonl``) and returns
+        the short ref id for the replacement marker, so the model can page
+        the dropped text back in via ``history_get('elided:<ref>')``.
+        Returns ``""`` on any failure or when no session id exists — the
+        caller then keeps its plain marker and compaction proceeds
+        unchanged (an elision-store failure must never break compaction).
+        """
+        try:
+            sid = str(getattr(self, "session_id", "") or "")
+            if not sid:
+                return ""
+            from delfin.agent.session_store import append_elided_record
+            ref = append_elided_record(
+                sid, index=index, role=role, content=content, reason=reason,
+            )
+            return ref or ""
+        except Exception:
+            return ""
 
     # -- Mid-conversation compaction (Feature 3) ---------------------------
 
@@ -1659,13 +1795,23 @@ class AgentEngine:
             # Preserve user messages verbatim (those are the GOALS).
             if role == "user":
                 continue
+            # Pinned messages are protected from every destructive stage.
+            if msg.get("_pinned"):
+                continue
+            # Lossless elision: persist the FULL original before trimming so
+            # the dropped middle stays retrievable. Best-effort — an empty
+            # ref just means the marker carries no retrieval hint.
+            ref = self._elide_original(
+                idx, role, content, reason="sliding_window")
+            hint = f" — retrievable via history_get('elided:{ref}')" if ref else ""
             # Trim the oldest large assistant/tool message head+tail.
             head_len = 600
             tail_len = 400
             new_content = (
                 content[:head_len]
                 + f"\n... [trimmed by sliding window, "
-                + f"{len(content) - head_len - tail_len} chars dropped] ...\n"
+                + f"{len(content) - head_len - tail_len} chars dropped"
+                + f"{hint}] ...\n"
                 + content[-tail_len:]
             )
             msg["content"] = new_content
@@ -1693,20 +1839,28 @@ class AgentEngine:
         pct = float(self.auto_compact_pct or 0.95)
         budget = int(self.context_window_tokens * pct)
         cleared = 0
-        for msg in old_msgs:
+        for idx, msg in enumerate(old_msgs):
             if self._estimate_context_tokens() <= budget:
                 break
             if msg.get("role", "") == "user":
+                continue
+            # Pinned messages are protected from every destructive stage.
+            if msg.get("_pinned"):
                 continue
             content = msg.get("content", "")
             if not isinstance(content, str) or len(content) < 800:
                 continue
             if content.startswith("[cleared:"):
                 continue  # already stubbed on an earlier compaction
+            # Lossless elision: keep the full original retrievable. old_msgs
+            # is a prefix slice of self.messages, so idx is the live index.
+            ref = self._elide_original(
+                idx, msg.get("role", ""), content, reason="hard_clear")
+            hint = f" — retrievable via history_get('elided:{ref}')" if ref else ""
             head = content[:200]
             msg["content"] = (
                 f"[cleared: {len(content)} chars of old tool output elided "
-                f"to save context]\n{head}"
+                f"to save context{hint}]\n{head}"
             )
             self._trimmed_chars_since_floor = (
                 getattr(self, "_trimmed_chars_since_floor", 0)
@@ -1842,6 +1996,12 @@ class AgentEngine:
         3. LLM-quality summary preferred (API backends), extractive
            fallback (CLI backend, summary failure, opt-out via
            ``agent.llm_compaction: false``).
+
+        Pinned messages (``msg["_pinned"]``) are exempt from every stage:
+        the trims skip them and the summary path carries them verbatim
+        into the kept set. Trimmed/cleared bodies are first persisted to
+        the session's elided store so ``history_get('elided:<ref>')`` can
+        recover them.
         """
         # Stage 1: sliding-window in-place trim. Fires every turn at 70%
         # so the cliff at 95% is much rarer. Cheap — no LLM call.
@@ -1877,6 +2037,16 @@ class AgentEngine:
 
         old_msgs = self.messages[:-self._KEEP_RECENT]
         recent = self.messages[-self._KEEP_RECENT:]
+        # Pinned messages are carried into the kept set VERBATIM — they are
+        # excluded from summarisation entirely (summarising them would both
+        # duplicate and endanger their exact wording).
+        pinned_old = [
+            m for m in old_msgs if isinstance(m, dict) and m.get("_pinned")
+        ]
+        compactable = [
+            m for m in old_msgs
+            if not (isinstance(m, dict) and m.get("_pinned"))
+        ]
 
         # Stage 2a: deterministic context-editing BEFORE any LLM summary.
         # Structure-preserving hard-clear of old bulky tool output — free,
@@ -1905,7 +2075,7 @@ class AgentEngine:
         except Exception:
             use_llm = True
         if use_llm:
-            summary = self._llm_summarize_old_messages(old_msgs)
+            summary = self._llm_summarize_old_messages(compactable)
 
         # 2) Fall back to extractive summarisation if LLM unavailable
         if not summary:
@@ -1915,7 +2085,7 @@ class AgentEngine:
             # Assistant text gets summarised. Tool-result-shaped content
             # gets aggressively dropped — the answers it produced are
             # usually already mentioned in the assistant text we keep.
-            for msg in old_msgs:
+            for msg in compactable:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role == "user":
@@ -1958,17 +2128,19 @@ class AgentEngine:
         if not summary:
             return
 
-        n_compacted = len(old_msgs)
+        n_compacted = len(compactable)
         tokens_before = self._estimate_context_tokens()
 
         # Archive the pre-compaction transcript so the user can scroll back
         # to it later via /session archive ls — nothing is ever lost in a
-        # long session, only summarised in-place for the next turn.
+        # long session, only summarised in-place for the next turn. Pinned
+        # messages stay in the live list, so only the summarised ones are
+        # archived here.
         try:
             from delfin.agent.session_store import archive_pre_compaction_transcript
             archive_pre_compaction_transcript(
                 getattr(self, "session_id", "") or "",
-                old_msgs,
+                compactable,
                 info={
                     "messages_compacted": n_compacted,
                     "tokens_before": tokens_before,
@@ -1980,7 +2152,7 @@ class AgentEngine:
         self.messages = [
             {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
-        ] + recent
+        ] + pinned_old + recent
         # `recent` starts with an assistant turn whenever compaction fires right
         # after a user message was appended, so the assistant_ack above lands
         # next to it → two consecutive assistant messages. Strict chat templates
@@ -1996,6 +2168,7 @@ class AgentEngine:
         tokens_after = self._estimate_context_tokens()
         self.last_compaction_info = {
             "messages_compacted": n_compacted,
+            "pinned_kept": len(pinned_old),
             "tokens_before": tokens_before,
             "tokens_after": tokens_after,
             "tokens_saved": max(0, tokens_before - tokens_after),
@@ -2088,7 +2261,7 @@ class AgentEngine:
                 )
                 for event in self.client.stream_message(
                     system=system_prompt,
-                    messages=self.messages,
+                    messages=self._wire_messages(),
                     max_tokens=stream_kwargs.get("max_tokens") or self.max_tokens_for_role(self.current_role),
                     session_id=self.session_id,
                     thinking_budget=stream_kwargs.get("thinking_budget", 0),

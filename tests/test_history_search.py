@@ -212,6 +212,98 @@ def test_history_get_bad_refs(fake_home):
 
 
 # ---------------------------------------------------------------------------
+# elided store (lossless in-place-trim originals)
+# ---------------------------------------------------------------------------
+
+def test_search_finds_elided_content(fake_home):
+    ref = ss.append_elided_record(
+        "sid-eli", index=3, role="assistant",
+        content="the tetracene dimer coupling came out at 42 meV",
+        reason="sliding_window",
+    )
+    assert ref
+    hits = hs.history_search("sid-eli", "tetracene coupling", messages=[
+        {"role": "user", "content": "nothing relevant here"},
+    ])
+    real = [h for h in hits if "score" in h]
+    assert len(real) == 1
+    assert real[0]["source"] == "elided"
+    assert real[0]["ref"] == f"elided:{ref}"
+    assert real[0]["role"] == "assistant"
+    assert "tetracene" in real[0]["snippet"]
+
+
+def test_history_get_elided_ref_returns_original(fake_home):
+    long_text = ("H" * 3000) + " ELIDED-MARKER-XYZ " + ("T" * 3000)
+    ref = ss.append_elided_record(
+        "sid-eliget", index=0, role="assistant",
+        content=long_text, reason="hard_clear",
+    )
+    got = hs.history_get("sid-eliget", f"elided:{ref}", max_chars=10_000)
+    assert got["text"] == long_text
+    assert got["truncated"] is False
+    assert got["total_chars"] == len(long_text)
+    assert got["source"] == "elided"
+    assert got["reason"] == "hard_clear"
+    # truncation applies past max_chars, like the other sources
+    cut = hs.history_get("sid-eliget", f"elided:{ref}", max_chars=1000)
+    assert cut["truncated"] is True and "[truncated:" in cut["text"]
+
+
+def test_history_get_elided_bad_refs(fake_home):
+    ss.append_elided_record(
+        "sid-elibad", index=0, role="assistant", content="x", reason="t")
+    assert "error" in hs.history_get("sid-elibad", "elided:deadbeef")  # unknown
+    assert "error" in hs.history_get("sid-elibad", "elided:../evil")   # malformed
+    assert "error" in hs.history_get("sid-elibad", "elided:")          # empty
+    assert "error" in hs.history_get("sid-none", "elided:deadbeef")    # no store
+
+
+def test_append_elided_record_requires_session_id(fake_home):
+    assert ss.append_elided_record(
+        "", index=0, role="assistant", content="x") is None
+
+
+def test_elided_cap_drops_oldest_records(fake_home, monkeypatch):
+    monkeypatch.setattr(ss, "_ELIDED_CAP", 5)
+    refs = [
+        ss.append_elided_record(
+            "sid-cap", index=i, role="assistant",
+            content=f"record number {i} about niobium")
+        for i in range(8)
+    ]
+    store = ss.elided_store_path("sid-cap")
+    lines = [ln for ln in store.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 5
+    # Oldest three fell off; newest five still resolve.
+    for r in refs[:3]:
+        assert ss.load_elided_record("sid-cap", r) is None
+        assert "error" in hs.history_get("sid-cap", f"elided:{r}")
+    for r in refs[3:]:
+        assert ss.load_elided_record("sid-cap", r)["content"].startswith("record")
+    hits = hs.history_search("sid-cap", "niobium")
+    assert len([h for h in hits if "score" in h]) == 5
+
+
+def test_corrupt_elided_lines_skipped(fake_home):
+    ref = ss.append_elided_record(
+        "sid-elicorrupt", index=0, role="assistant",
+        content="valid rhodium record")
+    with ss.elided_store_path("sid-elicorrupt").open("a", encoding="utf-8") as fh:
+        fh.write('{"ref": "torn\n')
+        fh.write("17\n\n")
+    ref2 = ss.append_elided_record(
+        "sid-elicorrupt", index=1, role="assistant",
+        content="second rhodium record")
+    hits = hs.history_search("sid-elicorrupt", "rhodium")
+    assert len([h for h in hits if "score" in h]) == 2
+    assert hs.history_get("sid-elicorrupt", f"elided:{ref}")["text"] \
+        == "valid rhodium record"
+    assert hs.history_get("sid-elicorrupt", f"elided:{ref2}")["text"] \
+        == "second rhodium record"
+
+
+# ---------------------------------------------------------------------------
 # path safety
 # ---------------------------------------------------------------------------
 

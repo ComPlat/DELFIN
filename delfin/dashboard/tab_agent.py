@@ -1151,7 +1151,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Git", "/git branch", "Show branches", False),
     # Memory
     ("Memory", "/remember", "Save a typed memory ([user|feedback|project|reference:] <text>)", True),
-    ("Memory", "/memories", "List project memories", False),
+    ("Context", "/pin", "Pin a message against compaction (/pin last, /pin list)", False),
+  ("Memory", "/memories", "List project memories", False),
   ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Memory", "/memorize", "Distill this session into durable memories (one cheap LLM call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
@@ -9124,6 +9125,55 @@ def create_tab(ctx):
                     "the .md files in ~/.delfin/projects/<slug>/memory/."
                 )
                 _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/pin" or cmd.startswith("/pin "):
+            engine = state["engine"]
+            if not engine or not getattr(engine, "messages", None):
+                _append_system_message("No active engine / no messages to pin.")
+                return True
+            arg = cmd[len("/pin "):].strip() if cmd.startswith("/pin ") else ""
+            if arg in ("", "list"):
+                idxs = engine.pinned_indices()
+                if not idxs:
+                    _append_system_message(
+                        "No pinned messages.\n"
+                        "Usage: /pin <index> | /pin last | /pin unpin <index> | /pin list")
+                    return True
+                lines = ["Pinned messages (excluded from compaction):"]
+                for i in idxs:
+                    c = engine.messages[i].get("content", "")
+                    preview = " ".join((c if isinstance(c, str) else str(c)).split())[:80]
+                    lines.append(f"  [{i}] {engine.messages[i].get('role', '?')}: {preview}")
+                _append_system_message("\n".join(lines))
+                return True
+            if arg.startswith("unpin"):
+                rest = arg[len("unpin"):].strip()
+                try:
+                    idx = len(engine.messages) - 1 if rest == "last" else int(rest)
+                except ValueError:
+                    _append_system_message(f"Not a message index: {rest!r}")
+                    return True
+                if engine.unpin_message(idx):
+                    _append_system_message(
+                        f"Unpinned message [{idx}] — compaction may trim it again.")
+                else:
+                    _append_system_message(
+                        f"No pin at index {idx} (out of range or not pinned).")
+                return True
+            try:
+                idx = len(engine.messages) - 1 if arg == "last" else int(arg)
+            except ValueError:
+                _append_system_message(f"Not a message index: {arg!r}")
+                return True
+            if engine.pin_message(idx):
+                _append_system_message(
+                    f"Pinned message [{idx}] — excluded from every compaction "
+                    f"stage (sliding-window trim, hard-clear, summary).")
+            else:
+                _append_system_message(
+                    f"Cannot pin index {idx} "
+                    f"(valid range: 0..{len(engine.messages) - 1}).")
             return True
 
         if cmd in ("/memories", "/memories global", "/memories all"):
