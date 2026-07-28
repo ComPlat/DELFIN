@@ -14,6 +14,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +26,126 @@ _STOPWORDS = {
 }
 
 
+def _normalise_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", text or "").casefold()
+
+
 def _tokenize(text: str) -> set[str]:
+    """Return deterministic Unicode-aware word tokens for recall and dedup."""
     return {
         token
-        for token in re.split(r"[^a-z0-9]+", (text or "").lower())
+        for token in re.findall(r"[^\W_]+", _normalise_text(text), re.UNICODE)
         if len(token) >= 3 and token not in _STOPWORDS
     }
+
+
+def _jaccard(a: str, b: str) -> float:
+    """Token-set Jaccard similarity in [0, 1]. Deterministic, model-free.
+
+    Used to detect near-duplicate typed memories so the store can merge
+    them instead of accumulating look-alikes. Two empty texts count as
+    identical (1.0); one empty vs. non-empty is 0.0."""
+    ta, tb = _tokenize(a), _tokenize(b)
+    if not ta and not tb:
+        return (
+            1.0
+            if _normalise_text(a).strip() == _normalise_text(b).strip()
+            else 0.0
+        )
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+# Similarity at/above this bar => treat as the same fact and merge in place.
+# Read this dynamically so long-running/local-model setups can tune the value
+# without relying on the model to perform deduplication itself.
+_DEFAULT_MERGE_SIMILARITY = 0.72
+
+
+def _merge_similarity_threshold() -> float:
+    raw = os.environ.get("DELFIN_MEMORY_MERGE_THRESHOLD", "")
+    if not raw:
+        return _DEFAULT_MERGE_SIMILARITY
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_MERGE_SIMILARITY
+    if 0.0 <= value <= 1.0:
+        return value
+    return _DEFAULT_MERGE_SIMILARITY
+
+
+def _set_file_perms(path: Path) -> None:
+    """Best-effort 0600 on a memory file (per-user, must not be committed)."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Memory files are rewritten on every recall, and a dashboard session and
+    a CLI session can share one repo: a plain ``write_text`` truncates first,
+    so a reader racing the writer would observe an empty or torn file."""
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        _set_file_perms(path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+# Frontmatter fields the store owns and rewrites itself; anything else found
+# in an existing file (e.g. hand-added by the user) is carried through
+# rewrites unchanged via the ``extras`` mapping.
+_KNOWN_FRONT_FIELDS = frozenset({
+    "name", "description", "created_at", "updated_at", "use_count",
+    "superseded", "type",
+})
+
+
+def _compose_frontmatter(
+    *,
+    name: str,
+    description: str,
+    created_at: int,
+    updated_at: int,
+    use_count: int,
+    memory_type: str,
+    body: str,
+    superseded: str = "",
+    extras: dict[str, str] | None = None,
+) -> str:
+    """Serialise a typed memory file (frontmatter + body)."""
+    lines = [
+        "---",
+        f"name: {name}",
+        f"description: {description}",
+        f"created_at: {created_at}",
+        f"updated_at: {updated_at}",
+        f"use_count: {use_count}",
+    ]
+    if superseded:
+        lines.append(f"superseded: {superseded}")
+    for key, value in (extras or {}).items():
+        if key not in _KNOWN_FRONT_FIELDS:
+            lines.append(f"{key}: {value}")
+    lines += ["metadata:", f"  type: {memory_type}", "---", "", body, ""]
+    return "\n".join(lines)
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -87,6 +202,38 @@ def delete_memory(index: int, path: Path | None = None) -> bool:
     return False
 
 
+def bm25_scores(task_text: str, texts: list[str]) -> list[float]:
+    """BM25 relevance of each text against ``task_text``.
+
+    Per-text score is the sum over the task's query tokens of
+    ``log((N - df + 0.5) / (df + 0.5) + 1)`` times a length-normalised
+    saturation factor (k1=1.2, b=0.75; term frequency is binary because
+    docs are token SETS). Returns all zeros when the task yields no tokens
+    after stopword removal. Deterministic and model-free."""
+    task_tokens = _tokenize(task_text)
+    if not task_tokens or not texts:
+        return [0.0] * len(texts)
+    import math as _math
+    docs = [_tokenize(t) for t in texts]
+    doc_lens = [max(1, len(d)) for d in docs]
+    avgdl = sum(doc_lens) / max(1, len(doc_lens))
+    N = len(docs)
+    df = {tok: sum(1 for d in docs if tok in d) for tok in task_tokens}
+    k1, b = 1.2, 0.75
+    scores: list[float] = []
+    for doc, dlen in zip(docs, doc_lens):
+        score = 0.0
+        for tok in task_tokens:
+            df_t = df.get(tok, 0)
+            if df_t == 0 or tok not in doc:
+                continue
+            idf = _math.log((N - df_t + 0.5) / (df_t + 0.5) + 1.0)
+            norm = (k1 + 1.0) / (1.0 + k1 * (1 - b + b * dlen / avgdl))
+            score += idf * norm
+        scores.append(score)
+    return scores
+
+
 def format_memory_context(
     path: Path | None = None,
     *,
@@ -115,32 +262,13 @@ def format_memory_context(
             for i, fact in enumerate(facts[-max_entries:])
         ]
     else:
-        import math as _math
-        N = len(facts)
-        # Pre-tokenize each fact + compute doc length / avg-doc length.
-        docs = [_tokenize(str(f.get("text", ""))) for f in facts]
-        doc_lens = [max(1, len(d)) for d in docs]
-        avgdl = sum(doc_lens) / max(1, len(doc_lens))
-        # Document frequency for each query token.
-        df: dict[str, int] = {}
-        for tok in task_tokens:
-            df[tok] = sum(1 for d in docs if tok in d)
-        k1, b = 1.2, 0.75
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for i, (fact, doc, dlen) in enumerate(zip(facts, docs, doc_lens)):
-            score = 0.0
-            for tok in task_tokens:
-                df_t = df.get(tok, 0)
-                if df_t == 0 or tok not in doc:
-                    continue
-                idf = _math.log((N - df_t + 0.5) / (df_t + 0.5) + 1.0)
-                # Token frequency is binary here (we don't track tf in a
-                # set), so the saturation curve simplifies to:
-                norm = (k1 + 1.0) / (1.0 + k1 * (1 - b + b * dlen / avgdl))
-                score += idf * norm
-            if score > 0:
-                # Tiebreak on recency: later facts win on equal score.
-                scored.append((score + 1e-6 * i, fact))
+        scores = bm25_scores(task_text, [str(f.get("text", "")) for f in facts])
+        scored: list[tuple[float, dict[str, Any]]] = [
+            # Tiebreak on recency: later facts win on equal score.
+            (score + 1e-6 * i, fact)
+            for i, (score, fact) in enumerate(zip(scores, facts))
+            if score > 0
+        ]
         scored.sort(key=lambda kv: kv[0], reverse=True)
         selected = scored[:max_entries]
 
@@ -410,7 +538,7 @@ def save_typed_memory(
     """Persist a typed memory in the .delfin project-memory layout.
 
     Writes:
-    - ``~/.claude/projects/<slug>/memory/<type>_<kebab-slug>.md`` with
+    - ``~/.delfin/projects/<slug>/memory/<type>_<kebab-slug>.md`` with
       ``name:``, ``description:`` and ``metadata.type`` frontmatter
     - Prepends a one-line pointer to that file under the matching section
       of ``MEMORY.md``, creating the section if missing.
@@ -431,24 +559,75 @@ def save_typed_memory(
     memory_dir = _delfin_memory_dir(Path(repo_root))
     memory_dir.mkdir(parents=True, exist_ok=True)
 
+    now = int(time.time())
+    description = first_line[:160] or display_title
+
+    # --- Deduplicate: merge into a near-identical same-type memory ---------
+    # Deterministic, model-independent (Jaccard over token sets) so weak /
+    # open models (Qwen, Gemma, local) get the same dedup behaviour as
+    # frontier ones without having to reason about it. We compare against
+    # existing memories of the SAME type only; the highest-similarity match
+    # above the threshold wins and is updated in place.
+    existing = [r for r in list_typed_memories(repo_root) if r["type"] == memory_type]
+    best: dict | None = None
+    best_sim = 0.0
+    for rec in existing:
+        sim = _jaccard(body, rec["body"])
+        if best is None or sim > best_sim:
+            best_sim, best = sim, rec
+
+    if best is not None and best_sim >= _merge_similarity_threshold():
+        # Upsert: refresh the existing file's body + description, bump the
+        # use_count, and stamp updated_at. Keep its original filename/slug so
+        # MEMORY.md pointers and wikilinks stay valid.
+        fpath = Path(best["path"])
+        slug = best["name"] or slug
+        use_count = int(best.get("use_count", 0)) + 1
+        created_at = int(best.get("created_at", now)) or now
+        old_body = str(best.get("body", "")).strip()
+        try:
+            old_meta, _ = _parse_frontmatter(fpath.read_text(encoding="utf-8"))
+        except OSError:
+            old_meta = {}
+        if old_body != body:
+            superseded = " ".join(old_body.split())[:160]
+        else:
+            superseded = " ".join(old_meta.get("superseded", "").split())[:160]
+        front = _compose_frontmatter(
+            name=slug, description=description, created_at=created_at,
+            updated_at=now, use_count=use_count, memory_type=memory_type,
+            body=body, superseded=superseded, extras=old_meta,
+        )
+        _atomic_write(fpath, front)
+        # Refresh the MEMORY.md pointer so its hook matches the merged body
+        # (also re-adds the line if the user hand-pruned it from the index).
+        _remove_memory_index_line(memory_dir, fpath.name)
+        _update_memory_index(
+            memory_dir, memory_type=memory_type, title=display_title,
+            filename=fpath.name, hook=description,
+        )
+        return fpath, slug, memory_type
+
+    # --- New memory -------------------------------------------------------
     fname = f"{memory_type}_{slug}.md"
     fpath = memory_dir / fname
     if fpath.exists():
-        # Don't clobber — disambiguate with a monotonic suffix.
-        fname = f"{memory_type}_{slug}_{int(time.time())}.md"
+        # Same slug but NOT similar enough to merge (distinct fact that
+        # happens to share a title) -> disambiguate with a monotonic suffix.
+        suffix = str(now)
+        fname = f"{memory_type}_{slug}_{suffix}.md"
         fpath = memory_dir / fname
+        counter = 2
+        while fpath.exists():
+            fname = f"{memory_type}_{slug}_{suffix}_{counter}.md"
+            fpath = memory_dir / fname
+            counter += 1
 
-    description = first_line[:160] or display_title
-    front = (
-        "---\n"
-        f"name: {slug}\n"
-        f"description: {description}\n"
-        f"metadata:\n"
-        f"  type: {memory_type}\n"
-        "---\n\n"
-        f"{body}\n"
+    front = _compose_frontmatter(
+        name=slug, description=description, created_at=now,
+        updated_at=now, use_count=1, memory_type=memory_type, body=body,
     )
-    fpath.write_text(front, encoding="utf-8")
+    _atomic_write(fpath, front)
 
     _update_memory_index(
         memory_dir,
@@ -490,7 +669,7 @@ def _update_memory_index(
     else:
         content = content.rstrip() + f"\n\n{section_header}\n{line}\n"
 
-    index.write_text(content, encoding="utf-8")
+    _atomic_write(index, content)
 
 
 def _type_from_filename(fname: str) -> str:
@@ -501,7 +680,7 @@ def _type_from_filename(fname: str) -> str:
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Return ({name, description, type}, body) from a memory file's text."""
+    """Return parsed scalar frontmatter fields and the memory body."""
     meta: dict[str, str] = {}
     body = text
     if text.startswith("---\n"):
@@ -517,6 +696,15 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
                 k, _, v = s.partition(":")
                 meta.setdefault(k.strip(), v.strip())
     return meta, body
+
+
+def _meta_int(meta: dict[str, str], key: str, default: int = 0) -> int:
+    """Read an integer frontmatter field, tolerating missing / malformed
+    values (old files predate use_count/updated_at). Never raises."""
+    try:
+        return int(str(meta.get(key, default)).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def list_typed_memories(repo_root: Path | str) -> list[dict]:
@@ -537,6 +725,10 @@ def list_typed_memories(repo_root: Path | str) -> list[dict]:
         except OSError:
             continue
         meta, body = _parse_frontmatter(text)
+        try:
+            mtime = int(p.stat().st_mtime)
+        except OSError:
+            mtime = 0
         out.append({
             "file": p.name,
             "path": str(p),
@@ -544,6 +736,11 @@ def list_typed_memories(repo_root: Path | str) -> list[dict]:
             "description": meta.get("description") or "",
             "type": meta.get("type") or _type_from_filename(p.name) or "user",
             "body": body.strip(),
+            # Usage/decay metadata. Old files lack these -> fall back to the
+            # file mtime so LRU pruning still has a sane ordering signal.
+            "use_count": _meta_int(meta, "use_count", 0),
+            "created_at": _meta_int(meta, "created_at", mtime),
+            "updated_at": _meta_int(meta, "updated_at", mtime),
         })
     out.sort(key=lambda r: (r["type"], r["name"]))
     return out
@@ -561,7 +758,7 @@ def _remove_memory_index_line(memory_dir: Path, filename: str) -> None:
     kept = [ln for ln in lines if f"({filename})" not in ln]
     if len(kept) != len(lines):
         try:
-            index.write_text("".join(kept), encoding="utf-8")
+            _atomic_write(index, "".join(kept))
         except OSError:
             pass
 
@@ -590,6 +787,120 @@ def delete_typed_memory(repo_root: Path | str, name_or_file: str) -> Path | None
         return None
     _remove_memory_index_line(memory_dir, match["file"])
     return p
+
+
+# Feedback/user entries get a larger cap and no age-based pruning because they
+# encode deliberate corrections and identity/preferences. They remain bounded.
+_PRUNE_PROTECTED: frozenset[str] = frozenset({"feedback", "user"})
+_PRUNE_PROTECTION_FACTOR = 4
+_PRUNE_DEFAULT_CAP = 25
+
+
+def prune_memories(
+    repo_root: Path | str,
+    *,
+    max_per_type: int = _PRUNE_DEFAULT_CAP,
+    max_age_days: int | None = None,
+) -> list[str]:
+    """Cap prunable memory types via LRU decay; return deleted filenames.
+
+    For each non-protected type, remove entries older than ``max_age_days``
+    (when configured), then keep at most ``max_per_type`` entries. Relevance
+    is ranked by updated_at first and use_count second: recall bumps keep
+    frequently injected memories fresh, while ranking recency first means a
+    just-written memory (use_count 1) always survives the prune that runs
+    right after its save — with use_count first, a saturated store would
+    evict every new memory immediately and fossilise. ``feedback`` and
+    ``user`` types receive a larger cap and are exempt from age-based
+    pruning.
+
+    Called after every write path (remember tool, /remember, auto-memory
+    distill) so the store self-limits instead of growing unbounded and
+    drowning BM25 recall in look-alikes.
+    """
+    cutoff = None
+    if max_age_days is not None and max_age_days >= 0:
+        cutoff = int(time.time()) - (max_age_days * 86_400)
+
+    by_type: dict[str, list[dict]] = {}
+    for rec in list_typed_memories(repo_root):
+        by_type.setdefault(rec["type"], []).append(rec)
+
+    deleted: list[str] = []
+    for mtype, recs in by_type.items():
+        protected = mtype in _PRUNE_PROTECTED
+        type_cap = max_per_type * (_PRUNE_PROTECTION_FACTOR if protected else 1)
+        stale = [] if cutoff is None or protected else [
+            rec for rec in recs if int(rec.get("updated_at", 0)) < cutoff
+        ]
+        stale_files = {rec["file"] for rec in stale}
+        survivors = [rec for rec in recs if rec["file"] not in stale_files]
+        survivors.sort(
+            key=lambda r: (int(r.get("updated_at", 0)), int(r.get("use_count", 0))),
+            reverse=True,
+        )
+        over_cap = survivors[max(type_cap, 0):]
+        for rec in [*stale, *over_cap]:
+            if delete_typed_memory(repo_root, rec["file"]) is not None:
+                deleted.append(rec["file"])
+    return deleted
+
+
+def record_memory_recall(
+    repo_root: Path | str,
+    filenames: list[str] | set[str],
+) -> int:
+    """Bump use_count + updated_at for the memory files actually injected
+    into a prompt. Returns how many files were updated.
+
+    Called by the prompt loader with the exact set of memory files it pulled
+    into the External Memory block, so the LRU decay signal reflects real
+    RECALL (what the agent actually saw), not just writes. Only the injected
+    files are rewritten, so the per-turn cost is bounded by the recall size,
+    not the whole store. Best-effort: never raises.
+    """
+    wanted = {f for f in (filenames or []) if f and f != "MEMORY.md"}
+    if not wanted:
+        return 0
+    memory_dir = _delfin_memory_dir(Path(repo_root))
+    if not memory_dir.is_dir():
+        return 0
+    now = int(time.time())
+    updated = 0
+    try:
+        resolved_memory_dir = memory_dir.resolve()
+    except OSError:
+        return 0
+    for fname in wanted:
+        try:
+            p = (resolved_memory_dir / fname).resolve()
+            p.relative_to(resolved_memory_dir)
+        except (OSError, ValueError):
+            continue
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        meta, body = _parse_frontmatter(text)
+        mtype = meta.get("type") or _type_from_filename(fname) or "user"
+        name = meta.get("name") or p.stem
+        description = meta.get("description") or ""
+        use_count = _meta_int(meta, "use_count", 0) + 1
+        created_at = _meta_int(meta, "created_at", now) or now
+        superseded = " ".join(meta.get("superseded", "").split())[:160]
+        front = _compose_frontmatter(
+            name=name, description=description, created_at=created_at,
+            updated_at=now, use_count=use_count, memory_type=mtype,
+            body=body.strip(), superseded=superseded, extras=meta,
+        )
+        try:
+            _atomic_write(p, front)
+            updated += 1
+        except OSError:
+            continue
+    return updated
 
 
 # ---------------------------------------------------------------------------

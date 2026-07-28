@@ -147,6 +147,39 @@ def test_save_facts_typed_dedups_on_body(monkeypatch, tmp_path):
                          repo_root=repo) == 0
 
 
+def test_save_facts_prunes_after_writing(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    repo = tmp_path / "repo"; repo.mkdir()
+    calls = []
+    monkeypatch.setattr(
+        ms, "prune_memories",
+        lambda root, **kw: calls.append((root, kw.get("max_age_days"))) or [])
+    monkeypatch.setattr(
+        md, "auto_memory_settings", lambda *a, **k: {"max_age_days": 45})
+
+    assert md.save_facts(
+        ["project: retain bounded durable context"], repo_root=repo) == 1
+
+    # The configured decay window is threaded through to the pruner.
+    assert calls == [(repo, 45)]
+
+
+def test_auto_memory_settings_parses_max_age_days():
+    cfg = md.auto_memory_settings(
+        {"agent": {"auto_memory": {"max_age_days": "45"}}})
+    assert cfg["max_age_days"] == 45
+    # Absent, malformed or negative -> disabled (None).
+    assert md.auto_memory_settings({})["max_age_days"] is None
+    assert md.auto_memory_settings(
+        {"agent": {"auto_memory": {"max_age_days": "soon"}}},
+    )["max_age_days"] is None
+    assert md.auto_memory_settings(
+        {"agent": {"auto_memory": {"max_age_days": -3}}},
+    )["max_age_days"] is None
+
+
 def test_distill_and_save_threads_repo_root(monkeypatch, tmp_path):
     from pathlib import Path
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

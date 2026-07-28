@@ -41,11 +41,19 @@ def auto_memory_settings(settings: dict | None = None) -> dict:
         except Exception:
             settings = {}
     cfg = ((settings or {}).get("agent") or {}).get("auto_memory") or {}
+    try:
+        raw_age = cfg.get("max_age_days")
+        max_age_days = int(raw_age) if raw_age is not None else None
+    except (TypeError, ValueError):
+        max_age_days = None
+    if max_age_days is not None and max_age_days < 0:
+        max_age_days = None
     return {
         "enabled": bool(cfg.get("enabled", False)),
         "model": str(cfg.get("model", "") or ""),
         "max_facts": int(cfg.get("max_facts", 5) or 5),
         "min_user_msgs": int(cfg.get("min_user_msgs", 3) or 3),
+        "max_age_days": max_age_days,
     }
 
 
@@ -172,6 +180,17 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
             saved += 1
         except Exception:
             continue
+    # Self-limit the store after writing so prunable types (project/reference)
+    # don't grow unbounded and drown BM25 recall in stale look-alikes. The
+    # optional agent.auto_memory.max_age_days setting additionally drops
+    # prunable entries that haven't been recalled within that window.
+    if saved and repo_root is not None:
+        try:
+            from delfin.agent.memory_store import prune_memories
+            cfg = auto_memory_settings()
+            prune_memories(repo_root, max_age_days=cfg.get("max_age_days"))
+        except Exception:
+            pass
     return saved
 
 
