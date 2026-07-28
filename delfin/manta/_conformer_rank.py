@@ -545,3 +545,199 @@ def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     except Exception:
         # Ranking must never break the build — fall back to original order.
         return isomers
+
+
+# ---------------------------------------------------------------------------
+# BEST-FIRST *DEFECT* ORDERING (DELFIN_FRAME_RANK_QUALITY, default-OFF → byte-id)
+# ---------------------------------------------------------------------------
+# Root of the 2026-07-28 finding ("die besten Frames werden nicht nach vorne
+# sortiert"): :func:`_frame_score` scores ONLY steric overlap — it starts at 100
+# and subtracts clash terms — so
+#   * a TORN / decoordinated / exploded frame has no overlap at all, scores the
+#     PERFECT 100.0 and sorts to the FRONT, and
+#   * on a clean ensemble virtually every frame scores exactly 100.0 (measured
+#     over the built census: 1341 of 1559 emitted frames = 86 %, and 23 of 47
+#     multi-frame systems are a COMPLETE tie) → the sort degenerates into a tie
+#     → the delivered order IS the enumeration order.
+# The ordering below replaces that single number by a lexicographic DEFECT tuple.
+# Every term is a per-frame geometric DEFECT — never RMSD, never energy, never an
+# isomer preference.  It answers "which frame is least broken", not "which isomer
+# do we like", so it stays isomer-invariant and Goodhart-safe:
+#   * the ligand covalent graph is shared by every coordination / linkage /
+#     binding-mode isomer → its consensus is a legitimate per-frame reference
+#     (metal pairs excluded — M–D distances legitimately differ per isomer);
+#   * coordination ideality is measured RELATIVE to the best frame of the SAME
+#     CN signature, because `_coord_ideal_penalty` returns 0.0 both for "ideal"
+#     AND for "nothing to score" (CN<2, or CN outside the CN2..CN9 table) —
+#     comparing it raw would hand a free 0.0 to η-frames with CN>9 and reward
+#     DECOORDINATION (measured: 11/52 promotions were unscored frames, 20/52
+#     lowered the metal CN).
+# Reorder-only; completeness hard-guaranteed by an explicit bijection check.
+_QUALITY_BOND_MULT = 1.15        # covalent bonding contact (same value as the clean gate)
+_QUALITY_MAJORITY = 0.5          # bonded in > 50 % of the frames = real ligand bond
+_QUALITY_MIN_CONSENSUS = 3       # consensus ill-defined below 3 frames → tier neutral
+_QUALITY_COLLAPSE_F = 0.70       # real bond fused below this fraction of Σr_cov
+_QUALITY_MAX_WORK = 20_000_000   # n_frames · n_heavy² budget; above it the tier is neutral
+
+
+def _coord_cn_signature(atoms: List[Tuple[str, float, float, float]]) -> tuple:
+    """Sorted per-metal coordination numbers, donors perceived EXACTLY as
+    :func:`_coord_ideal_penalty` perceives them.  Two frames may be compared on
+    coordination ideality ONLY when this signature is identical — otherwise the
+    comparison expresses an isomer/CN preference instead of a defect."""
+    syms = [a[0] for a in atoms]
+    out = []
+    for m, sm in enumerate(syms):
+        if sm not in _METALS:
+            continue
+        rm = _cov(sm)
+        cn = 0
+        for j, sj in enumerate(syms):
+            if j == m or sj == "H" or sj not in _DONORS:
+                continue
+            dx = atoms[m][1] - atoms[j][1]
+            dy = atoms[m][2] - atoms[j][2]
+            dz = atoms[m][3] - atoms[j][3]
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            sum_r = rm + _cov(sj)
+            if sum_r > 0 and 0.3 * sum_r < d < 1.30 * sum_r:
+                cn += 1
+        out.append(cn)
+    return tuple(sorted(out))
+
+
+def _consensus_defects(frames):
+    """``[(torn, spurious, collapsed), ...]`` over frames sharing ONE atom order.
+
+    A heavy, non-metal pair is a REAL ligand bond iff it is at covalent bonding
+    distance in a strict MAJORITY of the frames (the same consensus primitive the
+    topology gate in ``smiles_converter`` already uses; majority instead of 80 %
+    so the measure is symmetric — a defect in a minority of frames is attributed
+    to THAT frame, not to the clean majority).  Then per frame:
+      torn      = real bond NOT at bonding distance here (ligand ripped open),
+      spurious  = bonding contact that is NOT a real bond (forged bond),
+      collapsed = real bond fused below ``_QUALITY_COLLAPSE_F`` · Σr_cov.
+    Returns all-zero (= tier does not participate) whenever the consensus is not
+    well defined: <3 frames, <2 heavy atoms, numpy unavailable, or above the cost
+    budget.  Deterministic; integer counts only; never raises."""
+    nf = len(frames)
+    zero = [(0, 0, 0)] * nf
+    if nf < _QUALITY_MIN_CONSENSUS or not frames[0]:
+        return zero
+    syms = [a[0] for a in frames[0]]
+    heavy = [k for k, s in enumerate(syms) if s != "H" and s not in _METALS]
+    nh = len(heavy)
+    if nh < 2 or nf * nh * nh > _QUALITY_MAX_WORK:
+        return zero
+    try:
+        import numpy as _np
+    except Exception:
+        return zero
+    try:
+        rs = _np.array([_cov(syms[k]) for k in heavy], dtype=float)
+        pair_sum = rs[:, None] + rs[None, :]
+        bond_t = _QUALITY_BOND_MULT * pair_sum
+        coll_t = _QUALITY_COLLAPSE_F * pair_sum
+        iu = _np.triu_indices(nh, 1)
+        bmask, cmask = [], []
+        for atoms in frames:
+            if len(atoms) != len(syms):
+                return zero
+            C = _np.array([[atoms[k][1], atoms[k][2], atoms[k][3]]
+                           for k in heavy], dtype=float)
+            diff = C[:, None, :] - C[None, :, :]
+            D = _np.sqrt((diff * diff).sum(-1))
+            bmask.append((D < bond_t)[iu])
+            cmask.append((D < coll_t)[iu])
+        cnt = _np.zeros(bmask[0].shape[0], dtype=_np.int64)
+        for b in bmask:
+            cnt += b
+        real = cnt > (_QUALITY_MAJORITY * nf)
+        out = []
+        for b, c in zip(bmask, cmask):
+            out.append((int(_np.count_nonzero(real & ~b)),
+                        int(_np.count_nonzero((~real) & b)),
+                        int(_np.count_nonzero(real & c))))
+        return out
+    except Exception:
+        return zero
+
+
+def rank_isomers_quality(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """Re-order ``[(xyz_string, label), ...]`` LEAST-BROKEN first, so the most
+    realistic frame becomes frame 0.
+
+    Lexicographic key — pure geometry, deterministic, NO RMSD / NO energy:
+
+      0  unparsable  frames whose coordinates cannot be read never lead (kept!)
+      1  torn        consensus ligand bond missing in this frame
+      2  spurious    forged bond (bonding contact that is not a consensus bond)
+      3  collapsed   consensus bond fused below 0.70 · Σr_cov
+      4  clash       today's continuous overlap penalty (100 − ``_frame_score``)
+      5  coord_rel   coordination-ideality deviation MINUS the best value any
+                     frame with the SAME CN signature reaches → measures this
+                     frame's own DISTORTION, never a preference for a lower or
+                     an untabulated CN (which would reward decoordination)
+      6  idx         enumeration index → stable; exact ties keep today's order
+
+    COMPLETENESS IS HARD-GUARANTEED: the result is a PERMUTATION of the input.
+    Items are moved unchanged (xyz **and** label **and** any extra tuple field,
+    so labels travel with their frame by construction), and the permutation is
+    verified to be a bijection on ``range(len(isomers))`` before it is returned.
+    On any deviation, any exception, with fewer than 2 frames, or with
+    ``DELFIN_NO_FRAME_RANK=1`` the input list is returned UNCHANGED.
+
+    Deliberately a SEPARATE entry point from :func:`rank_isomers`: that one is
+    also used as the BASE-FRAME PICKER during construction
+    (``smiles_converter._emit_nonmetal_ring_pucker_variants``), so changing it
+    would change WHICH conformers are generated.  This function is called only
+    on the FINAL emitted ensemble → construction stays byte-identical and this
+    really is reorder-only."""
+    if os.environ.get("DELFIN_NO_FRAME_RANK", "0") == "1":
+        return isomers
+    if not isinstance(isomers, list) or len(isomers) < 2:
+        return isomers
+    try:
+        n = len(isomers)
+        parsed = []
+        for item in isomers:
+            xyz = item[0] if isinstance(item, (tuple, list)) and item else item
+            parsed.append(_parse_xyz_tolerant(xyz) if isinstance(xyz, str) else [])
+        # Consensus tiers per SHARED-atom-order group (a union build may mix atom
+        # orders; each group is scored against its own consensus only).
+        groups: Dict[tuple, List[int]] = {}
+        for i, atoms in enumerate(parsed):
+            groups.setdefault(tuple(a[0] for a in atoms), []).append(i)
+        defects = [(0, 0, 0)] * n
+        for _sig in sorted(groups):
+            idxs = groups[_sig]
+            vals = _consensus_defects([parsed[i] for i in idxs])
+            for k, i in enumerate(idxs):
+                defects[i] = vals[k]
+        # Coordination distortion RELATIVE to the best frame of the same CN sig.
+        pen, csig = [], []
+        for atoms in parsed:
+            pen.append(_coord_ideal_penalty(atoms) if atoms else 0.0)
+            csig.append(_coord_cn_signature(atoms) if atoms else ())
+        best: Dict[tuple, float] = {}
+        for s, p in zip(csig, pen):
+            if s not in best or p < best[s]:
+                best[s] = p
+        keyed = []
+        for i, atoms in enumerate(parsed):
+            if not atoms:
+                keyed.append(((1, 0, 0, 0, 0.0, 0.0, i), i))
+                continue
+            t, sp, co = defects[i]
+            clash = round(100.0 - _frame_score(atoms), 6)
+            crel = round(pen[i] - best.get(csig[i], pen[i]), 4)
+            keyed.append(((0, t, sp, co, clash, crel, i), i))
+        keyed.sort(key=lambda e: e[0])
+        order = [i for _k, i in keyed]
+        if len(order) != n or sorted(order) != list(range(n)):
+            return isomers   # completeness guard — a frame must never be lost
+        return [isomers[i] for i in order]
+    except Exception:
+        # Ordering must never break the build — fall back to the original order.
+        return isomers
+

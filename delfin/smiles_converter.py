@@ -30154,10 +30154,31 @@ def _filter_nonfinite_isomers(results):
 
 
 def _rank_emitted_isomers(isomers):
-    """Order the emitted ensemble best (most crystal-like) first via least-clash
-    ranking (cross-validated 2026-06-12).  Never drops/alters a structure — only
-    reorders.  Safe no-op on any error or with DELFIN_NO_FRAME_RANK=1."""
+    """Order the emitted ensemble best (most crystal-like) first.  Never drops or
+    alters a structure — only reorders.  Safe no-op on any error or with
+    DELFIN_NO_FRAME_RANK=1.
+
+    DEFAULT = the legacy least-clash ranking (cross-validated 2026-06-12).  That
+    ranker measures ONLY steric overlap, so it is blind in both directions: a
+    TORN / decoordinated frame has no overlap at all and therefore scores the
+    perfect 100.0 and LEADS, while on a clean ensemble 86 % of all emitted frames
+    score exactly 100.0 -> a complete tie -> the delivered order is the ENUMERATION
+    order, i.e. no ranking at all (measured over the built census 2026-07-28; user
+    report the same day: "die besten Frames werden nicht nach vorne sortiert").
+
+    DELFIN_FRAME_RANK_QUALITY=1 switches to the DEFECT ordering
+    (:func:`delfin.manta._conformer_rank.rank_isomers_quality`): torn / spurious /
+    collapsed ligand bonds first, then clash, then coordination distortion
+    relative to the best frame of the same CN signature, enumeration index last.
+    Pure geometry, deterministic, no RMSD, no energy; a verified PERMUTATION with an
+    explicit bijection guard, so no frame is ever lost and every label travels with
+    its frame.  Default-OFF -> byte-identical order to today.  Applied ONLY here, on
+    the final emitted ensemble -- the construction-time base-frame picker keeps using
+    the legacy ``rank_isomers``, so the manifold CONTENT is unchanged."""
     try:
+        if os.environ.get("DELFIN_FRAME_RANK_QUALITY", "0") == "1":
+            from delfin.manta._conformer_rank import rank_isomers_quality
+            return rank_isomers_quality(isomers)
         from delfin.manta._conformer_rank import rank_isomers
         return rank_isomers(isomers)
     except Exception:
