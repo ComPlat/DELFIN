@@ -1134,3 +1134,50 @@ def test_engine_set_live_state_passes_through(agent_tree):
     prompt = engine._build_current_system_prompt(memory_context="", task_text="hi")
     assert "--- Live state ---" in prompt
     assert "CONTROL: PAL=8" in prompt
+
+
+def test_episode_recall_injected_into_solo_prompt(
+    agent_tree, tmp_path, monkeypatch,
+):
+    """A saved episode matching the task text appears as its own
+    'Past Sessions' section; disabling agent.episodes.enabled removes it."""
+    from delfin.agent import episodes as ep
+    from delfin.agent.prompt_loader import PromptLoader
+    import delfin.user_settings as us
+
+    (agent_tree / "pack" / "agents" / "solo_agent.md").write_text(
+        "# Solo Agent\nYou are the solo agent."
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    ep.save_episode(
+        "epi12345",
+        repo_root=agent_tree,
+        goal="Debug orca geometry convergence failure",
+        outcome="Added tightscf and slowconv keywords",
+        decisions=[],
+        open_items=[],
+        verdict="PASS",
+    )
+    monkeypatch.setattr(
+        us, "load_settings",
+        lambda *a, **k: {"agent": {"episodes": {"enabled": True}}})
+
+    loader = PromptLoader(agent_tree)
+    build = dict(
+        role_id="solo_agent",
+        mode_id="quick",
+        mode_description="solo",
+        route=["solo_agent"],
+        role_index=0,
+        task_text="the orca geometry convergence job fails again",
+    )
+    prompt = loader.build_system_prompt(**build)
+    assert "--- Past Sessions ---" in prompt
+    assert "# Similar past sessions" in prompt
+    assert "tightscf" in prompt
+
+    monkeypatch.setattr(
+        us, "load_settings",
+        lambda *a, **k: {"agent": {"episodes": {"enabled": False}}})
+    prompt_disabled = loader.build_system_prompt(**build)
+    assert "--- Past Sessions ---" not in prompt_disabled

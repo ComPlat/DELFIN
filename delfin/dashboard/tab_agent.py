@@ -4888,6 +4888,26 @@ def create_tab(ctx):
                 todo_payload=state.get("current_todos") or [],
             )
             state["active_session_id"] = engine.session_id
+            # Episodic memory: one compact per-session record so a later
+            # session can recall similar past work (best-effort; mirrors
+            # the headless CLI hook in delfin/agent/cli.py).
+            try:
+                from delfin.agent.episodes import (
+                    build_episode_from_state,
+                    save_episode,
+                )
+                fields = build_episode_from_state(
+                    {**estate,
+                     "todo_payload": state.get("current_todos") or []},
+                    state.get("chat_messages") or [],
+                )
+                save_episode(
+                    engine.session_id,
+                    repo_root=getattr(engine, "repo_dir", Path.cwd()),
+                    **fields,
+                )
+            except Exception:
+                pass
             try:
                 kp = getattr(engine, "kit_permissions", None)
                 if kp is not None:
