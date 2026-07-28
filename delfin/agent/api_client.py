@@ -1697,6 +1697,39 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "publish_report",
+            "description": (
+                "Write a durable, rendered report to <workspace>/reports/ "
+                "(markdown + standalone HTML) instead of leaving results "
+                "only in chat. Use for deliverables the user will keep: "
+                "analysis summaries, calculation comparisons, audit "
+                "results. Existing files are never overwritten."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Report title (used for the filename).",
+                    },
+                    "markdown": {
+                        "type": "string",
+                        "description": ("Report body in markdown (headers, "
+                                        "lists, tables, fenced code)."),
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["md", "html", "both"],
+                        "description": "Output format (default both).",
+                    },
+                },
+                "required": ["title", "markdown"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grep_file",
             "description": (
                 "Search for a regex pattern in files under the DELFIN repository. "
@@ -4406,7 +4439,7 @@ class _DocToolExecutor:
         return result
 
     _AUDITED_TOOLS = frozenset({
-        "write_file", "edit_file", "multi_edit",
+        "write_file", "edit_file", "multi_edit", "publish_report",
         "bash", "bash_background", "bash_kill",
         "notebook_edit",
         "remember_permission", "remember_permission_bundle",
@@ -4649,6 +4682,8 @@ class _DocToolExecutor:
             return self._execute_view_image(arguments, permissions)
         elif name == "forget":
             return self._execute_forget(arguments, permissions)
+        elif name == "publish_report":
+            return self._execute_publish_report(arguments, permissions)
         elif name == "remember":
             return self._execute_remember(arguments, permissions)
         elif name == "grep_file":
@@ -4894,6 +4929,34 @@ class _DocToolExecutor:
             "note": ("The image is shown to you in the next message — look at "
                      "it and describe / use what you SEE."),
         })
+
+    def _execute_publish_report(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        title = (arguments.get("title") or "").strip()
+        markdown = arguments.get("markdown") or ""
+        fmt = (arguments.get("format") or "both").strip().lower()
+        if not title or not markdown.strip():
+            return json.dumps({"error": "title and markdown are required"})
+        if fmt not in ("md", "html", "both"):
+            return json.dumps({"error": "format must be md|html|both"})
+        if perms is None:
+            return json.dumps({"error": (
+                "publish_report requires permissions to be configured.")})
+        if getattr(perms, "mode", "") == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — publish_report rejected. Present "
+                "the plan first; write the report after approval.")})
+        try:
+            from .deliverables import publish_report
+            out = publish_report(perms.workspace, title=title,
+                                 markdown=markdown, fmt=fmt)
+        except Exception as exc:
+            return json.dumps({"error": f"publish_report failed: {exc}"})
+        out["status"] = "written"
+        out["note"] = ("Report saved under the workspace reports/ dir — "
+                       "mention the path in your answer.")
+        return json.dumps(out)
 
     def _execute_forget(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
