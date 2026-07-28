@@ -1037,6 +1037,19 @@ class PromptLoader:
                 injected.append("memory_addendum")
         except Exception:
             pass
+        # Git + orchestration discipline: in a repo, secure every work unit
+        # with git (branch, commit, push before merge), use worktrees for
+        # parallel work, and orchestrate subagents with disjoint file
+        # ownership. Stable content — cache-friendly like the other addenda.
+        try:
+            _gitwf = self._cached_read(
+                self.agent_dir / "shared" / "git_workflow_addendum.md"
+            )
+            if _gitwf:
+                sections.append(_gitwf)
+                injected.append("git_workflow_addendum")
+        except Exception:
+            pass
 
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)

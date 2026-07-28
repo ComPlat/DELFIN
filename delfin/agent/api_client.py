@@ -574,10 +574,22 @@ class APIClient(_BaseClient):
 
         Handles text, thinking, tool_use, and cost events.
         """
+        # Explicit prompt-cache breakpoint on the system prompt: the prompt
+        # loader keeps it byte-stable across turns precisely so the provider
+        # can serve it from cache — without the marker none of that
+        # engineering pays off on this backend. cache_read_input_tokens is
+        # already folded into the metrics above/below.
+        _system_param: Any = system
+        if system:
+            _system_param = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "system": system,
+            "system": _system_param,
             "messages": messages,
         }
         if thinking_budget > 0:

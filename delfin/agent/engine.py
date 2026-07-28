@@ -722,6 +722,19 @@ class AgentEngine:
         else:
             last_line = "- Last compaction: (none this session)"
         warn = " — WARNING: nearing auto-compaction" if pct >= 80.0 else ""
+        # Prompt-cache health: a collapsing hit rate is the earliest signal
+        # that something destabilised the cached prefix (and doubled prefill
+        # cost) — surface it where it gets seen every turn.
+        cache_line = ""
+        try:
+            _in = int(self.token_usage.get("input", 0) or 0)
+            _cached = int(self.token_usage.get("cached", 0) or 0)
+            if _in > 0 and _cached > 0:
+                cache_line = (
+                    f"\n- Prompt cache: {_cached:,} of {_in:,} input tokens "
+                    f"served from cache ({_cached / _in * 100.0:.0f}%)")
+        except Exception:
+            cache_line = ""
         return (
             "# Context status (auto-injected each turn)\n"
             f"- Compaction trigger: {compact_pct*100:.0f}% of window "
@@ -729,6 +742,7 @@ class AgentEngine:
             f"- Current usage: {n_msgs} msgs, ~{tokens:,} tokens "
             f"({pct:.1f}% of {window:,}){warn}\n"
             f"{last_line}"
+            f"{cache_line}"
         )
 
     def _build_open_tasks_block(self) -> str:
