@@ -262,6 +262,43 @@ def run_eval(
     return path
 
 
+def maybe_run_scheduled(
+    settings: dict | None = None,
+    *,
+    min_interval_hours: float = 24.0,
+    reports_dir: Path | None = None,
+) -> Path | None:
+    """Opportunistic scheduled pass: run the LLM-free eval at most once per
+    ``min_interval_hours``, gated by the same opt-in.
+
+    Called from session-end paths (CLI run, dashboard) so the loop
+    actually closes without anyone remembering a cron job — previously
+    the module had NO automatic caller at all. Never raises; returns the
+    report path when a pass ran, else None."""
+    cfg = eval_settings(settings)
+    if not cfg["enabled"]:
+        return None
+    d = reports_dir or _REPORTS_DIR
+    stamp = d / ".last_run"
+    now = time.time()
+    try:
+        last = float(stamp.read_text(encoding="utf-8").strip() or 0.0)
+    except (OSError, ValueError):
+        last = 0.0
+    if now - last < min_interval_hours * 3600.0:
+        return None
+    try:
+        path = run_eval(settings=settings, reports_dir=d)
+    except Exception:
+        return None
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(now), encoding="utf-8")
+    except OSError:
+        pass
+    return path
+
+
 def main() -> int:
     cfg = eval_settings()
     if not cfg["enabled"]:

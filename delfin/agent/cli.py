@@ -174,8 +174,29 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
         return 3
     _resume_or_create(engine, args)
+    import time as _time
+    _t0 = _time.monotonic()
     out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096)
     sid = _save_session(engine, repo)
+
+    # Learning signal: record the outcome so provider profiles learn from
+    # CLI/headless usage too — previously only dashboard cycles fed the
+    # profile, so KIT/CLI sessions contributed nothing.
+    try:
+        engine.record_cycle_outcome(
+            "FAIL" if out["error"] else "PASS",
+            prompt,
+            error_type=("cli_error" if out["error"] else None),
+            start_time=_t0,
+        )
+    except Exception:
+        pass
+    # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
+    try:
+        from .eval_loop import maybe_run_scheduled
+        maybe_run_scheduled()
+    except Exception:
+        pass
 
     if args.json:
         payload = {**out, "session_id": sid}

@@ -107,3 +107,37 @@ def test_run_eval_writes_report(tmp_path, monkeypatch):
     assert "eval report" in body
     # the recurring pattern produced a draft, referenced in the report
     assert list((tmp_path / "drafts").glob("recur_*.yaml"))
+
+
+def test_maybe_run_scheduled_disabled_returns_none(tmp_path):
+    assert ev.maybe_run_scheduled(
+        {"agent": {"eval_loop": {"enabled": False}}},
+        reports_dir=tmp_path) is None
+
+
+def test_maybe_run_scheduled_runs_once_per_interval(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ev, "run_eval",
+        lambda **kw: calls.append(1) or (tmp_path / "r.md"))
+    cfg = {"agent": {"eval_loop": {"enabled": True}}}
+    first = ev.maybe_run_scheduled(cfg, reports_dir=tmp_path)
+    assert first is not None
+    assert calls == [1]
+    # Second call inside the interval is a no-op.
+    assert ev.maybe_run_scheduled(cfg, reports_dir=tmp_path) is None
+    assert calls == [1]
+    # Expired stamp -> runs again.
+    (tmp_path / ".last_run").write_text("0", encoding="utf-8")
+    assert ev.maybe_run_scheduled(cfg, reports_dir=tmp_path) is not None
+    assert calls == [1, 1]
+
+
+def test_maybe_run_scheduled_survives_run_error(tmp_path, monkeypatch):
+    def _boom(**kw):
+        raise RuntimeError("mining failed")
+    monkeypatch.setattr(ev, "run_eval", _boom)
+    cfg = {"agent": {"eval_loop": {"enabled": True}}}
+    assert ev.maybe_run_scheduled(cfg, reports_dir=tmp_path) is None
+    # No stamp written on failure -> next call tries again.
+    assert not (tmp_path / ".last_run").exists()
