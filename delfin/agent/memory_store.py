@@ -304,6 +304,11 @@ _TYPE_PREFIX_RE = re.compile(
     r"^(user|feedback|project|reference)\s*[:\-]\s*", re.IGNORECASE
 )
 
+# "global:" scope prefix — routes the fact to the USER-WIDE store
+# (~/.delfin/memory) regardless of its type ("global: feedback: …" is a
+# user-scoped feedback memory). Colon-only so "global-warming …" survives.
+_GLOBAL_PREFIX_RE = re.compile(r"^global\s*:\s*", re.IGNORECASE)
+
 
 # Heuristic keyword sets for auto-classification when no explicit prefix
 # is supplied. The first matching type wins. Order matters: feedback is
@@ -348,17 +353,37 @@ def _classify_by_heuristic(text: str) -> str:
     return "user"
 
 
-def parse_memory_type(text: str) -> tuple[str, str]:
-    """Strip a leading ``<type>:`` prefix and return ``(memory_type, body)``.
+def parse_memory_scope(text: str) -> tuple[str, str]:
+    """Strip a leading ``global:`` prefix and return ``(scope, rest)``.
 
-    When no prefix is present we run a keyword heuristic across feedback /
-    project / reference patterns and fall back to ``"user"``. The body is
-    always the original text minus any consumed prefix.
+    ``scope`` is ``"user"`` (user-wide ~/.delfin/memory store) when the
+    prefix is present, else ``"project"``. Any ``<type>:`` prefix in the
+    rest is left untouched for ``parse_memory_type``.
     """
-    m = _TYPE_PREFIX_RE.match(text or "")
+    m = _GLOBAL_PREFIX_RE.match(text or "")
     if m:
-        return m.group(1).lower(), (text[m.end():]).strip()
-    body = (text or "").strip()
+        return "user", (text[m.end():]).strip()
+    return "project", (text or "").strip()
+
+
+def parse_memory_type(text: str) -> tuple[str, str]:
+    """Strip leading ``global:`` / ``<type>:`` prefixes and return
+    ``(memory_type, body)``.
+
+    A ``global:`` scope prefix is consumed first (the scope itself is
+    reported by ``parse_memory_scope``); the remaining prefix is parsed
+    normally. Without any type prefix we run a keyword heuristic across
+    feedback / project / reference patterns and fall back to ``"user"`` —
+    except for a bare ``global:`` fact, which defaults to the ``user``
+    type (a fact that crosses repos is about the user by definition).
+    """
+    scope, rest = parse_memory_scope(text)
+    m = _TYPE_PREFIX_RE.match(rest)
+    if m:
+        return m.group(1).lower(), (rest[m.end():]).strip()
+    body = rest.strip()
+    if scope == "user":
+        return "user", body
     return _classify_by_heuristic(body), body
 
 
@@ -393,6 +418,21 @@ def _delfin_memory_dir(repo_root: Path) -> Path:
     _migrate_legacy_dir(
         Path.home() / ".claude" / "projects" / slug / "memory", new)
     return new
+
+
+def _delfin_global_memory_dir() -> Path:
+    """DELFIN's USER-WIDE memory store: ``~/.delfin/memory``. Same layout
+    as the per-project store (typed files + MEMORY.md index) but holds
+    facts that cross repos — user identity and standing feedback."""
+    return Path.home() / ".delfin" / "memory"
+
+
+def _memory_dir_for_scope(repo_root: Path | str, scope: str) -> Path:
+    """Resolve the store directory for a scope: ``"user"`` → the global
+    ``~/.delfin/memory``; anything else → the per-project store."""
+    if scope == "user":
+        return _delfin_global_memory_dir()
+    return _delfin_memory_dir(Path(repo_root))
 
 
 def _delfin_plans_dir(repo_root: Path) -> Path:
@@ -535,20 +575,40 @@ def save_typed_memory(
     repo_root: Path | str,
     memory_type: str | None = None,
     title: str | None = None,
+    scope: str = "project",
 ) -> tuple[Path, str, str]:
     """Persist a typed memory in the .delfin project-memory layout.
 
     Writes:
     - ``~/.delfin/projects/<slug>/memory/<type>_<kebab-slug>.md`` with
-      ``name:``, ``description:`` and ``metadata.type`` frontmatter
+      ``name:``, ``description:`` and ``metadata.type`` frontmatter.
+      ``scope="user"`` (or a leading ``global:`` prefix in the text, which
+      always wins) targets the user-wide ``~/.delfin/memory/`` store
+      instead, so identity/standing-feedback facts cross repos.
     - Prepends a one-line pointer to that file under the matching section
       of ``MEMORY.md``, creating the section if missing.
+
+    Project-scoped bodies containing ``path:line`` references get a short
+    content anchor per ref (the cited line's text) stored in an
+    ``anchors:`` frontmatter mapping so recall can later detect drift.
 
     Returns ``(file_path, slug, memory_type)``.
     """
     body = (text or "").strip()
+    prefix_scope, body = parse_memory_scope(body)
+    if prefix_scope == "user":
+        scope = "user"
+    scope = "user" if scope == "user" else "project"
     if memory_type is None:
-        memory_type, body = parse_memory_type(body)
+        m = _TYPE_PREFIX_RE.match(body)
+        if m:
+            memory_type = m.group(1).lower()
+            body = (body[m.end():]).strip()
+        elif prefix_scope == "user":
+            # A bare "global: …" fact is about the user by definition.
+            memory_type = "user"
+        else:
+            memory_type = _classify_by_heuristic(body)
     memory_type = (memory_type or "user").lower()
     if memory_type not in _TYPE_LABELS:
         memory_type = "user"
@@ -557,19 +617,35 @@ def save_typed_memory(
     display_title = (title or first_line)[:80].strip() or "memory"
     slug = _slugify(display_title)
 
-    memory_dir = _delfin_memory_dir(Path(repo_root))
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
     memory_dir.mkdir(parents=True, exist_ok=True)
+    index_header = (
+        _GLOBAL_INDEX_HEADER if scope == "user" else _PROJECT_INDEX_HEADER
+    )
 
     now = int(time.time())
     description = first_line[:160] or display_title
+
+    # Content anchors: only for the project store — global facts outlive
+    # any single checkout, so repo-relative anchors would rot immediately.
+    anchors_json = ""
+    if scope == "project":
+        try:
+            anchors = collect_reference_anchors(body, repo_root)
+            if anchors:
+                anchors_json = json.dumps(anchors, ensure_ascii=False)
+        except Exception:
+            anchors_json = ""
 
     # --- Deduplicate: merge into a near-identical same-type memory ---------
     # Deterministic, model-independent (Jaccard over token sets) so weak /
     # open models (Qwen, Gemma, local) get the same dedup behaviour as
     # frontier ones without having to reason about it. We compare against
-    # existing memories of the SAME type only; the highest-similarity match
-    # above the threshold wins and is updated in place.
-    existing = [r for r in list_typed_memories(repo_root) if r["type"] == memory_type]
+    # existing memories of the SAME type in the SAME store only; the
+    # highest-similarity match above the threshold wins and is updated in
+    # place.
+    existing = [r for r in list_typed_memories(repo_root, scope=scope)
+                if r["type"] == memory_type]
     best: dict | None = None
     best_sim = 0.0
     for rec in existing:
@@ -590,14 +666,22 @@ def save_typed_memory(
             old_meta, _ = _parse_frontmatter(fpath.read_text(encoding="utf-8"))
         except OSError:
             old_meta = {}
+        extras = dict(old_meta)
         if old_body != body:
             superseded = " ".join(old_body.split())[:160]
+            # Fresh text ⇒ fresh health signal: re-anchor the new body and
+            # drop the rot counter accumulated against the old one.
+            extras.pop("stale_hits", None)
+            if anchors_json:
+                extras["anchors"] = anchors_json
+            else:
+                extras.pop("anchors", None)
         else:
             superseded = " ".join(old_meta.get("superseded", "").split())[:160]
         front = _compose_frontmatter(
             name=slug, description=description, created_at=created_at,
             updated_at=now, use_count=use_count, memory_type=memory_type,
-            body=body, superseded=superseded, extras=old_meta,
+            body=body, superseded=superseded, extras=extras,
         )
         _atomic_write(fpath, front)
         # Refresh the MEMORY.md pointer so its hook matches the merged body
@@ -605,7 +689,7 @@ def save_typed_memory(
         _remove_memory_index_line(memory_dir, fpath.name)
         _update_memory_index(
             memory_dir, memory_type=memory_type, title=display_title,
-            filename=fpath.name, hook=description,
+            filename=fpath.name, hook=description, header=index_header,
         )
         return fpath, slug, memory_type
 
@@ -627,6 +711,7 @@ def save_typed_memory(
     front = _compose_frontmatter(
         name=slug, description=description, created_at=now,
         updated_at=now, use_count=1, memory_type=memory_type, body=body,
+        extras={"anchors": anchors_json} if anchors_json else None,
     )
     _atomic_write(fpath, front)
 
@@ -636,8 +721,13 @@ def save_typed_memory(
         title=display_title,
         filename=fname,
         hook=description,
+        header=index_header,
     )
     return fpath, slug, memory_type
+
+
+_PROJECT_INDEX_HEADER = "# DELFIN Project Memory"
+_GLOBAL_INDEX_HEADER = "# DELFIN Global Memory (all projects)"
 
 
 def _update_memory_index(
@@ -647,6 +737,7 @@ def _update_memory_index(
     title: str,
     filename: str,
     hook: str,
+    header: str = _PROJECT_INDEX_HEADER,
 ) -> None:
     """Insert a one-line link under the matching ``## <Label>`` section of
     ``MEMORY.md``. Creates the index file or the section header if missing."""
@@ -658,7 +749,7 @@ def _update_memory_index(
     if index.exists():
         content = index.read_text(encoding="utf-8")
     else:
-        content = "# DELFIN Project Memory\n\n"
+        content = f"{header}\n\n"
 
     if section_header in content:
         idx = content.index(section_header)
@@ -708,13 +799,22 @@ def _meta_int(meta: dict[str, str], key: str, default: int = 0) -> int:
         return default
 
 
-def list_typed_memories(repo_root: Path | str) -> list[dict]:
-    """One record per typed memory file under the project's memory dir.
+def list_typed_memories(
+    repo_root: Path | str, scope: str = "project",
+) -> list[dict]:
+    """One record per typed memory file in the selected store(s).
 
-    Sorted by type then name. Each record: file, path, name, description,
-    type, body. This is the single source of truth for the agent's learned
+    ``scope`` picks the store: ``"project"`` (default), ``"user"`` (the
+    global ~/.delfin/memory store) or ``"all"`` (global first, then
+    project). Sorted by type then name within each store. Each record:
+    file, path, name, description, type, scope, body plus usage/decay
+    metadata. This is the single source of truth for the agent's learned
     memories (the legacy flat JSON store is no longer used for recall)."""
-    memory_dir = _delfin_memory_dir(Path(repo_root))
+    if scope == "all":
+        return (list_typed_memories(repo_root, scope="user")
+                + list_typed_memories(repo_root, scope="project"))
+    scope = "user" if scope == "user" else "project"
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
     if not memory_dir.is_dir():
         return []
     out: list[dict] = []
@@ -736,12 +836,16 @@ def list_typed_memories(repo_root: Path | str) -> list[dict]:
             "name": meta.get("name") or p.stem,
             "description": meta.get("description") or "",
             "type": meta.get("type") or _type_from_filename(p.name) or "user",
+            "scope": scope,
             "body": body.strip(),
             # Usage/decay metadata. Old files lack these -> fall back to the
             # file mtime so LRU pruning still has a sane ordering signal.
             "use_count": _meta_int(meta, "use_count", 0),
             "created_at": _meta_int(meta, "created_at", mtime),
             "updated_at": _meta_int(meta, "updated_at", mtime),
+            # Rot counter: recalls that saw dead/drifted code refs in this
+            # memory. Secondary eviction key in prune_memories.
+            "stale_hits": _meta_int(meta, "stale_hits", 0),
         })
     out.sort(key=lambda r: (r["type"], r["name"]))
     return out
@@ -764,15 +868,23 @@ def _remove_memory_index_line(memory_dir: Path, filename: str) -> None:
             pass
 
 
-def delete_typed_memory(repo_root: Path | str, name_or_file: str) -> Path | None:
+def delete_typed_memory(
+    repo_root: Path | str, name_or_file: str, scope: str = "project",
+) -> Path | None:
     """Delete a typed memory by name / slug / filename and remove its
-    MEMORY.md pointer. Returns the deleted path, or None if not found."""
+    MEMORY.md pointer. ``scope="user"`` addresses the global store;
+    ``"all"`` tries the project store first, then the global one.
+    Returns the deleted path, or None if not found."""
+    if scope == "all":
+        return (delete_typed_memory(repo_root, name_or_file, scope="project")
+                or delete_typed_memory(repo_root, name_or_file, scope="user"))
+    scope = "user" if scope == "user" else "project"
     target = (name_or_file or "").strip().lower()
     if not target:
         return None
-    memory_dir = _delfin_memory_dir(Path(repo_root))
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
     match = None
-    for rec in list_typed_memories(repo_root):
+    for rec in list_typed_memories(repo_root, scope=scope):
         if (rec["file"].lower() == target
                 or rec["file"].lower() == target + ".md"
                 or rec["name"].lower() == target
@@ -802,6 +914,7 @@ def prune_memories(
     *,
     max_per_type: int = _PRUNE_DEFAULT_CAP,
     max_age_days: int | None = None,
+    scope: str = "project",
 ) -> list[str]:
     """Cap prunable memory types via LRU decay; return deleted filenames.
 
@@ -811,25 +924,29 @@ def prune_memories(
     frequently injected memories fresh, while ranking recency first means a
     just-written memory (use_count 1) always survives the prune that runs
     right after its save — with use_count first, a saturated store would
-    evict every new memory immediately and fossilise. ``feedback`` and
+    evict every new memory immediately and fossilise. The ``stale_hits``
+    rot counter breaks remaining ties: of two equally fresh entries the one
+    whose code references rotted is evicted first. ``feedback`` and
     ``user`` types receive a larger cap and are exempt from age-based
-    pruning.
+    pruning; with ``scope="user"`` (the global store) EVERY type gets that
+    protected treatment — global facts are deliberate, identity-grade.
 
     Called after every write path (remember tool, /remember, auto-memory
     distill) so the store self-limits instead of growing unbounded and
-    drowning BM25 recall in look-alikes.
+    drowning BM25 recall in look-alikes. Operates on one store per call.
     """
+    scope = "user" if scope == "user" else "project"
     cutoff = None
     if max_age_days is not None and max_age_days >= 0:
         cutoff = int(time.time()) - (max_age_days * 86_400)
 
     by_type: dict[str, list[dict]] = {}
-    for rec in list_typed_memories(repo_root):
+    for rec in list_typed_memories(repo_root, scope=scope):
         by_type.setdefault(rec["type"], []).append(rec)
 
     deleted: list[str] = []
     for mtype, recs in by_type.items():
-        protected = mtype in _PRUNE_PROTECTED
+        protected = scope == "user" or mtype in _PRUNE_PROTECTED
         type_cap = max_per_type * (_PRUNE_PROTECTION_FACTOR if protected else 1)
         stale = [] if cutoff is None or protected else [
             rec for rec in recs if int(rec.get("updated_at", 0)) < cutoff
@@ -837,12 +954,16 @@ def prune_memories(
         stale_files = {rec["file"] for rec in stale}
         survivors = [rec for rec in recs if rec["file"] not in stale_files]
         survivors.sort(
-            key=lambda r: (int(r.get("updated_at", 0)), int(r.get("use_count", 0))),
+            key=lambda r: (
+                int(r.get("updated_at", 0)),
+                int(r.get("use_count", 0)),
+                -int(r.get("stale_hits", 0)),
+            ),
             reverse=True,
         )
         over_cap = survivors[max(type_cap, 0):]
         for rec in [*stale, *over_cap]:
-            if delete_typed_memory(repo_root, rec["file"]) is not None:
+            if delete_typed_memory(repo_root, rec["file"], scope=scope) is not None:
                 deleted.append(rec["file"])
     return deleted
 
@@ -850,20 +971,23 @@ def prune_memories(
 def record_memory_recall(
     repo_root: Path | str,
     filenames: list[str] | set[str],
+    *,
+    scope: str = "project",
 ) -> int:
     """Bump use_count + updated_at for the memory files actually injected
     into a prompt. Returns how many files were updated.
 
     Called by the prompt loader with the exact set of memory files it pulled
     into the External Memory block, so the LRU decay signal reflects real
-    RECALL (what the agent actually saw), not just writes. Only the injected
-    files are rewritten, so the per-turn cost is bounded by the recall size,
-    not the whole store. Best-effort: never raises.
+    RECALL (what the agent actually saw), not just writes. ``scope="user"``
+    addresses the global store. Only the injected files are rewritten, so
+    the per-turn cost is bounded by the recall size, not the whole store.
+    Best-effort: never raises.
     """
     wanted = {f for f in (filenames or []) if f and f != "MEMORY.md"}
     if not wanted:
         return 0
-    memory_dir = _delfin_memory_dir(Path(repo_root))
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
     if not memory_dir.is_dir():
         return 0
     now = int(time.time())
@@ -895,6 +1019,68 @@ def record_memory_recall(
             name=name, description=description, created_at=created_at,
             updated_at=now, use_count=use_count, memory_type=mtype,
             body=body.strip(), superseded=superseded, extras=meta,
+        )
+        try:
+            _atomic_write(p, front)
+            updated += 1
+        except OSError:
+            continue
+    return updated
+
+
+def record_stale_hits(
+    repo_root: Path | str,
+    filenames: list[str] | set[str],
+    *,
+    scope: str = "project",
+) -> int:
+    """Bump the ``stale_hits`` rot counter for memory files whose injected
+    body referenced dead or drifted code. Returns how many were updated.
+
+    Deliberately does NOT touch use_count/updated_at — a rotted memory must
+    keep decaying like an unused one; the counter only serves as a
+    secondary eviction key in ``prune_memories``. Best-effort: never
+    raises, and path-traversal filenames are ignored like in
+    ``record_memory_recall``.
+    """
+    wanted = {f for f in (filenames or []) if f and f != "MEMORY.md"}
+    if not wanted:
+        return 0
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
+    if not memory_dir.is_dir():
+        return 0
+    now = int(time.time())
+    updated = 0
+    try:
+        resolved_memory_dir = memory_dir.resolve()
+    except OSError:
+        return 0
+    for fname in wanted:
+        try:
+            p = (resolved_memory_dir / fname).resolve()
+            p.relative_to(resolved_memory_dir)
+        except (OSError, ValueError):
+            continue
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+            mtime = int(p.stat().st_mtime)
+        except OSError:
+            continue
+        meta, body = _parse_frontmatter(text)
+        extras = dict(meta)
+        extras["stale_hits"] = str(_meta_int(meta, "stale_hits", 0) + 1)
+        front = _compose_frontmatter(
+            name=meta.get("name") or p.stem,
+            description=meta.get("description") or "",
+            created_at=_meta_int(meta, "created_at", mtime) or mtime,
+            updated_at=_meta_int(meta, "updated_at", mtime) or mtime,
+            use_count=_meta_int(meta, "use_count", 0),
+            memory_type=meta.get("type") or _type_from_filename(fname) or "user",
+            body=body.strip(),
+            superseded=" ".join(meta.get("superseded", "").split())[:160],
+            extras=extras,
         )
         try:
             _atomic_write(p, front)
@@ -971,17 +1157,21 @@ def resolve_wikilinks(text: str, memory_dir: Path) -> str:
     return _WIKILINK_RE.sub(_replace, text)
 
 
-def find_stale_references(text: str, repo_root: Path | str) -> list[str]:
-    """Return a list of ``path[:line]`` references mentioned in the memory
-    text that no longer exist on disk.
+# Content-anchor tuning: anchors are the cited line's stripped text (short,
+# so frontmatter stays one line per memory), drift is searched in a window
+# around the cited line (code shifting a little must not flag), and the
+# recall path caps its filesystem probes per memory (hot path — a handful
+# of exists()/read_text() at most).
+_ANCHOR_MAX_CHARS = 80
+_ANCHOR_WINDOW = 20
+_RECALL_REF_CHECK_CAP = 8
 
-    Used by ``/memories verify`` to flag rotted recommendations. The check
-    is conservative: only entries that *look* like paths (slash- or
-    dot-shaped) are tested, so plain prose like "delete" or "method" is
-    skipped.
-    """
-    root = Path(repo_root)
-    stale: list[str] = []
+
+def _extract_path_refs(text: str) -> list[tuple[str, str, int | None]]:
+    """``(ref, path_part, line)`` for every path-shaped reference in
+    ``text`` (line is None without a ``:NN`` suffix). Applies the URL /
+    version-tag / trivial-fragment filters shared by all ref checks."""
+    out: list[tuple[str, str, int | None]] = []
     for match in _PATH_REF_RE.finditer(text or ""):
         ref = match.group(0)
         path_part = match.group(1)
@@ -990,19 +1180,159 @@ def find_stale_references(text: str, repo_root: Path | str) -> list[str]:
             continue
         if "." not in path_part and "/" not in path_part:
             continue
-        candidate = root / path_part if not Path(path_part).is_absolute() else Path(path_part)
+        line_no: int | None = None
+        if match.group(2):
+            try:
+                line_no = int(match.group(2))
+            except ValueError:
+                line_no = None
+        out.append((ref, path_part, line_no))
+    return out
+
+
+def _resolve_ref_path(path_part: str, root: Path) -> Path:
+    p = Path(path_part)
+    return p if p.is_absolute() else root / path_part
+
+
+def collect_reference_anchors(
+    text: str,
+    repo_root: Path | str,
+    *,
+    max_refs: int = _RECALL_REF_CHECK_CAP,
+) -> dict[str, str]:
+    """Map each ``path:line`` reference in ``text`` to a short content
+    anchor — the cited line's stripped text (≤80 chars) — so a later recall
+    can detect that the code MOVED even though the file still exists.
+
+    Best-effort: refs without a line number, unreadable files and
+    out-of-range lines are skipped; at most ``max_refs`` files are read.
+    """
+    root = Path(repo_root)
+    anchors: dict[str, str] = {}
+    checked = 0
+    for ref, path_part, line_no in _extract_path_refs(text):
+        if checked >= max_refs:
+            break
+        if line_no is None or ref in anchors:
+            continue
+        checked += 1
+        candidate = _resolve_ref_path(path_part, root)
         try:
-            if not candidate.exists():
-                stale.append(ref)
+            lines = candidate.read_text(
+                encoding="utf-8", errors="replace").splitlines()
         except OSError:
-            stale.append(ref)
-    return stale
+            continue
+        if 1 <= line_no <= len(lines):
+            anchor = lines[line_no - 1].strip()[:_ANCHOR_MAX_CHARS]
+            if anchor:
+                anchors[ref] = anchor
+    return anchors
+
+
+def _parse_anchors(meta: dict[str, str]) -> dict[str, str]:
+    """Decode the JSON ``anchors:`` frontmatter mapping. Never raises."""
+    raw = (meta or {}).get("anchors", "")
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {str(k): str(v) for k, v in loaded.items()}
+
+
+def find_stale_references(
+    text: str,
+    repo_root: Path | str,
+    *,
+    anchors: dict[str, str] | None = None,
+    with_status: bool = False,
+    max_checks: int | None = None,
+) -> list:
+    """Return the ``path[:line]`` references in ``text`` that no longer
+    check out on disk.
+
+    Two failure classes:
+    - ``stale``   — the referenced path does not exist any more
+    - ``drifted`` — the path exists, but the content anchor captured at
+      save time (``anchors[ref]``) is no longer found within ±20 lines of
+      the cited line (only refs that carry an anchor are drift-checked)
+
+    By default returns the legacy flat list of bad refs (both classes);
+    with ``with_status=True`` returns ``[(ref, status)]`` tuples instead.
+    ``max_checks`` bounds the number of filesystem probes (the recall path
+    passes a small cap). The check is conservative: only entries that
+    *look* like paths (slash- or dot-shaped) are tested, so plain prose
+    like "delete" or "method" is skipped.
+    """
+    root = Path(repo_root)
+    results: list[tuple[str, str]] = []
+    checked = 0
+    for ref, path_part, line_no in _extract_path_refs(text):
+        if max_checks is not None and checked >= max_checks:
+            break
+        checked += 1
+        candidate = _resolve_ref_path(path_part, root)
+        try:
+            exists = candidate.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            results.append((ref, "stale"))
+            continue
+        anchor = (anchors or {}).get(ref, "")
+        if not anchor or line_no is None:
+            continue
+        try:
+            lines = candidate.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        lo = max(0, line_no - 1 - _ANCHOR_WINDOW)
+        hi = min(len(lines), line_no + _ANCHOR_WINDOW)
+        if not any(anchor in ln.strip() for ln in lines[lo:hi]):
+            results.append((ref, "drifted"))
+    if with_status:
+        return results
+    return [ref for ref, _status in results]
+
+
+def recall_reference_notes(file_text: str, repo_root: Path | str) -> list[str]:
+    """Inline health annotations for one memory file about to be injected
+    into a prompt: one line per dead/drifted ``path[:line]`` reference in
+    its body (content anchors from the frontmatter honoured). Empty list =
+    healthy. Bounded to a handful of filesystem probes; never raises.
+    """
+    try:
+        meta, body = _parse_frontmatter(file_text)
+        statuses = find_stale_references(
+            body, repo_root, anchors=_parse_anchors(meta),
+            with_status=True, max_checks=_RECALL_REF_CHECK_CAP,
+        )
+        notes: list[str] = []
+        for ref, status in statuses:
+            if status == "drifted":
+                notes.append(
+                    f"[drifted: the cited code at {ref} has changed — "
+                    "re-read it]")
+            else:
+                notes.append(
+                    f"[stale: {ref} no longer exists — verify against the "
+                    "current code before relying on this]")
+        return notes
+    except Exception:
+        return []
 
 
 def verify_typed_memories(repo_root: Path | str) -> list[dict]:
     """Walk every memory file under the project's memory dir and return a
-    list of ``{file, stale_refs}`` records for any file containing one or
-    more dead references. Empty list = everything still resolves.
+    list of ``{file, stale_refs, drifted_refs}`` records for any file whose
+    references no longer check out (``stale_refs`` = path gone,
+    ``drifted_refs`` = path exists but the anchored line moved away).
+    Empty list = everything still resolves.
     """
     memory_dir = _delfin_memory_dir(Path(repo_root))
     if not memory_dir.is_dir():
@@ -1015,7 +1345,15 @@ def verify_typed_memories(repo_root: Path | str) -> list[dict]:
             text = p.read_text(encoding="utf-8")
         except OSError:
             continue
-        stale = find_stale_references(text, repo_root)
-        if stale:
-            results.append({"file": p.name, "stale_refs": stale})
+        meta, body = _parse_frontmatter(text)
+        statuses = find_stale_references(
+            body, repo_root, anchors=_parse_anchors(meta), with_status=True)
+        stale = [ref for ref, status in statuses if status == "stale"]
+        drifted = [ref for ref, status in statuses if status == "drifted"]
+        if stale or drifted:
+            results.append({
+                "file": p.name,
+                "stale_refs": stale,
+                "drifted_refs": drifted,
+            })
     return results

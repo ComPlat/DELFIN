@@ -28,6 +28,9 @@ _DISTILL_SYSTEM = (
     "dates, not 'next week')\n"
     "  reference: a pointer to an external resource (URL, ticket, dashboard)\n"
     "  user: who the user is (role, expertise, durable preference)\n"
+    "Add a leading 'global: ' before the type when the fact holds for this "
+    "user across ALL projects (identity, standing preferences), e.g. "
+    "'global: feedback: ...'.\n"
     "One fact per line, no numbering, no commentary. Skip anything the repo "
     "already records (code structure, git history, past fixes). English. "
     "If nothing durable, return exactly: NONE"
@@ -112,8 +115,26 @@ def parse_facts(raw: str, max_facts: int = 5) -> list[str]:
     return facts
 
 
+def _add_store_bodies(out: set[str], mdir) -> None:
+    """Add every typed-memory body under ``mdir`` (lowercased) to ``out``."""
+    try:
+        if not mdir.is_dir():
+            return
+        for p in mdir.glob("*.md"):
+            if p.name == "MEMORY.md":
+                continue
+            try:
+                txt = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            body = txt.split("---", 2)[-1] if txt.startswith("---") else txt
+            out.add(body.strip().lower())
+    except Exception:
+        pass
+
+
 def _existing_memory_texts(repo_root=None) -> set[str]:
-    """Collect existing memory texts (legacy JSON + typed store) for dedup."""
+    """Collect existing memory texts (legacy JSON + typed stores) for dedup."""
     out: set[str] = set()
     try:
         from delfin.agent.memory_store import load_memories
@@ -125,19 +146,15 @@ def _existing_memory_texts(repo_root=None) -> set[str]:
         try:
             from pathlib import Path as _P
             from delfin.agent.memory_store import _delfin_memory_dir
-            mdir = _delfin_memory_dir(_P(repo_root))
-            if mdir.is_dir():
-                for p in mdir.glob("*.md"):
-                    if p.name == "MEMORY.md":
-                        continue
-                    try:
-                        txt = p.read_text(encoding="utf-8")
-                    except OSError:
-                        continue
-                    body = txt.split("---", 2)[-1] if txt.startswith("---") else txt
-                    out.add(body.strip().lower())
+            _add_store_bodies(out, _delfin_memory_dir(_P(repo_root)))
         except Exception:
             pass
+    # The user-wide global store dedups "global:" facts across repos.
+    try:
+        from delfin.agent.memory_store import _delfin_global_memory_dir
+        _add_store_bodies(out, _delfin_global_memory_dir())
+    except Exception:
+        pass
     return out
 
 
@@ -147,24 +164,29 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
     When ``repo_root`` is given, each fact is written to the TYPED project
     memory store (``save_typed_memory`` → ``<type>_<slug>.md`` + MEMORY.md
     pointer, the same store the prompt recalls) — classified by its
-    ``feedback:/project:/reference:/user:`` prefix or the heuristic. Without
-    a repo_root it falls back to the legacy flat JSON store.
+    ``feedback:/project:/reference:/user:`` prefix or the heuristic. Facts
+    prefixed ``global:`` route to the user-wide ``~/.delfin/memory`` store
+    instead (even without a repo_root), so identity/standing-feedback facts
+    cross repos. Without a repo_root the rest falls back to the legacy flat
+    JSON store.
     """
     if not facts:
         return 0
     existing = _existing_memory_texts(repo_root)
     try:
         from delfin.agent.memory_store import (
-            parse_memory_type, save_memory, save_typed_memory,
+            parse_memory_scope, parse_memory_type, save_memory,
+            save_typed_memory,
         )
     except Exception:
         return 0
     saved = 0
+    saved_global = False
     for f in facts:
         body = f.strip()
         if not body:
             continue
-        # Dedup on both the raw line and its type-prefix-stripped form.
+        # Dedup on both the raw line and its scope/type-prefix-stripped form.
         try:
             _t, stripped = parse_memory_type(body)
         except Exception:
@@ -172,24 +194,39 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
         if body.lower() in existing or stripped.strip().lower() in existing:
             continue
         try:
-            if repo_root is not None:
-                save_typed_memory(body, repo_root=repo_root)
+            is_global = parse_memory_scope(body)[0] == "user"
+        except Exception:
+            is_global = False
+        try:
+            if repo_root is not None or is_global:
+                # save_typed_memory parses the "global:" prefix itself and
+                # routes to ~/.delfin/memory; the repo_root is only used
+                # for project-scoped facts.
+                save_typed_memory(body, repo_root=repo_root or ".")
             else:
                 save_memory(body, source="auto-distill")
             existing.add(body.lower())
             existing.add(stripped.strip().lower())
             saved += 1
+            saved_global = saved_global or is_global
         except Exception:
             continue
-    # Self-limit the store after writing so prunable types (project/reference)
-    # don't grow unbounded and drown BM25 recall in stale look-alikes. The
-    # optional agent.auto_memory.max_age_days setting additionally drops
-    # prunable entries that haven't been recalled within that window.
+    # Self-limit the stores after writing so prunable types (project/
+    # reference) don't grow unbounded and drown BM25 recall in stale
+    # look-alikes. The optional agent.auto_memory.max_age_days setting
+    # additionally drops prunable entries that haven't been recalled within
+    # that window. The global store self-limits under its protected caps.
     if saved and repo_root is not None:
         try:
             from delfin.agent.memory_store import prune_memories
             cfg = auto_memory_settings()
             prune_memories(repo_root, max_age_days=cfg.get("max_age_days"))
+        except Exception:
+            pass
+    if saved_global:
+        try:
+            from delfin.agent.memory_store import prune_memories
+            prune_memories(repo_root or ".", scope="user")
         except Exception:
             pass
     return saved

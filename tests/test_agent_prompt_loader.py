@@ -913,6 +913,149 @@ def test_external_memory_not_injected_for_other_roles(agent_tree, tmp_path, monk
 
 
 # ---------------------------------------------------------------------------
+# Recall-time provenance verification (stale / drifted annotations)
+# ---------------------------------------------------------------------------
+
+def test_recall_annotates_stale_reference(agent_tree, tmp_path, monkeypatch):
+    """A memory citing a file that vanished is annotated on injection and
+    fed into the rot counter instead of the recall bump."""
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    ms.save_typed_memory(
+        "project: the retry logic sits in delfin/vanished.py somewhere",
+        repo_root=agent_tree)
+
+    out = loader._load_external_memory_context(task_text="retry logic")
+
+    assert ("[stale: delfin/vanished.py no longer exists — verify against "
+            "the current code before relying on this]") in out
+    rec = ms.list_typed_memories(agent_tree)[0]
+    assert rec["stale_hits"] == 1
+    assert rec["use_count"] == 1            # rotted recall bumps nothing
+
+
+def test_recall_annotates_drifted_reference(agent_tree, tmp_path, monkeypatch):
+    """File still exists, but the anchored line moved out of the window."""
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    target = agent_tree / "srcmod.py"
+    target.write_text("import os\nMAGIC_LIMIT = 17\n", encoding="utf-8")
+    ms.save_typed_memory(
+        "project: the magic limit constant sits at srcmod.py:2 today",
+        repo_root=agent_tree)
+    # Rewrite the file so the anchored line is nowhere near line 2.
+    target.write_text(
+        "\n".join(f"filler_{i} = {i}" for i in range(60)), encoding="utf-8")
+
+    out = loader._load_external_memory_context(task_text="magic limit")
+
+    assert ("[drifted: the cited code at srcmod.py:2 has changed — "
+            "re-read it]") in out
+
+
+def test_recall_healthy_reference_not_annotated(
+    agent_tree, tmp_path, monkeypatch,
+):
+    """Healthy refs stay clean and still earn the normal recall bump."""
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    target = agent_tree / "srcmod.py"
+    target.write_text("import os\nMAGIC_LIMIT = 17\n", encoding="utf-8")
+    ms.save_typed_memory(
+        "project: the magic limit constant sits at srcmod.py:2 today",
+        repo_root=agent_tree)
+
+    out = loader._load_external_memory_context(task_text="magic limit")
+
+    assert "[stale:" not in out
+    assert "[drifted:" not in out
+    rec = ms.list_typed_memories(agent_tree)[0]
+    assert rec["use_count"] == 2             # healthy recall still bumps
+    assert rec["stale_hits"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Global (user-scoped) store merged into the External Memory block
+# ---------------------------------------------------------------------------
+
+def test_recall_merges_global_store_first(agent_tree, tmp_path, monkeypatch):
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    ms.save_typed_memory(
+        "global: user: Max prefers concise German answers",
+        repo_root=agent_tree)
+    ms.save_typed_memory(
+        "project: dashboard websocket runs on port 8050",
+        repo_root=agent_tree)
+
+    out = loader._load_external_memory_context()
+
+    assert "GLOBAL MEMORY.md" in out
+    assert "concise German answers" in out
+    assert "port 8050" in out
+    # Global (identity / standing rules) comes before project content.
+    assert out.index("concise German answers") < out.index("port 8050")
+    # The recall bump lands in the right store.
+    assert ms.list_typed_memories(agent_tree, scope="user")[0]["use_count"] == 2
+    assert ms.list_typed_memories(agent_tree)[0]["use_count"] == 2
+
+
+def test_recall_global_floor_survives_fat_project_store(
+    agent_tree, tmp_path, monkeypatch,
+):
+    """A fat project store must not starve the global entries: they keep a
+    guaranteed 25% floor of the budget (and are injected first)."""
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    ms.save_typed_memory(
+        "global: user: identity anchor phrase zeta", repo_root=agent_tree)
+    ms.save_typed_memory(
+        "project: giant context dump " + "verbose " * 1500,
+        repo_root=agent_tree)
+
+    out = loader._load_external_memory_context(max_chars=3000)
+
+    assert "identity anchor phrase zeta" in out
+    assert len(out) <= 3100                  # cap + truncation marker
+    assert "truncated" in out
+
+
+def test_recall_without_global_store_unchanged(
+    agent_tree, tmp_path, monkeypatch,
+):
+    """No ~/.delfin/memory -> pure project behaviour, no global markers."""
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    ms.save_typed_memory(
+        "project: dashboard websocket runs on port 8050",
+        repo_root=agent_tree)
+
+    out = loader._load_external_memory_context()
+
+    assert "GLOBAL MEMORY.md" not in out
+    assert out.startswith("# MEMORY.md")
+    assert "port 8050" in out
+
+
+# ---------------------------------------------------------------------------
 # S1 — live_state injected into the system prompt (replaces user-msg state block)
 # ---------------------------------------------------------------------------
 
