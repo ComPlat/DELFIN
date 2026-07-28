@@ -370,6 +370,15 @@ class AgentEngine:
         # request (from message_start). Used as the ground-truth floor of the
         # compaction estimate so system prompt + tool schemas are never missed.
         self._last_input_tokens: int = 0
+        # Chars removed from self.messages by in-place trims since the floor
+        # above was last set. The floor is a PRE-trim provider count, so the
+        # estimator must credit these removals or the trim/hard-clear stop
+        # conditions can never be reached once the floor is the binding term.
+        self._trimmed_chars_since_floor: int = 0
+        # Whether the current turn delivered a message_start (authoritative
+        # input count). Backends that only report usage in message_delta get
+        # an accounting-only fallback there.
+        self._saw_message_start: bool = False
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
@@ -992,6 +1001,7 @@ class AgentEngine:
         _turn_t0 = _time.monotonic()
         _turn_ttft: float | None = None
         _turn_tool_calls = 0
+        self._saw_message_start = False
         # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
         # single turn's tool-loop can't run away forever. Resets every turn — it
         # is NOT a cumulative session budget. (_MAX_TOOL_ROUNDS already bounds
@@ -1093,12 +1103,16 @@ class AgentEngine:
                     # including cache).  Do NOT also add in message_delta.
                     with self._lock:
                         self.token_usage["input"] += event.input_tokens
+                        self._saw_message_start = True
                         # Snapshot the real per-request input count so the
                         # compaction budget can use it as a ground-truth floor
                         # (it includes the system prompt + tool schemas that
                         # self.messages omits).
                         if event.input_tokens:
                             self._last_input_tokens = int(event.input_tokens)
+                            # Fresh provider count -> trims applied since the
+                            # previous floor are already reflected in it.
+                            self._trimmed_chars_since_floor = 0
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.
@@ -1111,6 +1125,15 @@ class AgentEngine:
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
                         self.cost_usd += event.cost_usd
+                        # Accounting fallback for backends that never emit
+                        # message_start: count the turn's input here so
+                        # /context and the self-monitoring block show real
+                        # numbers. NOT used as the compaction floor — this
+                        # value is cumulative across tool rounds and would
+                        # overestimate a single request.
+                        if (not self._saw_message_start
+                                and getattr(event, "input_tokens", 0)):
+                            self.token_usage["input"] += event.input_tokens
                         # OpenAI/vLLM report cached prompt tokens here.
                         self.token_usage["cached"] = self.token_usage.get(
                             "cached", 0) + (getattr(event, "cached_tokens", 0) or 0)
@@ -1335,7 +1358,13 @@ class AgentEngine:
                         total_chars += len(str(part))
         est = total_chars // 4
         est += len(getattr(self, "last_system_prompt", "") or "") // 4
-        return max(est, int(getattr(self, "_last_input_tokens", 0) or 0))
+        # The provider floor is a PRE-trim snapshot; credit chars that
+        # in-place trims removed since it was taken, or the trim loops'
+        # stop conditions ("estimate <= budget") could never be reached
+        # and the paid LLM summary would always fire at the 95% cliff.
+        floor = int(getattr(self, "_last_input_tokens", 0) or 0)
+        floor -= int(getattr(self, "_trimmed_chars_since_floor", 0) or 0) // 4
+        return max(est, max(0, floor))
 
     def _should_auto_compact(self) -> bool:
         """True if estimated context exceeds the configured fraction."""
@@ -1395,6 +1424,8 @@ class AgentEngine:
                 + content[-tail_len:]
             )
             msg["content"] = new_content
+            self._trimmed_chars_since_floor += max(
+                0, len(content) - len(new_content))
             trimmed += 1
         return trimmed
 
@@ -1431,6 +1462,8 @@ class AgentEngine:
                 f"[cleared: {len(content)} chars of old tool output elided "
                 f"to save context]\n{head}"
             )
+            self._trimmed_chars_since_floor += max(
+                0, len(content) - len(msg["content"]))
             cleared += 1
         return cleared
 
@@ -1711,6 +1744,7 @@ class AgentEngine:
         # floor so the estimate reflects the compacted size immediately (the
         # next request's message_start repopulates the real count).
         self._last_input_tokens = 0
+        self._trimmed_chars_since_floor = 0
 
         tokens_after = self._estimate_context_tokens()
         self.last_compaction_info = {

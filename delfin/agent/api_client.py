@@ -7643,6 +7643,10 @@ class OpenAIClient(_BaseClient):
             # Accumulate streamed tool calls (may arrive in chunks)
             _tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments_parts}
             _text_chunks: list[str] = []
+            # This round's own prompt-token count (one round = one request).
+            # Emitted as message_start below so the engine's compaction floor
+            # and input accounting run on provider truth, not chars//4.
+            _round_in = 0
 
             finish_reason = None
             try:
@@ -7651,6 +7655,7 @@ class OpenAIClient(_BaseClient):
                     for chunk in stream:
                         if chunk.usage:
                             _total_in += chunk.usage.prompt_tokens or 0
+                            _round_in += chunk.usage.prompt_tokens or 0
                             _total_out += chunk.usage.completion_tokens or 0
                             _total_cached += _cached_tokens_of(chunk.usage)
 
@@ -7742,6 +7747,7 @@ class OpenAIClient(_BaseClient):
                 resp = self.client.chat.completions.create(**nk)
                 if getattr(resp, "usage", None):
                     _total_in += resp.usage.prompt_tokens or 0
+                    _round_in += resp.usage.prompt_tokens or 0
                     _total_out += resp.usage.completion_tokens or 0
                     _total_cached += _cached_tokens_of(resp.usage)
                 if getattr(resp, "choices", None):
@@ -7766,6 +7772,15 @@ class OpenAIClient(_BaseClient):
             # budget so a later hiccup in this same (possibly long) turn gets a
             # fresh set of retries rather than inheriting an exhausted count.
             _stream_attempt = 0
+
+            # Authoritative per-round input count -> message_start, so the
+            # engine's compaction floor and token accounting run on the
+            # provider's own number (it includes the system prompt and the
+            # advertised tool schemas that a chars//4 estimate misses).
+            # cached_tokens stays on the final message_delta only, to avoid
+            # double counting.
+            if _round_in:
+                yield StreamEvent(type="message_start", input_tokens=_round_in)
 
             # Harmony tool-channel recovery: gpt-5.x via the OpenAI-compatible
             # endpoint sometimes leaks its tool calls ("to=<tool> {json}") into
