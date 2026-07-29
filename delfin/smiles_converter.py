@@ -36073,6 +36073,56 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
     return raw_xyz
 
 
+# Period-2 p-block centres: low inversion barrier and good 2p-2p overlap, so a
+# lone pair delocalises rather than staying pyramidal.  Period 3 and below keep a
+# high inversion barrier (phosphine, thioether, sulfoxide stay pyramidal).  This
+# is a periodic-table property of the ATOM, deliberately not a functional-group list.
+_PERIOD2_PLANAR_Z = frozenset((5, 6, 7, 8))  # B, C, N, O
+
+
+def _donor_sigma_geometry(atom):
+    """Geometry target for a non-metal centre, counting the METAL as a sigma partner.
+
+    2026-07-29.  Every hybridisation decision in the build path reads RDKit off a
+    graph the metal was stripped from (`decompose.py` removes each M-D bond and
+    re-sanitises the fragment), and `_build_uff_constraints_from_template` then drops
+    bonded metals a second time when it collects `heavy_nbrs`.  A coordinated donor
+    is therefore short one sigma partner, and `len(heavy_nbrs) < 3` skips it outright:
+
+        R2N-M      R, R, M      -> 2 heavy non-metal -> no restraint at all, so the
+                                   metal drifts out of the amido pi plane (15-23 deg
+                                   measured on AFOMEO frame 4)
+        pyridine-M C, C, M      -> 2                 -> metal leaves the ring plane
+        M-NH2-R    H, H, R, M   -> 1                 -> no tetrahedral target either
+
+    Counting the metal fixes both directions with one rule, atom- and bond-specific:
+
+        >= 4 sigma partners            -> tetrahedral   (M-NR3, M-PR3, M-NH2-R)
+        == 3 sigma partners, period 2  -> planar        (amido, aryl-C, carbene,
+                                          pyridine-N: the metal lies IN the plane)
+        == 3 sigma partners, period 3+ -> pyramidal     (phosphido, thioether,
+                                          sulfoxide-S: inversion barrier wins)
+        <= 2 sigma partners            -> no opinion    (alkoxide, thiolate, nitrile)
+
+    Returns (target, sigma_neighbour_indices) with target in
+    {"planar", "tetrahedral", None}; None means "leave the caller's behaviour alone".
+    """
+    sigma = [n for n in atom.GetNeighbors() if n.GetAtomicNum() > 1]
+    if not any(n.GetSymbol() in _METAL_SET for n in sigma):
+        return None, []
+    n_h = sum(1 for n in atom.GetNeighbors() if n.GetAtomicNum() == 1)
+    n_h += atom.GetTotalNumHs()
+    n_sigma = len(sigma) + n_h
+    idx = sorted(n.GetIdx() for n in sigma)
+    if n_sigma >= 4:
+        return "tetrahedral", idx
+    if n_sigma == 3:
+        if atom.GetAtomicNum() in _PERIOD2_PLANAR_Z:
+            return "planar", idx
+        return "tetrahedral", idx
+    return None, idx
+
+
 def _build_uff_constraints_from_template(
     mol_template,
     xyz_delfin: Optional[str] = None,
@@ -36268,6 +36318,9 @@ def _build_uff_constraints_from_template(
         # regular triangle/tetrahedron and generalises the carboxyl
         # O-C-O rule above to every rigid anion / cation (NO3-, SO4²-,
         # PO4³-, CO3²-, carbamate, urea, guanidinium, ...).
+        _metal_sigma_count = (
+            os.environ.get("DELFIN_FFFREE_METAL_SIGMA_COUNT", "0") == "1"
+        )
         for atom in mol_template.GetAtoms():
             if atom.GetSymbol() in _METAL_SET:
                 continue
@@ -36287,17 +36340,36 @@ def _build_uff_constraints_from_template(
                     ]
                     if len(_o_nbrs) >= 3:
                         is_sp3_four_same = True
-            if not (is_sp2 or is_sp3_four_same):
+            # METAL-SIGMA (2026-07-29, env, default OFF): count a bonded metal as a
+            # sigma partner so a coordinated donor gets the geometry target its REAL
+            # coordination number implies, instead of being dropped below for having
+            # "too few" neighbours once the metal is subtracted.  See
+            # _donor_sigma_geometry for the atom-specific rule.
+            _geom = None
+            _sigma_idx: List[int] = []
+            if _metal_sigma_count:
+                _geom, _sigma_idx = _donor_sigma_geometry(atom)
+                if _geom is not None:
+                    is_sp2 = _geom == "planar"
+                    is_sp3_four_same = False
+            if not (is_sp2 or is_sp3_four_same or _geom is not None):
                 continue
-            heavy_nbrs = sorted(
-                n.GetIdx()
-                for n in atom.GetNeighbors()
-                if n.GetAtomicNum() > 1 and n.GetSymbol() not in _METAL_SET
-            )
-            if len(heavy_nbrs) < 3:
+            if _geom is not None:
+                # sigma partners INCLUDING the metal -- the improper below then pins
+                # the metal into the donor plane, which is the whole point.
+                heavy_nbrs = _sigma_idx
+            else:
+                heavy_nbrs = sorted(
+                    n.GetIdx()
+                    for n in atom.GetNeighbors()
+                    if n.GetAtomicNum() > 1 and n.GetSymbol() not in _METAL_SET
+                )
+            # Pairwise angles need two partners, the improper needs three.  The legacy
+            # path keeps its 3-partner floor so it stays byte-identical.
+            if len(heavy_nbrs) < (2 if _geom is not None else 3):
                 continue
             x = atom.GetIdx()
-            if is_sp2:
+            if is_sp2 and len(heavy_nbrs) >= 3:
                 # Improper dihedral → planarity
                 a, b, c = heavy_nbrs[:3]
                 key = (a, x, b, c)
