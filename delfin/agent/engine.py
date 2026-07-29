@@ -341,6 +341,14 @@ class AgentEngine:
         self.provider = provider
         AgentEngine._active_provider = provider  # class-level for static methods
         self.loader._active_provider = provider
+        # Orientation must name the directory the agent actually works in:
+        # the permissions workspace when the client has one, else the launch
+        # dir. Never the DELFIN source tree that hosts the prompt pack.
+        try:
+            _ws = getattr(self.kit_permissions, "workspace", None)
+            self.loader.workspace_root = Path(_ws) if _ws else Path(self.repo_dir)
+        except Exception:
+            self.loader.workspace_root = None
         # Inject-once gating of stable prompt sections is only sound on the
         # persistent claude CLI process (its first system prompt stays alive
         # across turns). Codex CLI spawns per turn and the chat-API backends

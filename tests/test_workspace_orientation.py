@@ -1,0 +1,83 @@
+"""The agent must be oriented at its workspace, not the DELFIN source tree.
+
+Field case 20260729-115601: the session environment block reported the
+DELFIN checkout as ``cwd``. Told it was working inside DELFIN, the model
+switched to absolute paths under the source tree and built the user's
+project (venv, games, notebook) into DELFIN's own checkout instead of
+the workspace the dashboard was launched in.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from delfin.agent.prompt_loader import PromptLoader
+
+
+def _loader(tmp_path: Path) -> PromptLoader:
+    pack = tmp_path / "pack_root"
+    (pack / "pack" / "shared").mkdir(parents=True)
+    (pack / "pack_lite").mkdir(parents=True)
+    return PromptLoader(repo_dir=pack)
+
+
+def test_env_block_reports_the_workspace_not_the_source_tree(tmp_path):
+    loader = _loader(tmp_path)
+    ws = tmp_path / "user_project"
+    ws.mkdir()
+    loader.workspace_root = ws
+    block = loader._build_session_env_block()
+    assert f"cwd: {ws}" in block
+    assert str(loader.repo_root) not in block.splitlines()[0]
+
+
+def test_env_block_warns_when_workspace_differs_from_source_tree(tmp_path):
+    loader = _loader(tmp_path)
+    ws = tmp_path / "user_project"
+    ws.mkdir()
+    loader.workspace_root = ws
+    block = loader._build_session_env_block()
+    assert "do not build the user's project inside it" in block
+
+
+def test_no_warning_when_working_on_delfin_itself(tmp_path):
+    loader = _loader(tmp_path)
+    loader.workspace_root = Path(loader.repo_root)
+    block = loader._build_session_env_block()
+    assert "do not build the user's project inside it" not in block
+
+
+def test_unset_workspace_falls_back_to_repo_root(tmp_path):
+    loader = _loader(tmp_path)
+    assert loader.workspace_root is None
+    assert f"cwd: {loader.repo_root}" in loader._build_session_env_block()
+
+
+def test_written_files_count_as_observed_evidence():
+    """A file the agent just wrote is grounded — citing it must not be
+    flagged as an unverified claim (field case: 5 false flags on files
+    the agent had created in the same turn)."""
+    from delfin.agent.api_client import _OBSERVATION_TOOLS, _observe_read_files
+    for tool in ("write_file", "edit_file", "multi_edit", "notebook_edit"):
+        assert tool in _OBSERVATION_TOOLS
+    observed: set = set()
+    _observe_read_files(observed, "write_file",
+                        {"path": "voila_games/snake.py"}, "File created: ...")
+    assert observed == {"voila_games/snake.py"}
+
+
+def test_failed_write_is_not_recorded_as_evidence():
+    from delfin.agent.api_client import _observe_read_files
+    observed: set = set()
+    _observe_read_files(observed, "write_file", {"path": "x.py"},
+                        '{"error": "write failed"}')
+    assert observed == set()
+
+
+def test_code_language_rule_ships_in_the_shared_pack():
+    rules = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
+             / "pack" / "shared" / "work_cycle_rules.md").read_text(
+                 encoding="utf-8")
+    assert "English" in rules
+    assert "docstrings" in rules
+    assert "talk to the user in their language" in rules

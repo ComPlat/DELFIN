@@ -4103,6 +4103,12 @@ def _clear_green_targets(red_files: set, ran: str) -> None:
 # code-claim citation check (verify_guard.scan_for_ungrounded_code_claims).
 _OBSERVATION_TOOLS = frozenset({
     "read_file", "grep_file", "notebook_read", "view_image",
+    # A file the agent just WROTE is grounded evidence too: its content
+    # came from the agent itself, so describing it is not a guess. Without
+    # these, an answer about freshly created work products is flagged as
+    # ungrounded and forces a pointless correction turn (observed in the
+    # field: 5 flags on files the agent had just written).
+    "write_file", "edit_file", "multi_edit", "notebook_edit",
 })
 
 
