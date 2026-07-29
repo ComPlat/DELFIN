@@ -3856,7 +3856,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         value=(
             '<span style="color:#2e7d32;">&#x2705; Anthropic CLI found</span>'
             if _claude_cli_found
-            else '<span style="color:#ef6c00;">&#x26a0; Anthropic CLI ('claude') not found in PATH</span>'
+            else '<span style="color:#ef6c00;">&#x26a0; Anthropic CLI (\'claude\') not found in PATH</span>'
         ),
     )
 
