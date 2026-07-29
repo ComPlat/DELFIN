@@ -176,6 +176,99 @@ def run_entry(
     }
 
 
+# ---------------------------------------------------------------------------
+# Benchmark entries (bench_watch) — recognised by a machine prompt marker
+# ---------------------------------------------------------------------------
+
+# Entries created by `cli scheduler add-bench` carry this marker as the
+# prompt prefix. They are executed by calling ``bench_watch.nightly``
+# directly (no LLM prompt-turn wrapper), so the cost of a fire equals the
+# benchmark suite cost itself. Creation is strictly user-explicit — this
+# module only ever EXECUTES such entries, it never creates one.
+BENCH_ENTRY_PREFIX = "[bench-nightly]"
+
+
+def format_bench_entry_prompt(
+    *, model: str, provider: str = "", backend: str = "", repeats: int = 1,
+) -> str:
+    """Canonical marker prompt for a scheduled nightly benchmark entry."""
+    parts = [BENCH_ENTRY_PREFIX, f"model={model}"]
+    if provider:
+        parts.append(f"provider={provider}")
+    if backend:
+        parts.append(f"backend={backend}")
+    if repeats and int(repeats) != 1:
+        parts.append(f"repeats={int(repeats)}")
+    return " ".join(parts)
+
+
+def parse_bench_entry(prompt: str) -> dict | None:
+    """Parse a bench-entry marker prompt; ``None`` for ordinary entries."""
+    text = str(prompt or "").strip()
+    if not text.startswith(BENCH_ENTRY_PREFIX):
+        return None
+    cfg: dict[str, Any] = {
+        "model": "", "provider": "", "backend": "api", "repeats": 1}
+    for token in text[len(BENCH_ENTRY_PREFIX):].split():
+        key, sep, value = token.partition("=")
+        if not sep:
+            continue
+        if key == "repeats":
+            try:
+                cfg["repeats"] = max(1, int(value))
+            except ValueError:
+                pass
+        elif key in ("model", "provider", "backend"):
+            cfg[key] = value
+    return cfg
+
+
+def run_bench_entry(entry: ScheduleEntry, cfg: dict | None = None) -> dict:
+    """Execute ONE due benchmark entry via ``bench_watch.nightly``.
+
+    Mirrors :func:`run_entry`'s contract: returns a small result dict on
+    success, raises on failure so ``Scheduler.tick`` counts consecutive
+    failures. ``nightly`` itself never raises — it reports errors inside
+    its summary, writes the markdown report, and emits the regression
+    attention event; this wrapper only translates a failed cycle into
+    the tick failure signal. Runs with the process cwd at the entry's
+    workspace because the benchmark engines root themselves at cwd.
+    """
+    import os
+
+    if cfg is None:
+        cfg = parse_bench_entry(entry.prompt)
+    if not cfg or not cfg.get("model"):
+        raise DisableEntry(
+            "bench entry has no model recorded — re-create it via "
+            "`scheduler add-bench --model ...`")
+    from . import bench_watch as _bw
+
+    prev_cwd = os.getcwd()
+    try:
+        os.chdir(Path(str(entry.workspace)).expanduser())
+        summary = _bw.nightly(
+            str(cfg.get("model")),
+            str(cfg.get("provider") or ""),
+            str(cfg.get("backend") or "api"),
+            repeats=int(cfg.get("repeats") or 1),
+        )
+    finally:
+        try:
+            os.chdir(prev_cwd)
+        except OSError:
+            pass
+    if not summary.get("ok"):
+        raise RuntimeError(
+            "nightly benchmark cycle degraded: "
+            + "; ".join(summary.get("errors") or ["unknown error"])[:300])
+    n_confirmed = len(summary.get("confirmed") or [])
+    text = (f"nightly bench {cfg.get('model')}: "
+            f"{n_confirmed} confirmed regression(s); "
+            f"report {summary.get('report_path') or '(not written)'}")
+    return {"session_id": "", "text": text, "tool_calls": 0}
+
+
 def make_fire_callback(
     *,
     settings: dict | None = None,
@@ -194,9 +287,13 @@ def make_fire_callback(
             raise DisableEntry(f"workspace no longer exists: {ws}")
         log(f"[scheduler-daemon] firing entry {entry.id} "
             f"({entry.kind}) in {ws}")
+        bench_cfg = parse_bench_entry(entry.prompt)
         try:
-            result = run_entry(
-                entry, settings=settings, engine_factory=engine_factory)
+            if bench_cfg is not None:
+                result = run_bench_entry(entry, bench_cfg)
+            else:
+                result = run_entry(
+                    entry, settings=settings, engine_factory=engine_factory)
         except Exception as exc:
             try:
                 from .attention import emit_attention

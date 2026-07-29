@@ -392,6 +392,217 @@ def test_disk_cache_old_flat_format_is_discarded(monkeypatch, tmp_path):
     assert key not in mc._CACHE
 
 
+# ---------------------------------------------------------------------------
+# KIT-served model ids (observed on the live /v1/models listing, 2026-07-29):
+# every chat-capable id must resolve to a curated static entry — never fall
+# through to the silent heuristic default that mis-gates tools/windows.
+# ---------------------------------------------------------------------------
+
+_KIT_SERVED_CHAT_IDS = (
+    "azure.gpt-5",
+    "azure.gpt-5-mini",
+    "azure.gpt-5-nano",
+    "azure.gpt-5.1",
+    "azure.gpt-5.4",
+    "azure.gpt-5.5",
+    "azure.gpt-5.6-luna",
+    "azure.gpt-5.6-sol",
+    "azure.gpt-5.6-terra",
+    "google.claude-fable-5",
+    "google.claude-haiku-4.5",
+    "google.claude-opus-4.8",
+    "google.claude-sonnet-4.6",
+    "google.claude-sonnet-5",
+    "google.gemini-2.5-flash",
+    "google.gemini-2.5-flash-lite",
+    "google.gemini-2.5-pro",
+    "google.gemini-3.1-flash-lite",
+    "google.gemini-3.5-flash",
+    "kit.gemma4-31b-it",
+    "kit.gpt-oss-120b",
+    "kit.minimax-m2.7-229b",
+    "kit.mistral-small-4-119b-a8b",
+    "kit.qwen3.5-397b-A17b",
+    "standard-extern",
+    "standard-local",
+)
+
+_KIT_SERVED_NONCHAT_IDS = (
+    "kit.flux.2-dev",
+    "kit.qwen3-embedding-8b",
+    "kit.qwen3-reranker-8b",
+    "kit.voxtral-4b-tts-2603",
+    "kit.whisper-large-v3",
+)
+
+
+@pytest.mark.parametrize("model", _KIT_SERVED_CHAT_IDS)
+def test_kit_served_chat_id_resolves_statically(model):
+    # base_url="" → no live probe; the static registry alone must know the id.
+    caps = mc.resolve("kit", model, "")
+    assert caps.source == "static", f"{model} fell through to {caps.source}"
+    assert caps.context_window >= 32_000
+    assert caps.supports_tools is True
+
+
+@pytest.mark.parametrize("model", _KIT_SERVED_NONCHAT_IDS)
+def test_kit_served_nonchat_id_is_flagged(model):
+    assert mc.nonchat_reason(model) is not None
+
+
+def test_kit_served_chat_ids_pass_preflight_without_warning():
+    # The strong KIT-hosted chat models must not trip the weak-KIT warning.
+    for model in ("kit.qwen3.5-397b-A17b", "kit.gpt-oss-120b",
+                  "kit.minimax-m2.7-229b", "kit.mistral-small-4-119b-a8b"):
+        ok, msg = mc.preflight("kit", model, "")
+        assert ok is True
+        assert msg == "", f"unexpected warning for {model}: {msg}"
+
+
+# ---------------------------------------------------------------------------
+# Resolution bugs (each failed before the corresponding registry fix)
+# ---------------------------------------------------------------------------
+
+
+def test_google_gateway_prefix_is_stripped():
+    # Served ids carry a google. prefix; before the fix only kit./azure. were
+    # stripped, so these fell to the heuristic (32k, no vision).
+    caps = mc.resolve("kit", "google.gemini-2.5-pro", "")
+    assert caps.source == "static"
+    assert caps.supports_vision is True
+    assert caps.context_window > 100_000
+
+
+def test_static_lookup_is_case_insensitive():
+    # The served id has a mixed-case active-parameter suffix (…-A17b); a
+    # lowercased config value must still hit the curated exact entry.
+    caps = mc.resolve("kit", "kit.qwen3.5-397b-a17b", "")
+    assert caps.source == "static"
+    assert caps.context_window == 128_000           # exact entry, not a prefix
+
+
+def test_gpt_oss_is_reasoning_for_token_floor():
+    # gpt-oss is a reasoning line: without is_reasoning the max_tokens floor
+    # never applies and small budgets yield empty replies mid-think.
+    assert mc.resolve("kit", "kit.gpt-oss-120b", "").is_reasoning is True
+    assert mc.resolve("openai", "gpt-oss-20b", "").is_reasoning is True
+
+
+def test_deepseek_r1_static_has_no_native_tools():
+    # R1 line: reasoning without native tool calling. The static entry must
+    # say so — advertising tools to it makes the backend reject the request.
+    caps = mc.resolve("ollama", "deepseek-r1:32b", "")
+    assert caps.supports_tools is False
+    assert caps.is_reasoning is True
+
+
+def test_deepseek_r1_live_tools_capability_overrides_static(monkeypatch):
+    # A live probe that reports tool support wins over the conservative
+    # static claim (newer builds may add native tool calling).
+    monkeypatch.setattr(
+        mc.urllib.request, "urlopen",
+        _urlopen_router({"/api/show": _show_payload(65_536,
+                                                    ["tools", "thinking"])}),
+    )
+    caps = mc.resolve("ollama", "deepseek-r1:32b", _OLLAMA_BASE)
+    assert caps.source == "live"
+    assert caps.supports_tools is True
+
+
+def test_qwen3_coder_is_not_thinking_tagged():
+    # The coder line is non-thinking; the qwen3 name heuristic must not mark
+    # it thinking-tagged (static entry pins the flags explicitly).
+    caps = mc.resolve("ollama", "qwen3-coder:32b", "")
+    assert caps.thinking_tagged is False
+    assert caps.is_reasoning is False
+
+
+# ---------------------------------------------------------------------------
+# New family entries
+# ---------------------------------------------------------------------------
+
+
+def test_kimi_k2_family():
+    caps = mc.resolve("openai", "kimi-k2:1t", "")
+    assert caps.source == "static"
+    assert caps.supports_tools is True
+    assert caps.context_window == 131_072
+    thinking = mc.resolve("openai", "kimi-k2-thinking", "")
+    assert thinking.is_reasoning is True
+    assert thinking.thinking_tagged is True
+    assert thinking.context_window == 262_144
+
+
+def test_deepseek_v3_family_keeps_tools():
+    caps = mc.resolve("openai", "deepseek-v3.1", "")
+    assert caps.source == "static"
+    assert caps.supports_tools is True
+    assert caps.is_reasoning is False
+
+
+def test_glm_family_windows():
+    assert mc.resolve("openai", "glm-4.6", "").context_window == 200_000
+    assert mc.resolve("openai", "glm-4.5-air", "").context_window == 131_072
+
+
+def test_llama_hyphenated_and_v4_ids():
+    assert mc.resolve("openai", "llama-3.3-70b-instruct",
+                      "").context_window == 131_072
+    assert mc.resolve("openai", "llama-4-scout-17b-16e-instruct",
+                      "").context_window == 131_072
+    assert mc.resolve("openai", "llama4:16x17b", "").context_window == 131_072
+
+
+def test_mistral_family_specific_beats_broad():
+    # Longest-prefix: mistral-small (128k line) must not be shadowed by the
+    # broad 32k "mistral" floor.
+    assert mc.resolve("openai", "mistral-small-3.2", "").context_window \
+        == 131_072
+    assert mc.resolve("openai", "mixtral:8x7b", "").context_window == 32_768
+    assert mc.resolve("openai", "mistral:7b", "").context_window == 32_768
+
+
+def test_minimax_m2_reasoning_flags():
+    caps = mc.resolve("kit", "kit.minimax-m2.7-229b", "")
+    assert caps.is_reasoning is True
+    assert caps.thinking_tagged is True
+    generic = mc.resolve("openai", "minimax-m2", "")
+    assert generic.is_reasoning is True and generic.thinking_tagged is True
+
+
+def test_gemma_generation_windows_differ():
+    assert mc.resolve("openai", "gemma3-27b-it", "").context_window == 131_072
+    assert mc.resolve("openai", "gemma2-9b-it", "").context_window == 8_192
+
+
+def test_standard_aliases_resolve_conservatively():
+    for alias in ("standard-extern", "standard-local"):
+        caps = mc.resolve("kit", alias, "")
+        assert caps.source == "static"
+        assert caps.context_window == 32_768
+        assert caps.supports_tools is True
+
+
+# ---------------------------------------------------------------------------
+# Provenance note + unchanged fallback
+# ---------------------------------------------------------------------------
+
+
+def test_note_field_carries_registry_provenance():
+    caps = mc.resolve("kit", "kit.qwen3.5-397b-A17b", "")
+    assert "endpoint-verified" in caps.note
+    family = mc.resolve("openai", "kimi-k2:1t", "")
+    assert "family-knowledge" in family.note
+
+
+def test_unknown_model_fallback_unchanged():
+    caps = mc.resolve("kit", "totally-unknown-model-z", "")
+    assert caps.source == "heuristic"
+    assert caps.context_window == 32_768            # strong fallback window
+    assert caps.supports_tools is True              # default stays permissive
+    assert caps.note == ""
+
+
 def test_disk_cache_version_mismatch_is_discarded(monkeypatch, tmp_path):
     p = tmp_path / "caps.json"
     monkeypatch.setattr(mc, "_CACHE_PATH", p)

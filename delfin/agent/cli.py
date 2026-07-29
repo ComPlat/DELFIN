@@ -316,7 +316,20 @@ def cmd_bench(args: argparse.Namespace) -> int:
             print(f"  {ts}  {f.name}  ({n_records} tasks)")
         return 0
 
+    if action == "nightly":
+        return _cmd_bench_nightly(args)
+
+    if action == "compare" and (getattr(args, "model", "") or "").strip():
+        # History mode: classify one run against the rolling per-task
+        # baseline (bench_watch). Pure file comparison — no API spend.
+        return _cmd_bench_compare_history(args)
+
     if action == "compare":
+        if not getattr(args, "baseline", "") or not getattr(args, "candidate", ""):
+            print("ERROR: pass either two run files (baseline candidate) "
+                  "or --model for a rolling-baseline compare.",
+                  file=sys.stderr)
+            return 2
         baseline = Path(args.baseline).expanduser().resolve()
         candidate = Path(args.candidate).expanduser().resolve()
         if not baseline.exists() or not candidate.exists():
@@ -431,6 +444,141 @@ def cmd_bench(args: argparse.Namespace) -> int:
           f"{s['total_duration_s']:.1f}s")
     _print_behavior_rates(_bm, results)
     print(f"\nWritten to: {path}")
+    return 0
+
+
+_BENCH_SCHEDULE_HINT = (
+    "Scheduling is opt-in — nothing was registered automatically.\n"
+    "To run this nightly via the scheduler daemon, run exactly:\n"
+    "  python -m delfin.agent.cli scheduler add-bench --model {model}"
+    "{provider}{backend} --every 24h\n"
+    "  python -m delfin.agent.cli scheduler start\n"
+    "Cost estimate: ~$8 per nightly run for the 48-task KIT-Qwen suite at "
+    "repeats=1 (repeats multiply cost; recheck adds up to $3 more on "
+    "suspect days)."
+)
+
+
+def _bench_schedule_hint(model: str, provider: str = "",
+                         backend: str = "") -> str:
+    return _BENCH_SCHEDULE_HINT.format(
+        model=model or "<model>",
+        provider=f" --provider {provider}" if provider else "",
+        backend=f" --backend {backend}" if backend and backend != "api" else "",
+    )
+
+
+def _cmd_bench_nightly(args: argparse.Namespace) -> int:
+    """Full unattended cycle: run suite → compare vs rolling history →
+    recheck suspects → report → attention on confirmed regressions."""
+    from . import bench_watch as _bw
+
+    model = (getattr(args, "model", "") or "").strip()
+    if not model:
+        print("ERROR: --model is required for `bench nightly`",
+              file=sys.stderr)
+        return 2
+    provider = getattr(args, "provider", "") or ""
+    backend = getattr(args, "backend", "") or "api"
+    repeats = max(1, int(getattr(args, "repeats", 1) or 1))
+    recheck = not bool(getattr(args, "no_recheck", False))
+    last_k = max(1, int(getattr(args, "last_k", _bw.DEFAULT_LAST_K)
+                        or _bw.DEFAULT_LAST_K))
+    runs_dir_arg = (getattr(args, "runs_dir", "") or "").strip() or None
+
+    print(f"Nightly benchmark cycle for {model} "
+          f"(repeats={repeats}, recheck={'on' if recheck else 'off'}, "
+          f"baseline last-k={last_k})…", flush=True)
+    summary = _bw.nightly(
+        model, provider, backend,
+        repeats=repeats, recheck=recheck, last_k=last_k,
+        runs_dir=runs_dir_arg,
+    )
+
+    comparison = summary.get("comparison") or {}
+    counts = comparison.get("counts") or {}
+    if comparison:
+        print(f"  compared {comparison.get('n_tasks', 0)} tasks: "
+              f"{counts.get('stable', 0)} stable, "
+              f"{counts.get('improved', 0)} improved, "
+              f"{counts.get('suspect_regression', 0)} suspect, "
+              f"{counts.get('new_task', 0)} new")
+    rc = summary.get("recheck") or {}
+    if rc:
+        print(f"  recheck: {len(rc.get('confirmed') or [])} confirmed, "
+              f"{len(rc.get('noise') or [])} noise, "
+              f"{len(rc.get('skipped') or [])} skipped by cap "
+              f"(spent ${float(rc.get('spent_usd') or 0):.2f})")
+    for c in summary.get("confirmed") or []:
+        print(f"  CONFIRMED regression: {c['task_id']} "
+              f"(recheck q={float(c.get('recheck_quality') or 0):.0f})")
+    if summary.get("attention_id"):
+        print(f"  attention event raised: {summary['attention_id']}")
+    for err in summary.get("errors") or []:
+        print(f"  [error] {err}", file=sys.stderr)
+    if summary.get("report_path"):
+        print(f"\nReport: {summary['report_path']}")
+    print()
+    print(_bench_schedule_hint(model, provider, backend))
+    return 0 if summary.get("ok") else 1
+
+
+def _cmd_bench_compare_history(args: argparse.Namespace) -> int:
+    """Classify one run vs the rolling baseline. No API spend."""
+    from . import bench_watch as _bw
+    from . import benchmark as _bm
+
+    model = (getattr(args, "model", "") or "").strip()
+    last_k = max(1, int(getattr(args, "last_k", _bw.DEFAULT_LAST_K)
+                        or _bw.DEFAULT_LAST_K))
+    runs_dir_arg = (getattr(args, "runs_dir", "") or "").strip() or None
+    base_dir = (Path(runs_dir_arg).expanduser() if runs_dir_arg
+                else _bm.runs_dir())
+
+    run_arg = (getattr(args, "run", "") or "").strip()
+    if run_arg:
+        run_path = Path(run_arg).expanduser()
+        if not run_path.exists():
+            candidate = base_dir / run_arg
+            if candidate.exists():
+                run_path = candidate
+            else:
+                print(f"ERROR: run file not found: {run_arg}",
+                      file=sys.stderr)
+                return 2
+    else:
+        files = _bw.list_model_runs(model, runs_dir=runs_dir_arg)
+        if not files:
+            print(f"ERROR: no run files for model {model!r} in "
+                  f"{base_dir}", file=sys.stderr)
+            return 2
+        run_path = files[0]
+
+    # The compared run must never sit inside its own baseline window.
+    history = _bw.load_history(
+        model, runs_dir=runs_dir_arg, last_k=last_k, exclude=run_path)
+    cmp = _bw.compare_run(run_path, history=history)
+    if getattr(args, "json", False):
+        print(json.dumps(cmp, indent=2, ensure_ascii=False))
+        return 0
+    counts = cmp.get("counts") or {}
+    print(f"Run {Path(cmp['run_path']).name} vs rolling baseline "
+          f"({len(history.get('files') or [])} file(s), last-k={last_k}):")
+    print(f"  {cmp.get('n_tasks', 0)} tasks — "
+          f"{counts.get('stable', 0)} stable, "
+          f"{counts.get('improved', 0)} improved, "
+          f"{counts.get('suspect_regression', 0)} suspect, "
+          f"{counts.get('new_task', 0)} new")
+    for e in cmp.get("suspects") or []:
+        base = e.get("baseline") or {}
+        print(f"  SUSPECT {e['task_id']:<28} ({e.get('reason', '?')}) "
+              f"q={e.get('quality', 0):.0f} vs median "
+              f"{float(base.get('median_quality') or 0):.0f} "
+              f"(threshold {float(e.get('threshold') or 0):.1f})")
+    if not cmp.get("suspects"):
+        print("  no suspects — within the noise band of the baseline")
+    print("\nCompare-only: nothing was re-run and no API cost was "
+          "incurred. Use `bench nightly --model ...` for the full cycle.")
     return 0
 
 
@@ -690,6 +838,51 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
               "agent turn.")
         return 0
 
+    if action == "add-bench":
+        # Explicit opt-in creation of a recurring benchmark entry — the
+        # only way a nightly bench lands in the schedule. The entry is
+        # executed by the daemon's bench hook (scheduler_daemon), which
+        # calls bench_watch.nightly directly instead of an LLM turn.
+        from . import scheduler as _sched
+        from . import scheduler_daemon as _sdm
+
+        model = (getattr(args, "model", "") or "").strip()
+        if not model:
+            print("ERROR: --model is required for `scheduler add-bench`",
+                  file=sys.stderr)
+            return 2
+        every_token = getattr(args, "every", "") or "24h"
+        every_s = _sched.parse_interval_seconds(every_token)
+        if every_s is None:
+            print(f"ERROR: bad --every interval {every_token!r} "
+                  "(use e.g. 24h, 12h, 1d)", file=sys.stderr)
+            return 2
+        prompt = _sdm.format_bench_entry_prompt(
+            model=model,
+            provider=getattr(args, "provider", "") or "",
+            backend=getattr(args, "backend", "") or "",
+            repeats=max(1, int(getattr(args, "repeats", 1) or 1)),
+        )
+        ent = _sched.Scheduler().schedule_interval(
+            every_seconds=every_s,
+            prompt=prompt,
+            reason=f"nightly benchmark watch ({model})",
+            workspace=os.getcwd(),
+        )
+        print(f"Scheduled bench entry {ent.id}: every {every_token}, "
+              f"workspace {ent.workspace}")
+        print("Cost estimate: ~$8 per run for the 48-task KIT-Qwen suite "
+              "at repeats=1 (repeats multiply cost; the suspect recheck "
+              "adds up to $3 more on suspect days).")
+        st = _sd.daemon_status()
+        if not st["running"]:
+            print("The scheduler daemon is NOT running — the entry fires "
+                  "only after you start it:\n"
+                  "  python -m delfin.agent.cli scheduler start")
+        print(f"Remove anytime: delete entry {ent.id} via the dashboard "
+              "scheduler tools, or edit ~/.delfin/cron.json.")
+        return 0
+
     if action == "stop":
         st = _sd.daemon_status()
         if not st["running"]:
@@ -830,15 +1023,88 @@ def build_parser() -> argparse.ArgumentParser:
     bench_latest.set_defaults(bench_action="latest")
 
     bench_cmp = bench_sub.add_parser(
-        "compare", help="Diff two run files: baseline vs candidate",
+        "compare",
+        help=("Diff two run files (baseline candidate), or with --model "
+              "classify one run against the rolling per-task baseline — "
+              "both are pure file comparisons, no API spend"),
     )
-    bench_cmp.add_argument("baseline", help="Baseline JSONL run file")
-    bench_cmp.add_argument("candidate", help="Candidate JSONL run file")
+    bench_cmp.add_argument("baseline", nargs="?", default="",
+                           help="Baseline JSONL run file (two-file mode)")
+    bench_cmp.add_argument("candidate", nargs="?", default="",
+                           help="Candidate JSONL run file (two-file mode)")
+    bench_cmp.add_argument(
+        "--model", default="",
+        help=("Rolling-baseline mode: classify a run of this model as "
+              "stable/improved/suspect/new vs the last-k history "
+              "(noise-aware; no re-runs, no cost)"),
+    )
+    bench_cmp.add_argument(
+        "--run", default="",
+        help=("Run file to classify in --model mode (absolute path or name "
+              "in the runs dir; default: the newest run of the model)"),
+    )
+    bench_cmp.add_argument(
+        "--last-k", type=int, default=5, dest="last_k",
+        help="Baseline window: per task, samples from the newest K run "
+             "files containing it (default: 5)",
+    )
+    bench_cmp.add_argument("--runs-dir", default="", dest="runs_dir",
+                           help="Override the runs directory "
+                                "(default: ~/.delfin/benchmark_runs)")
     bench_cmp.add_argument("--json", action="store_true",
                            help="Emit raw JSON")
     bench_cmp.add_argument("--markdown", action="store_true",
                            help="Emit a markdown report (PR-body ready, "
                                 "annotates profile commits between runs)")
+
+    bench_nightly = bench_sub.add_parser(
+        "nightly",
+        help=("Unattended cycle: run suite → compare vs rolling history → "
+              "re-check suspects (capped) → report + attention on "
+              "CONFIRMED regressions. Scheduling stays opt-in: use "
+              "`scheduler add-bench` explicitly (~$8/run for the 48-task "
+              "KIT-Qwen suite at repeats=1)"),
+        description=(
+            "Full unattended benchmark cycle: runs the suite against "
+            "--model, classifies every task against the per-task rolling "
+            "baseline (majority success + median quality + noise-aware "
+            "threshold), re-runs only suspect tasks with repeats under "
+            "hard task/cost caps, writes a markdown report to "
+            "<runs-dir>/reports/, and raises ONE attention event only "
+            "for regressions the recheck CONFIRMED.\n\n"
+            "Scheduling is strictly opt-in — this command never registers "
+            "a scheduler entry. To run it nightly, run exactly:\n"
+            "  python -m delfin.agent.cli scheduler add-bench "
+            "--model <model> [--provider P] [--backend B] --every 24h\n"
+            "  python -m delfin.agent.cli scheduler start\n"
+            "Cost estimate: ~$8 per nightly run for the 48-task KIT-Qwen "
+            "suite at repeats=1 (repeats multiply cost; recheck adds up "
+            "to $3 more on suspect days)."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bench_nightly.add_argument("--model", required=True,
+                               help="Model name (e.g. kit.qwen3.5-397b-A17b)")
+    bench_nightly.add_argument("--provider", default="",
+                               help="claude / openai / kit")
+    bench_nightly.add_argument("--backend", default="",
+                               choices=["", "api", "cli"])
+    bench_nightly.add_argument(
+        "--repeats", type=int, default=1,
+        help="Samples per task for the main suite run (default: 1; "
+             "cost scales linearly)")
+    bench_nightly.add_argument(
+        "--no-recheck", action="store_true", dest="no_recheck",
+        help="Skip the suspect recheck stage (suspects stay unconfirmed; "
+             "no attention event is raised)")
+    bench_nightly.add_argument(
+        "--last-k", type=int, default=5, dest="last_k",
+        help="Baseline window: per task, samples from the newest K run "
+             "files containing it (default: 5)")
+    bench_nightly.add_argument("--runs-dir", default="", dest="runs_dir",
+                               help="Override the runs directory "
+                                    "(default: ~/.delfin/benchmark_runs)")
+    bench_nightly.set_defaults(bench_action="nightly")
+
     bench.set_defaults(func=cmd_bench, bench_action="run")
 
     # credentials — secure key management
@@ -935,6 +1201,27 @@ def build_parser() -> argparse.ArgumentParser:
     sched_stop = sched_sub.add_parser(
         "stop", help="Stop the daemon (SIGTERM; finishes the current turn)")
     sched_stop.set_defaults(scheduler_action="stop")
+
+    sched_bench = sched_sub.add_parser(
+        "add-bench",
+        help=("OPT-IN: register a recurring `bench nightly` entry "
+              "(~$8 per run for the 48-task KIT-Qwen suite at repeats=1). "
+              "Never registered automatically — running this command IS "
+              "the consent"),
+    )
+    sched_bench.add_argument("--model", required=True,
+                             help="Model to benchmark nightly")
+    sched_bench.add_argument("--provider", default="",
+                             help="claude / openai / kit")
+    sched_bench.add_argument("--backend", default="",
+                             choices=["", "api", "cli"])
+    sched_bench.add_argument("--repeats", type=int, default=1,
+                             help="Samples per task per run (default: 1; "
+                                  "cost scales linearly)")
+    sched_bench.add_argument("--every", default="24h",
+                             help="Interval token: 24h / 12h / 1d "
+                                  "(default: 24h)")
+    sched_bench.set_defaults(scheduler_action="add-bench")
 
     sched.set_defaults(func=cmd_scheduler, scheduler_action="status")
 
