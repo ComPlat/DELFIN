@@ -2403,6 +2403,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_changes_made",
+            "description": (
+                "List what this session actually changed, from the "
+                "append-only audit log: files written (grouped per path), "
+                "shell commands run, denied actions, and persisted "
+                "permissions. Use this to answer 'what did you change?' "
+                "from the record instead of from memory."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "project_introspect",
             "description": (
                 "One-call snapshot of the workspace's state: "
@@ -4527,6 +4541,8 @@ class _DocToolExecutor:
         session_id = ""
         if permissions is not None:
             mode = getattr(permissions, "mode", "") or ""
+            session_id = getattr(permissions, "task_session_id", "") or ""
+        cwd = str(arguments.get("cwd", "") or "")
         record = _al.make_record(
             tool=name,
             decision=decision,
@@ -4534,6 +4550,7 @@ class _DocToolExecutor:
             path=str(arguments.get("path", "")),
             command=str(arguments.get("command", "")),
             session_id=session_id,
+            extra={"cwd": cwd} if cwd else None,
         )
         _al.append(record)
 
@@ -4706,6 +4723,11 @@ class _DocToolExecutor:
                 return self._execute_task_adopt(arguments, permissions)
             if name == "task_get":
                 return self._execute_task_get(arguments, permissions)
+
+        # Read-only audit view — no permission gate (reads only the local
+        # audit log; answers "what did you change?" from the record).
+        if name == "list_changes_made":
+            return self._execute_list_changes(arguments, permissions)
 
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
@@ -7736,6 +7758,18 @@ class _DocToolExecutor:
             "by_status": {k: len(v) for k, v in grouped.items() if v},
             "tasks": tasks,
         }, ensure_ascii=False)
+
+    def _execute_list_changes(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Read-only: render the current session's audit records."""
+        from . import audit_log as _al
+        sid = (getattr(perms, "task_session_id", "") or "") if perms else ""
+        try:
+            report = _al.build_changes_report(sid if sid else None)
+            return _al.format_changes_report(report)
+        except Exception as exc:
+            return json.dumps({"error": f"list_changes_made failed: {exc}"})
 
     def _execute_task_get(
         self, arguments: dict, perms: "KitToolPermissions"
