@@ -36073,11 +36073,33 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
     return raw_xyz
 
 
-# Period-2 p-block centres: low inversion barrier and good 2p-2p overlap, so a
-# lone pair delocalises rather than staying pyramidal.  Period 3 and below keep a
-# high inversion barrier (phosphine, thioether, sulfoxide stay pyramidal).  This
-# is a periodic-table property of the ATOM, deliberately not a functional-group list.
-_PERIOD2_PLANAR_Z = frozenset((5, 6, 7, 8))  # B, C, N, O
+# --- donor geometry, calibrated on CCDC clean_v2 -----------------------------
+# 307370 structures / 1433955 sigma-donor records (exactly one metal partner,
+# non-hapto, H-complete), measured in full rather than sampled.  Two findings drive
+# everything below.
+#
+# 1. ONE angle per element, and it follows the PERIODIC ROW, not the group and not
+#    electronegativity: Si 104.5 / P 103.7 / S 104.8 span 1.1 deg across EN 1.90-2.58,
+#    while P 103.7 -> As 102.1 -> Sb 99.8 tracks the row exactly.  The same number
+#    falls out of two independent bins -- theta from 4-partner X-D-X and theta from
+#    3-partner (angle sum / 3) agree to ~1 deg (S 104.8/103.8, As 102.1/103.1,
+#    Sb 99.8/99.1) -- so it is one physical parameter, not two fitted ones.
+#
+# 2. The metal angle is NOT free.  Widening M-D-X closes X-D-X and vice versa:
+#       phi(M-D-X) = 109.5 - 0.87 * (theta - 109.5)
+#    reproduces the measured medians to <= 0.5 deg for C, N, Si, P, S, Ge, As, Sn, Sb.
+#    One parameter per element; every other angle is geometrically implied.
+_THETA_BY_PERIOD = {2: 109.5, 3: 104.0, 4: 101.5, 5: 100.5, 6: 99.0}
+_GROUP_14 = frozenset((6, 14, 32, 50, 82))   # C  Si Ge Sn Pb
+_GROUP_15 = frozenset((7, 15, 33, 51, 83))   # N  P  As Sb Bi
+_GROUP_16 = frozenset((8, 16, 34, 52))       # O  S  Se Te
+
+
+def _period_of(z: int) -> int:
+    for _p, _hi in ((1, 2), (2, 10), (3, 18), (4, 36), (5, 54), (6, 86)):
+        if z <= _hi:
+            return _p
+    return 7
 
 
 def _donor_sigma_geometry(atom):
@@ -36104,23 +36126,52 @@ def _donor_sigma_geometry(atom):
                                           sulfoxide-S: inversion barrier wins)
         <= 2 sigma partners            -> no opinion    (alkoxide, thiolate, nitrile)
 
-    Returns (target, sigma_neighbour_indices) with target in
-    {"planar", "tetrahedral", None}; None means "leave the caller's behaviour alone".
+    Returns (mode, sigma_neighbour_indices, theta, phi); mode is
+    "planar"    -> only the improper dihedral (the RING sets the individual angles,
+                   see below), "pyramidal" -> theta among non-metal partners and phi
+                   for every pair involving the metal, no improper, or
+    None        -> no opinion, leave the caller's behaviour untouched.
+
+    NOTE: a planar 3-partner donor must NOT be pushed to 120/120/120.  Only the SUM
+    is invariant; the ring fixes the split.  Measured on N: flat 6-ring 118.1 internal
+    / 120.8 to the metal, flat 5-ring 106.1 / 126.6, acyclic 118.3 / 120.6.  Forcing
+    120 would bend every imidazole and pyrazole donor by ~14 deg.
     """
     sigma = [n for n in atom.GetNeighbors() if n.GetAtomicNum() > 1]
     if not any(n.GetSymbol() in _METAL_SET for n in sigma):
-        return None, []
+        return None, [], 0.0, 0.0
+    z = atom.GetAtomicNum()
+    theta = _THETA_BY_PERIOD.get(_period_of(z), 99.0)
+    phi = 109.5 - 0.87 * (theta - 109.5)
+    idx = sorted(n.GetIdx() for n in sigma)
     n_h = sum(1 for n in atom.GetNeighbors() if n.GetAtomicNum() == 1)
     n_h += atom.GetTotalNumHs()
     n_sigma = len(sigma) + n_h
-    idx = sorted(n.GetIdx() for n in sigma)
     if n_sigma >= 4:
-        return "tetrahedral", idx
-    if n_sigma == 3:
-        if atom.GetAtomicNum() in _PERIOD2_PLANAR_Z:
-            return "planar", idx
-        return "tetrahedral", idx
-    return None, idx
+        # theta/phi collapse to 109.5/109.5 for period 2, i.e. plain tetrahedral.
+        return "pyramidal", idx, theta, phi
+    if n_sigma != 3:
+        return None, idx, theta, phi
+    if _period_of(z) == 2:
+        # O is genuinely bimodal in the crystal -- 51 % planar, 26 % pyramidal, p10 of
+        # the angle sum 332.9 deg.  Coordinated ether / alkoxide / aqua is flattened
+        # but SOFT; forcing either target would be wrong, so decline to have an opinion.
+        if z == 8:
+            return None, idx, theta, phi
+        return "planar", idx, theta, phi
+    if z in _GROUP_14:
+        # Three sigma partners on a heavy group-14 centre is a carbene analogue with an
+        # M=E multiple bond, not a lone-pair donor: Si 96 %, Sn 79 % planar.
+        return "planar", idx, theta, phi
+    if z in _GROUP_15:
+        # Genuinely bimodal (P: 50.4 % planar / 43.9 % pyramidal).  What separates them
+        # is whether the donor sits in a coplanar ring: phosphinine 95.4 % planar,
+        # a free phosphido pyramidal.
+        return ("planar" if atom.GetIsAromatic() else "pyramidal"), idx, theta, phi
+    # Group 16 stays pyramidal even inside an aromatic ring: S in a flat 5-ring is
+    # 94.8 % PYRAMIDAL (sum 316.2 deg) and holds the metal 2.0 A off the ring plane.
+    # "Conjugation flattens the donor" is measurably FALSE here (S 0.4 % vs 0.3 %).
+    return "pyramidal", idx, theta, phi
 
 
 def _build_uff_constraints_from_template(
@@ -36347,8 +36398,9 @@ def _build_uff_constraints_from_template(
             # _donor_sigma_geometry for the atom-specific rule.
             _geom = None
             _sigma_idx: List[int] = []
+            _theta = _phi = 0.0
             if _metal_sigma_count:
-                _geom, _sigma_idx = _donor_sigma_geometry(atom)
+                _geom, _sigma_idx, _theta, _phi = _donor_sigma_geometry(atom)
                 if _geom is not None:
                     is_sp2 = _geom == "planar"
                     is_sp3_four_same = False
@@ -36380,11 +36432,28 @@ def _build_uff_constraints_from_template(
                     constraints["torsions"].append(
                         (a, x, b, c, _nearest_planar_target(a, x, b, c))
                     )
+            if _geom == "planar":
+                # Deliberately NO angle constraints here.  Only the angle SUM is
+                # invariant for a planar donor; the ring sets the split (N: flat
+                # 6-ring 118.1/120.8, flat 5-ring 106.1/126.6).  Pinning 120 would
+                # bend every imidazole and pyrazole donor by ~14 deg.  The improper
+                # above already delivers planarity, and with the metal among the
+                # partners it also pins the metal INTO that plane.
+                continue
             # Pairwise angle constraints on every heavy-heavy pair.
             target_angle = 120.0 if is_sp2 else 109.5
             for i in range(len(heavy_nbrs)):
                 for j in range(i + 1, len(heavy_nbrs)):
                     ai, aj = heavy_nbrs[i], heavy_nbrs[j]
+                    if _geom is not None:
+                        # theta among non-metal partners, phi for any pair involving
+                        # the metal -- one calibrated parameter per element, the rest
+                        # geometrically implied (see _donor_sigma_geometry).
+                        _has_m = (
+                            mol_template.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET
+                            or mol_template.GetAtomWithIdx(aj).GetSymbol() in _METAL_SET
+                        )
+                        target_angle = _phi if _has_m else _theta
                     angle_key = (ai, x, aj)
                     if angle_key in seen_angle:
                         continue
