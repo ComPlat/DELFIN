@@ -29,7 +29,11 @@ def _estimate_tokens(text: str) -> int:
 @pytest.mark.parametrize(
     "filename, max_tokens",
     [
-        ("dashboard_agent.md", 7500),
+        # Raised 7500 -> 7700 for the destructive-request carve-out in the
+        # mode-switch redirect block (refuse in own voice, never redirect a
+        # destructive act to the code mode). Content is intentional; keep
+        # growth in check.
+        ("dashboard_agent.md", 7700),
         # Raised 13800 -> 14000 for the workspace/CLI orchestration guidance
         # (launch-dir = workspace). Content is intentional; keep growth in check.
         ("solo_agent.md", 14000),

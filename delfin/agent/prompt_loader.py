@@ -1174,6 +1174,19 @@ class PromptLoader:
                 injected.append("scientific_integrity_addendum")
         except Exception:
             pass
+        # Refusal contract (UNIVERSAL — all roles): destructive, irreversible,
+        # or out-of-safe-scope requests are refused explicitly (what + why),
+        # never routed to another mode/tool to get the harmful action done,
+        # and answered with the nearest safe alternative.
+        try:
+            _refusal = self._cached_read(
+                self.agent_dir / "shared" / "refusal_addendum.md"
+            )
+            if _refusal:
+                sections.append(_refusal)
+                injected.append("refusal_addendum")
+        except Exception:
+            pass
 
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)

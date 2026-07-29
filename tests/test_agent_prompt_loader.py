@@ -1136,6 +1136,90 @@ def test_engine_set_live_state_passes_through(agent_tree):
     assert "CONTROL: PAL=8" in prompt
 
 
+# ---------------------------------------------------------------------------
+# Refusal addendum — universal refusal contract injected for every role
+# ---------------------------------------------------------------------------
+
+def _real_pack() -> Path:
+    return Path(__file__).resolve().parent.parent / "delfin" / "agent" / "pack"
+
+
+def test_refusal_addendum_ships_in_the_pack():
+    """The shared refusal contract exists and carries its four pillars:
+    explicit what+why, no routing-around, nearest safe alternative, and
+    risk-before-capability for legitimate out-of-scope requests."""
+    body = (_real_pack() / "shared" / "refusal_addendum.md").read_text(
+        encoding="utf-8")
+    flat = " ".join(body.split())          # robust against line wrapping
+    assert "Name what you will not do" in flat
+    assert "Never route around the refusal" in flat
+    assert "nearest safe alternative" in flat
+    assert "BEFORE naming the mode" in flat
+    # Pre-waived confirmation is not a license to act.
+    assert "does not license the action" in flat
+
+
+@pytest.mark.parametrize("role_id,mode_id", [
+    ("solo_agent", "solo"),
+    ("dashboard_agent", "dashboard"),
+    ("builder_agent", "quick"),
+    ("critic_agent", "quick"),
+])
+def test_refusal_addendum_injected_for_every_role(role_id, mode_id):
+    """The contract is universal — composed into the prompt head for guide,
+    solo, and pipeline roles alike (same layer as the honesty addendum)."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    prompt = PromptLoader().build_system_prompt(
+        role_id=role_id, mode_id=mode_id, task_text="tidy the workspace")
+    assert "Never route around the refusal" in prompt
+    assert "nearest safe alternative" in prompt
+
+
+def test_refusal_addendum_injected_when_present(agent_tree):
+    """Loader contract: pack/shared/refusal_addendum.md is picked up by
+    build_system_prompt without any extra registration."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    shared = agent_tree / "pack" / "shared"
+    (shared / "refusal_addendum.md").write_text(
+        "# Refusing unsafe requests\nREFUSAL-MARKER")
+    (agent_tree / "pack" / "agents" / "solo_agent.md").write_text(
+        "# Solo\nYou are solo.")
+    loader = PromptLoader(agent_tree)
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent", mode_id="quick", mode_description="solo",
+        route=["solo_agent"], role_index=0)
+    assert "REFUSAL-MARKER" in prompt
+
+
+def test_dashboard_redirect_carves_out_destructive_requests():
+    """The guide's mode-switch one-liner applies to safe, constructive
+    requests only; destructive requests must be refused in the guide's own
+    voice, never redirected to the code mode to be executed there."""
+    body = (_real_pack() / "agents" / "dashboard_agent.md").read_text(
+        encoding="utf-8")
+    flat = " ".join(body.split())          # robust against line wrapping
+    assert "refused, not redirected" in flat
+    assert ("Never name another mode as the place where the destructive act "
+            "would run") in flat
+    # The redirect instruction itself is scoped to safe requests.
+    assert "safe, constructive source edit" in flat
+
+
+def test_dashboard_prompt_contains_refusal_contract_and_carve_out():
+    """End-to-end: the composed dashboard prompt carries BOTH the universal
+    contract and the role-specific carve-out, so the two never diverge."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    prompt = PromptLoader().build_system_prompt(
+        role_id="dashboard_agent", mode_id="dashboard",
+        route=["dashboard_agent"], role_index=0,
+        task_text="open the submit tab")
+    assert "Never route around the refusal" in prompt
+    assert "refused, not redirected" in prompt
+
+
 def test_episode_recall_injected_into_solo_prompt(
     agent_tree, tmp_path, monkeypatch,
 ):
