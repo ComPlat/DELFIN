@@ -360,13 +360,16 @@ class _Registry:
 
     def _new_job_id(self) -> str:
         # 8 hex chars — short enough for chat readability, large enough
-        # to make accidental collisions vanishingly rare.
+        # to make accidental collisions vanishingly rare. An all-digit
+        # token (~2 % of them) is indistinguishable from a SLURM job id
+        # to any consumer that classifies by shape, so those are redrawn.
         for _ in range(10):
             jid = secrets.token_hex(4)
-            if jid not in self._jobs:
+            if jid not in self._jobs and not jid.isdigit():
                 return jid
         # Extremely unlikely; fall back to a longer token.
-        return secrets.token_hex(8)
+        jid = secrets.token_hex(8)
+        return jid if not jid.isdigit() else "bg" + jid[2:]
 
     def start(
         self,

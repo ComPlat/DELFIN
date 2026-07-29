@@ -289,3 +289,45 @@ def test_stale_pid_is_reclaimed(tmp_path):
     pp.write_text("999999999")                       # definitely dead
     assert jm.acquire_pid_lock(pp) is True
     jm.release_pid_lock(pp)
+
+
+# ---------------------------------------------------------------------------
+# Job-kind classification must not depend on the id's shape
+# ---------------------------------------------------------------------------
+
+
+def test_all_digit_bash_job_is_not_mistaken_for_slurm(tmp_path, monkeypatch):
+    """~2 % of 8-hex-char ids are all digits. Classifying by shape filed
+    those as SLURM jobs, so their completion was polled via squeue/sacct
+    forever and never reported (CI flake 2026-07-29, one run in ~43)."""
+    from delfin.agent import bash_jobs as BJ
+    monkeypatch.setattr(BJ, "_INDEX_PATH", tmp_path / "bash_jobs_index.json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    job = BJ.get_registry().start("echo done", cwd=str(ws), workspace=ws)
+    # Force the pathological shape for this job.
+    digit_id = "48153092"
+    with BJ.get_registry()._lock:
+        BJ.get_registry()._jobs[digit_id] = job
+
+    entry = jm.register_agent_job(ws, digit_id, "digit-shaped bash job")
+    assert entry["kind"] == "bash"
+
+    deadline = time.monotonic() + 10
+    while job.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    done = jm.check_agent_jobs(ws, run_fn=_fake_run())
+    assert [d["job_id"] for d in done] == [digit_id]
+    assert done[0]["kind"] == "bash" and done[0]["ok"] is True
+
+
+def test_unknown_numeric_id_still_counts_as_slurm(tmp_path):
+    entry = jm.register_agent_job(tmp_path, "4646143", "a real slurm job")
+    assert entry["kind"] == "slurm"
+
+
+def test_generated_bash_job_ids_are_never_all_digits():
+    from delfin.agent import bash_jobs as BJ
+    reg = BJ.get_registry()
+    for _ in range(200):
+        assert not reg._new_job_id().isdigit()
