@@ -13686,7 +13686,7 @@ def create_tab(ctx):
                         getattr(engine, "last_compaction_info", None) or {}
                     ).get("archived_at")
 
-                    engine.stream_response(
+                    _final_text = engine.stream_response(
                         user_message=current_msg,
                         on_token=_on_token,
                         on_tool_use=_on_tool_use,
@@ -13697,6 +13697,20 @@ def create_tab(ctx):
                         memory_context=_memory,
                         images=_vision_images,
                     )
+                    # When the engine's claim-grounding guard spent its
+                    # correction turn, the streamed chunks contain the
+                    # provisional answer AND the correction concatenated —
+                    # the engine's return value is the verified final text.
+                    # Present only that (verification happens before the
+                    # final display, not as visible churn), with one short
+                    # note so the self-correction stays honest.
+                    if (getattr(engine, "_claim_guard_corrected", False)
+                            and isinstance(_final_text, str)
+                            and _final_text.strip()):
+                        chunks[:] = [_final_text]
+                        _append_system_message(
+                            "✓ Selbstverifikation: Angaben geprüft, "
+                            "Antwort korrigiert.")
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
@@ -13868,11 +13882,28 @@ def create_tab(ctx):
                             )
                         except Exception:
                             _cflags = []
-                        for _cf in _cflags:
-                            _append_system_message(_cf.message())
                         _c_hard = [c for c in _cflags
                                    if c.kind == "nonexistent"]
+                        _c_soft = [c for c in _cflags
+                                   if c.kind != "nonexistent"]
+                        # One compact line instead of per-flag chat spam;
+                        # soft (unread-path) hints stay quiet unless there
+                        # is nothing else going on.
+                        if _c_soft and not _c_hard:
+                            _refs = ", ".join(
+                                f.path for f in _c_soft[:3])
+                            _more = (f" (+{len(_c_soft) - 3})"
+                                     if len(_c_soft) > 3 else "")
+                            _append_system_message(
+                                f"🔎 Hinweis: zitiert, aber diese Runde "
+                                f"nicht gelesen: {_refs}{_more}")
                         if _c_hard and not _vflags:
+                            _refs = ", ".join(
+                                f.path for f in _c_hard[:3])
+                            _append_system_message(
+                                f"🔎 Verifiziere {len(_c_hard)} unbelegte "
+                                f"Angabe(n) ({_refs}) — Antwort wird "
+                                f"korrigiert …")
                             _cfeedback = (
                                 "[Verify] " + _vg.code_claim_feedback(_c_hard)
                             )
@@ -13896,9 +13927,16 @@ def create_tab(ctx):
                                     "".join(chunks), role_label,
                                     finalize=True,
                                 )
+                                _append_system_message(
+                                    "✓ Selbstverifikation: Angaben "
+                                    "geprüft, Antwort korrigiert.")
                         if _vflags:
-                            for _vf in _vflags:
-                                _append_system_message(_vf.message())
+                            _kws = ", ".join(
+                                getattr(f, "keyword", str(f))
+                                for f in _vflags[:3])
+                            _append_system_message(
+                                f"🔎 Verifiziere {len(_vflags)} "
+                                f"Keyword-Angabe(n) ({_kws}) …")
                             _grounded = any(
                                 re.search(r"(?i)search|read|grep|fetch|docs",
                                           _t or "")
@@ -13928,6 +13966,9 @@ def create_tab(ctx):
                                         "".join(chunks), role_label,
                                         finalize=True,
                                     )
+                                    _append_system_message(
+                                        "✓ Selbstverifikation: Angaben "
+                                        "geprüft, Antwort korrigiert.")
 
                         # Quantity-claim check: physical quantities stated
                         # without any evidence act this turn (no calculation
@@ -13944,8 +13985,10 @@ def create_tab(ctx):
                             )
                         except Exception:
                             _qflags = []
-                        for _qf in _qflags:
-                            _append_system_message(_qf.message())
+                        if _qflags:
+                            _append_system_message(
+                                f"🔎 Verifiziere {len(_qflags)} "
+                                f"Zahlenangabe(n) ohne Beleg …")
                         if _qflags and not _vflags and not _c_hard:
                             _qgrounded = any(
                                 re.search(r"(?i)search|read|grep|fetch|docs",
@@ -13977,6 +14020,9 @@ def create_tab(ctx):
                                         "".join(chunks), role_label,
                                         finalize=True,
                                     )
+                                    _append_system_message(
+                                        "✓ Selbstverifikation: Angaben "
+                                        "geprüft, Antwort korrigiert.")
 
                     # -- Interactive question detection (solo/dashboard) --
                     # After the agent finishes a turn, check if the response
