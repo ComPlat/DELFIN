@@ -33,7 +33,11 @@ def _estimate_tokens(text: str) -> int:
         # mode-switch redirect block (refuse in own voice, never redirect a
         # destructive act to the code mode). Content is intentional; keep
         # growth in check.
-        ("dashboard_agent.md", 7700),
+        # Raised 7700 -> 7950 for the turn-closing contract (satisfied
+        # requests close with ACTION: /done in the same response; questions
+        # only for genuinely missing information). Content is intentional;
+        # keep growth in check.
+        ("dashboard_agent.md", 7950),
         # Raised 13800 -> 14000 for the workspace/CLI orchestration guidance
         # (launch-dir = workspace). Content is intentional; keep growth in check.
         ("solo_agent.md", 14000),

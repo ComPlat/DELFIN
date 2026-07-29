@@ -13676,14 +13676,21 @@ def create_tab(ctx):
                             elif real_results:
                                 placeholder = "(commands executed)"
                             elif done_seen:
-                                # /done alone — agent emitted no real
-                                # action. Make the empty bubble explicit
-                                # so the user doesn't think something
-                                # ran silently.
-                                placeholder = (
-                                    "(agent had no action to execute — "
-                                    "please clarify or rephrase)"
-                                )
+                                if _cont_turn > 1:
+                                    # /done alone in a wrap-up round — the
+                                    # agent closes a turn whose actions
+                                    # already ran. Not an error.
+                                    placeholder = "(request completed)"
+                                else:
+                                    # /done alone on the first round —
+                                    # agent emitted no real action. Make
+                                    # the empty bubble explicit so the
+                                    # user doesn't think something ran
+                                    # silently.
+                                    placeholder = (
+                                        "(agent had no action to execute — "
+                                        "please clarify or rephrase)"
+                                    )
                             else:
                                 placeholder = "(commands executed)"
                             _update_last_assistant(placeholder, role_label)
@@ -13700,8 +13707,18 @@ def create_tab(ctx):
                         # feedback that goes back to the model doesn't
                         # contain the sentinel.
                         exec_results = real_results
-                        # Inject results and run the agent again
-                        feedback = "[Command results]\n" + "\n".join(exec_results)
+                        # Inject results and run the agent again. The
+                        # closing reminder keeps this wrap-up round from
+                        # drifting into narration or unprompted follow-up
+                        # questions: a satisfied request ends with /done.
+                        feedback = (
+                            "[Command results]\n" + "\n".join(exec_results)
+                            + "\n(Actions executed. If the request is now "
+                            "satisfied, close with a line `ACTION: /done` "
+                            "and at most a few words of prose. Otherwise "
+                            "emit the next required ACTION, or ask the one "
+                            "genuinely missing question.)"
+                        )
                         engine.messages.append(
                             {"role": "user", "content": feedback}
                         )
