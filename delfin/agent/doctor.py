@@ -276,6 +276,52 @@ def _check_benchmark(ctx: dict) -> list[dict]:
     )]
 
 
+def _check_bash_isolation(ctx: dict) -> list[dict]:
+    """Report whether shell commands run in a filesystem namespace.
+
+    Write-target gating refuses paths outside the workspace, but it reads
+    the command text — a subprocess started by that command is beyond it.
+    Only namespace isolation contains that, and it is opt-in because it
+    can disturb cluster workflows. Surfacing the state (and whether the
+    machine even supports it) lets the user decide instead of assuming.
+    """
+    mode = "auto"
+    try:
+        from delfin.user_settings import load_settings
+        mode = str(((load_settings() or {}).get("agent") or {})
+                   .get("bash_isolation", "auto") or "auto").strip().lower()
+    except Exception:
+        pass
+    try:
+        from delfin.agent.api_client import _bwrap_functional
+        usable = bool(_bwrap_functional())
+    except Exception:
+        usable = False
+
+    fix = ("set agent.bash_isolation = \"bwrap\" to contain shell writes "
+           "in every permission mode")
+    if mode == "bwrap":
+        if usable:
+            return [{"check": "bash isolation", "status": "PASS",
+                     "detail": "bwrap namespace active for every command"}]
+        return [{"check": "bash isolation", "status": "FAIL",
+                 "detail": "configured as bwrap but bwrap does not work here",
+                 "fix": "install bwrap, or set agent.bash_isolation "
+                        "= \"auto\" to fall back to the write gate"}]
+    if mode == "off":
+        return [{"check": "bash isolation", "status": "WARN",
+                 "detail": "explicitly off — only the write-target gate "
+                           "protects paths outside the workspace",
+                 "fix": fix}]
+    # "auto": isolated only in the unattended permission mode.
+    detail = ("auto — isolated in bypassPermissions only"
+              + ("" if usable else "; bwrap unusable here, so never isolated"))
+    return [{"check": "bash isolation", "status": "WARN",
+             "detail": detail, "fix": fix if usable else
+             "install bwrap for real containment; the write-target gate "
+             "stays active either way"}]
+
+
 def _check_memory_store(ctx: dict) -> list[dict]:
     """~/.delfin writable — memory/credential/session stores live there."""
     delfin_dir = Path.home() / ".delfin"
@@ -337,6 +383,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("benchmark truth", "_check_benchmark"),
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
+    ("bash isolation", "_check_bash_isolation"),
 )
 
 
