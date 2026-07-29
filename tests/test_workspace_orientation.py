@@ -115,3 +115,27 @@ def test_unknown_workspace_type_keeps_legacy_behaviour(tmp_path):
     assert loader.is_delfin_workspace is None
     prompt = loader.build_system_prompt("solo_agent", "task")
     assert "module guidance" in prompt
+
+
+def test_artifact_verification_rule_ships_in_the_contract():
+    """Field case 20260729-141616: the agent shipped start.sh as the way
+    to run the dashboard but verified voila by calling it directly, so an
+    invalid flag in the script reached the user."""
+    from pathlib import Path as _P
+    text = (_P(__file__).resolve().parent.parent / "delfin" / "agent"
+            / "pack" / "shared"
+            / "scientific_integrity_addendum.md").read_text(encoding="utf-8")
+    assert "Test the artifact you hand over" in text
+    assert "not a stand-in" in text
+    assert "named as untested" in text
+
+
+def test_bash_cwd_guidance_matches_reality():
+    """The prompt claimed chained `cd` was blocked; it is not. Guidance
+    that contradicts the runtime teaches the model to distrust it."""
+    from pathlib import Path as _P
+    prompt = (_P(__file__).resolve().parent.parent / "delfin" / "agent"
+              / "pack" / "agents" / "solo_agent.md").read_text(
+                  encoding="utf-8")
+    assert "bash(cd <path> && ...)` is blocked" not in prompt
+    assert "Prefer `cwd=<path>`" in prompt

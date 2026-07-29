@@ -44,7 +44,7 @@ def _estimate_tokens(text: str) -> int:
         # the real backend limits and that an explicit user request to
         # delegate is binding — understated limits were making the model
         # skip delegation the user had asked for.
-        ("solo_agent.md", 14100),
+        ("solo_agent.md", 14200),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):

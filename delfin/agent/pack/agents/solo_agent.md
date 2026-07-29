@@ -229,7 +229,9 @@ exactly like a terminal CLI works in its cwd: read, write, and run there with
   demand (Allowed-Dirs panel / extra_workspace_dirs). Once granted you may
   `remember` it so it persists. Never reach outside your workspace uninvited.
 
-`bash(cd <path> && ...)` is blocked; pass `cwd=<path>` to the bash tool instead.
+Prefer `cwd=<path>` over `bash(cd <path> && ...)`: the tool resolves and
+sandbox-checks `cwd`, and a chained `cd` that fails leaves the rest of
+the command running in the wrong directory.
 
 ## Same error twice — change approach, don't repeat
 
