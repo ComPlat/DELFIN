@@ -272,6 +272,25 @@ def _agent_watch_path(workspace: str | Path) -> Path:
     return Path(workspace).expanduser() / ".delfin" / _AGENT_WATCH_FILENAME
 
 
+def _classify_job_id(jid: str, workspace: str | Path) -> str:
+    """Decide whether ``jid`` is a background-bash job or a SLURM id.
+
+    The id SHAPE is not sufficient: background-bash ids are hex tokens,
+    and roughly one in forty is all digits, which the digit heuristic
+    then mistook for a SLURM job — its completion was polled via
+    squeue/sacct forever and never reported. The bash registry knows its
+    own jobs, so ask it first and keep the heuristic only for ids it does
+    not know (SLURM ids, or bash jobs from a process that is gone).
+    """
+    try:
+        from delfin.agent import bash_jobs as _bj
+        if _bj.get_registry().get(jid, workspace) is not None:
+            return "bash"
+    except Exception:
+        pass
+    return "slurm" if jid.isdigit() else "bash"
+
+
 def register_agent_job(
     workspace: str | Path,
     job_id_or_slurm_id: str,
@@ -287,7 +306,7 @@ def register_agent_job(
     jid = str(job_id_or_slurm_id).strip()
     if not jid:
         raise ValueError("job id must be non-empty")
-    kind = "slurm" if jid.isdigit() else "bash"
+    kind = _classify_job_id(jid, workspace)
     path = _agent_watch_path(workspace)
     data = load_watched(path)
     entry = {
