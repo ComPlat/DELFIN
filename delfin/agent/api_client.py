@@ -4478,12 +4478,23 @@ class _DocToolExecutor:
         # by another layer, and even if a per-tool handler forgot its own gate.
         auth_role = getattr(permissions, "agent_role", "") if permissions else ""
         if permissions is not None and _tool_denied_for_role(auth_role, name):
-            result = json.dumps({"error": (
-                f"Tool '{name}' is not available to the '{auth_role}' role. "
-                "The dashboard guide operates the UI via ACTION: slash-commands "
-                "and researches via search_docs — it does not read/edit source "
-                "or run shell commands."
-            )})
+            from . import action_protocol as _action_protocol
+            if (_action_protocol.role_uses_action_protocol(auth_role)
+                    and _action_protocol.is_action_style_call(name, arguments)):
+                # ACTION-protocol repair (defense in depth for dispatch paths
+                # that bypass the streaming tool loop's repair branch): the
+                # call is a text-protocol invocation, so return a
+                # constructive interpretation instead of a role-denial error.
+                result = _action_protocol.build_repair_result(
+                    _action_protocol.extract_slash_command(name, arguments),
+                    role=auth_role, tool_name=name)
+            else:
+                result = json.dumps({"error": (
+                    f"Tool '{name}' is not available to the '{auth_role}' role. "
+                    "The dashboard guide operates the UI via ACTION: slash-commands "
+                    "and researches via search_docs — it does not read/edit source "
+                    "or run shell commands."
+                )})
         elif block_reason:
             result = json.dumps({
                 "error": "blocked_by_hook",
@@ -8969,6 +8980,12 @@ class OpenAIClient(_BaseClient):
         # them to exit_plan_mode. (bug 20260718-185356: 20 blocked task_create
         # calls, ~318s / $0.17, before the model called exit_plan_mode.)
         _plan_redirect_sent = False
+        # ACTION-protocol repair bookkeeping: per-turn occurrence counter
+        # keyed by the repaired slash command ("" = unrecoverable). Repeat
+        # occurrences produce a different, escalating result, and each
+        # distinct command is registered on the text channel exactly once.
+        from . import action_protocol as _action_protocol
+        _action_repair_counts: dict[str, int] = {}
 
         # Scale the tool-output elision budget to the model's real context
         # window so a big-context model keeps its earlier file reads instead
@@ -9342,6 +9359,62 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name=fn_name,
+                            tool_output=result[:2000],
+                        )
+                        api_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        })
+                        _round_results.append(result)
+                        continue
+
+                    # ACTION-protocol repair: roles that drive the UI via
+                    # plain-text "ACTION: /command" lines sometimes emit the
+                    # protocol as a structured tool call (a tool named
+                    # ACTION, or the slash command itself as the tool name).
+                    # Dispatching can only yield an unknown-tool or
+                    # role-denial error, so repair instead: register the
+                    # recovered command on the text channel (downstream
+                    # ACTION parsers read accumulated assistant text) and
+                    # return a constructive, non-error result that steers
+                    # the model back to the text protocol. The result never
+                    # starts with {"error" and varies per occurrence, so
+                    # the consecutive-identical-error abort cannot fire on
+                    # repaired calls.
+                    _ap_role = (getattr(self._permissions, "agent_role", "")
+                                if self._permissions else "") or ""
+                    if (_action_protocol.role_uses_action_protocol(_ap_role)
+                            and _action_protocol.is_action_style_call(
+                                fn_name, fn_args)):
+                        _ap_cmd = _action_protocol.extract_slash_command(
+                            fn_name, fn_args)
+                        _action_repair_counts[_ap_cmd] = (
+                            _action_repair_counts.get(_ap_cmd, 0) + 1)
+                        _ap_attempt = _action_repair_counts[_ap_cmd]
+                        result = _action_protocol.build_repair_result(
+                            _ap_cmd, role=_ap_role, attempt=_ap_attempt,
+                            registered=bool(_ap_cmd), tool_name=fn_name)
+                        _ap_display = (fn_name if fn_name.startswith("mcp__")
+                                       else f"mcp__delfin-docs__{fn_name}")
+                        yield StreamEvent(
+                            type="tool_use",
+                            tool_name=_ap_display,
+                            tool_input=json.dumps(fn_args),
+                        )
+                        if _ap_cmd and _ap_attempt == 1:
+                            # Text-channel registration: emit the canonical
+                            # ACTION line once so downstream parsers pick it
+                            # up exactly as model-written text (their safety
+                            # tiers and confirmation gates still apply).
+                            yield StreamEvent(
+                                type="text_delta",
+                                text="\n" + _action_protocol
+                                .canonical_action_line(_ap_cmd) + "\n",
+                            )
+                        yield StreamEvent(
+                            type="tool_result",
+                            tool_name=_ap_display,
                             tool_output=result[:2000],
                         )
                         api_messages.append({
