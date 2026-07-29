@@ -1398,6 +1398,24 @@ def _wait_chip_html(text: str) -> str:
     )
 
 
+def _count_post_plan_executions(entries: list) -> int:
+    """Write/command tool calls recorded AFTER the last exit_plan_mode
+    submission. Non-zero means a restored 'pending' plan actually ran
+    before the session died — the restore notice must say so instead of
+    asking the user to approve it again."""
+    executed = 0
+    seen_exit = False
+    for e in entries or []:
+        tool = str((e or {}).get("tool") or (e or {}).get("name") or "")
+        if tool.endswith("exit_plan_mode"):
+            seen_exit = True
+            executed = 0
+        elif seen_exit and any(k in tool for k in (
+                "write_file", "bash", "edit", "apply_patch", "notebook")):
+            executed += 1
+    return executed
+
+
 def _extract_action_commands(agent_text: str) -> list[str]:
     """Pull every ``ACTION: /command`` line out of an agent response.
 
@@ -5061,10 +5079,35 @@ def create_tab(ctx):
         pending_plan = data.get("pending_plan_body") or ""
         if pending_plan:
             state["_pending_plan_body"] = pending_plan
-            _append_system_message(
-                "📋 A pending plan was restored from the saved session. "
-                "Switch to /mode plan to review + approve it."
-            )
+            # The saved chat only knows turns that COMPLETED — a crash
+            # mid-execution (field case: the agent killed its own host
+            # process) leaves the plan marked pending although work
+            # already ran. The tool trace persists per call, so it is
+            # the honest source: count write/command calls after the
+            # plan submission before claiming the plan awaits approval.
+            _executed = 0
+            try:
+                from delfin.agent import tool_trace as _tt
+                _sid = (data.get("session_id")
+                        or str(getattr(engine, "session_id", "") or ""))
+                _executed = _count_post_plan_executions(
+                    _tt.read(_sid) if _sid else [])
+            except Exception:
+                _executed = 0
+            if _executed:
+                _append_system_message(
+                    f"📋 The saved session's plan was already approved and "
+                    f"EXECUTED at least partially ({_executed} write/command "
+                    f"call(s) after submission), but the executing turn was "
+                    f"interrupted before its chat was saved. Check the "
+                    f"workspace for finished work products before re-running "
+                    f"anything — /changes lists what was written."
+                )
+            else:
+                _append_system_message(
+                    "📋 A pending plan was restored from the saved session. "
+                    "Switch to /mode plan to review + approve it."
+                )
         # Active gate — restoring lets a paused approval keep its banner.
         saved_gate = data.get("active_gate")
         if isinstance(saved_gate, dict) and saved_gate.get("type"):

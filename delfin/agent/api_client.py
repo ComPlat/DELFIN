@@ -698,6 +698,108 @@ class APIClient(_BaseClient):
 # Bash patterns that are ALWAYS rejected (case-insensitive substring/regex
 # match against the raw command string). Keep this list tight: false positives
 # block the user, but missing entries can cause real damage.
+def _host_process_ancestry() -> list[tuple[int, str, str]]:
+    """[(pid, name, cmdline)] for this process and its ancestors.
+
+    The agent's session runs INSIDE a host stack (Voila server -> Jupyter
+    kernel, or a terminal session); a broad process-kill that matches an
+    ancestor kills the very UI hosting the agent (observed in the field:
+    ``pkill -f "voila.*8866"`` took down the user's dashboard mid-turn,
+    losing the whole unpersisted turn). Linux /proc walk; empty list when
+    unavailable. Never raises.
+    """
+    out: list[tuple[int, str, str]] = []
+    try:
+        pid = os.getpid()
+        for _ in range(32):
+            with open(f"/proc/{pid}/stat", encoding="utf-8",
+                      errors="replace") as fh:
+                stat = fh.read()
+            comm = stat[stat.index("(") + 1:stat.rindex(")")]
+            ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+            try:
+                cmdline = (Path(f"/proc/{pid}/cmdline").read_bytes()
+                           .replace(b"\0", b" ").decode(errors="replace")
+                           .strip())
+            except OSError:
+                cmdline = ""
+            out.append((pid, comm, cmdline))
+            if ppid <= 1:
+                break
+            pid = ppid
+    except Exception:
+        return []
+    return out
+
+
+# Host stacks DELFIN sessions are known to run under — the conservative
+# fallback when /proc ancestry is unavailable.
+_HOST_STACK_RE = re.compile(r"(?i)\b(?:voila|jupyter|ipykernel)\b")
+
+
+def _kill_targets_host_process(
+    command: str,
+    ancestry: list[tuple[int, str, str]] | None = None,
+) -> str:
+    """Reason string when ``command`` would kill this session's host
+    process (pkill/killall pattern or kill PID matching an ancestor),
+    else "". Precise where /proc is readable; falls back to blocking
+    kill patterns naming known host stacks. Never raises."""
+    try:
+        if not re.search(r"(?:^|[;&|(\s])(?:pkill|killall|kill)\b", command):
+            return ""
+        anc = _host_process_ancestry() if ancestry is None else ancestry
+        for m in re.finditer(
+                r"(?:^|[;&|(]\s*)\s*(pkill|killall|kill)\b([^;&|)]*)",
+                command):
+            tool, rest = m.group(1), m.group(2)
+            try:
+                import shlex
+                argv = shlex.split(rest)
+            except Exception:
+                argv = rest.split()
+            flags = [a for a in argv if a.startswith("-")]
+            args = [a for a in argv if not a.startswith("-")]
+            if tool == "kill":
+                pids = {int(a) for a in args if a.isdigit()}
+                hit = [a for a in anc if a[0] in pids]
+                if hit:
+                    return (f"kill {hit[0][0]} targets this session's host "
+                            f"process ({hit[0][1]})")
+                continue
+            if not args:
+                continue
+            if not anc:
+                # No ancestry available — conservative: block kill patterns
+                # naming a known host stack.
+                for a in args:
+                    if _HOST_STACK_RE.search(a):
+                        return (f"{tool} pattern '{a}' names the stack "
+                                "hosting this session")
+                continue
+            for pattern in args:
+                try:
+                    rx = re.compile(pattern)
+                except re.error:
+                    rx = None
+                for _pid, name, cmdline in anc:
+                    if tool == "killall":
+                        matched = pattern == name
+                    elif "-f" in flags:
+                        matched = bool(rx.search(cmdline) if rx
+                                       else pattern in cmdline)
+                    else:
+                        matched = bool(rx.search(name) if rx
+                                       else pattern in name)
+                    if matched:
+                        excerpt = (cmdline or name)[:90]
+                        return (f"{tool} pattern '{pattern}' matches this "
+                                f"session's host process: {excerpt}")
+    except Exception:
+        return ""
+    return ""
+
+
 _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])\b",
     r"\brm\s+-[a-zA-Z]*\s+/(?:\s|$)",
@@ -6602,6 +6704,20 @@ class _DocToolExecutor:
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
+
+        # Self-preservation (all modes, incl. bypassPermissions): a broad
+        # process kill matching this session's own host stack would take
+        # down the UI mid-turn and lose the unpersisted turn state.
+        _host_hit = _kill_targets_host_process(cmd)
+        if _host_hit:
+            return json.dumps({"error": (
+                f"blocked: {_host_hit}. Killing the hosting process would "
+                "terminate this session and lose the current turn. Stop "
+                "only processes YOU started: use bash_kill(job_id) for "
+                "background jobs, or kill a specific PID you spawned — "
+                "never broad pkill/killall patterns that can match the "
+                "host stack."
+            )})
         timeout = int(arguments.get("timeout_s", perms.bash_timeout_s) or perms.bash_timeout_s)
         timeout = max(1, min(timeout, perms.bash_max_timeout_s))
         cwd_arg = arguments.get("cwd", "") or ""

@@ -1459,3 +1459,54 @@ def test_wait_chip_renders_and_clears():
     assert "…" in long
     # HTML in the wait text must be escaped, not rendered.
     assert "<script>" not in _wait_chip_html("<script>alert(1)</script>")
+
+
+# ---------------------------------------------------------------------------
+# Honest restore: a "pending" plan that already executed must say so
+# ---------------------------------------------------------------------------
+
+
+def _trace(*tools):
+    return [{"tool": t} for t in tools]
+
+
+def test_post_plan_executions_counted_from_field_case():
+    """Shape of archive case 20260729-112242: plan submitted, then the
+    execution turn ran writes/bash before the host died."""
+    from delfin.dashboard.tab_agent import _count_post_plan_executions
+    entries = _trace(
+        "mcp__kit-coding__project_introspect",
+        "mcp__kit-coding__task_create",
+        "mcp__kit-coding__exit_plan_mode",
+        "mcp__kit-coding__task_update",
+        "mcp__kit-coding__bash",
+        "mcp__kit-coding__write_file",
+        "mcp__kit-coding__bash_background",
+        "mcp__kit-coding__bash_kill",
+    )
+    assert _count_post_plan_executions(entries) == 4
+
+
+def test_no_execution_after_plan_submission_counts_zero():
+    from delfin.dashboard.tab_agent import _count_post_plan_executions
+    assert _count_post_plan_executions(_trace(
+        "mcp__kit-coding__task_create",
+        "mcp__kit-coding__exit_plan_mode",
+        "mcp__kit-coding__task_update",
+    )) == 0
+    # Writes BEFORE the submission belong to an earlier phase.
+    assert _count_post_plan_executions(_trace(
+        "mcp__kit-coding__write_file",
+        "mcp__kit-coding__exit_plan_mode",
+    )) == 0
+    assert _count_post_plan_executions([]) == 0
+    assert _count_post_plan_executions([{}, {"name": ""}]) == 0
+
+
+def test_resubmitted_plan_resets_the_counter():
+    from delfin.dashboard.tab_agent import _count_post_plan_executions
+    assert _count_post_plan_executions(_trace(
+        "mcp__kit-coding__exit_plan_mode",
+        "mcp__kit-coding__bash",
+        "mcp__kit-coding__exit_plan_mode",
+    )) == 0
