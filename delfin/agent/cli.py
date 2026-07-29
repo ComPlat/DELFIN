@@ -732,6 +732,22 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """One-surface prerequisite report: docs index, credentials,
+    binaries, Python deps, MCP servers, scheduler, attention inbox,
+    benchmark ground truth, memory store, disk space.
+
+    Exit code 1 when any check FAILs (warnings alone exit 0), so the
+    command is scriptable as a pre-flight gate.
+    """
+    from . import doctor as _doc
+
+    workspace = getattr(args, "workspace", "") or None
+    results = _doc.run_doctor(workspace)
+    print(_doc.format_doctor(results))
+    return 1 if any(r.get("status") == "FAIL" for r in results) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m delfin.agent.cli",
@@ -921,6 +937,17 @@ def build_parser() -> argparse.ArgumentParser:
     sched_stop.set_defaults(scheduler_action="stop")
 
     sched.set_defaults(func=cmd_scheduler, scheduler_action="status")
+
+    # doctor — aggregate prerequisite health report
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check all prerequisites in one report (docs index, "
+             "credentials, binaries, deps, MCP, scheduler, inbox, "
+             "benchmark truth, memory store, disk); exit 1 on any FAIL",
+    )
+    doctor.add_argument("--workspace", default="",
+                        help="Workspace directory (default: current dir)")
+    doctor.set_defaults(func=cmd_doctor)
 
     return p
 
