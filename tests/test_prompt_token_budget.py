@@ -20,31 +20,27 @@ def _estimate_tokens(text: str) -> int:
     return (len(text) + 3) // 4
 
 
-# Budgets reflect the post-P4 prompts (verify-enforcement, the 8-pattern
-# playbook, ORCA-builder grounding docs were all deliberate additions
-# after the original S2 slim-down) with ~8% headroom, so any further
-# creep fails immediately. A deliberate "prompt diet" — trimming these
-# back down WITH benchmark validation — is on the backlog; shrink the
-# budgets again when it lands.
+# Budgets are set just above the CURRENT prompt sizes, so any regrowth
+# fails immediately. The prompt diet removed duplicated rules (the same
+# contract stated in a role prompt AND a shared addendum), worked examples
+# that restated a rule already given, historical incident narrative, and
+# blocks that re-listed what a tool schema already declares. No behavioral
+# contract was dropped — extending one is fine, but pay for it by trimming
+# elsewhere rather than by raising the number.
 @pytest.mark.parametrize(
     "filename, max_tokens",
     [
-        # Raised 7500 -> 7700 for the destructive-request carve-out in the
-        # mode-switch redirect block (refuse in own voice, never redirect a
-        # destructive act to the code mode). Content is intentional; keep
-        # growth in check.
-        # Raised 7700 -> 7950 for the turn-closing contract (satisfied
-        # requests close with ACTION: /done in the same response; questions
-        # only for genuinely missing information). Content is intentional;
-        # keep growth in check.
-        ("dashboard_agent.md", 7950),
-        # Raised 13800 -> 14000 for the workspace/CLI orchestration guidance
-        # (launch-dir = workspace). Content is intentional; keep growth in check.
-        # Raised 14000 -> 14100 (2026-07-29): the subagent section states
-        # the real backend limits and that an explicit user request to
-        # delegate is binding — understated limits were making the model
-        # skip delegation the user had asked for.
-        ("solo_agent.md", 14200),
+        # 7950 -> 7150: dropped the two worked ACTION examples (they restate
+        # the plan-first / verify-after-set rules stated above them), the
+        # ORCA counter-example lists, and the duplicated tab-set + command-
+        # discovery blocks.
+        ("dashboard_agent.md", 7150),
+        # 14200 -> 10600: dropped the worked-example dialogs and the
+        # "how these compound" walk-through, folded the three separate
+        # workspace-location statements into one, compressed the sandbox
+        # internals, and removed tool-signature listings that duplicate the
+        # tool schemas.
+        ("solo_agent.md", 10600),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
@@ -56,6 +52,39 @@ def test_role_prompt_within_token_budget(filename, max_tokens):
     assert actual <= max_tokens, (
         f"{filename}: {actual} tokens (>{max_tokens} budget). "
         f"Trim before extending."
+    )
+
+
+# The file budgets above guard the markdown. This one guards what the model
+# actually receives: the CACHEABLE HEAD of the composed prompt (role prompt +
+# shared addenda + project context). It is the part that is re-sent verbatim
+# on every request of a session, so it is where prompt cost is decided.
+@pytest.mark.parametrize(
+    "role_id, mode_id, route, max_stable_tokens",
+    [
+        ("solo_agent", "solo", ["solo_agent"], 11400),
+        ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
+    ],
+)
+def test_composed_stable_head_within_budget(
+        monkeypatch, role_id, mode_id, route, max_stable_tokens):
+    from delfin import user_settings
+    from delfin.agent.prompt_loader import PromptLoader
+
+    # Pin the lazy-module setting so the budget measures the prompt, not the
+    # machine's local configuration.
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda *a, **k: {"agent": {"slim_prompt": True}})
+
+    report = PromptLoader().prompt_size_report(
+        role_id=role_id, mode_id=mode_id, route=route,
+        task_text="fix the failing test in foo.py",
+        session_key="budget-1")
+    actual = report["stable_tokens"]
+    assert actual <= max_stable_tokens, (
+        f"{role_id}: cacheable head is {actual} tokens "
+        f"(>{max_stable_tokens} budget). Trim before extending."
     )
 
 

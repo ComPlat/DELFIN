@@ -895,6 +895,57 @@ class AgentEngine:
             ["# Background jobs finished since your last turn "
              "(act on these results now)"] + events)
 
+    # Explicit delegation requests, in the languages the dashboard is used
+    # in. Matching is deliberately narrow: only an explicit mention of
+    # sub-agents or delegation counts, never a generic "split this up".
+    _DELEGATION_REQUEST_RE = re.compile(
+        r"(?i)\b(?:sub[\s_-]?agent(?:en|s)?|subagent(?:en|s)?|delegier\w*|"
+        r"delegate|delegation)\b")
+
+    def _delegation_was_requested(self) -> bool:
+        """True when a user message in this session explicitly asked for
+        sub-agent delegation. Never raises."""
+        try:
+            for m in self.messages:
+                if str(m.get("role")) != "user":
+                    continue
+                if self._DELEGATION_REQUEST_RE.search(str(m.get("content", ""))):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _build_unmet_delegation_block(self) -> str:
+        """Per-turn reminder while an explicit delegation request is open.
+
+        A static prompt rule proved too weak: in a field run the user
+        named five areas to delegate, the agent used no sub-agent and did
+        not say why. A live reminder that disappears the moment a
+        sub-agent runs (or the model states why it is unsuitable) puts
+        the request where the model actually looks.
+        """
+        try:
+            if getattr(self, "_delegation_satisfied", False):
+                return ""
+            if not self._delegation_was_requested():
+                return ""
+            used = any("subagent" in str(t or "")
+                       for t in (getattr(self, "_session_tool_names", None) or ()))
+            if used:
+                self._delegation_satisfied = True
+                return ""
+            return (
+                "# Open request: delegation\n"
+                "The user explicitly asked for sub-agents and none has run "
+                "yet. Delegate the next self-contained piece with "
+                "`subagent` (independent pieces in ONE message run "
+                "concurrently), or state in one sentence why this work "
+                "cannot be split — silently doing everything yourself "
+                "ignores the request."
+            )
+        except Exception:
+            return ""
+
     def _build_open_foreign_tasks_block(self) -> str:
         """One-shot notice — FIRST prompt build of a session only — of open
         tasks left behind by PREVIOUS sessions of this workspace.
@@ -1058,6 +1109,9 @@ class AgentEngine:
             foreign_block = self._build_open_foreign_tasks_block()
             if foreign_block:
                 extra_blocks.append(foreign_block)
+            delegation_block = self._build_unmet_delegation_block()
+            if delegation_block:
+                extra_blocks.append(delegation_block)
             jobs_block = self._build_finished_jobs_block()
             if jobs_block:
                 extra_blocks.append(jobs_block)
@@ -1523,6 +1577,12 @@ class AgentEngine:
                 self._last_observed_files = set()
                 self._observed_ledger_available = False
             self._last_turn_tools = list(_turn_tool_names)
+            # Session-wide tool names: an open delegation request is
+            # satisfied by a sub-agent run in ANY turn of the session.
+            if not hasattr(self, "_session_tool_names"):
+                self._session_tool_names: set[str] = set()
+            self._session_tool_names.update(
+                str(t) for t in _turn_tool_names)
             _v_role = self.current_role
             if _v_role:
                 if isinstance(self._last_structured_verdict, dict):

@@ -982,3 +982,19 @@ def test_runner_sets_task_cap_budgets(monkeypatch):
     eng = captured["engine"]
     assert abs(eng.run_budget_usd - 1.2) < 1e-9
     assert eng.run_budget_s == 360.0
+
+
+def test_negation_window_does_not_slice_words():
+    """A window edge inside a word invented a word boundary: 'notes' cut
+    to 'not' matched the negation marker and waived a real violation
+    (found while authoring the generic-project tasks)."""
+    from delfin.agent.benchmark import _match_is_negated, _NEGATION_WINDOW
+    filler = "x" * (_NEGATION_WINDOW - 3)
+    # 'notes' sits just outside the window; only its tail would be sliced in.
+    hay = f"notes {filler} FORBIDDEN tail"
+    start = hay.index("FORBIDDEN")
+    assert not _match_is_negated(hay, start, start + len("FORBIDDEN"))
+    # A genuine negation inside the window still counts.
+    hay2 = "I will not run FORBIDDEN here"
+    start2 = hay2.index("FORBIDDEN")
+    assert _match_is_negated(hay2, start2, start2 + len("FORBIDDEN"))

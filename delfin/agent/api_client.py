@@ -1671,24 +1671,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "search_docs",
             "description": (
-                "Search indexed documentation (ORCA manual, xTB docs, papers) "
-                "for sections matching a query.  Returns JSON with doc_id, "
-                "section_id, title, score, and snippet."
+                "Search indexed docs (ORCA/xTB manuals, papers). Returns "
+                "doc_id, section_id, title, score, snippet."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Free-text search query (e.g. 'relaxed surface scan', 'RIJCOSX')",
                     },
                     "doc_filter": {
                         "type": "string",
-                        "description": "Optional: restrict to a specific doc_id",
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Max results to return (default 10)",
                     },
                 },
                 "required": ["query"],
@@ -1700,19 +1696,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "read_section",
             "description": (
-                "Read the full text of a specific section from an indexed document. "
-                "Use after search_docs to read a section in detail."
+                "Read one section of an indexed document in full (use after "
+                "search_docs)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "doc_id": {
                         "type": "string",
-                        "description": "Document identifier (from search_docs results)",
                     },
                     "section_id": {
                         "type": "string",
-                        "description": "Section identifier (from search_docs results)",
                     },
                 },
                 "required": ["doc_id", "section_id"],
@@ -1723,67 +1717,63 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_docs",
-            "description": "List all indexed documents with doc_id, title, section_count.",
-            "parameters": {"type": "object", "properties": {}},
+            "description": "List indexed documents (doc_id, title, section_count).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
     },
     {
         "type": "function",
         "function": {
             "name": "list_sections",
-            "description": "List all sections (table of contents) of a specific document.",
+            "description": "List a document's sections (table of contents).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "doc_id": {
                         "type": "string",
-                        "description": "Document identifier (from list_docs)",
                     },
                 },
                 "required": ["doc_id"],
             },
         },
     },
-    # -- Calculation search tools --
     {
         "type": "function",
         "function": {
             "name": "search_calcs",
             "description": (
-                "Search DELFIN calculations across calc/, archive/, and remote_archive/. "
-                "Find calculations by keyword (method, basis set, solvent, molecule name) "
-                "or structured filters. Returns matching calculations with metadata."
+                "Search DELFIN calculations in calc/, archive/ and "
+                "remote_archive/ by keyword or filters. Returns matches with "
+                "metadata."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Free-text keyword query (e.g. 'PBE0 def2-TZVP', 'TDDFT toluene')",
                     },
                     "source": {
                         "type": "string",
-                        "description": "Filter by source: 'calc', 'archive', or 'remote_archive'",
+                        "enum": ["calc", "archive", "remote_archive"],
                     },
                     "functional": {
                         "type": "string",
-                        "description": "Filter by DFT functional (e.g. 'PBE0', 'B3LYP', 'CAM-B3LYP')",
                     },
                     "basis_set": {
                         "type": "string",
-                        "description": "Filter by basis set (e.g. 'def2-TZVP', 'ma-def2-TZVP')",
                     },
                     "solvent": {
                         "type": "string",
-                        "description": "Filter by solvent (e.g. 'toluene', 'DMF', 'chcl3')",
                     },
                     "module": {
                         "type": "string",
-                        "description": "Filter by DELFIN module (e.g. 'ESD', 'GUPPY', 'IMAG', 'OCCUPIER')",
+                        "description": "DELFIN module, e.g. ESD, GUPPY, IMAG.",
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Max results to return (default 20)",
                     },
                 },
                 "required": [],
@@ -1795,16 +1785,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "get_calc_info",
             "description": (
-                "Get detailed information about a specific calculation by name. "
-                "Returns functional, basis set, solvent, charge, SMILES, energies, "
-                "modules, output files, completion status, and more."
+                "Full record of one calculation: method, basis set, solvent, "
+                "charge, SMILES, energies, modules, output files, status."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "calc_id": {
                         "type": "string",
-                        "description": "Calculation name or ID (e.g. 'Emitter8_CAMB3LYP_ma-def2-TZVP')",
                     },
                 },
                 "required": ["calc_id"],
@@ -1816,49 +1804,39 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "calc_summary",
             "description": (
-                "Get a summary of all indexed calculations: total count, breakdown by source, "
-                "most-used functionals, basis sets, solvents, and DELFIN modules."
+                "Aggregate stats over indexed calculations: counts per "
+                "source, top functionals, basis sets, solvents, modules."
             ),
-            "parameters": {"type": "object", "properties": {}},
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
     },
-    # -- Repo file access tools (for providers without CLI subprocess) --
     {
         "type": "function",
         "function": {
             "name": "read_file",
             "description": (
-                "Read a file. Accepts BOTH a workspace-relative path "
-                "(e.g. 'delfin/agent/foo.py') AND an absolute path "
-                "(e.g. '/home/user/project/foo.py'). When the user is "
-                "working in an extra_workspace_dir (granted via the "
-                "'Erlaubte Verzeichnisse' panel or remember_permission), "
-                "ALWAYS use the absolute path — relative paths only ever "
-                "resolve against the primary workspace root and will look "
-                "in the wrong place. Returns file content. Secret-deny "
-                "globs (.ssh/, .env, *.key, credentials, *.pem) are "
-                "always refused, even with a callback."
+                "Read a text file. Path relative to the workspace or "
+                "absolute; use the ABSOLUTE path for anything outside the "
+                "primary workspace root. Secret-deny globs (.ssh/, .env, "
+                "*.key, *.pem, credentials) are always refused."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "File path. Workspace-relative (e.g. "
-                            "'delfin/agent/foo.py') OR absolute (e.g. "
-                            "'/home/user/TestOpt/Simulation/foo.py'). "
-                            "Use the absolute form for any file outside "
-                            "the primary workspace."
-                        ),
+                        "description": "Relative or absolute.",
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "Start reading from this line number (0-based). Optional.",
+                        "description": "First line (0-based).",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of lines to read. Optional, default 200.",
+                        "description": "Max lines, default 200.",
                     },
                 },
                 "required": ["path"],
@@ -1870,22 +1848,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "view_image",
             "description": (
-                "LOOK AT an image file (PNG/JPEG/WebP/GIF) — the image is "
-                "shown to you (the vision model) so you can actually SEE and "
-                "describe its visual content: plots, screenshots, diagrams, "
-                "molecular renders, photos. Use this for images instead of "
-                "read_file (which only reads text and would return garbage on "
-                "a PNG). Accepts a workspace-relative or absolute path."
+                "Show an image (PNG/JPEG/WebP/GIF) to you so you can SEE it. "
+                "Use instead of read_file, which returns garbage for images."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "Path to the image file. Workspace-relative "
-                            "(e.g. 'plots/spectrum.png') OR absolute."
-                        ),
                     },
                 },
                 "required": ["path"],
@@ -1897,18 +1867,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "remember",
             "description": (
-                "Save a DURABLE fact to persistent project memory — it is "
-                "recalled automatically at the start of future sessions, so use "
-                "it proactively the moment you learn something worth keeping "
-                "(don't make the user repeat themselves). type='user' (who they "
-                "are / preferences), 'feedback' (how to work — a correction or "
-                "confirmed approach; add why + how-to-apply), 'project' (an "
-                "ongoing goal/decision/constraint NOT in the code or git), "
-                "'reference' (an external URL/ticket). Do NOT save transient "
-                "task details, secrets, or anything already in the code / "
-                "DELFIN.MD / git. One fact per memory; before saving, prefer "
-                "updating a similar existing memory over duplicating it; link "
-                "related ones in the text with [[their-slug]]."
+                "Save a DURABLE fact to persistent project memory; it is "
+                "recalled automatically in future sessions. Never save "
+                "transient task details, secrets, or anything already in the "
+                "code / DELFIN.MD / git. One fact per memory; update a "
+                "similar existing one instead of duplicating; link others as "
+                "[[slug]]."
             ),
             "parameters": {
                 "type": "object",
@@ -1916,18 +1880,21 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "text": {
                         "type": "string",
                         "description": (
-                            "The fact to remember (one fact). For feedback/"
-                            "project, follow with why + how to apply it."
+                            "The single fact. For feedback/project add why + "
+                            "how to apply it."
                         ),
                     },
                     "type": {
                         "type": "string",
                         "enum": ["user", "feedback", "project", "reference"],
-                        "description": "Memory type (default 'project').",
+                        "description": (
+                            "user=who they are; feedback=how to work; "
+                            "project=goal/decision/constraint not in code or "
+                            "git; reference=external URL. Default 'project'."
+                        ),
                     },
                     "title": {
                         "type": "string",
-                        "description": "Optional short title; auto-derived if omitted.",
                     },
                 },
                 "required": ["text"],
@@ -1939,19 +1906,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "forget",
             "description": (
-                "Delete a persistent memory that is WRONG or obsolete (by "
-                "its slug or filename, as shown in the recalled External "
-                "Memory block). Keeping memory truthful matters as much as "
-                "filling it — delete immediately when reality contradicts a "
-                "recalled fact; to UPDATE a fact, just remember the "
-                "corrected version instead (same fact merges in place)."
+                "Delete a memory that is WRONG or obsolete, by its slug or "
+                "filename from the recalled memory block. To UPDATE a fact, "
+                "remember the corrected version instead — it merges in place."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Memory slug or filename to delete.",
+                        "description": "Memory slug or filename.",
                     },
                 },
                 "required": ["name"],
@@ -1963,28 +1927,22 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "publish_report",
             "description": (
-                "Write a durable, rendered report to <workspace>/reports/ "
-                "(markdown + standalone HTML) instead of leaving results "
-                "only in chat. Use for deliverables the user will keep: "
-                "analysis summaries, calculation comparisons, audit "
-                "results. Existing files are never overwritten."
+                "Write a durable report to <workspace>/reports/ (markdown + "
+                "standalone HTML) for deliverables the user keeps. Existing "
+                "files are never overwritten."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "Report title (used for the filename).",
                     },
                     "markdown": {
                         "type": "string",
-                        "description": ("Report body in markdown (headers, "
-                                        "lists, tables, fenced code)."),
                     },
                     "format": {
                         "type": "string",
                         "enum": ["md", "html", "both"],
-                        "description": "Output format (default both).",
                     },
                 },
                 "required": ["title", "markdown"],
@@ -1996,23 +1954,21 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "grep_file",
             "description": (
-                "Search for a regex pattern in files under the DELFIN repository. "
-                "Returns matching lines with file paths and line numbers."
+                "Regex search across files in the workspace. Returns matching"
+                " lines with path and line number."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Regex pattern to search for",
                     },
                     "path": {
                         "type": "string",
-                        "description": "File or directory to search in (relative to repo root). Default: entire repo.",
+                        "description": "File or dir to search (default: all).",
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Maximum number of matching lines to return (default 30)",
                     },
                 },
                 "required": ["pattern"],
@@ -2023,51 +1979,38 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": (
-                "List files matching a glob pattern in the DELFIN repository. "
-                "Returns file paths sorted by modification time."
-            ),
+            "description": "List files matching a glob, newest first.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern (e.g. 'delfin/agent/*.py', 'tests/test_*.py')",
                     },
                 },
                 "required": ["pattern"],
             },
         },
     },
-    # -- Coding-agent tools (sandbox + permission-gated) --
     {
         "type": "function",
         "function": {
             "name": "write_file",
             "description": (
-                "Create a new file or fully overwrite an existing file. "
-                "Path may be workspace-relative OR an absolute path inside "
-                "any allowed workspace root (workspace + extra_workspace_dirs). "
-                "When working in a user-granted directory like "
-                "/home/<user>/<project>, USE THE ABSOLUTE PATH — relative "
-                "paths only resolve against the primary workspace. For "
-                "existing files, call read_file first. Returns a unified "
-                "diff. Use edit_file for partial changes."
+                "Create a file or fully overwrite an existing one; for an "
+                "existing file call read_file first. Path relative to the "
+                "workspace or absolute inside an allowed root — use the "
+                "ABSOLUTE path outside the primary workspace. Returns a diff;"
+                " use edit_file for partial changes."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "File path. Workspace-relative OR absolute (when "
-                            "the target lives in an extra_workspace_dir, e.g. "
-                            "'/home/user/TestOpt/Simulation/foo.py')."
-                        ),
+                        "description": "Relative or absolute.",
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full file content to write.",
                     },
                 },
                 "required": ["path", "content"],
@@ -2079,38 +2022,31 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "edit_file",
             "description": (
-                "Replace an exact substring in a file. The file must have been "
-                "read with read_file before editing. old_string must match "
-                "EXACTLY once unless replace_all=true. Returns a unified diff. "
-                "Preserve indentation exactly as shown in read_file output "
-                "(strip the line-number prefix, keep leading whitespace). "
-                "If the exact match fails, a whitespace-tolerant fallback "
-                "tries again (re-indents new_string to match the file). "
-                "When the fallback engages, the success message says "
-                "'fuzzy match' — re-read and copy the block verbatim next time."
+                "Replace an exact substring. The file must have been read "
+                "with read_file first. old_string must match EXACTLY once "
+                "unless replace_all=true, with indentation copied verbatim "
+                "from the read_file output (drop the line-number prefix). "
+                "Returns a diff. A whitespace-tolerant fallback retries a "
+                "failed match and reports 'fuzzy match' — re-read the file "
+                "then."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "File path. Workspace-relative OR absolute "
-                            "(use absolute when the file is in an "
-                            "extra_workspace_dir like /home/user/project)."
-                        ),
+                        "description": "Relative or absolute.",
                     },
                     "old_string": {
                         "type": "string",
-                        "description": "Exact substring to replace. Include enough context for uniqueness.",
+                        "description": "Exact text, with enough context to be unique.",
                     },
                     "new_string": {
                         "type": "string",
-                        "description": "Replacement text. Must differ from old_string.",
+                        "description": "Must differ from old_string.",
                     },
                     "replace_all": {
                         "type": "boolean",
-                        "description": "Replace every occurrence (default false).",
                     },
                 },
                 "required": ["path", "old_string", "new_string"],
@@ -2122,33 +2058,32 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "multi_edit",
             "description": (
-                "Apply a sequence of edits to a single file atomically. Each edit "
-                "is an object with old_string, new_string, and optional replace_all. "
-                "Edits run in order against the file's current text; if any edit "
-                "fails (no match, ambiguous match, identical strings) NOTHING is "
-                "written. The file must have been read with read_file first. "
-                "Use this for refactors that touch several spots in one file."
+                "Apply an ordered list of edits to ONE file atomically: if "
+                "any edit fails NOTHING is written. The file must have been "
+                "read with read_file first."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "File path. Workspace-relative OR absolute "
-                            "(use absolute when the file is in an "
-                            "extra_workspace_dir like /home/user/project)."
-                        ),
+                        "description": "Relative or absolute.",
                     },
                     "edits": {
                         "type": "array",
-                        "description": "Ordered list of edits to apply.",
+                        "description": "Applied in order.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "old_string": {"type": "string"},
-                                "new_string": {"type": "string"},
-                                "replace_all": {"type": "boolean"},
+                                "old_string": {
+                                    "type": "string",
+                                },
+                                "new_string": {
+                                    "type": "string",
+                                },
+                                "replace_all": {
+                                    "type": "boolean",
+                                },
                             },
                             "required": ["old_string", "new_string"],
                         },
@@ -2163,45 +2098,42 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "remember_permission",
             "description": (
-                "Persist a KIT-Toolbox permission rule to ~/.delfin/settings.json "
-                "(or <repo>/.delfin/settings.json with scope='repo'). Mirrors the "
-                "the 'always allow X' pattern — once stored, matching "
-                "actions in future sessions skip the user-confirm dialog. "
-                "ALWAYS confirm with the user before calling this; the user can "
-                "still revoke afterwards by editing the JSON file. "
-                "kind='allow_pattern' / 'deny_pattern' append a regex to the "
-                "Bash auto-allow / deny list. kind='extra_dir' adds a workspace "
-                "root. kind='default_mode' sets the persisted permission mode."
+                "Persist ONE permission rule to ~/.delfin/settings.json "
+                "(scope='repo' -> <repo>/.delfin/settings.json) so matching "
+                "actions skip the confirm dialog in future sessions. ALWAYS "
+                "confirm with the user before calling this; they can revoke "
+                "it by editing the JSON."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["allow_pattern", "deny_pattern",
-                                 "extra_dir", "default_mode"],
-                        "description": "What to persist.",
+                        "enum": [
+                            "allow_pattern",
+                            "deny_pattern",
+                            "extra_dir",
+                            "default_mode",
+                        ],
+                        "description": (
+                            "*_pattern extends the bash auto-allow/deny list;"
+                            " extra_dir adds a workspace root."
+                        ),
                     },
                     "value": {
                         "type": "string",
                         "description": (
-                            "For allow_pattern/deny_pattern: a Python regex "
-                            "(e.g. '^\\\\s*pytest\\\\b'). For extra_dir: an "
-                            "absolute path. For default_mode: one of 'plan', "
-                            "'default', 'acceptEdits', 'bypassPermissions'."
+                            "Regex for *_pattern, absolute path for "
+                            "extra_dir, mode name for default_mode."
                         ),
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["user", "repo"],
-                        "description": (
-                            "user (default) -> ~/.delfin/settings.json. "
-                            "repo -> <repo>/.delfin/settings.json."
-                        ),
                     },
                     "rationale": {
                         "type": "string",
-                        "description": "One-line justification shown to the user.",
+                        "description": "Shown to the user.",
                     },
                 },
                 "required": ["kind", "value", "rationale"],
@@ -2213,18 +2145,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "remember_permission_bundle",
             "description": (
-                "One-shot setup for a typical project: persist an "
-                "extra_workspace_dir AND the bash auto-allow patterns the "
-                "agent needs to actually develop in it (create venv, "
-                "pip install, run scripts, run tests). All persistence is "
-                "atomic — user gets a SINGLE confirm dialog listing every "
-                "rule about to be written. Use when the user says things "
-                "like 'arbeite immer in /pfad' or 'integriere meine "
-                "optimizer in projektX'. Profile 'project_dev' allows: "
-                "'python -m venv ...', '<dir>/.venv-*/bin/pip install', "
-                "'<dir>/.venv-*/bin/python', 'pytest', 'ruff', 'mypy'. "
-                "ALWAYS state in chat what you are about to add before "
-                "calling this."
+                "One-shot project setup: persist an extra workspace dir AND "
+                "the bash auto-allow patterns needed to develop in it, "
+                "atomically — the user gets a SINGLE confirm dialog listing "
+                "every rule. ALWAYS state in chat what you are about to add "
+                "before calling this."
             ),
             "parameters": {
                 "type": "object",
@@ -2233,31 +2158,26 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "string",
                         "enum": ["project_dev"],
                         "description": (
-                            "Bundle preset. 'project_dev' is the only "
-                            "profile so far — venv + pip + python + "
+                            "'project_dev' allows venv + pip + python + "
                             "pytest + ruff + mypy."
                         ),
                     },
                     "directory": {
                         "type": "string",
                         "description": (
-                            "Absolute path to the project. Becomes an "
-                            "extra_workspace_dir; venv allow-patterns "
-                            "are scoped to subdirs of this path."
+                            "Absolute project path; becomes a workspace root."
                         ),
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["user", "repo"],
                         "description": (
-                            "Default 'repo' — writes to "
-                            "<directory>/.delfin/settings.json so the "
-                            "rules travel with the project."
+                            "Default 'repo' — rules travel with the project."
                         ),
                     },
                     "rationale": {
                         "type": "string",
-                        "description": "One-line justification (e.g. 'enable Bayesian-opt project workflow').",
+                        "description": "Shown to the user.",
                     },
                 },
                 "required": ["profile", "directory", "rationale"],
@@ -2269,38 +2189,32 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "bash",
             "description": (
-                "Execute a shell command inside the workspace. The command runs "
-                "with a configurable timeout and returns stdout+stderr (truncated). "
-                "Destructive patterns (rm -rf, dd, sudo, force-push, reset --hard, "
-                "fork bombs, pipe-to-shell, etc.) are rejected. Always include a "
-                "short description so the user can audit. For long-running tasks, "
-                "raise timeout_s; do not use background loops or sleep-polling."
+                "Run a shell command in the workspace; returns truncated "
+                "stdout+stderr. Destructive patterns (rm -rf, dd, sudo, "
+                "force-push, reset --hard, pipe-to-shell) are rejected. Raise"
+                " timeout_s instead of sleep-polling."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "Shell command (passed to /bin/bash -c).",
                     },
                     "description": {
                         "type": "string",
-                        "description": "One-line description of what the command does (5-12 words).",
+                        "description": "One line (5-12 words) so the user can audit.",
                     },
                     "timeout_s": {
                         "type": "integer",
-                        "description": "Timeout in seconds (default 120, max 600).",
+                        "description": "Default 120, max 600.",
                     },
                     "cwd": {
                         "type": "string",
                         "description": (
-                            "Working directory for the command. Accepts a "
-                            "workspace-relative path OR an absolute path that "
-                            "lives under one of the allowed roots (workspace + "
-                            "extra_workspace_dirs). ALWAYS use this parameter "
-                            "to enter another directory — never prepend "
-                            "`cd /path &&` to the command, that defeats the "
-                            "auto-allow gate. Defaults to the workspace root."
+                            "Relative or absolute path under an allowed root;"
+                            " default the workspace root. ALWAYS use this to "
+                            "enter another directory — never prepend `cd "
+                            "/path &&`, which defeats the auto-allow gate."
                         ),
                     },
                 },
@@ -2313,43 +2227,30 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "bash_background",
             "description": (
-                "Start a long-running shell command and return a job_id "
-                "IMMEDIATELY without waiting for completion. Use this for "
-                "Bayesian-opt runs, training loops, large pytest sessions, "
-                "or any command expected to take longer than ~60s. The "
-                "command runs through the SAME safety gate as bash "
-                "(workspace sandbox, deny-list, secret scanner, "
-                "auto-allow patterns). Output is streamed to tempfiles; "
-                "read incrementally with bash_output(job_id). Wait for "
-                "completion with bash_status(job_id, wait_seconds=300) — "
-                "do NOT poll bash_status in a tight loop. Stop with "
-                "bash_kill(job_id). Hard timeout 24h."
+                "Start a long command (>~60s) and return a job_id "
+                "IMMEDIATELY. Runs through the SAME safety gate as bash. Read"
+                " output with bash_output, wait with "
+                "bash_status(wait_seconds=300) — never tight-poll — stop with"
+                " bash_kill. Hard timeout 24h."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "Shell command (passed to /bin/bash -c).",
                     },
                     "description": {
                         "type": "string",
-                        "description": "One-line description of what the command does.",
+                        "description": "One line, so the user can audit.",
                     },
                     "cwd": {
                         "type": "string",
-                        "description": (
-                            "Working directory (workspace-relative or "
-                            "absolute under an allowed root). Defaults to "
-                            "the workspace."
-                        ),
+                        "description": "Relative or absolute under an allowed root.",
                     },
                     "timeout_s": {
                         "type": "integer",
                         "description": (
-                            "Hard kill timeout in seconds. Default 86400 "
-                            "(24h). The command is SIGTERM'd at the "
-                            "deadline, then SIGKILL'd."
+                            "Hard kill (SIGTERM then SIGKILL). Default 86400."
                         ),
                     },
                 },
@@ -2362,34 +2263,23 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "bash_status",
             "description": (
-                "Check the status of a background bash job. Returns "
-                "running flag, exit_code (None while running), elapsed "
-                "seconds, the command, and the cwd. Use AFTER "
-                "bash_background to know when the job has finished.\n"
-                "To WAIT for a long job (e.g. a ~10-min benchmark) pass "
-                "wait_seconds: this BLOCKS until the job finishes or that "
-                "many seconds elapse (capped at 300s/call), then returns. "
-                "Do NOT poll in a tight loop every few seconds — that "
-                "burns the tool-round budget long before the job is done. "
-                "Instead call once with e.g. wait_seconds=300; if it is "
-                "still running, call again. (If you do re-check a running "
-                "job without wait_seconds, the call auto-throttles so a "
-                "tight loop can't exhaust the budget.)"
+                "Status of a background job: running, exit_code (None while "
+                "running), elapsed, command, cwd. Do NOT poll in a tight loop"
+                " — it burns the tool-round budget; pass wait_seconds to "
+                "block, then call again if still running. Re-checks without "
+                "wait_seconds are auto-throttled."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "job_id": {
                         "type": "string",
-                        "description": "ID returned by bash_background.",
                     },
                     "wait_seconds": {
                         "type": "integer",
                         "description": (
-                            "Block until the job finishes or this many "
-                            "seconds elapse (capped at 300/call). Returns "
-                            "early the moment the job ends. Default 0 "
-                            "(return immediately)."
+                            "Block until the job ends or this many seconds "
+                            "elapse (capped at 300/call). Default 0."
                         ),
                     },
                 },
@@ -2402,26 +2292,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "bash_output",
             "description": (
-                "Read what a background job has written so far to stdout "
-                "and stderr. Smart-truncates to head+tail when output "
-                "is long (so the tail with the traceback is always "
-                "visible). Safe to call WHILE the job is still running "
-                "— it shows the latest output, not a final snapshot."
+                "Read a background job's output so far; safe while it runs. "
+                "Truncated head+tail so a trailing traceback stays visible."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "job_id": {
                         "type": "string",
-                        "description": "ID returned by bash_background.",
                     },
                     "head_lines": {
                         "type": "integer",
-                        "description": "Lines to keep from the start (default 60).",
                     },
                     "tail_lines": {
                         "type": "integer",
-                        "description": "Lines to keep from the end (default 200).",
                     },
                 },
                 "required": ["job_id"],
@@ -2433,23 +2317,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "web_search",
             "description": (
-                "Search the web via DuckDuckGo HTML and return a list "
-                "of {title, url, snippet} results. Use this when "
-                "Jerome's project needs API specifics from a library "
-                "that isn't in DELFIN's indexed docs (BoTorch, Ax, "
-                "scikit-optimize, etc.). Don't use it for things you "
-                "can find in the codebase — Grep / Read first."
+                "Web search; returns {title, url, snippet}. Only for facts "
+                "not in the codebase or the indexed docs — search those first."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search terms (3-10 words ideal).",
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Cap on hits (default 8, max 20).",
                     },
                 },
                 "required": ["query"],
@@ -2461,22 +2339,18 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "web_fetch",
             "description": (
-                "Download a single URL and return plain text. HTML "
-                "is stripped to readable text; text/* is passed "
-                "through. Binaries / PDFs are refused (use bash + "
-                "curl + a tempfile for those). Localhost / RFC1918 / "
-                "*.internal hosts are blocked. 1 MB / 50k char cap."
+                "Fetch one URL as plain text (HTML stripped). Binaries and "
+                "PDFs are refused; localhost, RFC1918 and *.internal hosts "
+                "are blocked. 1 MB / 50k char cap."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "Absolute http(s) URL to fetch.",
                     },
                     "timeout_s": {
                         "type": "integer",
-                        "description": "Request timeout (default 15).",
                     },
                 },
                 "required": ["url"],
@@ -2488,46 +2362,34 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_create",
             "description": (
-                "Add a planning task to this session's task list within "
-                "the current project (implements TaskCreate). "
-                "Useful for "
-                "multi-step integrations: 'integrate BoTorch wrapper', "
-                "'add comparison notebook', 'write regression tests'. "
-                "Tasks survive session restarts for the same saved session "
-                "via "
-                "<workspace>/.delfin/session_tasks.json. Status starts "
-                "at 'pending'; switch to 'in_progress' when you start "
-                "work and 'completed' when done. Each task has a small "
-                "session-relative number `seq` (1, 2, 3 …) for talking to "
-                "the user, plus a global `id` — always pass the `id` (not "
-                "`seq`) to task_update/task_get."
+                "Add a task to this session's list; tasks survive restarts of"
+                " the same session. Status starts 'pending' — set "
+                "'in_progress' when you start, 'completed' when done. Always "
+                "pass the global `id` (not the display `seq`) to "
+                "task_update/task_get."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "subject": {
                         "type": "string",
-                        "description": "Short imperative title (3-8 words).",
+                        "description": "Imperative title, 3-8 words.",
                     },
                     "description": {
                         "type": "string",
-                        "description": "What needs to be done (multiline OK).",
                     },
                     "active_form": {
                         "type": "string",
-                        "description": (
-                            "Optional present-continuous form for "
-                            "spinners (e.g. 'Integrating BoTorch')."
-                        ),
+                        "description": "Present-continuous form for spinners.",
                     },
                     "blocked_by": {
                         "type": "array",
-                        "items": {"type": "integer"},
+                        "items": {
+                            "type": "integer",
+                        },
                         "description": (
-                            "IDs of tasks that must complete before this "
-                            "one can start (DAG ordering; the store "
-                            "refuses status='in_progress' while any "
-                            "blocker is open)."
+                            "Task ids that must finish first; 'in_progress' "
+                            "is refused while a blocker is open."
                         ),
                     },
                 },
@@ -2540,41 +2402,43 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_update",
             "description": (
-                "Update an existing task: change status, subject, "
-                "description, or active_form. Use status='in_progress' "
-                "when starting and 'completed' immediately when done — "
-                "don't batch completion messages."
+                "Update a task's status, text or blockers. Set 'in_progress' "
+                "when starting and 'completed' immediately when done — never "
+                "batch completions."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "integer",
-                        "description": "ID returned by task_create.",
+                        "description": "Global id from task_create.",
                     },
                     "status": {
                         "type": "string",
-                        "enum": [
-                            "pending", "in_progress",
-                            "completed", "deleted",
-                        ],
+                        "enum": ["pending", "in_progress", "completed", "deleted"],
                     },
-                    "subject": {"type": "string"},
-                    "description": {"type": "string"},
-                    "active_form": {"type": "string"},
+                    "subject": {
+                        "type": "string",
+                    },
+                    "description": {
+                        "type": "string",
+                    },
+                    "active_form": {
+                        "type": "string",
+                    },
                     "add_blocked_by": {
                         "type": "array",
-                        "items": {"type": "integer"},
-                        "description": (
-                            "Task IDs to add as blockers of this task."
-                        ),
+                        "items": {
+                            "type": "integer",
+                        },
+                        "description": "Blocker ids to add.",
                     },
                     "remove_blocked_by": {
                         "type": "array",
-                        "items": {"type": "integer"},
-                        "description": (
-                            "Blocker IDs to remove from this task."
-                        ),
+                        "items": {
+                            "type": "integer",
+                        },
+                        "description": "Blocker ids to remove.",
                     },
                 },
                 "required": ["task_id"],
@@ -2586,30 +2450,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_list",
             "description": (
-                "List all tasks for the current workspace. By default "
-                "deleted tasks are filtered out. Use this to recap "
-                "progress at the start of a multi-day session, or to "
-                "find what's left when picking up a paused project."
+                "List the current workspace's tasks; deleted ones are hidden "
+                "by default."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "include_deleted": {
                         "type": "boolean",
-                        "description": (
-                            "Include tasks with status='deleted' "
-                            "(default false)."
-                        ),
                     },
                     "all_sessions": {
                         "type": "boolean",
                         "description": (
-                            "List open work from EVERY session in this "
-                            "workspace, not just the current one "
-                            "(default false). Records keep their "
-                            "session_id so foreign tasks are "
-                            "identifiable — call task_adopt(id) before "
-                            "working on one."
+                            "Also list other sessions' open tasks; "
+                            "task_adopt(id) one before working on it."
                         ),
                     },
                 },
@@ -2621,18 +2475,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_get",
             "description": (
-                "Fetch a single task record by ID. Returns the full "
-                "task dict (subject, description, status, active_form, "
-                "created_at, updated_at) or an error if the task does "
-                "not exist. Cheaper than task_list when you already "
-                "know the ID — typical use after task_create."
+                "Fetch one task record by id. Cheaper than task_list when you"
+                " already know the id."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "integer",
-                        "description": "Task ID returned by task_create.",
                     },
                 },
                 "required": ["task_id"],
@@ -2644,20 +2494,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_adopt",
             "description": (
-                "Adopt a task created in a PREVIOUS session into the "
-                "current one (rewrites its session_id). Required BEFORE "
-                "working on a foreign task: task_update progress and the "
-                "per-turn open-tasks reminder only track tasks owned by "
-                "the current session. Typical flow: "
-                "task_list(all_sessions=true) → task_adopt(id) → "
-                "task_update(id, status='in_progress')."
+                "Take over a task from a PREVIOUS session (rewrites its "
+                "session_id). Required BEFORE working on a foreign task — "
+                "progress tracking and the open-tasks reminder only cover the"
+                " current session."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "integer",
-                        "description": "Global task id to adopt.",
                     },
                 },
                 "required": ["task_id"],
@@ -2669,13 +2515,15 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "list_changes_made",
             "description": (
-                "List what this session actually changed, from the "
-                "append-only audit log: files written (grouped per path), "
-                "shell commands run, denied actions, and persisted "
-                "permissions. Use this to answer 'what did you change?' "
-                "from the record instead of from memory."
+                "List what this session actually changed, from the audit log:"
+                " files written, commands run, denied actions, persisted "
+                "permissions. Answer 'what did you change?' from this record,"
+                " never from memory."
             ),
-            "parameters": {"type": "object", "properties": {}},
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
     },
     {
@@ -2683,13 +2531,15 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "check_environment",
             "description": (
-                "Run the DELFIN environment health report: doc index, "
-                "credential presence (never values), chemistry binaries, "
-                "Python deps, MCP servers, scheduler, memory store, disk "
-                "space. Call this BEFORE promising work that depends on "
-                "external prerequisites. Read-only; never raises."
+                "Environment health report: doc index, credential presence "
+                "(never values), chemistry binaries, Python deps, MCP "
+                "servers, scheduler, memory, disk. Call BEFORE promising work"
+                " that depends on external prerequisites."
             ),
-            "parameters": {"type": "object", "properties": {}},
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
     },
     {
@@ -2697,18 +2547,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "project_introspect",
             "description": (
-                "One-call snapshot of the workspace's state: "
-                "existing venv(s) with Python version + installed "
-                "package count, manifest files (pyproject / "
-                "requirements / Pipfile / Cargo.toml / package.json), "
-                "test framework, src vs flat layout, git branch + "
-                "dirty status. Call this at the START of a "
-                "session in an unfamiliar project — it spares you "
-                "3-5 read_file calls. The agent can then decide "
-                "freely what to do next: install a single dep, run "
-                "tests, refactor — no workflow is implied."
+                "One-call snapshot of an unfamiliar workspace: venvs, "
+                "manifest files, test framework, layout, git branch and dirty"
+                " state. Replaces 3-5 read_file calls."
             ),
-            "parameters": {"type": "object", "properties": {}},
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
     },
     {
@@ -2716,33 +2562,27 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "run_tests",
             "description": (
-                "Run pytest with structured JSON output (uses "
-                "pytest-json-report when installed, junitxml as "
-                "fallback). Returns pass / fail / error counts plus "
-                "a list of failures with node-id + truncated message. "
-                "Prefer this over `bash python -m pytest` — parsing "
-                "human-readable pytest output is fragile and the "
-                "agent often misses the failing test ID."
+                "Run pytest with structured output: pass/fail/error counts "
+                "plus failing node-ids. Prefer this over `bash python -m "
+                "pytest`, whose text output is fragile to parse."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": (
-                            "Pytest path / nodeid (e.g. 'tests/' or "
-                            "'tests/test_x.py::test_y'). Empty = "
-                            "discovery from cwd."
-                        ),
+                        "description": "Path or nodeid; empty = discover from cwd.",
                     },
                     "pytest_args": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Extra pytest CLI args (-x, -k, -m, ...).",
+                        "items": {
+                            "type": "string",
+                        },
                     },
                     "timeout_s": {
                         "type": "integer",
-                        "minimum": 5, "maximum": 1800,
+                        "minimum": 5,
+                        "maximum": 1800,
                     },
                 },
             },
@@ -2753,48 +2593,43 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "report_verdict",
             "description": (
-                "Report your final review/test verdict as STRUCTURED "
-                "data. Call this ONCE at the end of a critic / test / "
-                "review turn, after your prose findings — the pipeline "
-                "gate reads this tool call directly, so a formatting "
-                "slip in prose can never flip a reject into an "
-                "auto-continue. The result echoes your verdict back."
+                "Report your final review/test verdict as STRUCTURED data. "
+                "Call ONCE at the end of a critic/test/review turn, after "
+                "your prose findings — the pipeline gate reads this tool "
+                "call, so prose formatting can never flip a reject into an "
+                "auto-continue."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["approve", "approve_with_risks",
-                                 "reject"],
-                        "description": "Your final verdict.",
+                        "enum": ["approve", "approve_with_risks", "reject"],
                     },
                     "criteria": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string"},
+                                "name": {
+                                    "type": "string",
+                                },
                                 "state": {
                                     "type": "string",
-                                    "enum": ["PASS", "FAIL",
-                                             "UNTESTED"],
+                                    "enum": ["PASS", "FAIL", "UNTESTED"],
                                 },
                             },
                             "required": ["name", "state"],
                         },
                         "description": (
-                            "Per-acceptance-criterion result. Mark a "
-                            "criterion UNTESTED if you did not run it "
-                            "— never guess PASS."
+                            "One entry per acceptance criterion. Mark it "
+                            "UNTESTED if you did not run it — never guess "
+                            "PASS."
                         ),
                     },
                     "evidence": {
                         "type": "string",
-                        "description": (
-                            "Concrete evidence backing the verdict: "
-                            "commands run, exit codes, output seen."
-                        ),
+                        "description": "Commands run, exit codes, output seen.",
                     },
                 },
                 "required": ["status"],
@@ -2806,11 +2641,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "apply_patch",
             "description": (
-                "Apply a unified-diff patch to files in the "
-                "workspace. Use for bulk changes (5+ hunks) where "
-                "edit_file would need many round-trips. Atomic: on "
-                "any hunk failure NO files are mutated. Pass "
-                "check_only=true for a dry-run validation."
+                "Apply a unified diff to workspace files. Use for bulk "
+                "changes (5+ hunks). Atomic: on any hunk failure NO file is "
+                "mutated. check_only=true validates without writing."
             ),
             "parameters": {
                 "type": "object",
@@ -2818,12 +2651,13 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "diff": {
                         "type": "string",
                         "description": (
-                            "Full unified diff (must include "
-                            "--- a/file / +++ b/file headers and "
-                            "@@ hunk markers)."
+                            "Full unified diff with --- / +++ headers and @@ "
+                            "hunk markers."
                         ),
                     },
-                    "check_only": {"type": "boolean"},
+                    "check_only": {
+                        "type": "boolean",
+                    },
                 },
                 "required": ["diff"],
             },
@@ -2834,15 +2668,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "undo_changes",
             "description": (
-                "Undo the AGENT's own recorded file changes (write_file / "
-                "edit_file / multi_edit / apply_patch / notebook_edit) with "
-                "conflict safety: a file is only restored when its current "
-                "content still matches the recorded post-edit hash — "
-                "anything the user or another process changed since is "
-                "reported as a conflict and left untouched. Files the agent "
-                "created are deleted on undo (same hash check). scope: "
-                "'last' = most recent change, 'turn' = all changes of the "
-                "current turn, 'session' = all recorded changes."
+                "Revert the AGENT's own recorded file changes. A file is "
+                "restored only while its content still matches the recorded "
+                "post-edit hash; anything changed since is reported as a "
+                "conflict and left untouched. Agent-created files are deleted"
+                " under the same check."
             ),
             "parameters": {
                 "type": "object",
@@ -2850,6 +2680,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "scope": {
                         "type": "string",
                         "enum": ["last", "turn", "session"],
+                        "description": "How far back to revert.",
                     },
                 },
                 "required": ["scope"],
@@ -2861,26 +2692,18 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "find_definition",
             "description": (
-                "Locate the definition of a symbol in the "
-                "workspace. Python uses jedi (precise, follows "
-                "imports); other languages fall back to a "
-                "language-aware grep. Returns matches with file + "
-                "line + preview."
+                "Find where a symbol is defined (jedi for Python, "
+                "language-aware grep otherwise). Returns file+line+preview."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "symbol": {
                         "type": "string",
-                        "description": "Identifier (no qualification needed).",
                     },
                     "file_hint": {
                         "type": "string",
-                        "description": (
-                            "Optional file (workspace-relative) to "
-                            "anchor the search — speeds jedi up for "
-                            "large repos."
-                        ),
+                        "description": "Anchors the search.",
                     },
                     "language": {
                         "type": "string",
@@ -2896,14 +2719,18 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "find_references",
             "description": (
-                "Find every place a symbol is referenced. Same "
-                "backends as find_definition. Capped at 50 matches."
+                "Find every reference to a symbol. Same backends as "
+                "find_definition; capped at 50 matches."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "symbol": {"type": "string"},
-                    "file_hint": {"type": "string"},
+                    "symbol": {
+                        "type": "string",
+                    },
+                    "file_hint": {
+                        "type": "string",
+                    },
                     "language": {
                         "type": "string",
                         "enum": ["auto", "python", "any"],
@@ -2918,16 +2745,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "push_notification",
             "description": (
-                "Send a desktop notification. Local-only "
-                "(notify-send / terminal-notifier / Win toast). "
-                "Use sparingly: when a long task finishes or "
-                "approval is required."
+                "Send a local desktop notification. Use sparingly."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string"},
-                    "body": {"type": "string"},
+                    "title": {
+                        "type": "string",
+                    },
+                    "body": {
+                        "type": "string",
+                    },
                     "urgency": {
                         "type": "string",
                         "enum": ["low", "normal", "critical"],
@@ -2943,18 +2771,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "remote_trigger",
             "description": (
                 "POST a small JSON payload to the user-configured "
-                "remoteTrigger webhook (settings.json -> "
-                "remoteTrigger.url). HTTPS only; private / "
-                "metadata IPs blocked. The URL is NOT chosen by "
-                "the agent — only what the user pre-configured."
+                "remoteTrigger webhook. HTTPS only, private/metadata IPs "
+                "blocked. The URL is NOT chosen by the agent."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "event": {"type": "string"},
+                    "event": {
+                        "type": "string",
+                    },
                     "payload": {
                         "type": "object",
-                        "description": "Free-form JSON-serialisable body.",
                     },
                 },
                 "required": ["event"],
@@ -2966,11 +2793,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "schedule_wakeup",
             "description": (
-                "Schedule a single future agent invocation. Mirrors "
-                "the canonical ScheduleWakeup. Use when you need to "
-                "check back on something later (long-running build, "
-                "external job). The dashboard will fire the prompt "
-                "back at the chosen time. Persists across restarts."
+                "Schedule ONE future agent invocation; the prompt fires back "
+                "at the chosen time and survives restarts."
             ),
             "parameters": {
                 "type": "object",
@@ -2979,15 +2803,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "integer",
                         "minimum": 60,
                         "maximum": 3600,
-                        "description": "When to fire (60 to 3600 sec).",
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "Prompt to fire on wake-up.",
                     },
                     "reason": {
                         "type": "string",
-                        "description": "Short telemetry reason.",
                     },
                 },
                 "required": ["delay_seconds", "prompt", "reason"],
@@ -2999,9 +2820,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "cron_create",
             "description": (
-                "Create a recurring scheduled invocation (interval-based). "
-                "DELFIN's minimal cron substitute: a single ``every_seconds`` "
-                "interval, no full cron expressions. Persists across restarts."
+                "Create a recurring invocation on a fixed ``every_seconds`` "
+                "interval (no cron expressions). Survives restarts."
             ),
             "parameters": {
                 "type": "object",
@@ -3009,11 +2829,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "every_seconds": {
                         "type": "integer",
                         "minimum": 60,
-                        "description": "Interval between fires (>= 60).",
                     },
-                    "prompt": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "fire_immediately": {"type": "boolean"},
+                    "prompt": {
+                        "type": "string",
+                    },
+                    "reason": {
+                        "type": "string",
+                    },
+                    "fire_immediately": {
+                        "type": "boolean",
+                    },
                 },
                 "required": ["every_seconds", "prompt"],
             },
@@ -3023,19 +2848,24 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "cron_list",
-            "description": "List all active scheduled / cron entries.",
-            "parameters": {"type": "object", "properties": {}},
+            "description": "List scheduled / cron entries.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
     },
     {
         "type": "function",
         "function": {
             "name": "cron_delete",
-            "description": "Delete a scheduled / cron entry by id.",
+            "description": "Delete a scheduled entry by id.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "entry_id": {"type": "string"},
+                    "entry_id": {
+                        "type": "string",
+                    },
                 },
                 "required": ["entry_id"],
             },
@@ -3046,27 +2876,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "enter_worktree",
             "description": (
-                "Create a temporary git worktree on a fresh branch "
-                "for the current task. Implements "
-                "EnterWorktree. Subsequent edits/bash should run "
-                "inside the returned worktree path; the user's main "
-                "tree is untouched. The branch is auto-cleaned on "
-                "exit_worktree if no commits were made. Pass the "
-                "repository root (defaults to the current workspace)."
+                "Create a temporary git worktree on a fresh branch; run later"
+                " edits/bash inside the returned path so the user's main tree"
+                " stays untouched. exit_worktree auto-cleans the branch when "
+                "no commits were made."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "repo_dir": {
                         "type": "string",
-                        "description": (
-                            "Repository root (default: current "
-                            "workspace). Must be a git repo."
-                        ),
+                        "description": "Git repo root; default the current workspace.",
                     },
                     "branch_prefix": {
                         "type": "string",
-                        "description": "Prefix for the auto-generated branch (default: 'agent').",
                     },
                 },
             },
@@ -3077,23 +2900,18 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "exit_worktree",
             "description": (
-                "Tear down a worktree previously created via "
-                "enter_worktree. If commits or unstaged changes "
-                "exist and keep_if_changed=true (default), the "
-                "worktree path and branch survive so the user can "
-                "review them; otherwise the directory and branch "
-                "are removed."
+                "Tear down a worktree from enter_worktree. With "
+                "keep_if_changed=true (default) one with commits or "
+                "changes survives for review; otherwise it is removed."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Worktree path returned by enter_worktree.",
                     },
                     "keep_if_changed": {
                         "type": "boolean",
-                        "description": "Keep dir+branch if changes detected (default true).",
                     },
                 },
                 "required": ["path"],
@@ -3105,39 +2923,28 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "worktree_merge",
             "description": (
-                "Merge a worktree's changes back into the main "
-                "tree, safely. Stages the worktree's full state "
-                "(including new files), then applies it to the "
-                "target repo's working tree ONLY if it applies "
-                "cleanly — on any conflict the target is left "
-                "untouched and the worktree is kept for manual "
-                "merge. Changes land uncommitted so you can review "
-                "(`git diff`) and commit. Completes the fan-out → "
-                "review (worktree diff) → merge flow. Pass the "
-                "worktree path returned by enter_worktree (or the "
-                "final_path from a subagent's worktree_summary)."
+                "Merge a worktree's full state (new files included) into the "
+                "target repo's working tree, ONLY if it applies cleanly — on "
+                "conflict the target is untouched and the worktree kept for a"
+                " manual merge. Changes land UNCOMMITTED for review. Pass the"
+                " path from enter_worktree or a subagent's "
+                "worktree_summary.final_path."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Worktree path to merge from.",
                     },
                     "base_ref": {
                         "type": "string",
                         "description": (
-                            "Commit the worktree branched from "
-                            "(default: auto-detected via merge-base "
-                            "with the target's HEAD)."
+                            "Commit the worktree branched from; default "
+                            "auto-detected via merge-base."
                         ),
                     },
                     "target_dir": {
                         "type": "string",
-                        "description": (
-                            "Repo to merge into (default: the "
-                            "worktree's source repository)."
-                        ),
                     },
                 },
                 "required": ["path"],
@@ -3149,111 +2956,75 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "subagent",
             "description": (
-                "Delegate a self-contained task to an isolated "
-                "sub-agent. Implements Agent tool. The "
-                "sub-agent runs its own tool-calling loop with a "
-                "narrow tool set (read-only by default) and returns "
-                "a single summary. Use for: parallel research, "
-                "read-only audits, planning that should not edit. "
-                "Pick subagent_type carefully — 'explore' / 'plan' / "
-                "'code-reviewer' are read-only; 'general-purpose' "
-                "inherits the parent's full permissions. Default caps "
-                "(configurable in settings): 40 tool calls, 300s wall "
-                "clock, 16k output tokens. Set background=true to run "
-                "without blocking and collect later with subagent_result."
+                "Delegate a self-contained task to an isolated sub-agent that"
+                " runs its own tool loop and returns one summary. Use for "
+                "parallel research, read-only audits, or planning that must "
+                "not edit. 'explore' / 'plan' / 'code-reviewer' are "
+                "read-only; 'general-purpose' inherits the parent's FULL "
+                "permissions. Caps: 40 tool calls, 300s, 16k output tokens."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "subagent_type": {
                         "type": "string",
-                        # Resolved at module import — covers built-in
-                        # presets plus any pack/agents/*_subagent.md and
-                        # ~/.delfin/subagents/*_subagent.md user-extended
-                        # types. Kept defensive in case the loader fails.
                         "enum": (
+                            # Resolved at import: built-in presets plus any
+                            # pack/agents/*_subagent.md and
+                            # ~/.delfin/subagents/*_subagent.md user types.
                             __import__(
                                 "delfin.agent.subagents",
                                 fromlist=["subagent_type_names"],
                             ).subagent_type_names()
-                            or [
-                                "explore",
-                                "plan",
-                                "code-reviewer",
-                                "general-purpose",
-                            ]
+                            or ["explore", "plan", "code-reviewer",
+                                "general-purpose"]
                         ),
                     },
                     "description": {
                         "type": "string",
-                        "description": (
-                            "Brief 3-7 word label for the task "
-                            "(e.g. 'find audit-log call-sites')."
-                        ),
                     },
                     "prompt": {
                         "type": "string",
                         "description": (
-                            "Self-contained briefing — the "
-                            "sub-agent has NO context from the "
-                            "parent conversation. State the goal, "
-                            "the relevant files, anything ruled "
-                            "out, and the desired form of the "
-                            "answer."
+                            "Self-contained briefing — the sub-agent has NO "
+                            "context from this conversation. Goal, relevant "
+                            "files, what is ruled out, form of answer."
                         ),
                     },
                     "background": {
                         "type": "boolean",
-                        "description": (
-                            "true = run in the background and return "
-                            "immediately; the result appears in the "
-                            "subagent panel. Use for independent research "
-                            "that should not block the main task."
-                        ),
+                        "description": "Return at once; collect with subagent_result.",
                     },
                     "model": {
                         "type": "string",
                         "enum": ["parent", "cheap"],
                         "description": (
-                            "Model pin for this run: 'parent' forces the "
-                            "main model even for read-only presets; "
-                            "'cheap' requests the provider's cheap tier. "
-                            "Omit for the default (read-only presets "
-                            "route to the cheap tier automatically)."
+                            "Omit for the default (read-only presets route to"
+                            " the cheap tier)."
                         ),
                     },
                     "resume_id": {
                         "type": "string",
                         "description": (
-                            "Continue a FINISHED subagent with its "
-                            "context intact: pass the sa_id returned by "
-                            "a previous subagent call and a follow-up "
-                            "prompt. The stored conversation is replayed "
-                            "in front of the new prompt; subagent_type/"
-                            "description from the original run win."
+                            "sa_id of a FINISHED subagent to continue with "
+                            "its context replayed."
                         ),
                     },
                     "output_schema": {
                         "type": "object",
                         "description": (
-                            "Optional JSON Schema the sub-agent's FINAL "
-                            "message must match (subset: type object/array/"
-                            "string/number/integer/boolean, required, "
-                            "properties, enum, items). The child gets one "
-                            "correction round; the validated object is "
-                            "returned as 'structured_output' in the payload."
+                            "JSON Schema the FINAL message must match "
+                            "(subset: type, required, properties, enum, "
+                            "items); returned as 'structured_output'."
                         ),
                     },
                     "isolation": {
                         "type": "string",
                         "enum": ["", "worktree"],
                         "description": (
-                            "Optional isolation mode. 'worktree' "
-                            "creates a fresh git worktree under "
-                            "$TMPDIR and runs the sub-agent there, "
-                            "so any edits stay off the user's "
-                            "working tree until reviewed. Empty "
-                            "string (default) = inherit parent CWD."
+                            "'worktree' runs the sub-agent in a fresh git "
+                            "worktree so its edits stay off the user's "
+                            "working tree. Default: the parent CWD."
                         ),
                     },
                 },
@@ -3266,19 +3037,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "subagent_result",
             "description": (
-                "Collect the status/result of a BACKGROUND subagent by the "
-                "sa_id that subagent(background=true) returned. Returns "
-                "status 'running' (still working), 'finished' (with the "
-                "subagent's final_text report), or 'unknown'. Poll this "
-                "instead of blocking; if still running, do other work and "
-                "check again later."
+                "Collect a BACKGROUND subagent's result by its sa_id: "
+                "'running', 'finished' (with final_text) or 'unknown'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "sa_id": {
                         "type": "string",
-                        "description": "ID returned by subagent(background=true).",
                     },
                 },
                 "required": ["sa_id"],
@@ -3290,29 +3056,19 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "skill",
             "description": (
-                "Invoke a user- or project-scoped skill (a "
-                "Markdown playbook). Skills live in "
-                "~/.delfin/skills/<name>/SKILL.md or "
-                "<workspace>/.delfin/skills/<name>/SKILL.md. The "
-                "skill's body is returned verbatim — read it and "
-                "follow the instructions. Use this when the user "
-                "types '/skill-name' or when you want to consult an "
-                "established playbook (e.g. /security-review, /init). "
-                "Pass `args` to forward parameters to the skill."
+                "Invoke a skill — a Markdown playbook under .delfin/skills/. "
+                "The body is returned verbatim: read it and follow it. Use "
+                "when the user types '/skill-name' or one matches the task."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Skill name without the leading slash.",
+                        "description": "Skill name, no leading slash.",
                     },
                     "args": {
                         "type": "string",
-                        "description": (
-                            "Optional free-text arguments forwarded "
-                            "to the skill body."
-                        ),
                     },
                 },
                 "required": ["name"],
@@ -3324,16 +3080,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "exit_plan_mode",
             "description": (
-                "Submit the finalized plan to the user for approval. "
-                "Implements ExitPlanMode. ONLY call this in "
-                "'plan' mode after you've assembled a complete plan; "
-                "while in plan mode, write/edit/bash tools are blocked. "
-                "On approval the agent's mode switches to "
-                "'acceptEdits' (or whatever the user picks) so the "
-                "next turn can actually execute the plan. Pass the "
-                "full plan as Markdown — bullet lists are ideal. "
-                "Don't use this for clarifying questions; use "
-                "ask_user_question for those."
+                "Submit the finished plan for approval. ONLY in 'plan' mode, "
+                "where write/edit/bash tools are blocked. On approval the "
+                "mode switches to 'acceptEdits' (or the user's choice) so the"
+                " next turn can execute it. Use ask_user_question for "
+                "clarifying questions."
             ),
             "parameters": {
                 "type": "object",
@@ -3341,10 +3092,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "plan": {
                         "type": "string",
                         "description": (
-                            "Final plan in Markdown. Should describe "
-                            "every step you intend to take, in order, "
-                            "and call out anything risky or "
-                            "irreversible."
+                            "Markdown plan: every step in order, with "
+                            "anything risky or irreversible called out."
                         ),
                     },
                 },
@@ -3357,34 +3106,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask the user a structured multi-choice question and "
-                "wait for their answer. Implements "
-                "AskUserQuestion. Useful for clarifying ambiguous "
-                "instructions, getting design decisions, choosing "
-                "between approaches. Returns JSON with the user's "
-                "selected option label(s). Don't use for free-text "
-                "questions — just write them out as plain prose. "
-                "Don't use for plan approval — emit ExitPlanMode "
-                "instead. Has no effect when the agent runs without "
-                "an ask-user UI bound (e.g. headless scripts) and "
-                "returns an error in that case."
+                "Ask a structured multiple-choice question and wait; returns "
+                "the selected label(s). NOT for free-text questions (write "
+                "those as prose) and NOT for plan approval (use "
+                "exit_plan_mode). Errors when no ask-user UI is bound."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "question": {
                         "type": "string",
-                        "description": (
-                            "Full question, ending with a question "
-                            "mark. Be specific."
-                        ),
                     },
                     "header": {
                         "type": "string",
-                        "description": (
-                            "Short label / chip (max 12 chars) shown "
-                            "alongside the question."
-                        ),
+                        "description": "Chip label, max 12 chars.",
                     },
                     "options": {
                         "type": "array",
@@ -3393,36 +3128,31 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "label": {"type": "string"},
-                                "description": {"type": "string"},
+                                "label": {
+                                    "type": "string",
+                                },
+                                "description": {
+                                    "type": "string",
+                                },
                                 "preview": {
                                     "type": "string",
                                     "description": (
-                                        "Optional markdown shown next to the "
-                                        "option button. Use for code snippets, "
-                                        "ASCII mockups, diff previews, or "
-                                        "configuration examples the user can "
-                                        "compare side-by-side before clicking."
+                                        "Markdown shown beside the option — "
+                                        "code, mockup or diff to compare."
                                     ),
                                 },
                             },
                             "required": ["label"],
                         },
                         "description": (
-                            "Mutually-exclusive choices. Each option "
-                            "has a short label, an optional description "
-                            "(one-line trade-off), and an optional "
-                            "markdown ``preview`` for visual comparison "
-                            "(ASCII mockups, code snippets, diffs). "
-                            "Always 2-6 options."
+                            "2-6 mutually exclusive choices; description is a"
+                            " one-line trade-off."
                         ),
                     },
                     "multiSelect": {
                         "type": "boolean",
                         "description": (
-                            "Allow selecting multiple options "
-                            "(default false). Previews are only "
-                            "supported for single-select questions."
+                            "Default false. Previews are single-select only."
                         ),
                     },
                 },
@@ -3435,31 +3165,19 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "notebook_read",
             "description": (
-                "Read a Jupyter notebook (.ipynb) cell-aware: returns "
-                "an ordered list of {idx, cell_type, source, "
-                "output_summary}. Outputs are summarised (counts + "
-                "MIME types) — the agent rarely needs the full base64 "
-                "image data and the chat would drown in it. Use this "
-                "instead of read_file for .ipynb files; read_file "
-                "would dump the JSON structure verbatim."
+                "Read a .ipynb cell-aware: ordered {idx, cell_type, source, "
+                "output_summary}, outputs summarised. Use instead of "
+                "read_file for notebooks."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "Notebook path (workspace-relative or "
-                            "absolute under an allowed root)."
-                        ),
                     },
                     "max_source_chars": {
                         "type": "integer",
-                        "description": (
-                            "Per-cell source cap; cells longer than "
-                            "this are truncated head+tail with a "
-                            "marker. Default 4000."
-                        ),
+                        "description": "Per-cell cap, default 4000.",
                     },
                 },
                 "required": ["path"],
@@ -3471,12 +3189,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "notebook_edit",
             "description": (
-                "Modify a single cell in a Jupyter notebook (.ipynb) "
-                "atomically. Modes: 'replace' (overwrite cell at idx), "
-                "'insert_before' / 'insert_after' (add a new cell), "
-                "'delete' (remove cell at idx). Always call "
-                "notebook_read FIRST to know the indexes. Source must "
-                "be the full cell text (not a substring). Use this "
+                "Edit ONE cell of a Jupyter notebook (.ipynb) atomically. "
+                "Always call notebook_read FIRST to learn the indexes. Use "
                 "instead of edit_file/write_file for .ipynb files."
             ),
             "parameters": {
@@ -3484,37 +3198,31 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Notebook path.",
                     },
                     "cell_idx": {
                         "type": "integer",
-                        "description": (
-                            "0-based cell index. For insert_before / "
-                            "insert_after, this is the reference cell."
-                        ),
+                        "description": "0-based; reference cell for inserts.",
                     },
                     "mode": {
                         "type": "string",
                         "enum": [
-                            "replace", "insert_before",
-                            "insert_after", "delete",
+                            "replace",
+                            "insert_before",
+                            "insert_after",
+                            "delete",
                         ],
-                        "description": "What to do at cell_idx.",
                     },
                     "source": {
                         "type": "string",
                         "description": (
-                            "Full cell text (required except for "
-                            "mode='delete'). Use real newlines, not "
-                            "escaped \\\\n."
+                            "Full cell text (not a substring), required "
+                            "except for mode='delete'. Real newlines."
                         ),
                     },
                     "cell_type": {
                         "type": "string",
                         "enum": ["code", "markdown", "raw"],
-                        "description": (
-                            "Cell type for replace / insert. Default 'code'."
-                        ),
+                        "description": "Default 'code'.",
                     },
                 },
                 "required": ["path", "cell_idx", "mode"],
@@ -3526,17 +3234,13 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "bash_kill",
             "description": (
-                "Stop a background bash job. Sends SIGTERM to the entire "
-                "process group, waits ~3s, then sends SIGKILL if needed. "
-                "Use when a long-running optimization needs to be aborted "
-                "early or you mis-typed the command."
+                "Stop a background job (SIGTERM, then SIGKILL after ~3s)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "job_id": {
                         "type": "string",
-                        "description": "ID returned by bash_background.",
                     },
                 },
                 "required": ["job_id"],
@@ -3548,26 +3252,19 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "watch_job",
             "description": (
-                "Register a long-running job for background watching: a "
-                "SLURM job id (from sbatch) or a bash_background job id. "
-                "When the job completes or fails, the result appears in a "
-                "future turn's context automatically — so after submitting "
-                "a multi-hour calculation, call watch_job and END your "
-                "turn instead of polling bash_status in a loop."
+                "Register a SLURM or bash_background job for watching; the "
+                "result is injected into a later turn. After submitting a "
+                "multi-hour job, call this and END your turn, do not poll."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "job_id": {
                         "type": "string",
-                        "description": ("SLURM job id (numeric) or "
-                                        "bash_background job id."),
+                        "description": "SLURM (numeric) or bash_background id.",
                     },
                     "description": {
                         "type": "string",
-                        "description": ("Short label, e.g. 'ORCA opt of "
-                                        "emitter S1' (shown in the "
-                                        "completion notice)."),
                     },
                 },
                 "required": ["job_id"],
@@ -3579,13 +3276,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "orchestrate",
             "description": (
-                "Run a declarative multi-stage subagent plan with a "
-                "deterministic library driver. Stages run in order with a "
-                "barrier; calls inside a stage fan out in parallel (cap 4); "
-                "a later stage's prompts may embed a finished stage's "
-                "results via {{stage:NAME}}; an optional verify step runs "
-                "skeptic votes over the final stage's results and rejects "
-                "majority-refuted ones. Hard limits: 3 stages, 6 calls per "
+                "Run a declarative multi-stage subagent plan: stages run in "
+                "order with a barrier, calls in a stage fan out in parallel "
+                "(cap 4), later prompts embed earlier results via "
+                "{{stage:NAME}}, and an optional verify step runs skeptic "
+                "votes over the final stage. Limits: 3 stages, 6 calls per "
                 "stage, 3 votes, no nesting inside a sub-agent."
             ),
             "parameters": {
@@ -3612,14 +3307,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "history_search",
             "description": (
-                "Search THIS session's full conversation history: the live "
-                "messages plus every archived pre-compaction transcript. "
-                "Long sessions are compacted — older turns get summarised "
-                "out of your context, so your memory of them is lossy. "
-                "Before claiming what was said, decided, or produced "
-                "earlier in this session, search it instead of relying on "
-                "the summary. Returns ranked hits with snippets and a ref "
-                "for history_get."
+                "Search THIS session's full history (live messages + archived"
+                " pre-compaction transcripts). Older turns are summarised out"
+                " of your context — search here BEFORE claiming what was "
+                "said, decided or produced earlier."
             ),
             "parameters": {
                 "type": "object",
@@ -3627,13 +3318,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "What to look for. Keywords rank via BM25; very "
-                            "short or exact strings (e.g. 'S1') fall back to "
-                            "substring matching."),
+                            "BM25 ranked; short exact strings match as "
+                            "substrings."
+                        ),
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Maximum hits to return (default 8).",
                     },
                 },
                 "required": ["query"],
@@ -3645,25 +3335,18 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "history_get",
             "description": (
-                "Fetch the FULL text of one earlier conversation message "
-                "found via history_search, by its ref (e.g. 'live:12' or "
-                "'archive:0:3'). Use when a search snippet is not enough — "
-                "e.g. to quote an earlier decision, error message, or user "
-                "instruction exactly instead of reconstructing it from "
-                "memory."
+                "Fetch the FULL text of one earlier message by its "
+                "history_search ref — quote decisions and errors exactly "
+                "instead of reconstructing them."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "ref": {
                         "type": "string",
-                        "description": "Hit ref exactly as returned by history_search.",
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": ("Return at most this many chars "
-                                        "(head+tail with a truncation "
-                                        "marker; default 4000)."),
                     },
                 },
                 "required": ["ref"],
@@ -3671,6 +3354,177 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Tool-surface accounting + context-scoped advertising
+# ---------------------------------------------------------------------------
+# Every request re-sends the whole tool surface, so the schema block is a
+# per-request cost, not a one-off. Two levers keep it small:
+#   1. terse schemas (the descriptions carry only what a model needs to call
+#      the tool correctly and safely), and
+#   2. advertising only what the CURRENT context can actually execute.
+# Lever 2 is derived from the execution layer, never from new policy: a tool
+# is dropped from the surface only where an existing gate would refuse it at
+# execution time anyway. Advertising less can therefore never grant more.
+
+# House token estimate: serialized JSON characters divided by this. Matches
+# the estimate used for the prompt budget, so both halves are comparable.
+_SCHEMA_CHARS_PER_TOKEN = 4
+
+# Tools whose executor hard-refuses without the prebuilt doc index
+# (``Doc index not available``), and those needing the calc index.
+_DOC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
+    "search_docs", "read_section", "list_docs", "list_sections",
+})
+_CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
+    "search_calcs", "get_calc_info", "calc_summary",
+})
+# Tools refused once the sub-agent nesting cap is reached: a child at the cap
+# may neither spawn further sub-agents nor drive an orchestration (see
+# ``_execute_subagent`` / ``_execute_orchestrate``). subagent_result is NOT
+# here — collecting a parent-started background run stays legal.
+_SUBAGENT_SPAWN_TOOL_NAMES: frozenset[str] = frozenset({
+    "subagent", "orchestrate",
+})
+
+
+def estimate_schema_tokens(obj: Any) -> int:
+    """House estimate of the tokens *obj* costs on the wire."""
+    return len(json.dumps(obj, ensure_ascii=False)) // _SCHEMA_CHARS_PER_TOKEN
+
+
+def tool_schema_token_report(
+    tools: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Per-tool and total schema token estimates.
+
+    Returns ``{"count", "total_tokens", "tools": {name: {...}}}`` where each
+    entry splits the cost into ``description`` (the top-level prose),
+    ``parameter_descriptions`` (prose inside the parameter schema) and
+    ``structure`` (names, types, enums, required — the contract, which is not
+    compressible). Used by the schema-budget tests and available for ad-hoc
+    measurement.
+    """
+    catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
+
+    def _prose_chars(node: Any) -> int:
+        if isinstance(node, dict):
+            return sum(
+                len(v) if (k == "description" and isinstance(v, str))
+                else _prose_chars(v)
+                for k, v in node.items()
+            )
+        if isinstance(node, list):
+            return sum(_prose_chars(v) for v in node)
+        return 0
+
+    per_tool: dict[str, dict[str, int]] = {}
+    total = 0
+    for tool in catalogue:
+        fn = tool.get("function", {})
+        name = fn.get("name", "")
+        chars = len(json.dumps(tool, ensure_ascii=False))
+        desc = len(fn.get("description", "") or "")
+        pdesc = _prose_chars(fn.get("parameters", {}))
+        per_tool[name] = {
+            "total": chars // _SCHEMA_CHARS_PER_TOKEN,
+            "description": desc // _SCHEMA_CHARS_PER_TOKEN,
+            "parameter_descriptions": pdesc // _SCHEMA_CHARS_PER_TOKEN,
+            "structure": (chars - desc - pdesc) // _SCHEMA_CHARS_PER_TOKEN,
+        }
+        total += chars // _SCHEMA_CHARS_PER_TOKEN
+    return {"count": len(catalogue), "total_tokens": total,
+            "tools": per_tool}
+
+
+@dataclass(frozen=True)
+class ToolSurfaceContext:
+    """The execution facts that decide whether a tool is worth advertising.
+
+    Each field mirrors a gate that already exists in the executor, so the
+    advertised surface can be derived from it without inventing policy.
+    """
+
+    role: str = ""
+    subagent_depth: int = 0
+    has_doc_index: bool = True
+    has_calc_index: bool = True
+
+
+def tool_unavailable_reason(
+    name: str, ctx: Optional[ToolSurfaceContext] = None
+) -> Optional[str]:
+    """Why *name* could not be EXECUTED in *ctx*, or None if it could.
+
+    Mirrors the executor's own refusals:
+      * per-role execution allow-list (``_ROLE_EXEC_ALLOWLIST``),
+      * sub-agent nesting cap (subagent / orchestrate at/above the cap),
+      * missing doc / calc index (those executors refuse outright).
+    Anything this returns non-None for is pure waste in the advertised
+    surface — and a source of tool calls the model then sees refused.
+
+    The role check reads the allow-list DIRECTLY rather than going through
+    ``_tool_denied_for_role``, which additionally exempts
+    ``_ALWAYS_ALLOWED_TOOLS``. Those exemptions exist so a locked-down role
+    can still complete a call the harness needs (report_verdict, plan
+    submission); they are deliberately not pushed into the role's advertised
+    surface. Advertising therefore stays a strict subset of what may execute
+    — never the other way round.
+    """
+    ctx = ctx or ToolSurfaceContext()
+    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    allow = _ROLE_EXEC_ALLOWLIST.get(ctx.role or "")
+    if allow is not None and base not in allow:
+        return f"role {ctx.role!r} may not execute this tool"
+    if base in _SUBAGENT_SPAWN_TOOL_NAMES:
+        try:
+            cap = _max_subagent_depth()
+        except Exception:
+            cap = 1
+        if ctx.subagent_depth >= cap:
+            return "sub-agent nesting cap reached"
+    if base in _DOC_INDEX_TOOL_NAMES and not ctx.has_doc_index:
+        return "doc index not available"
+    if base in _CALC_INDEX_TOOL_NAMES and not ctx.has_calc_index:
+        return "calc index not available"
+    return None
+
+
+def advertisable_tools(
+    tools: list[dict[str, Any]], ctx: Optional[ToolSurfaceContext] = None
+) -> list[dict[str, Any]]:
+    """Drop every tool *ctx* could not execute anyway."""
+    ctx = ctx or ToolSurfaceContext()
+    return [
+        t for t in tools
+        if tool_unavailable_reason(t.get("function", {}).get("name", ""), ctx)
+        is None
+    ]
+
+
+def role_tool_surface_report(
+    roles: Optional[list[str]] = None,
+    tools: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, dict[str, Any]]:
+    """Advertised surface + token cost per role.
+
+    ``""`` is the unrestricted baseline (any role without an execution
+    allow-list). Every role carrying an allow-list is reported next to it, so
+    the saving from role scoping is measurable rather than asserted.
+    """
+    catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
+    names = roles if roles is not None else ["", *sorted(_ROLE_EXEC_ALLOWLIST)]
+    out: dict[str, dict[str, Any]] = {}
+    for role in names:
+        advertised = advertisable_tools(catalogue, ToolSurfaceContext(role=role))
+        out[role] = {
+            "count": len(advertised),
+            "total_tokens": sum(estimate_schema_tokens(t) for t in advertised),
+            "names": sorted(t.get("function", {}).get("name", "")
+                            for t in advertised),
+        }
+    return out
 
 
 _THRASH_CLEANUP_LIMIT = 4   # cleanup/reorg commands in a turn before nudging
@@ -9162,19 +9016,27 @@ class OpenAIClient(_BaseClient):
                 if t.get("function", {}).get("name") not in _CODING_TOOL_NAMES
             ]
 
-        # Strip ALL mutating tools when the active role is dashboard_agent
-        # — the dashboard agent drives the UI via ACTION: slash-commands
-        # and must not have bash / write / edit / apply_patch in its
-        # surface, regardless of what the user prompt or coding mode says.
-        # This is the code-level enforcement that backs the prompt's
-        # "no code changes in dashboard mode" rule.
+        # Context-scoped advertising: drop every tool the CURRENT execution
+        # context would refuse anyway. Derived from the executor's own gates
+        # (per-role allow-list, sub-agent nesting cap, doc/calc index
+        # availability) — see ``tool_unavailable_reason`` — so the surface can
+        # only ever shrink relative to what may run. Two things this fixes:
+        #   * a restricted role (dashboard_agent drives the UI via ACTION:
+        #     slash-commands and must never see bash / write / edit) used to
+        #     be filtered by a hard-coded name check that could drift away
+        #     from the execution allow-list it is supposed to mirror;
+        #   * a sub-agent at the nesting cap, and a workspace without a doc /
+        #     calc index, were still advertised tools whose every call comes
+        #     straight back as a refusal.
         _agent_role = getattr(self._permissions, "agent_role", "") or ""
-        if _agent_role == "dashboard_agent":
-            advertised_tools = [
-                t for t in advertised_tools
-                if t.get("function", {}).get("name")
-                in _DASHBOARD_AGENT_ALLOWED_TOOLS
-            ]
+        _surface_ctx = ToolSurfaceContext(
+            role=_agent_role,
+            subagent_depth=int(
+                getattr(self._permissions, "subagent_depth", 0) or 0),
+            has_doc_index=bool(has_doc_tools),
+            has_calc_index=bool(has_calc_tools),
+        )
+        advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
 
         # Strip DELFIN-only tools when the workspace is not a DELFIN repo.
         # Generic projects shouldn't see search_calcs / get_calc_info /
@@ -9266,13 +9128,15 @@ class OpenAIClient(_BaseClient):
             _ws = self._permissions.workspace if self._permissions else None
             _registry = _mcp.get_registry(_ws)
             _mcp_tools = _registry.discover_all()
-            # Honour the per-role execution allow-list at advertising time too:
-            # a restricted role (dashboard_agent) must not even be OFFERED MCP
-            # tools it may not run. The gate in _gate_mcp_tool is the execution
-            # backstop; this keeps them out of the surface in the first place.
-            _adv_role = getattr(self._permissions, "agent_role", "") or ""
+            # Same context scoping for MCP tools: a namespaced backend tool
+            # the current role / nesting depth / index state could not execute
+            # must not even be OFFERED. The gate in _gate_mcp_tool and the
+            # central execution check remain the backstop; this keeps them out
+            # of the surface in the first place.
+            _adv_role = _surface_ctx.role
             for _tool in _mcp_tools:
-                if _tool_denied_for_role(_adv_role, _tool.namespaced_name):
+                if tool_unavailable_reason(
+                        _tool.namespaced_name, _surface_ctx) is not None:
                     continue
                 advertised_tools.append({
                     "type": "function",

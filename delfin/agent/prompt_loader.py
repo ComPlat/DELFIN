@@ -1109,7 +1109,16 @@ class PromptLoader:
 
     # -- system prompt composition -----------------------------------------
 
-    def build_system_prompt(
+    # Layer numbers used by ``compose_sections``. The composition order IS
+    # the layer order: every stable section must precede every volatile one,
+    # so an OpenAI-compatible endpoint (KIT/vLLM) can prefix-cache the whole
+    # stable head of the prompt across the turns of a session.
+    LAYER_STABLE = 0     # byte-identical for every turn of a session
+    LAYER_ROUTE = 1      # depends on mode/route position, not on turn state
+    LAYER_VOLATILE = 2   # changes per turn (git status, memory, live state, …)
+    LAYER_ANCHOR = 3     # static, but deliberately LAST (recency bias)
+
+    def compose_sections(
         self,
         role_id: str,
         mode_id: str,
@@ -1123,95 +1132,57 @@ class PromptLoader:
         live_state: str = "",
         model: str = "",
         permission_mode: str = "",
-    ) -> str:
-        """Compose the full system prompt for a given role.
+    ) -> list[PromptSection]:
+        """Compose the system prompt as an ORDERED list of labelled sections.
 
-        Parameters
-        ----------
-        role_id : str
-            Current agent role (e.g. 'builder_agent').
-        mode_id : str
-            Active mode (e.g. 'default').
-        mode_description : str
-            The mode's markdown description.
-        route : list[str], optional
-            Full route for the mode.
-        role_index : int
-            Current position in the route (0-based).
-        prior_outputs : dict[str, str], optional
-            Outputs from previous roles in this cycle.
-        memory_context : str
-            Persistent memory to inject.
-        task_text : str
-            Current task text used to select a relevant profile playbook.
+        ``build_system_prompt`` is a thin join over this list; the token
+        reporter and the section-order test read the same list, so what is
+        measured is exactly what is sent.
+
+        Ordering contract (see the LAYER_* constants): stable sections first,
+        then route-dependent ones, then per-turn volatile material, then the
+        attention anchor. Prefix caching on OpenAI-compatible endpoints keys
+        on the longest identical PREFIX of a request, so anything that
+        changes between turns must come after everything that does not.
         """
-        sections = []
+        sections: list[PromptSection] = []
         injected: list[str] = []  # track which sections we inject
 
-        # Honesty & grounding addendum (UNIVERSAL — all roles + all models):
-        # verify-before-claim, cite file:line / search_docs, prefer "I'm not
-        # sure — let me check" over a confident guess, never invent paths /
-        # keywords / APIs. Injected first so it stays in the prefix-cached part
-        # of the prompt; matters MOST for weak OSS models that hallucinate more.
-        try:
-            _honesty = self._cached_read(
-                self.agent_dir / "shared" / "honesty_addendum.md"
-            )
-            if _honesty:
-                sections.append(_honesty)
-                injected.append("honesty_addendum")
-        except Exception:
-            pass
-        # Memory: tell the agent to PROACTIVELY save durable facts via the
-        # `remember` tool (so it carries knowledge across sessions, like a human
-        # collaborator would), with the same typed/one-fact discipline.
-        try:
-            _memory = self._cached_read(
-                self.agent_dir / "shared" / "memory_addendum.md"
-            )
-            if _memory:
-                sections.append(_memory)
-                injected.append("memory_addendum")
-        except Exception:
-            pass
-        # Git + orchestration discipline: in a repo, secure every work unit
-        # with git (branch, commit, push before merge), use worktrees for
-        # parallel work, and orchestrate subagents with disjoint file
-        # ownership. Stable content — cache-friendly like the other addenda.
-        try:
-            _gitwf = self._cached_read(
-                self.agent_dir / "shared" / "git_workflow_addendum.md"
-            )
-            if _gitwf:
-                sections.append(_gitwf)
-                injected.append("git_workflow_addendum")
-        except Exception:
-            pass
-        # Scientific integrity: DELFIN's defining contract — provenance for
-        # every claim, no fabrication, reproducible methods, uncertainty
-        # honesty, no selective reporting. Injected for every role.
-        try:
-            _sci = self._cached_read(
-                self.agent_dir / "shared" / "scientific_integrity_addendum.md"
-            )
-            if _sci:
-                sections.append(_sci)
-                injected.append("scientific_integrity_addendum")
-        except Exception:
-            pass
-        # Refusal contract (UNIVERSAL — all roles): destructive, irreversible,
-        # or out-of-safe-scope requests are refused explicitly (what + why),
-        # never routed to another mode/tool to get the harmful action done,
-        # and answered with the nearest safe alternative.
-        try:
-            _refusal = self._cached_read(
-                self.agent_dir / "shared" / "refusal_addendum.md"
-            )
-            if _refusal:
-                sections.append(_refusal)
-                injected.append("refusal_addendum")
-        except Exception:
-            pass
+        def add(name: str, layer: int, content: str) -> None:
+            if content:
+                sections.append(
+                    PromptSection(name=name, layer=layer, content=content))
+
+        def _shared(rel: str) -> str:
+            try:
+                return self._cached_read(self.agent_dir / "shared" / rel)
+            except Exception:
+                return ""
+
+        # ---- Layer 0: universal contracts -------------------------------
+        # Stable bytes, identical on every turn — they open the prompt so
+        # the cacheable prefix starts at byte 0.
+        #  * honesty: verify-before-claim, cite file:line / search_docs,
+        #    never invent paths / keywords / APIs.
+        #  * memory: proactively persist durable facts via ``remember``.
+        #  * git workflow: branch, commit, push before merge; worktrees for
+        #    parallel work; disjoint file ownership for subagents.
+        #  * scientific integrity: provenance for every claim, reproducible
+        #    methods, honest uncertainty, no selective reporting.
+        #  * refusal: destructive / out-of-scope requests are refused
+        #    explicitly and never routed around via another mode or tool.
+        for _name, _rel in (
+            ("honesty_addendum", "honesty_addendum.md"),
+            ("memory_addendum", "memory_addendum.md"),
+            ("git_workflow_addendum", "git_workflow_addendum.md"),
+            ("scientific_integrity_addendum",
+             "scientific_integrity_addendum.md"),
+            ("refusal_addendum", "refusal_addendum.md"),
+        ):
+            _text = _shared(_rel)
+            if _text:
+                add(_name, self.LAYER_STABLE, _text)
+                injected.append(_name)
 
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)
@@ -1227,14 +1198,15 @@ class PromptLoader:
 
         # Solo mode: role prompt + project context — behave like terminal CLI
         if role_id == "solo_agent":
-            # Layer 0: Role identity (always)
+            # ---- Layer 0 (continued): role identity + project context ----
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
                 # Progressive disclosure: strip lazy-module sections (chemistry
                 # decision tree, web-research, notebook handling, KIT sandbox,
                 # etc.) when the task text doesn't signal that they're needed.
-                # Saves 4-6k tokens on the typical turn. Falls back to the
-                # full prompt for any task signal the regex can't classify.
+                # The active set is session-STICKY, so the stripped prompt is
+                # byte-stable across the turns of a session (a new trigger
+                # invalidates the cache once, then it is stable again).
                 try:
                     role_prompt = self._strip_lazy_modules(
                         role_prompt, task_text=task_text, mode_id=mode_id,
@@ -1242,168 +1214,157 @@ class PromptLoader:
                     )
                 except Exception:
                     pass
-                sections.append(role_prompt)
+                add("role_prompt", self.LAYER_STABLE, role_prompt)
 
             # Plan addendum: the agent must investigate first and finalise via
             # ExitPlanMode. Triggered either by the legacy "plan" mode_id OR by
             # the "plan" permission profile — plan is a permission now, so
             # setting Perms = Plan (in any mode) gets the full plan experience.
-            # Mode-stable so it stays high in the prompt where the prefix
-            # cache benefits most.
+            # Session-stable, hence part of the cacheable head.
             if mode_id == "plan" or permission_mode == "plan":
-                plan_addendum = self._cached_read(
-                    self.agent_dir / "shared" / "plan_mode_addendum.md"
-                )
+                plan_addendum = _shared("plan_mode_addendum.md")
                 if plan_addendum:
-                    sections.append(plan_addendum)
+                    add("plan_mode_addendum", self.LAYER_STABLE, plan_addendum)
                     injected.append("plan_mode_addendum")
 
-            # Project context (delfin_context.md) is static — keep near the
-            # top so it caches with the role prompt. Env block + live state
-            # move to the END of this branch (just before the anchor) so
-            # their per-turn variability doesn't invalidate the cached
-            # prefix every send.
             if self.is_delfin_workspace is False:
                 # User project: DELFIN's own product context neither applies
                 # nor is free, and naming its internals invites drift into
-                # the source tree (observed in the field).
-                sections.append(
+                # the source tree.
+                add("project_context", self.LAYER_STABLE,
                     "--- Project Context ---\nDELFIN is the "
                     "quantum-chemistry platform hosting this agent. You are "
                     "NOT working on DELFIN's own source here — work in the "
                     "user's workspace shown under Session Environment. "
                     "DELFIN's chemistry tooling stays available through your "
-                    "tools."
-                )
+                    "tools.")
             else:
-                ctx_text = self._cached_read(
-                    self.agent_dir / "shared" / "delfin_context.md")
+                ctx_text = _shared("delfin_context.md")
                 if ctx_text:
-                    sections.append(f"--- Project Context ---\n{ctx_text}")
+                    add("project_context", self.LAYER_STABLE,
+                        f"--- Project Context ---\n{ctx_text}")
 
-            # Layer 1: Task-aware (briefing + decomposition for complex tasks)
+            if progressive:
+                # Static menu of on-demand sections — belongs in the head.
+                add("progressive_note", self.LAYER_STABLE,
+                    self._build_progressive_disclosure_note())
+
+            # ---- Layer 2: per-turn material ------------------------------
+            # Everything below is derived from the current task text, the
+            # working tree or the UI, so it changes between turns.
             if self._should_inject_briefing(role_id, session_key, briefing_ctx):
                 if not self._should_skip_section("briefing", role_id):
-                    sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                    add("briefing", self.LAYER_VOLATILE,
+                        f"--- Task Briefing ---\n{briefing_ctx}")
                     injected.append("briefing")
             if decomposition_ctx:
-                sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+                add("decomposition", self.LAYER_VOLATILE,
+                    f"--- Task Decomposition ---\n{decomposition_ctx}")
             if chemistry_reminder:
-                sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
+                add("chemistry_protocol", self.LAYER_VOLATILE,
+                    f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 
-            # Layer 2: On-demand (repo_map, playbook, profile)
-            if progressive:
-                # Only inject if agent requests via NEED_CONTEXT
-                sections.append(self._build_progressive_disclosure_note())
-            else:
+            if not progressive:
                 if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
                     if not self._should_skip_section("repo_map", role_id):
-                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        add("repo_map", self.LAYER_VOLATILE,
+                            f"--- Repo Map ---\n{repo_map_ctx}")
                         injected.append("repo_map")
                 profile_ctx = self._load_profile_context(mode_id)
                 if self._should_inject_profile_context(role_id, session_key, profile_ctx):
                     if not self._should_skip_section("profile", role_id):
-                        sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                        add("profile", self.LAYER_VOLATILE,
+                            f"--- Provider Profile ---\n{profile_ctx}")
                         injected.append("profile")
                 if include_playbook:
                     if not self._should_skip_section("playbook", role_id):
-                        sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
+                        add("playbook", self.LAYER_VOLATILE,
+                            f"--- Relevant Playbook ---\n{relevant_playbook}")
                         injected.append("playbook")
 
-            # Layer 3: Memory
             if self._should_inject_memory(role_id, session_key, memory_context):
                 if not self._should_skip_section("memory", role_id):
-                    sections.append(f"--- Project Memory ---\n{memory_context}")
+                    add("memory", self.LAYER_VOLATILE,
+                        f"--- Project Memory ---\n{memory_context}")
                     injected.append("memory")
 
-            # Layer 3b: External Memory — bridge to the user's
-            # ~/.claude/projects/<slug>/memory/MEMORY.md so dashboard
-            # solo mode inherits the same memories the terminal CLI uses.
+            # External memory — bridge to the user-level memory file, so
+            # dashboard solo mode inherits the same memories the terminal
+            # CLI uses.
             try:
                 ext_mem = self._load_external_memory_context(
                     task_text=task_text)
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):
-                sections.append(f"--- External Memory ---\n{ext_mem}")
+                add("external_memory", self.LAYER_VOLATILE,
+                    f"--- External Memory ---\n{ext_mem}")
                 injected.append("external_memory")
 
-            # Layer 3c: Episodic recall — compact records of similar past
-            # sessions, so previously write-only session state becomes
-            # answerable ("have I worked on this before?").
+            # Episodic recall — compact records of similar past sessions, so
+            # previously write-only session state becomes answerable.
             episode_ctx = self._load_episode_recall_context(task_text)
             if episode_ctx and not self._should_skip_section(
                     "memory", role_id):
-                sections.append(f"--- Past Sessions ---\n{episode_ctx}")
+                add("episodes", self.LAYER_VOLATILE,
+                    f"--- Past Sessions ---\n{episode_ctx}")
                 injected.append("episodes")
 
-            # ----- Variable tail (changes per turn — kept at the bottom
-            # so the cached prefix above doesn't get invalidated when
-            # git status / live state / context_status drift) -----
-
             # CLI-style environment block: cwd, branch, status, recent
-            # commits. Moved from the top of the prompt to the bottom
-            # because the git status line changes after every commit /
-            # uncommitted edit, which would otherwise break the prefix
-            # cache for everything that came after it.
+            # commits. Kept near the bottom because the git status line
+            # changes after every commit / uncommitted edit, which would
+            # otherwise break the prefix cache for everything after it.
             env_block = self._build_session_env_block()
-            if env_block:
-                sections.append(f"--- Session Environment ---\n{env_block}")
+            add("session_env", self.LAYER_VOLATILE,
+                f"--- Session Environment ---\n{env_block}" if env_block else "")
 
             # Live state (dashboard widgets, calc folder, jobs, the
             # context-status block) — highest per-turn churn, must be
             # last before the anchor.
             if live_state:
-                sections.append(f"--- Live state ---\n{live_state}")
+                add("live_state", self.LAYER_VOLATILE,
+                    f"--- Live state ---\n{live_state}")
                 injected.append("live_state")
 
-            # Attention anchor (always last — recency bias)
-            sections.append(self._build_critical_anchor(role_id))
+            add("critical_anchor", self.LAYER_ANCHOR,
+                self._build_critical_anchor(role_id))
 
             self._last_injected_sections = injected
-            return "\n\n".join(sections)
+            return sections
 
-        # 1. Role prompt (highest attention)
+        # ---- Layer 0: role identity -------------------------------------
         role_prompt = self.load_role_prompt(role_id)
-        if role_prompt:
-            sections.append(role_prompt)
+        add("role_prompt", self.LAYER_STABLE, role_prompt)
 
-        # 2. Shared DELFIN context (full only for roles that modify code
-        #    or make strategic decisions; brief summary for read-only roles)
+        # ---- Layer 0: shared DELFIN context ------------------------------
+        # Full only for roles that modify code or make strategic decisions;
+        # brief summary for read-only roles. The repo map and the relevant
+        # playbook are TASK-derived, so they are only *decided* here and
+        # emitted further down in the volatile tail.
         _FULL_CONTEXT_ROLES = {"session_manager", "chief_agent", "builder_agent", "critic_agent"}
         _PLAYBOOK_ROLES = {"builder_agent", "session_manager", "critic_agent"}
+        want_repo_map = False
+        want_playbook = False
         shared = self.load_shared_context()
         if shared:
             if role_id in _FULL_CONTEXT_ROLES:
-                sections.append(shared)
-                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
-                    if not self._should_skip_section("repo_map", role_id):
-                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
-                        injected.append("repo_map")
+                add("shared_context", self.LAYER_STABLE, shared)
+                want_repo_map = self._should_inject_repo_map(
+                    role_id, session_key, repo_map_ctx)
                 if role_id in _PLAYBOOK_ROLES:
-                    playbooks = self._cached_read(
-                        self.agent_dir / "shared" / "playbooks.md"
-                    )
-                    if playbooks:
-                        sections.append(playbooks)
-                    if include_playbook:
-                        if not self._should_skip_section("playbook", role_id):
-                            sections.append(
-                                f"--- Relevant Playbook ---\n{relevant_playbook}"
-                            )
-                            injected.append("playbook")
+                    add("playbooks", self.LAYER_STABLE, _shared("playbooks.md"))
+                    want_playbook = include_playbook
             elif self.is_delfin_workspace is False:
                 # The user works in their OWN project — DELFIN's product
                 # context and module paths are neither applicable nor free.
                 # Naming DELFIN's internals here also invites the model to
-                # drift into the source tree (observed in the field).
-                sections.append(
+                # drift into the source tree.
+                add("shared_context", self.LAYER_STABLE,
                     "DELFIN is the quantum-chemistry platform hosting this "
                     "agent. You are NOT working on DELFIN's own source here "
                     "— work in the user's workspace shown under Session "
                     "Environment. DELFIN's chemistry tooling stays available "
-                    "through your tools."
-                )
+                    "through your tools.")
             else:
                 # Brief context: short intro only. Detailed guidance comes from
                 # the relevant playbook and repo map to keep prompts cheap.
@@ -1414,43 +1375,25 @@ class PromptLoader:
                     "Key paths: delfin/dashboard/, delfin/orca/, "
                     "delfin/slurm/, delfin/agent/, tests/)"
                 )
-                sections.append(brief)
-                if include_playbook:
-                    if not self._should_skip_section("playbook", role_id):
-                        sections.append(
-                            f"--- Relevant Playbook ---\n{relevant_playbook}"
-                        )
-                        injected.append("playbook")
-                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
-                    if not self._should_skip_section("repo_map", role_id):
-                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
-                        injected.append("repo_map")
+                add("shared_context", self.LAYER_STABLE, brief)
+                want_playbook = include_playbook
+                want_repo_map = self._should_inject_repo_map(
+                    role_id, session_key, repo_map_ctx)
 
-        # 3. Mode description (only for session_manager / chief who need it
-        #    for routing/strategic decisions; other roles get their
-        #    instructions from the role prompt itself)
+        # ---- Layer 0: mode description, routing rules, templates ---------
+        # Mode description only for session_manager / chief who need it for
+        # routing/strategic decisions; other roles get their instructions
+        # from the role prompt itself.
         _MODE_DESC_ROLES = {"session_manager", "chief_agent"}
-        if mode_description:
-            if role_id in _MODE_DESC_ROLES:
-                sections.append(mode_description)
-            # Others skip mode_description — their role prompt is sufficient
+        if mode_description and role_id in _MODE_DESC_ROLES:
+            add("mode_description", self.LAYER_STABLE, mode_description)
 
-        # 4. Routing rules (only for session_manager)
         if role_id == "session_manager":
-            routing = self.load_routing_rules()
-            if routing:
-                sections.append(routing)
+            add("routing_rules", self.LAYER_STABLE, self.load_routing_rules())
+            add("input_template", self.LAYER_STABLE, self.load_input_template())
+            add("verdict_template", self.LAYER_STABLE, self.load_verdict_template())
 
-        # 5. Input/output templates (only for session_manager — others don't need them)
-        if role_id == "session_manager":
-            input_tmpl = self.load_input_template()
-            if input_tmpl:
-                sections.append(input_tmpl)
-            verdict_tmpl = self.load_verdict_template()
-            if verdict_tmpl:
-                sections.append(verdict_tmpl)
-
-        # 6. Cycle context + efficiency rules + collaboration protocol
+        # ---- Layer 1: cycle context + protocol ---------------------------
         if route:
             total = len(route)
             header = (
@@ -1465,11 +1408,10 @@ class PromptLoader:
             # a link in the multi-agent CODING pipeline. Emitting the pipeline
             # collaboration protocol, the git/pytest efficiency rules, a
             # "read DELFIN source anywhere" tool block, or the structured-output
-            # self-reflection here contaminated it into acting like a coder: it
-            # read the whole delfin/manta source tree and self-started a task
-            # (bug 20260708-092217). Its scope, tools and ACTION: mechanics
-            # already live in dashboard_agent.md — keep only a short, CONSISTENT
-            # orientation here so nothing contradicts that role prompt.
+            # self-reflection here contaminated it into acting like a coder. Its
+            # scope, tools and ACTION: mechanics already live in
+            # dashboard_agent.md — keep only a short, CONSISTENT orientation
+            # here so nothing contradicts that role prompt.
             if role_id == "dashboard_agent":
                 cycle_info = header + (
                     "You are a single-step, conversational guide talking "
@@ -1481,7 +1423,7 @@ class PromptLoader:
                     "computations. Always ask before any destructive action "
                     "(submit / recalc / cancel)."
                 )
-                sections.append(cycle_info)
+                add("cycle_info", self.LAYER_ROUTE, cycle_info)
             else:
                 # TRUE multi-agent PIPELINE roles (builder / critic / test /
                 # session_manager / …). NOTE: solo_agent never reaches here — it
@@ -1570,28 +1512,41 @@ class PromptLoader:
                     f"If anything is missing, fix it before submitting."
                 )
 
-                sections.append(cycle_info)
+                add("cycle_info", self.LAYER_ROUTE, cycle_info)
 
-        # 6b. Pre-task briefing (outcome-based insights)
+        # ---- Layer 2: per-turn material ----------------------------------
+        if want_repo_map and not self._should_skip_section("repo_map", role_id):
+            add("repo_map", self.LAYER_VOLATILE,
+                f"--- Repo Map ---\n{repo_map_ctx}")
+            injected.append("repo_map")
+        if want_playbook and not self._should_skip_section("playbook", role_id):
+            add("playbook", self.LAYER_VOLATILE,
+                f"--- Relevant Playbook ---\n{relevant_playbook}")
+            injected.append("playbook")
+
+        # Pre-task briefing (outcome-based insights)
         if self._should_inject_briefing(role_id, session_key, briefing_ctx):
             if not self._should_skip_section("briefing", role_id):
-                sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                add("briefing", self.LAYER_VOLATILE,
+                    f"--- Task Briefing ---\n{briefing_ctx}")
                 injected.append("briefing")
 
-        # 6c. Goal decomposition for complex tasks (Feature 3)
+        # Goal decomposition for complex tasks
         if decomposition_ctx and role_id in (
             "session_manager", "builder_agent", "solo_agent",
         ):
-            sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+            add("decomposition", self.LAYER_VOLATILE,
+                f"--- Task Decomposition ---\n{decomposition_ctx}")
 
-        # 6d. Chemistry doc-first protocol (Feature 6)
+        # Chemistry doc-first protocol
         if chemistry_reminder and role_id in (
             "solo_agent", "research_agent", "builder_agent", "dashboard_agent",
         ):
-            sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
+            add("chemistry_protocol", self.LAYER_VOLATILE,
+                f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 
-        # 7. Prior role outputs (role-aware truncation)
-        # SM plan is critical for Builder/Test — keep most of it
+        # Prior role outputs (role-aware truncation). The SM plan is critical
+        # for Builder/Test — keep most of it.
         _PRIOR_LIMITS = {
             "session_manager": 6000,
             "critic_agent": 4000,
@@ -1608,19 +1563,19 @@ class PromptLoader:
                 if len(output) > limit:
                     truncated += "\n... [truncated]"
                 parts.append(f"## {rid}\n{truncated}")
-            sections.append("\n\n".join(parts))
+            add("prior_outputs", self.LAYER_VOLATILE, "\n\n".join(parts))
             injected.append("prior_outputs")
 
-        # 8. Memory context
+        # Memory context
         if self._should_inject_memory(role_id, session_key, memory_context):
             if not self._should_skip_section("memory", role_id):
-                sections.append(f"--- Project Memory ---\n{memory_context}")
+                add("memory", self.LAYER_VOLATILE,
+                    f"--- Project Memory ---\n{memory_context}")
                 injected.append("memory")
 
-        # 8b. External Memory bridge — same source the terminal CLI reads
-        # (~/.claude/projects/<slug>/memory/MEMORY.md). Solo gets the full
-        # 6 KB cap; dashboard gets a tighter 2 KB cap because its turns are
-        # short and we don't want to drown a haiku-class model in memos.
+        # External memory bridge — same source the terminal CLI reads. Solo
+        # gets the full 6 KB cap; dashboard gets a tighter 2 KB cap because
+        # its turns are short and a guide model should not drown in memos.
         if role_id == "dashboard_agent":
             try:
                 ext_mem = self._load_external_memory_context(
@@ -1628,33 +1583,183 @@ class PromptLoader:
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):
-                sections.append(f"--- External Memory ---\n{ext_mem}")
+                add("external_memory", self.LAYER_VOLATILE,
+                    f"--- External Memory ---\n{ext_mem}")
                 injected.append("external_memory")
 
-            # 8c. Episodic recall — same bridge as solo (Layer 3c), small
-            # by construction (<=2 entries / 1200 chars).
+            # Episodic recall — same bridge as solo, small by construction
+            # (<=2 entries / 1200 chars).
             episode_ctx = self._load_episode_recall_context(task_text)
             if episode_ctx and not self._should_skip_section(
                     "memory", role_id):
-                sections.append(f"--- Past Sessions ---\n{episode_ctx}")
+                add("episodes", self.LAYER_VOLATILE,
+                    f"--- Past Sessions ---\n{episode_ctx}")
                 injected.append("episodes")
 
-        # 9. Provider profile (success rates, failures, playbooks)
+        # Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
         if self._should_inject_profile_context(role_id, session_key, profile_ctx):
             if not self._should_skip_section("profile", role_id):
-                sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                add("profile", self.LAYER_VOLATILE,
+                    f"--- Provider Profile ---\n{profile_ctx}")
                 injected.append("profile")
 
-        # 9b. Live state (per-turn UI snapshot, e.g. Dashboard widgets +
-        # active calc folder). Placed before the attention anchor so it's
-        # the last domain content the model sees.
+        # Live state (per-turn UI snapshot, e.g. dashboard widgets + active
+        # calc folder). Last domain content before the anchor.
         if live_state:
-            sections.append(f"--- Live state ---\n{live_state}")
+            add("live_state", self.LAYER_VOLATILE,
+                f"--- Live state ---\n{live_state}")
             injected.append("live_state")
 
-        # 10. Attention anchor (always last — recency bias)
-        sections.append(self._build_critical_anchor(role_id))
+        # ---- Layer 3: attention anchor (always last — recency bias) ------
+        add("critical_anchor", self.LAYER_ANCHOR,
+            self._build_critical_anchor(role_id))
 
         self._last_injected_sections = injected
-        return "\n\n".join(sections)
+        return sections
+
+    def build_system_prompt(
+        self,
+        role_id: str,
+        mode_id: str,
+        mode_description: str = "",
+        route: list[str] | None = None,
+        role_index: int = 0,
+        prior_outputs: dict[str, str] | None = None,
+        memory_context: str = "",
+        task_text: str = "",
+        session_key: str = "",
+        live_state: str = "",
+        model: str = "",
+        permission_mode: str = "",
+    ) -> str:
+        """Compose the full system prompt for a given role.
+
+        Thin join over :meth:`compose_sections` — see there for the section
+        order and the prefix-cache contract.
+
+        Parameters
+        ----------
+        role_id : str
+            Current agent role (e.g. 'builder_agent').
+        mode_id : str
+            Active mode (e.g. 'default').
+        mode_description : str
+            The mode's markdown description.
+        route : list[str], optional
+            Full route for the mode.
+        role_index : int
+            Current position in the route (0-based).
+        prior_outputs : dict[str, str], optional
+            Outputs from previous roles in this cycle.
+        memory_context : str
+            Persistent memory to inject.
+        task_text : str
+            Current task text used to select a relevant profile playbook.
+        """
+        sections = self.compose_sections(
+            role_id=role_id,
+            mode_id=mode_id,
+            mode_description=mode_description,
+            route=route,
+            role_index=role_index,
+            prior_outputs=prior_outputs,
+            memory_context=memory_context,
+            task_text=task_text,
+            session_key=session_key,
+            live_state=live_state,
+            model=model,
+            permission_mode=permission_mode,
+        )
+        return "\n\n".join(s.content for s in sections)
+
+    # -- prompt size reporting ---------------------------------------------
+
+    def prompt_size_report(self, **kwargs: Any) -> dict[str, Any]:
+        """Break the composed system prompt down per section.
+
+        Accepts the same keyword arguments as :meth:`build_system_prompt`
+        and returns a dict with the per-section chars / estimated tokens
+        plus stable-vs-volatile totals. ``chars // 4`` is the house token
+        estimate (see ``tests/test_prompt_token_budget.py``).
+
+        The stable total is what an OpenAI-compatible endpoint can serve
+        from its prefix cache once the session is warm; the volatile total
+        is what every turn pays for in full.
+        """
+        sections = self.compose_sections(**kwargs)
+        joined_overhead = 2 * max(0, len(sections) - 1)  # the "\n\n" glue
+        rows = [
+            {
+                "name": s.name,
+                "layer": s.layer,
+                "chars": s.char_count,
+                "tokens": estimate_tokens(s.content),
+                "volatile": s.layer >= self.LAYER_VOLATILE,
+            }
+            for s in sections
+        ]
+        total_chars = sum(r["chars"] for r in rows) + joined_overhead
+        stable_chars = sum(
+            r["chars"] for r in rows if r["layer"] < self.LAYER_VOLATILE)
+        return {
+            "role_id": kwargs.get("role_id", ""),
+            "mode_id": kwargs.get("mode_id", ""),
+            "sections": rows,
+            "total_chars": total_chars,
+            "total_tokens": (total_chars + 3) // 4,
+            "stable_chars": stable_chars,
+            "stable_tokens": (stable_chars + 3) // 4,
+            "volatile_chars": total_chars - stable_chars,
+            "volatile_tokens": (total_chars - stable_chars + 3) // 4,
+        }
+
+    def stable_prefix(self, **kwargs: Any) -> str:
+        """The leading, turn-invariant part of the composed prompt.
+
+        Two builds within one session must agree on this prefix byte for
+        byte — that is exactly the span an OpenAI-compatible endpoint can
+        reuse from its prefix cache.
+        """
+        sections = self.compose_sections(**kwargs)
+        stable = [s.content for s in sections if s.layer < self.LAYER_VOLATILE]
+        return "\n\n".join(stable)
+
+
+def estimate_tokens(text: str) -> int:
+    """House token estimate: ``chars // 4`` rounded up.
+
+    Deliberately identical to the estimator in the prompt budget tests so
+    reported numbers and enforced budgets are the same currency.
+    """
+    return (len(text) + 3) // 4
+
+
+def format_prompt_size_report(report: dict[str, Any]) -> str:
+    """Render :meth:`PromptLoader.prompt_size_report` as a text table."""
+    lines = [
+        f"role={report.get('role_id', '?')} "
+        f"mode={report.get('mode_id', '?')}",
+        f"{'section':<30} {'layer':>5} {'chars':>8} {'tokens':>8}  kind",
+        "-" * 68,
+    ]
+    for row in report["sections"]:
+        kind = "volatile" if row["volatile"] else "stable"
+        lines.append(
+            f"{row['name']:<30} {row['layer']:>5} {row['chars']:>8} "
+            f"{row['tokens']:>8}  {kind}"
+        )
+    lines.append("-" * 68)
+    lines.append(
+        f"{'TOTAL':<30} {'':>5} {report['total_chars']:>8} "
+        f"{report['total_tokens']:>8}"
+    )
+    lines.append(
+        f"{'  cacheable prefix (stable)':<30} {'':>5} "
+        f"{report['stable_chars']:>8} {report['stable_tokens']:>8}"
+    )
+    lines.append(
+        f"{'  per-turn (volatile)':<30} {'':>5} "
+        f"{report['volatile_chars']:>8} {report['volatile_tokens']:>8}"
+    )
+    return "\n".join(lines)
