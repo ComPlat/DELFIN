@@ -161,3 +161,107 @@ def test_add_mcp_rejects_empty_name_or_command(tmp_path):
 def test_remove_unknown_returns_none(tmp_path):
     cfg = tmp_path / "mcp.json"
     assert me.remove_mcp_server("nope", path=cfg) is None
+
+
+# ---------------------------------------------------------------------------
+# Sessions are scoped to the directory they worked in
+# ---------------------------------------------------------------------------
+
+
+def test_sessions_are_listed_per_workspace(tmp_path, monkeypatch):
+    """Field case: Voila started in another folder opened the PREVIOUS
+    folder's session. A project's dashboard must offer that project's
+    history, not every session on the machine."""
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib
+    from delfin.agent import session_store as ss
+    importlib.reload(ss)
+
+    a = tmp_path / "projA"
+    b = tmp_path / "projB"
+    a.mkdir()
+    b.mkdir()
+    ss.save_session("sid-a", chat_messages=[{"role": "user", "content": "a"}],
+                    title="work in A", workspace=str(a))
+    ss.save_session("sid-b", chat_messages=[{"role": "user", "content": "b"}],
+                    title="work in B", workspace=str(b))
+
+    assert [s["session_id"] for s in ss.list_sessions(workspace=a)] == ["sid-a"]
+    assert [s["session_id"] for s in ss.list_sessions(workspace=b)] == ["sid-b"]
+    # Unscoped listing still sees everything (session browser / search).
+    assert len(ss.list_sessions()) == 2
+
+
+def test_legacy_sessions_without_workspace_stay_visible(tmp_path, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib
+    from delfin.agent import session_store as ss
+    importlib.reload(ss)
+    ss.save_session("legacy", chat_messages=[{"role": "user", "content": "x"}],
+                    title="before scoping existed")
+    ws = tmp_path / "anywhere"
+    ws.mkdir()
+    assert [s["session_id"] for s in ss.list_sessions(workspace=ws)] == ["legacy"]
+
+
+def test_latest_session_is_the_resume_target(tmp_path, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib, time as _t
+    from delfin.agent import session_store as ss
+    importlib.reload(ss)
+    a = tmp_path / "projA"
+    a.mkdir()
+    other = tmp_path / "projB"
+    other.mkdir()
+    ss.save_session("old", chat_messages=[{"role": "user", "content": "1"}],
+                    title="older", workspace=str(a))
+    _t.sleep(0.01)
+    ss.save_session("newer", chat_messages=[{"role": "user", "content": "2"}],
+                    title="newer", workspace=str(a))
+    _t.sleep(0.01)
+    ss.save_session("elsewhere", chat_messages=[{"role": "user", "content": "3"}],
+                    title="other project", workspace=str(other))
+
+    assert ss.latest_session(a)["session_id"] == "newer"
+    assert ss.latest_session(other)["session_id"] == "elsewhere"
+    assert ss.latest_session(tmp_path / "empty") is None
+
+
+def test_fork_stays_in_its_workspace(tmp_path, monkeypatch):
+    """A fork inherits the whole record, so it must stay listed in the
+    project it was forked from."""
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib
+    from delfin.agent import session_store as ss
+    importlib.reload(ss)
+    a = tmp_path / "projA"
+    a.mkdir()
+    ss.save_session("src", chat_messages=[{"role": "user", "content": "x"}],
+                    title="original", workspace=str(a))
+    new_id = ss.fork_session("src")
+    assert new_id
+    ids = [s["session_id"] for s in ss.list_sessions(workspace=a)]
+    assert set(ids) == {"src", new_id}
+    # And the fork is not offered in a different project.
+    other = tmp_path / "projB"
+    other.mkdir()
+    assert ss.list_sessions(workspace=other) == []
+
+
+def test_restore_by_explicit_id_ignores_scoping(tmp_path, monkeypatch):
+    """Scoping governs what is OFFERED; an explicit id still loads —
+    otherwise a bundle imported from elsewhere would be unreachable."""
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import importlib
+    from delfin.agent import session_store as ss
+    importlib.reload(ss)
+    a = tmp_path / "projA"
+    a.mkdir()
+    ss.save_session("far-away", chat_messages=[{"role": "user", "content": "x"}],
+                    title="elsewhere", workspace=str(a))
+    assert ss.load_session("far-away")["title"] == "elsewhere"

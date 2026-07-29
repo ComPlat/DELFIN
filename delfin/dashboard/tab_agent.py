@@ -1175,6 +1175,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Perms", "/grant", "Grant the agent access to a directory (/grant <path> [always])", True),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     ("Session", "/session", "ls/restore/search/fork/tree/handoff/bundle/import/archive", False),
+    ("Session", "/session resume", "Continue this directory's last conversation (context included)", False),
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
     ("Commands", "/commands", "List user-defined slash commands from ~/.delfin/commands/", False),
     ("Project", "/init", "Scan repo + write AGENTS.md / .delfin/settings.json scaffold", False),
@@ -4871,11 +4872,30 @@ def create_tab(ctx):
 
     # -- session helpers ---------------------------------------------------
 
+    def _agent_workspace_path() -> str:
+        """Directory this dashboard's agent works in — the scope for
+        session listing and resume."""
+        try:
+            eng = state.get("engine")
+            kp = getattr(eng, "kit_permissions", None) if eng else None
+            ws = getattr(kp, "workspace", None) or getattr(eng, "repo_dir", None)
+            if ws:
+                return str(ws)
+        except Exception:
+            pass
+        try:
+            import os as _os
+            return str(_os.environ.get("DELFIN_LAUNCH_CWD", "")
+                       or (ctx.repo_dir or ""))
+        except Exception:
+            return ""
+
     def _refresh_session_dropdown():
         """Rebuild the session dropdown from saved sessions."""
         try:
             from delfin.agent.session_store import list_sessions
-            sessions = list_sessions(limit=30)
+            sessions = list_sessions(limit=30,
+                                     workspace=_agent_workspace_path() or None)
         except Exception:
             sessions = []
 
@@ -4965,6 +4985,7 @@ def create_tab(ctx):
                 subagent_calls=state.get("subagent_calls") or [],
                 pending_plan_body=state.get("_pending_plan_body", ""),
                 todo_payload=state.get("current_todos") or [],
+                workspace=_agent_workspace_path(),
             )
             state["active_session_id"] = engine.session_id
             # Episodic memory: one compact per-session record so a later
@@ -7515,6 +7536,28 @@ def create_tab(ctx):
                         )
                 _append_system_message("\n".join(lines))
                 return True
+            # /session resume — continue this WORKSPACE's last conversation
+            if arg in ("resume", "continue"):
+                _ws_now = _agent_workspace_path()
+                try:
+                    latest = _ss.latest_session(_ws_now or None)
+                except Exception as exc:
+                    _append_system_message(f"Resume failed: {exc}")
+                    return True
+                if not latest:
+                    _append_system_message(
+                        f"No previous session for `{_ws_now or '?'}` — "
+                        "this is a fresh start here.")
+                    return True
+                try:
+                    _load_saved_session(latest.get("session_id", ""))
+                    _append_system_message(
+                        f"▶ Resumed `{latest.get('title', '')[:60]}` "
+                        f"({latest.get('message_count', 0)} messages) — "
+                        "the conversation and its context are back.")
+                except Exception as exc:
+                    _append_system_message(f"Resume failed: {exc}")
+                return True
             # /session restore <id>  — load a saved session into this tab
             if arg.startswith("restore "):
                 sid = arg[len("restore "):].strip()
@@ -7656,7 +7699,7 @@ def create_tab(ctx):
                 hits: list[str] = []
                 # Chat-history of saved sessions (newest first, capped)
                 try:
-                    for r in _ss.list_sessions(limit=50):
+                    for r in _ss.list_sessions(limit=50, workspace=_agent_workspace_path() or None):
                         sid = r.get("session_id", "")
                         try:
                             data = _ss.load_session(sid) or {}
@@ -7763,7 +7806,7 @@ def create_tab(ctx):
                 return True
             # /session ls
             if arg == "ls" or arg == "list":
-                rows = _ss.list_sessions(limit=20)
+                rows = _ss.list_sessions(limit=20, workspace=_agent_workspace_path() or None)
                 if not rows:
                     _append_system_message("No saved sessions.")
                     return True

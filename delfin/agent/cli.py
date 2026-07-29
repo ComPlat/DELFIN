@@ -153,6 +153,7 @@ def _save_session(engine, repo_root: Path) -> str:
             engine_messages=estate.get("engine_messages", []),
             token_usage=estate.get("token_usage", {}),
             cost_usd=estate.get("cost_usd", 0.0),
+            workspace=str(repo_root),
         )
     except Exception as exc:
         print(f"WARN: session save failed: {exc}", file=sys.stderr)
