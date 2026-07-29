@@ -36431,8 +36431,17 @@ def _build_uff_constraints_from_template(
             x = atom.GetIdx()
             # In "angles" mode a planar donor is steered by angle targets alone -- no improper, so
             # nothing forces the metal into the donor plane against the polyhedron.
+            # MODE "theta" (2026-07-29, third bisection step): constrain ONLY the donor's internal
+            # X-D-X angle and emit nothing that involves the metal -- no improper, no phi.  Both
+            # earlier modes damaged the polyhedron (poly_cshm_vs_ccdc was the worst-regressing axis
+            # in BOTH, and "angles" was worse than "full": ccdc_isomer_lost 8 vs 2, isomers_lost 30
+            # vs 9).  Dropping the improper therefore was not the answer; what the two modes still
+            # SHARE is that they constrain angles AT the metal.  The coordination path already owns
+            # M-D distances and D-M-D angles, so a second set of metal-involving targets competes
+            # with it.  This mode shapes the LIGAND and leaves the metal to the path that owns it.
+            _theta_only = (_geom is not None and _metal_sigma_mode == "theta")
             _planar_angles = (_geom == "planar" and _metal_sigma_mode == "angles")
-            if is_sp2 and len(heavy_nbrs) >= 3 and not _planar_angles:
+            if is_sp2 and len(heavy_nbrs) >= 3 and not _planar_angles and not _theta_only:
                 # Improper dihedral → planarity
                 a, b, c = heavy_nbrs[:3]
                 key = (a, x, b, c)
@@ -36443,7 +36452,8 @@ def _build_uff_constraints_from_template(
                     constraints["torsions"].append(
                         (a, x, b, c, _nearest_planar_target(a, x, b, c))
                     )
-            if _geom == "planar" and not _planar_angles:
+            _use_ring_angles = (_geom == "planar") and (_planar_angles or _theta_only)
+            if _geom == "planar" and not _use_ring_angles:
                 # "full" mode: deliberately NO angle constraints.  Only the angle SUM is invariant
                 # for a planar donor; the ring sets the split, and pinning 120 would bend every
                 # imidazole and pyrazole donor by ~14 deg.  The improper above delivers planarity.
@@ -36454,7 +36464,7 @@ def _build_uff_constraints_from_template(
             # Cross-check against the crystal: measured 118.0 / 120.75 and 106.0 / 126.5, so the
             # regular-polygon values land within ~2 deg without importing a single measured number.
             _ring_internal = _ring_exo = 0.0
-            if _planar_angles:
+            if _use_ring_angles:
                 _rs = 0
                 for _n in (3, 4, 5, 6, 7, 8):
                     if atom.IsInRingSize(_n):
@@ -36470,7 +36480,15 @@ def _build_uff_constraints_from_template(
             for i in range(len(heavy_nbrs)):
                 for j in range(i + 1, len(heavy_nbrs)):
                     ai, aj = heavy_nbrs[i], heavy_nbrs[j]
-                    if _planar_angles:
+                    if _theta_only:
+                        _has_m = (
+                            mol_template.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET
+                            or mol_template.GetAtomWithIdx(aj).GetSymbol() in _METAL_SET
+                        )
+                        if _has_m:
+                            continue          # the coordination path owns everything at the metal
+                        target_angle = _ring_internal if _use_ring_angles else _theta
+                    elif _planar_angles:
                         # Internal iff BOTH partners share a ring bond with the donor.
                         _bi = mol_template.GetBondBetweenAtoms(x, ai)
                         _bj = mol_template.GetBondBetweenAtoms(x, aj)
