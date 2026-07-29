@@ -109,6 +109,13 @@ DEFAULT_SETTINGS = {
         # (cost_hard_limit_usd) and the consecutive-failure abort remain
         # the actual safety nets. 0 → uncapped (cost/fail-abort only).
         "max_tool_rounds": 500,
+        # Dashboard ACTION rounds: a round that issues at least one NEW
+        # command is progress and only draws on the ceiling; a round that
+        # re-issues what already ran this turn is charged against
+        # action_repeat_limit, so a loop ends after the first repeat while
+        # honest multi-step work runs on. 0 → ceiling disabled.
+        "max_action_rounds": 12,
+        "action_repeat_limit": 2,
         # Auto-verification: don't let the agent finish a turn with broken code.
         # When the model stops after editing .py files, the harness verifies
         # them and — on a problem — forces a bounded fix round (the model can't

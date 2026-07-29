@@ -490,3 +490,329 @@ def test_engine_correction_budget_is_per_turn(agent_tree):
     assert fake.stream_message.call_count == 2
     engine.stream_response("zweite frage: class AgentEngine wo?")
     assert fake.stream_message.call_count == 4
+
+
+# ---------------------------------------------------------------------------
+# Functional-claim scanner — "it works now" needs the artifact to have run
+# ---------------------------------------------------------------------------
+
+def _cmds(*pairs) -> list[str]:
+    """Build an executed-command ledger from (tool_name, tool_input) pairs
+    exactly the way the engine records them."""
+    out = []
+    for name, payload in pairs:
+        cmd = vg.extract_exec_command(name, payload)
+        if cmd:
+            out.append(cmd)
+    return out
+
+
+# The field case: game logic unit-tested, server started, playability
+# asserted. Nothing ever exercised the browser or the key handling.
+_FIELD_LEDGER = _cmds(
+    ("run_tests", '{"target": "tests/test_game_logic.py"}'),
+    ("bash_background", '{"command": "voila --port 8866 games.ipynb"}'),
+    ("bash", '{"command": "curl -sI http://localhost:8866"}'),
+)
+_FIELD_ANSWER = (
+    "Beide Spiele funktionieren im Browser. Der Voila-Server läuft auf "
+    "Port 8866. Du kannst die Schlange mit den Pfeiltasten steuern."
+)
+
+
+def test_functional_playability_after_tests_and_server_start_flagged():
+    flags = vg.scan_for_unexercised_functional_claims(
+        _FIELD_ANSWER, exec_commands=_FIELD_LEDGER)
+    kinds = [f.kind for f in flags]
+    claims = " | ".join(f.claim for f in flags)
+    assert kinds == ["interactive", "interactive"]
+    assert "Beide Spiele funktionieren im Browser" in claims
+    assert "Pfeiltasten" in claims
+    # The server sentence itself is NOT flagged: it was started.
+    assert "Voila-Server" not in claims
+    assert "headlessly" in flags[0].message()
+
+
+def test_functional_honest_non_verification_not_flagged():
+    for text in (
+        "Ich konnte nicht verifizieren, dass die Spiele im Browser "
+        "funktionieren.",
+        "I could not verify that the games work in the browser.",
+        "Die Tastatursteuerung ist ungetestet — ob sie funktioniert, weiß "
+        "ich nicht.",
+        "The browser UI is untested; whether it works is unconfirmed.",
+    ):
+        assert vg.scan_for_unexercised_functional_claims(
+            text, exec_commands=_FIELD_LEDGER) == [], text
+
+
+def test_functional_executed_artifact_not_flagged():
+    ledger = _cmds(("bash", '{"command": "python solver.py --check"}'))
+    assert vg.scan_for_unexercised_functional_claims(
+        "Das Skript solver.py läuft fehlerfrei.", exec_commands=ledger) == []
+    assert vg.scan_for_unexercised_functional_claims(
+        "solver.py runs without errors.", exec_commands=ledger) == []
+
+
+def test_functional_server_start_does_not_exercise_the_artifact():
+    # Only served, never run: the claim about the artifact stays ungrounded.
+    ledger = _cmds(
+        ("bash_background", '{"command": "voila --port 8866 games.ipynb"}'))
+    flags = vg.scan_for_unexercised_functional_claims(
+        "games.ipynb läuft fehlerfrei.", exec_commands=ledger)
+    assert [(f.kind, f.subject) for f in flags] == [
+        ("unexercised", "games.ipynb")]
+    assert "starting a server" in flags[0].message()
+
+
+def test_functional_unrelated_test_run_does_not_ground_artifact_claim():
+    ledger = _cmds(("bash", '{"command": "python -m pytest tests/"}'))
+    flags = vg.scan_for_unexercised_functional_claims(
+        "Das Skript snake.py läuft fehlerfrei.", exec_commands=ledger)
+    assert [(f.kind, f.subject) for f in flags] == [
+        ("unexercised", "snake.py")]
+
+
+def test_functional_german_and_english_phrasings_detected():
+    german = (
+        "Die App funktioniert im Browser.",
+        "Das Spiel ist spielbar.",
+        "Du kannst es jetzt im Browser starten und bedienen.",
+        "Die Oberfläche läuft fehlerfrei.",
+    )
+    english = (
+        "Both games work in the browser now.",
+        "The UI is fully functional.",
+        "You can now play with the arrow keys.",
+        "The widget runs smoothly.",
+    )
+    for text in german + english:
+        flags = vg.scan_for_unexercised_functional_claims(
+            text, exec_commands=_FIELD_LEDGER)
+        assert [f.kind for f in flags] == ["interactive"], text
+
+
+def test_functional_hedged_claims_not_flagged():
+    for text in (
+        "Vermutlich funktioniert das Spiel jetzt im Browser.",
+        "The game should be playable in the browser.",
+        "Das Spiel dürfte im Browser funktionieren — nicht geprüft.",
+        "It probably works in the browser.",
+    ):
+        assert vg.scan_for_unexercised_functional_claims(
+            text, exec_commands=_FIELD_LEDGER) == [], text
+
+
+def test_functional_non_assertions_not_flagged():
+    for text in (
+        "Das Spiel funktioniert nicht im Browser.",          # negated
+        "The keyboard control does not work in the browser.",
+        "Damit es im Browser funktioniert, brauchst du ipyevents.",
+        "Funktioniert das Spiel im Browser?",                # question
+        "Wie du bestätigt hast, funktioniert das Spiel im Browser.",
+        "```\nDas Spiel funktioniert im Browser\n```",       # fenced code
+        "> Das Spiel funktioniert im Browser",               # quoted
+        "Die Arbeit an dem Modul ist abgeschlossen.",        # no claim
+        "So funktioniert die Tastensteuerung: ein Event-Handler.",
+        "Here is how the browser widget works internally.",
+        "Der Test prüft, ob das Spiel im Browser funktioniert.",
+    ):
+        assert vg.scan_for_unexercised_functional_claims(
+            text, exec_commands=_FIELD_LEDGER) == [], text
+
+
+def test_functional_general_prose_needs_an_artifact_noun():
+    # Zero execution this session, but these are not claims about produced
+    # software — the turn-level kind stays silent.
+    for text in (
+        "That approach works well for large basis sets.",
+        "Ja, das funktioniert so.",
+        "Die Methode funktioniert für angeregte Zustände.",
+    ):
+        assert vg.scan_for_unexercised_functional_claims(
+            text, exec_commands=[]) == [], text
+    assert vg.scan_for_unexercised_functional_claims(
+        "Das Skript läuft jetzt fehlerfrei.", exec_commands=[]) != []
+
+
+def test_functional_turn_level_rule_for_unnamed_artifacts():
+    # Nothing ran at all -> the unnamed claim is flagged ...
+    flags = vg.scan_for_unexercised_functional_claims(
+        "Das Skript läuft jetzt.", exec_commands=[])
+    assert [f.kind for f in flags] == ["no_execution"]
+    # ... but any foreground run this session grounds it (turn-level rule).
+    assert vg.scan_for_unexercised_functional_claims(
+        "Das Skript läuft jetzt.",
+        exec_commands=_cmds(("bash", '{"command": "python -m pytest"}'))) == []
+
+
+def test_functional_no_ledger_silences_runtime_but_not_interactive():
+    assert vg.scan_for_unexercised_functional_claims(
+        "Das Skript läuft jetzt.", exec_commands=[],
+        exec_ledger_available=False) == []
+    flags = vg.scan_for_unexercised_functional_claims(
+        "Das Spiel funktioniert im Browser.", exec_commands=[],
+        exec_ledger_available=False)
+    assert [f.kind for f in flags] == ["interactive"]
+
+
+def test_functional_ui_automation_grounds_interactive_claims():
+    assert vg.scan_for_unexercised_functional_claims(
+        "Das Spiel funktioniert im Browser.", exec_commands=[],
+        tools_used={"mcp__browser__click_element"}) == []
+    assert vg.scan_for_unexercised_functional_claims(
+        "Das Spiel funktioniert im Browser.",
+        exec_commands=_cmds(
+            ("bash", '{"command": "playwright test e2e/game.spec.ts"}'))) == []
+    # Fetching a URL is not driving a UI.
+    assert vg.scan_for_unexercised_functional_claims(
+        "Das Spiel funktioniert im Browser.", exec_commands=[],
+        tools_used={"web_fetch"}) != []
+
+
+def test_functional_cap_and_order_stable():
+    text = " ".join(
+        f"Spiel {i} funktioniert im Browser." for i in range(10))
+    flags = vg.scan_for_unexercised_functional_claims(
+        text, exec_commands=[], max_flags=3)
+    assert len(flags) == 3
+    assert flags[0].claim.startswith("Spiel 0")
+    assert flags[2].claim.startswith("Spiel 2")
+    again = vg.scan_for_unexercised_functional_claims(
+        text, exec_commands=[], max_flags=3)
+    assert [f.claim for f in again] == [f.claim for f in flags]
+
+
+def test_functional_scanner_never_raises_on_broken_state():
+    class Boom:
+        def __str__(self):
+            raise RuntimeError("boom")
+
+    claim = "Das Spiel funktioniert im Browser."
+    assert vg.scan_for_unexercised_functional_claims("") == []
+    assert vg.scan_for_unexercised_functional_claims(None) == []
+    assert vg.scan_for_unexercised_functional_claims(
+        claim, max_flags=0) == []
+    assert vg.scan_for_unexercised_functional_claims(
+        claim, exec_commands=[Boom()]) == []
+    assert vg.scan_for_unexercised_functional_claims(
+        claim, tools_used={Boom()}) == []
+    assert vg.functional_claim_caveat([]) == ""
+
+
+def test_functional_caveat_names_the_unverified_thing():
+    flags = vg.scan_for_unexercised_functional_claims(
+        _FIELD_ANSWER, exec_commands=_FIELD_LEDGER)
+    cav = vg.functional_claim_caveat(flags)
+    assert cav.startswith("\n\n[verify] Caveat")
+    assert "Beide Spiele funktionieren im Browser" in cav
+    assert "Pfeiltasten" in cav
+    assert "never exercised" in cav
+    assert "headlessly" in cav
+    # The artifact kind names the artifact.
+    art = vg.scan_for_unexercised_functional_claims(
+        "games.ipynb läuft fehlerfrei.", exec_commands=_cmds(
+            ("bash_background", '{"command": "voila games.ipynb"}')))
+    assert "'games.ipynb' was never executed" in vg.functional_claim_caveat(art)
+
+
+def test_extract_exec_command_selects_execution_tools_only():
+    assert vg.extract_exec_command(
+        "bash", '{"command": "python app.py", "description": "run"}') == (
+        "bash python app.py")
+    assert vg.extract_exec_command(
+        "run_tests", {"target": "tests/t.py", "pytest_args": ["-q"]}) == (
+        "run_tests tests/t.py -q")
+    assert vg.extract_exec_command("Bash", "python app.py") == (
+        "bash python app.py")
+    # Reading, searching and job-inspection are not execution acts.
+    for name in ("read_file", "grep_file", "search_docs", "bash_output",
+                 "bash_status", "write_file"):
+        assert vg.extract_exec_command(name, '{"command": "x"}') == "", name
+    assert vg.extract_exec_command("", "") == ""
+    assert vg.extract_exec_command("bash", None) == "bash"
+
+
+# ---------------------------------------------------------------------------
+# Engine-level functional-claim enforcement (same funnel, caveat consequence)
+# ---------------------------------------------------------------------------
+
+def _tool_client(reply, tool_calls=()):
+    """Fake backend client that emits ``tool_calls`` ((name, input) pairs)
+    before streaming ``reply`` as text."""
+    from delfin.agent.api_client import StreamEvent
+    fake = MagicMock()
+    fake._observed_files_session = set()
+
+    def _stream(*a, **k):
+        for name, payload in tool_calls:
+            yield StreamEvent(type="tool_use", tool_name=name,
+                              tool_input=payload)
+            yield StreamEvent(type="tool_result", tool_name=name,
+                              tool_output="ok")
+        yield StreamEvent(type="text_delta", text=reply)
+        yield StreamEvent(type="message_delta", output_tokens=5, cost_usd=0.0)
+
+    fake.stream_message = MagicMock(side_effect=_stream)
+    return fake
+
+
+def test_engine_functional_claim_gets_caveat_not_correction(agent_tree):
+    fake = _tool_client(
+        _FIELD_ANSWER,
+        tool_calls=(
+            ("Bash", '{"command": "python -m pytest tests/test_game_logic.py"}'),
+            ("Bash", '{"command": "voila --port 8866 games.ipynb &"}'),
+        ))
+    engine = _engine(agent_tree, client=fake)
+    streamed: list[str] = []
+    out = engine.stream_response("baue die spiele", on_token=streamed.append)
+    # No forced correction turn for this class — one model call only.
+    assert fake.stream_message.call_count == 1
+    assert "[verify] Caveat" in out
+    assert "Beide Spiele funktionieren im Browser" in out
+    assert "Pfeiltasten" in out
+    # Visible to the user and recorded in the transcript.
+    assert "[verify] Caveat" in "".join(streamed)
+    assert "[verify] Caveat" in engine.messages[-1]["content"]
+
+
+def test_engine_executed_script_claim_gets_no_caveat(agent_tree):
+    fake = _tool_client(
+        "Das Skript solver.py läuft fehlerfrei.",
+        tool_calls=(("Bash", '{"command": "python solver.py"}'),))
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("prüf das skript")
+    assert fake.stream_message.call_count == 1
+    assert out == "Das Skript solver.py läuft fehlerfrei."
+
+
+def test_engine_functional_caveat_rides_along_with_a_correction(agent_tree):
+    # A location claim (correction turn) AND a functional claim (caveat) in
+    # one answer: one correction, one caveat, no duplication.
+    fake = _claims_client(
+        ["Zeile 26: class SnakeGame — das Spiel funktioniert im Browser.",
+         "Vermutlich Zeile 26 — nicht verifiziert."])
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wo ist die klasse?")
+    assert fake.stream_message.call_count == 2
+    assert out.count("[verify] Caveat: the following was NOT verified") == 1
+    assert "das Spiel funktioniert im Browser" in out
+
+
+def test_engine_functional_guard_respects_plan_mode(agent_tree):
+    fake = _tool_client(_FIELD_ANSWER)
+    fake._permissions.mode = "plan"
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("plane die spiele")
+    assert "[verify] Caveat" not in out
+
+
+def test_engine_exec_ledger_is_cleared_on_new_cycle(agent_tree):
+    fake = _tool_client(
+        "ok", tool_calls=(("Bash", '{"command": "python solver.py"}'),))
+    engine = _engine(agent_tree, client=fake)
+    engine.stream_response("lauf")
+    assert engine._exec_commands_session == ["bash python solver.py"]
+    engine.reset_cycle()
+    assert engine._exec_commands_session == []

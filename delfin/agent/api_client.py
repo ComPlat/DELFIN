@@ -4422,6 +4422,340 @@ def _iter_scan_files(search_path: Path, extra_skip_dirs: frozenset[str]):
             yield Path(dirpath) / name
 
 
+# --- Written-code language check --------------------------------------------
+# The shared work cycle requires English INSIDE code — comments, docstrings,
+# identifiers, log/error strings — while the reply to the user is written in
+# the user's own language. Stating that in the system prompt did not bind:
+# generated modules kept arriving with non-English docstrings and comments.
+# The rule is therefore surfaced where the action happens. After a successful
+# write/edit the tool RESULT carries a short note naming the offending lines,
+# exactly like the post-edit test hint (_suggest_test_for_edit). The note is
+# advisory only: the write is never blocked and the file is never modified.
+
+# Source files only. Prose and data formats (.md, .rst, .txt, .json, .csv,
+# .yaml, .html) are excluded on purpose — their content is what the user asked
+# for and may legitimately be written in any language.
+_LANG_CHECK_EXTS = frozenset({
+    ".py", ".pyi", ".pyw", ".ipynb",
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".svelte",
+    ".sh", ".bash", ".zsh", ".ksh",
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".hh", ".cs", ".java", ".go", ".rs",
+    ".kt", ".swift", ".scala", ".php", ".rb", ".pl", ".pm", ".lua", ".r",
+    ".jl", ".sql", ".css", ".scss", ".less",
+})
+
+# suffix -> (line-comment markers, block-comment (open, close) | None,
+#            python-style triple-quoted docstrings)
+_LANG_STYLE_PY = (("#",), None, True)
+_LANG_STYLE_HASH = (("#",), None, False)
+_LANG_STYLE_SLASH = (("//",), ("/*", "*/"), False)
+_LANG_STYLE_DASH = (("--",), ("/*", "*/"), False)
+_LANG_STYLE_BLOCK = ((), ("/*", "*/"), False)
+
+_LANG_STYLES = {
+    **{s: _LANG_STYLE_PY for s in (".py", ".pyi", ".pyw", ".ipynb")},
+    **{s: _LANG_STYLE_HASH for s in (".sh", ".bash", ".zsh", ".ksh", ".rb",
+                                     ".pl", ".pm", ".r", ".jl")},
+    **{s: _LANG_STYLE_SLASH for s in (
+        ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".svelte",
+        ".c", ".h", ".cc", ".cpp", ".hpp", ".hh", ".cs", ".java", ".go",
+        ".rs", ".kt", ".swift", ".scala", ".php")},
+    **{s: _LANG_STYLE_DASH for s in (".sql", ".lua")},
+    **{s: _LANG_STYLE_BLOCK for s in (".css", ".scss", ".less")},
+}
+
+# Non-Latin scripts that cannot occur in English source prose. Greek is
+# deliberately absent: scientific comments legitimately use α, β, ΔE.
+_LANG_NON_LATIN_RANGES = (
+    (0x0400, 0x052F),   # Cyrillic
+    (0x0590, 0x08FF),   # Hebrew / Arabic
+    (0x3040, 0x30FF),   # Kana
+    (0x3400, 0x9FFF),   # CJK
+    (0xAC00, 0xD7AF),   # Hangul
+)
+_LANG_UMLAUTS = frozenset("äöüÄÖÜßẞ")
+
+# Whole-word markers. Every entry is a word that does NOT exist in English,
+# so one hit is enough. English homographs (die, war, man, hat, so, in, an,
+# fast, gift, bad, rat, arm, also, halt, herb, bald, rot, tag, ...) are left
+# out on purpose, and ALL-CAPS tokens are ignored so "MIT License" or a "DAS"
+# acronym can never match. Two entries were dropped after measuring the rule
+# against this repository's (English) sources: "falls" collided with "falls
+# back/through", and "der"/"den"/"von" collided with "van der Waals" and with
+# cited author names.
+_LANG_MARKER_WORDS = frozenset({
+    # articles / pronouns / determiners
+    "das", "dem", "des", "dieser", "diese", "dieses", "diesem",
+    "diesen", "ein", "eine", "einen", "einem", "einer", "eines", "kein",
+    "keine", "keinen", "jede", "jeder", "jedes", "jeden", "welche", "welcher",
+    "alle", "aktuell", "aktuelle", "aktuellen", "neue", "neuen",
+    # conjunctions / adverbs / prepositions
+    "aber", "auch", "auf", "aus", "bei", "beim", "bereits", "bzw", "damit", "dann",
+    "dass", "dabei", "dadurch", "denn", "deshalb", "durch", "erst", "etwa",
+    "gegen", "hier", "immer", "jetzt", "nach", "nicht", "nichts",
+    "noch", "nur", "oben", "obwohl", "oder", "ohne", "schon", "sehr", "sobald",
+    "sondern", "sonst", "sowie", "und", "unter", "vom", "vor", "weil",
+    "weitere", "wenn", "wieder", "wobei", "zudem", "zum", "zur", "zwischen",
+    "mit", "nachdem", "seit", "statt", "trotz", "zwar",
+    # verbs / modals
+    "gibt", "ist", "kann", "koennen", "muss", "sind", "soll", "sollte",
+    "wird", "werden", "wurde", "wurden", "erstellt", "erzeugt", "verwendet",
+    "berechnet", "liefert", "setzt", "enthaelt", "benoetigt",
+    # frequent nouns in code comments
+    "datei", "fehler", "wert", "werte", "zeile", "zeilen", "beispiel",
+    "ergebnis", "anzahl", "pfad", "ausgabe", "eingabe", "nachricht",
+    "verzeichnis", "spiel", "abfrage", "schritt",
+})
+_LANG_WORD_RE = re.compile(r"[A-Za-zÄÖÜäöüß]{2,}")
+
+# Lines whose non-English look is expected and harmless: proper names in
+# author/copyright headers, URLs, encoding cookies.
+_LANG_IGNORE_RE = re.compile(
+    r"(https?://|@author|author\s*[:=]|copyright|\(c\)\s*\d|spdx|"
+    r"coding[:=]\s*[-\w.]*utf)", re.IGNORECASE)
+
+# Calls whose string arguments are user-visible text and therefore in scope.
+_LANG_LOG_CALL_RE = re.compile(
+    r"(?:^|[^\w.])(?:print|echo|raise|throw)\s*[\(\s]"
+    r"|(?:logger|logging|log|_log|LOG|console)\s*\.\s*"
+    r"(?:debug|info|warn|warning|error|critical|exception|fatal|trace|log)\s*\("
+    r"|\bwarnings\.warn\s*\("
+    r"|\bst\.(?:write|error|warning|info|success)\s*\(")
+_LANG_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
+# String prefixes that may precede a docstring's triple quotes (r, f, rb, ...).
+_LANG_STR_PREFIX_RE = re.compile(r'^[rRuUbBfF]{0,2}(?=["\'])')
+
+_LANG_CHECK_MAX_LINES = 2000
+_LANG_CHECK_MAX_CHARS = 200_000
+_LANG_CHECK_MAX_CELLS = 200
+_LANG_CHECK_MAX_FINDINGS = 3
+_LANG_CHECK_SNIPPET = 78
+
+
+def _lang_has_marker(segment: str) -> bool:
+    """True when a comment/docstring/message segment carries a high-precision
+    non-English marker (a non-Latin script, a lowercase umlaut/eszett word, or
+    an unambiguous German function word).
+
+    Precision beats recall by design: a check that nags on correct English is
+    worse than one that misses a German line, so no statistical language guess
+    is used and every word marker is a token with no English homograph. An
+    umlaut only counts inside a LOWERCASE word — capitalised umlaut tokens in
+    English source are almost always cited author names (Pyykkö, Hückel,
+    Schrödinger, Löwdin), which measured as the largest false-positive class.
+    The cost is recall on German text whose only marker is a capitalised noun.
+    """
+    if not segment or _LANG_IGNORE_RE.search(segment):
+        return False
+    if not segment.isascii():  # cheap C-level gate for the common case
+        for ch in segment:
+            code = ord(ch)
+            if code > 0x02FF:
+                for lo, hi in _LANG_NON_LATIN_RANGES:
+                    if lo <= code <= hi:
+                        return True
+    for word in _LANG_WORD_RE.findall(segment):
+        if word.isupper():
+            continue  # acronyms: MIT, DAS, VOM ...
+        if word.lower() in _LANG_MARKER_WORDS:
+            return True
+        if word.islower() and not _LANG_UMLAUTS.isdisjoint(word):
+            return True
+    return False
+
+
+def _lang_line_segments(line: str, style: tuple) -> list[str]:
+    """The parts of a single code line that are in scope: its line comment and
+    the string literals of a log/print/raise call. Returns [] for plain code.
+    """
+    markers, _block, _doc = style
+    segments: list[str] = []
+    for marker in markers:
+        idx = line.find(marker)
+        if idx < 0:
+            continue
+        before = line[:idx]
+        # A quote before the marker means it is probably inside a string
+        # ("https://", "#tag"). Skipping there costs recall, not precision.
+        if '"' in before or "'" in before:
+            continue
+        segments.append(line[idx + len(marker):])
+        break
+    # A log/print/raise call always carries a string literal, so the quote
+    # test (C-level) keeps the regex off the vast majority of code lines.
+    if ('"' in line or "'" in line) and _LANG_LOG_CALL_RE.search(line):
+        for match in _LANG_STRING_RE.findall(line)[:8]:
+            segments.append(match[1:-1])
+    return segments
+
+
+def _lang_scan_text(text: str, suffix: str,
+                    max_findings: int = _LANG_CHECK_MAX_FINDINGS
+                    ) -> list[tuple[int, str]]:
+    """Scan source text for non-English comment/docstring/message lines.
+
+    Returns ``[(line_number, line_text), ...]``, capped at ``max_findings``.
+    Work is bounded by _LANG_CHECK_MAX_CHARS / _LANG_CHECK_MAX_LINES so a huge
+    generated file cannot slow the write path down.
+    """
+    style = _LANG_STYLES.get(suffix)
+    if style is None:
+        return []
+    markers, block, docstrings = style
+    if len(text) > _LANG_CHECK_MAX_CHARS:
+        text = text[:_LANG_CHECK_MAX_CHARS]
+    findings: list[tuple[int, str]] = []
+    in_block = False
+    in_doc = ""
+    for lineno, line in enumerate(text.split("\n"), 1):
+        if lineno > _LANG_CHECK_MAX_LINES:
+            break
+        segments: list[str] = []
+        rest = line
+        if in_doc:
+            end = rest.find(in_doc)
+            if end < 0:
+                segments.append(rest)
+                rest = ""
+            else:
+                segments.append(rest[:end])
+                rest = rest[end + 3:]
+                in_doc = ""
+        if in_block and rest:
+            close = block[1] if block else None
+            end = rest.find(close) if close else -1
+            if end < 0:
+                segments.append(rest)
+                rest = ""
+            else:
+                segments.append(rest[:end])
+                rest = rest[end + len(close):]
+                in_block = False
+        if rest and docstrings:
+            stripped = rest.lstrip()
+            prefix = _LANG_STR_PREFIX_RE.match(stripped)
+            body = stripped[prefix.end():] if prefix else stripped
+            # Only a docstring POSITION counts (line starts with the quotes).
+            # `TEMPLATE = """..."""` is data — often prose the user asked for.
+            if body[:3] in ('"""', "'''"):
+                delim = body[:3]
+                after = body[3:]
+                end = after.find(delim)
+                if end < 0:
+                    segments.append(after)
+                    in_doc = delim
+                    rest = ""
+                else:
+                    segments.append(after[:end])
+                    rest = after[end + 3:]
+        if rest and block and not in_block:
+            start = rest.find(block[0])
+            if start >= 0 and '"' not in rest[:start] and "'" not in rest[:start]:
+                after = rest[start + len(block[0]):]
+                end = after.find(block[1])
+                if end < 0:
+                    segments.append(after)
+                    in_block = True
+                    rest = ""
+                else:
+                    segments.append(after[:end])
+                    rest = after[end + len(block[1]):]
+        if rest:
+            segments.extend(_lang_line_segments(rest, style))
+        for segment in segments:
+            if _lang_has_marker(segment):
+                findings.append((lineno, line))
+                break
+        if len(findings) >= max_findings:
+            break
+    return findings
+
+
+def _lang_scan_notebook(text: str) -> list[tuple[str, str]]:
+    """Scan the code cells of a notebook document. Markdown cells are prose
+    and stay untouched. Returns ``[(label, line_text), ...]``."""
+    try:
+        nb = json.loads(text)
+    except Exception:
+        return []
+    cells = nb.get("cells") if isinstance(nb, dict) else None
+    if not isinstance(cells, list):
+        return []
+    out: list[tuple[str, str]] = []
+    for idx, cell in enumerate(cells[:_LANG_CHECK_MAX_CELLS]):
+        if not isinstance(cell, dict) or cell.get("cell_type") != "code":
+            continue
+        src = cell.get("source")
+        if isinstance(src, list):
+            src = "".join(str(part) for part in src)
+        elif not isinstance(src, str):
+            continue
+        for lineno, line in _lang_scan_text(src, ".py"):
+            out.append((f"cell {idx} line {lineno}", line))
+            if len(out) >= _LANG_CHECK_MAX_FINDINGS:
+                return out
+    return out
+
+
+def _lang_snippet(line: str) -> str:
+    snippet = " ".join(line.split())
+    if len(snippet) > _LANG_CHECK_SNIPPET:
+        snippet = snippet[:_LANG_CHECK_SNIPPET - 3] + "..."
+    return snippet
+
+
+def _language_hint_for_write(path: Path, text: str,
+                             inserted: Optional[list] = None) -> str:
+    """Advisory note for a successful write/edit whose new code carries
+    non-English comments, docstrings or user-visible messages.
+
+    ``inserted`` restricts the report to text the caller just wrote (the
+    new_string of an edit), so untouched legacy lines are never re-reported.
+    Any internal failure yields "" — the write result stays untouched.
+    """
+    try:
+        suffix = path.suffix.lower()
+        if suffix not in _LANG_CHECK_EXTS or not isinstance(text, str):
+            return ""
+        if suffix == ".ipynb":
+            hits = _lang_scan_notebook(text)
+        else:
+            hits = [(f"line {n}", line) for n, line in
+                    _lang_scan_text(text, suffix)]
+        if not hits:
+            return ""
+        if inserted is not None:
+            new_lines: set = set()
+            fragments: list = []
+            for chunk in inserted:
+                if not isinstance(chunk, str) or not chunk:
+                    continue
+                if "\n" not in chunk:
+                    fragments.append(chunk)
+                for part in chunk.split("\n")[:_LANG_CHECK_MAX_LINES]:
+                    part = part.strip()
+                    if part:
+                        new_lines.add(part)
+            hits = [
+                (label, line) for label, line in hits
+                if line.strip() in new_lines
+                or any(frag in line for frag in fragments)
+            ]
+            if not hits:
+                return ""
+        where = "; ".join(
+            f"{label}: `{_lang_snippet(line)}`" for label, line in hits)
+        return (
+            f"\n\nNote: non-English text in code — {where}. "
+            "Code stays English (comments, docstrings, identifiers, log/error "
+            "strings); only the reply to the user uses the user's language. "
+            "Fix it on the next edit unless this is deliberate user-facing "
+            "output."
+        )
+    except Exception:
+        return ""
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -6149,7 +6483,8 @@ class _DocToolExecutor:
         diff = self._make_diff(old_text, content, disp)
         action = "created" if not existed else "overwritten"
         test_hint = self._suggest_test_for_edit(resolved, perms)
-        return f"File {action}: {disp}\n\n{diff}{test_hint}"
+        lang_hint = _language_hint_for_write(resolved, content)
+        return f"File {action}: {disp}\n\n{diff}{test_hint}{lang_hint}"
 
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -6220,11 +6555,13 @@ class _DocToolExecutor:
                     indent_note = (
                         f", indent {fm.indent_shift}" if fm.indent_shift else ""
                     )
+                    lang_hint = _language_hint_for_write(
+                        resolved, new_text, inserted=[new_string])
                     return (
                         f"Edited {disp} (1 replacement, fuzzy match: "
                         f"{fm.strategy}{indent_note} — old_string did not "
                         f"match exactly; whitespace-tolerant fallback found "
-                        f"a unique match):\n\n{diff}"
+                        f"a unique match):\n\n{diff}{lang_hint}"
                     )
             return json.dumps({"error": (
                 f"old_string not found in '{path_arg}' "
@@ -6263,9 +6600,11 @@ class _DocToolExecutor:
         diff = self._make_diff(old_text, new_text, disp)
         replaced = count if replace_all else 1
         test_hint = self._suggest_test_for_edit(resolved, perms)
+        lang_hint = _language_hint_for_write(
+            resolved, new_text, inserted=[new_string])
         return (
             f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n"
-            f"{diff}{test_hint}"
+            f"{diff}{test_hint}{lang_hint}"
         )
 
     def _execute_multi_edit(
@@ -6366,10 +6705,15 @@ class _DocToolExecutor:
             if fuzzy_edits else ""
         )
         test_hint = self._suggest_test_for_edit(resolved, perms)
+        lang_hint = _language_hint_for_write(
+            resolved, text,
+            inserted=[ed.get("new_string", "") for ed in edits
+                      if isinstance(ed, dict)],
+        )
         return (
             f"Multi-edited {disp} "
             f"({len(edits)} edit(s), {total} replacement(s) total"
-            f"{fuzzy_note}):\n\n{diff}{test_hint}"
+            f"{fuzzy_note}):\n\n{diff}{test_hint}{lang_hint}"
         )
 
     def _suggest_test_for_edit(
@@ -7169,7 +7513,7 @@ class _DocToolExecutor:
         delta_str = (
             f"+{delta}" if delta > 0 else f"{delta}" if delta < 0 else "0"
         )
-        return json.dumps({
+        payload = {
             "status": "ok",
             "path": disp,
             "mode": mode,
@@ -7178,7 +7522,19 @@ class _DocToolExecutor:
             "cells_before": n_before,
             "cells_after": n_after,
             "cells_delta": delta_str,
-        }, ensure_ascii=False)
+        }
+        # Same advisory as the text write paths — only the cell source the
+        # agent just wrote is inspected, and only for code cells.
+        if mode != "delete" and cell_type == "code":
+            cell_src = source
+            if isinstance(cell_src, list):
+                cell_src = "".join(str(part) for part in cell_src)
+            if isinstance(cell_src, str):
+                note = _language_hint_for_write(
+                    Path("cell.py"), cell_src).strip()
+                if note:
+                    payload["note"] = note
+        return json.dumps(payload, ensure_ascii=False)
 
     # ------- Phase 7: project introspection -------------------------------
 

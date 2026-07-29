@@ -138,3 +138,26 @@ def test_git_workflow_addendum_injected_when_present(agent_tree, tmp_path):
         role_id="solo_agent", mode_id="quick", mode_description="solo",
         route=["solo_agent"], role_index=0)
     assert "GITWF-MARKER" in prompt
+
+
+def test_git_rules_do_not_contradict_each_other():
+    """The addendum demanded a commit after each work unit while the role
+    prompt forbade committing unprompted — a contradiction the model
+    cannot follow. One rule now: commit on YOUR branch, never on the
+    user's; push and merge always wait for the user."""
+    from pathlib import Path
+    pack = Path(__file__).resolve().parent.parent / "delfin" / "agent" / "pack"
+    addendum = (pack / "shared" / "git_workflow_addendum.md").read_text(
+        encoding="utf-8")
+    solo = (pack / "agents" / "solo_agent.md").read_text(encoding="utf-8")
+
+    # The blanket prohibition is gone from both places ...
+    assert "never commit unprompted" not in solo
+    # ... and both state the branch-scoped resolution.
+    assert "on YOUR branch" in addendum
+    assert "Where you commit decides whether you may" in solo
+    for text in (addendum, solo):
+        assert "default branch" in text
+    # Push / merge stay user-gated everywhere.
+    assert "Merge to main only" in addendum
+    assert "wait for the user" in solo

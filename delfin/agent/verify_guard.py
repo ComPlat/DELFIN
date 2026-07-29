@@ -843,3 +843,465 @@ def grounding_caveat(
         "file read or lookup in this session backs them: "
         + ", ".join(items) + ". Treat them as unconfirmed."
     )
+
+
+# ---------------------------------------------------------------------------
+# Functional claims — "it works now" requires the artifact to have been run
+# ---------------------------------------------------------------------------
+#
+# The scanners above judge claims about code LOCATIONS and about measured
+# QUANTITIES. A third class slipped past both: the claim that something the
+# session BUILT now works — "das Skript läuft fehlerfrei", "the app is ready
+# to use", "beide Spiele funktionieren im Browser". Passing tests over a
+# module's logic and a server that answers on its port say nothing about
+# whether the delivered artifact behaves as described, and interactive or
+# browser behavior cannot be observed headlessly at all.
+#
+# Two claim kinds, judged against what the session actually EXECUTED:
+#
+#   interactive — the claim is about browser / UI / keyboard / mouse /
+#                 playability. No headless check available here can observe
+#                 that, so it is flagged whenever asserted plainly — unless
+#                 the session drove a real UI (browser-automation tool or
+#                 command).
+#   runtime     — the claim is that something runs / starts / is usable.
+#                 Grounded when the artifact named in the claim appears in a
+#                 command the session actually ran. Launching a server is
+#                 explicitly NOT evidence: it shows the server starts, never
+#                 that what it serves works — such commands are recorded as
+#                 start-only. When the claim names no artifact, the
+#                 turn-level rule applies (mirroring bare_line above): it is
+#                 flagged only when the session ran nothing at all.
+#
+# Never flagged: hedged claims (``_is_hedged``), explicit non-verification
+# disclosures ("I could not verify ..."), negated statements, conditionals
+# ("damit es funktioniert ..."), questions, and statements attributed to the
+# user's own report. Multilingual by construction (German + English), since
+# the agent answers in the user's language.
+
+# Execution tools whose calls are recorded as "this session ran X".
+_EXEC_TOOLS = frozenset({
+    "bash", "bash_background", "run_tests", "run_command", "run_script",
+    "shell", "exec", "execute", "terminal", "pytest",
+})
+
+# Read-only companions of the execution tools: they inspect a job, they do
+# not run anything, so they must never count as an execution act.
+_EXEC_TOOL_DENY = frozenset({
+    "bash_output", "bash_status", "bash_kill", "watch_job", "job_monitor",
+    "run_status",
+})
+
+# Fallback shape match so execution tools count regardless of the backend's
+# naming scheme (CLI backends report e.g. "Bash").
+_EXEC_TOOL_SHAPE = re.compile(
+    r"(?i)(?:^|_)(?:bash|shell|exec|run|pytest|command|terminal)(?:_|$)")
+
+# Tool-input keys that carry the executed command / target.
+_EXEC_INPUT_KEYS = ("command", "cmd", "script", "target", "pytest_args",
+                    "args", "file", "path")
+
+# Commands that START something without exercising it. A server launch (and
+# any backgrounded start) is evidence that the process starts — never that
+# the artifact it serves behaves as claimed.
+_START_ONLY_CMD_RE = re.compile(
+    r"(?i)\b(?:bash_background|voila|voil(?:à|a)|streamlit|uvicorn|gunicorn|"
+    r"flask|http\.server|serve|runserver|nodemon|vite|webpack|"
+    r"jupyter\s+(?:notebook|lab|server)|ng\s+serve|next\s+dev|"
+    r"npm\s+(?:run\s+)?(?:start|dev|serve)|yarn\s+(?:start|dev|serve)|"
+    r"php\s+-S|rails\s+s(?:erver)?)\b")
+
+# Test-runner commands, plus the shape of a test file: a test run grounds
+# claims about the test files it discovers even when the command names only
+# a directory.
+_TEST_CMD_RE = re.compile(
+    r"(?i)\b(?:pytest|run_tests|unittest|nose2?|tox|jest|vitest|"
+    r"npm\s+(?:run\s+)?test)\b")
+_TEST_FILE_RE = re.compile(r"(?i)^(?:test_[\w\-.]+|[\w\-.]+_test)\.(?:py|js|ts)$")
+
+# A tool or command that actually drives a user interface. If one was used,
+# interactive claims have real evidence behind them and are not flagged.
+_UI_EXERCISE_TOOL_SHAPE = re.compile(
+    r"(?i)(playwright|selenium|puppeteer|webdriver|chromedriver|browser_|"
+    r"_browser|screenshot|chrome|devtools|click_element)")
+_UI_EXERCISE_CMD_RE = re.compile(
+    r"(?i)\b(?:playwright|cypress|selenium|puppeteer|webdriver|chromedriver|"
+    r"xvfb-run)\b")
+
+# Playability / hands-on predicates: asserting these IS an interactive claim,
+# no extra marker needed.
+_FUNC_PLAY_PAT = (
+    r"(?:"
+    # German
+    r"\bspielbar\b|\bbedienbar\b|\bsteuerbar\b|"
+    # both word orders: "kannst du ... spielen" / "du kannst ... spielen"
+    r"\b(?:(?:kannst|k(?:ö|oe)nnen|kann)\s+(?:du|sie|ihr|man)|"
+    r"(?:du|sie|ihr|man)\s+(?:kannst|k(?:ö|oe)nnen|kann))\b[^\n]{0,48}?"
+    r"\b(?:spielen|steuern|bedienen|klicken|dr(?:ü|ue)cken)\b|"
+    r"\bzum\s+Spielen\s+bereit\b|"
+    # English
+    r"\bplayable\b|"
+    r"\byou\s+can\s+(?:now\s+)?(?:play|control|click|press|drag|move)\b|"
+    r"\bready\s+to\s+play\b"
+    r")"
+)
+_FUNC_PLAY_RE = re.compile(_FUNC_PLAY_PAT, re.IGNORECASE)
+
+# General "it works / runs / is usable" predicates.
+_FUNC_WORK_PAT = (
+    r"(?:"
+    # German
+    r"\bfunktionier(?:t|en)\b|\bfunktionsf(?:ä|ae)hig\b|"
+    r"\bfunktionst(?:ü|ue)chtig\b|\beinsatzbereit\b|\bbetriebsbereit\b|"
+    r"\blauff(?:ä|ae)hig\b|\bbenutzbar\b|\bnutzbar\b|\bverwendbar\b|"
+    r"\b(?:l(?:ä|ae)uft|laufen)\s+(?:jetzt\s+|nun\s+|wieder\s+)?"
+    r"(?:fehlerfrei|problemlos|stabil|einwandfrei|durch|erfolgreich|sauber|"
+    r"korrekt|wie\s+erwartet|jetzt|nun|wieder)\b|"
+    r"\bstartet\s+(?:jetzt\s+|nun\s+)?"
+    r"(?:erfolgreich|problemlos|fehlerfrei|sauber|jetzt|nun)\b|"
+    r"\b(?:(?:kannst|k(?:ö|oe)nnen|kann)\s+(?:du|sie|ihr|man)|"
+    r"(?:du|sie|ihr|man)\s+(?:kannst|k(?:ö|oe)nnen|kann))\s+"
+    r"(?:(?:es|ihn|sie|das|die|den|jetzt|nun|direkt|sofort)\s+){0,3}"
+    r"(?:nutzen|benutzen|verwenden|starten|(?:ö|oe)ffnen|ausf(?:ü|ue)hren)\b|"
+    # English
+    r"\bworks\b|\bwork\s+(?:correctly|fine|properly|now|as\s+expected|"
+    r"in\s+the\s+browser)\b|\b(?:is|are)\s+working\b|"
+    r"\bruns\s+(?:fine|successfully|correctly|cleanly|smoothly|now|"
+    r"without\s+(?:errors|issues|problems))\b|"
+    r"\b(?:starts|launches)\s+(?:successfully|fine|cleanly|now|"
+    r"without\s+errors)\b|"
+    r"\b(?:is|are)\s+(?:now\s+)?(?:fully\s+)?"
+    r"(?:functional|operational|usable|ready\s+to\s+(?:use|run)|"
+    r"ready\s+for\s+use)\b|"
+    r"\byou\s+can\s+(?:now\s+)?(?:use|run|open|start|try)\b"
+    r")"
+)
+_FUNC_WORK_RE = re.compile(_FUNC_WORK_PAT, re.IGNORECASE)
+
+_FUNC_PREDICATE_RE = re.compile(
+    "(?:" + _FUNC_PLAY_PAT + "|" + _FUNC_WORK_PAT + ")", re.IGNORECASE)
+
+# User-interface context markers. Combined with any functional predicate
+# they make the claim an interactive one.
+_FUNC_UI_MARKER_RE = re.compile(
+    r"(?i)(?:"
+    r"\bbrowser\b|\bwebseite\b|\bweb\s?page\b|\bweb-?app\b|\bwebapp\b|"
+    r"\btastatur\b|\bpfeiltasten\b|\bleertaste\b|\btasten\b|\bkeyboard\b|"
+    r"\barrow\s+keys\b|\bkey\s?press\b|\bwasd\b|\bmaus\b|\bmouse\b|"
+    r"\bklick\w*\b|\bclick\w*\b|\bdrag\b|\bbutton\b|\bschaltfl(?:ä|ae)che\b|"
+    r"\bgui\b|\bui\b|\boberfl(?:ä|ae)che\b|\bfrontend\b|\bfront-end\b|"
+    r"\bwidget\w*\b|\bcanvas\b|\bipyevents\b|\bipywidgets\b|"
+    r"\binteraktiv\w*\b|\binteractive\b|\banimation\b|\bon\s+screen\b|"
+    r"\bim\s+browser\b|\bin\s+the\s+browser\b"
+    r")")
+
+# Explicit disclosure that the thing was NOT verified. Distinct from the
+# generic hedge markers: an answer that says "I could not verify it in a
+# browser" has already told the truth this guard exists to enforce.
+_FUNC_DISCLOSURE_RE = re.compile(
+    r"(?i)(?:"
+    # German
+    r"nicht\s+(?:verifiziert|verifizierbar|getestet|(?:ü|ue)berpr(?:ü|ue)ft|"
+    r"gepr(?:ü|ue)ft|best(?:ä|ae)tigt|nachgewiesen|belegt)|"
+    r"(?:konnte|kann|konnten|k(?:ö|oe)nnen)\s+(?:ich|wir)?\s*nicht\s+"
+    r"[^\n]{0,40}?(?:verifizieren|(?:ü|ue)berpr(?:ü|ue)fen|pr(?:ü|ue)fen|"
+    r"testen|best(?:ä|ae)tigen|nachweisen)|"
+    r"ungetestet|ungepr(?:ü|ue)ft|unverifiziert|ohne\s+Gew(?:ä|ae)hr|"
+    r"nicht\s+im\s+Browser\s+getestet|headless\s+nicht|"
+    # English
+    r"(?:could|can|was|were|am|is|are)\s*n(?:o|')?t\s+"
+    r"[^\n]{0,40}?(?:verif(?:y|ied)|check(?:ed)?|confirm(?:ed)?|test(?:ed)?|"
+    r"validat(?:e|ed))|"
+    r"unable\s+to\s+(?:verify|check|confirm|test)|"
+    r"\bunverified\b|\buntested\b|\bnot\s+verified\b|\bnot\s+tested\b|"
+    r"no\s+way\s+to\s+(?:verify|check|confirm)|"
+    r"have\s*n(?:o|')?t\s+(?:verified|tested|checked|confirmed)"
+    r")")
+
+# Negation near the predicate: "funktioniert nicht", "does not work".
+_FUNC_NEGATION_RE = re.compile(
+    r"(?i)(?:\bnicht\b|\bkein(?:e|en|er|em)?\b|\bnie\b|\bnot\b|n't\b|"
+    r"\bcannot\b|\bfails?\b|\bfailing\b|\bbroken\b|\bkaputt\b|"
+    r"\bfehlerhaft\b|\bnoch\s+nicht\b)")
+
+# Conditional / subordinate / instructional framing: a requirement, an open
+# question or a recipe — not an assertion about present state.
+_FUNC_CONDITIONAL_RE = re.compile(
+    r"(?i)(?:\bdamit\b|\bsoll\w*\b|\bfalls\b|\bwenn\b|\bsobald\b|\bob\b|"
+    r"\bbevor\b|\bum\s+[^\n]{0,30}?\s+zu\s+\w+en\b|"
+    r"\bshould\b|\bwould\b|\bonce\b|\bif\b|\bwhether\b|\bin\s+order\s+to\b|"
+    r"\bto\s+make\s+it\b|\bmust\b|\bneeds?\s+to\b)")
+
+# Explanatory usage: describing HOW something works is not a claim THAT it
+# works ("so funktioniert der Parser", "here is how it works").
+_FUNC_EXPLANATORY_RE = re.compile(
+    r"(?i)(?:\bwie\s+funktionier(?:t|en)\b|\bso\s+funktionier(?:t|en)\b|"
+    r"funktionier(?:t|en)\s+(?:wie\s+folgt|folgenderma(?:ß|ss)en|so\b)|"
+    r"\bhow\s+(?:it|this|that|they|the\s+\w+)\s+works?\b|"
+    r"\bhere\s+is\s+how\b|\bthe\s+way\s+it\s+works\b)")
+
+# Software artifacts a functional claim can be about. Required for the
+# turn-level kind (no artifact file named): it keeps the guard on claims
+# about produced software and off general prose ("that works for me").
+_ARTIFACT_NOUN_RE = re.compile(
+    r"(?i)\b(?:skript|script|app|anwendung|programm|program|code|tool|"
+    r"server|notebook|modul|module|cli|pipeline|setup|build|installation|"
+    r"paket|package|datei|file|spiel\w*|game|dashboard|widget|"
+    r"web-?app|befehl|command|kommando|demo|prototyp\w*|prototype)\b")
+
+# The claim is reported back from the user, not asserted by the agent.
+_FUNC_USER_SOURCE_RE = re.compile(
+    r"(?i)(?:wie\s+du\s+(?:best(?:ä|ae)tigt|geschrieben|gesagt|berichtet)|"
+    r"laut\s+(?:deiner|deinem|ihrer)|du\s+hast\s+(?:best(?:ä|ae)tigt|"
+    r"berichtet|geschrieben)|dein(?:er|em)?\s+R(?:ü|ue)ckmeldung|"
+    r"you\s+(?:confirmed|reported|said|told\s+me)|"
+    r"as\s+you\s+(?:confirmed|reported|said)|per\s+your\s+report)")
+
+# Artifact tokens a functional claim can be ABOUT (runnable files).
+_ARTIFACT_EXTS = (
+    "py", "sh", "bash", "ipynb", "js", "mjs", "cjs", "ts", "tsx", "jsx",
+    "html", "htm", "jl", "rb", "go", "rs", "pl", "exe", "bat", "ps1",
+)
+_ARTIFACT_RE = re.compile(
+    r"\b((?:[\w\-.]+/)*[\w\-]+\.(?:" + "|".join(_ARTIFACT_EXTS) + r"))\b",
+    re.IGNORECASE)
+
+# Sentence boundary: a terminator followed by whitespace/end, or a newline.
+# The whitespace lookahead keeps "app.py" from splitting a sentence.
+_SENT_BOUND_RE = re.compile(r"[.!?;:](?=\s|$)|\n")
+
+# Work bound: how many predicate matches are examined at most, so a very
+# long answer cannot turn the per-match sentence lookup into a hot loop.
+_FUNC_MAX_MATCHES = 200
+
+
+@dataclass(frozen=True)
+class FunctionalClaimFlag:
+    """One claim that something works, without the session exercising it."""
+
+    claim: str          # normalized claim sentence, truncated
+    subject: str        # artifact the claim is about ("" when unnamed)
+    kind: str           # "interactive" | "unexercised" | "no_execution"
+
+    def message(self) -> str:
+        if self.kind == "interactive":
+            return (f"⚠️ Verify: '{self.claim}' asserts interactive or browser "
+                    f"behavior that nothing in this session exercised — it "
+                    f"cannot be checked headlessly, so state it as unverified.")
+        if self.kind == "unexercised":
+            return (f"⚠️ Verify: '{self.claim}' — '{self.subject}' was never "
+                    f"executed in this session (starting a server does not "
+                    f"count) — run it or state the claim as unverified.")
+        return (f"⚠️ Verify: '{self.claim}' claims working software, but this "
+                f"session executed nothing — run it or state the claim as "
+                f"unverified.")
+
+
+def extract_exec_command(tool_name, tool_input) -> str:
+    """Return a normalized command string when ``tool_name`` is an execution
+    tool, else ``""``.
+
+    The tool name is kept as the first token so command classification (see
+    ``_START_ONLY_CMD_RE``) can tell a foreground run from a backgrounded
+    start. Accepts the raw JSON string backends pass around, a decoded dict,
+    or a plain command string. Never raises.
+    """
+    try:
+        name = str(tool_name or "").strip().lower().rsplit("__", 1)[-1]
+        if not name or name in _EXEC_TOOL_DENY:
+            return ""
+        if name not in _EXEC_TOOLS and not _EXEC_TOOL_SHAPE.search(name):
+            return ""
+        payload = tool_input
+        if isinstance(payload, str) and payload.strip().startswith("{"):
+            try:
+                payload = json.loads(payload)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        parts: list[str] = [name]
+        if isinstance(payload, dict):
+            for key in _EXEC_INPUT_KEYS:
+                val = payload.get(key)
+                if isinstance(val, str) and val.strip():
+                    parts.append(val.strip())
+                elif isinstance(val, (list, tuple)):
+                    parts.extend(str(v) for v in val
+                                 if isinstance(v, (str, int, float)))
+        elif isinstance(payload, str) and payload.strip():
+            parts.append(payload.strip())
+        return " ".join(" ".join(parts).split())[:400]
+    except Exception:
+        return ""
+
+
+def _run_commands(exec_commands) -> list[str]:
+    """Commands that actually EXERCISED something, i.e. everything except
+    start-only launches (servers, backgrounded starts)."""
+    out: list[str] = []
+    for c in exec_commands or ():
+        s = str(c)
+        if _START_ONLY_CMD_RE.search(s):
+            continue
+        out.append(s)
+    return out
+
+
+def _artifact_exercised(subject: str, runs: list[str]) -> bool:
+    """True when a foreground command named this artifact — or when a test
+    runner ran and the artifact is a test file (runners discover those from
+    a directory argument)."""
+    base = subject.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not base:
+        return False
+    for c in runs:
+        low = c.lower()
+        if base in low:
+            return True
+        if _TEST_FILE_RE.match(base) and _TEST_CMD_RE.search(low):
+            return True
+    return False
+
+
+def _ui_was_exercised(tools_used, exec_commands) -> bool:
+    """True when the session drove a real user interface (browser-automation
+    tool or command) — then interactive claims have evidence."""
+    for t in tools_used or ():
+        if _UI_EXERCISE_TOOL_SHAPE.search(str(t)):
+            return True
+    for c in exec_commands or ():
+        if _UI_EXERCISE_CMD_RE.search(str(c)):
+            return True
+    return False
+
+
+def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Span of the sentence containing ``text[start:end]``."""
+    lo = 0
+    for m in _SENT_BOUND_RE.finditer(text, 0, start):
+        lo = m.end()
+    hi = len(text)
+    m = _SENT_BOUND_RE.search(text, end)
+    if m is not None:
+        hi = m.start()
+    return lo, hi
+
+
+def scan_for_unexercised_functional_claims(
+    text: str,
+    *,
+    exec_commands: Optional[list[str]] = None,
+    exec_ledger_available: bool = True,
+    tools_used: Optional[frozenset[str] | set[str]] = None,
+    max_flags: int = 4,
+) -> list[FunctionalClaimFlag]:
+    """Scan ``text`` for claims that something the session produced now
+    works, and flag those the session never exercised.
+
+    See the section comment for the claim kinds and the exemption rules.
+    ``exec_ledger_available=False`` (the caller keeps no record of what ran)
+    silences the runtime kind — absence of bookkeeping is not evidence of
+    fabrication. Interactive claims are judged independently of that ledger:
+    no amount of shell evidence makes browser behavior observable here.
+
+    Deterministic, order-stable (text position), de-duplicated, capped at
+    ``max_flags``. Never raises.
+    """
+    flags: list[FunctionalClaimFlag] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        scrubbed = _scrub_keep_offsets(text)
+        cmds = [str(c) for c in (exec_commands or ())]
+        runs = _run_commands(cmds)
+        ui_ok = _ui_was_exercised(tools_used, cmds)
+        seen_spans: set[tuple[int, int]] = set()
+        seen_keys: set[str] = set()
+        examined = 0
+        for m in _FUNC_PREDICATE_RE.finditer(scrubbed):
+            if len(flags) >= max_flags or examined >= _FUNC_MAX_MATCHES:
+                break
+            examined += 1
+            span = _sentence_span(scrubbed, m.start(), m.end())
+            if span in seen_spans:
+                continue
+            seen_spans.add(span)
+            sentence = scrubbed[span[0]:span[1]]
+            if not sentence.strip():
+                continue
+            # Not an assertion about present state, or already disclosed as
+            # unverified — never an enforcement target.
+            if _is_hedged(scrubbed, m.start(), m.end()):
+                continue
+            if (_FUNC_DISCLOSURE_RE.search(sentence)
+                    or _FUNC_NEGATION_RE.search(sentence)
+                    or _FUNC_CONDITIONAL_RE.search(sentence)
+                    or _FUNC_EXPLANATORY_RE.search(sentence)
+                    or _FUNC_USER_SOURCE_RE.search(sentence)):
+                continue
+            tail = scrubbed[span[1]:span[1] + 1]
+            if tail == "?":
+                continue                      # a question, not a claim
+            claim = " ".join(sentence.split())[:100]
+            interactive = bool(_FUNC_PLAY_RE.search(sentence)
+                               or _FUNC_UI_MARKER_RE.search(sentence))
+            if interactive:
+                if ui_ok:
+                    continue
+                kind, subject = "interactive", ""
+            else:
+                if not exec_ledger_available:
+                    continue
+                subjects = _ARTIFACT_RE.findall(sentence)
+                if subjects:
+                    unrun = [s for s in subjects
+                             if not _artifact_exercised(s, runs)]
+                    if not unrun:
+                        continue
+                    kind, subject = "unexercised", unrun[0]
+                else:
+                    if runs:
+                        continue      # turn-level rule: something did run
+                    if not _ARTIFACT_NOUN_RE.search(sentence):
+                        continue      # not a claim about produced software
+                    kind, subject = "no_execution", ""
+            key = f"{kind}:{subject.lower()}:{claim.lower()}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            flags.append(FunctionalClaimFlag(
+                claim=claim, subject=subject, kind=kind))
+    except Exception:
+        return flags
+    return flags
+
+
+def functional_claim_caveat(flags: list[FunctionalClaimFlag]) -> str:
+    """Visible caveat naming exactly what was claimed to work but never
+    exercised.
+
+    This class gets a caveat rather than a forced correction turn: the model
+    cannot verify browser or interactive behavior headlessly either, so a
+    retry would only invite a second confident assertion. Naming the gap is
+    the honest outcome.
+    """
+    if not flags:
+        return ""
+    items: list[str] = []
+    for f in flags:
+        if f.kind == "interactive":
+            items.append(f"'{f.claim}' — interactive/browser behavior was "
+                         f"never exercised in this session")
+        elif f.kind == "unexercised":
+            items.append(f"'{f.claim}' — '{f.subject}' was never executed in "
+                         f"this session (starting a server is not evidence "
+                         f"that it works)")
+        else:
+            items.append(f"'{f.claim}' — this session executed nothing")
+    note = ""
+    if any(f.kind == "interactive" for f in flags):
+        note = (" Interactive and browser behavior cannot be checked "
+                "headlessly here.")
+    return (
+        "\n\n[verify] Caveat: the following was NOT verified in this session: "
+        + "; ".join(items) + "." + note + " Treat it as unconfirmed."
+    )

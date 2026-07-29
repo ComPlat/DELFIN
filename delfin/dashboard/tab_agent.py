@@ -9,6 +9,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from typing import NamedTuple, Sequence
 
 import ipywidgets as widgets
 
@@ -1437,6 +1438,229 @@ def _extract_action_commands(agent_text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# ACTION continuation budget — progress vs. repetition.
+#
+# After executing an agent response's ACTION commands the dashboard feeds the
+# results back and re-prompts, so a multi-step request (open the tab, read the
+# error file, report) can finish inside one turn.  A flat round cap cannot
+# tell three genuinely different steps apart from the same command emitted
+# three times, so it cut healthy work at exactly the point where it cut a
+# runaway loop.
+#
+# The decision below separates the two cases, following the no-progress
+# detection the API tool loop already applies to tool calls: a round that
+# introduces NEW commands is progress and only draws on a generous absolute
+# ceiling, while an ACTION set that already ran in this turn stops the loop
+# right away.  Everything here is pure so the rule is unit-testable without a
+# dashboard.
+# ---------------------------------------------------------------------------
+
+# Absolute per-turn ceiling on continuation rounds. Deliberately generous:
+# with repetition caught after two occurrences, the ceiling only has to bound
+# the pathological case of an agent emitting an endless stream of DIFFERENT
+# commands. Real multi-step dashboard requests settle well below it.
+_ACTION_ROUND_CEILING_DEFAULT = 12
+# How often the same ACTION set may appear before the loop stops. 2 means the
+# first repeat ends the turn.
+_ACTION_ROUND_REPEAT_LIMIT_DEFAULT = 2
+
+# Decision reasons (stable strings — tests and the stop note branch on them).
+_ACTION_ROUND_PROGRESS = "progress"
+_ACTION_ROUND_NO_ACTIONS = "no_actions"
+_ACTION_ROUND_REPEAT = "repeat"
+_ACTION_ROUND_NO_PROGRESS = "no_progress"
+_ACTION_ROUND_CEILING = "ceiling"
+
+
+def _normalize_action_command(cmd) -> str:
+    """Case- and whitespace-normalised form used for repetition compares."""
+    return " ".join(str(cmd or "").split()).lower()
+
+
+def _action_round_signature(commands) -> str:
+    """Order-insensitive signature of the ACTION set executed in one round.
+
+    Two rounds that run the same commands in a different order do the same
+    work, so ordering must not hide a repetition (same reasoning as the tool
+    loop, which sorts its per-round call signature).
+    """
+    norm = sorted(
+        c for c in (_normalize_action_command(x) for x in (commands or [])) if c
+    )
+    return "\x1f".join(norm)
+
+
+class _ActionRoundDecision(NamedTuple):
+    """Outcome of the progress-vs-repetition check for one round."""
+
+    proceed: bool
+    reason: str
+    signature: str
+    new_commands: tuple[str, ...]
+    stale: bool = False
+
+
+def _decide_action_round(
+    commands: Sequence[str] | None,
+    seen_signatures: Sequence[str] | None,
+    seen_commands=None,
+    rounds_used: int = 0,
+    stale_rounds: int = 0,
+    ceiling: int = _ACTION_ROUND_CEILING_DEFAULT,
+    repeat_limit: int = _ACTION_ROUND_REPEAT_LIMIT_DEFAULT,
+) -> _ActionRoundDecision:
+    """Decide whether the ACTION continuation loop may run another round.
+
+    ``commands`` are the ACTION commands executed in the round that just
+    finished, ``seen_signatures`` the signatures of the EARLIER rounds of this
+    turn, ``seen_commands`` every normalised command already executed in this
+    turn, ``rounds_used`` the number of rounds completed so far (this one
+    included) and ``stale_rounds`` how many EARLIER rounds were already
+    flagged ``stale`` (the caller carries that counter, exactly as the tool
+    loop carries its identical-round counter).
+
+    A round is *stale* when it produced no work the turn had not already
+    done — either the identical ACTION set ran before, or every one of its
+    commands ran before in some other combination.  ``repeat_limit`` is the
+    number of occurrences of the same work that are tolerated: the default 2
+    means the first stale round ends the turn.
+
+    Stops with
+
+    * ``no_actions``  — the round executed nothing, so there is nothing to
+      report back and no reason to pay for another model turn;
+    * ``repeat``      — the identical ACTION set already ran this turn;
+    * ``no_progress`` — a reshuffled or partial re-emission of old work;
+    * ``ceiling``     — the absolute round budget is exhausted.
+
+    Anything else is ``progress``: the round introduced at least one command
+    that had not run yet, which is real multi-step work and must not be
+    charged against the same tiny budget as a loop.
+    """
+    try:
+        ceiling = int(ceiling)
+    except (TypeError, ValueError):
+        ceiling = _ACTION_ROUND_CEILING_DEFAULT
+    try:
+        repeat_limit = int(repeat_limit)
+    except (TypeError, ValueError):
+        repeat_limit = _ACTION_ROUND_REPEAT_LIMIT_DEFAULT
+    # A repeat limit below 2 would stop on the very first round — never
+    # meaningful, so clamp it.
+    repeat_limit = max(2, repeat_limit)
+    try:
+        stale_rounds = max(0, int(stale_rounds))
+    except (TypeError, ValueError):
+        stale_rounds = 0
+
+    norm = [c for c in (_normalize_action_command(x) for x in (commands or []))
+            if c]
+    signature = _action_round_signature(commands)
+    already = {_normalize_action_command(c) for c in (seen_commands or set())}
+    already.discard("")
+    new_commands = tuple(dict.fromkeys(c for c in norm if c not in already))
+
+    if not norm:
+        return _ActionRoundDecision(
+            False, _ACTION_ROUND_NO_ACTIONS, signature, (), True)
+
+    repeated = signature in set(seen_signatures or ())
+    stale = repeated or not new_commands
+    if stale:
+        # Occurrence count for this piece of work: the original round, every
+        # stale round since, and this one.
+        if stale_rounds + 2 >= repeat_limit:
+            return _ActionRoundDecision(
+                False,
+                _ACTION_ROUND_REPEAT if repeated else _ACTION_ROUND_NO_PROGRESS,
+                signature, new_commands, True)
+
+    try:
+        rounds_used = int(rounds_used)
+    except (TypeError, ValueError):
+        rounds_used = 0
+    if ceiling > 0 and rounds_used >= ceiling:
+        return _ActionRoundDecision(
+            False, _ACTION_ROUND_CEILING, signature, new_commands, stale)
+
+    return _ActionRoundDecision(
+        True, _ACTION_ROUND_PROGRESS, signature, new_commands, stale)
+
+
+def _resolve_action_round_limits() -> tuple[int, int]:
+    """Per-turn ACTION continuation budget: ``(ceiling, repeat_limit)``.
+
+    Configurable via ``agent.max_action_rounds`` and
+    ``agent.action_repeat_limit``; both read defensively so a missing or
+    corrupt settings file can never raise inside the streaming worker.  A
+    ceiling of 0 or below disables the absolute cap — the repetition check
+    then remains the only stop, which is a deliberate power-user choice.
+    """
+    ceiling = _ACTION_ROUND_CEILING_DEFAULT
+    repeat = _ACTION_ROUND_REPEAT_LIMIT_DEFAULT
+    try:
+        from delfin import user_settings
+        agent_cfg = user_settings.load_settings().get("agent", {}) or {}
+    except Exception:
+        agent_cfg = {}
+    raw = agent_cfg.get("max_action_rounds")
+    if raw is not None:
+        try:
+            ceiling = int(raw)
+        except (TypeError, ValueError):
+            ceiling = _ACTION_ROUND_CEILING_DEFAULT
+    if ceiling <= 0:
+        ceiling = 10_000
+    raw = agent_cfg.get("action_repeat_limit")
+    if raw is not None:
+        try:
+            repeat = int(raw)
+        except (TypeError, ValueError):
+            repeat = _ACTION_ROUND_REPEAT_LIMIT_DEFAULT
+    return ceiling, max(2, repeat)
+
+
+def _format_action_stop_note(
+    reason: str,
+    executed: Sequence[str] | None,
+    ceiling: int,
+    pending: Sequence[str] | None = None,
+) -> str:
+    """Honest, actionable note for a continuation loop that ended early.
+
+    Names what actually ran, why the turn stopped and how to carry on.
+    Returns an empty string when the stop needs no note (the agent finished
+    on its own).
+    """
+    ran = [c for c in (executed or []) if str(c).strip()]
+    shown = ", ".join(f"`{c}`" for c in ran[:5])
+    if len(ran) > 5:
+        shown += f" (+{len(ran) - 5} more)"
+    ran_part = (f"Executed this turn: {shown}."
+                if ran else "No commands were executed this turn.")
+    left = [c for c in (pending or []) if str(c).strip()]
+    left_part = ""
+    if left:
+        _l = ", ".join(f"`{c}`" for c in left[:3])
+        if len(left) > 3:
+            _l += f" (+{len(left) - 3} more)"
+        left_part = f" Not executed: {_l}."
+    if reason == _ACTION_ROUND_CEILING:
+        return (
+            f"⏸ {ran_part}{left_part} The turn was ended by the ACTION round "
+            f"limit ({ceiling} rounds, `agent.max_action_rounds`) — the work "
+            f"itself was not judged finished. Send 'continue' to resume."
+        )
+    if reason in (_ACTION_ROUND_REPEAT, _ACTION_ROUND_NO_PROGRESS):
+        return (
+            f"⏸ {ran_part}{left_part} The agent re-issued commands that had "
+            f"already run this turn, so the turn was ended instead of "
+            f"repeating them. Send the next step as a follow-up."
+        )
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Command safety tiers (enforced at CODE level, not prompt level).
 # Pure + module-level so the classification is unit-testable and shared by the
 # auto-exec loop and the hard destructive-action confirmation gate.
@@ -2742,6 +2966,7 @@ def create_tab(ctx):
         "_seen_tab_suggestions": set(),  # tab names that already had a suggestion (D2)
         "_pending_action_text": "",      # raw agent text awaiting Approve/Deny (D1)
         "_pending_action_commands": [],  # parsed commands awaiting Approve/Deny (D1)
+        "_last_exec_commands": [],       # ACTION batch dispatched by the last auto-exec
         "message_queue": [],      # queued messages sent while agent is busy
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
@@ -11552,6 +11777,9 @@ def create_tab(ctx):
         running auto-exec.  ``force_no_confirm=True`` bypasses this gate
         (used by the Approve handler).
         """
+        # Reset the dispatched-batch record up front so every early return
+        # (confirmation gate, destructive-action gate) reports "nothing ran".
+        state["_last_exec_commands"] = []
         # D1 short-circuit: agent is asking for confirmation → show
         # Approve/Deny buttons and skip auto-exec until the user clicks.
         if (
@@ -11664,6 +11892,12 @@ def create_tab(ctx):
 
         results: list[str] = []
         mutate_count = 0
+
+        # Publish the dispatched batch for the continuation loop's
+        # progress-vs-repetition check. The tolerant parser above accepts
+        # forms ``_extract_action_commands`` does not, so the loop must see
+        # what was really dispatched rather than re-parsing the raw text.
+        state["_last_exec_commands"] = list(commands[:10])
 
         for cmd_line in commands[:10]:  # safety limit
             tier = _command_tier(cmd_line)
@@ -13913,19 +14147,41 @@ def create_tab(ctx):
                     # Auto-execute slash commands from agent output (all modes).
                     # Dashboard, Solo, Builder — any agent can control the UI
                     # via ACTION: /command lines. Safety tiers still enforced.
-                    # Cap at 3 continuation rounds (down from 4): empirical
-                    # data on multi-step dashboard requests shows >3 rounds
-                    # is always model-confusion, not user intent. The
-                    # explicit `ACTION: /done` sentinel below skips even
-                    # the post-execute commentary turn so a 1- or 2-action
+                    #
+                    # Round budget: a flat cap charged genuine multi-step work
+                    # (open tab → read error file → report) the same rounds as
+                    # a model re-emitting one command, and ended both at the
+                    # same point. The loop therefore separates the two via
+                    # ``_decide_action_round``: rounds that introduce NEW
+                    # commands are progress and only draw on a generous
+                    # absolute ceiling, while an ACTION set that already ran
+                    # this turn ends the loop after the first repeat. The
+                    # explicit `ACTION: /done` sentinel still skips even the
+                    # post-execute commentary turn so a 1- or 2-action
                     # sequence doesn't burn an extra 30-120 s + $0.02-0.05
                     # on the model emitting "(commands executed)".
-                    _MAX_ACTION_CONT = 3
+                    _MAX_ACTION_CONT, _ACTION_REPEATS = (
+                        _resolve_action_round_limits())
                     _cont_turn = 0
+                    _round_sigs: list[str] = []      # per-round signatures
+                    _seen_cmds: set[str] = set()     # normalised, whole turn
+                    _ran_cmds: list[str] = []        # ordered, for the note
+                    _stale_rounds = 0                # rounds without new work
+                    _stop_reason = ""
                     while chunks and _cont_turn < _MAX_ACTION_CONT:
                         _cont_turn += 1
                         raw = "".join(chunks)
                         exec_results = _dashboard_auto_exec(raw)
+                        # What the tolerant dispatcher actually ran this round
+                        # (see ``_last_exec_commands``); the strict extractor
+                        # is only the fallback.
+                        _round_cmds = list(
+                            state.get("_last_exec_commands") or [])
+                        if not _round_cmds:
+                            _round_cmds = [
+                                c for c in _extract_action_commands(raw)
+                                if not c.strip().lower().startswith("/done")
+                            ]
                         # Split the done-sentinel from real results so the
                         # placeholder accurately reflects what happened.
                         done_seen = "__DONE__" in exec_results
@@ -13968,6 +14224,35 @@ def create_tab(ctx):
                         # No results → nothing to continue on
                         if not real_results:
                             break
+                        # Progress-vs-repetition. A round with at least one
+                        # not-yet-executed command is real work and only
+                        # draws on the absolute ceiling; a round that merely
+                        # re-runs what already ran this turn is a loop and
+                        # ends the turn right away. The commands of this
+                        # round have already been dispatched above — the
+                        # decision only governs whether the model gets
+                        # another turn, so a repeat costs one cheap local
+                        # re-dispatch and never a second model call.
+                        _dec = _decide_action_round(
+                            _round_cmds,
+                            _round_sigs,
+                            _seen_cmds,
+                            rounds_used=_cont_turn,
+                            stale_rounds=_stale_rounds,
+                            ceiling=_MAX_ACTION_CONT,
+                            repeat_limit=_ACTION_REPEATS,
+                        )
+                        _round_sigs.append(_dec.signature)
+                        if _dec.stale:
+                            _stale_rounds += 1
+                        for _c in _round_cmds:
+                            _n = _normalize_action_command(_c)
+                            if _n and _n not in _seen_cmds:
+                                _seen_cmds.add(_n)
+                                _ran_cmds.append(_c)
+                        if not _dec.proceed:
+                            _stop_reason = _dec.reason
+                            break
                         # Re-bind exec_results to the real slice so the
                         # feedback that goes back to the model doesn't
                         # contain the sentinel.
@@ -14004,15 +14289,39 @@ def create_tab(ctx):
                         )
                         if chunks:
                             _update_last_assistant("".join(chunks), role_label, finalize=True)
-                    # Cap-hit notification — only when the loop actually
-                    # exhausted all rounds without finishing on its own.
-                    if _cont_turn >= _MAX_ACTION_CONT and chunks:
-                        _post_raw = "".join(chunks)
-                        if _extract_action_commands(_post_raw):
-                            _append_system_message(
-                                f"⏸ Stopped after {_MAX_ACTION_CONT} ACTION rounds — "
-                                f"agent kept emitting commands. Send a follow-up to continue."
-                            )
+                    # Budget-stop notification. Only fires when the loop was
+                    # ended by the round budget or by repetition — a turn the
+                    # agent closed itself (/done, no further ACTIONs) stays
+                    # silent. The note names what ran, why the turn ended and
+                    # how to continue, so a stopped turn is never mistaken
+                    # for a finished one.
+                    if not _stop_reason and _cont_turn >= _MAX_ACTION_CONT:
+                        # Belt-and-braces: the while guard, not the decision,
+                        # ended the loop.
+                        if chunks and _extract_action_commands("".join(chunks)):
+                            _stop_reason = _ACTION_ROUND_CEILING
+                    if _stop_reason in (_ACTION_ROUND_CEILING,
+                                        _ACTION_ROUND_REPEAT,
+                                        _ACTION_ROUND_NO_PROGRESS):
+                        # "Pending" = commands still sitting in the last
+                        # response that this turn never executed. Commands
+                        # that already ran are in ``_seen_cmds`` and must not
+                        # be reported as outstanding.
+                        _pending = []
+                        if chunks:
+                            _pending = [
+                                c for c in
+                                _extract_action_commands("".join(chunks))
+                                if not c.strip().lower().startswith("/done")
+                                and _normalize_action_command(c)
+                                not in _seen_cmds
+                            ]
+                        _note = _format_action_stop_note(
+                            _stop_reason, _ran_cmds, _MAX_ACTION_CONT,
+                            _pending,
+                        )
+                        if _note:
+                            _append_system_message(_note)
 
                     # -- Verify-Enforcement (anti-hallucination) ----------
                     # Scan the finished answer for ORCA keyword claims that

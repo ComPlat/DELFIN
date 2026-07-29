@@ -1,7 +1,7 @@
 """Tests for the dashboard cost-efficiency pass:
 
 - ACTION: /done sentinel is recognised by _dashboard_auto_exec
-- _MAX_ACTION_CONT cap reduced from 4 to 3
+- the ACTION continuation budget distinguishes progress from repetition
 - _arm_stale_watcher honours stale_kill_after_s for cooperative kill
 - dashboard_agent.md documents the /done sentinel
 """
@@ -32,17 +32,19 @@ def test_done_sentinel_documented_in_dashboard_agent_md():
     assert "/tab orca" in body
 
 
-def test_max_action_cont_reduced_to_three():
-    """The continuation-cap was 4; the cost-efficiency pass lowered it
-    to 3. Empirical: >3 rounds is always model-confusion in practice."""
+def test_action_cap_is_resolved_from_settings_not_hardcoded():
+    """The continuation budget used to be a hardcoded flat cap of 3, which
+    ended healthy multi-step work at the same point as a runaway loop. It
+    now comes from ``_resolve_action_round_limits`` (settings-backed) and
+    is paired with a repetition check."""
     p = (Path(__file__).resolve().parent.parent
          / "delfin" / "dashboard" / "tab_agent.py")
     text = p.read_text(encoding="utf-8")
-    assert "_MAX_ACTION_CONT = 3" in text
-    # And the old "= 4" should be gone in the continuation-loop region
-    cont_idx = text.find("_MAX_ACTION_CONT")
-    snippet = text[cont_idx: cont_idx + 200]
-    assert "= 4" not in snippet
+    assert "_MAX_ACTION_CONT = 3" not in text
+    assert "_MAX_ACTION_CONT, _ACTION_REPEATS = (" in text
+    assert "_resolve_action_round_limits())" in text
+    # while-guard survives as the absolute backstop
+    assert "while chunks and _cont_turn < _MAX_ACTION_CONT:" in text
 
 
 def test_dashboard_auto_exec_returns_done_marker_when_sentinel_present():
@@ -170,3 +172,108 @@ def test_state_dict_seeds_kill_timer_slot():
          / "delfin" / "dashboard" / "tab_agent.py")
     text = p.read_text(encoding="utf-8")
     assert '"_stale_kill_timer": None' in text
+
+
+# ---------------------------------------------------------------------------
+# ACTION continuation budget — progress vs. repetition (loop wiring)
+# ---------------------------------------------------------------------------
+
+
+def _tab_agent_source() -> str:
+    return (Path(__file__).resolve().parent.parent / "delfin" / "dashboard"
+            / "tab_agent.py").read_text(encoding="utf-8")
+
+
+def _continuation_loop_block() -> str:
+    """Source of the ACTION continuation loop, from its budget setup to the
+    stop-note block."""
+    text = _tab_agent_source()
+    start = text.find("_MAX_ACTION_CONT, _ACTION_REPEATS = (")
+    assert start > 0, "continuation-loop budget setup not found"
+    end = text.find("-- Verify-Enforcement", start)
+    assert end > start, "continuation-loop block not found"
+    return text[start:end]
+
+
+def test_loop_carries_signature_command_and_stale_history():
+    """The decision needs per-turn state: which ACTION sets ran, which
+    commands ran, and how many rounds produced nothing new."""
+    block = _continuation_loop_block()
+    assert "_round_sigs: list[str] = []" in block
+    assert "_seen_cmds: set[str] = set()" in block
+    assert "_ran_cmds: list[str] = []" in block
+    assert "_stale_rounds = 0" in block
+
+
+def test_loop_calls_the_pure_decision_before_the_next_model_turn():
+    """The progress-vs-repetition check must sit between 'results exist'
+    and the continuation ``stream_response`` — otherwise a repeat still
+    costs a model call."""
+    block = _continuation_loop_block()
+    dec_idx = block.find("_dec = _decide_action_round(")
+    stream_idx = block.find("engine.stream_response(")
+    results_idx = block.find("if not real_results:")
+    assert 0 < results_idx < dec_idx < stream_idx
+    for kw in ("rounds_used=_cont_turn", "stale_rounds=_stale_rounds",
+               "ceiling=_MAX_ACTION_CONT", "repeat_limit=_ACTION_REPEATS"):
+        assert kw in block, kw
+    assert "if not _dec.proceed:" in block
+    assert "_stop_reason = _dec.reason" in block
+
+
+def test_done_sentinel_break_still_precedes_the_decision():
+    """The explicit /done early-exit must keep short-circuiting the loop —
+    the new budget must not make a finished turn pay a round."""
+    block = _continuation_loop_block()
+    done_idx = block.find("if done_seen:")
+    dec_idx = block.find("_dec = _decide_action_round(")
+    assert 0 < done_idx < dec_idx
+
+
+def test_loop_compares_the_commands_that_were_actually_dispatched():
+    """The tolerant dispatcher accepts ACTION forms the strict extractor
+    misses, so the repetition check reads the dispatched batch and only
+    falls back to re-parsing the raw text."""
+    text = _tab_agent_source()
+    assert 'state["_last_exec_commands"] = list(commands[:10])' in text
+    assert '"_last_exec_commands": [],' in text
+    block = _continuation_loop_block()
+    assert 'state.get("_last_exec_commands") or []' in block
+    assert "if not _round_cmds:" in block
+
+
+def test_stop_note_fires_only_for_budget_and_repetition_stops():
+    """A turn the agent closed itself must stay silent; a truncated one
+    must not."""
+    block = _continuation_loop_block()
+    assert "if _stop_reason in (_ACTION_ROUND_CEILING," in block
+    assert "_ACTION_ROUND_REPEAT," in block
+    assert "_ACTION_ROUND_NO_PROGRESS):" in block
+    assert "_note = _format_action_stop_note(" in block
+    # The old, dishonest wording is gone
+    assert "agent kept emitting commands" not in _tab_agent_source()
+
+
+def test_stop_note_excludes_already_executed_commands_from_pending():
+    """Reporting an executed command as outstanding would be a lie."""
+    block = _continuation_loop_block()
+    idx = block.find("_pending = [")
+    assert idx > 0
+    snippet = block[idx: idx + 400]
+    assert "_normalize_action_command(c)" in snippet
+    assert "not in _seen_cmds" in snippet
+
+
+def test_budget_defaults_are_generous_and_repetition_is_tight():
+    """The ceiling only has to bound an endless stream of DIFFERENT
+    commands; repetition is caught after the first repeat."""
+    from delfin.dashboard import tab_agent as ta
+    assert ta._ACTION_ROUND_CEILING_DEFAULT >= 8
+    assert ta._ACTION_ROUND_REPEAT_LIMIT_DEFAULT == 2
+
+
+def test_settings_keys_are_documented_in_the_resolver():
+    from delfin.dashboard import tab_agent as ta
+    doc = ta._resolve_action_round_limits.__doc__ or ""
+    assert "agent.max_action_rounds" in doc
+    assert "agent.action_repeat_limit" in doc

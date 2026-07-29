@@ -449,6 +449,12 @@ class AgentEngine:
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
+        # Executed-command ledger (session-cumulative, capped): what this
+        # session actually RAN. Evidence input for the functional-claim
+        # guard — "it works now" is grounded only when the artifact was
+        # exercised. Filled live from tool calls (see _note_exec_command),
+        # cleared on a new work cycle like the rest of the session state.
+        self._exec_commands_session: list[str] = []
         # Live state: a per-turn snippet (Dashboard widget state, calc folder,
         # etc.) appended to the system prompt — keeps it OUT of the user
         # message body so it doesn't accumulate in self.messages history.
@@ -1386,6 +1392,10 @@ class AgentEngine:
                         _turn_ttft = _time.monotonic()
                     _turn_tool_calls += 1
                     _turn_tool_names.append(event.tool_name)
+                    # Evidence for the functional-claim guard: record WHAT
+                    # was executed, not just that some tool ran.
+                    self._note_exec_command(
+                        event.tool_name, event.tool_input)
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
                     self._maybe_pin_project_dir(
@@ -1702,6 +1712,76 @@ class AgentEngine:
         except Exception:
             return False
 
+    def _note_exec_command(self, tool_name: str, tool_input: str) -> None:
+        """Record an executed command in the session ledger.
+
+        Only execution tools contribute (verify_guard.extract_exec_command
+        decides); read-only job inspectors and every other tool are ignored.
+        Bounded and de-duplicated so a long session cannot grow it without
+        limit. Best-effort — bookkeeping must never break a turn."""
+        try:
+            from . import verify_guard as _vg
+            cmd = _vg.extract_exec_command(tool_name, tool_input)
+            if not cmd:
+                return
+            ledger = self._exec_commands_session
+            if cmd in ledger:
+                return
+            ledger.append(cmd)
+            if len(ledger) > 200:
+                del ledger[:len(ledger) - 200]
+        except Exception:
+            pass
+
+    def _scan_functional_claims(self, text: str) -> list:
+        """Scan a finished answer for claims that something now works which
+        this session never exercised. Returns the flag list; never raises."""
+        try:
+            from . import verify_guard as _vg
+            cmds = getattr(self, "_exec_commands_session", None)
+            return _vg.scan_for_unexercised_functional_claims(
+                text,
+                exec_commands=list(cmds or ()),
+                exec_ledger_available=cmds is not None,
+                tools_used=set(getattr(self, "_last_turn_tools", None) or ()),
+            )
+        except Exception:
+            return []
+
+    def _append_functional_caveat(
+        self, text: str, flags: list,
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
+        """Append the visible functional-claim caveat to a finished answer.
+
+        This class gets a caveat, never a forced correction turn: the model
+        cannot verify browser or interactive behavior headlessly either, so
+        a retry would only invite a second confident assertion. The caveat
+        also enters the transcript, so later turns see the claim marked
+        unconfirmed instead of standing bare."""
+        if not flags:
+            return text
+        try:
+            from . import verify_guard as _vg
+            caveat = _vg.functional_claim_caveat(flags)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,
     ) -> tuple[list, list]:
@@ -1741,16 +1821,25 @@ class AgentEngine:
         asks the model to verify with tools or restate with explicit
         uncertainty. One retry only — if the correction is still
         ungrounded, a visible caveat is appended instead of failing or
-        looping. Returns the (possibly extended) answer text."""
+        looping.
+
+        Functional claims ("it works now") run through the SAME gate but
+        take the other consequence: a visible caveat naming what was never
+        exercised, and no correction turn — see _append_functional_caveat.
+        Returns the (possibly extended) answer text."""
         from . import verify_guard as _vg
         loc, qty = self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))
+        func = self._scan_functional_claims(response_text)
         if not loc and not qty:
-            return response_text
+            return self._append_functional_caveat(
+                response_text, func, on_token)
         if self._claim_guard_corrected:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
-            return response_text + _vg.grounding_caveat(loc, qty)
+            return self._append_functional_caveat(
+                response_text + _vg.grounding_caveat(loc, qty), func,
+                on_token)
         parts: list[str] = []
         if loc:
             parts.append(_vg.location_claim_feedback(loc))
@@ -1781,13 +1870,18 @@ class AgentEngine:
         finally:
             self._claim_guard_active = False
         if not correction:
-            return response_text + _vg.grounding_caveat(loc, qty)
+            return self._append_functional_caveat(
+                response_text + _vg.grounding_caveat(loc, qty), func, on_token)
         combined = response_text + "\n\n" + correction
         # Re-scan the correction only: the recursive turn refreshed the
         # observed-files snapshot and _last_turn_tools, so a correction
         # that verified via tools (or restated with hedges) passes clean.
         loc2, qty2 = self._scan_claim_grounding(
             correction, getattr(self, "_last_turn_tools", None))
+        # The correction may restate the functional claim — scan it too and
+        # merge (order-stable, de-duplicated: the flags are frozen).
+        func = list(dict.fromkeys(
+            func + self._scan_functional_claims(correction)))
         caveat = _vg.grounding_caveat(loc2, qty2) if (loc2 or qty2) else ""
         if caveat:
             if on_token:
@@ -1804,7 +1898,7 @@ class AgentEngine:
                     self.messages[-1]["content"] += caveat
             except Exception:
                 pass
-        return combined + caveat
+        return self._append_functional_caveat(combined + caveat, func, on_token)
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session
@@ -2962,6 +3056,9 @@ class AgentEngine:
             self.role_verdicts.clear()
             self.role_test_evidence.clear()
             self._project_dir = ""   # new conversation → re-pin on first write
+            # New conversation: what an earlier cycle ran no longer grounds
+            # a claim that something works now.
+            self._exec_commands_session.clear()
             self.compaction_summaries.clear()
             self.current_role_index = 0
             self.token_usage = {"input": 0, "output": 0, "cached": 0}

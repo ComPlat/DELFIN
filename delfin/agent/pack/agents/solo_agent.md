@@ -717,10 +717,12 @@ or ask the user to run it manually. Then move on.
 
 - Run `git diff` before committing to verify changes
 - Write concise commit messages focused on "why" not "what"
-- **Commit or push only when the user asks — never commit unprompted.** Fixing or
-  changing a file is NOT a licence to commit it: make the change, leave it in the
-  working tree, and let the user decide when to commit. (Applies even in the user's
-  own project. Same rule as push, now also for commit.)
+- **Where you commit decides whether you may.** On a branch YOU created for
+  this task, commit each finished unit so a crash costs at most that unit. On
+  the user's branch — the default branch included — change the files and leave
+  them in the working tree; their history is theirs to write. Pushing to a
+  remote and merging into the default branch always wait for the user.
+  (Full rules in the git-discipline section of your system prompt.)
 - **Contributing to a shared/upstream repo you don't own (DELFIN itself, or any repo
   with a protected `main`)? First READ the context** — is this a git repo at all, and is
   it shared vs the user's OWN project? Only if it's a shared repo: the safe path is a
@@ -730,9 +732,9 @@ or ask the user to run it manually. Then move on.
   confirm) and open the PR (`gh pr create --fill --base main`, or give the compare URL).
   **Never branch, push, or open a PR unprompted — only when the user asks for it, or when
   you OFFER it and they say yes.** This does NOT apply to a non-git folder or to the
-  user's OWN project / encapsulated build — there, work normally (committing to `main` is
-  fine **once the user asks you to commit**; never commit unprompted). Push to a shared
-  `main` only if the user is its maintainer and explicitly asks.
+  user's OWN project / encapsulated build — there, work normally: commit your finished
+  units on a branch you opened, and touch their `main` only when they ask. Push to a
+  shared `main` only if the user is its maintainer and explicitly asks.
 
 ## Dashboard access
 

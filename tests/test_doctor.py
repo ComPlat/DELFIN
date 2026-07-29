@@ -23,8 +23,8 @@ def _ctx(**over) -> dict:
 
 
 def test_run_doctor_aggregates_stubbed_checks(monkeypatch):
-    statuses = ["PASS", "WARN", "FAIL", "PASS", "WARN",
-                "FAIL", "PASS", "WARN", "FAIL", "PASS"]
+    cycle = ["PASS", "WARN", "FAIL"]
+    statuses = [cycle[i % 3] for i in range(len(doctor._CHECK_ATTRS))]
     for (group, attr), status in zip(doctor._CHECK_ATTRS, statuses):
         def make(g, s):
             return lambda ctx: [doctor._row(g, s, f"stub {s}", "do X")]
@@ -364,3 +364,54 @@ def test_cli_doctor_survives_exploding_probes(monkeypatch, capsys):
     assert rc == 1
     out, _ = capsys.readouterr()
     assert f"{len(doctor._CHECK_ATTRS)} fail" in out
+
+
+# ---------------------------------------------------------------------------
+# Filesystem isolation for shell commands must be visible, not assumed
+# ---------------------------------------------------------------------------
+
+
+def _isolation_row(monkeypatch, mode, usable):
+    import delfin.agent.doctor as doc
+    import delfin.user_settings as us
+    monkeypatch.setattr(
+        us, "load_settings", lambda: {"agent": {"bash_isolation": mode}})
+    import delfin.agent.api_client as ac
+    monkeypatch.setattr(ac, "_bwrap_functional", lambda: usable)
+    return doc._check_bash_isolation({})[0]
+
+
+def test_isolation_active_is_a_pass(monkeypatch):
+    row = _isolation_row(monkeypatch, "bwrap", True)
+    assert row["status"] == "PASS" and "active" in row["detail"]
+
+
+def test_isolation_configured_but_unusable_is_a_failure(monkeypatch):
+    row = _isolation_row(monkeypatch, "bwrap", False)
+    assert row["status"] == "FAIL" and "does not work here" in row["detail"]
+
+
+def test_auto_mode_says_when_it_does_not_isolate(monkeypatch):
+    row = _isolation_row(monkeypatch, "auto", True)
+    assert row["status"] == "WARN"
+    assert "bypassPermissions only" in row["detail"]
+    assert "bash_isolation" in row["fix"]
+
+
+def test_auto_without_working_bwrap_says_never_isolated(monkeypatch):
+    row = _isolation_row(monkeypatch, "auto", False)
+    assert "never isolated" in row["detail"]
+
+
+def test_isolation_off_is_reported_with_the_remaining_protection(monkeypatch):
+    row = _isolation_row(monkeypatch, "off", True)
+    assert row["status"] == "WARN" and "write-target gate" in row["detail"]
+
+
+def test_isolation_check_is_registered_and_never_raises(monkeypatch):
+    import delfin.agent.doctor as doc
+    assert ("bash isolation", "_check_bash_isolation") in doc._CHECK_ATTRS
+    import delfin.user_settings as us
+    monkeypatch.setattr(us, "load_settings",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert doc._check_bash_isolation({})[0]["check"] == "bash isolation"

@@ -3,10 +3,14 @@
 Check once per session whether the workspace is a git repo (`git rev-parse
 --is-inside-work-tree`). If it is, work like a careful senior engineer:
 
-1. **Never work uncommitted for long.** After each coherent work unit
-   (a fix + its tests green), commit with a message that explains WHY,
-   not just what. Small, reviewable commits — not one giant dump at the
-   end. A crash must never cost more than the current work unit.
+1. **Never work uncommitted for long — on YOUR branch.** The two halves
+   of this rule are one rule: create your own topic branch first, then
+   commit each coherent work unit there (a fix + its tests green) with a
+   message that explains WHY, not just what. A crash must then never
+   cost more than the current unit. On a branch the USER is working on —
+   including the default branch — you do not commit: their working tree
+   and history are theirs. Small, reviewable commits, never one giant
+   dump at the end.
 2. **Branch before you build.** On the default branch, create a feature
    branch first (`git checkout -b <topic>`). Never commit directly to
    main unless the user explicitly says so.
