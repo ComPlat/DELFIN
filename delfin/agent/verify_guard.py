@@ -403,6 +403,11 @@ _EVIDENCE_TOOLS = frozenset({
     "read_file", "grep_file", "history_search", "web_fetch",
 })
 
+# Fallback shape match so lookup tools count as evidence regardless of the
+# backend's naming scheme (CLI backends report e.g. "Read"/"Grep"/"WebFetch"
+# instead of the snake_case names above). Editing/exec tools never match.
+_EVIDENCE_TOOL_SHAPE = re.compile(r"(?i)(read|grep|search|fetch|docs|glob)")
+
 # Number token for unit-anchored claims. The lookbehind stops mid-token
 # matches (dotted version strings like 6.0.1 can never contribute their
 # tail digits); the sign class includes the Unicode minus.
@@ -482,6 +487,8 @@ def _used_evidence_tool(tools) -> bool:
         name = str(t).strip().lower()
         if name in _EVIDENCE_TOOLS or name.rsplit("__", 1)[-1] in _EVIDENCE_TOOLS:
             return True
+        if _EVIDENCE_TOOL_SHAPE.search(name):
+            return True
     return False
 
 
@@ -521,6 +528,8 @@ def scan_for_unsourced_quantities(
         matches: list[tuple[int, str, str]] = []
         for unit, rx in _QUANTITY_PATTERNS:
             for m in rx.finditer(scrubbed):
+                if _is_hedged(scrubbed, m.start(), m.end()):
+                    continue
                 qty = " ".join(m.group(0).split())
                 matches.append((m.start(), qty, unit))
         matches.sort(key=lambda t: (t[0], t[2]))
@@ -547,4 +556,277 @@ def quantity_claim_feedback(flags: list[QuantityClaimFlag]) -> str:
         "(calculation output via get_calc/read_file, or the docs via "
         "search_docs) and cite it next to each value, or restate each "
         "value as unverified and say what would confirm it."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hedge detection — explicitly uncertain claims are never enforcement targets
+# ---------------------------------------------------------------------------
+#
+# Every claim scanner below (and the quantity scanner above) skips claims
+# whose containing line carries an explicit uncertainty marker: enforcement
+# exists to stop CONFIDENT fabrication, and an answer that says it is
+# guessing has already disclosed its grounding status.
+
+_HEDGE_MARKERS = re.compile(
+    r"(?i)\b(?:"
+    # German
+    r"vermutlich|wahrscheinlich|m(?:ö|oe)glicherweise|vielleicht|"
+    r"ungef(?:ä|ae)hr|etwa|circa|ca\.|sch(?:ä|ae)tzungsweise|grob|"
+    r"unsicher|ungepr(?:ü|ue)ft|unverifiziert|"
+    r"nicht\s+(?:gepr(?:ü|ue)ft|verifiziert|(?:ü|ue)berpr(?:ü|ue)ft|sicher|"
+    r"nachgesehen|nachgeschaut)|"
+    r"k(?:ö|oe)nnte|d(?:ü|ue)rfte|scheint|offenbar|"
+    r"aus\s+dem\s+(?:ged(?:ä|ae)chtnis|kopf)|"
+    # English
+    r"probably|likely|perhaps|maybe|possibly|approximately|roughly|around|"
+    r"unsure|uncertain|unverified|presumably|"
+    r"not\s+(?:sure|certain|verified|checked|confirmed)|"
+    r"i\s+(?:think|believe|guess|assume|recall|suspect|expect)|"
+    r"have\s*n(?:o|')t\s+(?:checked|verified|looked|read|confirmed)|"
+    r"did\s*n(?:o|')t\s+(?:check|verify|look|read|confirm)|"
+    r"without\s+(?:checking|looking|verifying)|"
+    r"from\s+memory|iirc|if\s+i\s+recall|"
+    r"might|may\s+be|should\s+be|seems?|estimated?"
+    r")\b"
+)
+
+
+def _is_hedged(text: str, start: int, end: int) -> bool:
+    """True when the line containing ``text[start:end]`` carries an explicit
+    uncertainty marker. Line-scoped on purpose: a hedge in one sentence must
+    not blanket-immunize confident claims elsewhere in the answer."""
+    lo = text.rfind("\n", 0, start) + 1
+    hi = text.find("\n", end)
+    if hi == -1:
+        hi = len(text)
+    return _HEDGE_MARKERS.search(text[lo:hi]) is not None
+
+
+# ---------------------------------------------------------------------------
+# Code-location claims — specific file/line assertions need observed evidence
+# ---------------------------------------------------------------------------
+#
+# The citation scanner above checks that cited PATHS exist / were read, but a
+# fabricated answer can assert a specific LOCATION without ever naming a
+# path in citable form ("Zeile 26: class AgentEngine") — no scanner caught
+# that. This one detects three claim shapes:
+#
+#   file_line  — path plus a concrete line number ("engine.py:281",
+#                "engine.py, Zeile 281", "line 281 of engine.py")
+#   bare_line  — a concrete line number next to a code symbol, no path
+#                ("Zeile 26: class AgentEngine")
+#   defined_in — a symbol-is-defined-in-file assertion without a line
+#                ("AgentEngine is defined in delfin/agent/engine.py")
+#
+# Grounding rules (evidence = the observed-files ledger, i.e. files the
+# model demonstrably read/grepped this session):
+#
+#   file_line  — ungrounded unless THAT path is in the ledger. Injected
+#                context (repo map) surfaces paths but never line numbers,
+#                so a line-number claim about an unread file is the
+#                fabrication signature.
+#   bare_line / defined_in — no attributable path, so these use the
+#                turn-level rule: ungrounded only when the ledger is EMPTY
+#                (zero files observed — the unambiguous zero-evidence case).
+#
+# When the backend exposes no ledger at all (``ledger_available=False``)
+# the scanner stays silent: absence of bookkeeping is not evidence of
+# fabrication. Hedged claims (see ``_is_hedged``) are never flagged, and
+# statements without a concrete number ("near the top of the file") never
+# match. No task-specific patterns, no filename allowlists.
+
+# Path token with a code-file extension. Reuses the citation extension set
+# so dotted module names and version strings never match.
+_LOC_PATH = (
+    r"(?:[\w\-][\w.\-]*/)*[\w\-][\w.\-]*"
+    r"\.(?:" + "|".join(sorted(_CODE_FILE_EXTS)) + r")\b"
+)
+
+# Line-reference word (English + German).
+_LINE_WORD = r"(?:lines?|zeilen?|ln\.?)"
+
+# Same-line gap that must not skip over another path token — keeps the
+# claim attributed to the NEAREST path (grounding is judged per path).
+_LOC_GAP = rf"(?:(?!{_LOC_PATH})[^\n]){{0,40}}?"
+
+# file_line claim shapes. One path group + one line group each.
+_LOC_FILE_LINE_PATTERNS: tuple["re.Pattern[str]", ...] = (
+    # path:N
+    re.compile(rf"({_LOC_PATH}):(\d{{1,6}})\b", re.IGNORECASE),
+    # path ... line N (short same-line gap)
+    re.compile(rf"({_LOC_PATH}){_LOC_GAP}\b{_LINE_WORD}\s*(\d{{1,6}})\b",
+               re.IGNORECASE),
+    # line N ... of/in path (short same-line gap)
+    re.compile(rf"\b{_LINE_WORD}\s*(\d{{1,6}})\b{_LOC_GAP}"
+               rf"\b(?:of|in|von|im|der|aus)\b{_LOC_GAP}({_LOC_PATH})",
+               re.IGNORECASE),
+)
+
+# bare_line claim shape: a line-number reference with no path on the line.
+_LOC_BARE_LINE = re.compile(rf"\b{_LINE_WORD}\s*(\d{{1,6}})\b", re.IGNORECASE)
+_LOC_PATH_RE = re.compile(_LOC_PATH, re.IGNORECASE)
+
+# defined_in claim shapes (no line number): definition verb near a path.
+_LOC_DEFINED_PATTERNS: tuple["re.Pattern[str]", ...] = (
+    re.compile(rf"\b(?:defined|declared|implemented|located|lives)\b"
+               rf"[^\n]{{0,60}}?({_LOC_PATH})", re.IGNORECASE),
+    re.compile(rf"({_LOC_PATH})[^\n]{{0,60}}?"
+               rf"\b(?:definiert|deklariert|implementiert)\b", re.IGNORECASE),
+)
+
+# Code-symbol signals gating the bare_line shape (both regexes checked
+# against the claim's line; keyword one is case-insensitive, shape one is
+# case-sensitive so CamelCase detection stays meaningful).
+_CODE_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:class|def|function|method|klasse|funktion|methode|"
+    r"defin(?:ed|iert)|declared|deklariert)\b")
+_CODE_SHAPE_RE = re.compile(
+    r"\b[A-Z][A-Za-z0-9]*[a-z][A-Z][A-Za-z0-9]*\b"   # CamelCase
+    r"|\b[a-z][a-z0-9]*_[a-z0-9_]+\b"                 # snake_case
+    r"|\b\w+\(\)")                                    # call form
+
+
+@dataclass(frozen=True)
+class LocationClaimFlag:
+    """One code-location claim without matching observed evidence."""
+
+    claim: str          # matched text, whitespace-normalized, truncated
+    path: str           # cited path ("" for bare_line)
+    line: Optional[int]
+    kind: str           # "file_line" | "bare_line" | "defined_in"
+
+    def message(self) -> str:
+        return (f"⚠️ Verify: location claim '{self.claim}' is not backed by "
+                f"any file read or grep this session — open the source or "
+                f"state the location as unverified.")
+
+
+def _scrub_keep_offsets(text: str) -> str:
+    """Blank non-claim regions (fenced code blocks, blockquoted lines) and
+    backtick characters while PRESERVING offsets, so hedge lookups on match
+    positions stay valid. Inline-backtick content is kept: backticked
+    ``path:line`` spans are exactly the claims this scanner targets."""
+    t = _FENCED_BLOCK.sub(lambda m: " " * (m.end() - m.start()), text)
+    t = "\n".join(
+        " " * len(ln) if ln.lstrip().startswith(">") else ln
+        for ln in t.split("\n")
+    )
+    return t.replace("`", " ")
+
+
+def _line_of(text: str, start: int, end: int) -> str:
+    lo = text.rfind("\n", 0, start) + 1
+    hi = text.find("\n", end)
+    return text[lo:hi if hi != -1 else len(text)]
+
+
+def scan_for_ungrounded_location_claims(
+    text: str,
+    *,
+    observed_files: Optional[frozenset[str] | set[str]] = None,
+    ledger_available: bool = True,
+    max_flags: int = 6,
+) -> list[LocationClaimFlag]:
+    """Scan ``text`` for specific code-location claims lacking observed
+    evidence. See the section comment for claim shapes and grounding rules.
+
+    Deterministic, order-stable, de-duplicated, capped at ``max_flags``.
+    Never raises.
+    """
+    flags: list[LocationClaimFlag] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        if not ledger_available:
+            return []
+        obs = frozenset(str(p) for p in (observed_files or ()))
+        any_observed = bool(obs)
+        scrubbed = _scrub_keep_offsets(text)
+        seen: set[str] = set()
+        consumed: list[tuple[int, int]] = []   # spans claimed by file_line
+        claimed_paths: set[str] = set()
+
+        def _add(claim: str, path: str, line: Optional[int],
+                 kind: str) -> None:
+            key = f"{kind}:{path.lower()}:{line}"
+            if key in seen or len(flags) >= max_flags:
+                return
+            seen.add(key)
+            flags.append(LocationClaimFlag(
+                claim=" ".join(claim.split())[:80],
+                path=path, line=line, kind=kind))
+
+        # 1. file_line — path + concrete line number.
+        for rx in _LOC_FILE_LINE_PATTERNS:
+            for m in rx.finditer(scrubbed):
+                g1, g2 = m.group(1), m.group(2)
+                path, num = (g1, g2) if not g1.isdigit() else (g2, g1)
+                path = path.strip().rstrip(".,;:")
+                consumed.append((m.start(), m.end()))
+                claimed_paths.add(path.lower())
+                if _is_hedged(scrubbed, m.start(), m.end()):
+                    continue
+                if _is_observed(path, obs):
+                    continue
+                _add(m.group(0), path, int(num), "file_line")
+
+        # 2. bare_line — line number + code symbol, no path involved.
+        for m in _LOC_BARE_LINE.finditer(scrubbed):
+            if any(s <= m.start() < e for s, e in consumed):
+                continue
+            line_text = _line_of(scrubbed, m.start(), m.end())
+            if _LOC_PATH_RE.search(line_text):
+                continue   # path on the same line: file_line territory
+            if not (_CODE_KEYWORD_RE.search(line_text)
+                    or _CODE_SHAPE_RE.search(line_text)):
+                continue   # no code symbol: not a code-location claim
+            if _is_hedged(scrubbed, m.start(), m.end()):
+                continue
+            if any_observed:
+                continue   # turn-level rule: any observation grounds these
+            _add(m.group(0), "", int(m.group(1)), "bare_line")
+
+        # 3. defined_in — symbol-defined-in-file, no line number.
+        for rx in _LOC_DEFINED_PATTERNS:
+            for m in rx.finditer(scrubbed):
+                path = m.group(1).strip().rstrip(".,;:")
+                if path.lower() in claimed_paths:
+                    continue   # already covered by a file_line claim
+                if _is_hedged(scrubbed, m.start(), m.end()):
+                    continue
+                if any_observed or _is_observed(path, obs):
+                    continue   # turn-level rule (see section comment)
+                _add(m.group(0), path, None, "defined_in")
+    except Exception:
+        return flags
+    return flags
+
+
+def location_claim_feedback(flags: list[LocationClaimFlag]) -> str:
+    """Feedback message for the forced self-correction turn."""
+    refs = ", ".join(f"'{f.claim}'" for f in flags)
+    return (
+        f"The following code-location claims are not backed by any file "
+        f"read or grep in this session: {refs}. Verify now — read or grep "
+        "the referenced source and cite the confirmed file and line — or "
+        "restate the answer marking the location as unverified."
+    )
+
+
+def grounding_caveat(
+    location_flags: list[LocationClaimFlag],
+    quantity_flags: list[QuantityClaimFlag],
+) -> str:
+    """Visible caveat appended when the single correction turn still lacks
+    grounding — the turn is never failed, the reader is warned instead."""
+    items: list[str] = []
+    items.extend(f"'{f.claim}'" for f in location_flags)
+    items.extend(f"'{f.quantity}'" for f in quantity_flags)
+    if not items:
+        return ""
+    return (
+        "\n\n[verify] Caveat: the following claims remain unverified — no "
+        "file read or lookup in this session backs them: "
+        + ", ".join(items) + ". Treat them as unconfirmed."
     )

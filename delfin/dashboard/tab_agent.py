@@ -13740,7 +13740,11 @@ def create_tab(ctx):
                     # read — force exactly ONE self-correction turn so the
                     # model looks the keyword up instead of guessing.  Hard
                     # cap of one correction keeps it from burning tokens.
-                    if chunks and not engine._stop_requested:
+                    # Skip when the engine's claim-grounding guard already
+                    # spent this turn's single correction.
+                    if (chunks and not engine._stop_requested
+                            and not getattr(engine, "_claim_guard_corrected",
+                                            False)):
                         try:
                             from delfin.agent import verify_guard as _vg
                             _vflags = _vg.scan_for_unverified_keywords(

@@ -427,6 +427,19 @@ class AgentEngine:
         self._prompt_session_serial: int = 1
         self._stop_requested = False
         self._lock = threading.Lock()
+        # Claim-grounding guard state (see _enforce_claim_grounding).
+        # _claim_guard_active is the reentrancy latch: True only while the
+        # single forced correction turn runs, so that turn can never spawn
+        # another one. _claim_guard_corrected marks that this user turn
+        # already got its one correction (also read by UI layers to skip
+        # redundant scan passes). The ledger flag records whether the
+        # backend client exposes an observed-files ledger at all — without
+        # one, ungrounded-location detection cannot judge and stays off.
+        self._claim_guard_active: bool = False
+        self._claim_guard_corrected: bool = False
+        self._last_observed_files: set[str] = set()
+        self._last_turn_tools: list[str] = []
+        self._observed_ledger_available: bool = False
         # Live state: a per-turn snippet (Dashboard widget state, calc folder,
         # etc.) appended to the system prompt — keeps it OUT of the user
         # message body so it doesn't accumulate in self.messages history.
@@ -1045,6 +1058,20 @@ class AgentEngine:
             answers_block = self._build_answered_attention_block()
             if answers_block:
                 extra_blocks.append(answers_block)
+            # One-time backend capability notice: reduced surfaces (no tool
+            # loop, no verify enforcement, ...) are stated at session start
+            # instead of failing silently mid-task. Best-effort — a missing
+            # attribute on a partially built engine must not break the
+            # prompt build.
+            try:
+                from .backend_parity import degradation_notice as _deg_notice
+                extra_blocks.extend(filter(None, [_deg_notice(
+                    getattr(self, "backend", "") or "",
+                    getattr(self, "provider", "") or "",
+                    first_turn=len(self.messages) <= 1,
+                    has_permissions=self.kit_permissions is not None)]))
+            except Exception:
+                pass
             if extra_blocks:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
@@ -1112,6 +1139,10 @@ class AgentEngine:
             The complete assistant response text.
         """
         self._stop_requested = False
+        # New user turn: re-arm the one-correction budget — unless this IS
+        # the correction turn (nested call), which must not re-arm itself.
+        if not self._claim_guard_active:
+            self._claim_guard_corrected = False
 
         # UserPromptSubmit hooks — fire BEFORE the message is appended so a
         # blocking hook can short-circuit the turn entirely. Stop hooks are
@@ -1207,6 +1238,9 @@ class AgentEngine:
         _turn_t0 = _time.monotonic()
         _turn_ttft: float | None = None
         _turn_tool_calls = 0
+        # Tool NAMES this turn — evidence input for the claim-grounding
+        # guard (a lookup tool used this turn grounds quantity claims).
+        _turn_tool_names: list[str] = []
         # Mid-turn crash-checkpoint throttle: first write fires 10 tool
         # results or 60s into the tool loop, whichever comes first — short
         # turns never touch disk. See session_store.save_turn_checkpoint.
@@ -1288,6 +1322,7 @@ class AgentEngine:
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
                     _turn_tool_calls += 1
+                    _turn_tool_names.append(event.tool_name)
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
                     self._maybe_pin_project_dir(
@@ -1467,9 +1502,18 @@ class AgentEngine:
             self._last_test_evidence = list(
                 getattr(self.client, "_test_evidence", None) or [])
             # Observed-files ledger (session-cumulative) for the code-claim
-            # citation check — files the model actually read/grepped.
-            self._last_observed_files = set(
-                getattr(self.client, "_observed_files_session", None) or set())
+            # citation check — files the model actually read/grepped. The
+            # availability flag distinguishes "backend keeps no ledger"
+            # (claim grounding cannot judge -> stays off) from "ledger kept
+            # but empty" (zero evidence -> enforcement may fire).
+            _obs_ledger = getattr(self.client, "_observed_files_session", None)
+            self._observed_ledger_available = _obs_ledger is not None
+            try:
+                self._last_observed_files = set(_obs_ledger or ())
+            except TypeError:
+                self._last_observed_files = set()
+                self._observed_ledger_available = False
+            self._last_turn_tools = list(_turn_tool_names)
             _v_role = self.current_role
             if _v_role:
                 if isinstance(self._last_structured_verdict, dict):
@@ -1542,7 +1586,136 @@ class AgentEngine:
             if self.messages and self.messages[-1].get("role") == "user":
                 self.messages.pop()
 
+        # Claim-grounding enforcement — every mode funnels through this
+        # method, so the guard runs here (not in any UI layer): a final
+        # answer asserting a specific code location or a measured quantity
+        # without matching observed evidence gets exactly ONE forced
+        # correction turn; a still-ungrounded correction gets a visible
+        # caveat. The nested correction turn (guard active) skips this
+        # block, which structurally rules out a loop. Best-effort: a guard
+        # failure must never break the turn.
+        if (full_response and not self._stop_requested
+                and not self._claim_guard_active):
+            try:
+                full_response = self._enforce_claim_grounding(
+                    full_response,
+                    memory_context=memory_context,
+                    on_token=on_token,
+                    on_tool_use=on_tool_use,
+                    on_tool_result=on_tool_result,
+                    on_permission_denied=on_permission_denied,
+                    on_thinking=on_thinking,
+                    thinking_budget=thinking_budget,
+                    max_tokens=max_tokens,
+                )
+            except Exception:
+                pass
+
         return full_response + _guard_note
+
+    def _scan_claim_grounding(
+        self, text: str, turn_tools: list[str] | None,
+    ) -> tuple[list, list]:
+        """Scan a finished answer for ungrounded code-location and
+        physical-quantity claims against this session's observed evidence.
+        Returns (location_flags, quantity_flags); never raises."""
+        try:
+            from . import verify_guard as _vg
+            observed = getattr(self, "_last_observed_files", None) or set()
+            ledger = bool(getattr(self, "_observed_ledger_available", False))
+            loc = _vg.scan_for_ungrounded_location_claims(
+                text, observed_files=observed, ledger_available=ledger)
+            qty = _vg.scan_for_unsourced_quantities(
+                text, observed_files=observed,
+                evidence_tools_used=set(turn_tools or ()))
+            return loc, qty
+        except Exception:
+            return [], []
+
+    def _enforce_claim_grounding(
+        self,
+        response_text: str,
+        *,
+        memory_context: str = "",
+        on_token: Callable[[str], None] | None = None,
+        on_tool_use: Callable[[str, str], None] | None = None,
+        on_tool_result: Callable[[str, str], None] | None = None,
+        on_permission_denied: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        thinking_budget: int = 0,
+        max_tokens: int = 0,
+    ) -> str:
+        """Enforce evidence grounding on a finished answer (all modes).
+
+        Ungrounded specific claims (code locations / measured quantities,
+        per verify_guard) trigger exactly one forced correction turn that
+        asks the model to verify with tools or restate with explicit
+        uncertainty. One retry only — if the correction is still
+        ungrounded, a visible caveat is appended instead of failing or
+        looping. Returns the (possibly extended) answer text."""
+        from . import verify_guard as _vg
+        loc, qty = self._scan_claim_grounding(
+            response_text, getattr(self, "_last_turn_tools", None))
+        if not loc and not qty:
+            return response_text
+        if self._claim_guard_corrected:
+            # The single correction for this user turn is spent (e.g. a
+            # nested continuation re-entered here) — annotate, never loop.
+            return response_text + _vg.grounding_caveat(loc, qty)
+        parts: list[str] = []
+        if loc:
+            parts.append(_vg.location_claim_feedback(loc))
+        if qty:
+            parts.append(_vg.quantity_claim_feedback(qty))
+        feedback = "[Verify] " + " ".join(parts)
+        self._claim_guard_corrected = True
+        self._claim_guard_active = True
+        if on_token:
+            try:
+                on_token("\n\n")
+            except Exception:
+                pass
+        try:
+            correction = self.stream_response(
+                user_message=feedback,
+                memory_context=memory_context,
+                on_token=on_token,
+                on_tool_use=on_tool_use,
+                on_tool_result=on_tool_result,
+                on_permission_denied=on_permission_denied,
+                on_thinking=on_thinking,
+                thinking_budget=thinking_budget,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            correction = ""
+        finally:
+            self._claim_guard_active = False
+        if not correction:
+            return response_text + _vg.grounding_caveat(loc, qty)
+        combined = response_text + "\n\n" + correction
+        # Re-scan the correction only: the recursive turn refreshed the
+        # observed-files snapshot and _last_turn_tools, so a correction
+        # that verified via tools (or restated with hedges) passes clean.
+        loc2, qty2 = self._scan_claim_grounding(
+            correction, getattr(self, "_last_turn_tools", None))
+        caveat = _vg.grounding_caveat(loc2, qty2) if (loc2 or qty2) else ""
+        if caveat:
+            if on_token:
+                try:
+                    on_token(caveat)
+                except Exception:
+                    pass
+            # Record the caveat in the transcript too, so later turns see
+            # the claim marked unconfirmed rather than standing bare.
+            try:
+                if (self.messages
+                        and self.messages[-1].get("role") == "assistant"
+                        and isinstance(self.messages[-1].get("content"), str)):
+                    self.messages[-1]["content"] += caveat
+            except Exception:
+                pass
+        return combined + caveat
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session

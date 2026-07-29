@@ -264,3 +264,229 @@ def test_web_search_result_is_wrapped(monkeypatch):
     out = A._doc_executor._execute_web_search({"query": "anything"})
     assert out.startswith("[UNTRUSTED EXTERNAL CONTENT")
     assert '"title": "T"' in out
+
+
+# ---------------------------------------------------------------------------
+# Code-location claim scanner
+# ---------------------------------------------------------------------------
+
+def test_location_bare_line_with_symbol_flagged():
+    flags = vg.scan_for_ungrounded_location_claims(
+        "Zeile 26: class AgentEngine", observed_files=set())
+    assert len(flags) == 1
+    assert flags[0].kind == "bare_line"
+    assert flags[0].line == 26
+    assert "not backed" in flags[0].message()
+
+
+def test_location_claim_shapes_detected():
+    flags = vg.scan_for_ungrounded_location_claims(
+        "pkg/mod.py:281 starts the class; also see line 300 of pkg/mod.py "
+        "and pkg/other.py, Zeile 12.",
+        observed_files=set())
+    kinds = {(f.kind, f.path, f.line) for f in flags}
+    assert ("file_line", "pkg/mod.py", 281) in kinds
+    assert ("file_line", "pkg/mod.py", 300) in kinds
+    assert ("file_line", "pkg/other.py", 12) in kinds
+
+
+def test_location_defined_in_both_languages():
+    en = vg.scan_for_ungrounded_location_claims(
+        "AgentEngine is defined in pkg/mod.py.", observed_files=set())
+    de = vg.scan_for_ungrounded_location_claims(
+        "Die Klasse wird in pkg/mod.py definiert.", observed_files=set())
+    assert [f.kind for f in en] == ["defined_in"]
+    assert [f.kind for f in de] == ["defined_in"]
+
+
+def test_location_observed_file_not_flagged():
+    # file_line about the observed file itself — grounded.
+    assert vg.scan_for_ungrounded_location_claims(
+        "See pkg/mod.py:281 for the class.",
+        observed_files={"/abs/repo/pkg/mod.py"}) == []
+    # bare_line / defined_in: ANY observation grounds them (turn-level).
+    assert vg.scan_for_ungrounded_location_claims(
+        "Zeile 281: class AgentEngine",
+        observed_files={"pkg/mod.py"}) == []
+    assert vg.scan_for_ungrounded_location_claims(
+        "AgentEngine is defined in pkg/mod.py.",
+        observed_files={"docs/notes.md"}) == []
+
+
+def test_location_file_line_unread_flagged_despite_other_observation():
+    flags = vg.scan_for_ungrounded_location_claims(
+        "The class starts at pkg/mod.py:26.",
+        observed_files={"README.md"})
+    assert [(f.kind, f.line) for f in flags] == [("file_line", 26)]
+
+
+def test_location_hedged_claims_not_flagged():
+    for text in (
+        "Vermutlich Zeile 26: class AgentEngine",
+        "It is probably around line 280 that class AgentEngine starts.",
+        "I have not checked, but pkg/mod.py:26 should be the class.",
+        "ungefähr Zeile 300, class AgentEngine",
+    ):
+        assert vg.scan_for_ungrounded_location_claims(
+            text, observed_files=set()) == [], text
+
+
+def test_location_non_claims_not_flagged():
+    for text in (
+        "The class is defined near the top of the file.",   # no number
+        "line 5 of the poem is beautiful",                  # no code symbol
+        "```\nZeile 26: class AgentEngine\n```",            # fenced code
+        "> Zeile 26: class AgentEngine",                    # blockquote
+        "import delfin.agent.memory_store version 3.5",     # module/version
+    ):
+        assert vg.scan_for_ungrounded_location_claims(
+            text, observed_files=set()) == [], text
+
+
+def test_location_no_ledger_means_no_flags():
+    assert vg.scan_for_ungrounded_location_claims(
+        "Zeile 26: class AgentEngine",
+        observed_files=set(), ledger_available=False) == []
+
+
+def test_location_feedback_and_caveat():
+    flags = vg.scan_for_ungrounded_location_claims(
+        "Zeile 26: class AgentEngine", observed_files=set())
+    fb = vg.location_claim_feedback(flags)
+    assert "Zeile 26" in fb
+    assert "unverified" in fb
+    cav = vg.grounding_caveat(flags, [])
+    assert cav.startswith("\n\n[verify] Caveat")
+    assert "Zeile 26" in cav
+    assert vg.grounding_caveat([], []) == ""
+
+
+def test_quantity_hedged_not_flagged():
+    assert vg.scan_for_unsourced_quantities(
+        "roughly 2.3 eV and ungefähr 14 kcal/mol") == []
+    # A hedge on one line must not immunize a firm claim on another.
+    flags = vg.scan_for_unsourced_quantities(
+        "roughly 2.3 eV maybe\nThe gap is 3.10 eV.")
+    assert [f.quantity for f in flags] == ["3.10 eV"]
+
+
+def test_quantity_cli_style_tool_names_count_as_evidence():
+    assert vg.scan_for_unsourced_quantities(
+        "The gap is 2.31 eV.", evidence_tools_used={"Read"}) == []
+    assert vg.scan_for_unsourced_quantities(
+        "The gap is 2.31 eV.", evidence_tools_used={"WebFetch"}) == []
+
+
+# ---------------------------------------------------------------------------
+# Engine-level claim-grounding enforcement (all modes funnel through
+# stream_response, so these cover dashboard/solo/benchmark alike)
+# ---------------------------------------------------------------------------
+
+def _claims_client(replies, ledger=None, has_ledger=True,
+                   observe_on_reply=None):
+    """Fake backend client: each stream_message call yields the next reply
+    as text events. ``ledger`` seeds _observed_files_session; a mapping in
+    ``observe_on_reply`` ({call_index: {paths}}) mutates the ledger during
+    that call, simulating the model verifying via tools."""
+    from delfin.agent.api_client import StreamEvent
+    fake = MagicMock()
+    if has_ledger:
+        fake._observed_files_session = set(ledger or ())
+    else:
+        del fake._observed_files_session   # hasattr -> False on MagicMock
+    calls = {"n": 0}
+
+    def _stream(*a, **k):
+        i = calls["n"]
+        calls["n"] += 1
+        if observe_on_reply and i in observe_on_reply and has_ledger:
+            fake._observed_files_session |= set(observe_on_reply[i])
+        text = replies[min(i, len(replies) - 1)]
+        yield StreamEvent(type="text_delta", text=text)
+        yield StreamEvent(type="message_delta", output_tokens=5,
+                          cost_usd=0.0)
+
+    fake.stream_message = MagicMock(side_effect=_stream)
+    return fake
+
+
+def test_engine_forces_single_correction_turn(agent_tree):
+    fake = _claims_client(
+        ["Zeile 26: class AgentEngine",
+         "Zeile 281: class AgentEngine (verified)"],
+        observe_on_reply={1: {"delfin/agent/engine.py"}})
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wo ist die klasse definiert?")
+    assert fake.stream_message.call_count == 2
+    assert "Zeile 281" in out
+    assert "[verify] Caveat" not in out
+    # The forced feedback entered the transcript as a user message.
+    feedback = [m for m in engine.messages
+                if m.get("role") == "user"
+                and "[Verify]" in str(m.get("content", ""))]
+    assert len(feedback) == 1
+    assert "code-location claims" in str(feedback[0]["content"])
+
+
+def test_engine_correction_still_ungrounded_appends_caveat(agent_tree):
+    fake = _claims_client(
+        ["Zeile 26: class AgentEngine", "Zeile 27: class AgentEngine"])
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wo ist die klasse definiert?")
+    # Exactly one correction — never a loop — and a visible caveat.
+    assert fake.stream_message.call_count == 2
+    assert "[verify] Caveat" in out
+    assert "Zeile 27" in out
+    # Caveat is recorded on the last assistant transcript message too.
+    assert "[verify] Caveat" in engine.messages[-1]["content"]
+
+
+def test_engine_grounded_answer_no_correction(agent_tree):
+    fake = _claims_client(["Zeile 281: class AgentEngine"],
+                          ledger={"delfin/agent/engine.py"})
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wo ist die klasse definiert?")
+    assert fake.stream_message.call_count == 1
+    assert out == "Zeile 281: class AgentEngine"
+
+
+def test_engine_hedged_answer_no_correction(agent_tree):
+    fake = _claims_client(
+        ["Vermutlich Zeile 280: class AgentEngine — nicht geprüft."])
+    engine = _engine(agent_tree, client=fake)
+    engine.stream_response("wo ist die klasse definiert?")
+    assert fake.stream_message.call_count == 1
+
+
+def test_engine_no_ledger_backend_skips_location_enforcement(agent_tree):
+    fake = _claims_client(["Zeile 26: class AgentEngine"], has_ledger=False)
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wo ist die klasse definiert?")
+    assert fake.stream_message.call_count == 1
+    assert out == "Zeile 26: class AgentEngine"
+
+
+def test_engine_quantity_claim_forces_correction(agent_tree):
+    fake = _claims_client(
+        ["The S1 energy is 2.31 eV.",
+         "Unverified estimate: roughly 2.3 eV — no output was read."])
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("what is the S1 energy?")
+    assert fake.stream_message.call_count == 2
+    # The hedged restatement passes the re-scan: no caveat needed.
+    assert "[verify] Caveat" not in out
+    assert "Unverified estimate" in out
+
+
+def test_engine_correction_budget_is_per_turn(agent_tree):
+    # Turn 1 corrects; turn 2 (new user message) may correct again.
+    fake = _claims_client(
+        ["Zeile 26: class AgentEngine",
+         "Vermutlich Zeile 26 — class AgentEngine, nicht verifiziert.",
+         "Zeile 99: class AgentEngine",
+         "Vermutlich Zeile 99 — class AgentEngine, nicht verifiziert."])
+    engine = _engine(agent_tree, client=fake)
+    engine.stream_response("erste frage: class AgentEngine wo?")
+    assert fake.stream_message.call_count == 2
+    engine.stream_response("zweite frage: class AgentEngine wo?")
+    assert fake.stream_message.call_count == 4
