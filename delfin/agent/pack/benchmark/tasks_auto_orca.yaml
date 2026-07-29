@@ -54,7 +54,7 @@ tasks:
     against: text
   - pattern: (?i)\bnumroots\b
     against: text
-  - pattern: (?i)\bstates\b
+  - pattern: (?i)(?:`states`|\*\*states\*\*|\bstates\s*[:=]|\|\s*states\s*\|)
     against: text
 - id: fact_orca_mp2_keywords_auto
   task_class: fact_verify_auto
