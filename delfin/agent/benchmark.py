@@ -716,7 +716,12 @@ def score_outcome(
     }
     quality = max(0, min(100, sum(components.values())))
 
-    excerpt = (traj.text or "")[:400].strip()
+    # A passing task needs only a glimpse; a FAILING one has to be
+    # diagnosable from the record alone — 400 chars regularly cut off the
+    # sentence that tripped a signal, leaving the failure unexplainable
+    # without re-running.
+    _ex_cap = 400 if (success and not violated) else 4000
+    excerpt = (traj.text or "")[:_ex_cap].strip()
     tool_names = [str(c.get("name", "")) for c in traj.tool_calls
                   if c.get("name")]
 
