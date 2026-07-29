@@ -1220,6 +1220,26 @@ def test_dashboard_prompt_contains_refusal_contract_and_carve_out():
     assert "refused, not redirected" in prompt
 
 
+def test_dashboard_prompt_specifies_turn_closing_contract():
+    """The guide's /done rule is a completion contract, not a cost hint:
+    a request covered by the emitted ACTIONs closes with ACTION: /done in
+    the same response; questions are reserved for genuinely missing
+    information (one concrete question, then end the turn)."""
+    body = (_real_pack() / "agents" / "dashboard_agent.md").read_text(
+        encoding="utf-8")
+    flat = " ".join(body.split())          # robust against line wrapping
+    assert "A satisfied request is closed, not extended" in flat
+    # Closing happens in the same response as the covering ACTIONs.
+    assert "in the same response" in flat
+    # Clarification stays legitimate — but scoped to missing information.
+    assert "ask ONE concrete question" in flat
+    # Result-dependent chains stay legitimate — /done is held back there.
+    assert "depends on the RESULT" in flat
+    # The old open-ended escape hatch must not come back: vague
+    # uncertainty was the license models used to keep turns open.
+    assert "unsure whether more actions are coming" not in flat
+
+
 def test_episode_recall_injected_into_solo_prompt(
     agent_tree, tmp_path, monkeypatch,
 ):

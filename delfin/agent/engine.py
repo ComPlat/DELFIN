@@ -522,7 +522,7 @@ class AgentEngine:
         perms = self.kit_permissions
         if perms is None:
             return False
-        if mode not in {"plan", "default", "acceptEdits", "bypassPermissions"}:
+        if mode not in {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}:
             return False
         perms.mode = mode
         return True
@@ -611,7 +611,7 @@ class AgentEngine:
     def persist_kit_default_mode(self, mode: str, *,
                                  scope: str = "user") -> tuple[bool, str]:
         """Persist the default permission mode and apply it live."""
-        if mode not in {"plan", "default", "acceptEdits", "bypassPermissions"}:
+        if mode not in {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}:
             return False, f"unknown mode: {mode!r}"
         try:
             from . import kit_settings as _kit_settings

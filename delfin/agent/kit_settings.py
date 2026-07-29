@@ -37,7 +37,7 @@ USER_SETTINGS_PATH = Path("~/.delfin/settings.json").expanduser()
 REPO_SETTINGS_RELPATH = Path(".delfin/settings.json")
 
 _KIT_KEY = "kit"
-_VALID_MODES = {"plan", "default", "acceptEdits", "bypassPermissions"}
+_VALID_MODES = {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}
 
 
 def _fresh_defaults() -> dict[str, Any]:
