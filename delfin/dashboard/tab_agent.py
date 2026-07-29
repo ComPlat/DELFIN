@@ -12407,7 +12407,14 @@ def create_tab(ctx):
                 error_text=str(state.get("_last_turn_error", "") or ""),
                 denied_commands=list(state.get("_denied_commands", []) or []),
                 referenced_files=sorted(state.get("_turn_files", []) or []),
-                workspace=str(getattr(engine, "repo_dir", "") or "") or None,
+                # Session workspace first: relative referenced_files were
+                # created where the agent's write tools resolve them (the
+                # permissions workspace), not in the repo root. Repo dir
+                # stays the fallback for engines without permissions.
+                workspace=(str(getattr(getattr(engine, "kit_permissions",
+                                               None), "workspace", "") or "")
+                           or str(getattr(engine, "repo_dir", "") or "")
+                           or None),
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
             )
             short = str(report_dir).replace(str(Path.home()), "~")
