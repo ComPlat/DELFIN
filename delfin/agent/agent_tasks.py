@@ -129,6 +129,9 @@ class TaskStore:
         allowed = {
             "status", "subject", "description", "active_form",
             "add_blocked_by", "remove_blocked_by",
+            # Adopt path: a fresh session takes over a task left open by a
+            # previous one (task_adopt) by rewriting its owning session id.
+            "session_id",
         }
         unknown = set(fields) - allowed
         if unknown:
@@ -276,3 +279,67 @@ def get_store(base_dir: Path) -> TaskStore:
             store = TaskStore(Path(base_dir))
             _STORES[key] = store
         return store
+
+
+def open_foreign_tasks(
+    base_dir: Path, current_session_id: str, *, cap: int = 5,
+) -> dict:
+    """Summary of open (pending / in_progress) tasks owned by OTHER
+    sessions of this workspace.
+
+    The task store is workspace-scoped and outlives sessions, but every
+    listing surface filters to the CURRENT session id — so a fresh
+    session (fresh id) never sees the work a paused one left behind.
+    This helper feeds the one-shot first-turn prompt block that surfaces
+    that leftover work for explicit adoption (task_adopt). It never
+    merges the lists automatically: session scoping is a deliberate
+    leak fix (bug 20260616-183359) and stays authoritative.
+
+    Returns ``{"count", "oldest_age_days", "tasks"}`` where ``tasks``
+    holds at most ``cap`` summaries — oldest first, each
+    ``{"id", "subject", "status", "session_id", "age_days"}`` — while
+    ``count``/``oldest_age_days`` describe ALL foreign open tasks. Age
+    is whole days since the task's last update (creation when never
+    updated). An empty ``current_session_id`` means the session already
+    sees every workspace task, so the summary is empty. Never raises;
+    cheap (one JSON read).
+    """
+    empty: dict = {"count": 0, "oldest_age_days": 0, "tasks": []}
+    sid = str(current_session_id or "").strip()
+    if not sid:
+        return empty
+    try:
+        tasks = get_store(Path(base_dir)).list(session_id=None)
+    except Exception:
+        return empty
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    foreign: list[dict] = []
+    for t in tasks or []:
+        try:
+            if t.get("status") not in ("pending", "in_progress"):
+                continue
+            if str(t.get("session_id", "") or "") == sid:
+                continue
+            ts = str(t.get("updated_at") or t.get("created_at") or "")
+            try:
+                parsed = datetime.fromisoformat(ts.rstrip("Z"))
+                age_days = max(0, int((now - parsed).total_seconds() // 86400))
+            except Exception:
+                age_days = 0
+            foreign.append({
+                "id": t.get("id"),
+                "subject": str(t.get("subject", ""))[:100],
+                "status": t.get("status"),
+                "session_id": str(t.get("session_id", "") or ""),
+                "age_days": age_days,
+            })
+        except Exception:
+            continue
+    if not foreign:
+        return empty
+    foreign.sort(key=lambda r: (-r["age_days"], int(r["id"] or 0)))
+    return {
+        "count": len(foreign),
+        "oldest_age_days": foreign[0]["age_days"],
+        "tasks": foreign[: max(1, int(cap))],
+    }

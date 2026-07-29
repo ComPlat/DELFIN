@@ -877,7 +877,7 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "web_search", "web_fetch",
     # Structured UX & planning.
     "ask_user_question",
-    "task_create", "task_update", "task_list", "task_get",
+    "task_create", "task_update", "task_list", "task_get", "task_adopt",
     # Persistent memory — remember durable user facts/preferences across sessions.
     "remember",
 })
@@ -2256,6 +2256,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "spinners (e.g. 'Integrating BoTorch')."
                         ),
                     },
+                    "blocked_by": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "IDs of tasks that must complete before this "
+                            "one can start (DAG ordering; the store "
+                            "refuses status='in_progress' while any "
+                            "blocker is open)."
+                        ),
+                    },
                 },
                 "required": ["subject"],
             },
@@ -2288,6 +2298,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "subject": {"type": "string"},
                     "description": {"type": "string"},
                     "active_form": {"type": "string"},
+                    "add_blocked_by": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "Task IDs to add as blockers of this task."
+                        ),
+                    },
+                    "remove_blocked_by": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "Blocker IDs to remove from this task."
+                        ),
+                    },
                 },
                 "required": ["task_id"],
             },
@@ -2311,6 +2335,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "description": (
                             "Include tasks with status='deleted' "
                             "(default false)."
+                        ),
+                    },
+                    "all_sessions": {
+                        "type": "boolean",
+                        "description": (
+                            "List open work from EVERY session in this "
+                            "workspace, not just the current one "
+                            "(default false). Records keep their "
+                            "session_id so foreign tasks are "
+                            "identifiable — call task_adopt(id) before "
+                            "working on one."
                         ),
                     },
                 },
@@ -2338,6 +2373,45 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 },
                 "required": ["task_id"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_adopt",
+            "description": (
+                "Adopt a task created in a PREVIOUS session into the "
+                "current one (rewrites its session_id). Required BEFORE "
+                "working on a foreign task: task_update progress and the "
+                "per-turn open-tasks reminder only track tasks owned by "
+                "the current session. Typical flow: "
+                "task_list(all_sessions=true) → task_adopt(id) → "
+                "task_update(id, status='in_progress')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "Global task id to adopt.",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_changes_made",
+            "description": (
+                "List what this session actually changed, from the "
+                "append-only audit log: files written (grouped per path), "
+                "shell commands run, denied actions, and persisted "
+                "permissions. Use this to answer 'what did you change?' "
+                "from the record instead of from memory."
+            ),
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -2474,6 +2548,33 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "check_only": {"type": "boolean"},
                 },
                 "required": ["diff"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "undo_changes",
+            "description": (
+                "Undo the AGENT's own recorded file changes (write_file / "
+                "edit_file / multi_edit / apply_patch / notebook_edit) with "
+                "conflict safety: a file is only restored when its current "
+                "content still matches the recorded post-edit hash — "
+                "anything the user or another process changed since is "
+                "reported as a conflict and left untouched. Files the agent "
+                "created are deleted on undo (same hash check). scope: "
+                "'last' = most recent change, 'turn' = all changes of the "
+                "current turn, 'session' = all recorded changes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["last", "turn", "session"],
+                    },
+                },
+                "required": ["scope"],
             },
         },
     },
@@ -4191,6 +4292,31 @@ class _DocToolExecutor:
         self._index: dict | None = None
         self._calc_engine = None
         self._calc_dirs: dict[str, str] = {}  # set by caller
+        # Undo journal: seqs of file changes captured THIS turn (reset by
+        # the client at turn start) so undo_changes(scope="turn") knows
+        # the turn boundary.
+        self._turn_change_seqs: list[int] = []
+
+    def _capture_change(
+        self, tool: str, resolved: Path, old_text: "Optional[str]",
+        new_text: str, perms: "KitToolPermissions",
+    ) -> None:
+        """Record the pre-image of a just-applied file change in the undo
+        journal (change_journal). Never raises — undo bookkeeping must not
+        break the write path it observes."""
+        try:
+            from . import change_journal as _cj
+            rec = _cj.record_change(
+                getattr(perms, "task_session_id", "") or "",
+                tool=tool, path=str(resolved),
+                old_text=old_text, new_text=new_text,
+            )
+            if rec is not None:
+                if not hasattr(self, "_turn_change_seqs"):
+                    self._turn_change_seqs = []
+                self._turn_change_seqs.append(rec["seq"])
+        except Exception:
+            pass
 
     def _ensure_loaded(self) -> bool:
         """Load doc index and build search engine. Returns True if ready."""
@@ -4467,6 +4593,8 @@ class _DocToolExecutor:
         session_id = ""
         if permissions is not None:
             mode = getattr(permissions, "mode", "") or ""
+            session_id = getattr(permissions, "task_session_id", "") or ""
+        cwd = str(arguments.get("cwd", "") or "")
         record = _al.make_record(
             tool=name,
             decision=decision,
@@ -4474,6 +4602,7 @@ class _DocToolExecutor:
             path=str(arguments.get("path", "")),
             command=str(arguments.get("command", "")),
             session_id=session_id,
+            extra={"cwd": cwd} if cwd else None,
         )
         _al.append(record)
 
@@ -4617,6 +4746,8 @@ class _DocToolExecutor:
             return self._execute_run_tests(arguments, permissions)
         if name == "apply_patch":
             return self._execute_apply_patch(arguments, permissions)
+        if name == "undo_changes":
+            return self._execute_undo_changes(arguments, permissions)
         if name in ("find_definition", "find_references"):
             return self._execute_code_nav(name, arguments, permissions)
 
@@ -4630,7 +4761,8 @@ class _DocToolExecutor:
         # Read paths (task_list/task_get) need no gate; the create/start paths
         # gate on plan mode INSIDE the executors (a task going in_progress is an
         # execution act — see _execute_task_create / _execute_task_update).
-        if name in ("task_create", "task_update", "task_list"):
+        if name in ("task_create", "task_update", "task_list", "task_get",
+                    "task_adopt"):
             if permissions is None:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured."
@@ -4641,8 +4773,15 @@ class _DocToolExecutor:
                 return self._execute_task_update(arguments, permissions)
             if name == "task_list":
                 return self._execute_task_list(arguments, permissions)
+            if name == "task_adopt":
+                return self._execute_task_adopt(arguments, permissions)
             if name == "task_get":
                 return self._execute_task_get(arguments, permissions)
+
+        # Read-only audit view — no permission gate (reads only the local
+        # audit log; answers "what did you change?" from the record).
+        if name == "list_changes_made":
+            return self._execute_list_changes(arguments, permissions)
 
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
@@ -5808,6 +5947,10 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps({"error": f"write failed: {exc}"})
 
+        self._capture_change(
+            "write_file", resolved,
+            old_text if existed else None, content, perms)
+
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
         except Exception:
@@ -5874,6 +6017,8 @@ class _DocToolExecutor:
                         resolved.write_text(new_text, encoding="utf-8")
                     except Exception as exc:
                         return json.dumps({"error": f"write failed: {exc}"})
+                    self._capture_change(
+                        "edit_file", resolved, old_text, new_text, perms)
                     try:
                         perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
                     except Exception:
@@ -5910,6 +6055,8 @@ class _DocToolExecutor:
             resolved.write_text(new_text, encoding="utf-8")
         except Exception as exc:
             return json.dumps({"error": f"write failed: {exc}"})
+
+        self._capture_change("edit_file", resolved, old_text, new_text, perms)
 
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
@@ -6003,6 +6150,8 @@ class _DocToolExecutor:
             resolved.write_text(text, encoding="utf-8")
         except Exception as exc:
             return json.dumps({"error": f"write failed: {exc}"})
+
+        self._capture_change("multi_edit", resolved, old_text, text, perms)
 
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
@@ -6682,6 +6831,11 @@ class _DocToolExecutor:
             )})
 
         try:
+            _nb_old_text = resolved.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            _nb_old_text = None
+
+        try:
             from . import notebook_tools as _nb
             n_before, n_after = _nb.apply_edit(
                 resolved, cell_idx=cell_idx, mode=mode,
@@ -6691,6 +6845,16 @@ class _DocToolExecutor:
             return json.dumps({"error": str(exc)})
         except Exception as exc:
             return json.dumps({"error": f"notebook edit failed: {exc}"})
+
+        if _nb_old_text is not None:
+            try:
+                _nb_new_text = resolved.read_bytes().decode(
+                    "utf-8", errors="replace")
+                self._capture_change(
+                    "notebook_edit", resolved, _nb_old_text, _nb_new_text,
+                    perms)
+            except OSError:
+                pass
 
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
@@ -6815,10 +6979,63 @@ class _DocToolExecutor:
             gate_err = self._run_permission_gate("apply_patch", arguments, perms)
             if gate_err is not None:
                 return json.dumps({"error": gate_err})
+        pre_images: dict[str, "Optional[str]"] = {}
+        if not check_only:
+            try:
+                for _rel in _pa._files_in_diff(diff):
+                    _fp = Path(perms.workspace) / _rel
+                    try:
+                        pre_images[_rel] = _fp.read_bytes().decode(
+                            "utf-8", errors="replace")
+                    except OSError:
+                        pre_images[_rel] = None  # file did not exist yet
+            except Exception:
+                pre_images = {}
         result = _pa.apply_patch(
             workspace=perms.workspace,
             diff_text=diff,
             check_only=check_only,
+        )
+        if not check_only and result.get("status") == "ok":
+            for _rel in result.get("files_touched", []) or []:
+                _fp = Path(perms.workspace) / _rel
+                try:
+                    _new_text = _fp.read_bytes().decode(
+                        "utf-8", errors="replace")
+                except OSError:
+                    continue  # diff deleted the file — no post state to hash
+                self._capture_change(
+                    "apply_patch", _fp, pre_images.get(_rel), _new_text, perms)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _execute_undo_changes(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import change_journal as _cj
+        if perms is None:
+            return json.dumps({"error": (
+                "undo_changes needs a workspace via permissions"
+            )})
+        if perms.mode == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — undo_changes mutates files; "
+                "use exit_plan_mode first."
+            )})
+        scope = str(arguments.get("scope", "") or "").strip()
+        if scope not in ("last", "turn", "session"):
+            return json.dumps({"error": (
+                f"invalid scope {scope!r}: must be last | turn | session"
+            )})
+        turn_seqs = list(getattr(self, "_turn_change_seqs", []) or [])
+        if scope == "turn" and not turn_seqs:
+            return json.dumps({
+                "reverted": [], "conflicts": [], "skipped": [],
+                "note": "no file changes recorded this turn",
+            })
+        result = _cj.revert(
+            getattr(perms, "task_session_id", "") or "",
+            scope=scope, turn_seqs=turn_seqs,
+            workspace=perms.workspace,
         )
         return json.dumps(result, ensure_ascii=False)
 
@@ -7624,12 +7841,17 @@ class _DocToolExecutor:
             })
         fields = {
             k: arguments.get(k)
-            for k in ("status", "subject", "description", "active_form")
+            for k in ("status", "subject", "description", "active_form",
+                      "add_blocked_by", "remove_blocked_by")
             if arguments.get(k) is not None
         }
         if not fields:
             return json.dumps({
-                "error": "at least one field (status / subject / description / active_form) must be provided"
+                "error": (
+                    "at least one field (status / subject / description / "
+                    "active_form / add_blocked_by / remove_blocked_by) "
+                    "must be provided"
+                )
             })
         try:
             task = self._task_store(perms).update(task_id, **fields)
@@ -7646,11 +7868,12 @@ class _DocToolExecutor:
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
         include_deleted = bool(arguments.get("include_deleted", False))
+        all_sessions = bool(arguments.get("all_sessions", False))
         _sid = getattr(perms, "task_session_id", "") or ""
         try:
             tasks = self._task_store(perms).list(
                 include_deleted=include_deleted,
-                session_id=_sid if _sid else None,
+                session_id=None if (all_sessions or not _sid) else _sid,
                 with_seq=True,
             )
         except Exception as exc:
@@ -7668,6 +7891,18 @@ class _DocToolExecutor:
             "tasks": tasks,
         }, ensure_ascii=False)
 
+    def _execute_list_changes(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Read-only: render the current session's audit records."""
+        from . import audit_log as _al
+        sid = (getattr(perms, "task_session_id", "") or "") if perms else ""
+        try:
+            report = _al.build_changes_report(sid if sid else None)
+            return _al.format_changes_report(report)
+        except Exception as exc:
+            return json.dumps({"error": f"list_changes_made failed: {exc}"})
+
     def _execute_task_get(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
@@ -7684,6 +7919,40 @@ class _DocToolExecutor:
         if task is None:
             return json.dumps({"error": f"task #{task_id} not found"})
         return json.dumps({"task": task}, ensure_ascii=False)
+
+    def _execute_task_adopt(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        try:
+            task_id = int(arguments.get("task_id"))
+        except (TypeError, ValueError):
+            return json.dumps({
+                "error": f"task_id must be int, got {arguments.get('task_id')!r}"
+            })
+        sid = getattr(perms, "task_session_id", "") or ""
+        if not sid:
+            return json.dumps({"error": (
+                "no current session id — the task list is unscoped here, "
+                "so every workspace task is already visible; adoption is "
+                "unnecessary"
+            )})
+        try:
+            task = self._task_store(perms).update(task_id, session_id=sid)
+        except KeyError as exc:
+            return json.dumps({"error": str(exc).strip("'")})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"task_adopt failed: {exc}"})
+        return json.dumps({
+            "status": "adopted",
+            "task": task,
+            "hint": (
+                f"task {task['id']} now belongs to this session — it "
+                "appears in task_list and the per-turn reminder. Mark "
+                "in_progress when you start, completed when done."
+            ),
+        }, ensure_ascii=False)
 
     # ------- Web tools (search + fetch) -----------------------------------
 
@@ -8347,7 +8616,8 @@ class OpenAIClient(_BaseClient):
                               "bash_background", "bash_status",
                               "bash_output", "bash_kill",
                               "notebook_read", "notebook_edit",
-                              "task_create", "task_update", "task_list", "task_get",
+                              "task_create", "task_update", "task_list",
+                              "task_get", "task_adopt",
                               "web_search", "web_fetch",
                               "ask_user_question",
                               "exit_plan_mode",
@@ -8369,6 +8639,7 @@ class OpenAIClient(_BaseClient):
                               "history_get",
                               "orchestrate",
                               "apply_patch",
+                              "undo_changes",
                               "find_definition",
                               "find_references",
                               "project_introspect"}
@@ -8598,6 +8869,9 @@ class OpenAIClient(_BaseClient):
         self._observed_files: set[str] = set()
         if not hasattr(self, "_observed_files_session"):
             self._observed_files_session: set[str] = set()
+        # Undo journal: new turn — reset the turn-scope seq window so
+        # undo_changes(scope="turn") only covers this turn's changes.
+        _doc_executor._turn_change_seqs = []
         _stream_attempt = 0    # transient-API-error retries (reset per response)
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
@@ -9063,6 +9337,8 @@ class OpenAIClient(_BaseClient):
                                             "task_create",
                                             "task_update",
                                             "task_list",
+                                            "task_get",
+                                            "task_adopt",
                                             "web_search",
                                             "web_fetch",
                                             "ask_user_question",

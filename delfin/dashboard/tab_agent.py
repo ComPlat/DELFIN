@@ -1154,6 +1154,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Context", "/pin", "Pin a message against compaction (/pin last, /pin list)", False),
   ("Memory", "/memories", "List project memories", False),
   ("Memory", "/memories global", "List cross-project (global) memories", False),
+    ("Session", "/changes", "What this session changed (audit log): files, commands, denials", False),
+    ("Diagnostics", "/doctor", "Check prerequisites: docs index, keys, binaries, MCP, scheduler, disk", False),
     ("Memory", "/memorize", "Distill this session into durable memories (one cheap LLM call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
@@ -9199,6 +9201,26 @@ def create_tab(ctx):
                 _append_system_message("Agent memories:\n" + "\n".join(lines))
             return True
 
+        if cmd in ("/changes", "/changes all"):
+            from delfin.agent import audit_log as _audit
+            _sid = getattr(engine, "session_id", "") or ""
+            if cmd == "/changes all" or not _sid:
+                _report = _audit.build_changes_report(
+                    workspace=str(ctx.repo_dir or "."))
+            else:
+                _report = _audit.build_changes_report(_sid)
+            _append_system_message(_audit.format_changes_report(_report))
+            return True
+
+        if cmd == "/doctor":
+            try:
+                from delfin.agent.doctor import format_doctor, run_doctor
+                results = run_doctor(ctx.repo_dir or ".")
+                _append_system_message(format_doctor(results))
+            except Exception as exc:
+                _append_system_message(f"Doctor failed: {exc}")
+            return True
+
         if cmd.startswith("/remember "):
             text_to_save = text[len("/remember "):].strip()
             if text_to_save:
@@ -12440,6 +12462,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
+            "/changes", "/doctor",
             "/bugs", "/watch", "/fix", "/grant",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
