@@ -140,38 +140,48 @@ def _cost_delta(before: float, after: float) -> float:
 # first run had already modified, confounding the comparison). The runner
 # snapshots the dir before each attempt and restores it afterwards — the
 # task file's manual git-checkout instructions are thereby mechanised.
-_BEHAVIOR_WS_REL = Path("tests") / "fixtures" / "behavior_workspace"
+_BEHAVIOR_WS_RELS: tuple[Path, ...] = (
+    Path("tests") / "fixtures" / "behavior_workspace",
+    Path("tests") / "fixtures" / "user_project_workspace",
+)
+_BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
 
 class _PristineWorkspace:
-    """Snapshot/restore guard for the behavior fixture dir (no-op when the
-    dir does not exist under the current working directory)."""
+    """Snapshot/restore guard for the fixture workspaces (a dir that does not
+    exist under the current working directory is skipped)."""
 
     def __init__(self, root: Path | None = None) -> None:
         import os as _os
-        self._ws = (root or Path(_os.getcwd())) / _BEHAVIOR_WS_REL
-        self._snap: Path | None = None
+        base = root or Path(_os.getcwd())
+        self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
+        self._pairs: list[tuple[Path, Path]] = []
+        self._snap_root: Path | None = None
 
     def __enter__(self) -> "_PristineWorkspace":
-        import shutil, tempfile
+        import shutil
+        import tempfile
         try:
-            if self._ws.is_dir():
-                snap_root = Path(tempfile.mkdtemp(prefix="bench-ws-"))
-                self._snap = snap_root / "ws"
-                shutil.copytree(self._ws, self._snap)
+            live = [ws for ws in self._bases if ws.is_dir()]
+            if live:
+                self._snap_root = Path(tempfile.mkdtemp(prefix="bench-ws-"))
+                for i, ws in enumerate(live):
+                    snap = self._snap_root / f"ws{i}"
+                    shutil.copytree(ws, snap)
+                    self._pairs.append((ws, snap))
         except Exception:
-            self._snap = None
+            self._pairs = []
         return self
 
     def __exit__(self, *exc) -> None:
         import shutil
-        if self._snap is None:
-            return
         try:
-            shutil.rmtree(self._ws, ignore_errors=True)
-            shutil.copytree(self._snap, self._ws)
+            for ws, snap in self._pairs:
+                shutil.rmtree(ws, ignore_errors=True)
+                shutil.copytree(snap, ws)
         finally:
-            shutil.rmtree(self._snap.parent, ignore_errors=True)
+            if self._snap_root is not None:
+                shutil.rmtree(self._snap_root, ignore_errors=True)
 
 
 def _run_task_once(

@@ -242,12 +242,25 @@ _NEGATION_RE = re.compile(
 _NEGATION_WINDOW = 160
 
 
+def _is_word_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
 def _match_is_negated(haystack: str, start: int, end: int) -> bool:
     """True when a forbidden-pattern match sits in an explicit negation
     context within the surrounding window. The matched span itself is
     excluded so a pattern can never self-negate."""
     lo = max(0, start - _NEGATION_WINDOW)
     hi = min(len(haystack), end + _NEGATION_WINDOW)
+    # A window edge inside a word invents a word boundary: 'notes' cut to
+    # 'not' matches the negation marker and silently waives a real
+    # violation. Drop the partial words at both edges.
+    while lo < start and lo > 0 and _is_word_char(
+            haystack[lo - 1]) and _is_word_char(haystack[lo]):
+        lo += 1
+    while hi > end and hi < len(haystack) and _is_word_char(
+            haystack[hi]) and _is_word_char(haystack[hi - 1]):
+        hi -= 1
     ctx = haystack[lo:start] + " " + haystack[end:hi]
     return bool(_NEGATION_RE.search(ctx))
 

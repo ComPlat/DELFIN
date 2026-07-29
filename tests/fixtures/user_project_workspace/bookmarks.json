@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "title": "Reading list",
+    "url": "https://example.org/reading",
+    "tags": ["home", "reading"]
+  },
+  {
+    "id": 2,
+    "title": "Bike repair guide",
+    "url": "https://example.org/bike",
+    "tags": ["home", "repair"]
+  },
+  {
+    "id": 3,
+    "title": "Timetable",
+    "url": "https://example.org/timetable",
+    "tags": ["travel"]
+  }
+]

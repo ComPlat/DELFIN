@@ -1,0 +1,2 @@
+# The note keeper is standard library only — no third-party dependencies.
+# Kept as an empty manifest so the workspace looks like an ordinary project.
