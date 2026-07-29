@@ -51,6 +51,13 @@ def test_smiles_to_xyz_isomers_uses_weighted_ob_search_when_non_deterministic(mo
 def test_dashboard_isomer_wrapper_passes_deterministic_flag(monkeypatch):
     recorded = []
 
+    # Pin the in-process path: with the subprocess UI isolation active
+    # (default unless DELFIN_UI_INLINE=1) the monkeypatch below cannot
+    # intercept the converter and the REAL pipeline runs — the test's
+    # subject is the wrapper's flag forwarding, which is identical in
+    # both paths.
+    monkeypatch.setattr(input_processing, "_UI_ISOLATE_DEFAULT", False)
+
     def _fake_converter(*_args, **kwargs):
         recorded.append(kwargs.get("deterministic"))
         return [("C 0.0 0.0 0.0\n", "isomer")], None
