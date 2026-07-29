@@ -4646,6 +4646,10 @@ def create_tab(ctx):
         state["_kit_plan_has_response"] = True
         _refresh_plan_accept_btn()
         _set_wait_chip("Plan-Freigabe")
+        # The worker blocks here waiting for the click; without a
+        # checkpoint a reload during that window loses the plan and the
+        # conversation that produced it.
+        _checkpoint_session(min_interval_s=0.0)
         # Block only briefly for the click. A long freeze here is pointless: if
         # the user steps away, the agent should pause, not sit frozen for 10 min
         # and then re-submit (observed 2026-06-25: a 21-min double-hang). On
@@ -4897,6 +4901,23 @@ def create_tab(ctx):
             session_dropdown.value = active
         else:
             session_dropdown.value = ""
+
+    def _checkpoint_session(min_interval_s: float = 20.0) -> None:
+        """Persist mid-turn so a reload keeps the conversation so far.
+
+        Turn-end saving alone loses every message of an in-flight turn —
+        including a plan that is waiting for approval. Throttled and
+        best-effort: persistence must never slow down or break a turn.
+        """
+        try:
+            now = time.monotonic()
+            last = float(state.get("_last_checkpoint_ts") or 0.0)
+            if min_interval_s > 0 and (now - last) < min_interval_s:
+                return
+            state["_last_checkpoint_ts"] = now
+            _auto_save_session()
+        except Exception:
+            pass
 
     def _auto_save_session():
         """Save the current session state to disk."""
@@ -6157,6 +6178,8 @@ def create_tab(ctx):
                  "role_label": role_label, "_streaming": not finalize}
             )
         _refresh_chat_html(streaming=not finalize)
+        if finalize and content.strip():
+            _checkpoint_session()
         if finalize and content.strip() and _looks_like_plan_response(content):
             # Plan-mode "Akzeptieren"-Button: only arm when the finalized
             # response actually has plan structure. A greeting or short
@@ -12923,6 +12946,11 @@ def create_tab(ctx):
         state["_stream_saw_output"] = False
         state.pop("_watchdog_stopped", None)
         _arm_stale_watcher()
+        # Checkpoint BEFORE the turn runs. Auto-save used to happen only
+        # after a turn completed, so a reload during a long turn (or while
+        # a plan waits for approval) came back missing everything since the
+        # last completed turn — the question itself included.
+        _checkpoint_session()
         # Snapshot the engine's pre-turn cost/tokens so the worker can
         # emit a per-turn delta footer once the turn finishes.
         try:
@@ -13953,7 +13981,16 @@ def create_tab(ctx):
                     # cap of one correction keeps it from burning tokens.
                     # Skip when the engine's claim-grounding guard already
                     # spent this turn's single correction.
+                    # A plan names files it INTENDS to create — grounding
+                    # those against the workspace makes every plan a false
+                    # alarm, so intent-describing turns are exempt.
+                    _describes_intent = False
+                    try:
+                        _describes_intent = engine._turn_describes_intent()
+                    except Exception:
+                        _describes_intent = False
                     if (chunks and not engine._stop_requested
+                            and not _describes_intent
                             and not getattr(engine, "_claim_guard_corrected",
                                             False)):
                         try:

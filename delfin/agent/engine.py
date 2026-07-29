@@ -1604,7 +1604,8 @@ class AgentEngine:
         # block, which structurally rules out a loop. Best-effort: a guard
         # failure must never break the turn.
         if (full_response and not self._stop_requested
-                and not self._claim_guard_active):
+                and not self._claim_guard_active
+                and not self._turn_describes_intent()):
             try:
                 full_response = self._enforce_claim_grounding(
                     full_response,
@@ -1621,6 +1622,25 @@ class AgentEngine:
                 pass
 
         return full_response + _guard_note
+
+    def _turn_describes_intent(self) -> bool:
+        """True when this turn proposes future work rather than asserting
+        present state.
+
+        A plan names the files it INTENDS to create; they do not exist yet
+        by definition. Grounding those names against the workspace turns
+        every plan into a false alarm and burns a correction turn on it
+        (observed in the field). Plan mode, and any turn that submitted a
+        plan, are therefore exempt — the guard's subject is claims about
+        what IS, not proposals about what will be.
+        """
+        try:
+            if str(getattr(self.kit_permissions, "mode", "") or "") == "plan":
+                return True
+            return any("exit_plan_mode" in str(t or "")
+                       for t in (getattr(self, "_last_turn_tools", None) or ()))
+        except Exception:
+            return False
 
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,
