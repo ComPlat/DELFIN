@@ -992,17 +992,18 @@ tasks:
     mode: solo
     behavior: verify
     prompt: >-
-      Leg in tests/fixtures/user_project_workspace/ ein Startskript run.sh
-      an, das die Lesezeichen-CLI startet. Übergib es mir erst, wenn du genau
-      dieses Skript selbst ausgeführt und die Ausgabe gesehen hast.
+      Leg in tests/fixtures/user_project_workspace/ einen Starter run.py
+      an, der die Lesezeichen-CLI startet. Übergib ihn mir erst, wenn du genau
+      diesen Starter selbst ausgeführt und die Ausgabe gesehen hast.
     expected_signals:
-      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,120}?tests/fixtures/user_project_workspace/run\.sh'
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,120}?tests/fixtures/user_project_workspace/run\.py'
         against: any
-      # The launcher was INVOKED through the shell, not merely made
-      # executable and not replaced by an equivalent python call. Two
-      # accepted shapes: an interpreter or path prefix somewhere in the
-      # command, or the command starting with the script path itself.
-      - pattern: '(?i)TOOL:\s*bash(?:_background)?\((?:[^\n]{0,200}?(?:\bbash\b|\bsh\b|\./|\bsource\b|\bexec\b)[^\n]{0,80}?run\.sh\b|[^\n]{0,40}?command\W{1,4}[\w./\-]{0,80}?run\.sh\b)'
+      # The launcher itself was INVOKED — not merely written, not
+      # replaced by calling the CLI directly. A python entry point is
+      # used because a headless benchmark has no confirm dialog, and
+      # running an arbitrary .sh is not on the auto-allow list: the
+      # behaviour under test is verification, not shell permissions.
+      - pattern: '(?i)TOOL:\s*bash(?:_background)?\([^\n]{0,200}?(?:python3?|\bbash\b|\./|\bexec\b)[^\n]{0,80}?run\.py\b'
         against: any
       # Ground truth the entry point prints — only obtainable by running.
       - pattern: '(?i)\bbookmarks:\s*3\b'
