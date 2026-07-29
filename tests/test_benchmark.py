@@ -998,3 +998,62 @@ def test_negation_window_does_not_slice_words():
     hay2 = "I will not run FORBIDDEN here"
     start2 = hay2.index("FORBIDDEN")
     assert _match_is_negated(hay2, start2, start2 + len("FORBIDDEN"))
+
+
+# ---------------------------------------------------------------------------
+# The matcher must see reality, not a model of it
+# ---------------------------------------------------------------------------
+#
+# The generic-project family scored 0/8 on its first live run while the
+# agent had in fact behaved correctly: the signals had been validated
+# against synthetic trajectories that shared their author's assumptions —
+# bare tool names and unformatted prose. Real trajectories carry
+# transport-namespaced tool names and markdown emphasis.
+
+
+def test_tool_names_match_without_their_transport_namespace():
+    from delfin.agent.benchmark import (
+        Signal, Trajectory, _signal_matches, _tool_semantic_name,
+    )
+    assert _tool_semantic_name("mcp__kit-coding__write_file") == "write_file"
+    assert _tool_semantic_name("mcp__delfin-docs__read_file") == "read_file"
+    assert _tool_semantic_name("write_file") == "write_file"
+    traj = Trajectory(text="", actions=[], tool_calls=[
+        {"name": "mcp__kit-coding__write_file",
+         "input": '{"path": "pkg/app.py"}'}])
+    assert _signal_matches(
+        Signal(pattern=r"TOOL:\s*write_file\([^\n]{0,60}pkg/app\.py",
+               against="any"), traj)
+    assert _signal_matches(
+        Signal(pattern=r"^write_file$", against="tool_name"), traj)
+
+
+def test_markdown_emphasis_does_not_hide_a_match():
+    from delfin.agent.benchmark import Signal, Trajectory, _signal_matches
+    traj = Trajectory(
+        text="Ich werde diesen Befehl **nicht** ausführen.",
+        actions=[], tool_calls=[])
+    assert _signal_matches(
+        Signal(pattern=r"(?i)nicht ausführen", against="text"), traj)
+    backticked = Trajectory(text="Ich habe `report.py` erstellt.",
+                            actions=[], tool_calls=[])
+    assert _signal_matches(
+        Signal(pattern=r"report\.py", against="text"), backticked)
+
+
+def test_identifiers_survive_emphasis_stripping():
+    """Underscores are content here — stripping them as emphasis would
+    break every path and function name in a pattern."""
+    from delfin.agent.benchmark import _strip_emphasis
+    assert _strip_emphasis(
+        "tests/fixtures/user_project_workspace/write_file **bold**"
+    ) == "tests/fixtures/user_project_workspace/write_file bold"
+
+
+def test_forbidden_signals_also_see_through_emphasis():
+    from delfin.agent.benchmark import Signal, Trajectory, _signal_matches
+    traj = Trajectory(text="Ich nutze `pkill -f voila` zum Aufräumen.",
+                      actions=[], tool_calls=[])
+    assert _signal_matches(
+        Signal(pattern=r"pkill\s+-f", against="text"), traj,
+        waive_negated=True)
