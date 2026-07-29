@@ -37,12 +37,35 @@ Hard limits:
 
 Failures don't propagate: a crash inside the sub-agent returns an
 error string, never an exception.
+
+Report verification (what the delegate SAYS vs. what it DID)
+------------------------------------------------------------
+
+A sub-agent's final message reaches the parent as a tool result and is
+read as fact — the parent applies its own grounding guards to its own
+answers, but had nothing to hold a delegate to. ``verify_subagent_report``
+closes that gap: it classifies the claims in a report (test results,
+file/location references, quantities, functional and completion claims)
+and cross-checks each against the ONE record the delegate cannot
+retroactively invent — the tool calls it actually made in that run. The
+verdict rides along with the result (``attach_verification``), so the
+parent reads it before the report body.
+
+What this CANNOT catch — stated plainly, because the check is easy to
+over-trust: it compares a report against its own trace, not against
+reality. A delegate that runs the tests and then misreports the outcome,
+reads a file and describes it wrongly, edits the wrong file, or draws a
+false conclusion from real tool calls passes every rule here. A clean
+verdict means "this report is consistent with what this run did", never
+"this report is correct". Claims that matter still need the parent's own
+verification.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -707,6 +730,10 @@ class SubagentResult:
     sa_id: str = ""
     model: str = ""          # model the run actually used ("" = unknown)
     model_tier: str = ""     # "cheap" when routed to the cheap tier, else "parent"
+    # Workspace the child ran in. Not part of the payload — used as the repo
+    # root when cross-checking file citations in the report (see
+    # ``verify_subagent_report``).
+    workspace: str = ""
     # Schema-validated returns (only meaningful when run_subagent was given
     # an output_schema): the parsed+validated dict, or None with
     # schema_error explaining why validation failed after the one
@@ -736,6 +763,747 @@ class SubagentResult:
             payload["structured_output"] = self.structured_output
         if self.schema_error:
             payload["schema_error"] = self.schema_error
+        # Cross-check the report against this run's own tool trace BEFORE the
+        # parent ever reads it. The full trace (with tool outputs) is passed
+        # explicitly — the payload copy above carries names/inputs only.
+        # Defined below; never raises, and leaves ``result`` untouched.
+        return attach_verification(
+            payload,
+            tool_calls=self.tool_calls,
+            repo_root=self.workspace or None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Delegate-report verification — claims vs. the delegate's own trace
+# ---------------------------------------------------------------------------
+#
+# Everything below is pure: dict in, dict out, no I/O, no model call, and no
+# exception ever leaves these functions. The claim scanners for code
+# locations, path citations, physical quantities and functional assertions
+# live in ``verify_guard`` (the parent already runs them over its OWN
+# answers) and are REUSED here — only the two claim classes the parent never
+# needed for itself are new: test-result claims and completion claims.
+#
+# Evidence is whatever the delegate's own run recorded: the tools it called,
+# the inputs it passed them, the commands it executed, and — when available —
+# what those calls returned. See the module docstring for the limits.
+
+_VERIFY_MAX_TEXT = 20_000        # report chars scanned (bounded work)
+_VERIFY_MAX_PER_KIND = 4         # flags taken from any single scanner
+_VERIFY_MAX_UNSUPPORTED = 8
+_VERIFY_MAX_SUPPORTED = 6
+_VERIFY_MAX_NOTICE_ITEMS = 4     # unsupported claims named in the notice line
+_VERIFY_CLAIM_CHARS = 120
+_VERIFY_MAX_OUTPUT_CHARS = 20_000
+_VERIFY_MAX_CALLS = 200
+
+_VERIFY_LIMITS_NOTE = (
+    "consistency check only: it compares the report against this run's own "
+    "tool trace, never against reality — a false conclusion drawn from real "
+    "tool calls is not detectable here"
+)
+
+# Tools whose call means the delegate MUTATED something.
+_WRITE_TOOL_NAMES = frozenset({
+    "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+    "write", "edit", "patch", "create_file", "undo_changes",
+})
+# Tools whose call means the delegate RAN tests (name-based; command-based
+# detection reuses verify_guard's test-command pattern).
+_TEST_TOOL_NAMES = frozenset({"run_tests", "pytest"})
+
+# Tool-input keys that carry a file target.
+_PATH_INPUT_KEYS = (
+    "path", "file_path", "filepath", "file", "paths", "files",
+    "notebook_path", "target", "directory", "dir",
+)
+
+# Loose path-ish token used to harvest file names out of command strings and
+# git --stat output. Deliberately generous: over-collecting only makes the
+# cross-check more lenient (fewer false alarms), never stricter.
+_PATH_TOKEN_RE = re.compile(
+    r"(?:[\w\-.]+/)+[\w\-.]+|\b[\w\-]+\.[A-Za-z][A-Za-z0-9]{0,5}\b")
+
+# Shell shapes that write something (heredocs, redirects, in-place edits).
+_BASH_WRITE_RE = re.compile(
+    r"(?:>>?\s*[\w./\-]|\btee\b|\bsed\s+-i\b|\bpatch\s+-p\d|\bgit\s+apply\b|"
+    r"\bgit\s+(?:commit|checkout|restore|revert)\b|\bmv\b|\bcp\b|\btouch\b|"
+    r"\bmkdir\b|\brm\b|\bcat\s+>|\btruncate\b)")
+
+# --- new claim classes ------------------------------------------------------
+#
+# Test-result claims: a report asserting the suite is fine. Every pattern
+# needs an explicit success predicate, so "run the tests" or "2 failed" never
+# match. Bilingual because reports are written in the user's language.
+_TEST_CLAIM_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("suite", re.compile(
+        r"(?i)\b(?:all\s+|alle\s+)?(?:\d+\s+)?(?:unit[\s-]?)?tests?\b"
+        r"[^\n]{0,32}?\b(?:pass(?:ed|es|ing)?|green|gr(?:ü|ue)n|"
+        r"erfolgreich|bestanden|durchgelaufen)\b")),
+    ("suite", re.compile(
+        r"(?i)\b(?:test[\s-]?suite|testsuite|test\s+run)\b[^\n]{0,32}?"
+        r"\b(?:pass(?:ed|es|ing)?|green|gr(?:ü|ue)n|clean|erfolgreich|"
+        r"sauber)\b")),
+    ("count", re.compile(r"(?i)\b(\d{1,5})\s+(?:tests?\s+)?"
+                         r"(?:passed|bestanden)\b")),
+    ("nofail", re.compile(
+        r"(?i)\b(?:no|zero)\s+(?:test\s+)?(?:failures|failing\s+tests)\b|"
+        r"\bkeine\s+(?:test)?(?:fehlschl(?:ä|ae)ge|fehler)\b")),
+    ("runner", re.compile(
+        r"(?i)\bpytest\b[^\n]{0,32}?\b(?:pass(?:ed|es|ing)?|green|"
+        r"gr(?:ü|ue)n|clean|erfolgreich|durch)\b")),
+)
+
+# Completion claims, by family. The families differ in what evidence would
+# back them, so they are judged by different rules (see _judge_completion).
+_COMPLETION_FAMILIES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("mutation", re.compile(
+        r"(?i)\b(?:implemented|fixed|patched|refactored|migrated|"
+        r"wired(?:\s+up)?|added|created|removed|deleted|renamed|updated|"
+        r"rewrote|implementiert|umgesetzt|behoben|gefixt|"
+        r"hinzugef(?:ü|ue)gt|entfernt|umbenannt|aktualisiert|eingebaut)\b")),
+    ("verification", re.compile(
+        r"(?i)\b(?:verified|validated|confirmed|double[\s-]?checked|"
+        r"cross[\s-]?checked|bit[\s-]?identical|identical|unchanged|"
+        r"verifiziert|validiert|best(?:ä|ae)tigt|(?:ü|ue)berpr(?:ü|ue)ft|"
+        r"gepr(?:ü|ue)ft|unver(?:ä|ae)ndert|identisch)\b|"
+        r"\bno\s+(?:functional\s+)?(?:changes?|differences?)\b|"
+        r"\bkeine\s+(?:funktionalen\s+)?"
+        r"(?:(?:ä|ae)nderungen|unterschiede)\b")),
+    ("generic", re.compile(
+        r"(?i)\b(?:done|completed?|finished|all\s+set|erledigt|fertig|"
+        r"abgeschlossen)\b")),
+)
+
+# First-person marker: a mutation verb only counts as the delegate's own
+# completion claim when the delegate says IT did the thing (or writes it as a
+# bare report bullet). "an enum was added to the parameter" is a FINDING
+# about the code, not a claim that this run changed anything.
+_FIRST_PERSON_RE = re.compile(r"(?i)\b(?:i|we|ich|wir)\b")
+_BULLET_PREFIX = "-*•>#0123456789.)( \t"
+
+
+@dataclass(frozen=True)
+class ReportClaim:
+    """One claim found in a delegate's report."""
+
+    kind: str            # "test_result" | "completion"
+    text: str            # normalized claim excerpt
+    subject: str = ""    # count for test claims, "" otherwise
+    family: str = ""     # completion family: mutation|verification|generic
+
+
+def _vg():
+    """The shared claim scanners, or None when unavailable.
+
+    Import failures degrade the check to the two local claim classes rather
+    than breaking a delegation.
+    """
+    try:
+        from . import verify_guard as _vgmod
+        return _vgmod
+    except Exception:
+        return None
+
+
+def _scrubbed(text: str) -> str:
+    """Blank non-claim regions (code fences, quotes) keeping offsets."""
+    vg = _vg()
+    if vg is not None:
+        try:
+            return vg._scrub_keep_offsets(text)
+        except Exception:
+            pass
+    return text
+
+
+def _hedged(scrubbed: str, start: int, end: int) -> bool:
+    """True when the claim's line discloses uncertainty (never a target)."""
+    vg = _vg()
+    if vg is None:
+        return False
+    try:
+        return bool(vg._is_hedged(scrubbed, start, end))
+    except Exception:
+        return False
+
+
+def _sentence_of(scrubbed: str, start: int, end: int) -> str:
+    """The sentence containing a match (falls back to its line)."""
+    vg = _vg()
+    if vg is not None:
+        try:
+            lo, hi = vg._sentence_span(scrubbed, start, end)
+            return scrubbed[lo:hi]
+        except Exception:
+            pass
+    lo = scrubbed.rfind("\n", 0, start) + 1
+    hi = scrubbed.find("\n", end)
+    return scrubbed[lo:hi if hi != -1 else len(scrubbed)]
+
+
+def _line_of(scrubbed: str, start: int) -> tuple[str, int]:
+    """``(line, offset_of_start_within_line)``."""
+    lo = scrubbed.rfind("\n", 0, start) + 1
+    hi = scrubbed.find("\n", start)
+    return scrubbed[lo:hi if hi != -1 else len(scrubbed)], start - lo
+
+
+def _is_agentive(line: str, verb_offset: int) -> bool:
+    """True when the delegate presents the verb as its OWN action."""
+    if _FIRST_PERSON_RE.search(line):
+        return True
+    return line[:verb_offset].strip(_BULLET_PREFIX).strip() == ""
+
+
+def _norm_tool_name(name) -> str:
+    """Bare tool name (``mcp__ns__bash`` -> ``bash``), lower-cased."""
+    try:
+        return str(name or "").strip().split("__")[-1].strip().lower()
+    except Exception:
+        return ""
+
+
+def _tool_args(raw) -> dict:
+    """Decode a tool input (dict or JSON string) to a dict; {} on anything else."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else {}
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return {}
+
+
+def _paths_from_call(args: dict, raw) -> list[str]:
+    """File paths a tool call touched: explicit path keys plus path-shaped
+    tokens in the raw input (a bash command names its files too)."""
+    out: list[str] = []
+    for key in _PATH_INPUT_KEYS:
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            out.append(val.strip())
+        elif isinstance(val, (list, tuple)):
+            out.extend(str(v).strip() for v in val
+                       if isinstance(v, str) and v.strip())
+    edits = args.get("edits")
+    if isinstance(edits, (list, tuple)):
+        for e in edits:
+            if not isinstance(e, dict):
+                continue
+            for key in ("path", "file_path", "file"):
+                val = e.get(key)
+                if isinstance(val, str) and val.strip():
+                    out.append(val.strip())
+    text = raw if isinstance(raw, str) else ""
+    if not text and args:
+        text = " ".join(str(v) for v in args.values() if isinstance(v, str))
+    for m in _PATH_TOKEN_RE.finditer(str(text)[:2000]):
+        tok = m.group(0).strip(".,;:()[]\"'")
+        if len(tok) > 3:
+            out.append(tok)
+    return out[:60]
+
+
+def collect_report_evidence(payload, *, tool_calls=None) -> dict:
+    """Reduce a sub-agent's recorded trace to the facts a report can be
+    checked against.
+
+    Evidence source order: an explicitly passed ``tool_calls`` list (the full
+    in-process trace, including what each call returned), else the payload's
+    own ``tool_calls`` entry. ``trace_available`` is False only when NO trace
+    was recorded at all — missing bookkeeping is never treated as evidence of
+    fabrication, so nothing is flagged in that case.
+
+    Returns ``{"trace_available", "calls", "tools", "files", "commands",
+    "test_runs", "writes", "test_output"}``. Never raises.
+    """
+    ev: dict = {
+        "trace_available": False,
+        "calls": 0,
+        "tools": [],
+        "files": [],
+        "commands": [],
+        "test_runs": [],
+        "writes": [],
+        "test_output": "",
+    }
+    try:
+        calls = tool_calls
+        if calls is not None:
+            ev["trace_available"] = True
+        elif isinstance(payload, dict) and "tool_calls" in payload:
+            ev["trace_available"] = True
+            calls = payload.get("tool_calls")
+        if not isinstance(calls, (list, tuple)):
+            calls = []
+        vg = _vg()
+        test_cmd_re = getattr(vg, "_TEST_CMD_RE", None) if vg else None
+        outs: list[str] = []
+        for call in list(calls)[:_VERIFY_MAX_CALLS]:
+            if not isinstance(call, dict):
+                continue
+            ev["calls"] += 1
+            name = _norm_tool_name(call.get("name"))
+            if name:
+                ev["tools"].append(name)
+            raw_in = call.get("input")
+            args = _tool_args(raw_in)
+            for p in _paths_from_call(args, raw_in):
+                if p not in ev["files"]:
+                    ev["files"].append(p)
+            cmd = ""
+            if vg is not None:
+                try:
+                    cmd = vg.extract_exec_command(call.get("name"), raw_in)
+                except Exception:
+                    cmd = ""
+            if cmd:
+                ev["commands"].append(cmd)
+            ran_tests = name in _TEST_TOOL_NAMES or bool(
+                cmd and test_cmd_re is not None and test_cmd_re.search(cmd))
+            if ran_tests:
+                ev["test_runs"].append(cmd or name)
+                out = call.get("output")
+                if out is not None:
+                    outs.append(out if isinstance(out, str) else str(out))
+            if name in _WRITE_TOOL_NAMES or (cmd and _BASH_WRITE_RE.search(cmd)):
+                ev["writes"].append(cmd or name)
+        # An isolated worktree reports WHAT it changed; those paths are write
+        # evidence even though the edits happened inside the child.
+        if isinstance(payload, dict):
+            wt = payload.get("worktree")
+            if isinstance(wt, dict):
+                stat = str(wt.get("diff_summary") or "")[:4000]
+                for m in _PATH_TOKEN_RE.finditer(stat):
+                    tok = m.group(0).strip(".,;:()[]\"'|")
+                    if len(tok) > 3 and tok not in ev["files"]:
+                        ev["files"].append(tok)
+                        ev["writes"].append(tok)
+        ev["test_output"] = "\n".join(outs)[:_VERIFY_MAX_OUTPUT_CHARS]
+    except Exception:
+        return ev
+    return ev
+
+
+def scan_report_test_claims(
+    text: str, *, max_flags: int = _VERIFY_MAX_PER_KIND,
+) -> list[ReportClaim]:
+    """Find test-result claims ("all tests pass", "alle Tests grün", "60
+    passed"). Hedged claims are skipped. Deterministic, de-duplicated,
+    capped. Never raises."""
+    claims: list[ReportClaim] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        scrubbed = _scrubbed(text[:_VERIFY_MAX_TEXT])
+        found: list[tuple[int, str, str]] = []
+        for shape, rx in _TEST_CLAIM_PATTERNS:
+            for m in rx.finditer(scrubbed):
+                if _hedged(scrubbed, m.start(), m.end()):
+                    continue
+                subject = ""
+                if shape == "count":
+                    try:
+                        subject = str(m.group(1) or "")
+                    except IndexError:
+                        subject = ""
+                found.append((m.start(), " ".join(m.group(0).split()), subject))
+        found.sort(key=lambda t: t[0])
+        seen: set[str] = set()
+        for _pos, claim, subject in found:
+            key = claim.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            claims.append(ReportClaim(kind="test_result",
+                                      text=claim[:_VERIFY_CLAIM_CHARS],
+                                      subject=subject))
+            if len(claims) >= max_flags:
+                break
+    except Exception:
+        return claims
+    return claims
+
+
+def scan_report_completion_claims(
+    text: str, *, max_flags: int = _VERIFY_MAX_PER_KIND,
+) -> list[ReportClaim]:
+    """Find completion claims and tag their family.
+
+    ``mutation``     — the delegate says it changed something ("implemented",
+                       "fixed"); only counted in a first-person or bare-bullet
+                       frame, so a finding about existing code is not mistaken
+                       for a claim of authorship.
+    ``verification`` — the delegate says it checked something or that
+                       something is unchanged/identical.
+    ``generic``      — "done", "erledigt", "finished".
+
+    Hedged, negated, conditional and user-attributed sentences are skipped
+    (reusing the shared claim filters). Never raises.
+    """
+    claims: list[ReportClaim] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        vg = _vg()
+        scrubbed = _scrubbed(text[:_VERIFY_MAX_TEXT])
+        found: list[tuple[int, str, str]] = []
+        for family, rx in _COMPLETION_FAMILIES:
+            for m in rx.finditer(scrubbed):
+                if _hedged(scrubbed, m.start(), m.end()):
+                    continue
+                sentence = _sentence_of(scrubbed, m.start(), m.end())
+                if not sentence.strip():
+                    continue
+                if vg is not None:
+                    try:
+                        if (vg._FUNC_DISCLOSURE_RE.search(sentence)
+                                or vg._FUNC_NEGATION_RE.search(sentence)
+                                or vg._FUNC_CONDITIONAL_RE.search(sentence)
+                                or vg._FUNC_USER_SOURCE_RE.search(sentence)):
+                            continue
+                    except Exception:
+                        pass
+                if family == "mutation":
+                    line, off = _line_of(scrubbed, m.start())
+                    if not _is_agentive(line, off):
+                        continue
+                found.append((m.start(),
+                              " ".join(sentence.split())[:_VERIFY_CLAIM_CHARS],
+                              family))
+        found.sort(key=lambda t: t[0])
+        seen: set[str] = set()
+        for _pos, claim, family in found:
+            key = f"{family}:{claim.lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            claims.append(ReportClaim(kind="completion", text=claim,
+                                      family=family))
+            if len(claims) >= max_flags:
+                break
+    except Exception:
+        return claims
+    return claims
+
+
+def _report_text(payload) -> str:
+    """The delegate's prose, wherever the payload carries it.
+
+    ``result`` is the field the parent reads from a finished ``subagent``
+    call; ``final_text`` is the equivalent in a collected background result.
+    """
+    if isinstance(payload, str):
+        return payload
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("result", "final_text"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def _inspected(ev: dict) -> bool:
+    """True when the run looked at anything at all (read/grep/search/exec)."""
+    if ev.get("files") or ev.get("commands"):
+        return True
+    vg = _vg()
+    if vg is None:
+        return bool(ev.get("tools"))
+    try:
+        return bool(vg._used_evidence_tool(frozenset(ev.get("tools") or ())))
+    except Exception:
+        return bool(ev.get("tools"))
+
+
+def _verification_notice(verdict: dict) -> str:
+    """One explicit line for the parent, naming what to re-check.
+
+    Kept short and put at the FRONT of the tool result: the parent is a
+    language model, so the verdict has to be in the text it reads, not only
+    in a field it may skip.
+    """
+    status = verdict.get("status", "")
+    prefix = ""
+    if verdict.get("run_incomplete"):
+        prefix = ("[subagent-verify] this run did not finish cleanly "
+                  f"({verdict.get('run_incomplete')}) — the report describes "
+                  "an incomplete run. ")
+    if status == "no_report":
+        return prefix.strip()
+    if status == "no_trace":
+        return (prefix + "[subagent-verify] no tool trace was recorded for "
+                "this sub-agent, so none of its claims could be cross-checked "
+                "— verify anything you rely on.")
+    unsupported = verdict.get("unsupported") or []
+    checked = int(verdict.get("claims_checked") or 0)
+    if not unsupported:
+        if not checked:
+            return prefix.strip()
+        return (prefix + f"[subagent-verify] {checked} claim(s) cross-checked "
+                f"against this sub-agent's own tool trace "
+                f"({verdict.get('evidence', {}).get('tool_calls', 0)} tool "
+                f"call(s)); all are backed by its own evidence. Limit: "
+                f"{_VERIFY_LIMITS_NOTE}.")
+    # Claims that fail for the SAME reason are listed together — the parent
+    # needs the claims named and one instruction per reason, not the same
+    # sentence repeated.
+    groups: list[list] = []
+    for u in unsupported:
+        why = str(u.get("why", ""))
+        recheck = str(u.get("recheck", ""))
+        for g in groups:
+            if g[0] == why and g[1] == recheck:
+                g[2].append(str(u.get("claim", "")))
+                break
+        else:
+            groups.append([why, recheck, [str(u.get("claim", ""))]])
+    items = []
+    shown = 0
+    for i, (why, recheck, claims) in enumerate(
+            groups[:_VERIFY_MAX_NOTICE_ITEMS], start=1):
+        named = claims[:_VERIFY_MAX_NOTICE_ITEMS]
+        shown += len(named)
+        quoted = ", ".join(f'"{c}"' for c in named)
+        if len(claims) > len(named):
+            quoted += f" (+{len(claims) - len(named)} more)"
+        items.append(f"({i}) {quoted} — {why}; re-check: {recheck}")
+    more = ""
+    if shown < len(unsupported):
+        more = (f" (+{len(unsupported) - shown} further unsupported claim(s) "
+                "in the 'verification' field)")
+    return (prefix + f"[subagent-verify] {len(unsupported)} of {checked} "
+            "claim(s) in this report are NOT backed by this sub-agent's own "
+            "tool trace — do not pass them on unverified: "
+            + " ".join(items) + more + ".")
+
+
+def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
+    """Cross-check a delegate's report against the delegate's own evidence.
+
+    ``payload`` is a sub-agent result payload (or the bare report text).
+    ``tool_calls`` overrides the payload's trace with the full in-process one
+    (tool outputs included). ``repo_root`` lets path citations be checked for
+    existence as well as for having been opened.
+
+    Claim classes and the rule each is judged by:
+
+      test_result  — no test-running tool call in the trace -> unsupported;
+                     a claimed count absent from the recorded test output ->
+                     unsupported.
+      file_reference / location / quantity / functional — delegated to the
+                     shared scanners in ``verify_guard``, evaluated against
+                     the files THIS sub-agent opened and the commands it ran.
+      completion   — zero tool calls -> unsupported; a mutation claim with no
+                     write in the trace -> unsupported; a verification claim
+                     with nothing read, grepped or executed -> unsupported.
+
+    Returns a compact, JSON-serializable verdict::
+
+        {"status", "claims_checked", "supported", "unsupported",
+         "evidence", "limits", "notice", "run_incomplete"?}
+
+    Never raises: any internal failure degrades to
+    ``{"status": "unavailable", ...}`` — the check must never cost the parent
+    a delegate's work.
+    """
+    verdict: dict = {
+        "status": "unavailable",
+        "claims_checked": 0,
+        "supported": [],
+        "unsupported": [],
+        "evidence": {},
+        "limits": _VERIFY_LIMITS_NOTE,
+        "notice": "",
+    }
+    try:
+        text = _report_text(payload)
+        if isinstance(payload, dict):
+            err = str(payload.get("error") or "").strip()
+            if err:
+                verdict["run_incomplete"] = err[:120]
+            elif payload.get("truncated"):
+                verdict["run_incomplete"] = "run was truncated (budget)"
+        ev = collect_report_evidence(payload, tool_calls=tool_calls)
+        verdict["evidence"] = {
+            "tool_calls": ev["calls"],
+            "tools": sorted(set(ev["tools"]))[:12],
+            "files_touched": ev["files"][:8],
+            "test_runs": len(ev["test_runs"]),
+            "writes": len(ev["writes"]),
+        }
+        if not text.strip():
+            verdict["status"] = "no_report"
+            verdict["notice"] = _verification_notice(verdict)
+            return verdict
+        if not ev["trace_available"]:
+            verdict["status"] = "no_trace"
+            verdict["notice"] = _verification_notice(verdict)
+            return verdict
+
+        verdict["status"] = "checked"
+        supported: list[dict] = []
+        unsupported: list[dict] = []
+
+        def _add(ok: bool, kind: str, claim: str,
+                 why: str = "", recheck: str = "") -> None:
+            entry = {"kind": kind, "claim": str(claim)[:_VERIFY_CLAIM_CHARS]}
+            if ok:
+                if len(supported) < _VERIFY_MAX_SUPPORTED:
+                    supported.append(entry)
+                return
+            entry["why"] = why
+            entry["recheck"] = recheck
+            if len(unsupported) < _VERIFY_MAX_UNSUPPORTED:
+                unsupported.append(entry)
+
+        # --- test-result claims -----------------------------------------
+        for claim in scan_report_test_claims(text):
+            if not ev["test_runs"]:
+                _add(False, "test_result", claim.text,
+                     "no test-running tool call in this sub-agent's trace",
+                     "run the tests yourself before relying on this")
+                continue
+            if (claim.subject and ev["test_output"]
+                    and not re.search(rf"\b{re.escape(claim.subject)}\b",
+                                      ev["test_output"])):
+                _add(False, "test_result", claim.text,
+                     "the test output recorded in this run does not contain "
+                     f"the number {claim.subject}",
+                     "read the actual test output yourself")
+                continue
+            _add(True, "test_result", claim.text)
+
+        # --- completion claims ------------------------------------------
+        for claim in scan_report_completion_claims(text):
+            if ev["calls"] == 0:
+                _add(False, "completion", claim.text,
+                     "this sub-agent made no tool calls at all, so nothing in "
+                     "the run backs this",
+                     "treat the report as unverified and inspect the "
+                     "workspace yourself")
+            elif claim.family == "mutation" and not ev["writes"]:
+                _add(False, "completion", claim.text,
+                     "no file-writing tool call in this sub-agent's trace",
+                     "diff the files before accepting the change")
+            elif claim.family == "verification" and not _inspected(ev):
+                _add(False, "completion", claim.text,
+                     "nothing was read, grepped or executed in this "
+                     "sub-agent's trace",
+                     "repeat the comparison yourself")
+            else:
+                _add(True, "completion", claim.text)
+
+        # --- shared scanners (verify_guard) ------------------------------
+        vg = _vg()
+        observed = frozenset(str(p) for p in ev["files"])
+        flagged_paths: set[str] = set()
+        if vg is not None:
+            try:
+                for f in vg.scan_for_ungrounded_code_claims(
+                        text, repo_root=repo_root, observed_files=observed,
+                        max_flags=_VERIFY_MAX_PER_KIND):
+                    ref = f"{f.path}:{f.line}" if f.line else f.path
+                    flagged_paths.add(f.path.lower())
+                    why = "this sub-agent never read or wrote that file"
+                    if f.kind == "nonexistent":
+                        why += " and it does not resolve as a file"
+                    _add(False, "file_reference", ref, why,
+                         f"open {f.path} yourself")
+            except Exception:
+                pass
+            try:
+                seen_ok: set[str] = set()
+                for path, _line in vg._iter_path_citations(text):
+                    key = path.lower()
+                    if key in seen_ok or key in flagged_paths:
+                        continue
+                    seen_ok.add(key)
+                    if vg._is_observed(path, observed):
+                        _add(True, "file_reference", path)
+            except Exception:
+                pass
+            try:
+                for f in vg.scan_for_ungrounded_location_claims(
+                        text, observed_files=observed, ledger_available=True,
+                        max_flags=_VERIFY_MAX_PER_KIND):
+                    if f.path and f.path.lower() in flagged_paths:
+                        continue    # already reported as a file reference
+                    _add(False, "location", f.claim,
+                         "no read or grep of that location in this "
+                         "sub-agent's trace",
+                         "open the cited location yourself")
+            except Exception:
+                pass
+            try:
+                for f in vg.scan_for_unsourced_quantities(
+                        text, observed_files=observed,
+                        evidence_tools_used=frozenset(ev["tools"]),
+                        max_flags=_VERIFY_MAX_PER_KIND):
+                    _add(False, "quantity", f.quantity,
+                         "no calculation output or lookup in this "
+                         "sub-agent's trace",
+                         "check where the number came from")
+            except Exception:
+                pass
+            try:
+                for f in vg.scan_for_unexercised_functional_claims(
+                        text, exec_commands=list(ev["commands"]),
+                        exec_ledger_available=True,
+                        tools_used=frozenset(ev["tools"]),
+                        max_flags=_VERIFY_MAX_PER_KIND):
+                    why = ("this sub-agent never executed "
+                           + (f"'{f.subject}'" if f.subject else "anything"))
+                    if f.kind == "interactive":
+                        why = ("interactive/browser behaviour was never "
+                               "exercised in this sub-agent's run")
+                    _add(False, "functional", f.claim, why,
+                         "run it yourself before relying on this")
+            except Exception:
+                pass
+
+        verdict["supported"] = supported
+        verdict["unsupported"] = unsupported
+        verdict["claims_checked"] = len(supported) + len(unsupported)
+        verdict["notice"] = _verification_notice(verdict)
+        return verdict
+    except Exception:
+        # Degraded but well-formed: the parent still gets its delegate's work.
+        verdict["notice"] = ""
+        return verdict
+
+
+def attach_verification(payload, *, tool_calls=None, repo_root=None):
+    """Return the payload with the verdict attached — text never touched.
+
+    The notice is placed FIRST so it heads the JSON the parent reads; the
+    delegate's own fields (``result`` above all) are copied through
+    byte-for-byte, and the machine-readable verdict lands under
+    ``verification``. Idempotent: a payload that already carries a verdict is
+    returned unchanged, so a second annotation pass cannot double-report.
+    Non-dict input is returned as-is. Never raises.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if "verification" in payload:
+        return payload
+    try:
+        verdict = verify_subagent_report(
+            payload, tool_calls=tool_calls, repo_root=repo_root)
+        notice = str(verdict.get("notice") or "")
+        compact = {k: v for k, v in verdict.items() if k != "notice"}
+        out: dict = {}
+        if notice:
+            out["verification_notice"] = notice
+        out.update(payload)
+        out["verification"] = compact
+        return out
+    except Exception:
         return payload
 
 
@@ -1299,6 +2067,7 @@ def run_subagent(
         sa_id=_sa_id,
         model=sub_model,
         model_tier=model_tier,
+        workspace=str(getattr(sub_perms, "workspace", "") or ""),
         structured_output=structured_output,
         schema_error=schema_error,
     )
@@ -1646,11 +2415,15 @@ def get_subagent_result(sa_id: str) -> dict:
         if m.get("role") == "assistant" and m.get("content"):
             final = m.get("content", "")
             break
-    return {"sa_id": sa_id, "status": "finished",
-            "subagent_type": sess.get("subagent_type", ""),
-            "description": sess.get("description", ""),
-            "final_text": final,
-            "error": sess.get("error", "")}
+    out = {"sa_id": sa_id, "status": "finished",
+           "subagent_type": sess.get("subagent_type", ""),
+           "description": sess.get("description", ""),
+           "final_text": final,
+           "error": sess.get("error", "")}
+    # A collected background report gets the same cross-check as a foreground
+    # one — the stored session keeps the tool calls WITH their outputs.
+    return attach_verification(
+        out, tool_calls=(sess.get("interactions") or []))
 
 
 __all__ = [
@@ -1660,6 +2433,12 @@ __all__ = [
     "subagent_type_names",
     "reload_subagent_presets",
     "SubagentResult",
+    "ReportClaim",
+    "collect_report_evidence",
+    "scan_report_test_claims",
+    "scan_report_completion_claims",
+    "verify_subagent_report",
+    "attach_verification",
     "run_subagent",
     "run_orchestration",
     "validate_json_schema",
