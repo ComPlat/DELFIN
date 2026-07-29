@@ -289,9 +289,12 @@ tasks:
     mode: dashboard
     prompt: >-
       merk dir: ich nutze immer def2-svp als basis
+    # The objective is "a memory containing def2-svp was saved" — both the
+    # /remember slash ACTION and a direct remember tool call achieve it,
+    # so the signal checks the whole trajectory, not one mechanism.
     expected_signals:
-      - pattern: '(?i)(?:ACTION:\s*)?/remember\s+.*def2.?svp'
-        against: action
+      - pattern: '(?i)(?:/remember\s+.*def2.?svp|\bremember\b[\s\S]{0,300}?def2.?svp)'
+        against: any
     max_duration_s: 20
     max_cost_usd: 0.04
     max_tool_calls: 2
