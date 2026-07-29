@@ -102,3 +102,20 @@ def pytest_collection_modifyitems(config, items):
         fname = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if fname in _SLOW_TEST_FILES:
             item.add_marker(pytest.mark.slow)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_telemetry(monkeypatch, tmp_path):
+    """Redirect the agent's per-user telemetry sinks into the test tmp dir.
+
+    Engine fixtures with mocked clients still execute the real
+    turn-metrics/tool-trace/failure-log writers at turn end; without this
+    every test run leaves mock records in the user's real ~/.delfin and
+    pollutes the eval loop's health statistics. Tests that monkeypatch
+    these constants themselves simply override this baseline."""
+    from delfin.agent import failure_log as _fl
+    from delfin.agent import tool_trace as _tt
+    from delfin.agent import turn_metrics as _tm
+    monkeypatch.setattr(_tm, "_DIR", tmp_path / "turn_metrics")
+    monkeypatch.setattr(_tt, "_DIR", tmp_path / "tool_trace")
+    monkeypatch.setattr(_fl, "_LOG_PATH", tmp_path / "failure_log.jsonl")
