@@ -36372,6 +36372,14 @@ def _build_uff_constraints_from_template(
         _metal_sigma_count = (
             os.environ.get("DELFIN_FFFREE_METAL_SIGMA_COUNT", "0") == "1"
         )
+        # MODE (2026-07-29): "full" pins a planar donor with an improper dihedral that includes the
+        # metal; "angles" drops that dihedral and steers the metal with ANGLE targets instead.
+        # full:1000 showed the improper fights the coordination polyhedron -- poly_cshm_vs_ccdc was
+        # the worst-regressing axis, with coord_angle and graph_geom right behind, i.e. the damage
+        # landed on angles AT THE METAL, not on the donor.  With a chelate, every donor demands the
+        # metal in ITS plane while the polyhedron demands its own L-M-L angles; something gives, and
+        # it was the polyhedron (ccdc_isomer_lost 2, topology_floor_ok false).
+        _metal_sigma_mode = os.environ.get("DELFIN_FFFREE_METAL_SIGMA_MODE", "full")
         for atom in mol_template.GetAtoms():
             if atom.GetSymbol() in _METAL_SET:
                 continue
@@ -36421,7 +36429,10 @@ def _build_uff_constraints_from_template(
             if len(heavy_nbrs) < (2 if _geom is not None else 3):
                 continue
             x = atom.GetIdx()
-            if is_sp2 and len(heavy_nbrs) >= 3:
+            # In "angles" mode a planar donor is steered by angle targets alone -- no improper, so
+            # nothing forces the metal into the donor plane against the polyhedron.
+            _planar_angles = (_geom == "planar" and _metal_sigma_mode == "angles")
+            if is_sp2 and len(heavy_nbrs) >= 3 and not _planar_angles:
                 # Improper dihedral → planarity
                 a, b, c = heavy_nbrs[:3]
                 key = (a, x, b, c)
@@ -36432,20 +36443,43 @@ def _build_uff_constraints_from_template(
                     constraints["torsions"].append(
                         (a, x, b, c, _nearest_planar_target(a, x, b, c))
                     )
-            if _geom == "planar":
-                # Deliberately NO angle constraints here.  Only the angle SUM is
-                # invariant for a planar donor; the ring sets the split (N: flat
-                # 6-ring 118.1/120.8, flat 5-ring 106.1/126.6).  Pinning 120 would
-                # bend every imidazole and pyrazole donor by ~14 deg.  The improper
-                # above already delivers planarity, and with the metal among the
-                # partners it also pins the metal INTO that plane.
+            if _geom == "planar" and not _planar_angles:
+                # "full" mode: deliberately NO angle constraints.  Only the angle SUM is invariant
+                # for a planar donor; the ring sets the split, and pinning 120 would bend every
+                # imidazole and pyrazole donor by ~14 deg.  The improper above delivers planarity.
                 continue
+            # Ring-aware targets for a planar donor -- pure polygon geometry, no fitted constant:
+            # a planar n-ring has internal angle 180 - 360/n, and the two exocyclic angles split
+            # what is left of 360.  6-ring -> 120 internal / 120 exocyclic, 5-ring -> 108 / 126.
+            # Cross-check against the crystal: measured 118.0 / 120.75 and 106.0 / 126.5, so the
+            # regular-polygon values land within ~2 deg without importing a single measured number.
+            _ring_internal = _ring_exo = 0.0
+            if _planar_angles:
+                _rs = 0
+                for _n in (3, 4, 5, 6, 7, 8):
+                    if atom.IsInRingSize(_n):
+                        _rs = _n
+                        break
+                if _rs >= 3:
+                    _ring_internal = 180.0 - 360.0 / _rs
+                    _ring_exo = (360.0 - _ring_internal) / 2.0
+                else:
+                    _ring_internal = _ring_exo = 120.0     # acyclic planar centre
             # Pairwise angle constraints on every heavy-heavy pair.
             target_angle = 120.0 if is_sp2 else 109.5
             for i in range(len(heavy_nbrs)):
                 for j in range(i + 1, len(heavy_nbrs)):
                     ai, aj = heavy_nbrs[i], heavy_nbrs[j]
-                    if _geom is not None:
+                    if _planar_angles:
+                        # Internal iff BOTH partners share a ring bond with the donor.
+                        _bi = mol_template.GetBondBetweenAtoms(x, ai)
+                        _bj = mol_template.GetBondBetweenAtoms(x, aj)
+                        _both_ring = bool(
+                            _bi is not None and _bj is not None
+                            and _bi.IsInRing() and _bj.IsInRing()
+                        )
+                        target_angle = _ring_internal if _both_ring else _ring_exo
+                    elif _geom is not None:
                         # theta among non-metal partners, phi for any pair involving
                         # the metal -- one calibrated parameter per element, the rest
                         # geometrically implied (see _donor_sigma_geometry).
