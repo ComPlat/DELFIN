@@ -1406,3 +1406,56 @@ def test_record_turn_outcome_runs_for_all_modes():
 def test_record_solo_turn_outcome_alias_still_works():
     """The old name is kept as an alias so external callers don't break."""
     assert _record_solo_turn_outcome is _record_turn_outcome
+
+
+# ---------------------------------------------------------------------------
+# Plan-accept arming heuristic + header wait chip
+# ---------------------------------------------------------------------------
+
+
+def test_greeting_does_not_look_like_a_plan():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    assert not _looks_like_plan_response("Hallo! Ich bin bereit zu helfen.")
+    assert not _looks_like_plan_response("")
+    assert not _looks_like_plan_response("Kurze Antwort ohne Struktur." * 3)
+
+
+def test_numbered_plan_is_recognised():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    plan = (
+        "Hier ist mein Plan für die Umsetzung des Features:\n"
+        "1. Zuerst die bestehende Struktur analysieren und die "
+        "betroffenen Module identifizieren.\n"
+        "2. Danach die neue Funktion implementieren, mit Tests "
+        "für jeden Randfall.\n"
+        "3. Anschließend die Dokumentation aktualisieren.\n"
+        "4. Zum Schluss den vollen Testlauf ausführen.\n"
+    )
+    assert _looks_like_plan_response(plan)
+
+
+def test_bulleted_plan_is_recognised():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    plan = (
+        "Vorgehen für die Migration der Datenbankschicht im Detail:\n"
+        "- Backup der bestehenden Daten anlegen und verifizieren\n"
+        "- Schema-Migration mit Rollback-Pfad implementieren\n"
+        "- Integrationstests gegen die migrierte Datenbank laufen lassen\n"
+    )
+    assert _looks_like_plan_response(plan)
+
+
+def test_short_list_is_not_a_plan():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    assert not _looks_like_plan_response("1. a\n2. b\n")
+
+
+def test_wait_chip_renders_and_clears():
+    from delfin.dashboard.tab_agent import _wait_chip_html
+    assert _wait_chip_html("") == ""
+    out = _wait_chip_html("Plan-Freigabe")
+    assert "wartet:" in out and "Plan-Freigabe" in out
+    long = _wait_chip_html("x" * 100)
+    assert "…" in long
+    # HTML in the wait text must be escaped, not rendered.
+    assert "<script>" not in _wait_chip_html("<script>alert(1)</script>")

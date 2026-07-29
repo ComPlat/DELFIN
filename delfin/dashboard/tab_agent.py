@@ -1372,6 +1372,32 @@ _CONFIRMATION_PATTERNS: tuple[str, ...] = (
 )
 
 
+def _looks_like_plan_response(text: str) -> bool:
+    """Heuristic fallback for arming the plan-accept button on backends
+    where ``exit_plan_mode`` never fires: a plan proposal has structure
+    (several enumerated or bulleted steps and some length) — a greeting
+    or short answer does not. The exact signal remains the
+    ``exit_plan_mode`` submission; this only gates the prose fallback."""
+    stripped = (text or "").strip()
+    if len(stripped) < 200:
+        return False
+    steps = re.findall(r"(?m)^\s*(?:\*?\*?\d+[.)]\*?\*?\s|[-*•]\s)", stripped)
+    return len(steps) >= 3
+
+
+def _wait_chip_html(text: str) -> str:
+    """Compact amber header chip shown while the agent waits on the user."""
+    if not text:
+        return ""
+    short = text[:60] + ("…" if len(text) > 60 else "")
+    return (
+        '<span style="font-family:monospace; color:#b45309; '
+        'padding:2px 6px; background:#fef3c7; border:1px solid #f59e0b; '
+        'border-radius:4px; font-size:11px;">'
+        f'⏸ wartet: {_html.escape(short)}</span>'
+    )
+
+
 def _extract_action_commands(agent_text: str) -> list[str]:
     """Pull every ``ACTION: /command`` line out of an agent response.
 
@@ -3629,6 +3655,7 @@ def create_tab(ctx):
             return
         _append_system_message("Mode → acceptEdits · sending plan-execute command …")
         state["_kit_plan_has_response"] = False
+        state["_agent_wait_chip"] = ""
         _refresh_kit_mode_chip()
         # Inject a follow-up user message that triggers execution.
         try:
@@ -4600,6 +4627,7 @@ def create_tab(ctx):
         # observes state changes from _on_plan_accept.
         state["_kit_plan_has_response"] = True
         _refresh_plan_accept_btn()
+        _set_wait_chip("Plan-Freigabe")
         # Block only briefly for the click. A long freeze here is pointless: if
         # the user steps away, the agent should pause, not sit frozen for 10 min
         # and then re-submit (observed 2026-06-25: a 21-min double-hang). On
@@ -5365,6 +5393,16 @@ def create_tab(ctx):
         """
         _append_chat_message("tool", html_content)
 
+    def _set_wait_chip(text: str) -> None:
+        """Publish what the agent currently waits for in the global header
+        chip (empty text clears it). Stored in state so the activity
+        updater's finish branch does not wipe an active wait."""
+        state["_agent_wait_chip"] = _wait_chip_html(text)
+        try:
+            ctx.agent_status_html.value = state["_agent_wait_chip"]
+        except Exception:
+            pass
+
     def _show_action_confirmation(agent_text: str, commands: list[str]) -> None:
         """D1: surface Approve/Deny buttons for a list of pending ACTIONs.
 
@@ -5375,12 +5413,16 @@ def create_tab(ctx):
         action_confirm_row.layout.display = "flex"
         state["_pending_action_text"] = agent_text
         state["_pending_action_commands"] = list(commands)
+        _set_wait_chip(
+            f"Freigabe für {len(commands)} Aktion(en)" if commands
+            else "Freigabe für Aktion")
 
     def _hide_action_confirmation() -> None:
         action_confirm_html.value = ""
         action_confirm_row.layout.display = "none"
         state["_pending_action_text"] = ""
         state["_pending_action_commands"] = []
+        _set_wait_chip("")
 
     def _on_actions_approve(_btn=None) -> None:
         text = state.get("_pending_action_text") or ""
@@ -6072,10 +6114,12 @@ def create_tab(ctx):
                  "role_label": role_label, "_streaming": not finalize}
             )
         _refresh_chat_html(streaming=not finalize)
-        if finalize and content.strip():
-            # Plan-mode "Akzeptieren"-Button erscheint, sobald der Agent eine
-            # Plan-Antwort abgeschlossen hat. Wir merken uns nur den letzten
-            # Status — beim Wechsel auf acceptEdits zurücksetzen.
+        if finalize and content.strip() and _looks_like_plan_response(content):
+            # Plan-mode "Akzeptieren"-Button: only arm when the finalized
+            # response actually has plan structure. A greeting or short
+            # answer in plan mode must NOT offer "Accept plan & execute" —
+            # there is nothing to accept. The exact arming signal remains
+            # the exit_plan_mode submission path.
             state["_kit_plan_has_response"] = True
             try:
                 _refresh_plan_accept_btn()
@@ -6435,7 +6479,9 @@ def create_tab(ctx):
                 "this.remove();"
                 '" style="display:none">'
             )
-            ctx.agent_status_html.value = ""
+            # Keep an active "agent waits on the user" chip visible after
+            # the stream ends — only clear when nothing is awaited.
+            ctx.agent_status_html.value = state.get("_agent_wait_chip") or ""
 
     def _arm_stale_watcher():
         """Schedule a two-stage watcher that (1) flips the spinner to
@@ -12198,6 +12244,11 @@ def create_tab(ctx):
         """
         state["_pending_question"] = question_info
         qtype = question_info["type"]
+        _n_opts = len(question_info.get("options") or [])
+        _set_wait_chip(
+            f"Auswahl ({_n_opts} Optionen)" if qtype == "numbered"
+            else "Ja/Nein-Frage" if qtype == "yesno"
+            else "Antwort auf Frage")
         children = []
 
         if qtype == "numbered":
@@ -12295,6 +12346,7 @@ def create_tab(ctx):
         question_row.layout.display = "none"
         question_hint_html.value = ""
         question_buttons_box.children = []
+        _set_wait_chip("")
         state.pop("_pending_question", None)
         state.pop("_question_checkboxes", None)
         input_textarea.placeholder = "Message the agent... (Enter to send, Shift+Enter for newline)"
