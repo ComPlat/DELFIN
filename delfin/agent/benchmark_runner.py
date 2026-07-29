@@ -15,6 +15,8 @@ fast on a bad argument before pulling the engine stack.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import re
 import time
 from typing import Any, Callable, Iterable
@@ -132,6 +134,46 @@ def _cost_delta(before: float, after: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+# Behavior tasks edit toy files under this repo-relative dir. Attempts must
+# start from a PRISTINE copy: an earlier attempt's edits would leak into the
+# next one (observed live: a later repeats run scored against fixtures the
+# first run had already modified, confounding the comparison). The runner
+# snapshots the dir before each attempt and restores it afterwards — the
+# task file's manual git-checkout instructions are thereby mechanised.
+_BEHAVIOR_WS_REL = Path("tests") / "fixtures" / "behavior_workspace"
+
+
+class _PristineWorkspace:
+    """Snapshot/restore guard for the behavior fixture dir (no-op when the
+    dir does not exist under the current working directory)."""
+
+    def __init__(self, root: Path | None = None) -> None:
+        import os as _os
+        self._ws = (root or Path(_os.getcwd())) / _BEHAVIOR_WS_REL
+        self._snap: Path | None = None
+
+    def __enter__(self) -> "_PristineWorkspace":
+        import shutil, tempfile
+        try:
+            if self._ws.is_dir():
+                snap_root = Path(tempfile.mkdtemp(prefix="bench-ws-"))
+                self._snap = snap_root / "ws"
+                shutil.copytree(self._ws, self._snap)
+        except Exception:
+            self._snap = None
+        return self
+
+    def __exit__(self, *exc) -> None:
+        import shutil
+        if self._snap is None:
+            return
+        try:
+            shutil.rmtree(self._ws, ignore_errors=True)
+            shutil.copytree(self._snap, self._ws)
+        finally:
+            shutil.rmtree(self._snap.parent, ignore_errors=True)
+
+
 def _run_task_once(
     task: Task,
     *,
@@ -168,7 +210,8 @@ def _run_task_once(
     cost_before = float(getattr(engine, "cost_usd", 0.0) or 0.0)
     t0 = clock()
     try:
-        raw = run_once(engine, task.prompt, max_tokens=max_tokens)
+        with _PristineWorkspace():
+            raw = run_once(engine, task.prompt, max_tokens=max_tokens)
     except Exception as exc:
         raw = {"text": "", "tool_calls": [], "input_tokens": 0,
                "output_tokens": 0, "error": f"_run_once raised: {exc}"}
