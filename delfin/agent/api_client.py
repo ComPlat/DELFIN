@@ -877,7 +877,7 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "web_search", "web_fetch",
     # Structured UX & planning.
     "ask_user_question",
-    "task_create", "task_update", "task_list", "task_get",
+    "task_create", "task_update", "task_list", "task_get", "task_adopt",
     # Persistent memory — remember durable user facts/preferences across sessions.
     "remember",
 })
@@ -2256,6 +2256,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "spinners (e.g. 'Integrating BoTorch')."
                         ),
                     },
+                    "blocked_by": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "IDs of tasks that must complete before this "
+                            "one can start (DAG ordering; the store "
+                            "refuses status='in_progress' while any "
+                            "blocker is open)."
+                        ),
+                    },
                 },
                 "required": ["subject"],
             },
@@ -2288,6 +2298,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "subject": {"type": "string"},
                     "description": {"type": "string"},
                     "active_form": {"type": "string"},
+                    "add_blocked_by": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "Task IDs to add as blockers of this task."
+                        ),
+                    },
+                    "remove_blocked_by": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "Blocker IDs to remove from this task."
+                        ),
+                    },
                 },
                 "required": ["task_id"],
             },
@@ -2313,6 +2337,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "(default false)."
                         ),
                     },
+                    "all_sessions": {
+                        "type": "boolean",
+                        "description": (
+                            "List open work from EVERY session in this "
+                            "workspace, not just the current one "
+                            "(default false). Records keep their "
+                            "session_id so foreign tasks are "
+                            "identifiable — call task_adopt(id) before "
+                            "working on one."
+                        ),
+                    },
                 },
             },
         },
@@ -2334,6 +2369,31 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "task_id": {
                         "type": "integer",
                         "description": "Task ID returned by task_create.",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_adopt",
+            "description": (
+                "Adopt a task created in a PREVIOUS session into the "
+                "current one (rewrites its session_id). Required BEFORE "
+                "working on a foreign task: task_update progress and the "
+                "per-turn open-tasks reminder only track tasks owned by "
+                "the current session. Typical flow: "
+                "task_list(all_sessions=true) → task_adopt(id) → "
+                "task_update(id, status='in_progress')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "Global task id to adopt.",
                     },
                 },
                 "required": ["task_id"],
@@ -4630,7 +4690,8 @@ class _DocToolExecutor:
         # Read paths (task_list/task_get) need no gate; the create/start paths
         # gate on plan mode INSIDE the executors (a task going in_progress is an
         # execution act — see _execute_task_create / _execute_task_update).
-        if name in ("task_create", "task_update", "task_list"):
+        if name in ("task_create", "task_update", "task_list", "task_get",
+                    "task_adopt"):
             if permissions is None:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured."
@@ -4641,6 +4702,8 @@ class _DocToolExecutor:
                 return self._execute_task_update(arguments, permissions)
             if name == "task_list":
                 return self._execute_task_list(arguments, permissions)
+            if name == "task_adopt":
+                return self._execute_task_adopt(arguments, permissions)
             if name == "task_get":
                 return self._execute_task_get(arguments, permissions)
 
@@ -7624,12 +7687,17 @@ class _DocToolExecutor:
             })
         fields = {
             k: arguments.get(k)
-            for k in ("status", "subject", "description", "active_form")
+            for k in ("status", "subject", "description", "active_form",
+                      "add_blocked_by", "remove_blocked_by")
             if arguments.get(k) is not None
         }
         if not fields:
             return json.dumps({
-                "error": "at least one field (status / subject / description / active_form) must be provided"
+                "error": (
+                    "at least one field (status / subject / description / "
+                    "active_form / add_blocked_by / remove_blocked_by) "
+                    "must be provided"
+                )
             })
         try:
             task = self._task_store(perms).update(task_id, **fields)
@@ -7646,11 +7714,12 @@ class _DocToolExecutor:
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
         include_deleted = bool(arguments.get("include_deleted", False))
+        all_sessions = bool(arguments.get("all_sessions", False))
         _sid = getattr(perms, "task_session_id", "") or ""
         try:
             tasks = self._task_store(perms).list(
                 include_deleted=include_deleted,
-                session_id=_sid if _sid else None,
+                session_id=None if (all_sessions or not _sid) else _sid,
                 with_seq=True,
             )
         except Exception as exc:
@@ -7684,6 +7753,40 @@ class _DocToolExecutor:
         if task is None:
             return json.dumps({"error": f"task #{task_id} not found"})
         return json.dumps({"task": task}, ensure_ascii=False)
+
+    def _execute_task_adopt(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        try:
+            task_id = int(arguments.get("task_id"))
+        except (TypeError, ValueError):
+            return json.dumps({
+                "error": f"task_id must be int, got {arguments.get('task_id')!r}"
+            })
+        sid = getattr(perms, "task_session_id", "") or ""
+        if not sid:
+            return json.dumps({"error": (
+                "no current session id — the task list is unscoped here, "
+                "so every workspace task is already visible; adoption is "
+                "unnecessary"
+            )})
+        try:
+            task = self._task_store(perms).update(task_id, session_id=sid)
+        except KeyError as exc:
+            return json.dumps({"error": str(exc).strip("'")})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"task_adopt failed: {exc}"})
+        return json.dumps({
+            "status": "adopted",
+            "task": task,
+            "hint": (
+                f"task {task['id']} now belongs to this session — it "
+                "appears in task_list and the per-turn reminder. Mark "
+                "in_progress when you start, completed when done."
+            ),
+        }, ensure_ascii=False)
 
     # ------- Web tools (search + fetch) -----------------------------------
 
@@ -8347,7 +8450,8 @@ class OpenAIClient(_BaseClient):
                               "bash_background", "bash_status",
                               "bash_output", "bash_kill",
                               "notebook_read", "notebook_edit",
-                              "task_create", "task_update", "task_list", "task_get",
+                              "task_create", "task_update", "task_list",
+                              "task_get", "task_adopt",
                               "web_search", "web_fetch",
                               "ask_user_question",
                               "exit_plan_mode",
@@ -9063,6 +9167,8 @@ class OpenAIClient(_BaseClient):
                                             "task_create",
                                             "task_update",
                                             "task_list",
+                                            "task_get",
+                                            "task_adopt",
                                             "web_search",
                                             "web_fetch",
                                             "ask_user_question",

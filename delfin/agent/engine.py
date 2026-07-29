@@ -418,6 +418,9 @@ class AgentEngine:
         # session. CLI stays "" and gets its real id from the stream.
         self.session_id: str = self._fresh_session_id()
         self._sync_task_session()
+        # One-shot: the open-foreign-tasks notice fires only on a session's
+        # first prompt build (re-armed with the session in reset_cycle).
+        self._foreign_tasks_shown: bool = False
         import uuid as _uuid_trace
         self._trace_id: str = _uuid_trace.uuid4().hex[:12]   # stable trace key
         self._trace_pending: list = []   # (tool, input, t0) awaiting its result
@@ -870,6 +873,53 @@ class AgentEngine:
             ["# Background jobs finished since your last turn "
              "(act on these results now)"] + events)
 
+    def _build_open_foreign_tasks_block(self) -> str:
+        """One-shot notice — FIRST prompt build of a session only — of open
+        tasks left behind by PREVIOUS sessions of this workspace.
+
+        The task store survives across sessions but every listing surface
+        filters to the current session id, so a fresh session would
+        otherwise never see the work a paused one parked (it dies
+        silently). Deliberately a summary with explicit opt-in adoption
+        (task_adopt / task_list(all_sessions=true)): session scoping is a
+        leak fix (bug 20260616-183359) and lists are never auto-merged.
+        Best-effort; empty string when nothing foreign is open."""
+        if getattr(self, "_foreign_tasks_shown", False):
+            return ""
+        if len(self.messages) > 1:
+            # Not a session's first turn (e.g. a restored conversation
+            # whose history came back via load) — never show it late.
+            self._foreign_tasks_shown = True
+            return ""
+        try:
+            perms = self.kit_permissions
+            ws = getattr(perms, "workspace", None) if perms else None
+            sid = str(getattr(perms, "task_session_id", "") or "") if perms else ""
+            if not ws or not sid:
+                # Empty session id → task_list already shows every
+                # workspace task; nothing is invisible.
+                return ""
+            from delfin.agent.agent_tasks import open_foreign_tasks
+            summary = open_foreign_tasks(ws, sid)
+        except Exception:
+            return ""
+        self._foreign_tasks_shown = True
+        count = int(summary.get("count", 0) or 0)
+        if count <= 0:
+            return ""
+        oldest = int(summary.get("oldest_age_days", 0) or 0)
+        lines = [
+            "# Open work from previous sessions",
+            f"- {count} open task(s), oldest {oldest} days — adopt with "
+            "task_adopt(id) or list via task_list(all_sessions=true); "
+            "ignore if obsolete.",
+        ]
+        for t in summary.get("tasks", [])[:5]:
+            lines.append(
+                f"- id {t.get('id')} [{t.get('status')}] "
+                f"{str(t.get('subject', ''))[:80]} ({t.get('age_days', 0)}d)")
+        return "\n".join(lines)
+
     def _build_answered_attention_block(self) -> str:
         """Late answers to parked questions/confirms (attention inbox).
 
@@ -983,6 +1033,9 @@ class AgentEngine:
             tasks_block = self._build_open_tasks_block()
             if tasks_block:
                 extra_blocks.append(tasks_block)
+            foreign_block = self._build_open_foreign_tasks_block()
+            if foreign_block:
+                extra_blocks.append(foreign_block)
             jobs_block = self._build_finished_jobs_block()
             if jobs_block:
                 extra_blocks.append(jobs_block)
@@ -2654,6 +2707,7 @@ class AgentEngine:
             self._last_outcome_cost = 0.0  # A6 — reset Δ baseline on new cycle
             self.session_id = self._fresh_session_id()  # fresh session for new cycle
             self._sync_task_session()
+            self._foreign_tasks_shown = False  # new session → notice re-armed
         else:
             # Mode-switch with continuity: keep messages so the new
             # agent sees the user's prompt history, but reset
