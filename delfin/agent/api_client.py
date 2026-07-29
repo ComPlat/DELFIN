@@ -2554,6 +2554,33 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "undo_changes",
+            "description": (
+                "Undo the AGENT's own recorded file changes (write_file / "
+                "edit_file / multi_edit / apply_patch / notebook_edit) with "
+                "conflict safety: a file is only restored when its current "
+                "content still matches the recorded post-edit hash — "
+                "anything the user or another process changed since is "
+                "reported as a conflict and left untouched. Files the agent "
+                "created are deleted on undo (same hash check). scope: "
+                "'last' = most recent change, 'turn' = all changes of the "
+                "current turn, 'session' = all recorded changes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["last", "turn", "session"],
+                    },
+                },
+                "required": ["scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "find_definition",
             "description": (
                 "Locate the definition of a symbol in the "
@@ -4265,6 +4292,31 @@ class _DocToolExecutor:
         self._index: dict | None = None
         self._calc_engine = None
         self._calc_dirs: dict[str, str] = {}  # set by caller
+        # Undo journal: seqs of file changes captured THIS turn (reset by
+        # the client at turn start) so undo_changes(scope="turn") knows
+        # the turn boundary.
+        self._turn_change_seqs: list[int] = []
+
+    def _capture_change(
+        self, tool: str, resolved: Path, old_text: "Optional[str]",
+        new_text: str, perms: "KitToolPermissions",
+    ) -> None:
+        """Record the pre-image of a just-applied file change in the undo
+        journal (change_journal). Never raises — undo bookkeeping must not
+        break the write path it observes."""
+        try:
+            from . import change_journal as _cj
+            rec = _cj.record_change(
+                getattr(perms, "task_session_id", "") or "",
+                tool=tool, path=str(resolved),
+                old_text=old_text, new_text=new_text,
+            )
+            if rec is not None:
+                if not hasattr(self, "_turn_change_seqs"):
+                    self._turn_change_seqs = []
+                self._turn_change_seqs.append(rec["seq"])
+        except Exception:
+            pass
 
     def _ensure_loaded(self) -> bool:
         """Load doc index and build search engine. Returns True if ready."""
@@ -4694,6 +4746,8 @@ class _DocToolExecutor:
             return self._execute_run_tests(arguments, permissions)
         if name == "apply_patch":
             return self._execute_apply_patch(arguments, permissions)
+        if name == "undo_changes":
+            return self._execute_undo_changes(arguments, permissions)
         if name in ("find_definition", "find_references"):
             return self._execute_code_nav(name, arguments, permissions)
 
@@ -5893,6 +5947,10 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps({"error": f"write failed: {exc}"})
 
+        self._capture_change(
+            "write_file", resolved,
+            old_text if existed else None, content, perms)
+
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
         except Exception:
@@ -5959,6 +6017,8 @@ class _DocToolExecutor:
                         resolved.write_text(new_text, encoding="utf-8")
                     except Exception as exc:
                         return json.dumps({"error": f"write failed: {exc}"})
+                    self._capture_change(
+                        "edit_file", resolved, old_text, new_text, perms)
                     try:
                         perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
                     except Exception:
@@ -5995,6 +6055,8 @@ class _DocToolExecutor:
             resolved.write_text(new_text, encoding="utf-8")
         except Exception as exc:
             return json.dumps({"error": f"write failed: {exc}"})
+
+        self._capture_change("edit_file", resolved, old_text, new_text, perms)
 
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
@@ -6088,6 +6150,8 @@ class _DocToolExecutor:
             resolved.write_text(text, encoding="utf-8")
         except Exception as exc:
             return json.dumps({"error": f"write failed: {exc}"})
+
+        self._capture_change("multi_edit", resolved, old_text, text, perms)
 
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
@@ -6767,6 +6831,11 @@ class _DocToolExecutor:
             )})
 
         try:
+            _nb_old_text = resolved.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            _nb_old_text = None
+
+        try:
             from . import notebook_tools as _nb
             n_before, n_after = _nb.apply_edit(
                 resolved, cell_idx=cell_idx, mode=mode,
@@ -6776,6 +6845,16 @@ class _DocToolExecutor:
             return json.dumps({"error": str(exc)})
         except Exception as exc:
             return json.dumps({"error": f"notebook edit failed: {exc}"})
+
+        if _nb_old_text is not None:
+            try:
+                _nb_new_text = resolved.read_bytes().decode(
+                    "utf-8", errors="replace")
+                self._capture_change(
+                    "notebook_edit", resolved, _nb_old_text, _nb_new_text,
+                    perms)
+            except OSError:
+                pass
 
         try:
             perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
@@ -6900,10 +6979,63 @@ class _DocToolExecutor:
             gate_err = self._run_permission_gate("apply_patch", arguments, perms)
             if gate_err is not None:
                 return json.dumps({"error": gate_err})
+        pre_images: dict[str, "Optional[str]"] = {}
+        if not check_only:
+            try:
+                for _rel in _pa._files_in_diff(diff):
+                    _fp = Path(perms.workspace) / _rel
+                    try:
+                        pre_images[_rel] = _fp.read_bytes().decode(
+                            "utf-8", errors="replace")
+                    except OSError:
+                        pre_images[_rel] = None  # file did not exist yet
+            except Exception:
+                pre_images = {}
         result = _pa.apply_patch(
             workspace=perms.workspace,
             diff_text=diff,
             check_only=check_only,
+        )
+        if not check_only and result.get("status") == "ok":
+            for _rel in result.get("files_touched", []) or []:
+                _fp = Path(perms.workspace) / _rel
+                try:
+                    _new_text = _fp.read_bytes().decode(
+                        "utf-8", errors="replace")
+                except OSError:
+                    continue  # diff deleted the file — no post state to hash
+                self._capture_change(
+                    "apply_patch", _fp, pre_images.get(_rel), _new_text, perms)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _execute_undo_changes(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import change_journal as _cj
+        if perms is None:
+            return json.dumps({"error": (
+                "undo_changes needs a workspace via permissions"
+            )})
+        if perms.mode == "plan":
+            return json.dumps({"error": (
+                "plan mode (read-only) — undo_changes mutates files; "
+                "use exit_plan_mode first."
+            )})
+        scope = str(arguments.get("scope", "") or "").strip()
+        if scope not in ("last", "turn", "session"):
+            return json.dumps({"error": (
+                f"invalid scope {scope!r}: must be last | turn | session"
+            )})
+        turn_seqs = list(getattr(self, "_turn_change_seqs", []) or [])
+        if scope == "turn" and not turn_seqs:
+            return json.dumps({
+                "reverted": [], "conflicts": [], "skipped": [],
+                "note": "no file changes recorded this turn",
+            })
+        result = _cj.revert(
+            getattr(perms, "task_session_id", "") or "",
+            scope=scope, turn_seqs=turn_seqs,
+            workspace=perms.workspace,
         )
         return json.dumps(result, ensure_ascii=False)
 
@@ -8507,6 +8639,7 @@ class OpenAIClient(_BaseClient):
                               "history_get",
                               "orchestrate",
                               "apply_patch",
+                              "undo_changes",
                               "find_definition",
                               "find_references",
                               "project_introspect"}
@@ -8736,6 +8869,9 @@ class OpenAIClient(_BaseClient):
         self._observed_files: set[str] = set()
         if not hasattr(self, "_observed_files_session"):
             self._observed_files_session: set[str] = set()
+        # Undo journal: new turn — reset the turn-scope seq window so
+        # undo_changes(scope="turn") only covers this turn's changes.
+        _doc_executor._turn_change_seqs = []
         _stream_attempt = 0    # transient-API-error retries (reset per response)
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
