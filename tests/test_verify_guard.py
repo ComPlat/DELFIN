@@ -156,3 +156,37 @@ def test_verify_hint_silent_on_navigation():
     from delfin.dashboard.tab_agent import _build_verify_hint
     assert _build_verify_hint("wechsel zu Submit") == ""
     assert _build_verify_hint("erkläre mir kurz wie DFT funktioniert") == ""
+
+
+# ---------------------------------------------------------------------------
+# Prose alternations must not count as path citations
+# ---------------------------------------------------------------------------
+
+
+def test_prose_word_alternations_are_not_path_claims(tmp_path):
+    """Word pairs like 'ORCA/xTB' or 'APIs/Bibliotheken' match the path
+    shape but are prose, not citations — they must not trigger the
+    forced correction turn (observed in production: a capability
+    overview cost an extra grounding round)."""
+    from delfin.agent.verify_guard import scan_for_ungrounded_code_claims
+    (tmp_path / "delfin").mkdir()
+    text = ("ORCA/xTB Berechnungen vorbereiten, Web-Recherche für "
+            "APIs/Bibliotheken, sauberes Input/Output Handling.")
+    assert scan_for_ungrounded_code_claims(text, repo_root=tmp_path) == []
+
+
+def test_extensionless_path_under_real_directory_still_flags(tmp_path):
+    from delfin.agent.verify_guard import scan_for_ungrounded_code_claims
+    (tmp_path / "delfin").mkdir()
+    flags = scan_for_ungrounded_code_claims(
+        "Der Code liegt in delfin/erfundener_ordner", repo_root=tmp_path)
+    assert [f.kind for f in flags] == ["nonexistent"]
+
+
+def test_extensionless_citation_with_line_number_still_flags(tmp_path):
+    """A ':<line>' suffix is a strong citation signal even without an
+    extension — the prose filter must not swallow it."""
+    from delfin.agent.verify_guard import scan_for_ungrounded_code_claims
+    flags = scan_for_ungrounded_code_claims(
+        "Fehler in FOO/BARBAZ:42 gefunden.", repo_root=tmp_path)
+    assert [f.kind for f in flags] == ["nonexistent"]
