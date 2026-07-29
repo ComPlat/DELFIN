@@ -81,3 +81,37 @@ def test_code_language_rule_ships_in_the_shared_pack():
     assert "English" in rules
     assert "docstrings" in rules
     assert "talk to the user in their language" in rules
+
+
+def test_delfin_context_suppressed_for_a_user_project(tmp_path):
+    """A session in the user's own project must not carry DELFIN's
+    product context and module paths — they do not apply, cost tokens,
+    and invite the model to drift into the source tree."""
+    loader = _loader(tmp_path)
+    shared = tmp_path / "pack_root" / "pack" / "shared"
+    (shared / "delfin_context.md").write_text(
+        "# DELFIN Context\n" + "module guidance\n" * 40, encoding="utf-8")
+    loader.is_delfin_workspace = False
+    prompt = loader.build_system_prompt("solo_agent", "build a game")
+    assert "module guidance" not in prompt
+    assert "NOT working on DELFIN's own source" in prompt
+
+
+def test_delfin_context_kept_when_working_on_delfin(tmp_path):
+    loader = _loader(tmp_path)
+    shared = tmp_path / "pack_root" / "pack" / "shared"
+    (shared / "delfin_context.md").write_text(
+        "# DELFIN Context\n" + "module guidance\n" * 40, encoding="utf-8")
+    loader.is_delfin_workspace = True
+    prompt = loader.build_system_prompt("solo_agent", "fix the pipeline")
+    assert "module guidance" in prompt
+
+
+def test_unknown_workspace_type_keeps_legacy_behaviour(tmp_path):
+    loader = _loader(tmp_path)
+    shared = tmp_path / "pack_root" / "pack" / "shared"
+    (shared / "delfin_context.md").write_text(
+        "# DELFIN Context\n" + "module guidance\n" * 40, encoding="utf-8")
+    assert loader.is_delfin_workspace is None
+    prompt = loader.build_system_prompt("solo_agent", "task")
+    assert "module guidance" in prompt

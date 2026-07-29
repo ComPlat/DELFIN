@@ -698,6 +698,164 @@ class APIClient(_BaseClient):
 # Bash patterns that are ALWAYS rejected (case-insensitive substring/regex
 # match against the raw command string). Keep this list tight: false positives
 # block the user, but missing entries can cause real damage.
+# Ephemeral sinks a shell command may always write to: scratch space and
+# device sinks hold no user data, so gating them would only produce noise.
+_BASH_SCRATCH_PREFIXES: tuple[str, ...] = ("/tmp/", "/var/tmp/", "/dev/")
+_BASH_SCRATCH_EXACT: frozenset[str] = frozenset({"/tmp", "/var/tmp"})
+
+# Commands whose destination is the LAST positional argument.
+_BASH_DEST_LAST: frozenset[str] = frozenset({
+    "cp", "mv", "rsync", "install", "unzip", "git-clone",
+})
+# Commands where EVERY positional argument is a write target.
+_BASH_DEST_ALL: frozenset[str] = frozenset({
+    "mkdir", "touch", "rm", "rmdir", "tee", "truncate", "shred",
+})
+# Options that carry a write destination as their value.
+_BASH_DEST_OPTS: frozenset[str] = frozenset({
+    "-o", "--output", "--output-file", "-C", "--directory", "-d",
+    "--target", "--prefix", "--root", "--output-dir", "--dest",
+})
+
+
+def _bash_write_targets(cmd: str) -> list[str]:
+    """Paths a shell command would plausibly WRITE to.
+
+    Best-effort and conservative: it recognises redirections, the common
+    file-creating commands and destination options. It is a second line of
+    defense that turns an out-of-workspace write into a clear refusal —
+    the airtight containment is filesystem isolation
+    (``agent.bash_isolation``), which this does not replace. Never raises;
+    an unparseable command yields no targets rather than a false block.
+    """
+    targets: list[str] = []
+    try:
+        import shlex
+
+        def _add(tok: str) -> None:
+            tok = (tok or "").strip().strip("'\"")
+            if not tok or tok.startswith("-") or tok.startswith("$"):
+                return
+            if any(c in tok for c in "*?[]"):        # globs: not a literal path
+                return
+            targets.append(tok)
+
+        # Redirections: > file, >> file, 2> file, &> file (not >&1 / &2).
+        for m in re.finditer(r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)",
+                             cmd):
+            tok = m.group(1)
+            if not tok.startswith("&"):
+                _add(tok)
+
+        # Per shell segment: command name + arguments.
+        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+            segment = segment.strip()
+            if not segment:
+                continue
+            try:
+                argv = shlex.split(segment, comments=True)
+            except ValueError:
+                argv = segment.split()
+            if not argv:
+                continue
+            # Skip env-var prefixes (FOO=bar cmd ...).
+            while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+                argv = argv[1:]
+            if not argv:
+                continue
+            name = Path(argv[0]).name
+            rest = argv[1:]
+
+            # `cd <dir> && ...` — the destination of the segment's writes.
+            if name in ("dd",):
+                for a in rest:
+                    if a.startswith("of="):
+                        _add(a[3:])
+                continue
+            if name in ("python", "python3") and "venv" in rest:
+                # python -m venv <dir>
+                tail = [a for a in rest[rest.index("venv") + 1:]
+                        if not a.startswith("-")]
+                if tail:
+                    _add(tail[0])
+                continue
+            if name in ("virtualenv", "uv") and rest:
+                tail = [a for a in rest if not a.startswith("-")]
+                if tail:
+                    _add(tail[-1])
+                continue
+            if name == "git" and len(rest) >= 2 and rest[0] == "clone":
+                pos = [a for a in rest[1:] if not a.startswith("-")]
+                if len(pos) >= 2:
+                    _add(pos[-1])
+                continue
+            if name in ("sed", "perl") and any(
+                    a.startswith("-i") for a in rest):
+                pos = [a for a in rest if not a.startswith("-")]
+                # First positional is the script unless -e/-f supplied it.
+                if not any(a.startswith(("-e", "-f")) for a in rest):
+                    pos = pos[1:]
+                for a in pos:
+                    _add(a)
+                continue
+            if name == "ln":
+                pos = [a for a in rest if not a.startswith("-")]
+                if len(pos) >= 2:
+                    _add(pos[-1])
+                continue
+
+            # Destination-carrying options (pip --target, tar -C, ...).
+            for i, a in enumerate(rest):
+                if a in _BASH_DEST_OPTS and i + 1 < len(rest):
+                    _add(rest[i + 1])
+                elif "=" in a and a.split("=", 1)[0] in _BASH_DEST_OPTS:
+                    _add(a.split("=", 1)[1])
+
+            pos = [a for a in rest if not a.startswith("-")]
+            if name in _BASH_DEST_ALL:
+                for a in pos:
+                    _add(a)
+            elif name in _BASH_DEST_LAST and len(pos) >= 2:
+                _add(pos[-1])
+    except Exception:
+        return []
+    # De-duplicate, preserve order. Scratch sinks are filtered by the
+    # caller, which knows the workspace (a workspace may legitimately live
+    # under /tmp, and then its files are not scratch).
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in targets:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _is_ephemeral_sink(path: Path, workspace: Path | None) -> bool:
+    """True for device sinks and scratch space OUTSIDE the workspace.
+
+    Gating these would only produce noise: they hold no user data. A
+    workspace that itself lives under a scratch root keeps full gating.
+    """
+    try:
+        text = str(path)
+        if text.startswith("/dev/") or text == "/dev/null":
+            return True
+        if not (text in _BASH_SCRATCH_EXACT
+                or text.startswith(_BASH_SCRATCH_PREFIXES)):
+            return False
+        # A workspace that itself lives under scratch space makes scratch
+        # and work indistinguishable — gate everything in that setup.
+        if workspace is not None:
+            ws = str(Path(workspace).resolve())
+            if ws in _BASH_SCRATCH_EXACT or ws.startswith(
+                    _BASH_SCRATCH_PREFIXES):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def _host_process_ancestry() -> list[tuple[int, str, str]]:
     """[(pid, name, cmdline)] for this process and its ancestors.
 
@@ -6705,11 +6863,61 @@ class _DocToolExecutor:
             "patterns_count": len(patterns),
         })
 
+    def _gate_bash_write_targets(
+        self, cmd: str, arguments: dict, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """Apply the per-path write policy to files a shell command writes.
+
+        Direct write tools resolve their path argument against the
+        workspace, so a write outside it is refused. bash had no such
+        check: an absolute path in a shell command wrote anywhere the
+        user account could reach (observed in the field: a venv and a
+        whole project were created inside the DELFIN checkout while the
+        workspace was elsewhere). Recognised write targets now pass the
+        same gate as write_file — sandbox roots, read-only locations,
+        self-modification guard, calc confirmation.
+
+        Returns a JSON error string to block, or None to allow.
+        """
+        try:
+            targets = _bash_write_targets(cmd)
+            if not targets:
+                return None
+            cwd_arg = str(arguments.get("cwd", "") or "")
+            base = perms.workspace
+            if cwd_arg:
+                resolved_cwd, err = self._resolve_in_workspace(
+                    cwd_arg, perms, for_read=True)
+                if not err:
+                    base = resolved_cwd
+            for target in targets:
+                path = Path(target).expanduser()
+                if not path.is_absolute():
+                    path = Path(base) / path
+                if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
+                    continue
+                gate = self._gate_write_path(
+                    str(path), perms, "bash", {"command": cmd})
+                if gate is not None:
+                    return json.dumps({"error": (
+                        f"blocked: this command would write to '{target}', "
+                        f"which is outside what you may modify. {gate} "
+                        "Work inside your workspace with relative paths, or "
+                        "ask the user to grant the directory."
+                    )})
+        except Exception:
+            return None
+        return None
+
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
+
+        gate_err = self._gate_bash_write_targets(cmd, arguments, perms)
+        if gate_err is not None:
+            return gate_err
 
         # Self-preservation (all modes, incl. bypassPermissions): a broad
         # process kill matching this session's own host stack would take
@@ -6795,6 +7003,17 @@ class _DocToolExecutor:
         description = arguments.get("description", "") or ""
         cwd_arg = arguments.get("cwd", "") or ""
         timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
+
+        gate_err = self._gate_bash_write_targets(cmd, arguments, perms)
+        if gate_err is not None:
+            return gate_err
+        _host_hit = _kill_targets_host_process(cmd)
+        if _host_hit:
+            return json.dumps({"error": (
+                f"blocked: {_host_hit}. Killing the hosting process would "
+                "terminate this session. Use bash_kill(job_id) for jobs you "
+                "started."
+            )})
 
         if cwd_arg:
             cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms, for_read=True)

@@ -347,6 +347,7 @@ class AgentEngine:
         try:
             _ws = getattr(self.kit_permissions, "workspace", None)
             self.loader.workspace_root = Path(_ws) if _ws else Path(self.repo_dir)
+            self.loader.is_delfin_workspace = self._is_delfin_workspace
         except Exception:
             self.loader.workspace_root = None
         # Inject-once gating of stable prompt sections is only sound on the

@@ -128,6 +128,10 @@ class PromptLoader:
         # the working directory, or the model writes into DELFIN's own
         # checkout instead of the user's project.
         self.workspace_root: Path | None = None
+        # None = unknown (legacy callers keep the previous behaviour);
+        # False suppresses DELFIN's own product context, which neither
+        # applies to nor helps a session working in a user project.
+        self.is_delfin_workspace: bool | None = None
         self._context_tracker: Any = None  # set by AgentEngine
         self._progressive_disclosure: bool = False  # set by AgentEngine
         # Backend statefulness (set by AgentEngine). Only the persistent CLI
@@ -1259,11 +1263,23 @@ class PromptLoader:
             # move to the END of this branch (just before the anchor) so
             # their per-turn variability doesn't invalidate the cached
             # prefix every send.
-            ctx_text = self._cached_read(
-                self.agent_dir / "shared" / "delfin_context.md"
-            )
-            if ctx_text:
-                sections.append(f"--- Project Context ---\n{ctx_text}")
+            if self.is_delfin_workspace is False:
+                # User project: DELFIN's own product context neither applies
+                # nor is free, and naming its internals invites drift into
+                # the source tree (observed in the field).
+                sections.append(
+                    "--- Project Context ---\nDELFIN is the "
+                    "quantum-chemistry platform hosting this agent. You are "
+                    "NOT working on DELFIN's own source here — work in the "
+                    "user's workspace shown under Session Environment. "
+                    "DELFIN's chemistry tooling stays available through your "
+                    "tools."
+                )
+            else:
+                ctx_text = self._cached_read(
+                    self.agent_dir / "shared" / "delfin_context.md")
+                if ctx_text:
+                    sections.append(f"--- Project Context ---\n{ctx_text}")
 
             # Layer 1: Task-aware (briefing + decomposition for complex tasks)
             if self._should_inject_briefing(role_id, session_key, briefing_ctx):
@@ -1376,6 +1392,18 @@ class PromptLoader:
                                 f"--- Relevant Playbook ---\n{relevant_playbook}"
                             )
                             injected.append("playbook")
+            elif self.is_delfin_workspace is False:
+                # The user works in their OWN project — DELFIN's product
+                # context and module paths are neither applicable nor free.
+                # Naming DELFIN's internals here also invites the model to
+                # drift into the source tree (observed in the field).
+                sections.append(
+                    "DELFIN is the quantum-chemistry platform hosting this "
+                    "agent. You are NOT working on DELFIN's own source here "
+                    "— work in the user's workspace shown under Session "
+                    "Environment. DELFIN's chemistry tooling stays available "
+                    "through your tools."
+                )
             else:
                 # Brief context: short intro only. Detailed guidance comes from
                 # the relevant playbook and repo map to keep prompts cheap.
