@@ -505,6 +505,7 @@ def save_session(
     pending_plan_body: str = "",
     todo_payload: list[dict[str, Any]] | None = None,
     transcript_archive_path: str = "",
+    workspace: str = "",
 ) -> Path:
     """Save a session to disk.
 
@@ -577,6 +578,10 @@ def save_session(
         "cost_usd": cost_usd,
         "title": title,
         "updated_at": time.time(),
+        # The directory this session worked in. Sessions are listed and
+        # resumed per workspace: a session started elsewhere must not be
+        # offered — let alone loaded — in another project's dashboard.
+        "workspace": str(workspace or ""),
         # Long-session state (only persisted when callers pass it)
         "perm_profile": perm_profile or "",
         "provider": provider or "",
@@ -619,14 +624,29 @@ def load_session(session_id: str) -> dict[str, Any] | None:
         return None
 
 
-def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
+def list_sessions(
+    limit: int = 50, *, workspace: str | Path | None = None,
+) -> list[dict[str, Any]]:
     """List saved sessions, newest first.
 
     Returns a list of lightweight session summaries (no full chat history).
+
+    ``workspace`` scopes the result to the directory the session worked
+    in: a project's dashboard offers that project's history, not every
+    session on the machine. Sessions saved before the field existed carry
+    no workspace and stay visible everywhere, so nothing becomes
+    unreachable.
     """
     d = _SESSIONS_DIR
     if not d.exists():
         return []
+
+    want = ""
+    if workspace:
+        try:
+            want = str(Path(workspace).expanduser().resolve())
+        except Exception:
+            want = str(workspace)
 
     sessions = []
     for f in d.glob("*.json"):
@@ -634,7 +654,17 @@ def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
             continue   # mid-turn crash checkpoint, not a session
         try:
             data = json.loads(f.read_text())
+            if want:
+                own = str(data.get("workspace") or "")
+                if own:
+                    try:
+                        own = str(Path(own).expanduser().resolve())
+                    except Exception:
+                        pass
+                    if own != want:
+                        continue
             sessions.append({
+                "workspace": data.get("workspace", ""),
                 "session_id": data.get("session_id", f.stem),
                 "title": data.get("title", "Untitled"),
                 "mode": _migrate_mode(data.get("mode", "quick")),
@@ -651,6 +681,15 @@ def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
 
     sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
     return sessions[:limit]
+
+
+def latest_session(workspace: str | Path | None = None) -> dict[str, Any] | None:
+    """Most recently updated session of ``workspace`` (None if there is
+    none). The resume target: continuing a project means continuing THAT
+    project's last conversation, never whatever ran last on the machine.
+    """
+    rows = list_sessions(limit=1, workspace=workspace)
+    return rows[0] if rows else None
 
 
 def delete_session(session_id: str) -> bool:
