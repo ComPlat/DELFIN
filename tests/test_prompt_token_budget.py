@@ -40,7 +40,11 @@ def _estimate_tokens(text: str) -> int:
         ("dashboard_agent.md", 7950),
         # Raised 13800 -> 14000 for the workspace/CLI orchestration guidance
         # (launch-dir = workspace). Content is intentional; keep growth in check.
-        ("solo_agent.md", 14000),
+        # Raised 14000 -> 14100 (2026-07-29): the subagent section states
+        # the real backend limits and that an explicit user request to
+        # delegate is binding — understated limits were making the model
+        # skip delegation the user had asked for.
+        ("solo_agent.md", 14100),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
