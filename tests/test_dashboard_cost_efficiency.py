@@ -95,8 +95,10 @@ def test_continuation_loop_breaks_on_done_marker():
 def test_done_only_response_shows_clear_no_action_placeholder():
     """When /done was emitted ALONE (no real ACTIONs), the cleaned
     placeholder must NOT say '(commands executed)' — that's misleading
-    because nothing actually ran. Instead show a 'please clarify'
-    message so the user knows the agent had no idea what to do."""
+    because nothing actually ran. On the FIRST round the user gets a
+    'please clarify' message; in a wrap-up round (actions already ran
+    earlier in the turn) a bare /done is a normal close and renders
+    '(request completed)' instead."""
     p = (Path(__file__).resolve().parent.parent
          / "delfin" / "dashboard" / "tab_agent.py")
     text = p.read_text(encoding="utf-8")
@@ -105,9 +107,12 @@ def test_done_only_response_shows_clear_no_action_placeholder():
         "missing 'no action' placeholder — /done-alone case still "
         "shows misleading '(commands executed)'"
     )
-    # And the branch that triggers it: cleaned is empty + no real_results + done_seen
-    block = text[max(0, idx-600): idx + 200]
+    # The branch that triggers it: cleaned empty + no real_results +
+    # done_seen, split by continuation round.
+    block = text[max(0, idx - 900): idx + 200]
     assert "elif done_seen:" in block
+    assert "_cont_turn > 1" in block
+    assert "(request completed)" in block
 
 
 # ---------------------------------------------------------------------------
