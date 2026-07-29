@@ -1156,6 +1156,9 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
   ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Session", "/changes", "What this session changed (audit log): files, commands, denials", False),
     ("Diagnostics", "/doctor", "Check prerequisites: docs index, keys, binaries, MCP, scheduler, disk", False),
+    ("Attention", "/attention", "Parked questions/events awaiting you (attention inbox)", False),
+    ("Attention", "/attention answer", "Answer a parked item (/attention answer <id> <text>)", True),
+    ("Attention", "/attention dismiss", "Dismiss a parked item (/attention dismiss <id|all>)", True),
     ("Memory", "/memorize", "Distill this session into durable memories (one cheap LLM call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
@@ -6697,103 +6700,23 @@ def create_tab(ctx):
                 _append_system_message(f"Guide not found: {exc}")
             return True
 
-        if cmd == "/help":
-            _append_system_message(
-                "📖 New here? Type **/guide** for the full user guide (models, /grant, monitoring, safety).\n\n"
-                "Available commands:\n"
-                "  /guide           — Full user guide (how to use the agent)\n"
-                "  /help            — Show this help\n"
-                "  /clear           — Clear chat history\n"
-                "  /cost            — Show token usage & cost\n"
-                "  /compact         — Summarize context (reduce tokens)\n"
-                "  /context         — Show context-window usage + compaction state\n"
-                "  /agents          — List subagent presets (explore/plan/...)\n"
-                "  /agents tools    — Per-tool usage/error/latency stats (all sessions)\n"
-                "  /skills          — List discovered skills\n"
-                "  /undo            — Undo last agent turn (remove from context)\n"
-                "  /retry           — Retry last message (undo + re-send)\n"
-                "  /stop            — Stop current generation\n"
-                "  /status          — Show engine status\n"
-                "  /usage           — Detailed token usage, cost & session stats\n"
-                "  /export          — Export chat as Markdown file\n"
-                "  /search <text>   — Search in chat history\n"
-                "  /retry           — Regenerate last response\n"
-                "  /git status      — Show git status\n"
-                "  /git diff        — Show staged/unstaged changes\n"
-                "  /git log         — Show recent commits\n"
-                "  /git branch      — Show branches\n"
-                "  /provider <name> — Switch provider (claude/openai/kit/ollama)\n"
-                "  /model <name>    — Switch model (depends on provider)\n"
-                "  /effort <lvl>    — Set effort (low/medium/high/xhigh)\n"
-                "  /mode <name>     — Switch mode (dashboard/code)\n"
-                "  /perms [profile] — Show/set permission profile (plan/ask_all/repo_free/all_free)\n"
-                "  /reset           — Reset engine for new cycle\n"
-                "\n"
-                "Dashboard control:\n"
-                "  /ui list         — List all controllable widgets\n"
-                "  /ui <w> show     — Show widget properties & value\n"
-                "  /ui <w> click    — Press a button\n"
-                "  /ui <w> value <v> — Set widget value (text/number/dropdown)\n"
-                "  /ui <w> options  — Show dropdown choices\n"
-                "  /ui <w> style <s> — Button color (primary/danger/success/info/warning)\n"
-                "  /ui <w> text/disabled/visible/width/height <v>\n"
-                "  /tab <name>      — Switch tab (submit/orca/jobs/calc/settings)\n"
-                "  /control show    — Show CONTROL content from Submit tab\n"
-                "  /control set ... — Set CONTROL content in Submit tab\n"
-                "  /control key k v — Change single CONTROL key (e.g. /control key functional BP86)\n"
-                "  /control validate — Validate CONTROL syntax\n"
-                "  /submit          — Submit job (confirms first)\n"
-                "  /orca show       — Show ORCA Builder settings\n"
-                "  /orca set <p> <v> — Set ORCA Builder param (method/basis/charge/...)\n"
-                "  /orca submit     — Submit ORCA job\n"
-                "  /jobs            — Switch to Job Status tab\n"
-                "\n"
-                "Calculations & analysis:\n"
-                "  /calc ls [path]  — List calc directories/files\n"
-                "  /calc cd <path>  — Navigate calc folder (syncs browser)\n"
-                "  /calc select <f> — Open/select file in browser preview\n"
-                "  /calc open <f> — Alias for /calc select\n"
-                "  /calc read <file> — Read a calc file\n"
-                "  /calc tail <file> — Read last 8KB of output\n"
-                "  /calc info <dir> — Show folder summary & status\n"
-                "  /calc tree [dir] — Show directory tree\n"
-                "  /calc search <p> — Search files by glob pattern\n"
-                "  /analyze <dir>   — Full analysis (energy+convergence+errors)\n"
-                "  /analyze energy <dir> — Extract energies (Gibbs/ZPE/electronic)\n"
-                "  /analyze rank <type> [limit] [root] — Rank energies across folders\n"
-                "  /analyze convergence <dir> — Check SCF convergence\n"
-                "  /analyze errors <dir> — Scan for ORCA errors\n"
-                "  /analyze status  — Overview of all calc folders\n"
-                "\n"
-                "Recalc & cancel (require confirmation):\n"
-                "  /recalc check <dir> — Check if recalc needed\n"
-                "  /recalc check-all — Scan all folders\n"
-                "  /recalc <dir>    — Submit recalc (confirms first)\n"
-                "  /recalc auto     — Recalc all that need it (confirms first)\n"
-                "  /cancel <job_id> — Cancel a job (confirms first)\n"
-                "  /cancel all      — Cancel all active jobs (confirms first)\n"
-                "  /cancel running  — Cancel only running (R) jobs\n"
-                "  /cancel pending  — Cancel only pending (PD) jobs\n"
-                "\n"
-                "Memory:\n"
-                "  /remember <text> — Save a persistent memory\n"
-                "  /memories        — List all memories\n"
-                "  /memories verify — Check memory file-refs against the repo\n"
-                "  /forget <index>  — Delete a memory by index\n"
-                "\n"
-                "Workspace:\n"
-                "  /workspace ls    — List files in agent workspace\n"
-                "  /workspace read <file> — Read a workspace file\n"
-                "  /workspace clean — Remove all workspace files\n"
-                "\n"
-                "Keyboard shortcuts:\n"
-                "  Enter            — Send message\n"
-                "  Shift+Enter      — New line\n"
-                "  Escape           — Stop generation\n"
-                "  Ctrl+L           — Clear chat\n"
-                "  Ctrl+K           — Toggle search\n"
-                "  Shift+Tab        — Cycle permission mode"
-            )
+        if cmd == "/help" or cmd.startswith("/help "):
+            from delfin.agent.help_gen import generate_help
+            _flt = cmd[len("/help"):].strip()
+            _help_text = (
+                "\U0001F4D6 New here? Type **/guide** for the full user guide "
+                "(models, /grant, monitoring, safety).\n\n"
+                + generate_help(_SLASH_COMMANDS, search=_flt))
+            if not _flt:
+                _help_text += (
+                    "\n\nKeyboard shortcuts:\n"
+                    "  Enter            \u2014 Send message\n"
+                    "  Shift+Enter      \u2014 New line\n"
+                    "  Escape           \u2014 Stop generation\n"
+                    "  Ctrl+L           \u2014 Clear chat\n"
+                    "  Ctrl+K           \u2014 Toggle search\n"
+                    "  Shift+Tab        \u2014 Cycle permission mode")
+            _append_system_message(_help_text)
             return True
 
         if cmd == "/clear":
@@ -9219,6 +9142,46 @@ def create_tab(ctx):
                 _append_system_message(format_doctor(results))
             except Exception as exc:
                 _append_system_message(f"Doctor failed: {exc}")
+            return True
+
+        if cmd == "/attention" or cmd.startswith("/attention "):
+            from delfin.agent import attention as _attn
+            _arg = text.strip()[len("/attention"):].strip()
+            if not _arg:
+                _append_system_message(_attn.render_inbox())
+                return True
+            _parts = _arg.split(None, 1)
+            _sub = _parts[0].lower()
+            _rest = _parts[1].strip() if len(_parts) > 1 else ""
+            if _sub == "answer":
+                _bits = _rest.split(None, 1)
+                if len(_bits) < 2:
+                    _append_system_message("Usage: /attention answer <id> <text>")
+                    return True
+                _res = _attn.answer_item(_bits[0], _bits[1])
+                _append_system_message(
+                    f"Answered {_res['id']} ({_res['title']}) — the agent "
+                    "receives this on its next turn."
+                    if _res.get("ok") else f"Answer failed: {_res.get('error')}")
+                return True
+            if _sub == "dismiss":
+                if not _rest:
+                    _append_system_message("Usage: /attention dismiss <id|all>")
+                    return True
+                if _rest.lower() == "all":
+                    _res = _attn.clear_all()
+                    _append_system_message(
+                        f"Dismissed {_res.get('cleared', 0)} pending item(s)."
+                        if _res.get("ok") else f"Dismiss failed: {_res.get('error')}")
+                    return True
+                _res = _attn.dismiss_item(_rest)
+                _append_system_message(
+                    f"Dismissed {_res['id']} ({_res['title']})."
+                    if _res.get("ok") else f"Dismiss failed: {_res.get('error')}")
+                return True
+            _append_system_message(
+                _attn.render_inbox(_sub) if _sub in _attn.ATTENTION_KINDS
+                else "Usage: /attention [answer <id> <text> | dismiss <id|all> | <kind>]")
             return True
 
         if cmd.startswith("/remember "):
@@ -12462,7 +12425,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
-            "/changes", "/doctor",
+            "/changes", "/doctor", "/attention", "/pin", "/batch",
             "/bugs", "/watch", "/fix", "/grant",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",

@@ -30,6 +30,16 @@ the moment must not be lost in scrollback. This module provides:
         once — an ``acknowledged`` flag persisted in the same file, the
         restart-safe pattern of ``bash_jobs.drain_finished_events``.
 
+  - The USER SURFACE: ``render_inbox()`` / ``answer_item()`` /
+        ``dismiss_item()`` / ``clear_all()``.
+        Pure helpers for a dashboard slash command (``/attention``):
+        compact grouped rendering with visible ids, answering a parked
+        item (the engine later injects the answer via
+        ``drain_resolved``), and dismissing items without replaying
+        them to the model. All four never raise — they return an error
+        string / ``{"ok": False, "error": ...}`` instead, because a
+        broken inbox must never break the chat surface.
+
 Delivery is best-effort and never raises; only the durable append (the
 core contract) propagates errors to the caller.
 """
@@ -378,11 +388,185 @@ def drain_resolved(session_id: str, *, include_unrouted: bool = True) -> list[di
     return out
 
 
+# ---------------------------------------------------------------------------
+# User surface (dashboard /attention command) — pure helpers, never raise
+# ---------------------------------------------------------------------------
+
+# Display order: kinds that block the agent first, informational last.
+_KIND_ORDER = (
+    "confirm_pending", "question_pending", "plan_pending",
+    "run_failed", "run_finished", "budget_warning",
+)
+_KIND_LABELS = {
+    "confirm_pending": "Confirmations waiting",
+    "question_pending": "Questions waiting",
+    "plan_pending": "Plans awaiting approval",
+    "run_failed": "Failed runs",
+    "run_finished": "Finished runs",
+    "budget_warning": "Budget warnings",
+}
+
+
+def _fmt_age(seconds: float) -> str:
+    """Compact age: 45s / 12m / 3h / 5d. Negative/garbage clamps to 0s."""
+    try:
+        s = max(0.0, float(seconds))
+    except (TypeError, ValueError):
+        s = 0.0
+    if s < 60:
+        return f"{int(s)}s"
+    if s < 3600:
+        return f"{int(s // 60)}m"
+    if s < 86400:
+        return f"{int(s // 3600)}h"
+    return f"{int(s // 86400)}d"
+
+
+def _match_pending(item_id: str) -> tuple[Optional[dict], str]:
+    """Find one pending event by full id or unique id prefix.
+
+    Returns ``(event, "")`` on success, ``(None, error)`` otherwise —
+    ids like ``att-19c8...-a1b2c3`` are painful to type in full, so a
+    surface accepts any unambiguous prefix."""
+    token = str(item_id or "").strip()
+    if not token:
+        return None, "missing item id"
+    pending = list_pending()
+    for ev in pending:
+        if ev.get("id") == token:
+            return ev, ""
+    matches = [
+        ev for ev in pending if str(ev.get("id", "")).startswith(token)]
+    if len(matches) == 1:
+        return matches[0], ""
+    if not matches:
+        return None, f"no pending item with id {token!r}"
+    return None, (
+        f"id prefix {token!r} is ambiguous "
+        f"({len(matches)} pending items match)")
+
+
+def render_inbox(kind: Optional[str] = None, *, limit: int = 50) -> str:
+    """Compact, grouped, id-visible view of the pending inbox.
+
+    Groups by kind (blocking kinds first), oldest first inside each
+    group, at most ``limit`` items total (a footer notes the overflow).
+    Never raises — a broken inbox renders as an error line."""
+    try:
+        pending = list_pending(kind)
+    except Exception as exc:
+        return f"Attention inbox unavailable: {exc}"
+    try:
+        scope = f" of kind {kind!r}" if kind else ""
+        if not pending:
+            return f"Attention inbox: no pending items{scope}."
+        now = time.time()
+        try:
+            cap = max(1, int(limit))
+        except (TypeError, ValueError):
+            cap = 50
+        urgent = sum(
+            1 for ev in pending if ev.get("kind") in _URGENT_KINDS)
+        lines = [
+            f"Attention inbox — {len(pending)} pending{scope}"
+            + (f" ({urgent} blocking the agent)" if urgent else "")]
+        shown = 0
+        kinds_seen = [k for k in _KIND_ORDER
+                      if any(ev.get("kind") == k for ev in pending)]
+        kinds_seen += sorted(
+            {str(ev.get("kind", "")) for ev in pending}
+            - set(_KIND_ORDER))
+        for k in kinds_seen:
+            group = [ev for ev in pending if ev.get("kind") == k]
+            if not group or shown >= cap:
+                continue
+            lines.append(f"{_KIND_LABELS.get(k, k)} ({len(group)}):")
+            for ev in group:
+                if shown >= cap:
+                    break
+                age = _fmt_age(now - float(ev.get("created_at") or now))
+                title = str(ev.get("title", "")).strip() or "(no title)"
+                lines.append(f"  {ev.get('id', '?')}  ({age})  {title}")
+                opts = ev.get("options")
+                if opts:
+                    lines.append(
+                        "      options: " + " | ".join(map(str, opts)))
+                shown += 1
+        if shown < len(pending):
+            lines.append(f"  ... and {len(pending) - shown} more")
+        lines.append(
+            "Answer: /attention answer <id> <text>   "
+            "Dismiss: /attention dismiss <id|all>")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Attention inbox unavailable: {exc}"
+
+
+def answer_item(item_id: str, text: str) -> dict:
+    """Record the user's late answer to a pending item (id or unique
+    prefix). The engine injects it into the next turn via
+    ``drain_resolved`` — so ``acknowledged`` stays False here. Never
+    raises; returns ``{"ok": bool, ...}``."""
+    try:
+        answer = str(text or "").strip()
+        if not answer:
+            return {"ok": False, "error": "empty answer text"}
+        target, err = _match_pending(item_id)
+        if target is None:
+            return {"ok": False, "error": err}
+        if not resolve(target["id"], answer=answer):
+            return {"ok": False,
+                    "error": f"item {target['id']} is no longer pending"}
+        return {"ok": True, "id": target["id"],
+                "kind": str(target.get("kind", "")),
+                "title": str(target.get("title", ""))}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def dismiss_item(item_id: str) -> dict:
+    """Clear a pending item without answering it (id or unique prefix).
+
+    Resolved with ``acknowledged=True`` so ``drain_resolved`` never
+    replays it to the model. Never raises."""
+    try:
+        target, err = _match_pending(item_id)
+        if target is None:
+            return {"ok": False, "error": err}
+        if not resolve(target["id"], answer=None, acknowledged=True):
+            return {"ok": False,
+                    "error": f"item {target['id']} is no longer pending"}
+        return {"ok": True, "id": target["id"],
+                "kind": str(target.get("kind", "")),
+                "title": str(target.get("title", ""))}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def clear_all(kind: Optional[str] = None) -> dict:
+    """Dismiss every pending item (optionally one kind). Same
+    ``acknowledged=True`` semantics as ``dismiss_item``. Never raises;
+    returns ``{"ok": True, "cleared": n}`` on success."""
+    try:
+        cleared = 0
+        for ev in list_pending(kind):
+            if resolve(str(ev.get("id", "")), answer=None,
+                       acknowledged=True):
+                cleared += 1
+        return {"ok": True, "cleared": cleared}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "cleared": 0}
+
+
 __all__ = [
     "ATTENTION_KINDS",
+    "answer_item",
     "attention_settings",
+    "clear_all",
+    "dismiss_item",
     "drain_resolved",
     "emit_attention",
     "list_pending",
+    "render_inbox",
     "resolve",
 ]
