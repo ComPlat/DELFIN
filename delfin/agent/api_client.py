@@ -2417,6 +2417,20 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "check_environment",
+            "description": (
+                "Run the DELFIN environment health report: doc index, "
+                "credential presence (never values), chemistry binaries, "
+                "Python deps, MCP servers, scheduler, memory store, disk "
+                "space. Call this BEFORE promising work that depends on "
+                "external prerequisites. Read-only; never raises."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "project_introspect",
             "description": (
                 "One-call snapshot of the workspace's state: "
@@ -4782,6 +4796,11 @@ class _DocToolExecutor:
         # audit log; answers "what did you change?" from the record).
         if name == "list_changes_made":
             return self._execute_list_changes(arguments, permissions)
+
+        # Read-only environment health report — no permission gate (local
+        # probes only; credential values never appear in the output).
+        if name == "check_environment":
+            return self._execute_check_environment(arguments, permissions)
 
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
@@ -7902,6 +7921,17 @@ class _DocToolExecutor:
             return _al.format_changes_report(report)
         except Exception as exc:
             return json.dumps({"error": f"list_changes_made failed: {exc}"})
+
+    def _execute_check_environment(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Read-only: formatted doctor report of agent prerequisites."""
+        try:
+            from .doctor import run_doctor, format_doctor
+            ws = getattr(perms, "workspace", None) if perms else None
+            return format_doctor(run_doctor(ws))
+        except Exception as exc:
+            return json.dumps({"error": f"check_environment failed: {exc}"})
 
     def _execute_task_get(
         self, arguments: dict, perms: "KitToolPermissions"
