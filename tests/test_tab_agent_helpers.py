@@ -1561,3 +1561,44 @@ def test_kill_watch_rearms_instead_of_expiring():
     block = src[idx:idx + 2000]
     assert "again = _threading.Timer(" in block
     assert 'state["_stale_kill_timer"] = again' in block
+
+
+# ---------------------------------------------------------------------------
+# Mid-turn persistence + plan-mode verify exemption
+# ---------------------------------------------------------------------------
+
+
+def test_session_is_checkpointed_before_and_during_a_turn():
+    """Field complaint: after a reload only the plan was there, not the
+    conversation that produced it — auto-save ran only at turn end."""
+    src = _watchdog_source()
+    assert "def _checkpoint_session(" in src
+    # before the turn runs, on every finalized message, and before the
+    # plan-approval block parks the worker
+    assert src.count("_checkpoint_session(") >= 4
+    assert "_checkpoint_session(min_interval_s=0.0)" in src
+
+
+def test_checkpoint_is_throttled_and_never_raises():
+    src = _watchdog_source()
+    idx = src.find("def _checkpoint_session(")
+    block = src[idx:idx + 900]
+    assert "min_interval_s" in block
+    assert "_last_checkpoint_ts" in block
+    assert "except Exception:" in block
+
+
+def test_plan_turns_are_exempt_from_claim_grounding():
+    """A plan names files it INTENDS to create; grounding them against the
+    workspace made every plan a false alarm (field case 20260729-125618:
+    3 flags on tetris_game.py / snake_game.py / game_dashboard.ipynb)."""
+    from pathlib import Path as _P
+    eng = (_P(__file__).resolve().parent.parent / "delfin" / "agent"
+           / "engine.py").read_text(encoding="utf-8")
+    assert "def _turn_describes_intent(" in eng
+    assert 'getattr(self.kit_permissions, "mode", "") or "") == "plan"' in eng
+    assert "exit_plan_mode" in eng
+    assert "and not self._turn_describes_intent()" in eng
+    src = _watchdog_source()
+    assert "_describes_intent = engine._turn_describes_intent()" in src
+    assert "and not _describes_intent" in src
