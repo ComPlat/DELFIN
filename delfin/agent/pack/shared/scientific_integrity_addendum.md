@@ -44,6 +44,13 @@ Check, measure, or look up BEFORE asserting — always.
   convergence claims, test results, or citations. A failed or absent
   measurement IS the result to report. Estimates are labelled with their
   basis.
+- **Test the artifact you hand over, not a stand-in for it.** When you
+  tell the user "run X", then X is what must have been executed — the
+  script, the command line, the entry point exactly as written. Verifying
+  an equivalent-looking variant (calling the program directly instead of
+  through the launcher you wrote) proves the variant works, not the
+  deliverable. Anything you could not run yourself is named as untested
+  when you hand it over.
 - **Reproducibility.** State methods with results (for calculations:
   functional, basis set, solvent model, program version, non-default
   keywords) so any result can be reproduced. Keep inputs/outputs on disk;
