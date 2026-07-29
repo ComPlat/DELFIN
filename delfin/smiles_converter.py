@@ -36102,6 +36102,38 @@ def _period_of(z: int) -> int:
     return 7
 
 
+# Pyykko & Atsumi 2009 published SINGLE, DOUBLE and TRIPLE covalent radii together; DELFIN already
+# uses the single set (occupier.load_covalent_radii, source "pyykko2009").  Loading the other two
+# turns the bond-order contraction from a global scale factor into an ATOM property, defined for
+# every element instead of a hand-listed handful of pairs.
+_PYYKKO_ORDER_ATTR = {2: "covalent_radius_pyykko_double", 3: "covalent_radius_pyykko_triple"}
+_PYYKKO_ORDER_CACHE: Dict[Tuple[str, int], Optional[float]] = {}
+
+
+def _pyykko_order_radius(sym: str, order: int) -> Optional[float]:
+    """Pyykko 2009 double/triple covalent radius (A) for `sym`, or None if unavailable.
+
+    Looked up per element and cached, so a build only ever queries the handful of elements it
+    actually contains.  None makes every caller a no-op -- never-worse by construction if
+    mendeleev is missing or has no value for that element.
+    """
+    key = (sym, order)
+    if key in _PYYKKO_ORDER_CACHE:
+        return _PYYKKO_ORDER_CACHE[key]
+    val: Optional[float] = None
+    attr = _PYYKKO_ORDER_ATTR.get(order)
+    if attr is not None:
+        try:
+            from mendeleev import element  # type: ignore
+            raw = getattr(element(sym), attr, None)
+            if raw is not None:
+                val = float(raw) / 100.0     # mendeleev stores pm
+        except Exception:
+            val = None
+    _PYYKKO_ORDER_CACHE[key] = val
+    return val
+
+
 def _donor_sigma_geometry(atom):
     """Geometry target for a non-metal centre, counting the METAL as a sigma partner.
 
@@ -36352,6 +36384,47 @@ def _build_uff_constraints_from_template(
                         continue
                     seen_tors.add(tors_key)
                     constraints["torsions"].append((a, b, c, d, _nearest_planar_target(a, b, c, d)))
+
+        # MULTIBOND LENGTH (2026-07-29, env, default OFF): pin every heavy-heavy DOUBLE/TRIPLE bond
+        # to the order-specific covalent-radii sum.  The carboxyl block above already does exactly
+        # this -- for one atom type, with three hardcoded C-O numbers, and those numbers ARE the
+        # Pyykko sums (C=O 0.67+0.57 = 1.24 vs its 1.22; C#O 0.60+0.53 = 1.13).  So the special case
+        # is a hand-listed subset of a rule that holds for the whole periodic table.
+        #
+        # Measured gap it closes (CCDC clean_v2, 25.8 M bonds, signature-resolved bands): terminal
+        # multiply-bonded heteroatoms on high-coordination centres are built at SINGLE-bond length --
+        # ClO4- Cl-O +0.55 A (100 % outside the CSD band), N=N=N +0.295, S=O +0.20, coordinated C#N
+        # +0.18 (472 systems), C#S +0.17 -- while P=O (+0.055) and N-O (-0.025) are already fine.
+        # A wrong REFERENCE, not noise, so a reference is what it needs.
+        #
+        # Runs AFTER the carboxyl block on purpose: `seen_dist` makes that block win where it already
+        # acts, so the flag only ever ADDS pins for bonds nothing constrained before.  Aromatic bonds
+        # are left alone (measured offset +0.024 A -- not worth the blast radius), and M-L lengths
+        # belong to the coordination path.
+        if os.environ.get("DELFIN_FFFREE_MULTIBOND_LEN", "0") == "1":
+            for _bond in mol_template.GetBonds():
+                _bt = _bond.GetBondType()
+                if _bt == Chem.BondType.TRIPLE:
+                    _order = 3
+                elif _bt == Chem.BondType.DOUBLE:
+                    _order = 2
+                else:
+                    continue
+                _a1, _a2 = _bond.GetBeginAtom(), _bond.GetEndAtom()
+                if _a1.GetAtomicNum() <= 1 or _a2.GetAtomicNum() <= 1:
+                    continue
+                _s1, _s2 = _a1.GetSymbol(), _a2.GetSymbol()
+                if _s1 in _METAL_SET or _s2 in _METAL_SET:
+                    continue
+                _r1 = _pyykko_order_radius(_s1, _order)
+                _r2 = _pyykko_order_radius(_s2, _order)
+                if _r1 is None or _r2 is None:
+                    continue          # unknown element -> behave exactly as today
+                _dk = tuple(sorted((_a1.GetIdx(), _a2.GetIdx())))
+                if _dk in seen_dist:
+                    continue
+                seen_dist.add(_dk)
+                constraints["distances"].append((_dk[0], _dk[1], round(_r1 + _r2, 3)))
 
         # Sp2 planarity at every 3-coordinate planar atom.  A ring-wise loop
         # alone cannot keep a fused-ring junction atom planar because the
