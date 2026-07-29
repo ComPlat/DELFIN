@@ -1602,3 +1602,258 @@ def test_plan_turns_are_exempt_from_claim_grounding():
     src = _watchdog_source()
     assert "_describes_intent = engine._turn_describes_intent()" in src
     assert "and not _describes_intent" in src
+
+
+# ---------------------------------------------------------------------------
+# ACTION continuation budget — progress vs. repetition
+# ---------------------------------------------------------------------------
+
+def _run_rounds(rounds, ceiling=12, repeat_limit=2):
+    """Drive the pure decision over a list of per-round ACTION sets.
+
+    Mirrors the bookkeeping the continuation loop does (signature history,
+    executed-command set, round counter) and returns
+    ``(rounds_completed, stop_reason)``.
+    """
+    from delfin.dashboard.tab_agent import (
+        _decide_action_round, _normalize_action_command)
+    sigs: list[str] = []
+    seen: set[str] = set()
+    used = 0
+    stale = 0
+    for cmds in rounds:
+        used += 1
+        dec = _decide_action_round(
+            cmds, sigs, seen, rounds_used=used, stale_rounds=stale,
+            ceiling=ceiling, repeat_limit=repeat_limit)
+        sigs.append(dec.signature)
+        if dec.stale:
+            stale += 1
+        for c in cmds:
+            n = _normalize_action_command(c)
+            if n:
+                seen.add(n)
+        if not dec.proceed:
+            return used, dec.reason
+    return used, ""
+
+
+def test_distinct_action_sets_keep_going_up_to_the_ceiling():
+    """Genuine multi-step work — a different command every round — must
+    not be cut short at the old flat cap of 3. The only thing that ends
+    such a sequence is the absolute ceiling."""
+    rounds = [[f"/tab step{i}"] for i in range(20)]
+    used, reason = _run_rounds(rounds, ceiling=12)
+    assert reason == "ceiling"
+    assert used == 12
+
+
+def test_four_distinct_rounds_are_progress_not_a_loop():
+    """The field case: read the error file, open the folder, inspect the
+    input, answer. Four distinct rounds must all be allowed."""
+    used, reason = _run_rounds([
+        ["/tab calc"],
+        ["/calc show job.err"],
+        ["/calc show job.inp"],
+        ["/tab orca"],
+    ], ceiling=12)
+    assert (used, reason) == (4, "")
+
+
+def test_same_action_set_twice_stops():
+    """Two occurrences of the identical set is a loop — stop immediately,
+    do not bleed to the ceiling."""
+    used, reason = _run_rounds([
+        ["/tab orca"],
+        ["/tab orca"],
+        ["/tab orca"],
+    ], ceiling=12)
+    assert reason == "repeat"
+    assert used == 2
+
+
+def test_repeat_detection_ignores_order_and_case_and_spacing():
+    """Same work in a different order (or with cosmetic differences) is
+    still the same work."""
+    used, reason = _run_rounds([
+        ["/tab orca", "/jobs"],
+        ["/JOBS", "/tab   orca"],
+    ], ceiling=12)
+    assert (used, reason) == (2, "repeat")
+
+
+def test_alternating_two_sets_stops_on_the_first_repeat():
+    """A/B/A alternation dodged a previous-round-only comparison; the full
+    per-turn signature history catches it."""
+    used, reason = _run_rounds([
+        ["/tab orca"],
+        ["/jobs"],
+        ["/tab orca"],
+    ], ceiling=12)
+    assert (used, reason) == (3, "repeat")
+
+
+def test_empty_round_stops():
+    """A round that executed no ACTION has nothing to feed back — another
+    model turn would be paid for nothing."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round([], [], set(), rounds_used=1)
+    assert dec.proceed is False
+    assert dec.reason == "no_actions"
+    assert dec.new_commands == ()
+
+
+def test_round_of_only_already_executed_commands_is_no_progress():
+    """A reshuffled/partial re-emission is not an identical set, but it
+    still adds nothing new."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca"], ["/jobs\x1f/tab orca"], {"/tab orca", "/jobs"},
+        rounds_used=2)
+    assert dec.proceed is False
+    assert dec.reason == "no_progress"
+
+
+def test_one_new_command_among_old_ones_is_progress():
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca", "/calc show new.err"], ["/tab orca"], {"/tab orca"},
+        rounds_used=1)
+    assert dec.proceed is True
+    assert dec.reason == "progress"
+    assert dec.new_commands == ("/calc show new.err",)
+
+
+def test_repeat_limit_is_clamped_to_at_least_two():
+    """A limit of 1 (or 0) would stop on the very first round and make the
+    loop useless — the helper clamps it."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca"], [], set(), rounds_used=1, repeat_limit=1)
+    assert dec.proceed is True
+    dec = _decide_action_round(
+        ["/tab orca"], [], set(), rounds_used=1, repeat_limit=0)
+    assert dec.proceed is True
+
+
+def test_higher_repeat_limit_tolerates_one_more_occurrence():
+    """The setting has to actually do something — with a limit of 3 the
+    same set may occur three times before the turn ends."""
+    used, reason = _run_rounds([
+        ["/tab orca"], ["/tab orca"], ["/tab orca"],
+    ], ceiling=12, repeat_limit=3)
+    assert (used, reason) == (3, "repeat")
+
+
+def test_action_round_signature_is_order_insensitive():
+    from delfin.dashboard.tab_agent import _action_round_signature
+    assert (_action_round_signature(["/a", "/b"])
+            == _action_round_signature(["/b", "/a"]))
+    assert _action_round_signature([]) == ""
+    assert _action_round_signature(["/a"]) != _action_round_signature(["/b"])
+
+
+def test_decide_action_round_survives_garbage_limits():
+    """Settings come from a user-editable file — bad values must not raise
+    inside the streaming worker."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca"], [], set(), rounds_used="x",
+        ceiling="nope", repeat_limit=None)
+    assert dec.proceed is True
+
+
+def test_resolve_action_round_limits_defaults(monkeypatch):
+    """No setting → generous ceiling, repeat limit 2."""
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+    monkeypatch.setattr(user_settings, "load_settings", lambda: {})
+    assert ta._resolve_action_round_limits() == (
+        ta._ACTION_ROUND_CEILING_DEFAULT, 2)
+
+
+def test_resolve_action_round_limits_reads_agent_settings(monkeypatch):
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda: {"agent": {"max_action_rounds": 5,
+                           "action_repeat_limit": 4}})
+    assert ta._resolve_action_round_limits() == (5, 4)
+
+
+def test_resolve_action_round_limits_zero_disables_the_ceiling(monkeypatch):
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda: {"agent": {"max_action_rounds": 0}})
+    ceiling, repeat = ta._resolve_action_round_limits()
+    assert ceiling >= 10_000
+    assert repeat == 2
+
+
+def test_resolve_action_round_limits_never_raises(monkeypatch):
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+
+    def _boom():
+        raise OSError("settings file corrupt")
+
+    monkeypatch.setattr(user_settings, "load_settings", _boom)
+    assert ta._resolve_action_round_limits() == (
+        ta._ACTION_ROUND_CEILING_DEFAULT, 2)
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda: {"agent": {"max_action_rounds": "many",
+                           "action_repeat_limit": "lots"}})
+    assert ta._resolve_action_round_limits() == (
+        ta._ACTION_ROUND_CEILING_DEFAULT, 2)
+
+
+# -- the stop note ----------------------------------------------------------
+
+def test_ceiling_stop_note_is_honest_and_actionable():
+    """It must name what ran, say the ROUND LIMIT ended the turn (not that
+    the work is done or that the agent misbehaved), and say how to go on."""
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note(
+        "ceiling", ["/tab calc", "/calc show job.err"], 12, [])
+    assert "/tab calc" in note and "/calc show job.err" in note
+    assert "12" in note
+    assert "agent.max_action_rounds" in note
+    assert "continue" in note.lower()
+    # Honesty: no claim that the agent misbehaved, no claim of completion
+    assert "kept emitting" not in note
+    assert "completed" not in note.lower()
+
+
+def test_ceiling_stop_note_lists_unexecuted_commands():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note(
+        "ceiling", ["/tab calc"], 12, ["/jobs", "/tab orca"])
+    assert "Not executed" in note
+    assert "/jobs" in note and "/tab orca" in note
+
+
+def test_repeat_stop_note_says_the_agent_repeated_itself():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note("repeat", ["/tab orca"], 12, [])
+    assert "/tab orca" in note
+    assert "already run" in note
+    assert "follow-up" in note
+    for reason in ("repeat", "no_progress"):
+        assert _format_action_stop_note(reason, ["/tab orca"], 12, [])
+
+
+def test_stop_note_is_empty_for_a_turn_that_finished_on_its_own():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    assert _format_action_stop_note("progress", ["/tab orca"], 12, []) == ""
+    assert _format_action_stop_note("no_actions", [], 12, []) == ""
+
+
+def test_stop_note_truncates_long_command_lists():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note(
+        "ceiling", [f"/tab t{i}" for i in range(9)], 12, [])
+    assert "+4 more" in note
