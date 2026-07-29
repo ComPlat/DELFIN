@@ -293,3 +293,42 @@ def test_resume_id_in_subagent_schema():
            / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
     i = src.find('"name": "subagent"')
     assert '"resume_id"' in src[i:i + 4000], "resume_id param missing"
+
+
+# ---------------------------------------------------------------------------
+# Documented limits must match the code (field question: "are subagents
+# broken?" — they were not, but the prompt understated their budget by 5x
+# on wall-clock, which makes delegating real work look infeasible).
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_states_the_real_subagent_limits():
+    from pathlib import Path
+    import delfin.agent.subagents as sa
+    prompt = (Path(sa.__file__).resolve().parent / "pack" / "agents"
+              / "solo_agent.md").read_text(encoding="utf-8")
+    idx = prompt.find("**Backend limits per subagent run**")
+    assert idx > 0
+    block = prompt[idx:idx + 260]
+    assert f"{sa._MAX_TOOL_CALLS} tool calls" in block
+    assert f"{int(sa._MAX_WALL_S)} s wall-clock" in block
+    assert f"{sa._MAX_OUTPUT_TOKENS} output tokens" in block
+
+
+def test_module_docstring_states_the_real_limits():
+    import delfin.agent.subagents as sa
+    doc = sa.__doc__ or ""
+    assert f"max {sa._MAX_TOOL_CALLS} tool calls" in doc
+    assert f"max {int(sa._MAX_WALL_S)} seconds" in doc
+    assert f"max {sa._MAX_OUTPUT_TOKENS} tokens" in doc
+
+
+def test_explicit_user_request_for_subagents_is_binding():
+    from pathlib import Path
+    import delfin.agent.subagents as sa
+    prompt = (Path(sa.__file__).resolve().parent / "pack" / "agents"
+              / "solo_agent.md").read_text(encoding="utf-8")
+    assert "When the user asks for sub-agents, use them" in prompt
+    assert "outranks your own judgement" in prompt
+    # The only writer preset must not be discouraged any more.
+    assert "Use sparingly; the others are sharper." not in prompt

@@ -29,9 +29,11 @@ Each type maps to:
 
 Hard limits:
 
-  - max 30 tool calls per sub-agent
-  - max 60 seconds wall-clock per sub-agent
-  - max 8000 tokens output
+  - max 40 tool calls per sub-agent      (``_MAX_TOOL_CALLS``)
+  - max 300 seconds wall-clock per run   (``_MAX_WALL_S``)
+  - max 16000 tokens output              (``_MAX_OUTPUT_TOKENS``)
+
+  All three are overridable via ``settings["agent"]["subagents"]``.
 
 Failures don't propagate: a crash inside the sub-agent returns an
 error string, never an exception.

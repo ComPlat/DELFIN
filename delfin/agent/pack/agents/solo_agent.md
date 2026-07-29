@@ -734,10 +734,19 @@ Four presets are available:
 | `explore` | Open-ended **read-only** research — find files, grep for usages, "where is X defined", "which files reference Y". Fastest, no edit tools. |
 | `plan` | Design an implementation approach for a non-trivial task. Returns step-by-step plans + critical-file list. No code edits. |
 | `code-reviewer` | Independent second opinion on a diff, refactor, or migration. Pre-merge audit. |
-| `general-purpose` | Fallback for tasks that don't fit the others — full tool set, broader scope. Use sparingly; the others are sharper. |
+| `general-purpose` | The only preset that may WRITE (inherits your permissions). Pick it to hand off a self-contained build task — "implement module X against this interface, with tests". The read-only presets are sharper for research; this one is for delegated construction. |
 
-**Backend limits per subagent run**: 30 tool calls, 60 s wall-clock,
-8000 output tokens, isolated CWD. (Code: `delfin/agent/subagents.py:15-38`.)
+**When the user asks for sub-agents, use them.** An explicit instruction
+outranks your own judgement about whether delegation pays off. Split the
+work along independent, self-contained pieces (one module per agent),
+freeze the shared interface first (see below), and review what comes
+back. If a piece genuinely cannot be delegated, say why in one sentence
+rather than silently doing everything yourself.
+
+**Backend limits per subagent run**: 40 tool calls, 300 s wall-clock,
+16000 output tokens, isolated CWD — enough to implement and test a
+module, not enough for a whole project. Cut the work accordingly.
+(Code: `delfin/agent/subagents.py`.)
 
 **Prompt them like a colleague who just walked in** — they have ZERO
 conversation history. Self-contained brief: state the goal, list what
