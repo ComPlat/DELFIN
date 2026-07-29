@@ -1510,3 +1510,54 @@ def test_resubmitted_plan_resets_the_counter():
         "mcp__kit-coding__bash",
         "mcp__kit-coding__exit_plan_mode",
     )) == 0
+
+
+# ---------------------------------------------------------------------------
+# Stale watchdog: prefill is not a stall
+# ---------------------------------------------------------------------------
+
+
+def _watchdog_source() -> str:
+    from pathlib import Path as _P
+    return (_P(__file__).resolve().parent.parent / "delfin" / "dashboard"
+            / "tab_agent.py").read_text(encoding="utf-8")
+
+
+def test_first_token_budget_is_separate_and_larger():
+    """Field case 20260729-122058: a dashboard turn was killed after 121 s
+    of silence although the provider had simply not started yet (measured
+    ~96 s time-to-first-token on the same endpoint for a one-word turn).
+    Waiting for the FIRST token must use its own, much larger budget."""
+    src = _watchdog_source()
+    assert "first_token_kill_after_s" in src
+    assert "waiting_for_first = not state.get(\"_stream_saw_output\")" in src
+    assert "budget = first_token_kill if waiting_for_first else kill_after" in src
+    assert "max(\n            600.0, kill_after * 4.0)" in src
+
+
+def test_stream_output_marks_first_token_for_every_channel():
+    src = _watchdog_source()
+    # text, thinking and tool use all count as "the provider started".
+    assert src.count('state["_stream_saw_output"] = True') >= 3
+    # ... and the flag is reset when a turn starts.
+    assert 'state["_stream_saw_output"] = False' in src
+
+
+def test_watchdog_kill_is_not_reported_as_a_backend_failure():
+    src = _watchdog_source()
+    assert 'state["_watchdog_stopped"] = (' in src
+    assert 'if not state.pop("_watchdog_stopped", "")' in src
+    assert "Turn ended by DELFIN's watchdog" in src
+    # The old wording blamed the CLI for our own stop.
+    assert "The CLI ended the turn" not in src
+
+
+def test_kill_watch_rearms_instead_of_expiring():
+    """The first-token budget outlives the initial timer, so a not-yet-due
+    check must re-arm rather than silently stop watching."""
+    src = _watchdog_source()
+    idx = src.find("def _check_kill():")
+    assert idx > 0
+    block = src[idx:idx + 2000]
+    assert "again = _threading.Timer(" in block
+    assert 'state["_stale_kill_timer"] = again' in block

@@ -6610,6 +6610,21 @@ def create_tab(ctx):
             except Exception:
                 pass
 
+        # Time-to-first-token is NOT a stall: the provider is queueing and
+        # prefilling a prompt whose size we control, and on a busy endpoint
+        # that legitimately takes minutes (measured: ~96 s for a one-word
+        # turn). Killing on that budget ends turns that were about to
+        # answer. Mid-stream silence after real output is the actual
+        # pathology, so it keeps the tighter budget.
+        try:
+            from delfin.user_settings import load_settings as _ls2
+            _first_cfg = float(((_ls2() or {}).get("agent", {}) or {})
+                               .get("first_token_kill_after_s") or 0)
+        except Exception:
+            _first_cfg = 0.0
+        first_token_kill = _first_cfg if _first_cfg > 0 else max(
+            600.0, kill_after * 4.0)
+
         def _check_kill():
             """Cooperative kill: send stop signal if still silent."""
             try:
@@ -6619,8 +6634,23 @@ def create_tab(ctx):
                 if last <= 0.0:
                     return
                 elapsed = time.monotonic() - last
-                if elapsed < kill_after:
+                waiting_for_first = not state.get("_stream_saw_output")
+                budget = first_token_kill if waiting_for_first else kill_after
+                if elapsed < budget:
+                    # Not due yet — re-arm for the remaining time instead of
+                    # dropping the watch (the first-token budget outlives
+                    # this timer).
+                    try:
+                        again = _threading.Timer(
+                            max(5.0, budget - elapsed) + 1.0, _check_kill)
+                        again.daemon = True
+                        again.start()
+                        state["_stale_kill_timer"] = again
+                    except Exception:
+                        pass
                     return
+                state["_watchdog_stopped"] = (
+                    "prefill" if waiting_for_first else "stall")
                 engine = state.get("engine")
                 if engine is None:
                     return
@@ -6633,12 +6663,23 @@ def create_tab(ctx):
                         engine.client.signal_stop()
                 except Exception:
                     pass
-                _append_system_message(
-                    f"⏱ Cooperative stop sent — stream silent for "
-                    f"{int(elapsed)} s (> kill threshold {int(kill_after)} s). "
-                    "No tokens were being produced; the turn is being "
-                    "ended to save wall-clock + API cost."
-                )
+                if waiting_for_first:
+                    _append_system_message(
+                        f"⏱ Turn ended by DELFIN's watchdog: the provider "
+                        f"sent nothing for {int(elapsed)} s (first-token "
+                        f"budget {int(budget)} s). No tokens were produced, "
+                        f"so this turn cost nothing. The endpoint was "
+                        f"likely queued or overloaded — /retry, pick a "
+                        f"different model, or raise "
+                        f"`agent.first_token_kill_after_s`."
+                    )
+                else:
+                    _append_system_message(
+                        f"⏱ Turn ended by DELFIN's watchdog: the stream went "
+                        f"silent for {int(elapsed)} s after starting "
+                        f"(stall budget {int(budget)} s). Partial output is "
+                        f"kept — /retry to continue."
+                    )
             except Exception:
                 pass
 
@@ -12879,6 +12920,8 @@ def create_tab(ctx):
         # Mark turn start + arm the stale-stream watcher.
         state["_last_stream_activity"] = time.monotonic()
         state["_stale_seen"] = False
+        state["_stream_saw_output"] = False
+        state.pop("_watchdog_stopped", None)
         _arm_stale_watcher()
         # Snapshot the engine's pre-turn cost/tokens so the worker can
         # emit a per-turn delta footer once the turn finishes.
@@ -12911,6 +12954,7 @@ def create_tab(ctx):
                 def _on_thinking(text):
                     nonlocal last_update
                     state["_last_stream_activity"] = time.monotonic()
+                    state["_stream_saw_output"] = True
                     if state.get("_stale_seen"):
                         # Recovered from stale — clear the warning state
                         state["_stale_seen"] = False
@@ -12928,6 +12972,7 @@ def create_tab(ctx):
                 def _on_token(text):
                     nonlocal last_update
                     state["_last_stream_activity"] = time.monotonic()
+                    state["_stream_saw_output"] = True
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
                     # When first text arrives, flush thinking as collapsed block
@@ -12955,6 +13000,7 @@ def create_tab(ctx):
 
                 def _on_tool_use(tool_name, tool_input):
                     state["_last_stream_activity"] = time.monotonic()
+                    state["_stream_saw_output"] = True
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
                     # Flush thinking if no text came before tool use
@@ -14696,10 +14742,15 @@ def create_tab(ctx):
                     # spinner just disappeared. This is the "agent stops
                     # mid-task" failure mode reported in production.
                     if not chunks and not thinking_chunks:
-                        _append_system_message(
-                            "Agent returned no output. The CLI ended the turn "
-                            "without producing text — try /retry or /status."
-                        )
+                        # Don't blame the backend for our own watchdog: it
+                        # already explained itself above.
+                        if not state.pop("_watchdog_stopped", ""):
+                            _append_system_message(
+                                "Agent returned no output — the backend ended "
+                                "the turn without producing text. /retry to "
+                                "send the same message again, /status for the "
+                                "connection state."
+                            )
                     _set_working(False)
                     _update_status()
                     _update_button_states()
