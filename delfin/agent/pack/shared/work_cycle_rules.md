@@ -20,6 +20,10 @@ These rules apply to every DELFIN work cycle.
 - Break complex work into small stage gates with exit evidence.
 - Do not let builder work begin before scope and criteria are clear.
 - If the current gate fails, stop and surface the blocker.
+- Everything you write INTO code is English: comments, docstrings,
+  identifiers, log and error strings — regardless of the conversation
+  language. Code outlives the chat and is read by people who did not see
+  it. You still talk to the user in their language.
 
 ## DELFIN priority order
 

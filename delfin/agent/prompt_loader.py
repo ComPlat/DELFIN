@@ -122,6 +122,12 @@ class PromptLoader:
             self.repo_root = self._MODULE_DIR.parent.parent
         self._cache: dict[str, str] = {}
         self._prompt_state: dict[tuple[str, str], dict[str, Any]] = {}
+        # The directory the AGENT works in (permissions workspace), set by
+        # AgentEngine. repo_root locates the prompt pack and is the DELFIN
+        # source tree — orientation shown to the model must never use it as
+        # the working directory, or the model writes into DELFIN's own
+        # checkout instead of the user's project.
+        self.workspace_root: Path | None = None
         self._context_tracker: Any = None  # set by AgentEngine
         self._progressive_disclosure: bool = False  # set by AgentEngine
         # Backend statefulness (set by AgentEngine). Only the persistent CLI
@@ -431,10 +437,25 @@ class PromptLoader:
         cwd, git branch, short status, and recent commits.  Keeps the
         block under ~12 lines so it doesn't crowd the prompt.
 
+        Reports the AGENT's workspace — the directory its relative paths
+        resolve against — not the DELFIN source tree. Naming the source
+        tree here misdirects the model into building the user's project
+        inside DELFIN's own checkout (observed in the field).
+
         Failures (no git, detached HEAD, etc.) are degraded gracefully.
         """
-        repo = self.repo_root
+        repo = Path(self.workspace_root or self.repo_root)
         lines: list[str] = [f"cwd: {repo}"]
+        try:
+            if (self.workspace_root
+                    and Path(self.workspace_root).resolve()
+                    != Path(self.repo_root).resolve()):
+                lines.append(
+                    "note: this is your working directory — relative paths "
+                    "resolve here. The DELFIN source tree is a DIFFERENT "
+                    "directory; do not build the user's project inside it.")
+        except Exception:
+            pass
 
         def _git(*args: str) -> str:
             try:
