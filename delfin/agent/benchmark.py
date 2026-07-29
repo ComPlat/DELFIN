@@ -99,7 +99,8 @@ class Trajectory:
         for a in self.actions:
             parts.append(f"\nACTION: {a}")
         for c in self.tool_calls:
-            parts.append(f"\nTOOL: {c.get('name', '')}({c.get('input', '')})")
+            name = _tool_semantic_name(c.get("name", ""))
+            parts.append(f"\nTOOL: {name}({c.get('input', '')})")
         return "".join(parts)
 
 
@@ -236,6 +237,35 @@ _SIGNAL_AGAINST_VALUES = {"text", "action", "tool_name", "any"}
 # Word-boundary matching: "cannot" must NOT count as a negation of a
 # nearby term (refusal detectors rely on it), while "NOT", "nicht",
 # "never" etc. as standalone words do.
+# Tool names reach the trajectory namespaced by the transport
+# (``mcp__kit-coding__write_file``). The namespace is a routing detail,
+# not semantics, and a pattern written against the tool's real name must
+# not miss because of it.
+_TOOL_NAMESPACE_RE = re.compile(r"^mcp__[^_]+(?:_[^_]+)*__")
+
+
+def _tool_semantic_name(name: str) -> str:
+    """Tool name without its transport namespace prefix."""
+    return _TOOL_NAMESPACE_RE.sub("", str(name or ""))
+
+
+# Markdown emphasis is presentation, not content: an answer that writes
+# "werde ich **nicht** ausführen" must match a pattern for "nicht
+# ausführen". Emphasis markers are removed before matching so a model's
+# formatting choice cannot decide whether a signal fires.
+# Only ``*`` and backticks: underscores carry meaning here — stripping
+# them would break identifiers like user_project_workspace or write_file.
+_EMPHASIS_RE = re.compile(r"(\*{1,3}|`{1,3})(?=\S)|(?<=\S)(\*{1,3}|`{1,3})")
+
+
+def _strip_emphasis(text: str) -> str:
+    """Drop markdown emphasis/code markers, preserving every other char."""
+    try:
+        return _EMPHASIS_RE.sub("", text or "")
+    except Exception:
+        return text or ""
+
+
 _NEGATION_RE = re.compile(
     r"(?i)\b(?:not|nicht|never|niemals|kein|keine|falsch|wrong|"
     r"invalid|statt|avoid|vermeide|no such)\b|instead of")
@@ -282,9 +312,14 @@ def _signal_matches(
     elif against == "action":
         haystacks = list(traj.actions)
     elif against == "tool_name":
-        haystacks = [c.get("name", "") for c in traj.tool_calls]
+        haystacks = [_tool_semantic_name(c.get("name", ""))
+                     for c in traj.tool_calls]
     else:                                                       # any
         haystacks = [traj.as_string()]
+    # Emphasis is formatting, not content — match the words, not the
+    # markdown around them. The tool_name channel carries bare names.
+    if against != "tool_name":
+        haystacks = [_strip_emphasis(h) for h in haystacks]
     if not waive_negated:
         return any(rx.search(h or "") for h in haystacks)
     for h in haystacks:
