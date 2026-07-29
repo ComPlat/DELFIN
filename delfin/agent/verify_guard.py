@@ -337,6 +337,19 @@ def scan_for_ungrounded_code_claims(
             seen.add(key)
             if _is_observed(path, obs):
                 continue
+            # Prose alternations ("ORCA/xTB", "APIs/Bibliotheken",
+            # "Input/Output") match the path shape but are not file
+            # citations. An extensionless slash token only counts when
+            # its FIRST segment is a real directory here — fabricated
+            # paths imitate existing structure; word pairs do not.
+            tail = path.rsplit("/", 1)[-1]
+            if "/" in path and "." not in tail and not line:
+                head = path.lstrip("./").split("/", 1)[0]
+                try:
+                    if root is None or not (root / head).is_dir():
+                        continue
+                except OSError:
+                    continue
             exists = False
             try:
                 p = Path(path)
