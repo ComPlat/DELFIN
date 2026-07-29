@@ -1126,6 +1126,10 @@ class KitToolPermissions:
         - "plan"               -> read-only (no write/edit/bash)
         - "default"            -> destructive ops require confirm_callback;
                                   bash auto-allow list bypasses callback
+        - "diff_approval"      -> write/edit tools stage a pending diff
+                                  (pending_changes) instead of writing; the
+                                  user applies each change via /approve in
+                                  the dashboard. bash keeps its normal gate.
         - "acceptEdits"        -> write/edit auto-allowed (sandbox-checked);
                                   bash still gated by callback / auto-allow
         - "bypassPermissions"  -> sandbox + denylist still enforced, but no
@@ -4332,6 +4336,36 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    def _stage_pending_change(
+        self, tool: str, resolved: Path, old_text: "Optional[str]",
+        new_text: str, perms: "KitToolPermissions",
+    ) -> str:
+        """diff_approval mode: record the change as PENDING instead of
+        writing it. The read-tracker is deliberately NOT updated — the
+        on-disk file did not change, so the read baseline must not move."""
+        from . import pending_changes as _pc
+        rec = _pc.stage(
+            getattr(perms, "task_session_id", "") or "",
+            tool=tool, path=str(resolved),
+            old_text=old_text, new_text=new_text,
+        )
+        if "error" in rec:
+            return json.dumps(
+                {"error": f"diff_approval staging failed: {rec['error']}"})
+        excerpt = "\n".join(str(rec.get("diff", "")).splitlines()[:20])
+        return json.dumps({
+            "status": "staged",
+            "change_id": rec["id"],
+            "path": self._display_path(resolved, perms),
+            "note": (
+                "diff-approval mode: the edit was NOT applied. It is staged "
+                f"as a pending diff; the user approves (/approve {rec['id']}) "
+                "or rejects it in the dashboard. Do not assume the file "
+                "changed — on-disk content is unchanged until approval."
+            ),
+            "diff_excerpt": excerpt,
+        }, ensure_ascii=False)
+
     def _ensure_loaded(self) -> bool:
         """Load doc index and build search engine. Returns True if ready."""
         if self._engine is not None:
@@ -5740,7 +5774,7 @@ class _DocToolExecutor:
             # may ask (bug 20260616-183359). The deny-list + secret scan already
             # ran above, so only non-dangerous, non-auto-allowed commands reach
             # the prompt. Head-less callers (no callback) keep the prose block.
-            if mode == "default" and perms.confirm_callback is not None:
+            if mode in ("default", "diff_approval") and perms.confirm_callback is not None:
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
                 try:
@@ -5971,6 +6005,11 @@ class _DocToolExecutor:
         else:
             old_text = ""
 
+        if getattr(perms, "mode", "") == "diff_approval":
+            return self._stage_pending_change(
+                "write_file", resolved,
+                old_text if existed else None, content, perms)
+
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             resolved.write_text(content, encoding="utf-8")
@@ -6043,6 +6082,9 @@ class _DocToolExecutor:
                 fm = _editblock.fuzzy_replace(old_text, old_string, new_string)
                 if fm is not None:
                     new_text = fm.new_text
+                    if getattr(perms, "mode", "") == "diff_approval":
+                        return self._stage_pending_change(
+                            "edit_file", resolved, old_text, new_text, perms)
                     try:
                         resolved.write_text(new_text, encoding="utf-8")
                     except Exception as exc:
@@ -6080,6 +6122,10 @@ class _DocToolExecutor:
             if replace_all
             else old_text.replace(old_string, new_string, 1)
         )
+
+        if getattr(perms, "mode", "") == "diff_approval":
+            return self._stage_pending_change(
+                "edit_file", resolved, old_text, new_text, perms)
 
         try:
             resolved.write_text(new_text, encoding="utf-8")
@@ -6175,6 +6221,10 @@ class _DocToolExecutor:
                 )})
             text = text.replace(o, n) if replace_all else text.replace(o, n, 1)
             per_edit_replacements.append(count if replace_all else 1)
+
+        if getattr(perms, "mode", "") == "diff_approval":
+            return self._stage_pending_change(
+                "multi_edit", resolved, old_text, text, perms)
 
         try:
             resolved.write_text(text, encoding="utf-8")
@@ -6865,6 +6915,34 @@ class _DocToolExecutor:
         except OSError:
             _nb_old_text = None
 
+        if getattr(perms, "mode", "") == "diff_approval":
+            if _nb_old_text is None:
+                return json.dumps({"error": (
+                    "diff_approval mode: cannot stage this notebook edit — "
+                    "no pre-image could be read."
+                )})
+            import tempfile as _tf
+            from . import notebook_tools as _nb
+            _fd, _tmp_name = _tf.mkstemp(suffix=".ipynb")
+            _tmp_nb = Path(_tmp_name)
+            try:
+                with os.fdopen(_fd, "w", encoding="utf-8", newline="") as _fh:
+                    _fh.write(_nb_old_text)
+                _nb.apply_edit(_tmp_nb, cell_idx=cell_idx, mode=mode,
+                               source=source, cell_type=cell_type)
+                _staged = _tmp_nb.read_bytes().decode("utf-8", errors="replace")
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)})
+            except Exception as exc:
+                return json.dumps({"error": f"notebook edit failed: {exc}"})
+            finally:
+                try:
+                    _tmp_nb.unlink()
+                except OSError:
+                    pass
+            return self._stage_pending_change(
+                "notebook_edit", resolved, _nb_old_text, _staged, perms)
+
         try:
             from . import notebook_tools as _nb
             n_before, n_after = _nb.apply_edit(
@@ -7009,6 +7087,57 @@ class _DocToolExecutor:
             gate_err = self._run_permission_gate("apply_patch", arguments, perms)
             if gate_err is not None:
                 return json.dumps({"error": gate_err})
+        if getattr(perms, "mode", "") == "diff_approval" and not check_only:
+            # Per-file staging via the pure-Python applier: post-images are
+            # computed in memory for ALL files before anything is staged.
+            # Diffs only `git apply` could handle (renames, binary, fuzz)
+            # are refused — a staged change must be reproducible byte-exact
+            # at approval time.
+            try:
+                _hunks_per_file = _pa._parse_diff(diff)
+            except ValueError as exc:
+                return json.dumps({"error": (
+                    f"diff_approval mode: cannot stage this patch per file "
+                    f"(parse error: {exc}). Re-issue the change with "
+                    "write_file/edit_file so it can be staged for approval."
+                )})
+            _to_stage: list[dict] = []
+            for _rel, _hunks in _hunks_per_file.items():
+                _fp = Path(perms.workspace) / _rel
+                try:
+                    _old = _fp.read_bytes().decode("utf-8", errors="replace")
+                except OSError:
+                    _old = None  # new file
+                try:
+                    _new = _pa._apply_hunks_to_file(_old or "", _hunks)
+                except ValueError as exc:
+                    return json.dumps({"error": (
+                        f"diff_approval mode: hunks for '{_rel}' do not "
+                        f"apply cleanly ({exc}). Nothing was staged."
+                    )})
+                _to_stage.append({"rel": _rel, "old": _old, "new": _new})
+            from . import pending_changes as _pc
+            _staged_files: list[dict] = []
+            for _item in _to_stage:
+                _rec = _pc.stage(
+                    getattr(perms, "task_session_id", "") or "",
+                    tool="apply_patch",
+                    path=str(Path(perms.workspace) / _item["rel"]),
+                    old_text=_item["old"], new_text=_item["new"],
+                )
+                _staged_files.append(
+                    {"path": _item["rel"], "error": _rec["error"]}
+                    if "error" in _rec else
+                    {"path": _item["rel"], "change_id": _rec["id"]})
+            return json.dumps({
+                "status": "staged",
+                "files": _staged_files,
+                "note": (
+                    "diff-approval mode: no file was modified. Each file's "
+                    "change is pending user approval (/approve <id> or "
+                    "/approve all in the dashboard)."
+                ),
+            }, ensure_ascii=False)
         pre_images: dict[str, "Optional[str]"] = {}
         if not check_only:
             try:

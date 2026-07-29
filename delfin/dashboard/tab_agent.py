@@ -1155,6 +1155,9 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
   ("Memory", "/memories", "List project memories", False),
   ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Session", "/changes", "What this session changed (audit log): files, commands, denials", False),
+    ("Session", "/pending", "List staged diffs awaiting approval (diff-approval mode)", False),
+    ("Session", "/approve", "Apply a staged diff (/approve <id|all>)", True),
+    ("Session", "/reject", "Discard a staged diff (/reject <id|all>)", True),
     ("Diagnostics", "/doctor", "Check prerequisites: docs index, keys, binaries, MCP, scheduler, disk", False),
     ("Attention", "/attention", "Parked questions/events awaiting you (attention inbox)", False),
     ("Attention", "/attention answer", "Answer a parked item (/attention answer <id> <text>)", True),
@@ -3488,12 +3491,15 @@ def create_tab(ctx):
     # KIT permission-mode picker (chip + cycle button).
     # Top-of-chat chip = current mode + verbose label.
     # Quick button next to Send = compact cycle button.
-    _KIT_MODE_ORDER = ("plan", "default", "acceptEdits", "bypassPermissions")
+    _KIT_MODE_ORDER = ("plan", "default", "diff_approval",
+                       "acceptEdits", "bypassPermissions")
     _KIT_MODE_VISUAL = {
         "plan":              ("Plan", "#5f6368", "#f1f3f4",
                               "Read-only · Agent schlägt vor, führt nichts aus"),
         "default":           ("Default", "#1a73e8", "#e8f0fe",
                               "Schreiben/Bash bestätigt jeden Schritt"),
+        "diff_approval":     ("Diff-Approval", "#188038", "#e6f4ea",
+                              "Writes staged as diffs · apply via /approve"),
         "acceptEdits":       ("Accept Edits", "#e8710a", "#fef7e0",
                               "Schreiben/Edit auto · Bash bestätigt"),
         "bypassPermissions": ("Bypass", "#c5221f", "#fce8e6",
@@ -9126,13 +9132,75 @@ def create_tab(ctx):
 
         if cmd in ("/changes", "/changes all"):
             from delfin.agent import audit_log as _audit
-            _sid = getattr(engine, "session_id", "") or ""
+            engine = state.get("engine")
+            _sid = (getattr(engine, "session_id", "") or "") if engine else ""
             if cmd == "/changes all" or not _sid:
                 _report = _audit.build_changes_report(
                     workspace=str(ctx.repo_dir or "."))
             else:
                 _report = _audit.build_changes_report(_sid)
             _append_system_message(_audit.format_changes_report(_report))
+            return True
+
+        if cmd == "/pending":
+            from delfin.agent import pending_changes as _pc
+            engine = state.get("engine")
+            _sid = str(getattr(engine, "session_id", "") or "") if engine else ""
+            if not _sid:
+                _append_system_message("No active session — nothing pending.")
+                return True
+            _append_system_message(_pc.render_pending(_sid))
+            return True
+
+        if cmd.startswith("/approve"):
+            from delfin.agent import pending_changes as _pc
+            engine = state.get("engine")
+            _sid = str(getattr(engine, "session_id", "") or "") if engine else ""
+            arg = text[len("/approve"):].strip()
+            if not _sid or not arg:
+                _append_system_message("Usage: /approve <id|all>  (see /pending)")
+                return True
+            kp = getattr(engine, "kit_permissions", None) if engine else None
+            _ws = getattr(kp, "workspace", None) or ctx.repo_dir or "."
+            if arg.lower() == "all":
+                res = _pc.approve_all(_sid, workspace=_ws)
+                lines = [f"Approved: {len(res['applied'])} change(s)"]
+                for c in res["conflicts"]:
+                    lines.append(
+                        f"  conflict #{c.get('id')} {c.get('path')}: "
+                        f"{c.get('reason')}")
+                for e in res["errors"]:
+                    lines.append(f"  error: {e}")
+                _append_system_message("\n".join(lines))
+                return True
+            res = _pc.approve(_sid, arg, workspace=_ws)
+            if res.get("status") == "applied":
+                _append_system_message(
+                    f"Applied change #{res['id']} → {res.get('path', '')} "
+                    "(covered by the undo journal).")
+            else:
+                _append_system_message(
+                    f"Change #{arg}: {res.get('status')}"
+                    + (f" — {res['reason']}" if res.get("reason") else ""))
+            return True
+
+        if cmd.startswith("/reject"):
+            from delfin.agent import pending_changes as _pc
+            engine = state.get("engine")
+            _sid = str(getattr(engine, "session_id", "") or "") if engine else ""
+            arg = text[len("/reject"):].strip()
+            if not _sid or not arg:
+                _append_system_message("Usage: /reject <id|all>  (see /pending)")
+                return True
+            if arg.lower() == "all":
+                res = _pc.reject_all(_sid)
+                _append_system_message(
+                    f"Rejected: {len(res['rejected'])} change(s)")
+                return True
+            res = _pc.reject(_sid, arg)
+            _append_system_message(
+                f"Change #{arg}: {res.get('status')}"
+                + (f" — {res['reason']}" if res.get("reason") else ""))
             return True
 
         if cmd == "/doctor":
@@ -12426,6 +12494,7 @@ def create_tab(ctx):
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
             "/changes", "/doctor", "/attention", "/pin", "/batch",
+            "/pending", "/approve", "/reject",
             "/bugs", "/watch", "/fix", "/grant",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
