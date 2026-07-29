@@ -8168,14 +8168,24 @@ class _DocToolExecutor:
             return json.dumps({"error": f"subagent runner raised: {exc}"})
         if not isinstance(payload, dict):
             return json.dumps({"error": "runner must return a dict payload"})
-        return json.dumps(payload, ensure_ascii=False)
+        # Delegate-report verification: cross-check the sub-agent's claims
+        # against its own recorded tool trace before the parent reads them.
+        # The built-in runner already attaches a verdict in
+        # SubagentResult.to_payload; this is the belt for foreign runners and
+        # is a no-op when a verdict is present. Never raises.
+        return json.dumps(
+            _sa.attach_verification(payload), ensure_ascii=False)
 
     def _execute_subagent_result(self, arguments: dict) -> str:
         from . import subagents as _sa
         sa_id = (arguments.get("sa_id") or "").strip()
         if not sa_id:
             return json.dumps({"error": "sa_id is required"})
-        return json.dumps(_sa.get_subagent_result(sa_id), ensure_ascii=False)
+        # get_subagent_result already cross-checks a finished report against
+        # its stored tool interactions; re-wrapping is a no-op (idempotent).
+        return json.dumps(
+            _sa.attach_verification(_sa.get_subagent_result(sa_id)),
+            ensure_ascii=False)
 
     # ------- Skill invocation ---------------------------------------------
 
