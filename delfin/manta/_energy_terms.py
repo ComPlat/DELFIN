@@ -202,6 +202,166 @@ def _ideal_bond_length(mol, i: int, j: int, order: float) -> float:
     return float(r_i + r_j) * scale
 
 
+# --------------------------------------------------------------------------
+# Signature-resolved ideal angle (measured, atom- and bond-specific)
+# --------------------------------------------------------------------------
+# WHY.  ``_hybridization_theta`` below reads RDKit's hybridization LABEL, which offers
+# three numbers for the whole periodic table and is decided WITHOUT the metal.  Measured
+# against the CSD that is wrong in two ways that matter:
+#   * the X-D-X angle at a saturated donor follows the atom's PERIOD, not one 109.47 for
+#     every element (2:109.5  3:104.0  4:101.5  5:100.5  6:99.0);
+#   * a donor whose lone pair joins a neighbouring pi system is TRIGONAL PLANAR with the
+#     metal IN that plane -- RDKit calls the same nitrogen sp3 and asks for 109.5.  That
+#     second case is AFOMEO frame 4: R2N-M pulled out of the pi plane.
+# Everything below keys off the ATOM and its BONDS (element, period, sigma-partner count
+# WITH the metal counted, pi activity, ring membership and ring size).  No functional
+# group is named anywhere -- "not every nitrogen is the same" is expressed as the bonding
+# situation at that one nitrogen.
+_THETA_BY_PERIOD: Dict[int, float] = {2: 109.5, 3: 104.0, 4: 101.5, 5: 100.5, 6: 99.0}
+# Ring angles: crystal-measured where we have them, else the regular polygon
+# (internal = 180 - 360/n, exocyclic = (360 - internal)/2).
+_RING_INTERNAL_MEAS: Dict[int, float] = {5: 106.0, 6: 118.0}
+_RING_EXOCYCLIC_MEAS: Dict[int, float] = {5: 126.5, 6: 120.75}
+# M-D-X at a SATURATED donor: as the two substituents close down, the metal is pushed to a
+# wider angle.  Measured slope, not fitted here.
+_PHI_MD_SLOPE = 0.87
+_THETA_PLANAR = 120.0
+_THETA_LINEAR = 180.0
+
+
+def _period_of(z: int) -> int:
+    for p, hi in ((1, 2), (2, 10), (3, 18), (4, 36), (5, 54), (6, 86)):
+        if z <= hi:
+            return p
+    return 7
+
+
+def _ring_sizes_containing(mol, *idxs) -> List[int]:
+    """Sizes of the rings that contain EVERY given atom index (smallest first)."""
+    try:
+        rings = mol.GetRingInfo().AtomRings()
+    except Exception:
+        return []
+    out = [len(r) for r in rings if all(x in r for x in idxs)]
+    return sorted(out)
+
+
+def _is_pi_active(mol, idx: int) -> bool:
+    """True if atom ``idx`` itself carries pi character (aromatic or a multiple bond)."""
+    try:
+        atom = mol.GetAtomWithIdx(idx)
+        if atom.GetIsAromatic():
+            return True
+        for b in atom.GetBonds():
+            if float(b.GetBondTypeAsDouble()) >= 1.5:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _has_conjugated_lone_pair(mol, idx: int) -> bool:
+    """True if ``idx`` has a lone pair AND a neighbour with pi character.
+
+    The lone pair then delocalises into that pi system and the centre flattens.  Decided
+    from the element's group and the atom's own charge -- never from a group name.
+    """
+    try:
+        atom = mol.GetAtomWithIdx(idx)
+        z = atom.GetAtomicNum()
+    except Exception:
+        return False
+    # Groups 15/16/17 across every period carry lone pairs; a negative formal charge adds
+    # one to anything (a carbanion donor included), so no element is special-cased.
+    has_lp = (z in (7, 8, 9, 15, 16, 17, 33, 34, 35, 51, 52, 53, 83, 84, 85)
+              or atom.GetFormalCharge() < 0)
+    if not has_lp:
+        return False
+    for nb in atom.GetNeighbors():
+        if _is_pi_active(mol, int(nb.GetIdx())):
+            return True
+    return False
+
+
+def _signature_theta(mol, i: int, j: int, k: int) -> float:
+    """Ideal angle (radians) for the triple (i, j, k) from the bonding signature at ``j``.
+
+    Order of the rules is chemistry, not convenience:
+      1. ring-internal / ring-exocyclic -- a ring fixes the angle geometrically, and for a
+         planar ring donor the metal simply IS the exocyclic substituent (pyridine N->M
+         lands on ~121 deg, which the period rule would have got wrong);
+      2. trigonal-planar centre -- 3 sigma partners (metal counted) plus pi character or a
+         conjugated lone pair.  Applies to EVERY triple at ``j`` including M-D-X, which is
+         precisely "metal in the pi plane";
+      3. linear centre -- 2 sigma partners with a triple bond or two doubles;
+      4. M-D-X at a saturated donor -- period rule through the measured slope;
+      5. X-D-X at a saturated donor -- period rule.
+    """
+    metals = _smiles_converter_metals()
+    try:
+        a_j = mol.GetAtomWithIdx(j)
+        sym_i = mol.GetAtomWithIdx(i).GetSymbol()
+        sym_k = mol.GetAtomWithIdx(k).GetSymbol()
+    except Exception:
+        return _THETA_SP3
+    i_is_m = sym_i in metals
+    k_is_m = sym_k in metals
+
+    # --- 1. rings ---------------------------------------------------------------
+    common = _ring_sizes_containing(mol, i, j, k)
+    if common:
+        n = common[0]
+        return math.radians(_RING_INTERNAL_MEAS.get(n, 180.0 - 360.0 / n))
+    j_rings = _ring_sizes_containing(mol, j)
+    if j_rings:
+        # Exocyclic only if exactly one of i/k shares a ring with j.
+        in_ring = sum(1 for x in (i, k) if _ring_sizes_containing(mol, j, x))
+        if in_ring == 1:
+            n = j_rings[0]
+            internal = _RING_INTERNAL_MEAS.get(n, 180.0 - 360.0 / n)
+            return math.radians(
+                _RING_EXOCYCLIC_MEAS.get(n, (360.0 - internal) / 2.0))
+
+    # --- sigma partners, WITH the metal counted --------------------------------
+    try:
+        n_sigma = int(a_j.GetDegree())
+        z_j = int(a_j.GetAtomicNum())
+        max_order = max((float(b.GetBondTypeAsDouble()) for b in a_j.GetBonds()),
+                        default=1.0)
+        n_double = sum(1 for b in a_j.GetBonds()
+                       if 1.75 <= float(b.GetBondTypeAsDouble()) < 2.5)
+    except Exception:
+        return _THETA_SP3
+
+    # --- 2. trigonal planar (this is the AFOMEO case) --------------------------
+    if n_sigma == 3 and (_is_pi_active(mol, j) or _has_conjugated_lone_pair(mol, j)):
+        return math.radians(_THETA_PLANAR)
+
+    # --- 3. linear -------------------------------------------------------------
+    if n_sigma == 2 and (max_order >= 2.5 or n_double >= 2):
+        return math.radians(_THETA_LINEAR)
+
+    theta_base = _THETA_BY_PERIOD.get(_period_of(z_j), 109.5)
+
+    # --- 4. M-D-X at a saturated donor ----------------------------------------
+    if i_is_m != k_is_m:
+        return math.radians(109.5 - _PHI_MD_SLOPE * (theta_base - 109.5))
+
+    # --- 5. X-D-X at a saturated donor ----------------------------------------
+    return math.radians(theta_base)
+
+
+def _build_angle_targets(mol) -> List[Tuple[int, int, int, float]]:
+    """``(i, j, k, theta_ideal)`` for every angle, resolved once per refinement.
+
+    The caller memoises this in the per-refine ``sym_info`` dict, so the signature work
+    is paid once instead of once per L-BFGS iteration (a 200-iteration run over a few
+    thousand angles would otherwise dominate the runtime).
+    """
+    return [(i, j, k, _signature_theta(mol, i, j, k))
+            for (i, j, k) in _enumerate_angles(mol)]
+
+
 def _hybridization_theta(mol, j: int) -> float:
     """Return ideal bond angle (radians) at atom ``j`` from RDKit hybridization."""
     try:
@@ -329,11 +489,17 @@ def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
 # U_angle
 # ---------------------------------------------------------------------------
 
-def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0
+def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0,
+            targets: Optional[List[Tuple[int, int, int, float]]] = None
             ) -> Tuple[float, np.ndarray]:
     """Bond-angle penalty per hybridization: Σ k_angle · (θ - θ_ideal)².
 
     sp → 180°, sp2 → 120°, sp3 → 109.47°. Metal-centred triples skipped.
+
+    ``targets`` optionally supplies ``(i, j, k, theta_ideal)`` from
+    :func:`_build_angle_targets`, i.e. the measured signature angle instead of RDKit's
+    three-value hybridization label.  Only the TARGET changes -- the analytic gradient
+    below is a derivative of theta and is untouched by where theta_ideal came from.
     """
     coords = np.asarray(coords, dtype=np.float64)
     n = coords.shape[0]
@@ -343,7 +509,9 @@ def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0
     if k_angle <= 0.0 or n == 0:
         return float(energy), grad
 
-    for (i, j, k) in _enumerate_angles(mol):
+    _triples = (targets if targets is not None
+                else [(i, j, k, None) for (i, j, k) in _enumerate_angles(mol)])
+    for (i, j, k, _theta_target) in _triples:
         x_ij = coords[i] - coords[j]
         x_kj = coords[k] - coords[j]
         norm_ij = float(np.linalg.norm(x_ij))
@@ -359,7 +527,8 @@ def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0
         if sin_t < _EPS_SIN:
             continue
         theta = math.acos(cos_t)
-        theta_id = _hybridization_theta(mol, j)
+        theta_id = (_theta_target if _theta_target is not None
+                    else _hybridization_theta(mol, j))
         delta = theta - theta_id
         energy += k_angle * delta * delta
 
@@ -860,7 +1029,22 @@ def U_total(coords: np.ndarray, mol, sym_info: Dict, params: Dict
     e_total += e
     g_total += g
 
-    e, g = U_angle(coords, mol, k_angle=k_angle)
+    # Signature-resolved angle targets (DELFIN_FFREE_THETA_SIGNATURE, default OFF ->
+    # byte-identical).  Memoised in sym_info, which is created once per refinement, so the
+    # signature work is paid once and not once per L-BFGS iteration; a plain dict also
+    # means no global state and no id()-reuse hazard.
+    _angle_targets = None
+    if os.environ.get("DELFIN_FFREE_THETA_SIGNATURE", "0") == "1":
+        _angle_targets = sym_info.get("_angle_targets")
+        if _angle_targets is None:
+            try:
+                _angle_targets = _build_angle_targets(mol)
+            except Exception:
+                _angle_targets = []
+            sym_info["_angle_targets"] = _angle_targets
+        if not _angle_targets:
+            _angle_targets = None
+    e, g = U_angle(coords, mol, k_angle=k_angle, targets=_angle_targets)
     e_total += e
     g_total += g
 
@@ -1015,3 +1199,63 @@ if __name__ == "__main__":  # pragma: no cover
     print(f"  max|grad_an - grad_fd|  = {diff:.4e}")
     print(f"  relative                = {rel:.4e}")
     print(f"  PASS" if rel < 1.0e-3 else f"  FAIL (rel >= 1e-3)")
+
+    # ------------------------------------------------------------------
+    # Signature-angle cases.  These are the bonding situations the RDKit
+    # hybridization label gets wrong; each names an ATOM and its BONDS, never a
+    # functional group.  Run unconditionally so a regression shows up without a flag.
+    # ------------------------------------------------------------------
+    print("\nSignature angle (_signature_theta) — measured targets:")
+    _cases = [
+        # smiles, triple kind ("MDX" = metal-donor-X, "XDX" = X-donor-X), want deg, what
+        ("[Cu][N+]1=CC=CC=C1", "MDX", 120.75,
+         "pyridine N->M: planar 6-ring donor, metal IS the exocyclic substituent"),
+        ("[Cu][N+]1=CC=CC=C1", "XDX", 118.0,
+         "same N, ring-internal C-N-C: the 6-ring's measured internal angle"),
+        ("C=C[N]([Cu])C=C", "MDX", 120.0,
+         "amido R2N-M conjugated: trigonal planar, METAL IN THE PI PLANE (AFOMEO)"),
+        ("C=C[N]([Cu])C=C", "XDX", 120.0,
+         "same N, C-N-C: planar too -- one signature, every triple at that atom"),
+        ("CN(C)[Cu]", "XDX", 109.5,
+         "saturated amine C-N-C: period-2 rule, no pi neighbour"),
+        ("CS(C)[Cu]", "XDX", 104.0,
+         "period-3 donor, C-S-C closes to the period value (NOT 109.47)"),
+        ("CS(C)[Cu]", "MDX", 114.28,
+         "same S, M-S-C opens as the substituents close (measured slope 0.87)"),
+        ("C[Se](C)[Cu]", "XDX", 101.5,
+         "period-4 donor Se: the row keeps closing -- universal, not per-element"),
+    ]
+    for smi_c, _kind, expect, what in _cases:
+        m = Chem.MolFromSmiles(smi_c)
+        if m is None:
+            print(f"  SKIP (unparsable): {smi_c}")
+            continue
+        m = Chem.AddHs(m)
+        _mets = _smiles_converter_metals()
+        # Pick the donor: the heavy atom bonded to the metal.
+        _j = None
+        for a in m.GetAtoms():
+            if a.GetSymbol() in _mets:
+                for nb in a.GetNeighbors():
+                    if nb.GetSymbol() != "H":
+                        _j = int(nb.GetIdx())
+                        break
+            if _j is not None:
+                break
+        if _j is None:
+            print(f"  SKIP (no donor): {smi_c}")
+            continue
+        _nbrs = [int(n.GetIdx()) for n in m.GetAtomWithIdx(_j).GetNeighbors()
+                 if m.GetAtomWithIdx(int(n.GetIdx())).GetSymbol() != "H"]
+        _mi = [x for x in _nbrs if m.GetAtomWithIdx(x).GetSymbol() in _mets]
+        _xi = [x for x in _nbrs if x not in _mi]
+        if _kind == "MDX" and _mi and _xi:
+            _i, _k = _mi[0], _xi[0]
+        elif _kind == "XDX" and len(_xi) >= 2:
+            _i, _k = _xi[0], _xi[1]
+        else:
+            print(f"  SKIP (no {_kind} triple): {smi_c}")
+            continue
+        got = math.degrees(_signature_theta(m, _i, _j, _k))
+        ok = abs(got - expect) < 1.0
+        print(f"  {'OK  ' if ok else 'FAIL'} {got:6.2f}deg (want {expect:6.2f})  {what}")
