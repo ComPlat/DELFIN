@@ -257,6 +257,24 @@ def _donor_cov(donor: str) -> float:
     return COV.get(donor, 0.75)
 
 
+def _measured_md(metal: str, donor: str):
+    """Measured p50 for this metal-donor pair, or None when no bin covers it.
+
+    Element-pair level deliberately: at seating time there IS no M-D bond in the ligand
+    mol, so the full bond signature cannot be computed here.  That makes the lookup
+    coarser than the functional's -- one p50 over all coordination numbers for that pair --
+    but still strictly closer to reality than a radii sum, which knows nothing at all.
+    Refining it by coordination number (the metal's degree is already part of the
+    signature) is the obvious next step and needs the CN threaded down to this call.
+    """
+    try:
+        from delfin.manta._energy_terms import _bond_band_table
+        row = _bond_band_table().get("|".join(sorted((metal, donor))) + "|1.0")
+        return None if row is None else float(row[1])          # p50
+    except Exception:
+        return None
+
+
 def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
     """Metal–donor placement distance (Å).
 
@@ -274,6 +292,18 @@ def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
     cyanide / halide / oxo-alkoxo / amide) — this is what distinguishes e.g.
     azide-N (short) from pyridine-N (unchanged) that the bare element sum cannot
     (#305 / GIXFIF).  Universal (graph-only, never SMILES-specific), deterministic."""
+    # MEASURED M-D LENGTH (DELFIN_FFREE_MD_MEASURED=1, default OFF -> byte-identical).
+    # A covalent-radii sum is not where crystals put a metal-donor bond, and this is a
+    # SETTING, not an optimisation: the builder places the donor at this distance and
+    # that is the end of it -- no weight, no barrier, no gate that can reject it.
+    # Measured basis: over 107 crystals the same radii-sum reference made U_topology score
+    # our own frames FIVE TIMES BETTER than reality (ratio 0.20); swapping it for the
+    # measured band took the crystal force from 52833 to 67.39, a factor of 784.  Here the
+    # same number is used one step earlier, where it costs nothing to be right.
+    if os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1":
+        _m = _measured_md(metal, donor)
+        if _m is not None:
+            return float(min(4.0, max(0.8, _m)))
     if os.environ.get("DELFIN_FFFREE_MD_CONTEXT", "0") != "1" or atom is None:
         return COV.get(metal, 1.5) + _donor_cov(donor)
     try:
