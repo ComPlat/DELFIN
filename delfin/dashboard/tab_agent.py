@@ -1257,15 +1257,31 @@ def _agent_workspace_from_launch(launch_cwd: str, fallback) -> "Path":
     return p
 
 
+_QUOTA_SPEND_RE = re.compile(
+    r"(?i)spend\s*[=:]\s*([0-9.]+).{0,40}?budget\s*[=:]\s*([0-9.]+)")
+
+
 def _classify_model_error_text(error_text: str) -> str:
-    """Classify a model/endpoint error: 'temp' (backend temporarily
-    unavailable — it WILL recover, NOT an auth problem), 'auth' (invalid key /
-    model not provisioned), or '' (neither). KIT's ServiceUnavailable dump
+    """Classify a model/endpoint error: 'quota' (the ACCOUNT's spending
+    limit is used up — no retry, no model switch, only the user can lift
+    it), 'temp' (backend temporarily unavailable — it WILL recover, NOT an
+    auth problem), 'auth' (invalid key / model not provisioned), or ''
+    (neither). KIT's ServiceUnavailable dump
     echoes 'Received Model Group=…', so the 'temp' signal must win over the
     'model group' auth signal (bug 2026-06-26: a flapping qwen3.5-397b was
     shown as 'auth/401 — invalid key' and marked permanently broken)."""
     et = error_text or ""
     low = et.lower()
+    # Account budget exhausted. It arrives as a 400, which otherwise reads
+    # like a client error, and a model cannot work around it: every further
+    # call fails the same way. Checked FIRST so it can never be mistaken for
+    # a flapping backend or a bad key (field case 2026-07-30: the gateway
+    # reported 'ExceededBudget ... Spend=5.55, Budget=5.0' and the agent
+    # kept improvising against a hard wall).
+    if ("exceededbudget" in low or "over budget" in low
+            or "insufficient_quota" in low or "quota exceeded" in low
+            or "billing" in low and "limit" in low):
+        return "quota"
     if ("temporarily unavailable" in low or "serviceunavailableerror" in low
             or "service unavailable" in low or "please try again later" in low
             or "503" in et):
@@ -15053,12 +15069,27 @@ def create_tab(ctx):
                 _err_kind = _classify_model_error_text(error_text)
                 is_temp_unavailable = _err_kind == "temp"
                 is_model_unavailable = _err_kind == "auth"
+                is_quota_exhausted = _err_kind == "quota"
                 _cur_model = ""
                 try:
                     _cur_model = model_dropdown.value or ""
                 except Exception:
                     pass
-                if is_temp_unavailable:
+                if is_quota_exhausted:
+                    _spend = _QUOTA_SPEND_RE.search(error_text or "")
+                    _amounts = (f" — spent {_spend.group(1)} of "
+                                f"{_spend.group(2)}" if _spend else "")
+                    _append_system_message(
+                        f"\U0001F6D1 The account's spending budget on this "
+                        f"endpoint is used up{_amounts}. This is not a DELFIN "
+                        f"limit and not a model problem: every further call "
+                        f"fails the same way. The cap sits on the ACCOUNT, "
+                        f"so switching to another model on the same endpoint "
+                        f"does not help either — the budget has to be raised "
+                        f"by whoever operates the endpoint, or it resets with "
+                        f"the next billing period."
+                    )
+                elif is_temp_unavailable:
                     _append_system_message(
                         f"⏳ Model **{_cur_model or 'currently selected'}** is "
                         f"temporarily unavailable on KIT (backend overloaded or "
