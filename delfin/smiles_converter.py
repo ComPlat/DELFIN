@@ -2114,8 +2114,11 @@ def _apply_baustein6_if_enabled(mol, results, dual_parse_done: bool):
                     # armed, so default behaviour is untouched.
                     import sys as _s6
                     print(f"[B6] declined {label}: err={report.get('error')!r} "
+                          f"topo_in={report.get('topo_ok_input')} "
                           f"topo={report.get('topology_preserved')} "
                           f"fallback={report.get('fallback_used')} "
+                          f"E={report.get('energy_initial')}->{report.get('energy_final')} "
+                          f"it={report.get('iterations')} "
                           f"pg={report.get('global_pg')}", file=_s6.stderr)
                     new_results.append((xyz, label))
             except Exception as _b6_frame_exc:
@@ -2124,6 +2127,12 @@ def _apply_baustein6_if_enabled(mol, results, dual_parse_done: bool):
                 new_results.append((xyz, label))
         return new_results
     except Exception as _b6_exc:
+        # SAME VISIBILITY HOLE one level up (2026-07-30): an ImportError here (scipy absent,
+        # symbol renamed) silently returns the untouched frames, so the per-frame print below
+        # never runs and the probe again reads as "affected=0" -- indistinguishable from "the
+        # functional declined every frame".  Only reachable when B6 is armed.
+        import sys as _s6
+        print(f"[B6] dispatch failed entirely: {_b6_exc!r}", file=_s6.stderr)
         try:
             logger.debug("Baustein 6 variational refine skipped: %s", _b6_exc)
         except Exception:
@@ -31588,6 +31597,28 @@ def _smiles_to_xyz_isomers_impl(
                 # the flag is a plain integer env-var, so pass mol=None.  Default-OFF
                 # byte-identical (the dispatch returns _ff unchanged when unset).
                 _ff = _apply_pi_coplanar_m_if_enabled(None, _ff, False)
+                # ── THE POST-PASS CHAIN IS UNREACHABLE FROM HERE (found 2026-07-30) ──
+                # This ``return`` short-circuits ~2260 lines that hold B4, B5, **B6 (the
+                # variational functional)** and every post-B5 fixer.  On the CHAMPION path
+                # (DELFIN_FFFREE_BUILDER=1) every metal complex leaves through here, so the
+                # functional was never CALLED -- `DELFIN_B6_WIRED=1` measured affected=0 on
+                # 35 systems and read as "it declines every frame", which was wrong.  The
+                # line above is the tell: ONE corrector was already hand-wired back in here
+                # instead of the hole being closed.
+                # Wire the FUNCTIONAL (and only it -- the post-hoc fixers are scaffolding we
+                # want to DROP, not resurrect).  ``mol`` is parsed lazily behind the same env
+                # gate, so the default-OFF path stays byte-identical and pays nothing; the
+                # refiner needs topology only (atoms/bonds/metals), never a conformer.
+                if (_delfin_env_int("DELFIN_B6_WIRED", 0)
+                        or _delfin_env_int("DELFIN_BAUSTEIN6", 0)):
+                    try:
+                        _b6_mol = _prepare_mol_for_embedding(
+                            smiles, hapto_approx=hapto_mode,
+                        )
+                    except Exception:
+                        _b6_mol = None
+                    if _b6_mol is not None:
+                        _ff = _apply_baustein6_if_enabled(_b6_mol, _ff, False)
                 return _ff, None
 
     # Resolve the quality profile once per call so the seed count,

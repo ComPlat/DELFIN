@@ -694,6 +694,19 @@ def variational_refine(
 
     metal_set = _load_metal_set()
 
+    # ----- Step 3.5: gate the INPUT too (diagnosis, 2026-07-30) -----
+    # Step 9 applies an ABSOLUTE gate ("topology preserved").  If the frame handed to us
+    # ALREADY violates it, no optimiser can ever pass -- and the report would still read
+    # "topology not preserved", blaming the functional for damage it did not do.  34 of 34
+    # frames were rejected with exactly that message, so the two cases must be told apart:
+    # ``topo_ok_input=False`` means the gate was unpassable from the start (the gate has to
+    # become RELATIVE), ``True`` means the minimisation really did walk out of the band (the
+    # barrier's [lo_frac, hi_frac] and the gate's [0.93, 1.07] disagree).  Diagnostic only.
+    try:
+        report["topo_ok_input"] = bool(_topology_check(coords, mol, metal_set))
+    except Exception:
+        report["topo_ok_input"] = None
+
     # ----- Step 4: symmetry pre-compute -----
     try:
         sym_info, sym_meta = _precompute_symmetry(
