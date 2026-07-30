@@ -1388,6 +1388,43 @@ _CONF_CACHE = {}
 _CONF_CACHE_MAX = 256
 
 
+def _relax_confs_ffree(m, cids):
+    """Minimise each conformer with U_total instead of MMFF.
+
+    Routed through ``variational_refine`` rather than a second copy of the minimiser:
+    ONE minimiser, one place.  The XYZ round-trip is cheap against L-BFGS.
+    ``enable_global_pg=False`` because Tier D is the point group of the WHOLE molecule
+    and this is only a cut-out fragment; Tier B/C (Morgan equivalence + graph orbits)
+    stay on and are exactly what keeps a symmetric ligand's conformer symmetric.
+    A conformer the refiner declines is left untouched -- never-worse per conformer.
+    """
+    try:
+        from delfin.manta._variational_refiner import variational_refine
+    except Exception:
+        return
+    syms = [a.GetSymbol() for a in m.GetAtoms()]
+    for cid in cids:
+        try:
+            conf = m.GetConformer(cid)
+            pos = conf.GetPositions()
+            xyz = f"{len(syms)}\nconf\n" + "\n".join(
+                f"{s:4s} {p[0]:12.6f} {p[1]:12.6f} {p[2]:12.6f}"
+                for s, p in zip(syms, pos))
+            new_xyz, rep = variational_refine(xyz, m, class_label="no_metal",
+                                              enable_global_pg=False)
+            if rep.get("fallback_used", True):
+                continue
+            n_set = 0
+            for ln in new_xyz.splitlines():
+                parts = ln.split()
+                if len(parts) == 4 and n_set < len(syms):
+                    conf.SetAtomPosition(n_set, (float(parts[1]), float(parts[2]),
+                                                 float(parts[3])))
+                    n_set += 1
+        except Exception:
+            continue
+
+
 def _ligand_confs_from_mol(frag_mol, k=10):
     """UNIVERSAL multi-conformer generation for a ligand (deterministic): K diverse
     ETKDG conformers (fixed seed, single-thread) + MMFF.  Returns (syms, [coords],
@@ -1445,10 +1482,22 @@ def _ligand_confs_from_mol(frag_mol, k=10):
                 _CONF_CACHE[key] = None
             return None
         cids = [0]
-    try:
-        AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
-    except Exception:
-        pass
+    # FF-FREE CONFORMER RELAX (DELFIN_FFREE_CONF_RELAX, default OFF -> byte-identical).
+    # MMFF is the last real force field on the conformer axis, and it has NO metal
+    # parameters -- it relaxes the conformers of a COORDINATED ligand with a model that
+    # does not know the metal exists, the same defect class as the
+    # "UFFTYPER: Unrecognized atom type: Pd+2" this build prints.  The fragment is cut
+    # metal-free here, so the functional's existing "no_metal" preset fits exactly:
+    # k_topology = 0, k_A = 0, and bond / signature-angle / torsion / clash / symmetry
+    # carry the geometry.  ETKDG above is NOT touched: it is distance geometry, not a
+    # force field, and it stays the generator.
+    if os.environ.get("DELFIN_FFREE_CONF_RELAX", "0") == "1":
+        _relax_confs_ffree(m, cids)
+    else:
+        try:
+            AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
+        except Exception:
+            pass
     syms = [a.GetSymbol() for a in m.GetAtoms()]
     out = (syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m)
     if key is not None and len(_CONF_CACHE) < _CONF_CACHE_MAX:
