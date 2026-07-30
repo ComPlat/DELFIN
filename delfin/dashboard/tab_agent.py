@@ -3973,6 +3973,25 @@ def create_tab(ctx):
                 broker.set_persist_callback(_persist)
                 panel = broker.build_widget()
                 kit_confirm_container.children = (panel,)
+
+                def _confirm_expired(tool_name: str, waited_s: float) -> None:
+                    """A confirmation window that closed on its own must say
+                    so: the panel clears itself, which otherwise looks like
+                    the prompt vanished for no reason while the user was
+                    still deciding."""
+                    try:
+                        _append_system_message(
+                            f"⌛ The confirmation for **{tool_name}** expired "
+                            f"after {int(waited_s)} s and was NOT approved — "
+                            f"treated as 'user away', not as a refusal, so the "
+                            f"agent may ask again. It is parked in "
+                            f"`/attention`, where you can still act on it."
+                        )
+                        _set_wait_chip("")
+                    except Exception:
+                        pass
+
+                broker._on_timeout = _confirm_expired
                 state["_kit_confirm_broker"] = broker
             except Exception as exc:
                 _append_system_message(f"KIT confirm broker init failed: {exc}")

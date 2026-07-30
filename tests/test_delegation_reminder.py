@@ -20,6 +20,7 @@ class _Stub(AgentEngine):
         self.messages: list[dict] = []
         self._session_tool_names: set[str] = set()
         self._delegation_satisfied = False
+        self._tasklist_satisfied = False
 
 
 def _eng(*user_texts: str) -> _Stub:
@@ -70,3 +71,34 @@ def test_builder_never_raises_on_broken_state():
     e = _Stub()
     e.messages = [{"role": "user"}, {"bad": "shape"}, None]  # type: ignore
     assert e._build_unmet_delegation_block() == ""
+
+
+# ---------------------------------------------------------------------------
+# Same pattern for an explicitly requested task list
+# ---------------------------------------------------------------------------
+
+
+def test_tasklist_request_is_detected():
+    for text in ("Open the task list with task_create, the whole roadmap",
+                 "leg die Taskliste an bevor du anfängst",
+                 "erstelle eine Aufgabenliste pro Schritt"):
+        e = _eng(text)
+        assert e._build_unmet_tasklist_block(), text
+
+
+def test_tasklist_block_disappears_after_the_first_task():
+    e = _eng("Open the task list with task_create up front")
+    e._session_tool_names = {"mcp__kit-coding__task_create"}
+    assert e._build_unmet_tasklist_block() == ""
+    e._session_tool_names = {"write_file"}
+    assert e._build_unmet_tasklist_block() == ""
+
+
+def test_no_tasklist_block_without_a_request():
+    assert _eng("baue mir ein Werkzeug")._build_unmet_tasklist_block() == ""
+
+
+def test_tasklist_builder_never_raises():
+    e = _Stub()
+    e.messages = [{"role": "user"}, None]  # type: ignore
+    assert e._build_unmet_tasklist_block() == ""

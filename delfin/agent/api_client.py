@@ -718,6 +718,77 @@ _BASH_DEST_OPTS: frozenset[str] = frozenset({
 })
 
 
+# Commands whose whole purpose is to emit a file's contents. Reading is not
+# gated in general — half of a shell session legitimately touches paths
+# outside the workspace (interpreters, system tools, /proc) — but these are
+# the direct substitute for a refused read_file.
+_BASH_CONTENT_READERS: frozenset[str] = frozenset({
+    "cat", "head", "tail", "less", "more", "strings", "xxd", "od",
+    "base64", "nl", "tac", "bat",
+})
+
+
+def _bash_reads_denied_path(cmd: str, denied: set) -> str:
+    """Reason string when a shell command would fetch a path the user has
+    already refused this session, else "".
+
+    Matching is by path prefix so a refused file cannot be reached through
+    its directory either, and it is deliberately independent of the command
+    used: a refusal is about the DATA, not about the tool that asked.
+    """
+    try:
+        if not denied or not cmd:
+            return ""
+        for path in denied:
+            p = str(path)
+            if not p:
+                continue
+            if p in cmd:
+                return f"the user refused '{p}' earlier in this session"
+            # Refusing a file also refuses reaching it through its directory.
+            parent = p.rsplit("/", 1)[0]
+            if parent and len(parent) > 1 and parent in cmd:
+                return (f"the user refused '{p}', and this command reaches "
+                        f"its directory '{parent}'")
+    except Exception:
+        return ""
+    return ""
+
+
+def _bash_outside_reads(cmd: str) -> list[str]:
+    """Absolute paths a content-dumping command would print.
+
+    Only the readers above are inspected, and only their absolute
+    arguments — a conservative net around the exact circumvention that was
+    observed (three refused read_file calls, then `cat` on the same files).
+    """
+    out: list[str] = []
+    try:
+        import shlex
+        for segment in re.split(r"[;&|]{1,2}|\n", cmd):
+            segment = segment.strip()
+            if not segment:
+                continue
+            try:
+                argv = shlex.split(segment, comments=True)
+            except ValueError:
+                argv = segment.split()
+            while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+                argv = argv[1:]
+            if not argv:
+                continue
+            if Path(argv[0]).name not in _BASH_CONTENT_READERS:
+                continue
+            for a in argv[1:]:
+                if a.startswith("-") or any(c in a for c in "*?["):
+                    continue
+                if a.startswith("/") or a.startswith("~"):
+                    out.append(a)
+    except Exception:
+        return out
+    return out
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -1449,6 +1520,11 @@ class KitToolPermissions:
     # holding a client back-reference. Signature: (spec) -> dict.
     orchestration_runner: Optional[Callable[..., dict]] = None
     read_tracker: dict[str, float] = field(default_factory=dict)
+    # Paths the user explicitly REFUSED this session. A refusal has to hold
+    # against every tool, not just the one that asked: a denied read_file was
+    # trivially reproduced with `bash cat <same path>`, which defeats the
+    # whole point of asking.
+    denied_paths: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).expanduser().resolve()
@@ -6047,7 +6123,27 @@ class _DocToolExecutor:
         except Exception as exc:
             return f"confirm_callback raised: {exc}"
         if not ok:
-            return f"read denied: user declined read of '{resolved}'"
+            _timed_out = bool(getattr(
+                getattr(perms.confirm_callback, "__self__", None),
+                "last_timed_out", False))
+            if not _timed_out:
+                # A real refusal, not an unattended window: remember it so no
+                # other tool can fetch the same path.
+                try:
+                    perms.denied_paths.add(str(resolved))
+                except Exception:
+                    pass
+                return (
+                    f"read denied: the user declined '{resolved}'. This path "
+                    "is now refused for the rest of the session — do NOT try "
+                    "another tool or command to read it. Ask the user what to "
+                    "use instead."
+                )
+            return (
+                f"read of '{resolved}' TIMED OUT — the user is away, this is "
+                "NOT a denial. Continue with work inside your workspace and "
+                "ask again later."
+            )
         return None
 
     def _gate_write_path(
@@ -7061,6 +7157,42 @@ class _DocToolExecutor:
             "patterns_count": len(patterns),
         })
 
+    def _gate_bash_read_paths(
+        self, cmd: str, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """Hold a refused read against every tool, and route a shell file
+        dump outside the workspace through the same confirmation as
+        read_file.
+
+        Observed in the field: three read_file calls were explicitly denied
+        by the user, and the agent obtained the same three files seconds
+        later with `cat`. A refusal that one tool honours and the next
+        ignores is not a refusal.
+        """
+        try:
+            denied = _bash_reads_denied_path(
+                cmd, getattr(perms, "denied_paths", set()) or set())
+            if denied:
+                _record_security_event(
+                    "denied_path_via_bash", "bash", cmd[:80], blocked=True)
+                return json.dumps({"error": (
+                    f"blocked: {denied}. A refusal covers the data, not just "
+                    "the tool that asked — do not reach it another way. Ask "
+                    "the user what to use instead."
+                )})
+            for target in _bash_outside_reads(cmd):
+                path = Path(target).expanduser()
+                if not path.is_absolute():
+                    continue
+                err = self._check_read_access(perms, path)
+                if err is not None:
+                    return json.dumps({"error": (
+                        f"blocked: this command would print '{target}'. {err}"
+                    )})
+        except Exception:
+            return None
+        return None
+
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -7112,6 +7244,10 @@ class _DocToolExecutor:
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
+
+        gate_err = self._gate_bash_read_paths(cmd, perms)
+        if gate_err is not None:
+            return gate_err
 
         gate_err = self._gate_bash_write_targets(cmd, arguments, perms)
         if gate_err is not None:
@@ -7202,6 +7338,9 @@ class _DocToolExecutor:
         cwd_arg = arguments.get("cwd", "") or ""
         timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
 
+        gate_err = self._gate_bash_read_paths(cmd, perms)
+        if gate_err is not None:
+            return gate_err
         gate_err = self._gate_bash_write_targets(cmd, arguments, perms)
         if gate_err is not None:
             return gate_err
