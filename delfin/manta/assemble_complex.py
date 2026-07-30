@@ -11,6 +11,7 @@ sphere placement (where) + this (orient + merge) -> a DFT-startable structure.
 Prototype: homoleptic monodentate [M(L)n].  Deterministic.
 """
 from __future__ import annotations
+import math
 import os
 import itertools
 from typing import List, Tuple
@@ -1329,6 +1330,92 @@ def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2):
     return bestQ
 
 
+_BITE_MAX_RING = 7      # above this a "shared ring" is a macrocycle, not a bite
+
+
+def bite_close(u, v, theta_deg):
+    """Rotate two unit directions symmetrically in their own plane until the angle between
+    them is ``theta_deg``, keeping their bisector fixed.
+
+    WHY.  An ideal octahedron puts two cis vertices 90 deg apart, and a five-membered
+    chelate ring measured over real crystals bites at 70.6 deg (p10 69.4, p90 72.6 -- a
+    3 deg wide band, one of the best defined quantities we have).  So every five-ring
+    chelate is seated 19.4 deg too open, and chelates are most of our systems.  This is the
+    quantified form of the earthquake root, "rigid polydentates forced onto ideal vertices",
+    and of poly_cshm_vs_ccdc being the worst axis in all seven UFF-constraint A/Bs.
+
+    Keeping the bisector fixed matters: the chelate must still occupy the SAME edge of the
+    polyhedron that the isomer enumeration assigned to it.  Only the opening changes, so
+    the isomer identity is untouched and this stays a pure seating correction.
+    """
+    u = np.asarray(u, float); v = np.asarray(v, float)
+    nu, nv = np.linalg.norm(u), np.linalg.norm(v)
+    if nu < 1e-9 or nv < 1e-9:
+        return u, v
+    u = u / nu; v = v / nv
+    c = float(np.clip(np.dot(u, v), -1.0, 1.0))
+    cur = math.degrees(math.acos(c))
+    if abs(cur - theta_deg) < 1e-6:
+        return u, v
+    bis = u + v
+    nb = np.linalg.norm(bis)
+    if nb < 1e-9:                       # exactly opposed: no bisector, nothing to close on
+        return u, v
+    bis = bis / nb
+    perp = u - float(np.dot(u, bis)) * bis
+    np_ = np.linalg.norm(perp)
+    if np_ < 1e-9:
+        return u, v
+    perp = perp / np_
+    half = math.radians(theta_deg) / 2.0
+    return (math.cos(half) * bis + math.sin(half) * perp,
+            math.cos(half) * bis - math.sin(half) * perp)
+
+
+def _chelate_ring_size(lmol, d1, d2):
+    """Size of the chelate ring the two donors would close WITH the metal.
+
+    The ligand mol has no metal, so the donors are not yet in a common ring: the chelate
+    ring is the shortest donor-to-donor path through the ligand, plus the metal itself.
+    Path of k bonds -> ring of k+2 atoms (k+1 ligand atoms and the metal).
+    """
+    try:
+        from rdkit import Chem
+        path = Chem.GetShortestPath(lmol, int(d1), int(d2))
+        return (len(path) + 1) if path else 0
+    except Exception:
+        return 0
+
+
+def _measured_bite(metal, cn, ring_size, e1, e2):
+    """Measured p50 bite angle (deg) for this chelate, or None.
+
+    Only for SMALL rings: shared rings of 11-14 come out 68-82 deg WIDE, because two
+    donors of a macrocycle can sit cis or trans while still sharing a ring.  Beyond
+    _BITE_MAX_RING there is no single bite to aim at, and forcing one would be the
+    bimodal-p50 mistake this table was designed to avoid.
+    """
+    if not ring_size or ring_size > _BITE_MAX_RING:
+        return None
+    path = os.environ.get("DELFIN_FFREE_DMD_BANDS", "")
+    if not path:
+        return None
+    try:
+        from delfin.manta.polyhedra import _load_band_tsv
+        tbl = _load_band_tsv(path)
+    except Exception:
+        return None
+    ea, eb = sorted((e1, e2))
+    for k in (f"{metal},{cn}|{ea},{eb}|{ring_size}",
+              f"{metal},{cn}|*|{ring_size}",
+              f"{metal}|*|{ring_size}",
+              f"*,{cn}|*|{ring_size}"):
+        row = tbl.get(k)
+        if row is not None:
+            return float(row[1])                     # p50
+    return None
+
+
 def assemble_multichelate(metal: str, geometry: str, chelate_specs):
     """chelate_specs: list of (smiles, [d1,d2], [v1,v2]).  Place several chelating
     ligands on their assigned cis vertex-pairs (e.g. tris-chelate [M(en)3])."""
@@ -1337,9 +1424,22 @@ def assemble_multichelate(metal: str, geometry: str, chelate_specs):
     for smi, dons, verts in chelate_specs:
         lsyms, lP, lmol = _ligand_3d(smi)
         d1, d2 = dons
-        T1 = ref[verts[0]] / np.linalg.norm(ref[verts[0]]) * MSB.md_distance(
+        u1 = ref[verts[0]] / np.linalg.norm(ref[verts[0]])
+        u2 = ref[verts[1]] / np.linalg.norm(ref[verts[1]])
+        # MEASURED BITE (DELFIN_FFREE_BITE_MEASURED, default OFF -> byte-identical).
+        # The ideal polyhedron separates two cis vertices by 90 deg; a five-membered
+        # chelate measured over real crystals bites at 70.6 deg with a 3 deg wide band.
+        # Closing the pair onto the measured angle -- bisector fixed, so the ligand keeps
+        # the very edge the isomer enumeration assigned it -- is a pure SETTING: no weight,
+        # no gate, no minimiser.
+        if os.environ.get("DELFIN_FFREE_BITE_MEASURED", "0") == "1":
+            _ring = _chelate_ring_size(lmol, d1, d2)
+            _bite = _measured_bite(metal, len(ref), _ring, lsyms[d1], lsyms[d2])
+            if _bite is not None:
+                u1, u2 = bite_close(u1, u2, _bite)
+        T1 = u1 * MSB.md_distance(
             metal, lsyms[d1], atom=lmol.GetAtomWithIdx(d1), mol=lmol)
-        T2 = ref[verts[1]] / np.linalg.norm(ref[verts[1]]) * MSB.md_distance(
+        T2 = u2 * MSB.md_distance(
             metal, lsyms[d2], atom=lmol.GetAtomWithIdx(d2), mol=lmol)
         Q = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2)
         out_syms += lsyms; blocks.append(Q)

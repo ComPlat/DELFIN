@@ -260,6 +260,40 @@ def _donor_cov(donor: str) -> float:
 _MD_BAND_CACHE: dict = {}
 
 
+_TSV_CACHE: dict = {}
+
+
+def _load_band_tsv(path: str) -> dict:
+    """``key -> (p10, p50, p90)`` from any of the measured band TSVs, cached per path.
+
+    One reader for every table (bonds, angles, metal-donor, D-M-D): they share the format
+    ``level<TAB>key<TAB>n<TAB>p10<TAB>p50<TAB>p90`` because they come from one measurement
+    pass.  Missing file or unreadable row -> empty, and every caller then keeps its
+    historic behaviour rather than guessing.
+    """
+    if not path:
+        return {}
+    tbl = _TSV_CACHE.get(path)
+    if tbl is not None:
+        return tbl
+    tbl = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                if ln.startswith("#"):
+                    continue
+                p = ln.rstrip("\n").split("\t")
+                if len(p) >= 6:
+                    try:
+                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                    except ValueError:
+                        continue
+    except Exception:
+        tbl = {}
+    _TSV_CACHE[path] = tbl
+    return tbl
+
+
 def _md_band_table() -> dict:
     """``key -> (p10, p50, p90)`` from ``DELFIN_FFREE_MD_BANDS`` (CSD-derived, not shipped).
 
