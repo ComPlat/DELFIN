@@ -840,6 +840,29 @@ def U_clash(coords: np.ndarray, mol, k_clash: float = 500.0,
 # U_topology
 # ---------------------------------------------------------------------------
 
+# Width over which -log(t) is replaced by its 2nd-order Taylor continuation, as a
+# fraction of the band width, so the relaxation scales with the band instead of being an
+# absolute length that means something different for a 1.9 A and a 2.6 A bond.
+_BARRIER_RELAX_FRAC = 0.05
+
+
+def _relaxed_barrier_enabled() -> bool:
+    return os.environ.get("DELFIN_FFREE_RELAXED_BARRIER", "0") == "1"
+
+
+def _relaxed_log_barrier(t: float, t_rel: float) -> Tuple[float, float]:
+    """``(-log(t), d/dt)`` for ``t >= t_rel``; below that, its 2nd-order Taylor at
+    ``t_rel``.  C2-continuous at the join, convex, and finite for every t including
+    t <= 0 -- so a frame that starts outside the band still sits on a real surface with
+    a real gradient, and can be pulled back in instead of stranded on a plateau."""
+    if t >= t_rel:
+        return -math.log(t), -1.0 / t
+    d = t - t_rel
+    inv = 1.0 / t_rel
+    return (-math.log(t_rel) - d * inv + 0.5 * d * d * inv * inv,
+            -inv + d * inv * inv)
+
+
 def U_topology(coords: np.ndarray, mol, k_topology: float = 10000.0,
                lo_frac: float = 0.85, hi_frac: float = 1.10
                ) -> Tuple[float, np.ndarray]:
@@ -880,6 +903,30 @@ def U_topology(coords: np.ndarray, mol, k_topology: float = 10000.0,
         d_id = _smiles_converter_ml_bondlen(sym_m, sym_d)
         lo = d_id * lo_frac
         hi = d_id * hi_frac
+
+        # RELAXED BARRIER (DELFIN_FFREE_RELAXED_BARRIER, default OFF).
+        # The branch below reports a CONSTANT energy outside the band together with a
+        # huge gradient, i.e. g is not the derivative of f.  Measured in the self-test:
+        # at 0.80x and at 1.25x ideal the energy is identical to the last decimal while
+        # |g_an| = 9.0e9 against a true |g_fd| = 1.1e5 -- relative error 1.000.  Outside
+        # its band this is not a potential energy surface at all, L-BFGS-B's Wolfe line
+        # search cannot be satisfied, and the "minimisation" is not one.  It matters
+        # because EVERY measured frame starts outside (topo_ok_input=False on all).
+        # The standard remedy: continue -log(t) below a small width by its 2nd-order
+        # Taylor expansion -- C2-continuous, convex, finite everywhere, and g == grad f.
+        # The wall stops being infinite; topology is held by the (now relative) post-gate
+        # instead, and the surface can pull an out-of-band frame smoothly back IN.
+        if _relaxed_barrier_enabled():
+            t_rel = _BARRIER_RELAX_FRAC * (hi - lo)
+            b_lo, db_lo = _relaxed_log_barrier(d - lo, t_rel)
+            b_hi, db_hi = _relaxed_log_barrier(hi - d, t_rel)
+            energy += k_topology * (b_lo + b_hi)
+            db_dd = db_lo - db_hi          # d(hi - d)/dd = -1
+            coef = k_topology * db_dd / d
+            grad[m_idx] += coef * diff
+            grad[d_idx] -= coef * diff
+            continue
+
         # Outside-domain handling: very large penalty + linear gradient
         # pointing back into the safe interval.
         if d <= lo + _EPS_BARRIER:
@@ -1438,6 +1485,43 @@ if __name__ == "__main__":  # pragma: no cover
     print(f"  max|grad_an - grad_fd|  = {diff:.4e}")
     print(f"  relative                = {rel:.4e}")
     print(f"  PASS" if rel < 1.0e-3 else f"  FAIL (rel >= 1e-3)")
+
+    # ------------------------------------------------------------------
+    # IS THIS AN OPTIMISABLE SURFACE WHERE OUR FRAMES ACTUALLY LIVE?
+    # The FD check above sits INSIDE U_topology's barrier domain.  Every measured frame
+    # sits OUTSIDE it (topo_ok_input=False on all of them), and out there the barrier
+    # reports a CONSTANT energy (k · big_pen) together with a huge gradient.  If f is flat
+    # and g is not zero, g is not the derivative of f, L-BFGS-B's Wolfe line search cannot
+    # be satisfied, and the "minimisation" is not one.  Test it where it matters.
+    # ------------------------------------------------------------------
+    print("\nU_topology OUTSIDE the barrier band (where our frames are):")
+    _md = _enumerate_metal_donor_bonds(mol)
+    if _md:
+        _m_i, _d_i = _md[0]
+        _sm = mol.GetAtomWithIdx(_m_i).GetSymbol()
+        _sd = mol.GetAtomWithIdx(_d_i).GetSymbol()
+        _ideal = _smiles_converter_ml_bondlen(_sm, _sd)
+        for _frac, _where in ((0.99, "inside  (0.99 x ideal)"),
+                              (0.80, "OUTSIDE (0.80 x ideal, below lo=0.85)"),
+                              (1.25, "OUTSIDE (1.25 x ideal, above hi=1.10)")):
+            _c = coords.copy()
+            _v = _c[_d_i] - _c[_m_i]
+            _n = float(np.linalg.norm(_v))
+            if _n < 1e-9:
+                continue
+            _c[_d_i] = _c[_m_i] + (_v / _n) * (_ideal * _frac)
+
+            def _topo_fn(cc):
+                return U_topology(cc, mol)
+
+            _e0, _g0 = U_topology(_c, mol)
+            _gfd = _fd_gradient(_topo_fn, _c, eps=1.0e-6)
+            _dd = float(np.max(np.abs(_g0 - _gfd)))
+            _rr = _dd / max(1.0e-9, float(np.max(np.abs(_g0))))
+            print(f"  {_where:38s} E = {_e0:14.4f}  "
+                  f"|g_an| = {np.max(np.abs(_g0)):10.3e}  "
+                  f"|g_fd| = {np.max(np.abs(_gfd)):10.3e}  "
+                  f"rel = {_rr:9.3e}  {'PASS' if _rr < 1.0e-3 else 'FAIL'}")
 
     # ------------------------------------------------------------------
     # Tier C: the REAL call path.  detect_fragments() hands U_C_fragment namedtuples it
