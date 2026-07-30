@@ -59,31 +59,31 @@ def _delfin_env_int(name: str, default: int) -> int:
 
 _CLASS_HYPER: Dict[str, Dict[str, Any]] = {
     "sigma": {
-        "k_bond": 1000.0, "k_angle": 100.0, "k_clash": 500.0,
+        "k_bond": 1000.0, "k_angle": 100.0, "k_clash": 500.0, "k_torsion": 50.0,
         "k_topology": 10000.0,
         "k_A": 100.0, "k_B": 50.0, "k_C": 80.0, "k_D": 30.0,
         "enable_D": True,
     },
     "hapto": {
-        "k_bond": 800.0, "k_angle": 80.0, "k_clash": 400.0,
+        "k_bond": 800.0, "k_angle": 80.0, "k_clash": 400.0, "k_torsion": 30.0,
         "k_topology": 10000.0,
         "k_A": 30.0, "k_B": 30.0, "k_C": 50.0, "k_D": 20.0,
         "enable_D": True,
     },
     "multi_sigma": {
-        "k_bond": 1000.0, "k_angle": 100.0, "k_clash": 500.0,
+        "k_bond": 1000.0, "k_angle": 100.0, "k_clash": 500.0, "k_torsion": 50.0,
         "k_topology": 10000.0,
         "k_A": 100.0, "k_B": 60.0, "k_C": 100.0, "k_D": 40.0,
         "enable_D": True,
     },
     "multi_hapto": {
-        "k_bond": 600.0, "k_angle": 50.0, "k_clash": 300.0,
+        "k_bond": 600.0, "k_angle": 50.0, "k_clash": 300.0, "k_torsion": 30.0,
         "k_topology": 10000.0,
         "k_A": 20.0, "k_B": 20.0, "k_C": 30.0, "k_D": 10.0,
         "enable_D": False,
     },
     "no_metal": {
-        "k_bond": 1000.0, "k_angle": 100.0, "k_clash": 500.0,
+        "k_bond": 1000.0, "k_angle": 100.0, "k_clash": 500.0, "k_torsion": 50.0,
         "k_topology": 0.0,
         "k_A": 0.0, "k_B": 100.0, "k_C": 150.0, "k_D": 50.0,
         "enable_D": True,

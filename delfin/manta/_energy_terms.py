@@ -545,6 +545,227 @@ def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0,
 
 
 # ---------------------------------------------------------------------------
+# U_torsion — planarity of conjugated bonds (the term the functional never had)
+# ---------------------------------------------------------------------------
+# U_total minimised EIGHT terms and not one of them was dihedral, so nothing in the
+# functional held a conjugated pi system flat: bond, angle and clash are all satisfied by
+# a twisted biaryl or a pyramidalised amide.  That is the "non-planar conjugated pi
+# systems, especially with heteroatoms in the conjugation" defect, and it had no
+# restoring force at all.
+#
+# The target is the eye's own measured law rather than a second, invented one:
+#
+#     thr(s) = 90 / (1 + exp((s - s50) / w))          [degrees]
+#
+# with ``s`` the bond's SHORTENING against that element pair's pure-single reference (pm).
+# It is continuous in s and carries no group table -- amide and amidinate land on the same
+# threshold at the same s, which is why the group table proved unnecessary.  Parameters are
+# fits to the p99 of the pi-capable acyclic band (same provenance as _BOND_ORDER_SCALE's
+# note above); only the fitted constants live here, never any structure data.
+_TORSION_PI_LAW: Dict[str, Tuple[float, float]] = {
+    "C-C": (9.00, 2.30), "C-N": (9.40, 2.00), "C-O": (6.05, 1.00),
+    "C-S": (12.55, 2.85), "N-N": (5.85, 1.65),
+}
+_TORSION_PI_LAW_POOLED = (10.30, 1.95)
+# An empty p orbital shortens a bond WITHOUT creating a rotation barrier, so boron is
+# never judged by the law.
+_TORSION_NO_LAW = frozenset(("B",))
+_TORSION_SIN_MIN = 0.342     # sin 20 deg: a near-collinear X-A-B has no torsion plane
+_TORSION_THR_MIN = 5.0       # clamp so 1/sin^2(thr) cannot blow up
+_TORSION_L1_FALLBACK = 0.98  # pure-single stand-in = 0.98 * (r_cov_i + r_cov_j)
+_TORSION_L1_CACHE: Dict[str, Dict[str, float]] = {}
+
+
+def _torsion_pair_key(a: str, b: str) -> str:
+    return "-".join(sorted((a, b)))
+
+
+def _torsion_l1(sym_a: str, sym_b: str) -> float:
+    """Pure-single reference length (Å) for the pair.
+
+    The measured per-pair table lives in the private workspace and is NOT shipped here, so
+    the default is the same covalent stand-in the calibration itself falls back to for an
+    unseen pair.  ``DELFIN_FFREE_TORSION_L1`` may point at a two-column TSV
+    (``pair<TAB>length``) to supply the measured values; without it the law still has the
+    right SHAPE but a coarser s axis, which makes the restraint weaker, never wrong-signed.
+    """
+    path = os.environ.get("DELFIN_FFREE_TORSION_L1", "")
+    if path:
+        tbl = _TORSION_L1_CACHE.get(path)
+        if tbl is None:
+            tbl = {}
+            try:
+                with open(path, "r") as fh:
+                    for ln in fh:
+                        parts = ln.split()
+                        if len(parts) >= 2:
+                            try:
+                                tbl[parts[0]] = float(parts[1])
+                            except ValueError:
+                                continue
+            except Exception:
+                tbl = {}
+            _TORSION_L1_CACHE[path] = tbl
+        v = tbl.get(_torsion_pair_key(sym_a, sym_b))
+        if v is not None:
+            return float(v)
+    cov = _smiles_converter_covalent_radii()
+    r_a = cov.get(sym_a)
+    r_b = cov.get(sym_b)
+    if r_a is None or r_b is None:
+        return _LAST_RESORT_BOND_LEN
+    return _TORSION_L1_FALLBACK * float(r_a + r_b)
+
+
+def _torsion_threshold_deg(sym_a: str, sym_b: str, d_actual: float) -> Optional[float]:
+    """Allowed deviation from planarity (deg) for this bond, or None when the law is off."""
+    if sym_a in _TORSION_NO_LAW or sym_b in _TORSION_NO_LAW:
+        return None
+    s_pm = (_torsion_l1(sym_a, sym_b) - float(d_actual)) * 100.0
+    s50, w = _TORSION_PI_LAW.get(_torsion_pair_key(sym_a, sym_b),
+                                 _TORSION_PI_LAW_POOLED)
+    try:
+        return 90.0 / (1.0 + math.exp((s_pm - s50) / w))
+    except OverflowError:
+        return 0.0 if s_pm > s50 else 90.0
+
+
+def _build_torsion_targets(coords: np.ndarray, mol
+                           ) -> List[Tuple[int, int, int, int, float]]:
+    """``(i, j, k, l, weight)`` for every conjugation-restrained dihedral.
+
+    Scope, decided per BOND from its own situation:
+      * both ends must be pi-capable -- planar 3-coordinate, or at most 2 sigma partners.
+        A tetrahedral end has no p orbital to conjugate through;
+      * a ring bond is skipped UNLESS the ring is aromatic.  A saturated ring's torsions are
+        already fixed by the ring itself, and restraining them is exactly how a puckered
+        ring gets flattened -- a defect the eye has already caught us making;
+      * metals are never an endpoint (the coordination sphere is U_A's job);
+      * a near-collinear X-A-B substituent is dropped: it has no torsion plane.
+
+    ``weight = 1/sin^2(thr)`` makes the energy read in units of the CRYSTAL-ALLOWED
+    deviation -- at exactly the threshold a dihedral contributes 1.  The weight is measured,
+    not tuned, and s is frozen from the input geometry so the target cannot drift with the
+    coordinates and the gradient stays exact.
+    """
+    metals = _smiles_converter_metals()
+    try:
+        ring_info = mol.GetRingInfo()
+    except Exception:
+        return []
+    out: List[Tuple[int, int, int, int, float]] = []
+
+    def _pi_capable(idx: int) -> bool:
+        a = mol.GetAtomWithIdx(idx)
+        if a.GetDegree() <= 2:
+            return True
+        return a.GetDegree() == 3 and (_is_pi_active(mol, idx)
+                                       or _has_conjugated_lone_pair(mol, idx))
+
+    for bond in mol.GetBonds():
+        j = int(bond.GetBeginAtomIdx())
+        k = int(bond.GetEndAtomIdx())
+        sym_j = mol.GetAtomWithIdx(j).GetSymbol()
+        sym_k = mol.GetAtomWithIdx(k).GetSymbol()
+        if sym_j in metals or sym_k in metals:
+            continue
+        if sym_j == "H" or sym_k == "H":
+            continue
+        try:
+            if bond.IsInRing() and not bond.GetIsAromatic():
+                continue
+        except Exception:
+            continue
+        if not (_pi_capable(j) and _pi_capable(k)):
+            continue
+        d_jk = float(np.linalg.norm(coords[j] - coords[k]))
+        thr = _torsion_threshold_deg(sym_j, sym_k, d_jk)
+        if thr is None:
+            continue
+        thr = max(_TORSION_THR_MIN, min(90.0, thr))
+        weight = 1.0 / (math.sin(math.radians(thr)) ** 2)
+        nbr_j = [int(n.GetIdx()) for n in mol.GetAtomWithIdx(j).GetNeighbors()
+                 if int(n.GetIdx()) != k]
+        nbr_k = [int(n.GetIdx()) for n in mol.GetAtomWithIdx(k).GetNeighbors()
+                 if int(n.GetIdx()) != j]
+        for i in nbr_j:
+            for l in nbr_k:
+                if i == l:
+                    continue
+                # Drop substituents with no torsion plane (near-collinear).
+                b1 = coords[j] - coords[i]
+                b2 = coords[k] - coords[j]
+                b3 = coords[l] - coords[k]
+                n1 = float(np.linalg.norm(np.cross(b1, b2)))
+                n2 = float(np.linalg.norm(np.cross(b2, b3)))
+                d1 = float(np.linalg.norm(b1)) * float(np.linalg.norm(b2))
+                d2 = float(np.linalg.norm(b2)) * float(np.linalg.norm(b3))
+                if d1 < _EPS_DIST or d2 < _EPS_DIST:
+                    continue
+                if n1 / d1 < _TORSION_SIN_MIN or n2 / d2 < _TORSION_SIN_MIN:
+                    continue
+                out.append((i, j, k, l, weight))
+    return out
+
+
+def U_torsion(coords: np.ndarray, mol, k_torsion: float = 0.0,
+              targets: Optional[List[Tuple[int, int, int, int, float]]] = None
+              ) -> Tuple[float, np.ndarray]:
+    """Planarity penalty on conjugated dihedrals: Σ k · w · sin²(φ).
+
+    ``sin²φ`` has its minima at 0° and 180°, i.e. at BOTH planar arrangements, so the term
+    flattens a twisted pi system without choosing cis or trans for it -- the isomer stays
+    whatever the enumeration made it.  Gradient is analytic.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    grad = np.zeros_like(coords)
+    energy = 0.0
+    if k_torsion <= 0.0 or coords.shape[0] == 0 or not targets:
+        return float(energy), grad
+
+    for (i, j, k, l, weight) in targets:
+        b1 = coords[j] - coords[i]
+        b2 = coords[k] - coords[j]
+        b3 = coords[l] - coords[k]
+        n1 = np.cross(b1, b2)
+        n2 = np.cross(b2, b3)
+        n1_sq = float(np.dot(n1, n1))
+        n2_sq = float(np.dot(n2, n2))
+        if n1_sq < _EPS_DIST or n2_sq < _EPS_DIST:
+            continue
+        # sin^2(phi) = 1 - cos^2(phi) with cos(phi) = (n1·n2)/(|n1||n2|).  Writing the
+        # energy in n1/n2 instead of in phi removes the dihedral sign convention from the
+        # problem entirely: the textbook dphi/dx formulas are stated for a b2 that points
+        # the other way, and mixing the conventions still satisfies translation invariance
+        # (the four terms sum to zero either way), so an inspection cannot catch it -- only
+        # the FD check can, and it did, twice, at 2.1e-01 and 7.6e-02.  Differentiating the
+        # cross products directly is mechanical and has no convention to get wrong.
+        n1_len = math.sqrt(n1_sq)
+        n2_len = math.sqrt(n2_sq)
+        dot_n = float(np.dot(n1, n2))
+        c = dot_n / (n1_len * n2_len)
+        c = max(-1.0, min(1.0, c))
+        energy += k_torsion * weight * (1.0 - c * c)
+
+        dU_dc = -2.0 * k_torsion * weight * c
+        inv = 1.0 / (n1_len * n2_len)
+        # dc/dn1 and dc/dn2
+        g = dU_dc * inv * (n2 - (dot_n / n1_sq) * n1)
+        h = dU_dc * inv * (n1 - (dot_n / n2_sq) * n2)
+        # Chain through n1 = b1 x b2 and n2 = b2 x b3 using a·(b x c) = b·(c x a).
+        dU_db1 = np.cross(b2, g)
+        dU_db2 = np.cross(g, b1) + np.cross(b3, h)
+        dU_db3 = np.cross(h, b2)
+        # b1 = r_j - r_i, b2 = r_k - r_j, b3 = r_l - r_k
+        grad[i] -= dU_db1
+        grad[j] += dU_db1 - dU_db2
+        grad[k] += dU_db2 - dU_db3
+        grad[l] += dU_db3
+
+    return float(energy), grad
+
+
+# ---------------------------------------------------------------------------
 # U_clash
 # ---------------------------------------------------------------------------
 
@@ -1048,6 +1269,24 @@ def U_total(coords: np.ndarray, mol, sym_info: Dict, params: Dict
     e_total += e
     g_total += g
 
+    # Conjugation planarity (DELFIN_FFREE_TORSION, default OFF -> byte-identical).  The
+    # scope and the per-bond weight are frozen from the INPUT geometry, memoised in the
+    # per-refine sym_info, so the target cannot drift with the coordinates mid-minimisation
+    # and the analytic gradient stays exact.
+    k_torsion = float(params.get("k_torsion", 0.0))
+    if k_torsion > 0.0 and os.environ.get("DELFIN_FFREE_TORSION", "0") == "1":
+        _tors = sym_info.get("_torsion_targets")
+        if _tors is None:
+            try:
+                _tors = _build_torsion_targets(coords, mol)
+            except Exception:
+                _tors = []
+            sym_info["_torsion_targets"] = _tors
+        if _tors:
+            e, g = U_torsion(coords, mol, k_torsion=k_torsion, targets=_tors)
+            e_total += e
+            g_total += g
+
     e, g = U_clash(coords, mol, k_clash=k_clash,
                    clash_factor=clash_factor, h_h_factor=h_h_factor)
     e_total += e
@@ -1199,6 +1438,38 @@ if __name__ == "__main__":  # pragma: no cover
     print(f"  max|grad_an - grad_fd|  = {diff:.4e}")
     print(f"  relative                = {rel:.4e}")
     print(f"  PASS" if rel < 1.0e-3 else f"  FAIL (rel >= 1e-3)")
+
+    # ------------------------------------------------------------------
+    # U_torsion.  The dihedral gradient is the only new calculus in the functional, so
+    # it gets its own finite-difference check on a real twisted conjugated system, plus
+    # a negative control: a saturated ring must stay untouched.
+    # ------------------------------------------------------------------
+    print("\nU_torsion — conjugation planarity:")
+    _bp = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1-c1ccccc1"))
+    AllChem.EmbedMolecule(_bp, randomSeed=0xBEEF)
+    _bc = np.array([list(_bp.GetConformer().GetAtomPosition(i))
+                    for i in range(_bp.GetNumAtoms())], dtype=np.float64)
+    _tt = _build_torsion_targets(_bc, _bp)
+    _te, _tg = U_torsion(_bc, _bp, k_torsion=50.0, targets=_tt)
+    print(f"  biphenyl:    {len(_tt):3d} restrained dihedrals   "
+          f"E = {_te:10.4f}   |g|_max = {np.max(np.abs(_tg)):.4e}")
+
+    def _tors_fn(c):
+        return U_torsion(c, _bp, k_torsion=50.0, targets=_tt)
+
+    _tg_fd = _fd_gradient(_tors_fn, _bc, eps=1.0e-6)
+    _td = float(np.max(np.abs(_tg - _tg_fd)))
+    _tr = _td / max(1.0e-9, float(np.max(np.abs(_tg))))
+    print(f"  FD gradient: max|an-fd| = {_td:.4e}   relative = {_tr:.4e}   "
+          f"{'PASS' if _tr < 1.0e-4 else 'FAIL'}")
+
+    _cy = Chem.AddHs(Chem.MolFromSmiles("C1CCCCC1"))
+    AllChem.EmbedMolecule(_cy, randomSeed=0xBEEF)
+    _cc = np.array([list(_cy.GetConformer().GetAtomPosition(i))
+                    for i in range(_cy.GetNumAtoms())], dtype=np.float64)
+    _cn = len(_build_torsion_targets(_cc, _cy))
+    print(f"  cyclohexane: {_cn:3d} restrained dihedrals   "
+          f"{'OK — pucker untouched' if _cn == 0 else 'FAIL — would flatten the ring'}")
 
     # ------------------------------------------------------------------
     # Signature-angle cases.  These are the bonding situations the RDKit
