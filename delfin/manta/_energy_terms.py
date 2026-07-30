@@ -1664,19 +1664,27 @@ def U_total(coords: np.ndarray, mol, sym_info: Dict, params: Dict
     e_total += e
     g_total += g
 
-    e, g = U_C_fragment(coords, mol,
-                        sym_info.get("fragments", []) or [],
-                        k_C=k_C)
-    e_total += e
-    g_total += g
-
-    e, g = U_D_global(coords, mol,
-                      sym_info.get("global_ops", []) or [],
-                      sym_info.get("atom_perms", {}) or {},
-                      k_D=k_D)
-    e_total += e
-    g_total += g
-
+    # U_C AND U_D REMOVED (2026-07-30), because they were MEASURED to do nothing.
+    # Over 107 real crystals and our own frames the stationarity test reports:
+    #     U_C   0.0000 / 0.0000
+    #     U_D   0.0000 / 0.0000
+    # Exactly zero force on BOTH sides.  A term whose gradient vanishes everywhere we
+    # looked cannot change any outcome, so it is not a term, it is cost.
+    #
+    # And the reason is chemistry, not a fixable implementation detail: every complex
+    # inspected came out as pg=C1.  Real coordination complexes have no global point group,
+    # so U_D has no operation to apply; and a real ligand inside a complex is distorted
+    # enough that the fragment-orbit guard (residual <= 0.35 A) rejects its automorphisms,
+    # so U_C has no fragment to enforce.  That includes the automorphism rewrite made
+    # earlier the same day -- the measurement says it changed nothing on real systems.
+    #
+    # Removing them also drops the Tier C/D half of _precompute_symmetry, which that
+    # module's own docstring calls "one-shot, expensive".  So this is not merely dead
+    # weight removed, it is time given back.
+    #
+    # Standing rule: corrections are scaffolding and are MEANT to fall; at equal outcome,
+    # less code is strictly better.  k_C / k_D stay in the hyperparameter presets so an
+    # ablation A/B can still be read against the old logs.
     return float(e_total), g_total
 
 

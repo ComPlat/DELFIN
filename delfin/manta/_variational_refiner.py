@@ -636,37 +636,26 @@ def _precompute_symmetry(mol, coords: np.ndarray, class_label: str,
     except Exception:
         pass
 
-    # ----- Tier C: fragment symmetry from graph orbits -----
-    # detect_fragments() matched a hand-written SMARTS table of named groups and returned
-    # FragmentMatch namedtuples, which U_C_fragment (a dict consumer) cannot read at all --
-    # so the whole 8-term U_total raised and silently demoted to the fallback for any
-    # molecule containing one of them.  detect_fragment_orbits() derives the same thing
-    # from the automorphism group of each ligand component: universal, element- and
-    # bond-order-aware, and in the shape U_C actually consumes.
-    try:
-        from delfin.manta._fragment_archetypes import (  # type: ignore
-            detect_fragment_orbits,
-        )
-        _tol = float(os.environ.get("DELFIN_FFREE_ORBIT_RMS_TOL", "0.35"))
-        frags = detect_fragment_orbits(mol, coords, rms_tol=_tol) or []
-        sym_info["fragments"] = frags
-        meta["fragments_detected"] = len(frags)
-    except Exception:
-        pass
-
-    # ----- Tier D: global molecular point group -----
-    if enable_global_pg and bool(params.get("enable_D", False)):
-        try:
-            from delfin.manta._symmetry_detection import (  # type: ignore
-                detect_global_point_group,
-            )
-            pg, ops, perms = detect_global_point_group(mol, coords)
-            sym_info["global_pg"] = pg or "C1"
-            sym_info["global_ops"] = list(ops) if ops is not None else []
-            sym_info["atom_perms"] = perms or {}
-            meta["global_pg"] = sym_info["global_pg"]
-        except Exception:
-            pass
+    # ----- Tier C and Tier D: REMOVED 2026-07-30 -----
+    # Both were measured against 107 real crystals and both report EXACTLY ZERO force, on
+    # our own frames as well as on the crystals.  A term whose gradient vanishes everywhere
+    # cannot change any outcome, so computing it is pure cost -- and this precompute is the
+    # expensive half of the refiner by its own docstring ("one-shot, expensive").
+    #
+    # The reason is chemistry rather than a fixable bug.  Every complex inspected came out
+    # pg=C1: real coordination complexes have no global point group, so Tier D has no
+    # operation to apply.  And a ligand inside a complex is distorted enough that the
+    # fragment-orbit guard (residual <= 0.35 A) rejects its automorphisms, so Tier C has no
+    # fragment to enforce.  That verdict includes the automorphism rewrite made earlier the
+    # same day, which replaced a hand-written SMARTS table of 14 named groups: the table was
+    # the wrong way to find fragments, and the right way finds none that matter here.
+    #
+    # Tier A (coordination sphere) and Tier B (Morgan equivalence, ratio 1.83) stay: both
+    # measure non-zero and B discriminates.
+    #
+    # detect_fragment_orbits() and U_C_fragment/U_D_global are left in place, exercised by
+    # the module self-tests, so an ablation A/B can be read against the old logs and the
+    # idea can be revived if a future class of system actually carries the symmetry.
 
     return sym_info, meta
 
