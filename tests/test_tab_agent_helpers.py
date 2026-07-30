@@ -1857,3 +1857,51 @@ def test_stop_note_truncates_long_command_lists():
     note = _format_action_stop_note(
         "ceiling", [f"/tab t{i}" for i in range(9)], 12, [])
     assert "+4 more" in note
+
+
+# ---------------------------------------------------------------------------
+# An exhausted account budget is not a model problem
+# ---------------------------------------------------------------------------
+
+
+def test_exceeded_budget_is_classified_as_quota():
+    """Field case 2026-07-30: the gateway answered 'Error code: 400 -
+    ExceededBudget ... Spend=5.55, Budget=5.0'. The agent read it as a
+    per-call failure and kept improvising against a hard wall."""
+    from delfin.dashboard.tab_agent import _classify_model_error_text as cls
+    for text in (
+        "Error code: 400 - {'detail': 'ExceededBudget: End User=x@kit.edu "
+        "over budget. Spend=5.548, Budget=5.0'}",
+        "insufficient_quota: you exceeded your current quota",
+        "quota exceeded for this project",
+    ):
+        assert cls(text) == "quota", text
+
+
+def test_quota_wins_over_the_other_classes():
+    """A budget message must never be read as a flapping backend or a bad
+    key — those invite a retry or a model switch, which cannot help."""
+    from delfin.dashboard.tab_agent import _classify_model_error_text as cls
+    assert cls("ExceededBudget ... service unavailable, model group=x") == "quota"
+
+
+def test_ordinary_errors_are_not_quota():
+    from delfin.dashboard.tab_agent import _classify_model_error_text as cls
+    assert cls("Error code: 503 - temporarily unavailable") == "temp"
+    assert cls("AuthenticationError: invalid subscription") == "auth"
+    assert cls("Error code: 400 - maximum context length exceeded") == ""
+
+
+def test_spend_amounts_are_extracted_for_the_message():
+    from delfin.dashboard.tab_agent import _QUOTA_SPEND_RE
+    m = _QUOTA_SPEND_RE.search("over budget. Spend=5.548838, Budget=5.0")
+    assert m and m.group(1).startswith("5.54") and m.group(2) == "5.0"
+
+
+def test_quota_message_states_that_switching_models_will_not_help():
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parent.parent / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    assert "is_quota_exhausted" in src
+    assert "cap sits on the ACCOUNT" in src
+    assert "does not help either" in src
