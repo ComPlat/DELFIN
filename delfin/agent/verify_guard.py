@@ -978,6 +978,21 @@ _FUNC_WORK_PAT = (
 )
 _FUNC_WORK_RE = re.compile(_FUNC_WORK_PAT, re.IGNORECASE)
 
+# An absolute completeness claim about verification ("vollständig
+# getestet", "alles geprüft", "fully tested") asserts the ABSENCE of
+# untested parts. No amount of executed commands can establish that — a
+# green test run says what it covered, never what it did not. Observed in
+# the field: a package whose e-mail path was never exercised was handed
+# over as "vollständig getestet" while a real test run made the ordinary
+# runtime check pass.
+_FUNC_COMPLETENESS_RE = re.compile(
+    r"(?i)\b(?:vollst[äa]ndig|komplett|l[üu]ckenlos|alles|alle\s+\w+|"
+    r"fully|completely|thoroughly|end[- ]?to[- ]?end)\b[^.!?\n]{0,40}?"
+    r"\b(?:getestet|gepr[üu]ft|verifiziert|abgedeckt|tested|verified|"
+    r"validated|covered)\b"
+)
+
+
 _FUNC_PREDICATE_RE = re.compile(
     "(?:" + _FUNC_PLAY_PAT + "|" + _FUNC_WORK_PAT + ")", re.IGNORECASE)
 
@@ -1217,6 +1232,35 @@ def scan_for_unexercised_functional_claims(
         seen_spans: set[tuple[int, int]] = set()
         seen_keys: set[str] = set()
         examined = 0
+        # Completeness claims stand on their own: "alles getestet" needs no
+        # functional predicate beside it, and no executed command can
+        # establish the absence of untested parts.
+        for m in _FUNC_COMPLETENESS_RE.finditer(scrubbed):
+            if len(flags) >= max_flags:
+                break
+            span = _sentence_span(scrubbed, m.start(), m.end())
+            sentence = scrubbed[span[0]:span[1]]
+            if not sentence.strip():
+                continue
+            if _is_hedged(scrubbed, m.start(), m.end()):
+                continue
+            if (_FUNC_DISCLOSURE_RE.search(sentence)
+                    or _FUNC_NEGATION_RE.search(sentence)
+                    or _FUNC_CONDITIONAL_RE.search(sentence)
+                    or _FUNC_EXPLANATORY_RE.search(sentence)
+                    or _FUNC_USER_SOURCE_RE.search(sentence)):
+                continue
+            if scrubbed[span[1]:span[1] + 1] == "?":
+                continue
+            claim = " ".join(sentence.split())[:100]
+            key = f"completeness::{claim.lower()}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            seen_spans.add(span)
+            flags.append(FunctionalClaimFlag(
+                claim=claim, subject="", kind="completeness"))
+
         for m in _FUNC_PREDICATE_RE.finditer(scrubbed):
             if len(flags) >= max_flags or examined >= _FUNC_MAX_MATCHES:
                 break
@@ -1288,7 +1332,12 @@ def functional_claim_caveat(flags: list[FunctionalClaimFlag]) -> str:
         return ""
     items: list[str] = []
     for f in flags:
-        if f.kind == "interactive":
+        if f.kind == "completeness":
+            items.append(
+                f"'{f.claim}' — a completeness claim cannot be established "
+                "by a test run: it says what was covered, never what was "
+                "left out. Name the parts you did NOT exercise")
+        elif f.kind == "interactive":
             items.append(f"'{f.claim}' — interactive/browser behavior was "
                          f"never exercised in this session")
         elif f.kind == "unexercised":

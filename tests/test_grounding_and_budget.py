@@ -816,3 +816,55 @@ def test_engine_exec_ledger_is_cleared_on_new_cycle(agent_tree):
     assert engine._exec_commands_session == ["bash python solver.py"]
     engine.reset_cycle()
     assert engine._exec_commands_session == []
+
+
+# ---------------------------------------------------------------------------
+# Completeness claims are unverifiable by construction
+# ---------------------------------------------------------------------------
+
+
+def test_completeness_claim_is_flagged_even_after_a_real_test_run():
+    """Field case 2026-07-30: a package whose e-mail path was never
+    exercised was handed over as 'vollständig getestet'. A green run says
+    what it covered, never what it left out — so the ordinary runtime
+    evidence must not make an absolute claim pass."""
+    from delfin.agent.verify_guard import (
+        functional_claim_caveat, scan_for_unexercised_functional_claims,
+    )
+    flags = scan_for_unexercised_functional_claims(
+        "Das Paket ist funktionsfähig und vollständig getestet.",
+        exec_commands={"bash pytest tests/ -x -q"},
+        exec_ledger_available=True)
+    assert [f.kind for f in flags] == ["completeness"]
+    caveat = functional_claim_caveat(flags)
+    assert "completeness claim" in caveat
+    assert "did NOT exercise" in caveat
+
+
+def test_completeness_wordings_in_both_languages():
+    from delfin.agent.verify_guard import scan_for_unexercised_functional_claims as scan
+    for text in ("Alles getestet und geprüft.",
+                 "Die Suite ist vollständig abgedeckt.",
+                 "Everything is fully tested.",
+                 "The code is thoroughly verified.",
+                 "End-to-end getestet."):
+        assert scan(text, exec_commands={"bash pytest"},
+                    exec_ledger_available=True), text
+
+
+def test_precise_scope_reports_are_not_flagged_as_completeness():
+    """Naming WHAT was tested is the desired behaviour — it must stay
+    silent, otherwise the guard punishes honesty."""
+    from delfin.agent.verify_guard import scan_for_unexercised_functional_claims as scan
+    for text in ("Ich habe die Parser-Tests ausgeführt: 11 bestanden.",
+                 "Der CSV-Export ist getestet; den SMTP-Pfad konnte ich "
+                 "ohne Netzwerk nicht prüfen.",
+                 "11 von 11 Parser-Tests bestehen."):
+        assert scan(text, exec_commands={"bash pytest tests/"},
+                    exec_ledger_available=True) == [], text
+
+
+def test_hedged_completeness_claim_stays_exempt():
+    from delfin.agent.verify_guard import scan_for_unexercised_functional_claims as scan
+    assert scan("Vermutlich ist alles getestet, geprüft habe ich es nicht.",
+                exec_commands={"bash pytest"}, exec_ledger_available=True) == []
