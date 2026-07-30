@@ -454,6 +454,106 @@ def _enumerate_metal_donor_bonds(mol) -> List[Tuple[int, int]]:
 _FLATBOTTOM_FRAC = 0.05   # half-width of the tolerated band, as a fraction of d_ideal
 
 
+# ---------------------------------------------------------------------------
+# Bond signature — the SHARED contract between the functional and its calibration
+# ---------------------------------------------------------------------------
+# The measured band table is keyed by this function, and the functional looks its target
+# up with this same function.  It therefore lives HERE, in the functional, and the
+# offline measurement imports it -- so the key can never drift between the two sides.
+# That is the whole reason not to port the eye's signature instead: two copies of a key
+# function are two things that can disagree.
+#
+# Every field is a property of the ATOM and its BONDS -- element, degree with the metal
+# counted, pi character, conjugated lone pair, smallest ring -- and of the bond itself.
+# No functional group is named, and the same key carries N, S, Se, Sb, U without a branch.
+
+def _atom_sig(mol, idx: int) -> str:
+    a = mol.GetAtomWithIdx(idx)
+    rings = _ring_sizes_containing(mol, idx)
+    return "{},{},{},{},{}".format(
+        a.GetSymbol(),
+        int(a.GetDegree()),                       # metal counted: it is a neighbour
+        1 if _is_pi_active(mol, idx) else 0,
+        1 if _has_conjugated_lone_pair(mol, idx) else 0,
+        rings[0] if rings else 0,
+    )
+
+
+def bond_signature_keys(mol, i: int, j: int) -> List[str]:
+    """Keys for the bond (i, j), most specific first.
+
+    The ladder is the fallback order for a sparse bin: drop the conjugated-lone-pair
+    flag, then the ring size, then pi, then the degree.  A rare heavy-donor bond still
+    lands on SOME measured band instead of falling back to a radii sum.
+    """
+    try:
+        b = mol.GetBondBetweenAtoms(i, j)
+        order = round(float(b.GetBondTypeAsDouble()) * 2) / 2.0
+        bring = 1 if b.IsInRing() else 0
+    except Exception:
+        order, bring = 1.0, 0
+    sa, sb = sorted((_atom_sig(mol, i), _atom_sig(mol, j)))
+    fa, fb = sa.split(","), sb.split(",")
+    el = sorted((fa[0], fb[0]))
+    out = [
+        f"{sa}|{sb}|{order}|{bring}",                                    # L0 full
+        f"{','.join(fa[:4])}|{','.join(fb[:4])}|{order}|{bring}",         # L1 no ring size
+        f"{','.join(fa[:3])}|{','.join(fb[:3])}|{order}|{bring}",         # L2 no lone pair
+        f"{','.join(fa[:2])}|{','.join(fb[:2])}|{order}",                 # L3 element+degree
+        f"{el[0]}|{el[1]}|{order}",                                       # L4 element pair
+    ]
+    return out
+
+
+_BOND_BAND_CACHE: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
+
+
+def _bond_band_table() -> Dict[str, Tuple[float, float, float]]:
+    """``key -> (p10, p50, p90)`` from the table ``DELFIN_FFREE_BOND_BANDS`` points at.
+
+    The measurement is CSD-derived and therefore does NOT ship here; the path is supplied
+    at runtime, the same split already used for the torsion L1 table.  Empty dict when
+    unset, which makes every caller fall back to the radii-sum reference -- unchanged
+    behaviour, never a crash.
+    """
+    path = os.environ.get("DELFIN_FFREE_BOND_BANDS", "")
+    if not path:
+        return {}
+    tbl = _BOND_BAND_CACHE.get(path)
+    if tbl is not None:
+        return tbl
+    tbl = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                if ln.startswith("#"):
+                    continue
+                p = ln.rstrip("\n").split("\t")
+                # level, key, n, p10, p50, p90
+                if len(p) >= 6:
+                    try:
+                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                    except ValueError:
+                        continue
+    except Exception:
+        tbl = {}
+    _BOND_BAND_CACHE[path] = tbl
+    return tbl
+
+
+def _measured_bond_band(mol, i: int, j: int):
+    """``(p10, p50, p90)`` for this bond from the measured table, walking the key ladder
+    from most specific to least, or None when the table has nothing for it."""
+    tbl = _bond_band_table()
+    if not tbl:
+        return None
+    for k in bond_signature_keys(mol, i, j):
+        v = tbl.get(k)
+        if v is not None:
+            return v
+    return None
+
+
 def _flat_bottom(d: float, target: float, half_width: float) -> Tuple[float, float]:
     """``(penalty, d(penalty)/dd)`` — zero inside ``target ± half_width``, quadratic
     outside.  C1 at the join.
@@ -508,7 +608,23 @@ def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
             continue
         d_id = _ideal_bond_length(mol, i, j, order)
         if _band:
-            pen, dpen = _flat_bottom(d, d_id, _FLATBOTTOM_FRAC * d_id)
+            # MEASURED band first: centre p50, walls at p10 / p90 of the crystal
+            # distribution for this bond's signature.  A flat bottom around the RADII-SUM
+            # centre was measured to make discrimination WORSE (0.79 -> 0.59): the builder
+            # places bonds at exactly that centre, so we sit at zero cost while reality,
+            # being a distribution, does not.  The shape was never the problem; the centre
+            # is.  Falls back to the radii sum when the table has no bin for this bond.
+            _mb = _measured_bond_band(mol, i, j)
+            if _mb is not None:
+                _p10, _p50, _p90 = _mb
+                if d < _p10:
+                    pen, dpen = (_p10 - d) ** 2, -2.0 * (_p10 - d)
+                elif d > _p90:
+                    pen, dpen = (d - _p90) ** 2, 2.0 * (d - _p90)
+                else:
+                    pen, dpen = 0.0, 0.0
+            else:
+                pen, dpen = _flat_bottom(d, d_id, _FLATBOTTOM_FRAC * d_id)
             if pen == 0.0:
                 continue
             energy += k_bond * pen
