@@ -1198,8 +1198,24 @@ def U_topology(coords: np.ndarray, mol, k_topology: float = 10000.0,
         # quadratic walls outside: zero force wherever the crystal actually lives, and the
         # hard topology guarantee sits in the post-gate, which is relative now anyway.
         if os.environ.get("DELFIN_FFREE_TOPO_BAND", "0") == "1":
-            _mid = 0.5 * (lo + hi)
-            pen, dpen = _flat_bottom(d, _mid, 0.5 * (hi - lo))
+            # MEASURED M-D band first, for exactly the reason it worked on U_bond: with the
+            # radii/table reference the flat bottom is centred on OUR number, which the
+            # builder already hits, so we sit at zero cost and reality does not.  Feeding
+            # U_bond the measured centre took its crystal force from 195.85 to 16.03 and
+            # its discrimination from 0.79 to 14.49; this is the same change on the term
+            # that carries ~1000x the weight.
+            _mb = _measured_bond_band(mol, m_idx, d_idx)
+            if _mb is not None:
+                _p10, _p50, _p90 = _mb
+                if d < _p10:
+                    pen, dpen = (_p10 - d) ** 2, -2.0 * (_p10 - d)
+                elif d > _p90:
+                    pen, dpen = (d - _p90) ** 2, 2.0 * (d - _p90)
+                else:
+                    pen, dpen = 0.0, 0.0
+            else:
+                _mid = 0.5 * (lo + hi)
+                pen, dpen = _flat_bottom(d, _mid, 0.5 * (hi - lo))
             if pen != 0.0:
                 energy += k_topology * pen
                 coef = k_topology * dpen / d
