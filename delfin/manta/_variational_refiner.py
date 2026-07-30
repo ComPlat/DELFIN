@@ -184,6 +184,83 @@ def _array_to_xyz(coords: np.ndarray, mol, orig_lines: Optional[List[str]] = Non
 # Topology check — reuse Baustein 5 if available, otherwise inline minimal.
 # ---------------------------------------------------------------------------
 
+def _topology_violation(coords: np.ndarray, mol, metal_set: set):
+    """Quantify the hard-gate violation instead of collapsing it to a bool.
+
+    WHY (2026-07-30).  :func:`_topology_check` is ABSOLUTE: it asks "is this frame inside
+    the band", never "is this frame better than the one I was given".  Measured on the
+    champion path, ``topo_ok_input=False`` on every frame -- the gate was unpassable
+    BEFORE the optimiser ran, so a minimisation that took U from 609439 to 646 in 138
+    iterations was discarded as "topology not preserved".  An absolute gate over a
+    population that mostly starts out of band is structurally dead code.
+
+    Returns ``(n_md_out, worst_md_excess, n_collapse, worst_collapse_deficit)``:
+      * ``n_md_out``     — M-D pairs outside the gate's window
+      * ``worst_md_excess`` — largest RELATIVE excursion past the window edge (0 inside)
+      * ``n_collapse``   — non-bonded heavy pairs below the collapse line
+      * ``worst_collapse_deficit`` — largest relative shortfall (0 if none)
+
+    A vector, not a scalar, so no axis can be traded against another.  Note the
+    reference length cancels between input and output, which makes the RELATIVE
+    comparison robust to a wrong ideal M-D -- the very quantity last night's CSD
+    measurement showed we do not have right yet.
+
+    Returns ``None`` when the canonical Baustein-5 helpers are unavailable (caller then
+    keeps the absolute behaviour rather than inventing a second definition).
+    """
+    try:
+        from delfin.manta._post_optimizer import (  # type: ignore
+            _metal_indices, _md_pairs, _non_bonded_heavy_pairs, _cov_radius,
+            _METAL_SET, _MD_LO, _MD_HI, _COLLAPSE_FRAC,
+        )
+    except Exception:
+        return None
+    try:
+        metals = _metal_indices(mol)
+        md = _md_pairs(mol, metals)
+        nb = _non_bonded_heavy_pairs(mol)
+        syms = [a.GetSymbol() for a in mol.GetAtoms()]
+    except Exception:
+        return None
+
+    n_md_out = 0
+    worst_md = 0.0
+    for (m, d, d_ideal) in md:
+        if not d_ideal:
+            continue
+        r = float(np.linalg.norm(coords[m] - coords[d])) / float(d_ideal)
+        # Same window as the absolute gate -- ONE definition, read from one place.
+        if r < _MD_LO:
+            n_md_out += 1
+            worst_md = max(worst_md, _MD_LO - r)
+        elif r > _MD_HI:
+            n_md_out += 1
+            worst_md = max(worst_md, r - _MD_HI)
+
+    n_col = 0
+    worst_col = 0.0
+    for (i, j) in nb:
+        if syms[i] in _METAL_SET or syms[j] in _METAL_SET:
+            continue
+        r_sum = _cov_radius(syms[i]) + _cov_radius(syms[j])
+        if not r_sum:
+            continue
+        r = float(np.linalg.norm(coords[i] - coords[j])) / float(r_sum)
+        if r < _COLLAPSE_FRAC:
+            n_col += 1
+            worst_col = max(worst_col, _COLLAPSE_FRAC - r)
+
+    return (int(n_md_out), float(worst_md), int(n_col), float(worst_col))
+
+
+def _topology_not_worse(before, after) -> bool:
+    """True iff ``after`` is no worse than ``before`` on EVERY axis of the violation
+    vector.  Componentwise, so a smaller M-D excursion can never buy a new clash."""
+    if before is None or after is None:
+        return False
+    return all(a <= b + 1e-12 for a, b in zip(after, before))
+
+
 def _topology_check(coords: np.ndarray, mol, metal_set: set) -> bool:
     """Conservative topology hard-gate.
 
@@ -842,11 +919,33 @@ def variational_refine(
                        "fallback_used": True})
         return xyz, report
 
-    # ----- Step 9: topology hard-gate -----
+    # ----- Step 9: topology gate — absolute first, then NEVER-WORSE -----
     try:
         topo_ok = _topology_check(new_coords, mol, metal_set)
     except Exception:
         topo_ok = True  # B5 unavailable → don't penalize
+
+    # RELATIVE FALLBACK (2026-07-30).  The absolute gate asks "is this frame in band",
+    # which our own frames mostly are not: topo_ok_input was False on every measured
+    # frame, so a minimisation that took U from 609439 to 646 was thrown away for damage
+    # it did not cause.  When the INPUT already violates, the only honest question is
+    # whether the output is WORSE -- componentwise over (M-D count, worst M-D excursion,
+    # collapse count, worst collapse deficit), so no axis can be traded for another.
+    # Accepting only non-worse frames is never-worse BY CONSTRUCTION in the refiner's own
+    # terms, and the relative comparison is immune to a wrong ideal M-D length (it cancels).
+    # Default ON: B6 as a whole is default-OFF, so the champion is untouched either way,
+    # and a default-OFF lever inside a default-OFF module would be unmeasurable dead code.
+    if not topo_ok and _delfin_env_int("DELFIN_B6_TOPO_RELATIVE", 1):
+        _v_in = _topology_violation(coords, mol, metal_set)
+        _v_out = _topology_violation(new_coords, mol, metal_set)
+        report["topo_viol_input"] = _v_in
+        report["topo_viol_output"] = _v_out
+        # Only rescue frames the absolute gate could never have passed.  A frame that
+        # STARTED in band and left it is real damage and stays rejected.
+        if (_v_in is not None and any(_v_in)
+                and _topology_not_worse(_v_in, _v_out)):
+            topo_ok = True
+            report["topo_relative_pass"] = True
 
     if not topo_ok:
         report.update({"error": "topology not preserved",

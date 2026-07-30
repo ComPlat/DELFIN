@@ -538,6 +538,15 @@ def _md_pairs(mol, metals: Sequence[int]) -> List[Tuple[int, int, float]]:
     return out
 
 
+# The hard gate's three numbers, named ONCE so a second consumer cannot drift from them
+# (2026-07-30: the B6 barrier ran on [0.85, 1.10] while this gate judged on [0.93, 1.07],
+# which let the optimiser walk legally into a shell the gate then rejected).  Values are
+# exactly the v2 forensik window below -- naming them changes nothing.
+_MD_LO = 0.93
+_MD_HI = 1.07
+_COLLAPSE_FRAC = 0.85
+
+
 def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
                      md_pairs: Sequence[Tuple[int, int, float]],
                      nb_pairs: Sequence[Tuple[int, int]]) -> bool:
@@ -550,7 +559,7 @@ def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
     # M-D distance window — tighter to prevent compression cascade.
     for (m, d, d_ideal) in md_pairs:
         d_cur = float(np.linalg.norm(coords[m] - coords[d]))
-        if d_cur < 0.93 * d_ideal or d_cur > 1.07 * d_ideal:
+        if d_cur < _MD_LO * d_ideal or d_cur > _MD_HI * d_ideal:
             return False
     # Non-bonded heavy-heavy collapse → new spurious bond.
     syms = [a.GetSymbol() for a in mol.GetAtoms()]
@@ -562,7 +571,7 @@ def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
             continue
         r_sum = _cov_radius(syms[i]) + _cov_radius(syms[j])
         d_cur = float(np.linalg.norm(coords[i] - coords[j]))
-        if d_cur < 0.85 * r_sum:
+        if d_cur < _COLLAPSE_FRAC * r_sum:
             return False
     return True
 
