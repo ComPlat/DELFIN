@@ -451,12 +451,43 @@ def _enumerate_metal_donor_bonds(mol) -> List[Tuple[int, int]]:
 # U_bond
 # ---------------------------------------------------------------------------
 
+_FLATBOTTOM_FRAC = 0.05   # half-width of the tolerated band, as a fraction of d_ideal
+
+
+def _flat_bottom(d: float, target: float, half_width: float) -> Tuple[float, float]:
+    """``(penalty, d(penalty)/dd)`` — zero inside ``target ± half_width``, quadratic
+    outside.  C1 at the join.
+
+    A harmonic term ``(d - d_ideal)^2`` has ONE zero-force point, so it is a restraint to
+    a single length, not a statement about what is realistic.  Measured consequence: at
+    107 real crystals U_bond pulls HARDER than on our own frames (ratio 0.79) -- our
+    builder places bonds at exactly d_ideal, so we sit in the term's minimum while reality,
+    which is a distribution, does not.  A flat bottom makes every length inside the
+    tolerated band cost nothing, so a crystal is stationary by construction and only
+    genuinely out-of-band geometry is pulled.
+    """
+    lo = target - half_width
+    hi = target + half_width
+    if d < lo:
+        e = lo - d
+        return e * e, -2.0 * e
+    if d > hi:
+        e = d - hi
+        return e * e, 2.0 * e
+    return 0.0, 0.0
+
+
 def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
            ) -> Tuple[float, np.ndarray]:
     """Bond-length penalty: Σ k_bond · (d - d_ideal)²  over covalent bonds.
 
+    With ``DELFIN_FFREE_BOND_BAND=1`` the point restraint becomes a flat-bottomed band
+    (see :func:`_flat_bottom`), which is what the crystal-stationarity measurement asks
+    for.  Default OFF -> byte-identical.
+
     Skips M-L bonds (those are handled by ``U_topology`` and ``U_A``).
     """
+    _band = os.environ.get("DELFIN_FFREE_BOND_BAND", "0") == "1"
     coords = np.asarray(coords, dtype=np.float64)
     n = coords.shape[0]
     grad = np.zeros_like(coords)
@@ -476,9 +507,16 @@ def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
         if d < _EPS_DIST:
             continue
         d_id = _ideal_bond_length(mol, i, j, order)
-        delta = d - d_id
-        energy += k_bond * delta * delta
-        coef = 2.0 * k_bond * delta / d
+        if _band:
+            pen, dpen = _flat_bottom(d, d_id, _FLATBOTTOM_FRAC * d_id)
+            if pen == 0.0:
+                continue
+            energy += k_bond * pen
+            coef = k_bond * dpen / d
+        else:
+            delta = d - d_id
+            energy += k_bond * delta * delta
+            coef = 2.0 * k_bond * delta / d
         grad[i] += coef * diff
         grad[j] -= coef * diff
 
@@ -916,6 +954,26 @@ def U_topology(coords: np.ndarray, mol, k_topology: float = 10000.0,
         # Taylor expansion -- C2-continuous, convex, finite everywhere, and g == grad f.
         # The wall stops being infinite; topology is held by the (now relative) post-gate
         # instead, and the surface can pull an out-of-band frame smoothly back IN.
+        # FLAT INTERIOR (DELFIN_FFREE_TOPO_BAND=1, default OFF).  The log barrier's
+        # gradient vanishes ONLY at the band centre, i.e. at 0.975 x our reference M-D:
+        # it is not a barrier, it is a stiff restraint to one length.  Measured at 107
+        # real crystals it outweighs every other term ~1000x and scores OUR OWN FRAMES
+        # FIVE TIMES BETTER THAN REALITY (RMS force 10786 vs 52833) -- because the builder
+        # places M-D at exactly that reference, so we start in its minimum and crystals,
+        # being a distribution, do not.  Packing forces explain excess force at a crystal;
+        # they cannot explain a ratio below 1.  Flat bottom over the WHOLE band with
+        # quadratic walls outside: zero force wherever the crystal actually lives, and the
+        # hard topology guarantee sits in the post-gate, which is relative now anyway.
+        if os.environ.get("DELFIN_FFREE_TOPO_BAND", "0") == "1":
+            _mid = 0.5 * (lo + hi)
+            pen, dpen = _flat_bottom(d, _mid, 0.5 * (hi - lo))
+            if pen != 0.0:
+                energy += k_topology * pen
+                coef = k_topology * dpen / d
+                grad[m_idx] += coef * diff
+                grad[d_idx] -= coef * diff
+            continue
+
         if _relaxed_barrier_enabled():
             t_rel = _BARRIER_RELAX_FRAC * (hi - lo)
             b_lo, db_lo = _relaxed_log_barrier(d - lo, t_rel)
