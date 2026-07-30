@@ -1685,6 +1685,23 @@ def U_total(coords: np.ndarray, mol, sym_info: Dict, params: Dict
     # Standing rule: corrections are scaffolding and are MEANT to fall; at equal outcome,
     # less code is strictly better.  k_C / k_D stay in the hyperparameter presets so an
     # ablation A/B can still be read against the old logs.
+    #
+    # DELFIN_FFREE_TIER_CD=1 puts them BACK.  A removal has to be confirmable, and it can
+    # only be confirmed if both versions are runnable: the ablation arm sets this and, if
+    # the byte partition comes out identical, the removal is proven to change nothing --
+    # the strongest form of never-worse there is.  The flag exists to be deleted once that
+    # measurement is in.
+    if os.environ.get("DELFIN_FFREE_TIER_CD", "0") == "1":
+        e, g = U_C_fragment(coords, mol,
+                            sym_info.get("fragments", []) or [], k_C=k_C)
+        e_total += e
+        g_total += g
+        e, g = U_D_global(coords, mol,
+                          sym_info.get("global_ops", []) or [],
+                          sym_info.get("atom_perms", {}) or {}, k_D=k_D)
+        e_total += e
+        g_total += g
+
     return float(e_total), g_total
 
 

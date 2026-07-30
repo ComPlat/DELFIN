@@ -656,6 +656,34 @@ def _precompute_symmetry(mol, coords: np.ndarray, class_label: str,
     # detect_fragment_orbits() and U_C_fragment/U_D_global are left in place, exercised by
     # the module self-tests, so an ablation A/B can be read against the old logs and the
     # idea can be revived if a future class of system actually carries the symmetry.
+    #
+    # DELFIN_FFREE_TIER_CD=1 restores the precompute, so the ABLATION ARM can run the old
+    # behaviour end to end.  Without it the sym_info keys stay empty and U_total skips both
+    # terms anyway -- but a removal that cannot be re-run cannot be confirmed, and this
+    # project confirms removals rather than assuming them.
+    if os.environ.get("DELFIN_FFREE_TIER_CD", "0") == "1":
+        try:
+            from delfin.manta._fragment_archetypes import (  # type: ignore
+                detect_fragment_orbits,
+            )
+            _tol = float(os.environ.get("DELFIN_FFREE_ORBIT_RMS_TOL", "0.35"))
+            frags = detect_fragment_orbits(mol, coords, rms_tol=_tol) or []
+            sym_info["fragments"] = frags
+            meta["fragments_detected"] = len(frags)
+        except Exception:
+            pass
+        if enable_global_pg and bool(params.get("enable_D", False)):
+            try:
+                from delfin.manta._symmetry_detection import (  # type: ignore
+                    detect_global_point_group,
+                )
+                pg, ops, perms = detect_global_point_group(mol, coords)
+                sym_info["global_pg"] = pg or "C1"
+                sym_info["global_ops"] = list(ops) if ops is not None else []
+                sym_info["atom_perms"] = perms or {}
+                meta["global_pg"] = sym_info["global_pg"]
+            except Exception:
+                pass
 
     return sym_info, meta
 
