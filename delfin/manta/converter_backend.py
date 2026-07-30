@@ -1302,6 +1302,16 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     d = DEC.decompose(smiles)
     if d is None:
         return None
+    # The coordination number is one number per complex and constant for the whole build,
+    # and it is what actually moves a metal-donor distance: measured, Cd-N runs 2.283 /
+    # 2.342 / 2.357 at CN 4 / 5 / 6.  Record it once here rather than threading it through
+    # all twelve md_distance() call sites; read only behind DELFIN_FFREE_MD_MEASURED, and
+    # a stale or missing value merely falls back to the coarser element-pair band.
+    try:
+        from delfin.manta import polyhedra as _PLY
+        _PLY.set_current_cn(d.get("cn"))
+    except Exception:
+        pass
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
         return None

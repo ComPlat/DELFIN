@@ -257,25 +257,89 @@ def _donor_cov(donor: str) -> float:
     return COV.get(donor, 0.75)
 
 
-def _measured_md(metal: str, donor: str):
-    """Measured p50 for this metal-donor pair, or None when no bin covers it.
+_MD_BAND_CACHE: dict = {}
 
-    Element-pair level deliberately: at seating time there IS no M-D bond in the ligand
-    mol, so the full bond signature cannot be computed here.  That makes the lookup
-    coarser than the functional's -- one p50 over all coordination numbers for that pair --
-    but still strictly closer to reality than a radii sum, which knows nothing at all.
-    Refining it by coordination number (the metal's degree is already part of the
-    signature) is the obvious next step and needs the CN threaded down to this call.
+
+def _md_band_table() -> dict:
+    """``key -> (p10, p50, p90)`` from ``DELFIN_FFREE_MD_BANDS`` (CSD-derived, not shipped).
+
+    Keys are what the offline measurement emitted: ``M,cn|donor_sig|chelate`` down to the
+    bare ``M|donor``.  Unset -> empty -> every caller keeps the covalent-radii sum.
     """
+    path = os.environ.get("DELFIN_FFREE_MD_BANDS", "")
+    if not path:
+        return {}
+    tbl = _MD_BAND_CACHE.get(path)
+    if tbl is not None:
+        return tbl
+    tbl = {}
     try:
-        from delfin.manta._energy_terms import _bond_band_table
-        row = _bond_band_table().get("|".join(sorted((metal, donor))) + "|1.0")
-        return None if row is None else float(row[1])          # p50
+        with open(path) as fh:
+            for ln in fh:
+                if ln.startswith("#"):
+                    continue
+                p = ln.rstrip("\n").split("\t")
+                if len(p) >= 6:
+                    try:
+                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                    except ValueError:
+                        continue
     except Exception:
+        tbl = {}
+    _MD_BAND_CACHE[path] = tbl
+    return tbl
+
+
+_CURRENT_CN = None
+
+
+def set_current_cn(cn) -> None:
+    """Record the coordination number of the complex currently being built.
+
+    Threading ``cn`` through all twelve md_distance() call sites would touch half the
+    build path for a value that is one number per complex and constant throughout it.
+    One process builds one complex at a time (``_one.py`` pins DELFIN_MAX_PROCESS_WORKERS
+    and the pool build runs single-threaded), so a module-level value is well defined here.
+    It is only ever READ behind DELFIN_FFREE_MD_MEASURED, and if it is stale or unset the
+    lookup simply falls back to the bare element pair -- never a wrong distance, only a
+    less specific one.
+    """
+    global _CURRENT_CN
+    try:
+        _CURRENT_CN = int(cn) if cn else None
+    except Exception:
+        _CURRENT_CN = None
+
+
+def _measured_md(metal: str, donor: str, cn=None, chelate=None):
+    """Measured p50 for this metal-donor contact, most specific key first.
+
+    The coordination number is what actually moves an M-D distance, and the measurement
+    shows it cleanly: Cd-N runs 2.283 / 2.342 / 2.357 at CN 4 / 5 / 6, Cd-I 2.712 / 2.743 /
+    2.837, monotonic for every donor type.  A CN-free p50 would flatten all of that into
+    one number -- and worse, for Cu(II) it would place the Jahn-Teller axial bonds 0.47 A
+    too short, because the element-pair band is 0.535 A wide and strongly asymmetric.
+
+    Falls back down the ladder and finally to None, in which case the caller keeps the
+    historic radii sum -- so a missing bin is never a wrong answer, only an unimproved one.
+    """
+    tbl = _md_band_table()
+    if not tbl:
         return None
+    keys = []
+    if cn is not None:
+        if chelate is not None:
+            keys.append(f"{metal},{int(cn)}|{donor}|{int(bool(chelate))}")
+        keys.append(f"{metal},{int(cn)}|{donor}")
+    keys.append(f"{metal}|{donor}")
+    for k in keys:
+        row = tbl.get(k)
+        if row is not None:
+            return float(row[1])                                # p50
+    return None
 
 
-def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
+def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     """Metal–donor placement distance (Å).
 
     DEFAULT (flag OFF or no donor context): the original element-pair covalent
@@ -301,7 +365,7 @@ def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
     # measured band took the crystal force from 52833 to 67.39, a factor of 784.  Here the
     # same number is used one step earlier, where it costs nothing to be right.
     if os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1":
-        _m = _measured_md(metal, donor)
+        _m = _measured_md(metal, donor, cn=(cn if cn else _CURRENT_CN))
         if _m is not None:
             return float(min(4.0, max(0.8, _m)))
     if os.environ.get("DELFIN_FFFREE_MD_CONTEXT", "0") != "1" or atom is None:
