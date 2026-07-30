@@ -358,8 +358,14 @@ def _build_angle_targets(mol) -> List[Tuple[int, int, int, float]]:
     is paid once instead of once per L-BFGS iteration (a 200-iteration run over a few
     thousand angles would otherwise dominate the runtime).
     """
-    return [(i, j, k, _signature_theta(mol, i, j, k))
-            for (i, j, k) in _enumerate_angles(mol)]
+    out = []
+    for (i, j, k) in _enumerate_angles(mol):
+        mb = _measured_angle_band(mol, i, j, k)
+        if mb is not None:
+            out.append((i, j, k, math.radians(mb[1])))     # measured p50 beats the rule
+        else:
+            out.append((i, j, k, _signature_theta(mol, i, j, k)))
+    return out
 
 
 def _hybridization_theta(mol, j: int) -> float:
@@ -505,7 +511,84 @@ def bond_signature_keys(mol, i: int, j: int) -> List[str]:
     return out
 
 
+def angle_signature_keys(mol, i: int, j: int, k: int) -> List[str]:
+    """Keys for the angle (i, j, k), j central, most specific first.
+
+    Same contract as :func:`bond_signature_keys`: the offline measurement imports this,
+    so key and lookup cannot drift.  The CENTRAL atom's signature leads -- it is what
+    decides an angle -- and the two outer signatures are sorted so the key is symmetric.
+
+    Measured need: rebuilding crystals with rule-based theta (period / pi / ring polygon)
+    costs 0.20 A RMSD, the largest single contribution of any target class, while measured
+    bond lengths cost 0.018 A.  The rule was a good first approximation; a measured p50
+    per bin should beat it exactly as it did for lengths.
+    """
+    try:
+        b_ij = mol.GetBondBetweenAtoms(i, j)
+        b_jk = mol.GetBondBetweenAtoms(j, k)
+        o_ij = round(float(b_ij.GetBondTypeAsDouble()) * 2) / 2.0
+        o_jk = round(float(b_jk.GetBondTypeAsDouble()) * 2) / 2.0
+    except Exception:
+        o_ij = o_jk = 1.0
+    ring = 1 if _ring_sizes_containing(mol, i, j, k) else 0
+    sj = _atom_sig(mol, j)
+    outer = sorted((f"{_atom_sig(mol, i)}~{o_ij}", f"{_atom_sig(mol, k)}~{o_jk}"))
+    fj = sj.split(",")
+    eo = sorted((mol.GetAtomWithIdx(i).GetSymbol(),
+                 mol.GetAtomWithIdx(k).GetSymbol()))
+    return [
+        f"{sj}#{outer[0]}#{outer[1]}#{ring}",                             # L0 full
+        f"{','.join(fj[:4])}#{outer[0]}#{outer[1]}#{ring}",                # L1 no ring size
+        f"{sj}#{eo[0]}#{eo[1]}#{ring}",                                    # L2 outer = element
+        f"{','.join(fj[:3])}#{eo[0]}#{eo[1]}#{ring}",                      # L3 + no lone pair
+        f"{','.join(fj[:2])}#{eo[0]}#{eo[1]}",                             # L4 element+degree
+    ]
+
+
 _BOND_BAND_CACHE: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
+_ANGLE_BAND_CACHE: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
+
+
+def _angle_band_table() -> Dict[str, Tuple[float, float, float]]:
+    """``key -> (p10, p50, p90)`` in DEGREES from ``DELFIN_FFREE_ANGLE_BANDS``.
+
+    Same runtime-path split as the bond table: the measurement is CSD-derived and does
+    not ship.  Unset -> empty -> every caller keeps the rule-based theta.
+    """
+    path = os.environ.get("DELFIN_FFREE_ANGLE_BANDS", "")
+    if not path:
+        return {}
+    tbl = _ANGLE_BAND_CACHE.get(path)
+    if tbl is not None:
+        return tbl
+    tbl = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                if ln.startswith("#"):
+                    continue
+                p = ln.rstrip("\n").split("\t")
+                if len(p) >= 6:
+                    try:
+                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                    except ValueError:
+                        continue
+    except Exception:
+        tbl = {}
+    _ANGLE_BAND_CACHE[path] = tbl
+    return tbl
+
+
+def _measured_angle_band(mol, i: int, j: int, k: int):
+    """``(p10, p50, p90)`` in degrees for this angle, walking the key ladder, or None."""
+    tbl = _angle_band_table()
+    if not tbl:
+        return None
+    for key in angle_signature_keys(mol, i, j, k):
+        v = tbl.get(key)
+        if v is not None:
+            return v
+    return None
 
 
 def _bond_band_table() -> Dict[str, Tuple[float, float, float]]:
@@ -743,6 +826,19 @@ def _torsion_l1(sym_a: str, sym_b: str) -> float:
     (``pair<TAB>length``) to supply the measured values; without it the law still has the
     right SHAPE but a coarser s axis, which makes the restraint weaker, never wrong-signed.
     """
+    # The measured bond-band table already CONTAINS this reference: the pure-single bin's
+    # p50 for that element pair IS the pure-single length.  Preferring it closes the loop --
+    # one measurement feeds both the length target and the torsion law -- and it fixes a
+    # real miscalibration: with the covalent stand-in a biaryl's inter-ring bond looks
+    # LONGER than its reference, so s comes out negative, thr -> 89 deg and the law reads
+    # a conjugated bond as freely rotating.  Measured, that same bond is shortened.
+    _bt = _bond_band_table()
+    if _bt:
+        _k = "|".join(sorted((sym_a, sym_b))) + "|1.0"
+        _v = _bt.get(_k)
+        if _v is not None:
+            return float(_v[1])                       # p50 of the single-bond bin
+
     path = os.environ.get("DELFIN_FFREE_TORSION_L1", "")
     if path:
         tbl = _TORSION_L1_CACHE.get(path)
@@ -838,6 +934,13 @@ def _build_torsion_targets(coords: np.ndarray, mol
             continue
         thr = max(_TORSION_THR_MIN, min(90.0, thr))
         weight = 1.0 / (math.sin(math.radians(thr)) ** 2)
+        # sin^2 of the tolerance: with DELFIN_FFREE_TORSION_TOL the term costs NOTHING
+        # while the dihedral stays inside thr and only bites beyond it.  Measured need:
+        # snapping conjugated torsions to exactly planar costs 0.20 A RMSD against real
+        # crystals -- biaryls twist 20-40 deg, amides ~10 deg, and the eye's own law calls
+        # thr(s) a TOLERANCE of 20-60 deg, not zero.  Forcing zero is over-planarising,
+        # the same defect the eye already caught on ring puckers.
+        s_thr = math.sin(math.radians(thr)) ** 2
         nbr_j = [int(n.GetIdx()) for n in mol.GetAtomWithIdx(j).GetNeighbors()
                  if int(n.GetIdx()) != k]
         nbr_k = [int(n.GetIdx()) for n in mol.GetAtomWithIdx(k).GetNeighbors()
@@ -858,7 +961,7 @@ def _build_torsion_targets(coords: np.ndarray, mol
                     continue
                 if n1 / d1 < _TORSION_SIN_MIN or n2 / d2 < _TORSION_SIN_MIN:
                     continue
-                out.append((i, j, k, l, weight))
+                out.append((i, j, k, l, weight, s_thr))
     return out
 
 
@@ -874,10 +977,13 @@ def U_torsion(coords: np.ndarray, mol, k_torsion: float = 0.0,
     coords = np.asarray(coords, dtype=np.float64)
     grad = np.zeros_like(coords)
     energy = 0.0
+    _tol_mode = os.environ.get("DELFIN_FFREE_TORSION_TOL", "0") == "1"
     if k_torsion <= 0.0 or coords.shape[0] == 0 or not targets:
         return float(energy), grad
 
-    for (i, j, k, l, weight) in targets:
+    for _t in targets:
+        i, j, k, l, weight = _t[:5]
+        s_thr = _t[5] if len(_t) > 5 else 0.0
         b1 = coords[j] - coords[i]
         b2 = coords[k] - coords[j]
         b3 = coords[l] - coords[k]
@@ -899,9 +1005,20 @@ def U_torsion(coords: np.ndarray, mol, k_torsion: float = 0.0,
         dot_n = float(np.dot(n1, n2))
         c = dot_n / (n1_len * n2_len)
         c = max(-1.0, min(1.0, c))
-        energy += k_torsion * weight * (1.0 - c * c)
-
-        dU_dc = -2.0 * k_torsion * weight * c
+        s = 1.0 - c * c                       # = sin^2(phi), the planarity deviation
+        if _tol_mode and s_thr > 0.0:
+            # Zero cost inside the measured tolerance, quadratic in the EXCESS beyond it.
+            # C1 at the join, and the derivative chains through s exactly as below.
+            if s <= s_thr:
+                continue
+            ex = s - s_thr
+            energy += k_torsion * weight * ex * ex
+            dU_ds = 2.0 * k_torsion * weight * ex
+        else:
+            energy += k_torsion * weight * s
+            dU_ds = k_torsion * weight
+        # ds/dc = -2c, so dU/dc = dU_ds * (-2c)
+        dU_dc = -2.0 * c * dU_ds
         inv = 1.0 / (n1_len * n2_len)
         # dc/dn1 and dc/dn2
         g = dU_dc * inv * (n2 - (dot_n / n1_sq) * n1)
@@ -1762,6 +1879,31 @@ if __name__ == "__main__":  # pragma: no cover
     _tr = _td / max(1.0e-9, float(np.max(np.abs(_tg))))
     print(f"  FD gradient: max|an-fd| = {_td:.4e}   relative = {_tr:.4e}   "
           f"{'PASS' if _tr < 1.0e-4 else 'FAIL'}")
+
+    # Tolerance branch: a near-planar system must cost NOTHING, and a strongly twisted one
+    # must still bite -- and its gradient must survive FD.  E = 0 alone proves nothing (it
+    # is also what a dead code path returns), so twist the molecule and test there.
+    _bc2 = _bc.copy()
+    _ax = _bc2[:, 0] > float(np.median(_bc2[:, 0]))       # rotate one half about x
+    _ang = math.radians(55.0)
+    _ca, _sa = math.cos(_ang), math.sin(_ang)
+    _bc2[_ax] = np.column_stack([
+        _bc2[_ax][:, 0],
+        _ca * _bc2[_ax][:, 1] - _sa * _bc2[_ax][:, 2],
+        _sa * _bc2[_ax][:, 1] + _ca * _bc2[_ax][:, 2]])
+    for _lbl, _tol in (("strict (planarity forced)", "0"), ("tolerance band", "1")):
+        os.environ["DELFIN_FFREE_TORSION_TOL"] = _tol
+        _e2, _g2 = U_torsion(_bc2, _bp, k_torsion=50.0, targets=_tt)
+
+        def _tf(c, _t=_tt):
+            return U_torsion(c, _bp, k_torsion=50.0, targets=_t)
+
+        _fd2 = _fd_gradient(_tf, _bc2, eps=1.0e-6)
+        _r2 = float(np.max(np.abs(_g2 - _fd2))) / max(1.0e-9,
+                                                      float(np.max(np.abs(_g2))))
+        print(f"  twisted 55deg, {_lbl:<26} E = {_e2:9.3f}   "
+              f"FD rel = {_r2:.3e}   {'PASS' if _r2 < 1.0e-4 else 'FAIL'}")
+    os.environ.pop("DELFIN_FFREE_TORSION_TOL", None)
 
     _cy = Chem.AddHs(Chem.MolFromSmiles("C1CCCCC1"))
     AllChem.EmbedMolecule(_cy, randomSeed=0xBEEF)
