@@ -27,7 +27,8 @@ Reference: ``iters/BAUSTEIN6_MASTERPLAN.md`` Section 3.3.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+import os
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -47,12 +48,54 @@ _THETA_SP3 = math.radians(109.47)  # tetrahedral
 
 # Covalent-bond-order scaling for ideal bond length d_ideal = scale * (r_i + r_j).
 # Pyykkö-style; AROMATIC sits between SINGLE and DOUBLE.
+#
+# ⚠️ This is a GLOBAL factor applied to every element pair, and measurement says that is the defect.
+# Pyykkö & Atsumi published single, DOUBLE and TRIPLE covalent radii per ELEMENT; collapsing all of
+# them into one ratio per bond order is a simplification the data does not support.  Measured against
+# CCDC clean_v2 (25.8 M bonds, signature-resolved bands): terminal multiply-bonded heteroatoms on
+# high-coordination centres come out at SINGLE-bond length -- ClO4- Cl-O +0.55 A (100 % outside the
+# band), N=N=N +0.295, S=O +0.20, coordinated C#N +0.18 across 472 systems, C#S +0.17 -- while P=O
+# (+0.055) and N-O (-0.025) are fine.  A single ratio cannot be right for both groups at once.
+# Kept as the FALLBACK for elements Pyykkö has no order-specific radius for; _pyykko_order_radius
+# below is consulted first.
 _BOND_ORDER_SCALE: Dict[float, float] = {
     1.0: 1.00,
     1.5: 0.93,
     2.0: 0.87,
     3.0: 0.78,
 }
+
+# Order-specific Pyykkö radii, looked up per element and cached, so a build only ever queries the
+# handful of elements it contains.  DELFIN already uses the SINGLE set elsewhere
+# (occupier.load_covalent_radii, source "pyykko2009"); the double/triple sets were published in the
+# same work.  This turns the bond-order contraction from a global ratio into a property of the ATOM,
+# defined across the periodic table instead of for a hand-listed set of pairs.
+_PYYKKO_ORDER_ATTR: Dict[int, str] = {2: "covalent_radius_pyykko_double",
+                                      3: "covalent_radius_pyykko_triple"}
+_PYYKKO_ORDER_CACHE: Dict[Tuple[str, int], Optional[float]] = {}
+
+
+def _pyykko_order_radius(sym: str, order: int) -> Optional[float]:
+    """Pyykkö double/triple covalent radius (Å) for `sym`, or None when unavailable.
+
+    None makes every caller fall back to the global-ratio path, so an element mendeleev has no
+    order-specific value for behaves exactly as before -- never-worse by construction.
+    """
+    key = (sym, order)
+    if key in _PYYKKO_ORDER_CACHE:
+        return _PYYKKO_ORDER_CACHE[key]
+    val: Optional[float] = None
+    attr = _PYYKKO_ORDER_ATTR.get(order)
+    if attr is not None:
+        try:
+            from mendeleev import element  # type: ignore
+            raw = getattr(element(sym), attr, None)
+            if raw is not None:
+                val = float(raw) / 100.0          # mendeleev stores pm
+        except Exception:
+            val = None
+    _PYYKKO_ORDER_CACHE[key] = val
+    return val
 
 _LAST_RESORT_BOND_LEN = 1.50   # Å — used if nothing else is known
 _DEFAULT_VDW_FALLBACK = 1.80   # Å — also used for unknown elements
@@ -146,6 +189,13 @@ def _ideal_bond_length(mol, i: int, j: int, order: float) -> float:
     r_j = cov.get(sym_j)
     if r_i is None or r_j is None:
         return _LAST_RESORT_BOND_LEN
+    # Order-specific radii first (a property of the ATOM), global ratio as fallback.
+    _o = 3 if order >= 2.5 else (2 if order >= 1.75 else 0)
+    if _o and os.environ.get("DELFIN_FFREE_PYYKKO_ORDER_RADII", "0") == "1":
+        _ri = _pyykko_order_radius(sym_i, _o)
+        _rj = _pyykko_order_radius(sym_j, _o)
+        if _ri is not None and _rj is not None:
+            return float(_ri + _rj)
     scale = _BOND_ORDER_SCALE.get(round(order * 2) / 2.0)  # snap to .5
     if scale is None:
         scale = 1.0

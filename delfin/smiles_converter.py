@@ -2106,8 +2106,21 @@ def _apply_baustein6_if_enabled(mol, results, dual_parse_done: bool):
                         and not report.get("fallback_used", True)):
                     new_results.append((new_xyz, label))
                 else:
+                    # VISIBILITY (2026-07-30).  B6 refuses silently: every bail-out path in the
+                    # refiner returns the input XYZ with fallback_used=True, and the caller logged the
+                    # reason at DEBUG only -- so `DELFIN_B6_WIRED=1` measured affected=0 on a 35-system
+                    # probe and there was no way to tell WHY.  An 8-term functional that declines
+                    # every frame and says nothing cannot be developed.  Only reachable when B6 is
+                    # armed, so default behaviour is untouched.
+                    import sys as _s6
+                    print(f"[B6] declined {label}: err={report.get('error')!r} "
+                          f"topo={report.get('topology_preserved')} "
+                          f"fallback={report.get('fallback_used')} "
+                          f"pg={report.get('global_pg')}", file=_s6.stderr)
                     new_results.append((xyz, label))
-            except Exception:
+            except Exception as _b6_frame_exc:
+                import sys as _s6
+                print(f"[B6] raised on {label}: {_b6_frame_exc!r}", file=_s6.stderr)
                 new_results.append((xyz, label))
         return new_results
     except Exception as _b6_exc:
