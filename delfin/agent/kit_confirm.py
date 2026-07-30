@@ -100,6 +100,10 @@ class KitConfirmBroker:
         # not an actual click on deny. Consumers distinguish the two.
         self.last_timed_out = False
         self._on_request: Optional[Any] = None  # UI callback to refresh the panel
+        # UI callback for an EXPIRED request: the panel clears itself when the
+        # window closes, which looks to the user like the prompt vanished for
+        # no reason. Signature: (title, waited_s) -> None; best-effort.
+        self._on_timeout: Optional[Any] = None
         # Optional persistence hook: callable(kind, pattern) -> (ok, msg).
         # When a remember_permission request goes through the broker and the
         # user ticks "Dauerhaft speichern", the broker forwards the
@@ -181,6 +185,15 @@ class KitConfirmBroker:
             persist_pat = req.persist_pattern
             persist_kind = req.persist_kind
             session_dir = req.session_dir
+
+        # Tell the UI that the prompt EXPIRED rather than letting it
+        # disappear silently — the user was deciding, not ignoring it.
+        if timed_out and self._on_timeout is not None:
+            try:
+                self._on_timeout(getattr(req, "tool_name", "") or "an action",
+                                 self._timeout_s)
+            except Exception:
+                pass
 
         # A real click resolves the inbox event; a TIMEOUT parks it (the
         # event stays pending) so the user can still act on it later from

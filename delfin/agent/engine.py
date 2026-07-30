@@ -952,6 +952,43 @@ class AgentEngine:
         except Exception:
             return ""
 
+    # An explicit instruction to open a task list / roadmap up front.
+    _TASKLIST_REQUEST_RE = re.compile(
+        r"(?i)\b(?:task_create|task[\s_-]?list|taskliste|aufgabenliste|"
+        r"roadmap)\b")
+
+    def _build_unmet_tasklist_block(self) -> str:
+        """Per-turn reminder while an explicit request for a task list is
+        open.
+
+        Same reasoning as the delegation reminder: an instruction stated
+        once at the start of a long execution turn loses against the work
+        in front of the model. Disappears as soon as a task exists.
+        """
+        try:
+            if getattr(self, "_tasklist_satisfied", False):
+                return ""
+            asked = any(
+                self._TASKLIST_REQUEST_RE.search(str(m.get("content", "")))
+                for m in self.messages if str(m.get("role")) == "user")
+            if not asked:
+                return ""
+            used = any("task_create" in str(t or "") for t in
+                       (getattr(self, "_session_tool_names", None) or ()))
+            if used:
+                self._tasklist_satisfied = True
+                return ""
+            return (
+                "# Open request: task list\n"
+                "The user explicitly asked for the roadmap to be opened with "
+                "`task_create` before execution starts, and no task exists "
+                "yet. Create one task per planned step now, then begin task 1 "
+                "with a real action — the list is the progress record the "
+                "user reads, not optional bookkeeping."
+            )
+        except Exception:
+            return ""
+
     def _build_open_foreign_tasks_block(self) -> str:
         """One-shot notice — FIRST prompt build of a session only — of open
         tasks left behind by PREVIOUS sessions of this workspace.
@@ -1118,6 +1155,9 @@ class AgentEngine:
             delegation_block = self._build_unmet_delegation_block()
             if delegation_block:
                 extra_blocks.append(delegation_block)
+            tasklist_block = self._build_unmet_tasklist_block()
+            if tasklist_block:
+                extra_blocks.append(tasklist_block)
             jobs_block = self._build_finished_jobs_block()
             if jobs_block:
                 extra_blocks.append(jobs_block)
