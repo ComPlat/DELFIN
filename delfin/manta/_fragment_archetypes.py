@@ -212,6 +212,116 @@ def detect_fragments(mol) -> List[FragmentMatch]:
     return matches
 
 
+def _kabsch(p, q):
+    """Nearest orthogonal R with R·p_i ≈ q_i, plus the residual RMS.
+
+    The determinant is deliberately NOT forced to +1: a mirror or an inversion is a real
+    symmetry operation, and the CCDC survey found improper operations in 35 % of complexes
+    (52 % of those trans) -- restricting to proper rotations reproduces half the reality.
+    """
+    import numpy as np
+
+    h = p.T @ q
+    u, _s, vt = np.linalg.svd(h)
+    r = vt.T @ u.T
+    resid = (p @ r.T) - q
+    rms = float(np.sqrt(max(0.0, float((resid * resid).sum()) / max(1, len(p)))))
+    return r, rms
+
+
+def detect_fragment_orbits(mol, coords, rms_tol: float = 0.35,
+                           max_perms: int = 32, max_fragments: int = 64,
+                           max_component_atoms: int = 120) -> List[Dict]:
+    """Tier-C fragments from GRAPH AUTOMORPHISMS -- the universal form of the table above.
+
+    A fragment is symmetric because its atoms lie in an ORBIT of the automorphism group,
+    not because its name is on a list.  ``FRAGMENT_DATABASE`` can only ever describe the
+    ligands somebody wrote down; every ligand outside it silently got no symmetry at all,
+    and no list can catch up with the periodic table.  The graph always answers.
+
+    How:
+      1. cut every metal-donor bond -> the connected components ARE the ligands (no name,
+         no pattern; the metal's own sphere is U_A's job and Tier D handles the molecule);
+      2. per component, the automorphism group is the set of self-substructure matches,
+         which preserves element AND bond order by construction;
+      3. per non-identity automorphism, Kabsch-fit the orthogonal operation that carries
+         each atom onto its image.  The fit is done ONCE on the input geometry and frozen,
+         so U_C's analytic gradient stays exact;
+      4. keep it only if the frame ALREADY nearly has that symmetry (residual <= rms_tol).
+         Tightening a near-symmetry is monotone; inventing one the molecule does not have
+         would be a way to damage a frame, so the guard is the never-worse condition.
+
+    Returns the dicts ``U_C_fragment`` actually consumes -- ``atoms`` / ``operations`` /
+    ``partners`` -- rather than the FragmentMatch namedtuples ``detect_fragments`` returns,
+    which that function has no ``.get`` for.
+    """
+    if mol is None or coords is None:
+        return []
+    try:
+        import numpy as np
+        from rdkit import Chem
+    except Exception:
+        return []
+
+    try:
+        coords = np.asarray(coords, dtype=float)
+        metals = set(_metal_symbols())
+        em = Chem.RWMol(mol)
+        for b in list(em.GetBonds()):
+            if (b.GetBeginAtom().GetSymbol() in metals
+                    or b.GetEndAtom().GetSymbol() in metals):
+                em.RemoveBond(b.GetBeginAtomIdx(), b.GetEndAtomIdx())
+        mapping: List[List[int]] = []
+        comps = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=False,
+                                 fragsMolAtomMapping=mapping)
+    except Exception:
+        return []
+
+    out: List[Dict] = []
+    for sub, parent_idx in zip(comps, mapping):
+        if len(out) >= max_fragments:
+            break
+        n = sub.GetNumAtoms()
+        if n < 3 or n > max_component_atoms:
+            continue
+        try:
+            Chem.FastFindRings(sub)
+            autos = sub.GetSubstructMatches(sub, uniquify=False,
+                                            useChirality=False,
+                                            maxMatches=max_perms)
+        except Exception:
+            continue
+        atoms = [int(x) for x in parent_idx]
+        loc = coords[atoms]
+        centroid = loc.mean(axis=0)
+        p = loc - centroid
+        ops = []
+        perms = []
+        for perm in sorted(autos):                    # sorted -> deterministic
+            if all(i == perm[i] for i in range(n)):
+                continue                              # identity contributes nothing
+            try:
+                q = p[list(perm)]
+                r, rms = _kabsch(p, q)
+            except Exception:
+                continue
+            if rms > rms_tol:
+                continue
+            ops.append(r)
+            perms.append({atoms[i]: atoms[perm[i]] for i in range(n)})
+        if ops:
+            out.append({"atoms": atoms, "operations": ops, "partners": perms})
+    return out
+
+
+def _metal_symbols():
+    try:
+        from delfin.smiles_converter import _METAL_SET  # type: ignore
+        return set(_METAL_SET)
+    except Exception:
+        return set()
+
+
 def get_archetype_point_group(archetype_name: str) -> str:
     """Return point-group label for given archetype, or 'C1' if unknown."""
     entry = FRAGMENT_DATABASE.get(archetype_name)

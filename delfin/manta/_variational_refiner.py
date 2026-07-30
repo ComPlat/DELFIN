@@ -636,10 +636,19 @@ def _precompute_symmetry(mol, coords: np.ndarray, class_label: str,
     except Exception:
         pass
 
-    # ----- Tier C: fragment archetypes -----
+    # ----- Tier C: fragment symmetry from graph orbits -----
+    # detect_fragments() matched a hand-written SMARTS table of named groups and returned
+    # FragmentMatch namedtuples, which U_C_fragment (a dict consumer) cannot read at all --
+    # so the whole 8-term U_total raised and silently demoted to the fallback for any
+    # molecule containing one of them.  detect_fragment_orbits() derives the same thing
+    # from the automorphism group of each ligand component: universal, element- and
+    # bond-order-aware, and in the shape U_C actually consumes.
     try:
-        from delfin.manta._fragment_archetypes import detect_fragments  # type: ignore
-        frags = detect_fragments(mol) or []
+        from delfin.manta._fragment_archetypes import (  # type: ignore
+            detect_fragment_orbits,
+        )
+        _tol = float(os.environ.get("DELFIN_FFREE_ORBIT_RMS_TOL", "0.35"))
+        frags = detect_fragment_orbits(mol, coords, rms_tol=_tol) or []
         sym_info["fragments"] = frags
         meta["fragments_detected"] = len(frags)
     except Exception:
@@ -811,8 +820,16 @@ def variational_refine(
                 U, g = _U_total(coords_2d, mol, sym_info, params)
                 g_arr = np.asarray(g, dtype=float).reshape(coords_2d.shape)
                 return float(U), g_arr
-            except Exception:
-                # Graceful fallback if the rich term raises mid-run.
+            except Exception as _u_exc:
+                # SILENT DEMOTION (found 2026-07-30).  This bare except is how the 8-term
+                # functional could stop running without anyone noticing: detect_fragments()
+                # returns FragmentMatch NAMEDTUPLES while U_C_fragment calls frag.get(...),
+                # so ANY molecule matching an archetype -- benzene, pyridine, methyl,
+                # carboxylate -- raised AttributeError here and the refiner quietly
+                # minimised the reduced fallback instead.  Record the first reason so a
+                # demotion is visible in the report rather than inferred from a mood.
+                if "u_total_fallback" not in report:
+                    report["u_total_fallback"] = f"{type(_u_exc).__name__}: {_u_exc}"
                 return _fallback_U_total(coords_2d, mol, sym_info, params)
         return _fallback_U_total(coords_2d, mol, sym_info, params)
 

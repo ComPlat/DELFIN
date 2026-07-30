@@ -1440,6 +1440,48 @@ if __name__ == "__main__":  # pragma: no cover
     print(f"  PASS" if rel < 1.0e-3 else f"  FAIL (rel >= 1e-3)")
 
     # ------------------------------------------------------------------
+    # Tier C: the REAL call path.  detect_fragments() hands U_C_fragment namedtuples it
+    # cannot read, which took the whole functional down to the fallback silently; the
+    # orbit version must both survive the call and find symmetry without a pattern list.
+    # ------------------------------------------------------------------
+    print("\nTier C — fragment symmetry on the real call path:")
+    from delfin.manta._fragment_archetypes import (detect_fragments,
+                                                   detect_fragment_orbits)
+    _fc = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1C(=O)[O-]"))
+    AllChem.EmbedMolecule(_fc, randomSeed=0xC0DE)
+    _fcc = np.array([list(_fc.GetConformer().GetAtomPosition(i))
+                     for i in range(_fc.GetNumAtoms())], dtype=np.float64)
+    try:
+        U_C_fragment(_fcc, _fc, detect_fragments(_fc))
+        print("  SMARTS path: returned (expected it to raise)")
+    except Exception as _fx:
+        print(f"  SMARTS path: {type(_fx).__name__} — "
+              f"this is the silent demotion to _fallback_U_total")
+    _orb = detect_fragment_orbits(_fc, _fcc)
+    _oe, _og = U_C_fragment(_fcc, _fc, _orb)
+    _nops = sum(len(f["operations"]) for f in _orb)
+    _loose = sum(len(f["operations"])
+                 for f in detect_fragment_orbits(_fc, _fcc, rms_tol=1.0e9))
+    print(f"  orbit path : survives the call, E = {_oe:.4f}")
+    print(f"  benzoate   : {_loose} graph automorphism(s), {_nops} accepted   "
+          f"{'OK — the ring flip is NOT a geometric symmetry here (=O vs [O-] are '
+             'distinct and off-axis), and the residual guard rejects it'
+             if _nops == 0 else 'check: something asymmetric was accepted'}")
+    # Positive control: a molecule that really carries the symmetry must keep it.
+    for _smi, _what in (("c1ccccc1", "benzene"),
+                        ("c1ccc(-c2ccccn2)nc1", "2,2'-bipyridine")):
+        _m = Chem.AddHs(Chem.MolFromSmiles(_smi))
+        AllChem.EmbedMolecule(_m, randomSeed=0xC0DE)
+        _mc = np.array([list(_m.GetConformer().GetAtomPosition(i))
+                        for i in range(_m.GetNumAtoms())], dtype=np.float64)
+        _o = detect_fragment_orbits(_m, _mc)
+        _all = sum(len(f["operations"])
+                   for f in detect_fragment_orbits(_m, _mc, rms_tol=1.0e9))
+        _kept = sum(len(f["operations"]) for f in _o)
+        print(f"  {_what:15s}: {_all:2d} automorphisms, {_kept:2d} geometric   "
+              f"{'OK' if _kept > 0 else 'FAIL — real symmetry lost'}")
+
+    # ------------------------------------------------------------------
     # U_torsion.  The dihedral gradient is the only new calculus in the functional, so
     # it gets its own finite-difference check on a real twisted conjugated system, plus
     # a negative control: a saturated ring must stay untouched.
