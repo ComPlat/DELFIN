@@ -332,3 +332,37 @@ def test_explicit_user_request_for_subagents_is_binding():
     assert "outranks your own judgement" in prompt
     # The only writer preset must not be discouraged any more.
     assert "Use sparingly; the others are sharper." not in prompt
+
+
+def test_wall_clock_is_the_raised_budget_and_the_others_are_not():
+    """Evidence-based budget (2026-07-29 delegation round): the runs that
+    died at the cap had made 10 and 3 tool calls — ~30 s per call on that
+    endpoint — and nothing was ever truncated. So wall-clock is the one
+    that binds; raising call count or output size would not have helped."""
+    import delfin.agent.subagents as sa
+    assert sa._MAX_WALL_S >= 900.0
+    assert sa._MAX_TOOL_CALLS == 40
+    assert sa._MAX_OUTPUT_TOKENS == 16000
+
+
+def test_subagent_budgets_are_tunable_from_settings():
+    from delfin.user_settings import DEFAULT_SETTINGS
+    cfg = (DEFAULT_SETTINGS.get("agent") or {}).get("subagents")
+    assert cfg, "budgets must be discoverable in the settings defaults"
+    assert cfg["max_wall_s"] == 900
+    import delfin.agent.subagents as sa
+    assert cfg["max_tool_calls"] == sa._MAX_TOOL_CALLS
+    assert cfg["max_output_tokens"] == sa._MAX_OUTPUT_TOKENS
+
+
+def test_settings_override_wins_over_the_default(monkeypatch):
+    import delfin.user_settings as us
+    import delfin.agent.subagents as sa
+    monkeypatch.setattr(
+        us, "load_settings",
+        lambda: {"agent": {"subagents": {"max_wall_s": 1800}}})
+    assert sa._subagent_limits()["max_wall_s"] == 1800.0
+    # An absent/zero value falls back rather than disabling the guard.
+    monkeypatch.setattr(us, "load_settings",
+                        lambda: {"agent": {"subagents": {"max_wall_s": 0}}})
+    assert sa._subagent_limits()["max_wall_s"] == sa._MAX_WALL_S

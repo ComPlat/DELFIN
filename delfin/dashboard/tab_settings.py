@@ -393,20 +393,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Window',
         layout=widgets.Layout(width='170px', height='28px'),
     )
-    # Subagent per-run limits (agent.subagents.*). Defaults mirror
-    # subagents._MAX_* so the UI shows the real fallbacks.
+    # Subagent per-run limits (agent.subagents.*). The fallbacks are READ
+    # from the backend instead of repeated here — a copied number silently
+    # drifts the moment the backend budget changes.
+    try:
+        from delfin.agent.subagents import (
+            _MAX_OUTPUT_TOKENS as _SA_TOKENS,
+            _MAX_TOOL_CALLS as _SA_CALLS,
+            _MAX_WALL_S as _SA_WALL,
+        )
+        _SA_WALL = int(_SA_WALL)
+    except Exception:
+        _SA_WALL, _SA_CALLS, _SA_TOKENS = 900, 40, 16000
     subagent_wall_input = widgets.BoundedIntText(
-        value=300, min=30, max=3600, step=30,
+        value=_SA_WALL, min=30, max=7200, step=30,
         description='Wall s',
         layout=widgets.Layout(width='170px', height='28px'),
     )
     subagent_calls_input = widgets.BoundedIntText(
-        value=40, min=5, max=200, step=5,
+        value=_SA_CALLS, min=5, max=200, step=5,
         description='Tool calls',
         layout=widgets.Layout(width='180px', height='28px'),
     )
     subagent_tokens_input = widgets.BoundedIntText(
-        value=16000, min=2000, max=64000, step=1000,
+        value=_SA_TOKENS, min=2000, max=64000, step=1000,
         description='Out tokens',
         layout=widgets.Layout(width='200px', height='28px'),
     )
@@ -445,9 +455,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             payload['agent']['eval_loop'] = evalloop
             subs = dict(payload['agent'].get('subagents') or {})
             subs.update({
-                'max_wall_s': int(subagent_wall_input.value or 300),
-                'max_tool_calls': int(subagent_calls_input.value or 40),
-                'max_output_tokens': int(subagent_tokens_input.value or 16000),
+                'max_wall_s': int(subagent_wall_input.value or _SA_WALL),
+                'max_tool_calls': int(subagent_calls_input.value or _SA_CALLS),
+                'max_output_tokens': int(subagent_tokens_input.value or _SA_TOKENS),
             })
             payload['agent']['subagents'] = subs
             payload['agent']['max_tool_rounds'] = int(
@@ -1026,11 +1036,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             evalloop_window_input.value = 200
         subagents_payload = agent_payload.get('subagents') or {}
         try:
-            subagent_wall_input.value = int(subagents_payload.get('max_wall_s', 300) or 300)
+            subagent_wall_input.value = int(subagents_payload.get('max_wall_s', _SA_WALL) or _SA_WALL)
         except Exception:
-            subagent_wall_input.value = 300
+            subagent_wall_input.value = _SA_WALL
         try:
-            subagent_calls_input.value = int(subagents_payload.get('max_tool_calls', 40) or 40)
+            subagent_calls_input.value = int(subagents_payload.get('max_tool_calls', _SA_CALLS) or _SA_CALLS)
         except Exception:
             subagent_calls_input.value = 40
         try:
@@ -3012,9 +3022,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             settings_payload['agent']['eval_loop'] = _evalloop
             _subs = dict(settings_payload['agent'].get('subagents') or {})
             _subs.update({
-                'max_wall_s': int(subagent_wall_input.value or 300),
-                'max_tool_calls': int(subagent_calls_input.value or 40),
-                'max_output_tokens': int(subagent_tokens_input.value or 16000),
+                'max_wall_s': int(subagent_wall_input.value or _SA_WALL),
+                'max_tool_calls': int(subagent_calls_input.value or _SA_CALLS),
+                'max_output_tokens': int(subagent_tokens_input.value or _SA_TOKENS),
             })
             settings_payload['agent']['subagents'] = _subs
             settings_payload.setdefault('features', {})

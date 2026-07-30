@@ -45,7 +45,14 @@ def test_backend_reads_the_same_keys():
     keys = {"max_wall_s", "max_tool_calls", "max_output_tokens"}
     lim = S._subagent_limits()
     assert keys == set(lim.keys())
-    # And UI defaults match the backend fallback defaults.
-    assert S._MAX_WALL_S == 300.0
-    assert S._MAX_TOOL_CALLS == 40
-    assert S._MAX_OUTPUT_TOKENS == 16000
+    # The UI must not repeat the numbers — it reads them from the backend,
+    # so a budget change cannot leave a stale default behind in the panel.
+    from pathlib import Path as _P
+    ui = (_P(__file__).resolve().parent.parent / "delfin" / "dashboard"
+          / "tab_settings.py").read_text(encoding="utf-8")
+    assert "_MAX_WALL_S as _SA_WALL" in ui
+    assert "value=_SA_WALL" in ui
+    assert "value=_SA_CALLS" in ui
+    assert "value=_SA_TOKENS" in ui
+    for literal in ("or 300)", "'max_wall_s', 300", "value=300,"):
+        assert literal not in ui, literal

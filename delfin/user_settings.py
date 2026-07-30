@@ -109,6 +109,15 @@ DEFAULT_SETTINGS = {
         # (cost_hard_limit_usd) and the consecutive-failure abort remain
         # the actual safety nets. 0 → uncapped (cost/fail-abort only).
         "max_tool_rounds": 500,
+        # Per-run limits for a delegated sub-agent. Wall-clock is the one
+        # that actually binds on a slow endpoint (a build task spends ~30 s
+        # per tool call there); call count and output size have not been
+        # the limit in measured runs. 0 → fall back to the module default.
+        "subagents": {
+            "max_tool_calls": 40,
+            "max_wall_s": 900,
+            "max_output_tokens": 16000,
+        },
         # Dashboard ACTION rounds: a round that issues at least one NEW
         # command is progress and only draws on the ceiling; a round that
         # re-issues what already ran this turn is charged against

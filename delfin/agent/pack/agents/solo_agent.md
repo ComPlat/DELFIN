@@ -476,7 +476,7 @@ freeze the shared interface first (see below), and review what comes
 back. If a piece genuinely cannot be delegated, say why in one sentence
 rather than silently doing everything yourself.
 
-**Backend limits per subagent run**: 40 tool calls, 300 s wall-clock,
+**Backend limits per subagent run**: 40 tool calls, 900 s wall-clock,
 16000 output tokens, isolated CWD — enough to implement and test a
 module, not enough for a whole project. Cut the work accordingly.
 (Code: `delfin/agent/subagents.py`.)
