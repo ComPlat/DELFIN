@@ -8924,6 +8924,19 @@ _TRANSIENT_NAME_HINTS = (
 )
 
 
+# Signatures of a gateway failing on its own resources rather than on the
+# request. None of these can appear in a legitimate bad-request response to
+# a chat completion.
+_INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
+    "operationalerror",
+    "remaining connection slots",
+    "too many connections",
+    "connection pool",
+    "sqlalche.me",
+    "temporarily unavailable",
+)
+
+
 def _is_transient_api_error(exc: Exception) -> bool:
     """Whether an API/streaming error is a transient hiccup worth retrying
     (timeout, dropped connection, rate-limit, 5xx) rather than a deterministic
@@ -8947,6 +8960,16 @@ def _is_transient_api_error(exc: Exception) -> bool:
     # true client errors (model-not-found, context-length, bad params).
     msg = str(exc)
     if "Extra data" in msg and ("vllm" in msg.lower() or "litellm" in msg.lower()):
+        return True
+    # Same shape, different cause: the gateway reports its OWN infrastructure
+    # exhaustion as a 400. Observed 2026-07-30 — a request died on
+    # "psycopg.OperationalError ... remaining connection slots are reserved
+    # for roles with the SUPERUSER attribute", i.e. the proxy's database was
+    # out of connections. A chat request cannot be malformed in a way that
+    # produces a database-pool message, so these markers retry the outage
+    # without ever retrying a genuine bad request.
+    low = msg.lower()
+    if any(marker in low for marker in _INFRA_EXHAUSTION_MARKERS):
         return True
     return False
 

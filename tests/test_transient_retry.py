@@ -149,3 +149,47 @@ def test_genuine_bad_request_400_is_not_transient():
     assert _is_transient_api_error(_Status400("context length exceeded")) is False
     # 'Extra data' WITHOUT the proxy markers is too generic to retry
     assert _is_transient_api_error(_Status400("Extra data in user field")) is False
+
+
+# ---------------------------------------------------------------------------
+# A gateway that runs out of its own resources reports a 400
+# ---------------------------------------------------------------------------
+
+
+def _err(msg, status=400):
+    exc = RuntimeError(msg)
+    exc.status_code = status
+    return exc
+
+
+def test_gateway_database_exhaustion_is_transient():
+    """Field case 2026-07-30: a run died mid-task on a 400 whose body was a
+    Postgres connection-slot error from the gateway — its own capacity, not
+    a malformed request."""
+    from delfin.agent.api_client import _is_transient_api_error
+    body = ("Error code: 400 - {'detail': '(psycopg.OperationalError) "
+            "connection failed: FATAL: remaining connection slots are "
+            "reserved for roles with the SUPERUSER attribute "
+            "(Background on this error at: https://sqlalche.me/e/20/e3q8)'}")
+    assert _is_transient_api_error(_err(body))
+
+
+def test_pool_and_availability_messages_are_transient():
+    from delfin.agent.api_client import _is_transient_api_error
+    for body in ("Error code: 400 - too many connections for role",
+                 "Error code: 400 - connection pool exhausted",
+                 "Error code: 400 - service temporarily unavailable"):
+        assert _is_transient_api_error(_err(body)), body
+
+
+def test_real_client_errors_are_still_not_retried():
+    """The markers must never rescue a genuinely bad request."""
+    from delfin.agent.api_client import _is_transient_api_error
+    for body in (
+        "Error code: 400 - {'error': {'message': 'model not found'}}",
+        "Error code: 400 - maximum context length is 131072 tokens",
+        "Error code: 400 - Invalid value for 'temperature'",
+        "Error code: 401 - invalid api key",
+        "Error code: 404 - no such model",
+    ):
+        assert not _is_transient_api_error(_err(body)), body
