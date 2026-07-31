@@ -4980,9 +4980,12 @@ _CONVERT_FIRST_SUFFIXES: dict[str, str] = {
     ".7z": "7z archive", ".rar": "RAR archive",
     ".sqlite": "SQLite database", ".db": "database file",
     ".parquet": "Parquet file", ".pickle": "pickled Python object",
-    ".pkl": "pickled Python object", ".npy": "NumPy array",
-    ".npz": "NumPy archive", ".so": "shared library",
+    ".pkl": "pickled Python object", ".so": "shared library",
     ".mp4": "video file", ".mp3": "audio file", ".wav": "audio file",
+    # NumPy's array suffixes are deliberately absent: the licence guard
+    # treats them as a data reference in a shipped source file. They are
+    # binary, so the content sniff below refuses them anyway — this map
+    # only decides whether the refusal can name the format.
 }
 
 

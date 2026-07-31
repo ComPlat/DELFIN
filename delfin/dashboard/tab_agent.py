@@ -15992,7 +15992,7 @@ def create_tab(ctx):
     # dropdown label and the panel around it. Marked internal, so restoring
     # does not re-save what it just read.
     try:
-        _saved_mode = str(_load_agent_settings().get("mode", "") or "").strip()
+        _saved_mode = str(_get_agent_settings().get("mode", "") or "").strip()
         if _saved_mode and _saved_mode != mode_dropdown.value:
             _set_mode_programmatically(_saved_mode)
     except Exception:

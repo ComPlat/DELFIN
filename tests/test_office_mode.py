@@ -199,3 +199,18 @@ def test_the_office_role_is_stamped_before_the_first_turn():
     constructing the engine and the first turn."""
     source = _tab_agent_source()
     assert '_kp.agent_role = "office_agent"' in source
+
+
+def test_the_mode_restore_calls_a_helper_that_exists():
+    """The restore is wrapped in try/except, so a wrong function name does
+    not raise — it silently turns the feature off. That is how a
+    NameError survived a test that only checked the source order: the
+    call was in the right place and pointed at nothing."""
+    import re
+
+    source = _tab_agent_source()
+    match = re.search(r"_saved_mode = str\((\w+)\(\)", source)
+    assert match, "the restore no longer reads the saved mode"
+    helper = match.group(1)
+    assert f"def {helper}(" in source, (
+        f"the restore calls {helper}(), which is not defined in this module")
