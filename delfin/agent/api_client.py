@@ -2575,6 +2575,72 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "merge_pdfs",
+            "description": (
+                "Combine PDFs into one NEW file, in the order given. "
+                "Reports the pages of each input and of the result."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "inputs": {
+                        "type": "array",
+                        "description": "Two or more PDFs, in order.",
+                        "items": {"type": "string"},
+                    },
+                    "output": {"type": "string"},
+                },
+                "required": ["inputs", "output"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "split_pdf",
+            "description": (
+                "Extract pages of a PDF into separate files, one per part "
+                "of pages. Omitting pages writes every page on its own."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "output_dir": {"type": "string"},
+                    "pages": {
+                        "type": "string",
+                        "description": "'3', '2-5' or '1,4,7'.",
+                    },
+                },
+                "required": ["path", "output_dir"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_pdf",
+            "description": (
+                "Write a new PDF from content blocks: {heading, level} | "
+                "{paragraph} | {table: [[...]], header_row} | {page_break}. "
+                "To fill an existing form use fill_pdf_form."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "blocks": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+                "required": ["path", "blocks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_permission",
             "description": (
                 "Persist ONE permission rule to ~/.delfin/settings.json "
@@ -3866,7 +3932,7 @@ _CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
 _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
     "fill_docx_template", "create_docx", "compare_tables",
-    "fill_series",
+    "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
 })
 
 _OFFICE_BACKENDS_CACHE: Optional[bool] = None
@@ -5671,7 +5737,7 @@ class _DocToolExecutor:
         # Document writes change user files like any other write, so they
         # belong in the audit trail /changes reads.
         "edit_sheet", "fill_pdf_form", "fill_docx_template", "create_docx",
-        "fill_series",
+        "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
         "remember_permission", "remember_permission_bundle",
     })
 
@@ -5747,7 +5813,8 @@ class _DocToolExecutor:
         # gates its OUTPUT (the source is only read), so they cannot
         # share the block above.
         if name in ("edit_sheet", "fill_pdf_form",
-                    "fill_docx_template", "create_docx", "fill_series"):
+                    "fill_docx_template", "create_docx", "fill_series",
+                    "merge_pdfs", "split_pdf", "create_pdf"):
             if permissions is None:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured."
@@ -5765,6 +5832,12 @@ class _DocToolExecutor:
                 return self._execute_fill_docx_template(arguments, permissions)
             if name == "fill_series":
                 return self._execute_fill_series(arguments, permissions)
+            if name == "merge_pdfs":
+                return self._execute_merge_pdfs(arguments, permissions)
+            if name == "split_pdf":
+                return self._execute_split_pdf(arguments, permissions)
+            if name == "create_pdf":
+                return self._execute_create_pdf(arguments, permissions)
             return self._execute_create_docx(arguments, permissions)
 
         # Background-job inspection tools — no command execution, just
@@ -6738,24 +6811,10 @@ class _DocToolExecutor:
 
         from . import office as _office
         if getattr(perms, "mode", "") == "diff_approval":
-            lines = []
-            for block in blocks[:20]:
-                if not isinstance(block, dict):
-                    continue
-                if "heading" in block:
-                    lines.append(f"  # {block['heading']}")
-                elif "paragraph" in block:
-                    lines.append(f"  {str(block['paragraph'])[:80]}")
-                elif "table" in block:
-                    rows = block.get("table") or []
-                    lines.append(f"  [table, {len(rows)} row(s)]")
-                elif block.get("page_break"):
-                    lines.append("  [page break]")
-            if len(blocks) > 20:
-                lines.append(f"  … {len(blocks) - 20} more block(s)")
             preview = (
                 f"Create {self._display_path(target, perms)} with "
-                f"{len(blocks)} block(s)\n" + "\n".join(lines)
+                f"{len(blocks)} block(s)\n"
+                + self._blocks_preview(blocks)
             )
             approved = self._confirm_office_change(
                 "create_docx", arguments, perms, preview)
@@ -6779,6 +6838,232 @@ class _DocToolExecutor:
             "paragraphs": result["paragraphs"],
             "tables": result["tables"],
         }, ensure_ascii=False)
+
+    def _execute_merge_pdfs(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        inputs = arguments.get("inputs")
+        if not isinstance(inputs, list) or len(inputs) < 2:
+            return json.dumps({"error": (
+                "inputs must be a list of at least two PDF paths, in the "
+                "order they should appear in the result")})
+
+        root = perms.workspace if perms is not None else self._repo_root()
+        sources: list[Path] = []
+        for item in inputs:
+            rel = str(item or "").strip()
+            if not rel:
+                return json.dumps({"error": (
+                    "an entry of inputs is empty — every input needs a path")})
+            full = (root / rel) if not Path(rel).is_absolute() else Path(rel)
+            if perms is not None:
+                denied = self._check_read_access(perms, full, label=rel)
+                if denied is not None:
+                    return json.dumps({"error": denied})
+            sources.append(full)
+
+        out_path, err = self._office_target(arguments, perms, key="output")
+        if err is not None:
+            return json.dumps({"error": err})
+        if out_path.exists():
+            return json.dumps({"error": (
+                f"'{self._display_path(out_path, perms)}' already exists — "
+                "write the merge to a new name")})
+        gate_err = self._gate_write_path(
+            str(out_path), perms, "merge_pdfs", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Merge {len(sources)} PDF(s) into "
+                f"{self._display_path(out_path, perms)}\n"
+                + "\n".join(f"  {self._display_path(s, perms)}"
+                            for s in sources)
+            )
+            approved = self._confirm_office_change(
+                "merge_pdfs", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        try:
+            result = _office.merge_pdfs(sources, output=out_path)
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"merging failed: {exc}"}, ensure_ascii=False)
+
+        self._capture_binary_change("merge_pdfs", out_path, None, perms)
+        out = {
+            "status": "ok",
+            "path": self._display_path(out_path, perms),
+            # Per input, so a document that contributed fewer pages than
+            # expected is visible instead of hidden in the total.
+            "inputs": [
+                {"path": self._display_path(Path(entry["path"]), perms),
+                 "pages": entry["pages"]}
+                for entry in result["inputs"]
+            ],
+            "pages": result["pages"],
+            # Counted in the file that was written, not in the inputs.
+            "verified": result["verified"],
+        }
+        if result.get("notes"):
+            out["notes"] = result["notes"]
+        return json.dumps(out, ensure_ascii=False)
+
+    def _execute_split_pdf(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        src, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        out_dir, err = self._office_target(arguments, perms, key="output_dir")
+        if err is not None:
+            return json.dumps({"error": err})
+
+        if perms is not None:
+            denied = self._check_read_access(
+                perms, src, label=str(arguments.get("path", "")))
+            if denied is not None:
+                return json.dumps({"error": denied})
+        gate_err = self._gate_write_path(
+            str(out_dir), perms, "split_pdf", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        pages = arguments.get("pages")
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Split {self._display_path(src, perms)}"
+                f" ({pages or 'every page'})\n"
+                f"  -> {self._display_path(out_dir, perms)}"
+            )
+            approved = self._confirm_office_change(
+                "split_pdf", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        try:
+            result = _office.split_pdf(
+                src, output_dir=out_dir,
+                pages=None if pages is None else str(pages))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"splitting failed: {exc}"}, ensure_ascii=False)
+
+        for entry in result["files"]:
+            if entry["status"] == "ok":
+                self._capture_binary_change(
+                    "split_pdf", Path(result["output_dir"]) / entry["output"],
+                    None, perms)
+
+        written = [e["output"] for e in result["files"]
+                   if e["status"] == "ok"]
+        out: dict[str, Any] = {
+            "status": "ok",
+            "output_dir": self._display_path(out_dir, perms),
+            "counts": result["counts"],
+            "written": written[:60],
+            "verified": result["verified"],
+        }
+        if len(written) > 60:
+            out["written_truncated"] = len(written) - 60
+        # Everything that did not work, named. An aggregate count would
+        # let a file that was never written pass as part of a batch.
+        problems = [e for e in result["files"] if e["status"] != "ok"]
+        if problems:
+            out["problems"] = [
+                {"output": e["output"], "pages": e["pages"],
+                 "status": e["status"], "detail": e.get("detail", "")}
+                for e in problems[:50]
+            ]
+        if result.get("notes"):
+            out["notes"] = result["notes"]
+        return json.dumps(out, ensure_ascii=False)
+
+    def _execute_create_pdf(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        target, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        blocks = arguments.get("blocks")
+        if not isinstance(blocks, list) or not blocks:
+            return json.dumps({"error": (
+                "blocks must be a non-empty list of content blocks: "
+                "{heading, level} | {paragraph} | {table} | {page_break}")})
+        if target.exists():
+            return json.dumps({"error": (
+                f"'{self._display_path(target, perms)}' already exists — "
+                "write to a new path")})
+
+        gate_err = self._gate_write_path(
+            str(target), perms, "create_pdf", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Create {self._display_path(target, perms)} with "
+                f"{len(blocks)} block(s)\n"
+                + self._blocks_preview(blocks)
+            )
+            approved = self._confirm_office_change(
+                "create_pdf", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        try:
+            result = _office.create_pdf(target, blocks)
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"could not write the PDF: {exc}"},
+                ensure_ascii=False)
+
+        self._capture_binary_change("create_pdf", target, None, perms)
+        out = {
+            "status": "ok",
+            "path": self._display_path(target, perms),
+            "pages": result["pages"],
+            "headings": result["headings"],
+            "paragraphs": result["paragraphs"],
+            "tables": result["tables"],
+            # Read back from the written file: page count plus a text
+            # probe, so a document that cannot be read is not a success.
+            "verified": result["verified"],
+        }
+        if result.get("notes"):
+            out["notes"] = result["notes"]
+        return json.dumps(out, ensure_ascii=False)
+
+    @staticmethod
+    def _blocks_preview(blocks: list, limit: int = 20) -> str:
+        """One line per content block, for an approval dialog."""
+        lines = []
+        for block in blocks[:limit]:
+            if not isinstance(block, dict):
+                continue
+            if "heading" in block:
+                lines.append(f"  # {block['heading']}")
+            elif "paragraph" in block:
+                lines.append(f"  {str(block['paragraph'])[:80]}")
+            elif "table" in block:
+                rows = block.get("table") or []
+                lines.append(f"  [table, {len(rows)} row(s)]")
+            elif block.get("page_break"):
+                lines.append("  [page break]")
+        if len(blocks) > limit:
+            lines.append(f"  … {len(blocks) - limit} more block(s)")
+        return "\n".join(lines)
 
     def _sheet_change_preview(
         self, path: Path, perms: "KitToolPermissions", plan: dict

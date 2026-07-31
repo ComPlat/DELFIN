@@ -36,7 +36,14 @@ _BASELINE_TOKENS = 11_422
 # Budget with headroom for a few future tools. The compaction target was a
 # 35% cut of the baseline, which lands around 7.35k; the document tools
 # were added on top of that and cost ~1.2k tokens for seven.
-_TOKEN_BUDGET = 8_600
+# Raised from 8,600 (measured surface 8,589) for the three PDF-assembly
+# tools: merge_pdfs, split_pdf and create_pdf cost 298 tokens together,
+# and about two thirds of that is the parameter contract (names, types,
+# required), which cannot be written any shorter. Their prose was kept to
+# when-to-call and the argument shapes; the caveats — page counts,
+# refusals, what did not verify — are returned by the runtime, where they
+# cost nothing until they apply. The remaining headroom is deliberate.
+_TOKEN_BUDGET = 9_000
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -45,6 +52,7 @@ _TOKEN_BUDGET = 8_600
 _POST_COMPACTION_TOOLS = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
     "fill_docx_template", "create_docx", "compare_tables", "fill_series",
+    "merge_pdfs", "split_pdf", "create_pdf",
 })
 
 

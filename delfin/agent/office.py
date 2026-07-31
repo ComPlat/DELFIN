@@ -19,6 +19,11 @@ rediscovered by the model on the spot, and several of them are silent:
   stay off for anything else.
 * XFA forms ignore AcroForm writes, so a "successful" fill changes
   nothing the user will see.
+* A merge that opens its inputs while it writes produces a document
+  that looks complete when the fourth attachment turns out to be
+  encrypted. The pages missing from it are the ones nobody can name
+  afterwards, so every input is opened before the first byte is
+  written.
 
 Each of those is handled once, here, instead of in whatever code the
 model happens to write that turn. The functions are pure in the sense
@@ -65,6 +70,10 @@ _BACKENDS: dict[str, tuple[str, str]] = {
     "pdf": ("pypdf", "pypdf"),
     "word": ("docx", "python-docx"),
     "csv": ("csv", ""),  # standard library
+    # Reading a PDF and producing one are different libraries: pypdf
+    # takes existing pages apart and puts them together, but it does not
+    # lay out text. Writing a page needs reportlab.
+    "pdf_write": ("reportlab", "reportlab"),
 }
 
 
@@ -2043,6 +2052,464 @@ def _flatten_form(writer: Any) -> None:
                     obj[NameObject("/Ff")] = NumberObject(flags | 1)
     except Exception as exc:
         raise OfficeError(f"could not flatten the form: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# PDF assembly: merging, splitting, writing
+# ---------------------------------------------------------------------------
+
+# Caps on the batch sizes. A merge of a thousand files or a split of a
+# thousand pages is far more likely to be a wrong argument than a wanted
+# operation, and both would be discovered as a full directory.
+MAX_MERGE_INPUTS = 100
+MAX_SPLIT_PARTS = 200
+
+
+def _pdf_pages(path: Path) -> tuple[Any, int]:
+    """Open a PDF and count its pages, naming the file on every failure.
+
+    An encrypted document opens without complaint and only refuses when a
+    page is touched, so the page count is read here rather than during the
+    write: a file that cannot be used has to be a refusal while nothing
+    has been produced yet, not a half-finished result.
+    """
+    try:
+        reader = _pdf_reader(path)
+    except OfficeError as exc:
+        raise OfficeError(f"{path.name}: {exc}") from exc
+    try:
+        return reader, len(reader.pages)
+    except Exception as exc:
+        if getattr(reader, "is_encrypted", False):
+            raise OfficeError(
+                f"{path.name} is encrypted and cannot be read without its "
+                "password"
+            ) from exc
+        raise OfficeError(f"{path.name} could not be read: {exc}") from exc
+
+
+def _pdf_has_fields(reader: Any) -> bool:
+    try:
+        return bool(reader.get_fields())
+    except Exception:
+        return False
+
+
+def merge_pdfs(inputs: list, *, output: Any) -> dict:
+    """Combine several PDFs into one new file, in the order given.
+
+    Every input is opened and its pages are counted before anything is
+    written. A merge that fails halfway would leave a document that looks
+    finished while missing pages nobody can name afterwards, so an
+    unreadable or encrypted input refuses the whole operation and says
+    which file it was.
+
+    An existing output is never replaced: in administrative work the file
+    already sitting under that name is the one somebody else may have
+    already sent.
+    """
+    if not isinstance(inputs, (list, tuple)) or len(inputs) < 2:
+        raise OfficeError(
+            "merging needs at least two PDFs, listed in the order they "
+            "should appear in the result")
+    if len(inputs) > MAX_MERGE_INPUTS:
+        raise OfficeError(
+            f"{len(inputs)} inputs exceeds the cap of {MAX_MERGE_INPUTS}")
+
+    out = _resolve(output, must_exist=False)
+    if document_kind(out) != "pdf":
+        raise OfficeError(f"cannot write {out.suffix!r} as a PDF — use .pdf")
+    if out.exists():
+        raise OfficeError(
+            f"{out.name} already exists — nothing was merged. Write to a "
+            "new name.")
+
+    pypdf = _require("pdf")
+    sources: list[tuple[Path, Any, int]] = []
+    for item in inputs:
+        src = _resolve(item)
+        if document_kind(src) != "pdf":
+            raise OfficeError(
+                f"{src.name} is not a PDF — nothing was merged")
+        reader, count = _pdf_pages(src)
+        sources.append((src, reader, count))
+
+    expected = sum(count for _, _, count in sources)
+    try:
+        writer = pypdf.PdfWriter()
+        for _src, reader, _count in sources:
+            try:
+                writer.append(reader)
+            except AttributeError:      # pragma: no cover - older pypdf
+                # No writer-level append: the pages still carry the
+                # content, only the outline entries are lost.
+                for page in reader.pages:
+                    writer.add_page(page)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("wb") as fh:
+            writer.write(fh)
+    except OfficeError:
+        raise
+    except Exception as exc:
+        # A truncated file under the requested name reads as a finished
+        # merge to everyone who finds it later.
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        raise OfficeError(f"could not merge the documents: {exc}") from exc
+
+    # Count the pages of the file that was written, not the pages that
+    # were meant to go into it.
+    written = 0
+    try:
+        written = len(pypdf.PdfReader(str(out)).pages)
+    except Exception:
+        written = 0
+
+    notes: list[str] = []
+    if written != expected:
+        notes.append(
+            f"the written file holds {written} page(s), not the {expected} "
+            "the inputs add up to")
+    with_fields = [src.name for src, reader, _c in sources
+                   if _pdf_has_fields(reader)]
+    if with_fields:
+        notes.append(
+            "form fields are present in " + ", ".join(with_fields)
+            + " — fields carrying the same name collapse into one shared "
+            "value when the documents are combined. Open the result before "
+            "handing it over.")
+    return {
+        "path": str(out),
+        "inputs": [{"path": str(src), "pages": count}
+                   for src, _r, count in sources],
+        "pages": written,
+        "expected_pages": expected,
+        "verified": written == expected and written > 0,
+        "notes": notes,
+    }
+
+
+def _split_label(group: list[int]) -> str:
+    """Name the page selection a part covers, for the output file name."""
+    if len(group) == 1:
+        return f"p{group[0]}"
+    if group == list(range(group[0], group[-1] + 1)):
+        return f"p{group[0]}-{group[-1]}"
+    return "p" + "_".join(str(n) for n in group)
+
+
+def split_pdf(
+    path: Any, *, output_dir: Any, pages: Optional[str] = None
+) -> dict:
+    """Write page ranges of a PDF into separate files.
+
+    ``pages`` takes the syntax :func:`read_pdf` uses, and every
+    comma-separated part becomes one document: ``"2-5,9"`` writes a
+    four-page file and a one-page file. Without it every page is written
+    on its own.
+
+    Each part is reported with its own outcome. A name already taken
+    fails that part and leaves the existing file untouched, because the
+    aggregate "12 files written" is exactly what hides the one page that
+    silently replaced last week's version.
+    """
+    src = _resolve(path)
+    if document_kind(src) != "pdf":
+        raise OfficeError(f"{src.name} is not a PDF")
+
+    pypdf = _require("pdf")
+    reader, total = _pdf_pages(src)
+
+    spec = str(pages or "").strip()
+    if spec:
+        # One output per comma-separated part, so "2-5" stays one
+        # document. The parts themselves go through the reader's page
+        # parser — there is one page syntax in this module, not two.
+        groups = [_parse_pages(part, total)
+                  for part in spec.split(",") if part.strip()]
+        if not groups:
+            raise OfficeError(f"no page selection in {spec!r}")
+    else:
+        groups = [[n] for n in _parse_pages(None, total)]
+    if len(groups) > MAX_SPLIT_PARTS:
+        raise OfficeError(
+            f"{len(groups)} parts exceeds the cap of {MAX_SPLIT_PARTS} — "
+            "pass a page selection")
+
+    out_dir = _resolve(output_dir, must_exist=False)
+    if out_dir.exists() and not out_dir.is_dir():
+        raise OfficeError(f"{out_dir} exists and is not a directory")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = _safe_name(src.stem)
+    used: dict[str, list[int]] = {}
+    results: list[dict] = []
+    for group in groups:
+        name = f"{stem}_{_split_label(group)}.pdf"[:150]
+        if name in used:
+            results.append({
+                "output": name, "pages": group, "status": "failed",
+                "detail": (f"the name is already taken by pages "
+                           f"{used[name]} of this call"),
+            })
+            continue
+        target = out_dir / name
+        if target.exists():
+            results.append({
+                "output": name, "pages": group, "status": "failed",
+                "detail": "a file of that name already exists; nothing was "
+                          "overwritten",
+            })
+            continue
+        try:
+            writer = pypdf.PdfWriter()
+            for number in group:
+                writer.add_page(reader.pages[number - 1])
+            with target.open("wb") as fh:
+                writer.write(fh)
+        except Exception as exc:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            results.append({"output": name, "pages": group,
+                            "status": "failed", "detail": str(exc)})
+            continue
+        used[name] = group
+
+        written = 0
+        try:
+            written = len(pypdf.PdfReader(str(target)).pages)
+        except Exception:
+            written = 0
+        if written == len(group):
+            results.append({"output": name, "pages": group, "status": "ok"})
+        else:
+            results.append({
+                "output": name, "pages": group, "status": "incomplete",
+                "detail": (f"the written file holds {written} page(s), not "
+                           f"the {len(group)} requested"),
+            })
+
+    counts = {
+        "ok": sum(1 for r in results if r["status"] == "ok"),
+        "incomplete": sum(1 for r in results if r["status"] == "incomplete"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+    }
+    notes: list[str] = []
+    if counts["failed"]:
+        notes.append(f"{counts['failed']} part(s) produced no file.")
+    if counts["incomplete"]:
+        notes.append(
+            f"{counts['incomplete']} file(s) do not hold the pages that were "
+            "asked for. They are not ready to hand over.")
+    if _pdf_has_fields(reader):
+        notes.append(
+            "the source is a form: the extracted pages keep the field "
+            "widgets but not the document-level form dictionary, so filled "
+            "values can render as empty. Check one result before handing "
+            "it over.")
+    return {
+        "source": str(src),
+        "output_dir": str(out_dir),
+        "source_pages": total,
+        "files": results,
+        "counts": counts,
+        "verified": counts["ok"] == len(groups),
+        "notes": notes,
+    }
+
+
+def _pdf_markup(value: Any) -> str:
+    """Escape a value for the paragraph markup of the PDF writer.
+
+    Paragraph text is parsed as markup, so an unescaped ``&`` in a company
+    name or a ``<`` in a note aborts the build or swallows the rest of the
+    line. Line breaks are kept as breaks rather than collapsing into one
+    run-on paragraph.
+    """
+    from xml.sax.saxutils import escape
+    return escape(_fmt(value)).replace("\r\n", "\n").replace("\n", "<br/>")
+
+
+_PROBE_RE = re.compile(r"[^\W\d_]{4,}", re.UNICODE)
+
+
+def _text_probe(text: str) -> str:
+    """The longest word of *text*, used to check the file reads back.
+
+    A whole line cannot be searched for: the writer wraps lines wherever
+    they run out of width. A single word is not hyphenated, so it survives
+    extraction intact — and a word carrying an umlaut proves the encoding
+    survived as well.
+    """
+    words = _PROBE_RE.findall(str(text or ""))
+    if not words:
+        return ""
+    return max(words, key=len)[:24]
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def create_pdf(path: Any, blocks: list[dict]) -> dict:
+    """Write a new PDF from the content blocks :func:`create_docx` takes.
+
+    Each block is one of ``{"heading": str, "level": int}``,
+    ``{"paragraph": str}``, ``{"table": [[...], ...], "header_row": bool}``
+    or ``{"page_break": true}``.
+
+    The result is read back before it is reported: the page count comes
+    from the written file and the first block's text has to be findable in
+    it, so a document that was produced but cannot be read does not come
+    back as a success.
+    """
+    p = _resolve(path, must_exist=False)
+    if document_kind(p) != "pdf":
+        raise OfficeError(f"cannot write {p.suffix!r} as a PDF — use .pdf")
+    if p.exists():
+        raise OfficeError(
+            f"{p.name} already exists — write to a new name; an existing "
+            "document is never replaced")
+    if not isinstance(blocks, list) or not blocks:
+        raise OfficeError("blocks must be a non-empty list")
+
+    _require("pdf_write")
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+        )
+    except Exception as exc:
+        raise OfficeError(
+            f"the 'reportlab' package is installed but incomplete: {exc}"
+        ) from exc
+
+    margin = 20 * mm
+    doc = SimpleDocTemplate(
+        str(p), pagesize=A4, title=p.stem,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=margin, bottomMargin=margin)
+    styles = getSampleStyleSheet()
+    body = styles["BodyText"]
+    cell_style = ParagraphStyle(
+        "office_cell", parent=body, fontSize=9, leading=11)
+
+    story: list[Any] = []
+    counts = {"headings": 0, "paragraphs": 0, "tables": 0}
+    probe = ""
+    wide_tables = 0
+    for index, block in enumerate(blocks, start=1):
+        if not isinstance(block, dict):
+            raise OfficeError(f"block {index} is not an object: {block!r}")
+        if "heading" in block:
+            level = max(0, min(int(block.get("level", 1) or 1), 6))
+            style = (styles["Title"] if level == 0
+                     else styles[f"Heading{level}"])
+            text = str(block["heading"])
+            story.append(Paragraph(_pdf_markup(text), style))
+            counts["headings"] += 1
+            probe = probe or _text_probe(text)
+        elif "paragraph" in block:
+            text = str(block["paragraph"])
+            story.append(Paragraph(_pdf_markup(text), body))
+            story.append(Spacer(1, 4))
+            counts["paragraphs"] += 1
+            probe = probe or _text_probe(text)
+        elif "table" in block:
+            rows = block["table"]
+            if not isinstance(rows, list) or not rows or not all(
+                    isinstance(r, (list, tuple)) for r in rows):
+                raise OfficeError(
+                    f"block {index}: table must be a non-empty list of lists")
+            width = max(len(r) for r in rows)
+            # Equal column widths over the printable width: a table sized
+            # from its content overflows the page silently, and a table
+            # running off the paper is not a document anyone can file.
+            col_width = doc.width / width
+            data = [
+                [Paragraph(_pdf_markup(r[c] if c < len(r) else ""), cell_style)
+                 for c in range(width)]
+                for r in rows
+            ]
+            header_row = bool(block.get("header_row"))
+            table = Table(data, colWidths=[col_width] * width,
+                          repeatRows=1 if header_row else 0)
+            commands = [
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+            if header_row:
+                commands.append(
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke))
+            table.setStyle(TableStyle(commands))
+            story.append(table)
+            story.append(Spacer(1, 6))
+            counts["tables"] += 1
+            if width > 8:
+                wide_tables += 1
+            for row in rows:
+                probe = probe or _text_probe(" ".join(_fmt(v) for v in row))
+                if probe:
+                    break
+        elif block.get("page_break"):
+            story.append(PageBreak())
+        else:
+            raise OfficeError(
+                f"block {index}: expected one of heading / paragraph / "
+                f"table / page_break, got keys {sorted(block)}")
+
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        doc.build(story)
+    except Exception as exc:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        raise OfficeError(f"could not write the PDF: {exc}") from exc
+
+    notes: list[str] = []
+    pages = 0
+    extracted = ""
+    try:
+        pypdf = _require("pdf")
+        written = pypdf.PdfReader(str(p))
+        pages = len(written.pages)
+        extracted = " ".join(
+            (page.extract_text() or "") for page in written.pages)
+    except Exception as exc:
+        notes.append(f"the written file could not be read back: {exc}")
+
+    found = True
+    if probe and pages:
+        found = _squash(probe) in _squash(extracted)
+    verified = pages > 0 and found
+    if not pages:
+        notes.append("the written file did not open as a PDF")
+    elif not found:
+        notes.append(
+            f"the word {probe!r} was written but was not found when the text "
+            "of the result was read back — check the document before "
+            "handing it over")
+    if wide_tables:
+        notes.append(
+            f"{wide_tables} table(s) have more than 8 columns; they were "
+            "fitted into equal-width columns and may be hard to read on A4.")
+    return {
+        "path": str(p),
+        "blocks": len(blocks),
+        "pages": pages,
+        "verified": verified,
+        "notes": notes,
+        **counts,
+    }
 
 
 # ---------------------------------------------------------------------------

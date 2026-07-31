@@ -108,6 +108,9 @@ office = [
     "openpyxl>=3.1",
     "pypdf>=4.0",
     "python-docx>=0.8.11",
+    # pypdf takes PDF pages apart and puts them together but cannot lay
+    # out a page, so producing a document needs a second library.
+    "reportlab>=4.0",
 ]
 dev = [
     "pytest>=6.0",

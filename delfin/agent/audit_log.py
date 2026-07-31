@@ -213,7 +213,7 @@ _WRITE_TOOLS = frozenset({
     # their ``path``; the file they produced is named in the result, so
     # the report shows what was worked on either way.
     "edit_sheet", "fill_pdf_form", "fill_docx_template", "create_docx",
-    "fill_series",
+    "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})
