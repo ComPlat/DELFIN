@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -114,7 +115,7 @@ def _atomic_write(path: Path, text: str) -> None:
 # rewrites unchanged via the ``extras`` mapping.
 _KNOWN_FRONT_FIELDS = frozenset({
     "name", "description", "created_at", "updated_at", "use_count",
-    "superseded", "type",
+    "superseded", "type", "domain",
 })
 
 
@@ -128,6 +129,7 @@ def _compose_frontmatter(
     memory_type: str,
     body: str,
     superseded: str = "",
+    domain: str = "",
     extras: dict[str, str] | None = None,
 ) -> str:
     """Serialise a typed memory file (frontmatter + body)."""
@@ -139,6 +141,8 @@ def _compose_frontmatter(
         f"updated_at: {updated_at}",
         f"use_count: {use_count}",
     ]
+    if domain:
+        lines.append(f"domain: {domain}")
     if superseded:
         lines.append(f"superseded: {superseded}")
     for key, value in (extras or {}).items():
@@ -387,6 +391,311 @@ def parse_memory_type(text: str) -> tuple[str, str]:
     return _classify_by_heuristic(body), body
 
 
+# ---------------------------------------------------------------------------
+# Memory domains — administrative work and technical work must not see
+# each other's memories
+# ---------------------------------------------------------------------------
+#
+# Office mode already has the chemistry and calculation tools removed at the
+# authorisation layer. Memory was the remaining channel through which that
+# subject matter could still reach an office turn: a fact written while
+# working on the code base scores high on text similarity often enough, and
+# once it is in the context window nothing downstream can take it back. The
+# domain is therefore a property OF THE STORED FILE, checked before the file
+# is read into a prompt — not an instruction to the model.
+#
+# The taxonomy is deliberately small: two working domains plus an explicit
+# neutral tier. "code" covers the technical session (source, calculations,
+# methodology) because those are one mode and one workspace in practice;
+# splitting them would only add a classification decision nobody can make
+# reliably.
+
+DOMAIN_OFFICE = "office"
+DOMAIN_CODE = "code"
+DOMAIN_GENERAL = "general"
+MEMORY_DOMAINS = (DOMAIN_OFFICE, DOMAIN_CODE, DOMAIN_GENERAL)
+
+# Files written before domains existed carry no ``domain:`` field. They were
+# necessarily written in a technical session — office mode is newer than the
+# store — so a missing field reads as "code" and NOT as "general". Reading it
+# as neutral would make every pre-existing memory visible to office turns,
+# which is exactly the leak this split closes.
+_LEGACY_DOMAIN = DOMAIN_CODE
+
+_OFFICE_ROLES = frozenset({"office_agent"})
+_OFFICE_MODES = frozenset({"office"})
+
+# Office workspaces seen by this installation. Persisted because the domain
+# of a WRITE is derived from the folder it is written for: a later process
+# (CLI, a fresh dashboard) must resolve the same folder to the same domain,
+# or a convention saved in one session would come back tagged as code work.
+_OFFICE_WS_LOCK = threading.Lock()
+_office_ws_cache: set[str] | None = None
+
+
+def _office_ws_file() -> Path:
+    return Path.home() / ".delfin" / "office_workspaces.json"
+
+
+def _load_office_workspaces() -> set[str]:
+    global _office_ws_cache
+    if _office_ws_cache is not None:
+        return _office_ws_cache
+    known: set[str] = set()
+    try:
+        raw = json.loads(_office_ws_file().read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            known = {str(p) for p in raw if str(p).strip()}
+    except (OSError, ValueError, TypeError):
+        known = set()
+    _office_ws_cache = known
+    return known
+
+
+def register_office_workspace(path: Path | str) -> None:
+    """Record ``path`` as a folder in which office work happens.
+
+    Called once per turn by the engine while an office session runs. The
+    write path uses it to tag memories saved for that folder, so the tag
+    does not depend on which caller happens to reach the store.
+    Best-effort: a store that cannot be persisted still holds for the
+    running process.
+    """
+    global _office_ws_cache
+    try:
+        resolved = str(Path(path).expanduser().resolve())
+    except OSError:
+        return
+    if not resolved:
+        return
+    with _OFFICE_WS_LOCK:
+        known = set(_load_office_workspaces())
+        if resolved in known:
+            return
+        known.add(resolved)
+        _office_ws_cache = known
+        try:
+            f = _office_ws_file()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(f, json.dumps(sorted(known), ensure_ascii=False))
+        except OSError:
+            pass
+
+
+def is_office_workspace(path: Path | str) -> bool:
+    """True when ``path`` is a registered office folder or lies inside one."""
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    with _OFFICE_WS_LOCK:
+        known = set(_load_office_workspaces())
+    for entry in known:
+        try:
+            root = Path(entry)
+            if target == root:
+                return True
+            target.relative_to(root)
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def domain_for_role(role_id: str = "", mode_id: str = "") -> str:
+    """Domain of a turn, from the role that runs it and the active mode."""
+    if (role_id or "").strip().lower() in _OFFICE_ROLES:
+        return DOMAIN_OFFICE
+    if (mode_id or "").strip().lower() in _OFFICE_MODES:
+        return DOMAIN_OFFICE
+    return DOMAIN_CODE
+
+
+def resolve_memory_domain(
+    repo_root: Path | str, explicit: str | None = None,
+) -> str:
+    """Domain a memory written for ``repo_root`` belongs to.
+
+    A registered office folder always wins over ``explicit``: the write
+    tool does not choose the domain, and an office session must not be
+    able to file a fact where other work would read it.
+    """
+    if is_office_workspace(repo_root):
+        return DOMAIN_OFFICE
+    candidate = (explicit or "").strip().lower()
+    if candidate in MEMORY_DOMAINS:
+        return candidate
+    return DOMAIN_CODE
+
+
+def domain_visible(memory_domain: str, active_domain: str) -> bool:
+    """Whether a memory of ``memory_domain`` may be recalled into a turn
+    running in ``active_domain``.
+
+    Visible when the domains match, or when the memory was deliberately
+    filed as neutral. An empty ``active_domain`` means the caller does not
+    track domains (older entry points, tests) and nothing is filtered.
+    """
+    if not (active_domain or "").strip():
+        return True
+    md = (memory_domain or _LEGACY_DOMAIN).strip().lower() or _LEGACY_DOMAIN
+    ad = active_domain.strip().lower()
+    return md == ad or md == DOMAIN_GENERAL
+
+
+def memory_text_domain(file_text: str) -> str:
+    """Domain of a raw memory file, legacy default applied. Never raises."""
+    try:
+        meta, _ = _parse_frontmatter(file_text or "")
+    except Exception:
+        return _LEGACY_DOMAIN
+    value = (meta.get("domain") or "").strip().lower()
+    return value if value in MEMORY_DOMAINS else _LEGACY_DOMAIN
+
+
+_INDEX_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
+
+
+def filter_memory_index(
+    index_text: str, memory_dir: Path, active_domain: str,
+) -> str:
+    """Drop MEMORY.md lines that are out of domain.
+
+    The index is injected verbatim alongside the memory bodies, and every
+    pointer line carries a one-line hook — filtering only the bodies would
+    still put the SUBJECT of an out-of-domain memory into the prompt.
+
+    Three kinds of line:
+    - a ``[Title](file.md)`` pointer — judged by the target file's domain;
+    - structure (blank lines, headings) — always kept, never counted;
+    - anything else — a fact written straight into the index by hand. It
+      carries no domain, so it is judged as legacy, exactly like a memory
+      file without the field.
+
+    Returns "" when nothing of substance survives, so the caller can skip
+    the store entirely instead of injecting a set of empty headings.
+    """
+    if not (active_domain or "").strip():
+        return index_text
+    kept: list[str] = []
+    survivors = 0
+    for line in (index_text or "").splitlines():
+        match = _INDEX_LINK_RE.search(line)
+        if match is None:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                kept.append(line)
+                continue
+            if domain_visible(_LEGACY_DOMAIN, active_domain):
+                kept.append(line)
+                survivors += 1
+            continue
+        rel = match.group(1).strip()
+        try:
+            target = (memory_dir / rel).resolve()
+            target.relative_to(Path(memory_dir).resolve())
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            continue
+        if domain_visible(memory_text_domain(text), active_domain):
+            kept.append(line)
+            survivors += 1
+    if not survivors:
+        return ""
+    return "\n".join(kept)
+
+
+# ---------------------------------------------------------------------------
+# Office memory hygiene — conventions may be stored, records may not
+# ---------------------------------------------------------------------------
+#
+# Administrative folders hold names, addresses, salaries and case numbers.
+# A store that accumulates those out of the documents it works on is worse
+# than no store: it persists past the session and outlives the folder. The
+# rule the office domain enforces is that a memory may describe HOW work is
+# done — which template belongs to which list, which column holds the key,
+# which naming pattern was approved — but may not carry a value copied out
+# of a document.
+#
+# The line drawn in code is: a FORMAT may be written, a VALUE may not.
+# "day-first dates (DD.MM.YYYY)" is a convention; "31.07.2026" is a record.
+# The check runs on the way IN, inside the single function every write path
+# reaches, and REJECTS rather than redacting — a silently scrubbed memory
+# would leave the user believing something was stored that was not, and a
+# half-scrubbed record is still a record.
+
+class OfficeMemoryRejected(ValueError):
+    """Raised when an office memory carries document content."""
+
+
+# A convention is a sentence about how work is done. Anything longer is
+# either a pasted excerpt or a summary of the documents themselves.
+_OFFICE_MAX_CHARS = 400
+_OFFICE_MAX_LINES = 6
+
+# Ordered so the most specific description wins the error message.
+_RECORD_VALUE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("an e-mail address", re.compile(r"[^\s@]+@[^\s@]+\.[A-Za-z]{2,}")),
+    ("an IBAN", re.compile(r"\b[A-Z]{2}\d{2}[ ]?[A-Z0-9]{4}(?:[ ]?[A-Z0-9]{4}){2,}\b")),
+    ("a date", re.compile(r"\b\d{1,4}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}\b")),
+    ("an amount", re.compile(r"\d[\d.\s]*,\d{2}(?!\d)|\b\d+\.\d{2}(?!\d)")),
+    ("a currency amount", re.compile(
+        r"(?:[€$£]|\b(?:EUR|USD|CHF|GBP)\b)\s*\d"
+        r"|\d\s*(?:[€$£]|\b(?:EUR|USD|CHF|GBP)\b)")),
+    ("a record key", re.compile(r"\b[A-Za-z]{1,4}[-_/]\d{2,}\b")),
+    ("a record number", re.compile(r"\d{4,}")),
+)
+
+# Three or more delimiter-separated fields on one line is the shape of a
+# copied table row, whatever the values in it happen to be.
+_TABLE_ROW_RE = re.compile(r"(?:[;|\t][^;|\t]*){2,}")
+
+
+def check_office_convention(text: str) -> str | None:
+    """Return why ``text`` is not storable as an office convention, or None.
+
+    Pure and side-effect free so the rule can be tested directly and reused
+    by any future write path.
+    """
+    body = (text or "").strip()
+    if not body:
+        return "the memory is empty"
+    if len(body) > _OFFICE_MAX_CHARS:
+        return (
+            f"it is {len(body)} characters long; a convention fits in a "
+            f"sentence (limit {_OFFICE_MAX_CHARS}). Store how the work is "
+            "done, not what the documents contain"
+        )
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    if len(lines) > _OFFICE_MAX_LINES:
+        return (
+            f"it spans {len(lines)} lines; that is an excerpt, not a "
+            "convention"
+        )
+    if _TABLE_ROW_RE.search(body):
+        return (
+            "it has the shape of a table row (delimiter-separated fields); "
+            "table content belongs in the document, not in memory"
+        )
+    for label, pattern in _RECORD_VALUE_PATTERNS:
+        hit = pattern.search(body)
+        if hit is not None:
+            return (
+                f"it contains {label} ({hit.group(0)!r}). Office memory "
+                "holds conventions, never values out of a document — name "
+                "the format (e.g. DD.MM.YYYY, decimal comma) instead of an "
+                "example taken from the file"
+            )
+    return None
+
+
+def assert_office_convention(text: str, *, what: str = "memory") -> None:
+    """Raise ``OfficeMemoryRejected`` when ``text`` is not a convention."""
+    reason = check_office_convention(text)
+    if reason is not None:
+        raise OfficeMemoryRejected(f"this {what} was not stored: {reason}")
+
+
 def _slugify(text: str, max_len: int = 60) -> str:
     s = re.sub(r"[^a-z0-9\s\-]", "", (text or "").lower())
     s = re.sub(r"\s+", "-", s).strip("-")
@@ -576,6 +885,7 @@ def save_typed_memory(
     memory_type: str | None = None,
     title: str | None = None,
     scope: str = "project",
+    domain: str | None = None,
 ) -> tuple[Path, str, str]:
     """Persist a typed memory in the .delfin project-memory layout.
 
@@ -592,6 +902,16 @@ def save_typed_memory(
     content anchor per ref (the cited line's text) stored in an
     ``anchors:`` frontmatter mapping so recall can later detect drift.
 
+    Every file records the DOMAIN it was written in (see ``domain_visible``)
+    so recall in another domain cannot reach it. Writes for a registered
+    office folder are forced into the office domain and the project store,
+    and their text must pass ``check_office_convention`` — an office
+    session can neither file a fact where other work would read it nor
+    store a value copied out of a document.
+
+    Raises ``OfficeMemoryRejected`` when an office write carries document
+    content.
+
     Returns ``(file_path, slug, memory_type)``.
     """
     body = (text or "").strip()
@@ -599,6 +919,16 @@ def save_typed_memory(
     if prefix_scope == "user":
         scope = "user"
     scope = "user" if scope == "user" else "project"
+    resolved_domain = resolve_memory_domain(repo_root, domain)
+    if resolved_domain == DOMAIN_OFFICE:
+        # An office convention describes one folder's way of working. The
+        # user-wide store is read by every other workspace, so that route is
+        # closed here rather than left to the caller — including the
+        # ``global:`` prefix, which the text itself could otherwise carry.
+        scope = "project"
+        assert_office_convention(body)
+        if title:
+            assert_office_convention(title, what="memory title")
     if memory_type is None:
         m = _TYPE_PREFIX_RE.match(body)
         if m:
@@ -643,9 +973,11 @@ def save_typed_memory(
     # frontier ones without having to reason about it. We compare against
     # existing memories of the SAME type in the SAME store only; the
     # highest-similarity match above the threshold wins and is updated in
-    # place.
+    # place. Domain is part of the identity: merging across domains would
+    # let an office write reopen a file that code turns still recall.
     existing = [r for r in list_typed_memories(repo_root, scope=scope)
-                if r["type"] == memory_type]
+                if r["type"] == memory_type
+                and r["domain"] == resolved_domain]
     best: dict | None = None
     best_sim = 0.0
     for rec in existing:
@@ -681,7 +1013,8 @@ def save_typed_memory(
         front = _compose_frontmatter(
             name=slug, description=description, created_at=created_at,
             updated_at=now, use_count=use_count, memory_type=memory_type,
-            body=body, superseded=superseded, extras=extras,
+            body=body, superseded=superseded, domain=resolved_domain,
+            extras=extras,
         )
         _atomic_write(fpath, front)
         # Refresh the MEMORY.md pointer so its hook matches the merged body
@@ -711,6 +1044,7 @@ def save_typed_memory(
     front = _compose_frontmatter(
         name=slug, description=description, created_at=now,
         updated_at=now, use_count=1, memory_type=memory_type, body=body,
+        domain=resolved_domain,
         extras={"anchors": anchors_json} if anchors_json else None,
     )
     _atomic_write(fpath, front)
@@ -837,6 +1171,9 @@ def list_typed_memories(
             "description": meta.get("description") or "",
             "type": meta.get("type") or _type_from_filename(p.name) or "user",
             "scope": scope,
+            # Which kind of work this memory came out of. Absent in files
+            # written before domains existed -> the legacy default.
+            "domain": memory_text_domain(text),
             "body": body.strip(),
             # Usage/decay metadata. Old files lack these -> fall back to the
             # file mtime so LRU pruning still has a sane ordering signal.
@@ -1018,7 +1355,8 @@ def record_memory_recall(
         front = _compose_frontmatter(
             name=name, description=description, created_at=created_at,
             updated_at=now, use_count=use_count, memory_type=mtype,
-            body=body.strip(), superseded=superseded, extras=meta,
+            body=body.strip(), superseded=superseded,
+            domain=memory_text_domain(text), extras=meta,
         )
         try:
             _atomic_write(p, front)
@@ -1080,6 +1418,7 @@ def record_stale_hits(
             memory_type=meta.get("type") or _type_from_filename(fname) or "user",
             body=body.strip(),
             superseded=" ".join(meta.get("superseded", "").split())[:160],
+            domain=memory_text_domain(text),
             extras=extras,
         )
         try:
