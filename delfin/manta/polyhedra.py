@@ -263,6 +263,38 @@ _MD_BAND_CACHE: dict = {}
 _TSV_CACHE: dict = {}
 
 
+def _EVIDENCE_ON() -> bool:
+    """Is evidence scoping active?  Default OFF -> every measured bin is used, as before."""
+    return os.environ.get("DELFIN_FFREE_EVIDENCE", "0") == "1"
+
+
+def _EVIDENCE_MIN_N() -> int:
+    """Smallest bin population that may steer a build.
+
+    200 is the measurement's own floor -- it is what min_n was set to when the tables were
+    produced, so anything at exactly 200 is a bin that only just survived.  The default
+    here asks for an order of magnitude more before a bin is allowed to move an atom.
+    """
+    try:
+        return int(os.environ.get("DELFIN_FFREE_EVIDENCE_MIN_N", "2000"))
+    except ValueError:
+        return 2000
+
+
+def _EVIDENCE_MAX_REL() -> float:
+    """Widest band, as (p90-p10)/|p50|, that still says something.
+
+    A five-ring chelate bite measured at 70.6 deg with a 3.2 deg spread has rel 0.045 and
+    is one of the best-defined quantities we have; a macrocycle pair spanning 68-82 deg
+    sits at 0.19 and its p50 is a value no structure actually adopts.  The default sits
+    between them.
+    """
+    try:
+        return float(os.environ.get("DELFIN_FFREE_EVIDENCE_MAX_REL", "0.10"))
+    except ValueError:
+        return 0.10
+
+
 def _load_band_tsv(path: str) -> dict:
     """``key -> (p10, p50, p90)`` from any of the measured band TSVs, cached per path.
 
@@ -285,9 +317,35 @@ def _load_band_tsv(path: str) -> dict:
                 p = ln.rstrip("\n").split("\t")
                 if len(p) >= 6:
                     try:
-                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                        _n = int(float(p[2]))
+                        _lo, _md, _hi = float(p[3]), float(p[4]), float(p[5])
                     except ValueError:
                         continue
+                    # EVIDENCE SCOPING (DELFIN_FFREE_EVIDENCE=1, default OFF -> every bin
+                    # is kept, byte-identical).
+                    #
+                    # WHY.  The never-worse gate is componentwise-strict: one regression on
+                    # one axis in one system fails the whole run.  So the probability of
+                    # landing falls off with REACH -- a change touching 800 systems at even
+                    # 0.5 % risk each lands with probability ~2 %, the same change scoped to
+                    # 50 systems lands with ~77 %.  Measured this week: bandsAB touched 769
+                    # systems and lost, mdAB 198 and lost.  Neither failed because its idea
+                    # was wrong; both applied a measured value EVERYWHERE, including bins
+                    # where the measurement barely says anything.
+                    #
+                    # So the measurement's own confidence decides where it is allowed to
+                    # act: a bin counted on few structures, or one so wide that its p50
+                    # carries no information, is dropped and the caller keeps its historic
+                    # reference.  This is not a weakening -- it is claiming only what was
+                    # actually measured, and it converts a broad risky change into a narrow
+                    # provable one without discarding a single piece of evidence.
+                    if _EVIDENCE_ON():
+                        if _n < _EVIDENCE_MIN_N():
+                            continue
+                        _rel = (_hi - _lo) / abs(_md) if _md else 9.9
+                        if _rel > _EVIDENCE_MAX_REL():
+                            continue
+                    tbl[p[1]] = (_lo, _md, _hi)
     except Exception:
         tbl = {}
     _TSV_CACHE[path] = tbl

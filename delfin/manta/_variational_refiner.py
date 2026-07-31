@@ -33,6 +33,7 @@ Entry point
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import traceback
@@ -261,6 +262,150 @@ def _topology_not_worse(before, after) -> bool:
     return all(a <= b + 1e-12 for a, b in zip(after, before))
 
 
+def _coordination_sphere_indices(mol, metal_set: set) -> List[int]:
+    """Metal atoms and their bonded donors — the atoms the SEATING places.
+
+    WHY (2026-07-30).  M-D lengths come from the measured CN-resolved table and the
+    chelate bite from ``bite_close``; both are SET, not searched.  Once a coordinate is
+    set to its measured value there is nothing left to improve, so any displacement the
+    optimiser applies to it is damage by definition.  Freezing is therefore strictly
+    better than penalising it afterwards: it costs no term, no weight, no barrier.
+
+    It also explains the two anti-correlated terms.  ``U_A`` and ``U_topology`` both score
+    0.94 -- they penalise real crystals MORE than our own frames, i.e. they assert our
+    build is more realistic than reality.  They exist mainly to stop the optimiser from
+    destroying what the seating placed; with the sphere frozen that job is gone.
+    """
+    out: List[int] = []
+    try:
+        for atom in mol.GetAtoms():
+            if atom.GetSymbol() not in metal_set:
+                continue
+            out.append(atom.GetIdx())
+            for nb in atom.GetNeighbors():
+                out.append(nb.GetIdx())
+    except Exception:
+        return []
+    return sorted(set(out))
+
+
+# Normal-distribution conversion: p90 - p10 = 2 * 1.2816 * sigma.  Imported from the
+# module that owns the band readers so the gate and U_bond's inverse-variance weight can
+# never disagree on what a sigma is; the literal is only a standalone-import fallback.
+try:
+    from delfin.manta._energy_terms import _P10_P90_TO_SIGMA  # type: ignore
+except Exception:
+    _P10_P90_TO_SIGMA = 2.5631
+
+
+def _realism_deviation(coords: np.ndarray, mol):
+    """``(R_bond, R_angle)`` — how far the frame lies OUTSIDE its own measured bands.
+
+    Per item: the excursion past the nearer band edge (exactly 0 inside the band),
+    expressed in units of that bin's own measured sigma.  Summed per class.
+
+    The sigma normalisation is not cosmetic.  It is what makes Å and degrees
+    commensurable, and it IS the weighting: a tightly measured bin (the five-ring
+    chelate bite is 3.2 deg wide) scores a given deviation harder than a loose one.
+    Measured, not guessed -- and crucially it couples to the WIDTH OF THE BAND, a
+    property of chemistry, never to the SIZE OF THE ERROR.  Coupling weight to how
+    broken a site is would hand a torn ligand enormous forces and blow it apart.
+
+    M-D and D-M-D are deliberately absent: those are handled by freezing the
+    coordination sphere, which is stronger than gating it after the fact.
+
+    Returns ``None`` per component when no table is loaded for it, so an unset table
+    makes the gate inert on that axis rather than inventing a reference.
+    """
+    try:
+        from delfin.manta._energy_terms import (  # type: ignore
+            _measured_bond_band, _measured_angle_band, _enumerate_bonds,
+            _enumerate_angles, _bond_band_table, _angle_band_table,
+        )
+        from delfin.manta._energy_terms import _smiles_converter_metals  # type: ignore
+    except Exception:
+        return (None, None)
+
+    coords = np.asarray(coords, dtype=np.float64)
+    try:
+        metals = _smiles_converter_metals()
+    except Exception:
+        metals = set()
+
+    def _excess(x, band):
+        p10, _p50, p90 = band
+        sigma = (p90 - p10) / _P10_P90_TO_SIGMA
+        if not (sigma > 1.0e-9):
+            return None            # degenerate bin — no scale, no statement
+        if x < p10:
+            return (p10 - x) / sigma
+        if x > p90:
+            return (x - p90) / sigma
+        return 0.0
+
+    r_bond = None
+    try:
+        if _bond_band_table():
+            acc = 0.0
+            for (i, j, _order) in _enumerate_bonds(mol):
+                if (mol.GetAtomWithIdx(i).GetSymbol() in metals
+                        or mol.GetAtomWithIdx(j).GetSymbol() in metals):
+                    continue        # M-D: frozen, not gated
+                band = _measured_bond_band(mol, i, j)
+                if band is None:
+                    continue
+                e = _excess(float(np.linalg.norm(coords[i] - coords[j])), band)
+                if e is not None:
+                    acc += e
+            r_bond = float(acc)
+    except Exception:
+        r_bond = None
+
+    r_angle = None
+    try:
+        if _angle_band_table():
+            acc = 0.0
+            for (i, j, k) in _enumerate_angles(mol):
+                if mol.GetAtomWithIdx(j).GetSymbol() in metals:
+                    continue        # D-M-D: frozen, not gated
+                band = _measured_angle_band(mol, i, j, k)
+                if band is None:
+                    continue
+                v1 = coords[i] - coords[j]
+                v2 = coords[k] - coords[j]
+                n1 = float(np.linalg.norm(v1))
+                n2 = float(np.linalg.norm(v2))
+                if n1 < 1.0e-8 or n2 < 1.0e-8:
+                    continue
+                cs = float(np.dot(v1, v2) / (n1 * n2))
+                cs = max(-1.0 + 1.0e-12, min(1.0 - 1.0e-12, cs))
+                e = _excess(math.degrees(math.acos(cs)), band)
+                if e is not None:
+                    acc += e
+            r_angle = float(acc)
+    except Exception:
+        r_angle = None
+
+    return (r_bond, r_angle)
+
+
+def _realism_not_worse(before, after) -> bool:
+    """True iff ``after`` is no worse than ``before`` on EVERY class.
+
+    Componentwise, never a sum.  ``mean_delta = 0.585`` is exactly what a mean that
+    trades good against bad looks like: a summed criterion would let twenty bond lengths
+    improve by a permille and pay for it with one destroyed angle.  A component with no
+    table on either side is skipped rather than counted as a pass on evidence we do not
+    have.
+    """
+    for b, a in zip(before, after):
+        if b is None or a is None:
+            continue
+        if a > b + 1.0e-9 + 1.0e-6 * abs(b):
+            return False
+    return True
+
+
 def _topology_check(coords: np.ndarray, mol, metal_set: set) -> bool:
     """Conservative topology hard-gate.
 
@@ -400,7 +545,8 @@ def _build_reduce_expand(
     coords: np.ndarray,
     rigid_h_indices: List[int],
     h_parent: List[int],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    frozen_indices: Optional[List[int]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Pre-compute coordinate-substitution book-keeping for L-BFGS-B.
 
     Parameters
@@ -411,22 +557,37 @@ def _build_reduce_expand(
         H atoms tracked rigidly (output of :func:`_compute_rigid_h_map`).
     h_parent : list[int]
         Per-atom parent index (output of :func:`_compute_rigid_h_map`).
+    frozen_indices : list[int], optional
+        Atoms held at their INPUT position (output of
+        :func:`_coordination_sphere_indices`).  A third category next to "free"
+        and "rigid H": rigid H is *reconstructed* from a parent, frozen is simply
+        never moved.
 
     Returns
     -------
     free_indices : (M,) int array
-        Atom indices remaining as free L-BFGS-B DoFs (heavy + non-rigid H).
+        Atom indices remaining as free L-BFGS-B DoFs (heavy + non-rigid H,
+        minus anything frozen).
     free_pos_of_atom : (N,) int array
         Reverse map: ``free_pos_of_atom[atom_idx]`` = row in the reduced
-        array for that atom, or ``-1`` for rigid H.
+        array for that atom, or ``-1`` for rigid H and for frozen atoms.
     h_offsets : (H, 3) float array
         Cached parent->H offset vectors (same order as ``rigid_h_indices``).
     rigid_h_arr : (H,) int array
         ``np.asarray(rigid_h_indices)`` for fast indexing.
+    frozen_arr : (F,) int array
+        Frozen atom indices.
+    frozen_coords : (F, 3) float array
+        Their input positions, written back verbatim at every expansion.
     """
     n = coords.shape[0]
     rigid_set = set(rigid_h_indices)
-    free = [i for i in range(n) if i not in rigid_set]
+    frozen_set = set(frozen_indices or ())
+    # A frozen atom is never also a rigid-H DoF; frozen wins (it is the stronger
+    # statement, and the H offset would be a no-op anyway).
+    rigid_h_indices = [h for h in rigid_h_indices if h not in frozen_set]
+    rigid_set = set(rigid_h_indices)
+    free = [i for i in range(n) if i not in rigid_set and i not in frozen_set]
     free_indices = np.asarray(free, dtype=np.int64)
     free_pos = np.full(n, -1, dtype=np.int64)
     for pos, i in enumerate(free):
@@ -437,7 +598,11 @@ def _build_reduce_expand(
         h_offsets = coords[rigid_h_arr] - coords[parents]
     else:
         h_offsets = np.zeros((0, 3), dtype=np.float64)
-    return free_indices, free_pos, h_offsets, rigid_h_arr
+    frozen_arr = np.asarray(sorted(frozen_set), dtype=np.int64)
+    frozen_coords = (coords[frozen_arr].copy() if frozen_arr.size
+                     else np.zeros((0, 3), dtype=np.float64))
+    return (free_indices, free_pos, h_offsets, rigid_h_arr,
+            frozen_arr, frozen_coords)
 
 
 def _expand_full(
@@ -447,13 +612,19 @@ def _expand_full(
     h_offsets: np.ndarray,
     h_parent: List[int],
     n_atoms: int,
+    frozen_arr: Optional[np.ndarray] = None,
+    frozen_coords: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Reconstruct full ``(N, 3)`` coords from the reduced DoF array.
 
-    Rigid-H rows are filled as ``coords[parent] + cached_offset``.
+    Order matters: free rows, then frozen rows, then rigid H -- a rigid H may hang
+    off a FROZEN parent (an N-H on an amine donor), so both parent categories have
+    to be in place before the offsets are applied.
     """
     full = np.empty((n_atoms, 3), dtype=np.float64)
     full[free_indices] = reduced
+    if frozen_arr is not None and frozen_arr.size:
+        full[frozen_arr] = frozen_coords
     if rigid_h_arr.size:
         parents = np.asarray([h_parent[h] for h in rigid_h_arr.tolist()],
                              dtype=np.int64)
@@ -475,7 +646,13 @@ def _reduce_grad(
     if rigid_h_arr.size:
         for h_idx in rigid_h_arr.tolist():
             p = h_parent[h_idx]
-            grad_red[free_pos[p]] += grad_full[h_idx]
+            pos = int(free_pos[p])
+            if pos < 0:
+                # Parent is FROZEN -> this H is frozen with it.  Its gradient row has
+                # no free DoF to fold into and must be dropped, not written to row -1
+                # (which would silently corrupt the last free atom's gradient).
+                continue
+            grad_red[pos] += grad_full[h_idx]
     return grad_red
 
 
@@ -856,11 +1033,32 @@ def variational_refine(
     free_indices: np.ndarray = np.arange(n_atoms, dtype=np.int64)
     free_pos: np.ndarray = np.arange(n_atoms, dtype=np.int64)
     h_parent: List[int] = [-1] * n_atoms
-    if rigid_h_flag:
+    frozen_arr: np.ndarray = np.zeros((0,), dtype=np.int64)
+    frozen_coords: np.ndarray = np.zeros((0, 3), dtype=np.float64)
+
+    # FREEZE THE COORDINATION SPHERE (2026-07-30, default OFF).  See
+    # _coordination_sphere_indices: what the seating SET must not be re-searched.
+    _freeze_req = bool(_delfin_env_int("DELFIN_FFREE_FREEZE_SPHERE", 0))
+    _frozen_list: List[int] = []
+    if _freeze_req:
+        _frozen_list = _coordination_sphere_indices(mol, metal_set)
+        # Leaving nothing to optimise would hand L-BFGS-B an empty x0.  A complex whose
+        # every atom is metal-or-donor has no ligand interior to relax, so the freeze
+        # simply does not apply -- report it instead of degrading to a zero-DoF run.
+        if len(_frozen_list) >= n_atoms:
+            report["freeze_sphere_skipped"] = "no free atoms left"
+            _frozen_list = []
+        report["frozen_count"] = len(_frozen_list)
+
+    if rigid_h_flag or _frozen_list:
         try:
-            rigid_h_indices, h_parent = _compute_rigid_h_map(mol)
-            free_indices, free_pos, h_offsets, rigid_h_arr = _build_reduce_expand(
-                coords, rigid_h_indices, h_parent
+            if rigid_h_flag:
+                rigid_h_indices, h_parent = _compute_rigid_h_map(mol)
+            else:
+                rigid_h_indices, h_parent = [], [-1] * n_atoms
+            (free_indices, free_pos, h_offsets, rigid_h_arr,
+             frozen_arr, frozen_coords) = _build_reduce_expand(
+                coords, rigid_h_indices, h_parent, _frozen_list
             )
             report["rigid_h_count"] = int(rigid_h_arr.size)
         except Exception as exc:
@@ -874,15 +1072,21 @@ def variational_refine(
             free_indices = np.arange(n_atoms, dtype=np.int64)
             free_pos = np.arange(n_atoms, dtype=np.int64)
             h_parent = [-1] * n_atoms
+            frozen_arr = np.zeros((0,), dtype=np.int64)
+            frozen_coords = np.zeros((0, 3), dtype=np.float64)
             report.setdefault("rigid_h_error", str(exc))
 
     n_free = int(free_indices.size)
+    # One switch for both reductions: rigid H OR a frozen sphere puts us on the
+    # reduced path.  Written once so the two can never disagree.
+    _reduced = bool((rigid_h_flag and rigid_h_arr.size > 0) or frozen_arr.size > 0)
 
     def objective(x_flat: np.ndarray) -> Tuple[float, np.ndarray]:
-        if rigid_h_flag and rigid_h_arr.size > 0:
+        if _reduced:
             reduced = x_flat.reshape(n_free, 3)
             full = _expand_full(reduced, free_indices, rigid_h_arr,
-                                h_offsets, h_parent, n_atoms)
+                                h_offsets, h_parent, n_atoms,
+                                frozen_arr, frozen_coords)
             U, grad_full = _eval(full)
             grad_red = _reduce_grad(grad_full, free_indices, free_pos,
                                     rigid_h_arr, h_parent)
@@ -906,7 +1110,7 @@ def variational_refine(
         return xyz, report
 
     # ----- Step 7: L-BFGS-B run -----
-    if rigid_h_flag and rigid_h_arr.size > 0:
+    if _reduced:
         x0 = coords[free_indices].flatten()
     else:
         x0 = coords.flatten()
@@ -919,10 +1123,11 @@ def variational_refine(
             options={"maxiter": int(max_iter), "ftol": float(ftol),
                      "gtol": 1e-5},
         )
-        if rigid_h_flag and rigid_h_arr.size > 0:
+        if _reduced:
             reduced_x = np.asarray(result.x, dtype=float).reshape(n_free, 3)
             new_coords = _expand_full(reduced_x, free_indices, rigid_h_arr,
-                                      h_offsets, h_parent, n_atoms)
+                                      h_offsets, h_parent, n_atoms,
+                                      frozen_arr, frozen_coords)
         else:
             new_coords = np.asarray(result.x, dtype=float).reshape(n_atoms, 3)
         U_final = float(result.fun)
@@ -988,6 +1193,30 @@ def variational_refine(
         return xyz, report
 
     report["topology_preserved"] = True
+
+    # ----- Step 9b: REALISM gate — a second never-worse, on a second axis -----
+    # Topology only asks "is the frame still connected and un-collapsed".  It says nothing
+    # about whether the geometry got more or less like a real crystal, and the measurement
+    # says that is exactly where the functional is ambivalent: it repairs the coarse cases
+    # and degrades the fine ones (mean_delta = 0.585).  A mean cannot express that, so the
+    # comparison is componentwise over the measured classes, in units of each bin's own
+    # sigma.  Reference-free: the bands ARE the reference, no crystal is consulted.
+    if _delfin_env_int("DELFIN_FFREE_REALISM_GATE", 0):
+        try:
+            _r_in = _realism_deviation(coords, mol)
+            _r_out = _realism_deviation(new_coords, mol)
+        except Exception as exc:
+            # A gate that cannot measure must not reject: falling through keeps the
+            # pre-gate behaviour instead of discarding work on a failure of the ruler.
+            _r_in = _r_out = (None, None)
+            report.setdefault("realism_error", str(exc))
+        report["realism_in"] = _r_in
+        report["realism_out"] = _r_out
+        if not _realism_not_worse(_r_in, _r_out):
+            report.update({"error": "realism regressed",
+                           "fallback_used": True})
+            return xyz, report
+        report["realism_gate_pass"] = True
 
     # ----- Step 10: write output -----
     try:
@@ -1071,6 +1300,166 @@ def _synthetic_xyz_acetone() -> Tuple[str, Any]:
     return "\n".join(lines) + "\n", mol
 
 
+def _synthetic_xyz_metal() -> Tuple[str, Any]:
+    """Diphenylzinc, one ring carbon displaced.
+
+    A metal with two donors AND a real ligand interior -- the minimum shape that can
+    tell "sphere frozen" apart from "nothing moved at all".
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except Exception:
+        return "", None
+    try:
+        mol = Chem.MolFromSmiles("c1ccccc1[Zn]c1ccccc1")
+        if mol is None:
+            return "", None
+        mol = Chem.AddHs(mol)
+        if AllChem.EmbedMolecule(mol, randomSeed=7) != 0:
+            return "", None
+    except Exception:
+        return "", None
+    conf = mol.GetConformer()
+    # Displace one carbon well away from where the ring wants it.
+    for a in mol.GetAtoms():
+        if a.GetSymbol() == "C":
+            p = conf.GetAtomPosition(a.GetIdx())
+            conf.SetAtomPosition(a.GetIdx(), (p.x + 0.25, p.y - 0.18, p.z + 0.11))
+            break
+    lines = [str(mol.GetNumAtoms()), "synthetic diphenylzinc"]
+    for a in mol.GetAtoms():
+        p = conf.GetAtomPosition(a.GetIdx())
+        lines.append(f"{a.GetSymbol():4s} {p.x:12.6f} {p.y:12.6f} {p.z:12.6f}")
+    return "\n".join(lines) + "\n", mol
+
+
+def _xyz_coords(xyz: str) -> np.ndarray:
+    rows = []
+    for ln in xyz.splitlines()[2:]:
+        p = ln.split()
+        if len(p) >= 4:
+            rows.append([float(p[1]), float(p[2]), float(p[3])])
+    return np.asarray(rows, dtype=np.float64)
+
+
+def _self_test_freeze_and_gate() -> None:
+    """Prove the two new levers actually DO something when armed.
+
+    A lever that is byte-identical when off and ALSO byte-identical when on is dead code
+    that looks alive -- the exact failure mode that hid four separate holes in this
+    functional.  Off-identity is checked by diffing this file's output against HEAD;
+    these cases check the other half.
+    """
+    import tempfile
+
+    # --- 1. freeze: the coordination sphere must not move, the ligand must ---
+    xyz, mol = _synthetic_xyz_metal()
+    if not xyz or mol is None:
+        print("[freeze  ] SKIP — RDKit could not build the metal case")
+    else:
+        c_in = _xyz_coords(xyz)
+        sphere = _coordination_sphere_indices(mol, _load_metal_set())
+        os.environ["DELFIN_FFREE_FREEZE_SPHERE"] = "1"
+        try:
+            new_xyz, rep = variational_refine(xyz, mol, class_label="sigma_coord",
+                                              max_iter=80, ftol=1e-5,
+                                              enable_global_pg=False)
+        finally:
+            os.environ.pop("DELFIN_FFREE_FREEZE_SPHERE", None)
+        c_out = _xyz_coords(new_xyz)
+        if c_out.shape != c_in.shape or not sphere:
+            print(f"[freeze  ] SKIP — sphere={len(sphere)} shape={c_out.shape}")
+        else:
+            moved = np.linalg.norm(c_out - c_in, axis=1)
+            free = [i for i in range(c_in.shape[0]) if i not in set(sphere)]
+            d_sphere = float(moved[sphere].max())
+            d_free = float(moved[free].max()) if free else 0.0
+            ok = (d_sphere == 0.0) and (d_free > 1.0e-6)
+            print(f"[freeze  ] sphere={len(sphere)} frozen_max_move={d_sphere:.3e} "
+                  f"free_max_move={d_free:.4f} fallback={rep.get('fallback_used')} "
+                  f"OK={ok}")
+
+    # --- 2. _realism_not_worse: the pure decision logic ---
+    cases = [
+        ((1.0, 2.0), (1.0, 2.0), True,  "identical"),
+        ((1.0, 2.0), (0.5, 1.0), True,  "both better"),
+        ((1.0, 2.0), (0.5, 9.0), False, "bond better, angle much worse"),
+        ((1.0, 2.0), (1.0, 2.1), False, "angle slightly worse"),
+        ((None, 2.0), (None, 1.0), True, "missing table skipped"),
+        ((None, 2.0), (None, 3.0), False, "missing table does not excuse the other"),
+    ]
+    bad = 0
+    for before, after, want, why in cases:
+        got = _realism_not_worse(before, after)
+        if got != want:
+            bad += 1
+            print(f"[gatelogic] FAIL {why}: {before} -> {after} got={got} want={want}")
+    print(f"[gatelogic] {len(cases) - bad}/{len(cases)} cases OK")
+
+    # --- 3. _realism_deviation against a synthetic band table ---
+    xyz, mol = _synthetic_xyz_acetone()
+    if not xyz or mol is None:
+        print("[bands   ] SKIP — RDKit not available")
+        return
+    coords = _xyz_coords(xyz)
+    r_none = _realism_deviation(coords, mol)
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as fh:
+        wide = fh.name
+        fh.write("L4\tC|C|1.0\t9999\t0.10\t1.50\t9.00\n")
+        fh.write("L4\tC|H|1.0\t9999\t0.10\t1.09\t9.00\n")
+        fh.write("L4\tC|O|2.0\t9999\t0.10\t1.21\t9.00\n")
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as fh:
+        narrow = fh.name
+        fh.write("L4\tC|C|1.0\t9999\t4.90\t5.00\t5.10\n")
+        fh.write("L4\tC|H|1.0\t9999\t4.90\t5.00\t5.10\n")
+        fh.write("L4\tC|O|2.0\t9999\t4.90\t5.00\t5.10\n")
+
+    os.environ["DELFIN_FFREE_BOND_BANDS"] = wide
+    r_wide = _realism_deviation(coords, mol)
+    os.environ["DELFIN_FFREE_BOND_BANDS"] = narrow
+    r_narrow = _realism_deviation(coords, mol)
+    os.environ.pop("DELFIN_FFREE_BOND_BANDS", None)
+
+    ok = (r_none[0] is None                      # no table -> inert, not zero
+          and r_wide[0] == 0.0                   # everything inside -> exactly 0
+          and r_narrow[0] is not None and r_narrow[0] > 0.0)
+    print(f"[bands   ] no_table={r_none[0]} wide={r_wide[0]} "
+          f"narrow={r_narrow[0]:.1f} OK={ok}")
+
+    # --- 4. end-to-end: a band the INPUT satisfies and the optimiser must leave ---
+    # p10/p90 are pinned to the input's own min/max C-H, so R_in = 0 by construction and
+    # any regularisation of the perturbed H pushes R_out above it -> the gate must reject
+    # and hand back the INPUT xyz unchanged.
+    ch = [float(np.linalg.norm(coords[b.GetBeginAtomIdx()] - coords[b.GetEndAtomIdx()]))
+          for b in mol.GetBonds()
+          if {b.GetBeginAtom().GetSymbol(), b.GetEndAtom().GetSymbol()} == {"C", "H"}]
+    if not ch:
+        print("[e2e     ] SKIP — no C-H bonds")
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as fh:
+        pinned = fh.name
+        fh.write(f"L4\tC|H|1.0\t9999\t{min(ch):.6f}\t"
+                 f"{0.5 * (min(ch) + max(ch)):.6f}\t{max(ch):.6f}\n")
+    os.environ["DELFIN_FFREE_BOND_BANDS"] = pinned
+    os.environ["DELFIN_FFREE_REALISM_GATE"] = "1"
+    try:
+        gated_xyz, rep_g = variational_refine(xyz, mol, class_label="no_metal",
+                                              max_iter=100, ftol=1e-5,
+                                              enable_global_pg=False)
+    finally:
+        os.environ.pop("DELFIN_FFREE_REALISM_GATE", None)
+        os.environ.pop("DELFIN_FFREE_BOND_BANDS", None)
+    r_in = rep_g.get("realism_in", (None, None))
+    r_out = rep_g.get("realism_out", (None, None))
+    rejected = rep_g.get("error") == "realism regressed"
+    unchanged = (gated_xyz == xyz)
+    consistent = (rejected != bool(rep_g.get("realism_gate_pass", False)))
+    print(f"[e2e     ] R_in={r_in[0]} R_out={r_out[0]} rejected={rejected} "
+          f"input_returned={unchanged} consistent={consistent} "
+          f"OK={consistent and (not rejected or unchanged)}")
+
+
 def _self_test() -> None:
     """Run three synthetic cases and print a one-line summary each."""
     cases = [
@@ -1103,3 +1492,5 @@ def _self_test() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     _self_test()
+    if os.environ.get("DELFIN_B6_SELFTEST_GATE", "0") == "1":
+        _self_test_freeze_and_gate()

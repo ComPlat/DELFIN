@@ -251,11 +251,41 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                                          if not _oc6_vertex else this_lo + 2.0)
                         bm[hi][lo] = float(this_lo)
                 if tp is not None:
+                    # TRILATERATED BOUNDS (DELFIN_FFREE_TRILAT_BOUNDS=1, default OFF).
+                    #
+                    # This block already IS "specify and solve": bounds matrix -> triangle
+                    # smoothing -> embed.  The solver is not the problem.  Its INPUT is:
+                    # tp are the IDEAL POLYHEDRON vertex positions, and the donor-donor
+                    # entries derived from them ask for a separation the ligand does not
+                    # have.  Triangle smoothing then propagates that impossible request
+                    # through the whole matrix, and the embedder returns the least-bad
+                    # compromise -- which is where the splayed rings and the 29 % of
+                    # chelate bites beyond 92 deg come from (real chelates: 98 % below 90,
+                    # none above 95).
+                    #
+                    # So keep the M-D radii, which are measured and real, and replace the
+                    # donor-donor entries with the separations the LIGAND ACTUALLY HAS.
+                    # Same statement as the cosine law for two donors, generalised: the
+                    # coordination angles become a consequence of the bounds instead of an
+                    # input to them, and the enumerated vertex assignment is untouched
+                    # because trilateration starts from those very targets.
+                    _tp_use = tp
+                    if os.environ.get("DELFIN_FFREE_TRILAT_BOUNDS", "0") == "1":
+                        try:
+                            _lp_src = mh.GetConformer().GetPositions()
+                        except Exception:
+                            _lp_src = None
+                        if _lp_src is not None:
+                            _t2 = _trilaterate_donor_targets(
+                                _lp_src, [int(d) for d in donor_idxs], list(tp))
+                            if _t2 is not None:
+                                _tp_use = _t2
                     for a, da in enumerate(donor_idxs):   # M-D HARD; donor-donor (soft for backbone)
-                        _setb(mi, int(da), float(np.linalg.norm(tp[a])))
+                        _setb(mi, int(da), float(np.linalg.norm(_tp_use[a])))
                         for b in range(a + 1, len(donor_idxs)):
                             _setb(int(da), int(donor_idxs[b]),
-                                  float(np.linalg.norm(tp[a] - tp[b])), tol=_dd_tol)
+                                  float(np.linalg.norm(_tp_use[a] - _tp_use[b])),
+                                  tol=_dd_tol)
                 if _DGs.DoTriangleSmoothing(bm):
                     ep = _DG.EmbedParameters()
                     ep.randomSeed = SEED
@@ -765,6 +795,36 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
                     best = (resid, R_, p_)
             R = best[1]; perm = best[2]
     Q = lP @ R.T
+
+    # TRILATERATED TARGETS (DELFIN_FFREE_TRILATERATE=1, default OFF -> byte-identical).
+    #
+    # The two branches below force a choice: per-donor radial gives the right M-D lengths
+    # and splays the ring, rigid keeps the ring and lets M-D come out emergent.  The choice
+    # only exists because the TARGETS are ideal polyhedron vertices, which the ligand
+    # generally cannot reach.  Move the targets first -- onto points that carry both the
+    # M-D radii and the ligand's own donor separations -- and the rigid fit lands on them
+    # with a small residual, so both hold at once.  Bidentate already does exactly this via
+    # _bite_aware_targets (the cosine law); this is the same statement for any denticity,
+    # and it is the only place polydentates have ever had it: _bite_aware_targets is called
+    # from _place_chelate_block alone, which runs only for dent == 2.
+    if os.environ.get("DELFIN_FFREE_TRILATERATE", "0") == "1":
+        try:
+            _tri = _trilaterate_donor_targets(
+                lP, list(donor_idxs), [targets[perm[i]] for i in range(len(donor_idxs))])
+        except Exception:
+            _tri = None
+        if _tri is not None:
+            _don = np.array([np.asarray(lP[d], float) for d in donor_idxs])
+            _tgt = np.array(_tri, float)
+            _dmu, _tmu = _don.mean(0), _tgt.mean(0)
+            try:
+                _Rk = _kabsch_rot(_don - _dmu, _tgt - _tmu)
+                _Qt = (np.asarray(lP, float) - _dmu) @ _Rk.T + _tmu
+                if np.all(np.isfinite(_Qt)):
+                    return _Qt
+            except Exception:
+                pass
+
     if rigid:
         # LIGAND-GEOMETRY-FIRST: rigid-body best-fit (rotation + translation, NO scale,
         # NO per-donor radial move) of the donor set onto the target POINTS.  Both the
@@ -1296,7 +1356,152 @@ def _bite_aware_targets(lP, d1, d2, T1, T2):
     return T1n, T2n
 
 
-def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2):
+def _trilaterate_donor_targets(lP, donor_idxs, targets, iters=400, damp=0.5):
+    """Donor targets that honour the ligand's OWN donor-donor distances AND the M-D radii.
+
+    THE GENERALISATION.  ``_bite_aware_targets`` solves exactly this for two donors, with
+    the cosine law: given the two M-D radii and the donor separation the ligand actually
+    has, the angle between them FOLLOWS.  For k donors the same statement is a
+    trilateration --
+
+        |x_i| = r_i                    (the measured / referenced M-D length)
+        |x_i - x_j| = D_ij             (the separation the LIGAND already has)
+
+    -- and the coordination angles are again a CONSEQUENCE, never an input.  No ideal
+    polyhedron appears anywhere in it, no metal is named, and k = 2 reduces to the cosine
+    law, so bidentate and macrocycle are one rule.
+
+    WHY IT MATTERS HERE.  This seating documents a trade-off it treats as unavoidable: the
+    per-donor radial placement gives correct M-D lengths at the price of splayed ring
+    angles, while the rigid-body fit keeps the ligand exact but lets M-D come out emergent
+    and sometimes impossible (a clathrochelate Co-O at 1.49 against ~1.95, a 24 % collapse).
+    Trilateration is the resolution: it satisfies BOTH as far as geometry allows, and where
+    they are genuinely incompatible the residual states by how much instead of silently
+    picking a side.  Measured motivation: over 995 built systems, 29 % of chelate bites come
+    out beyond 92 deg, a region real chelates essentially do not occupy (49 measured bins,
+    98 % below 90, none above 95).
+
+    Solved by alternating projection -- project every donor back onto its own radius, then
+    correct each pair toward the ligand's separation, damped, repeat.  Deterministic, no
+    random start, no minimiser.  It BEGINS at the enumerated vertex targets, so donor i
+    stays in the region of vertex i and the isomer assignment the enumeration made is
+    preserved; this only moves the targets to where the ligand can actually reach them.
+    """
+    k = len(donor_idxs)
+    if k < 2:
+        return None
+    P = np.array([np.asarray(targets[i], float) for i in range(k)])
+    r = np.array([float(np.linalg.norm(P[i])) for i in range(k)])
+    if np.any(r < 1.0e-6):
+        return None
+    L = np.array([np.asarray(lP[d], float) for d in donor_idxs])
+    D = np.zeros((k, k))
+    for i in range(k):
+        for j in range(i + 1, k):
+            D[i, j] = D[j, i] = float(np.linalg.norm(L[i] - L[j]))
+    if not np.all(np.isfinite(D)):
+        return None
+    for _ in range(int(iters)):
+        # 1) back onto each donor's own sphere around the metal
+        for i in range(k):
+            n = float(np.linalg.norm(P[i]))
+            if n > 1.0e-9:
+                P[i] *= r[i] / n
+        # 2) pull/push every pair toward the separation the ligand actually has
+        for i in range(k):
+            for j in range(i + 1, k):
+                v = P[i] - P[j]
+                d = float(np.linalg.norm(v))
+                if d < 1.0e-9 or D[i, j] < 1.0e-9:
+                    continue
+                corr = damp * 0.5 * (d - D[i, j]) * (v / d)
+                P[i] -= corr
+                P[j] += corr
+    for i in range(k):                      # radii are the hard side: end on them
+        n = float(np.linalg.norm(P[i]))
+        if n > 1.0e-9:
+            P[i] *= r[i] / n
+    if not np.all(np.isfinite(P)):
+        return None
+    return [P[i] for i in range(k)]
+
+
+def _lone_pair_dir(P, mol, idx):
+    """Direction of the donor's lone pair, from its own bonds only.
+
+    Minus the sum of the unit vectors to ALL its neighbours -- hydrogens included, because
+    for an sp3 amine the two N-H bonds are what fix where the lone pair points; dropping
+    them would leave only the C-N axis and give the wrong direction entirely.
+
+    One expression covers every case, which is the test this project applies to any rule:
+    an aromatic pyridine N (two ring neighbours) gets the in-plane outward bisector, an sp3
+    amine (three neighbours) gets the fourth tetrahedral direction, a linear nitrile N (one
+    neighbour) gets the bond axis reversed.  No hybridisation label is read, no functional
+    group is named, and it reads the same for a donor nobody has classified yet.
+    """
+    v = np.zeros(3)
+    try:
+        for nb in mol.GetAtomWithIdx(int(idx)).GetNeighbors():
+            d = P[int(nb.GetIdx())] - P[int(idx)]
+            n = float(np.linalg.norm(d))
+            if n > 1.0e-9:
+                v += d / n
+    except Exception:
+        return None
+    n = float(np.linalg.norm(v))
+    if n < 1.0e-6:
+        return None                      # symmetric surroundings: no defined direction
+    return -v / n
+
+
+def _lp_aligned_angle(Q, mol, d1, d2, axis, mid):
+    """The rotation about the donor-donor axis that points BOTH lone pairs at the metal.
+
+    THE DEFECT THIS REPLACES.  The orientation used to be picked by a 36-step sweep that
+    maximised the minimum metal-distance of the backbone -- collision avoidance, i.e. a
+    STERIC heuristic where the constraint is a BONDING one.  Three consequences, and all
+    three look like the flapping the manifold is full of: the criterion is simply the wrong
+    one, so a planar chelate's plane tilts out; 36 steps quantise to 10 deg; and scoring by
+    the MINIMUM over backbone atoms lets a single atom decide, so a small change in the
+    ligand flips the chosen step and the orientation jumps between similar systems.
+
+    A conjugated donor's lone pair lies IN its pi plane, so the metal lies in that plane
+    too -- there is no such thing as a tilted aromatic chelate.  That is a hard geometric
+    condition, not a preference, and it has a closed form.  Both donors sit ON the rotation
+    axis, so they do not move and their target directions t_i are constant; each lone pair
+    rotates by Rodrigues, and the total alignment is
+
+        sum_i lp_i(theta) . t_i  =  A cos(theta) + B sin(theta) + C
+
+    maximised at ``theta = atan2(B, A)``.  One atan2 instead of 36 samples: exact, no
+    quantisation, and no discontinuity to jump across.
+
+    Returns ``None`` when no lone-pair direction is defined at either donor, so the caller
+    keeps the old sweep rather than inventing an orientation.
+    """
+    k = axis / float(np.linalg.norm(axis))
+    A = B = C = 0.0
+    used = 0
+    for d in (d1, d2):
+        v = _lone_pair_dir(Q, mol, d)
+        if v is None:
+            continue
+        t = mid * 0.0 - Q[d]             # metal sits at the origin
+        nt = float(np.linalg.norm(t))
+        if nt < 1.0e-9:
+            continue
+        t = t / nt
+        kv, kt = float(np.dot(k, v)), float(np.dot(k, t))
+        A += float(np.dot(v, t)) - kv * kt
+        B += float(np.dot(np.cross(k, v), t))
+        C += kv * kt
+        used += 1
+    if used == 0 or (abs(A) < 1.0e-12 and abs(B) < 1.0e-12):
+        return None
+    return math.atan2(B, A)
+
+
+def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2, mol=None):
     """Rigid-fit a chelating ligand's donors onto targets T1,T2; return placed
     coords. (donor-donor vector -> target vector, midpoints matched, backbone
     rotated away from metal at origin.)
@@ -1321,6 +1526,28 @@ def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2):
                 if i not in (d1, d2) and lsyms[i] != "H"]
     if not body_idx:
         return Q                              # diatomic chelate: no backbone to rotate
+
+    # LONE-PAIR ORIENTATION (DELFIN_FFREE_LP_ORIENT, default OFF -> byte-identical).
+    #
+    # THE PLANE WINS, WITHOUT A STERIC ESCAPE.  A first version kept a floor that fell back
+    # to the sweep when the derived orientation pushed a backbone atom near the metal.  That
+    # is the wrong hierarchy and it is why the first version changed almost nothing: the
+    # M-D sigma bond goes THROUGH the lone pair, so a conjugated donor holds the metal in
+    # its pi plane, and a real molecule relieves a clash by turning substituents, opening
+    # the bite or twisting the polyhedron -- never by tipping the metal out of the plane,
+    # which would destroy the overlap that binds it.  Measured over 995 built systems: the
+    # tilt tracks the co-ligand contact (Pearson -0.20; median tilt 12.1 deg where the vdW
+    # shells already overlap, 0.9 deg where they do not), i.e. the seat is spending the
+    # ONE degree of freedom it has on steric relief and paying for it with the bond.
+    #
+    # So the plane is set, unconditionally.  If a collision remains it now STAYS VISIBLE
+    # for the clash axis to report, instead of being hidden inside a tilt -- and it has to
+    # be resolved where reality resolves it (cis-edge choice, conformer), not here.
+    if mol is not None and os.environ.get("DELFIN_FFREE_LP_ORIENT", "0") == "1":
+        _th = _lp_aligned_angle(Q, mol, d1, d2, axis, mid)
+        if _th is not None:
+            return (Q - mid) @ _axis_rot(axis, _th).T + mid
+
     best, bestQ = -1e9, Q
     for k in range(36):
         Qr = (Q - mid) @ _axis_rot(axis, 2 * np.pi * k / 36).T + mid
@@ -1432,16 +1659,59 @@ def assemble_multichelate(metal: str, geometry: str, chelate_specs):
         # Closing the pair onto the measured angle -- bisector fixed, so the ligand keeps
         # the very edge the isomer enumeration assigned it -- is a pure SETTING: no weight,
         # no gate, no minimiser.
-        if os.environ.get("DELFIN_FFREE_BITE_MEASURED", "0") == "1":
+        _r1 = MSB.md_distance(metal, lsyms[d1],
+                              atom=lmol.GetAtomWithIdx(d1), mol=lmol)
+        _r2 = MSB.md_distance(metal, lsyms[d2],
+                              atom=lmol.GetAtomWithIdx(d2), mol=lmol)
+        # DERIVED BITE (DELFIN_FFREE_BITE_LAW, default OFF -> byte-identical).
+        #
+        # A chelate closes a ring THROUGH the metal, so the bite is not an independent
+        # quantity at all -- it is ring closure:
+        #
+        #     cos(bite) = (r1^2 + r2^2 - d_DD^2) / (2 r1 r2)
+        #
+        # with d_DD the donor-donor distance the LIGAND ALREADY HAS, read straight off its
+        # own FF-free 3D construction.  Verified against 131769 crystals without building
+        # anything: inverting this on the measured D-M-D table returns chemically exact
+        # donor-donor distances (1.402 A for an eta2 C=C, 2.614 A for an en/bipy 5-ring)
+        # and reproduces the measured bite to 0.24 deg across 18 metals.  Nine of eleven
+        # ligand types sit at or below the precision of the M-D input itself.
+        #
+        # WHY THIS AND NOT THE TABLE.  Not precision -- the error in r enters either way.
+        # COUPLING.  mdAB measured what happens when they are set independently: the M-D
+        # length was corrected while the vertex angle stayed at the ideal 90 deg, which
+        # forces d_DD = |u1*r1 - u2*r2| to a value the ligand DOES NOT HAVE, so the ligand
+        # absorbs the difference (valid 155 -> 146).  Deriving the bite from d_DD and r
+        # makes that contradiction impossible by construction: the ligand keeps its own
+        # donor separation, whatever r turns out to be.
+        #
+        # It also extrapolates where the table has holes (bins below n=200 -- precisely the
+        # exotic systems carrying our defects), separates cis from trans by itself in a
+        # macrocycle (they simply ARE two different d_DD), and is a formula rather than a
+        # dataset.
+        if os.environ.get("DELFIN_FFREE_BITE_LAW", "0") == "1":
+            _dd = float(np.linalg.norm(lP[d1] - lP[d2]))
+            if _dd > 1.0e-6 and _r1 > 1.0e-6 and _r2 > 1.0e-6:
+                _c = (_r1 * _r1 + _r2 * _r2 - _dd * _dd) / (2.0 * _r1 * _r2)
+                # Outside [-1, 1] the triangle does not close: the ligand's own donor
+                # separation cannot be reached at these M-D lengths.  Forcing a clamped
+                # angle there would silently invent a geometry, so leave the vertex
+                # direction alone and let the existing path handle it.
+                if -1.0 <= _c <= 1.0:
+                    u1, u2 = bite_close(u1, u2, math.degrees(math.acos(_c)))
+        elif os.environ.get("DELFIN_FFREE_BITE_MEASURED", "0") == "1":
+            # MEASURED BITE.  The ideal polyhedron separates two cis vertices by 90 deg; a
+            # five-membered chelate measured over real crystals bites at 70.6 deg with a
+            # 3 deg wide band.  Closing the pair onto the measured angle -- bisector fixed,
+            # so the ligand keeps the very edge the isomer enumeration assigned it -- is a
+            # pure SETTING: no weight, no gate, no minimiser.
             _ring = _chelate_ring_size(lmol, d1, d2)
             _bite = _measured_bite(metal, len(ref), _ring, lsyms[d1], lsyms[d2])
             if _bite is not None:
                 u1, u2 = bite_close(u1, u2, _bite)
-        T1 = u1 * MSB.md_distance(
-            metal, lsyms[d1], atom=lmol.GetAtomWithIdx(d1), mol=lmol)
-        T2 = u2 * MSB.md_distance(
-            metal, lsyms[d2], atom=lmol.GetAtomWithIdx(d2), mol=lmol)
-        Q = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2)
+        T1 = u1 * _r1
+        T2 = u2 * _r2
+        Q = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2, mol=lmol)
         out_syms += lsyms; blocks.append(Q)
     return out_syms, np.vstack(blocks)
 
@@ -1461,7 +1731,7 @@ def assemble_chelate(metal: str, ligand_smiles: str, donor_indices: List[int],
     T1 = ref[vertex_indices[0]] / np.linalg.norm(ref[vertex_indices[0]]) * md1
     T2 = ref[vertex_indices[1]] / np.linalg.norm(ref[vertex_indices[1]]) * md2
     # rigid-fit + backbone-away-from-metal axial sweep (single source of truth)
-    bestQ = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2)
+    bestQ = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2, mol=lmol)
     syms = [metal] + lsyms
     P = np.vstack([np.zeros((1, 3)), bestQ])
     md_act = (float(np.linalg.norm(bestQ[d1])), float(np.linalg.norm(bestQ[d2])))
@@ -2498,7 +2768,7 @@ def assemble_hapto(metal, geometry, d, variant=None):
             for lP in coords_list:
                 if dent == 2:
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
-                                             targets[0], targets[1])
+                                             targets[0], targets[1], mol=lg["mol"])
                 else:
                     _rigid_seat = (os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
                                    and dent >= 3)
@@ -3087,7 +3357,8 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     if Q is not None and _rigid_planar and _collapsed_heavy_bonds_strict(lsyms, Q):
                         Q = None
                 if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
-                    Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])
+                    Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
+                                             targets[0], targets[1], mol=lg["mol"])
                 if Q is None:                       # tridentate embed failure -> skip this config
                     continue
             if not np.all(np.isfinite(Q)):
@@ -3332,3 +3603,234 @@ def generate_complex_conformers(metal, ligand_smiles, donor_idx, geometry,
             syms += lsyms; blocks.append(Q)
         out.append((round(e, 2), syms, np.vstack(blocks)))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Self-test — does the DERIVED bite actually preserve the ligand's own d_DD?
+# ---------------------------------------------------------------------------
+
+def _self_test_bite_law() -> None:
+    """The claim is not "the angle is nicer" -- it is that d_DD is PRESERVED.
+
+    mdAB measured what happens when it is not: correcting the M-D length while the vertex
+    angle stays at the ideal 90 deg forces d_DD = |u1*r1 - u2*r2| to a value the ligand
+    does not have, and the ligand absorbs the difference (valid 155 -> 146).  So the test
+    that matters compares the donor-donor distance the ligand HAS against the one the
+    seating ASKS FOR, with the law off and on.  A lever that leaves that gap unchanged
+    would be dead code that looks alive.
+    """
+    cases = [
+        ("NCCN",              [0, 3], "ethylenediamine, sp3 backbone"),
+        ("c1ccc(-c2ccccn2)nc1", None, "2,2'-bipyridine, aromatic backbone"),
+        ("CC(=O)CC(C)=O",     None,   "acetylacetone, 6-ring"),
+    ]
+    # WHERE THE MISMATCH ACTUALLY SHOWS.  _place_chelate_block fits the ligand RIGIDLY, so
+    # d_DD is preserved either way -- the first version of this test measured that and
+    # learned nothing.  A rigid body cannot satisfy two vertex directions AND two M-D
+    # lengths when the ligand's own bite disagrees with the vertex spacing, so the
+    # compromise lands in the M-D DISTANCES: the donors end up nearer or further than the
+    # length that was requested.  That is also the sharper reading of mdAB's failure --
+    # setting r is pointless if the rigid fit then moves the donor off it again.
+    print("derived bite -- does the seat DELIVER the M-D length it asked for?")
+    print(f"{'ligand':>34} | {'d_DD':>6} | {'M-D err off':>11} | {'M-D err on':>10} | "
+          f"{'angle off':>9} {'angle on':>8} | OK")
+    metal_sym = "Ni"
+    for smi, dons, label in cases:
+        try:
+            lsyms, lP, lmol = _ligand_3d(smi)
+        except Exception as exc:
+            print(f"{label:>34} | SKIP ({type(exc).__name__})")
+            continue
+        if dons is None:                      # first two N/O heavy donors in the SMILES
+            dons = [a.GetIdx() for a in lmol.GetAtoms()
+                    if a.GetSymbol() in ("N", "O")][:2]
+        if len(dons) != 2:
+            print(f"{label:>34} | SKIP (no donor pair)")
+            continue
+        d1, d2 = dons
+        dd_lig = float(np.linalg.norm(lP[d1] - lP[d2]))
+        _want1 = MSB.md_distance(metal_sym, lsyms[d1],
+                                 atom=lmol.GetAtomWithIdx(d1), mol=lmol)
+        _want2 = MSB.md_distance(metal_sym, lsyms[d2],
+                                 atom=lmol.GetAtomWithIdx(d2), mol=lmol)
+        errs, angs = [], []
+        for flag in ("0", "1"):
+            prev = os.environ.get("DELFIN_FFREE_BITE_LAW")
+            os.environ["DELFIN_FFREE_BITE_LAW"] = flag
+            try:
+                # OC-6 vertices 0/1 are TRANS ([1,0,0] / [-1,0,0]); a chelate needs a CIS
+                # edge, so 0/2 ([1,0,0] / [0,1,0], 90 deg apart).
+                syms, P = assemble_multichelate(metal_sym, "OC-6 octahedron",
+                                                [(smi, [d1, d2], [0, 2])])
+                # metal sits at row 0; the ligand block follows in ligand order
+                v1, v2 = P[1 + d1] - P[0], P[1 + d2] - P[0]
+                g1, g2 = float(np.linalg.norm(v1)), float(np.linalg.norm(v2))
+                errs.append(max(abs(g1 - _want1), abs(g2 - _want2)))
+                angs.append(math.degrees(math.acos(max(-1.0, min(1.0,
+                            float(np.dot(v1, v2)) / (g1 * g2))))))
+            except Exception as exc:
+                errs.append(float("nan"))
+                angs.append(float("nan"))
+                print(f"    ({label}: {type(exc).__name__}: {exc})")
+            finally:
+                if prev is None:
+                    os.environ.pop("DELFIN_FFREE_BITE_LAW", None)
+                else:
+                    os.environ["DELFIN_FFREE_BITE_LAW"] = prev
+        # NEVER-WORSE is the criterion, not "always changes something".  Three outcomes are
+        # all correct: the law repairs a real gap (en), it reproduces what an already-exact
+        # rigid fit does (bipy -- a confirmation, not a no-op), or it DECLINES because the
+        # triangle does not close (acac, whose freely embedded conformer is the open form,
+        # not the chelating one -- d_DD must come from the chelating basin).
+        _c = ((_want1 ** 2 + _want2 ** 2 - dd_lig ** 2) / (2.0 * _want1 * _want2)
+              if _want1 > 0 and _want2 > 0 else 2.0)
+        note = ("declined (cos=%.2f)" % _c if not -1.0 <= _c <= 1.0
+                else ("repairs" if errs[0] - errs[1] > 1.0e-6 else "reproduces"))
+        ok = errs[1] <= errs[0] + 1.0e-9
+        print(f"{label:>34} | {dd_lig:6.3f} | {errs[0]:11.4f} | {errs[1]:10.4f} | "
+              f"{angs[0]:9.2f} {angs[1]:8.2f} | {str(ok):>5} {note}")
+
+
+def _run_self_tests() -> None:
+    _self_test_bite_law()
+    _self_test_lp_orient()
+    _self_test_trilateration()
+
+
+def _self_test_lp_orient() -> None:
+    """How far do the donor lone pairs point PAST the metal?
+
+    That angle IS the flapping.  A conjugated donor's lone pair lies in its pi plane, so a
+    correctly seated planar chelate has the metal IN that plane and the angle is zero;
+    there is no such thing as a tilted aromatic chelate.  The old orientation was chosen by
+    a 36-step sweep maximising the minimum backbone-to-metal distance -- collision
+    avoidance where the constraint is bonding -- so this measures what that costs.
+    """
+    cases = [
+        ("c1ccc(-c2ccccn2)nc1",        "2,2'-bipyridine (planar, aromatic)"),
+        ("c1cnc2c(c1)ccc1cccnc12",     "1,10-phenanthroline (fused, rigid)"),
+        ("NCCN",                       "ethylenediamine (sp3)"),
+        ("CC(=O)[O-]",                 "acetate (carboxylate O donors)"),
+    ]
+    print("\nlone-pair orientation -- degrees the lone pairs miss the metal by")
+    print("  'converge' = angle between the two lone pairs measured on the FREE ligand.")
+    print("  A chelating conformer aims both at one point, so the two directions must")
+    print("  CONVERGE (obtuse, near 180-bite).  If they diverge, no rotation of the whole")
+    print("  ligand can aim them at a metal -- the conformer itself is the wrong one, and")
+    print("  the seat can only flap it into place.")
+    print(f"{'ligand':>36} | {'conv':>5} | {'--':>6} {'lp':>6} {'bite':>6} "
+          f"{'both':>6} | {'best':>7} | OK")
+    for smi, label in cases:
+        try:
+            lsyms, lP, lmol = _ligand_3d(smi)
+        except Exception as exc:
+            print(f"{label:>36} | SKIP ({type(exc).__name__})")
+            continue
+        dons = [a.GetIdx() for a in lmol.GetAtoms() if a.GetSymbol() in ("N", "O")][:2]
+        if len(dons) != 2:
+            print(f"{label:>36} | SKIP (no donor pair)")
+            continue
+        d1, d2 = dons
+        _l1, _l2 = _lone_pair_dir(lP, lmol, d1), _lone_pair_dir(lP, lmol, d2)
+        conv = (math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(_l1, _l2))))))
+                if (_l1 is not None and _l2 is not None) else float("nan"))
+        # Four configurations, because the sweep was only ONE candidate root.  A rigid
+        # ligand like phenanthroline cannot have a wrong conformer, so if its lone pairs
+        # still miss, the cause is upstream: the donors are pinned at an angle and a length
+        # the ligand does not aim at.  That is precisely what the derived bite removes, so
+        # it has to be in the comparison.
+        miss = []
+        for flag, bite in (("0", "0"), ("1", "0"), ("0", "1"), ("1", "1")):
+            prev = os.environ.get("DELFIN_FFREE_LP_ORIENT")
+            prevb = os.environ.get("DELFIN_FFREE_BITE_LAW")
+            os.environ["DELFIN_FFREE_LP_ORIENT"] = flag
+            os.environ["DELFIN_FFREE_BITE_LAW"] = bite
+            try:
+                syms, P = assemble_multichelate("Ni", "OC-6 octahedron",
+                                                [(smi, [d1, d2], [0, 2])])
+                worst = 0.0
+                for d in (d1, d2):
+                    lp = _lone_pair_dir(P[1:], lmol, d)
+                    if lp is None:
+                        continue
+                    t = P[0] - P[1 + d]
+                    nt = float(np.linalg.norm(t))
+                    if nt < 1.0e-9:
+                        continue
+                    c = max(-1.0, min(1.0, float(np.dot(lp, t / nt))))
+                    worst = max(worst, math.degrees(math.acos(c)))
+                miss.append(worst)
+            except Exception as exc:
+                miss.append(float("nan"))
+                print(f"    ({label}: {type(exc).__name__}: {exc})")
+            finally:
+                for _k, _v in (("DELFIN_FFREE_LP_ORIENT", prev),
+                               ("DELFIN_FFREE_BITE_LAW", prevb)):
+                    if _v is None:
+                        os.environ.pop(_k, None)
+                    else:
+                        os.environ[_k] = _v
+        best = min(m for m in miss if m == m)
+        ok = best <= miss[0] + 1.0e-6             # never-worse is the criterion
+        print(f"{label:>36} | {conv:4.0f}d | {miss[0]:6.1f}d {miss[1]:6.1f}d "
+              f"{miss[2]:6.1f}d {miss[3]:6.1f}d | {miss[0]-best:+6.1f}d | {ok}")
+
+
+
+
+def _self_test_trilateration() -> None:
+    """Does trilateration really hold BOTH sides, where the two old branches each drop one?
+
+    The seating documents the trade-off as unavoidable: per-donor radial keeps the M-D
+    lengths and splays the ring, rigid keeps the ring and lets M-D drift.  So the test
+    reports exactly those two errors for all three placements.  A lever that merely moves
+    the error from one column to the other would be a rename, not a fix.
+    """
+    from delfin.manta import polyhedra as _PH
+    cases = [
+        ("tridentate, 2.1 A radii", "OC-6 octahedron", [0, 2, 4], 2.10),
+        ("tridentate, 2.4 A radii", "OC-6 octahedron", [0, 2, 4], 2.40),
+        ("tetradentate",            "OC-6 octahedron", [0, 2, 4, 1], 2.10),
+    ]
+    print("\ntrilateration -- both constraints at once?  (errors in Angstrom)")
+    print(f"{'case':>24} | {'placement':>14} | {'M-D err':>8} | {'D-D err':>8}")
+    for label, geom, verts, rad in cases:
+        ref = _PH.ref_vectors(geom)
+        # a synthetic rigid donor set: an equilateral-ish arm spacing the ideal vertices
+        # cannot satisfy, which is the situation a real polydentate is in
+        L = np.array([[0.0, 0.0, 0.0], [2.55, 0.0, 0.0], [1.27, 2.30, 0.0],
+                      [1.27, 0.77, 2.10]])[:len(verts)]
+        T = [ref[v] / np.linalg.norm(ref[v]) * rad for v in verts]
+        D = {(i, j): float(np.linalg.norm(L[i] - L[j]))
+             for i in range(len(verts)) for j in range(i + 1, len(verts))}
+
+        def _err(X):
+            md = max(abs(float(np.linalg.norm(X[i])) - rad) for i in range(len(verts)))
+            dd = max(abs(float(np.linalg.norm(X[i] - X[j])) - D[(i, j)])
+                     for (i, j) in D)
+            return md, dd
+
+        # (a) ideal vertices, per-donor radial: radii exact, ligand distances ignored
+        a_md, a_dd = _err(np.array(T))
+        # (b) rigid body onto the ideal vertices: ligand exact, radii drift
+        dmu, tmu = L.mean(0), np.array(T).mean(0)
+        Rk = _kabsch_rot(L - dmu, np.array(T) - tmu)
+        Xb = (L - dmu) @ Rk.T + tmu
+        b_md, b_dd = _err(Xb)
+        # (c) trilateration, then the same rigid fit onto the moved targets
+        tri = _trilaterate_donor_targets(L, list(range(len(verts))), T)
+        if tri is None:
+            print(f"{label:>24} | trilateration returned None")
+            continue
+        tgt = np.array(tri)
+        Rk2 = _kabsch_rot(L - dmu, tgt - tgt.mean(0))
+        Xc = (L - dmu) @ Rk2.T + tgt.mean(0)
+        c_md, c_dd = _err(Xc)
+        for nm, (md, dd) in (("radial(ideal)", (a_md, a_dd)),
+                             ("rigid(ideal)", (b_md, b_dd)),
+                             ("TRILATERATED", (c_md, c_dd))):
+            print(f"{label:>24} | {nm:>14} | {md:8.3f} | {dd:8.3f}")
+
+
+if __name__ == "__main__":       # pragma: no cover
+    _run_self_tests()

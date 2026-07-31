@@ -308,12 +308,32 @@ def _signature_theta(mol, i: int, j: int, k: int) -> float:
     k_is_m = sym_k in metals
 
     # --- 1. rings ---------------------------------------------------------------
+    # POLYGON ONLY UP TO SIX (DELFIN_FFREE_POLY6=1, default OFF -> byte-identical).
+    #
+    # 180 - 360/n is the internal angle of a REGULAR PLANAR polygon.  A seven- or
+    # nine-membered ring is neither: it puckers, and its sides are not equal.  Measured
+    # against the CSD angle table, the formula over-predicts by +16.3 deg at ring 7,
+    # +11.5 at ring 8 and +10.0 above eight, while at ring 6 -- which carries 3.06 M of
+    # the 4.67 M measured angles -- it is right to 5 deg.  A CH2 in a macrocycle is set by
+    # its own hybridisation, not by the ring's perimeter.
+    #
+    # Judged alone against 1900 measured bins: 180 bins improve, 23 worsen; RMS 15.51 ->
+    # 13.70, median |residual| 3.62 -> 2.88, bins inside their own sigma 39.6 -> 44.6 %.
+    #
+    # NOT changed, and measured as the wrong idea: letting a metal in the triple outrank
+    # the ring rule.  That looked compelling -- M-D-X is the best branch in the law, 86.8 %
+    # of its bins inside sigma, and the ring branch blocks it for every chelate donor --
+    # but it scores 135 bins better against 188 worse.  A donor inside a chelate ring obeys
+    # RING CLOSURE, not the period rule; the ring branch is right there and merely has the
+    # wrong closure (a polygon instead of the actual geometry).  That case cannot be fixed
+    # in a signature table at all -- it needs the 1,3 distances, i.e. the seating.
+    _poly_max = 6 if os.environ.get("DELFIN_FFREE_POLY6", "0") == "1" else 10 ** 9
     common = _ring_sizes_containing(mol, i, j, k)
-    if common:
+    if common and common[0] <= _poly_max:
         n = common[0]
         return math.radians(_RING_INTERNAL_MEAS.get(n, 180.0 - 360.0 / n))
     j_rings = _ring_sizes_containing(mol, j)
-    if j_rings:
+    if j_rings and j_rings[0] <= _poly_max:
         # Exocyclic only if exactly one of i/k shares a ring with j.
         in_ring = sum(1 for x in (i, k) if _ring_sizes_containing(mol, j, x))
         if in_ring == 1:
@@ -459,6 +479,11 @@ def _enumerate_metal_donor_bonds(mol) -> List[Tuple[int, int]]:
 
 _FLATBOTTOM_FRAC = 0.05   # half-width of the tolerated band, as a fraction of d_ideal
 
+# Normal-distribution conversion: p90 - p10 = 2 * 1.2816 * sigma.  Kept next to the band
+# readers so the gate in _variational_refiner and U_bond cannot drift apart on it.
+_P10_P90_TO_SIGMA = 2.5631
+_INVVAR_W_MAX = 25.0      # weight bound, i.e. sigma ratio 5 in either direction
+
 
 # ---------------------------------------------------------------------------
 # Bond signature — the SHARED contract between the functional and its calibration
@@ -545,6 +570,32 @@ def angle_signature_keys(mol, i: int, j: int, k: int) -> List[str]:
     ]
 
 
+def _evidence_keep(n_str: str, lo: float, mid: float, hi: float) -> bool:
+    """May a bin measured on ``n`` structures with this width steer a build?
+
+    ONE definition for every table, imported from polyhedra so the bond/angle readers here
+    and the M-D / D-M-D reader there can never drift apart on what counts as evidence --
+    that drift is exactly how the round-trip deactivation ended up sitting on one of three
+    call sites.  Falls OPEN (keeps everything) if the helpers cannot be imported, so an
+    import problem can never silently narrow the tables and be mistaken for a measurement.
+    """
+    try:
+        from delfin.manta.polyhedra import (  # type: ignore
+            _EVIDENCE_ON, _EVIDENCE_MIN_N, _EVIDENCE_MAX_REL,
+        )
+    except Exception:
+        return True
+    if not _EVIDENCE_ON():
+        return True
+    try:
+        if int(float(n_str)) < _EVIDENCE_MIN_N():
+            return False
+    except ValueError:
+        return True
+    rel = (hi - lo) / abs(mid) if mid else 9.9
+    return rel <= _EVIDENCE_MAX_REL()
+
+
 _BOND_BAND_CACHE: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
 _ANGLE_BAND_CACHE: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
 
@@ -570,7 +621,10 @@ def _angle_band_table() -> Dict[str, Tuple[float, float, float]]:
                 p = ln.rstrip("\n").split("\t")
                 if len(p) >= 6:
                     try:
-                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                        _lo, _md, _hi = float(p[3]), float(p[4]), float(p[5])
+                        if not _evidence_keep(p[2], _lo, _md, _hi):
+                            continue
+                        tbl[p[1]] = (_lo, _md, _hi)
                     except ValueError:
                         continue
     except Exception:
@@ -615,7 +669,10 @@ def _bond_band_table() -> Dict[str, Tuple[float, float, float]]:
                 # level, key, n, p10, p50, p90
                 if len(p) >= 6:
                     try:
-                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                        _lo, _md, _hi = float(p[3]), float(p[4]), float(p[5])
+                        if not _evidence_keep(p[2], _lo, _md, _hi):
+                            continue
+                        tbl[p[1]] = (_lo, _md, _hi)
                     except ValueError:
                         continue
     except Exception:
@@ -671,6 +728,7 @@ def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
     Skips M-L bonds (those are handled by ``U_topology`` and ``U_A``).
     """
     _band = os.environ.get("DELFIN_FFREE_BOND_BAND", "0") == "1"
+    _invvar = os.environ.get("DELFIN_FFREE_INVVAR", "0") == "1"
     coords = np.asarray(coords, dtype=np.float64)
     n = coords.shape[0]
     grad = np.zeros_like(coords)
@@ -679,6 +737,39 @@ def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
     metals = _smiles_converter_metals()
     if k_bond <= 0.0 or n == 0:
         return float(energy), grad
+
+    # INVERSE-VARIANCE WEIGHTING (2026-07-30, default OFF, needs _band).
+    #
+    # k_bond is one global constant for every bond, which asserts that a C-C single bond
+    # and a Ru-N bond are known equally well.  The measurement says otherwise: bin widths
+    # differ by more than an order of magnitude.  Weighting by 1/sigma^2 states each
+    # restraint in units of how well that bond is actually known.
+    #
+    # NORMALISED, not absolute.  sigma ~ 0.02 A would multiply every energy by ~2500 and
+    # silently drown the other seven terms -- the weighting is meant to change the balance
+    # WITHIN U_bond, not the balance BETWEEN terms.  Dividing by the molecule's own median
+    # sigma keeps the total scale (and the meaning of k_bond) intact.
+    #
+    # And note what it couples to: the WIDTH OF THE BAND, a property of chemistry.  Never
+    # the SIZE OF THE ERROR.  Weighting by how broken a site is would hand a torn ligand
+    # enormous forces and tear it further -- the functional would be most destructive
+    # exactly on the frames it exists to rescue.  Broken sites already pull harder without
+    # that: the excursion enters quadratically, so 5 sigma is 100x the force of 0.5 sigma.
+    _sig_ref = None
+    if _band and _invvar:
+        _sigs = []
+        for (_i, _j, _o) in _enumerate_bonds(mol):
+            if (mol.GetAtomWithIdx(_i).GetSymbol() in metals
+                    or mol.GetAtomWithIdx(_j).GetSymbol() in metals):
+                continue
+            _b = _measured_bond_band(mol, _i, _j)
+            if _b is None:
+                continue
+            _s = (_b[2] - _b[0]) / _P10_P90_TO_SIGMA
+            if _s > 1.0e-9:
+                _sigs.append(_s)
+        if _sigs:
+            _sig_ref = float(np.median(_sigs))
 
     for (i, j, order) in _enumerate_bonds(mol):
         sym_i = mol.GetAtomWithIdx(i).GetSymbol()
@@ -698,6 +789,7 @@ def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
             # being a distribution, does not.  The shape was never the problem; the centre
             # is.  Falls back to the radii sum when the table has no bin for this bond.
             _mb = _measured_bond_band(mol, i, j)
+            _w = 1.0
             if _mb is not None:
                 _p10, _p50, _p90 = _mb
                 if d < _p10:
@@ -706,12 +798,18 @@ def U_bond(coords: np.ndarray, mol, k_bond: float = 1000.0
                     pen, dpen = (d - _p90) ** 2, 2.0 * (d - _p90)
                 else:
                     pen, dpen = 0.0, 0.0
+                if _sig_ref is not None:
+                    _s = (_p90 - _p10) / _P10_P90_TO_SIGMA
+                    if _s > 1.0e-9:
+                        # Bounded: one degenerate bin must not dominate the whole term.
+                        _w = min(_INVVAR_W_MAX,
+                                 max(1.0 / _INVVAR_W_MAX, (_sig_ref / _s) ** 2))
             else:
                 pen, dpen = _flat_bottom(d, d_id, _FLATBOTTOM_FRAC * d_id)
             if pen == 0.0:
                 continue
-            energy += k_bond * pen
-            coef = k_bond * dpen / d
+            energy += k_bond * pen * _w
+            coef = k_bond * dpen * _w / d
         else:
             delta = d - d_id
             energy += k_bond * delta * delta
@@ -737,7 +835,20 @@ def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0,
     :func:`_build_angle_targets`, i.e. the measured signature angle instead of RDKit's
     three-value hybridization label.  Only the TARGET changes -- the analytic gradient
     below is a derivative of theta and is untouched by where theta_ideal came from.
+
+    ``DELFIN_FFREE_ANGLE_BAND=1`` additionally replaces the harmonic well with a flat
+    bottom between the measured p10 and p90 (default OFF -> byte-identical).
+
+    WHY (found 2026-07-30 while building the inverse-variance weight).  The measured angle
+    table was wired in for its CENTRE only: ``_signature_theta`` reads p50 and throws p10
+    and p90 away, leaving a harmonic point restraint -- an infinitely narrow band.  That is
+    exactly the shape the crystal-stationarity measurement rejected for bond lengths: a
+    harmonic has ONE zero-force point, so a real crystal, being a distribution, is never
+    stationary in it.  The argument transfers verbatim; it had simply never been applied
+    here.  A measured centre with an invented width is still half an invention.
     """
+    _aband = os.environ.get("DELFIN_FFREE_ANGLE_BAND", "0") == "1"
+    _invvar = os.environ.get("DELFIN_FFREE_INVVAR", "0") == "1"
     coords = np.asarray(coords, dtype=np.float64)
     n = coords.shape[0]
     grad = np.zeros_like(coords)
@@ -748,6 +859,21 @@ def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0,
 
     _triples = (targets if targets is not None
                 else [(i, j, k, None) for (i, j, k) in _enumerate_angles(mol)])
+
+    # Same normalisation as U_bond: weights are RELATIVE within the term, so the balance
+    # between the eight terms is untouched.  See the long note in U_bond.
+    _sig_ref = None
+    if _aband and _invvar:
+        _sigs = []
+        for _t in _triples:
+            _b = _measured_angle_band(mol, _t[0], _t[1], _t[2])
+            if _b is None:
+                continue
+            _s = (_b[2] - _b[0]) / _P10_P90_TO_SIGMA
+            if _s > 1.0e-9:
+                _sigs.append(_s)
+        if _sigs:
+            _sig_ref = float(np.median(_sigs))
     for (i, j, k, _theta_target) in _triples:
         x_ij = coords[i] - coords[j]
         x_kj = coords[k] - coords[j]
@@ -767,13 +893,32 @@ def U_angle(coords: np.ndarray, mol, k_angle: float = 100.0,
         theta_id = (_theta_target if _theta_target is not None
                     else _hybridization_theta(mol, j))
         delta = theta - theta_id
-        energy += k_angle * delta * delta
+        _w = 1.0
+        if _aband:
+            _ab = _measured_angle_band(mol, i, j, k)
+            if _ab is not None:
+                _lo = math.radians(_ab[0])
+                _hi = math.radians(_ab[2])
+                # Signed excursion past the nearer edge; exactly 0 inside the band, so a
+                # crystal is stationary by construction.
+                if theta < _lo:
+                    delta = theta - _lo
+                elif theta > _hi:
+                    delta = theta - _hi
+                else:
+                    continue
+                if _sig_ref is not None:
+                    _s = (_ab[2] - _ab[0]) / _P10_P90_TO_SIGMA
+                    if _s > 1.0e-9:
+                        _w = min(_INVVAR_W_MAX,
+                                 max(1.0 / _INVVAR_W_MAX, (_sig_ref / _s) ** 2))
+        energy += k_angle * _w * delta * delta
 
         # ∂θ/∂x_i = -1/(sin θ · |x_ij|) · (v - cos θ · u)
         d_th_di = -(v - cos_t * u) / (norm_ij * sin_t)
         d_th_dk = -(u - cos_t * v) / (norm_kj * sin_t)
         d_th_dj = -(d_th_di + d_th_dk)
-        coef = 2.0 * k_angle * delta
+        coef = 2.0 * k_angle * _w * delta
         grad[i] += coef * d_th_di
         grad[j] += coef * d_th_dj
         grad[k] += coef * d_th_dk
@@ -2013,3 +2158,83 @@ if __name__ == "__main__":  # pragma: no cover
         got = math.degrees(_signature_theta(m, _i, _j, _k))
         ok = abs(got - expect) < 1.0
         print(f"  {'OK  ' if ok else 'FAIL'} {got:6.2f}deg (want {expect:6.2f})  {what}")
+
+    # ----- inverse-variance weighting: does it move, and is its gradient right? -----
+    #
+    # Both halves are needed.  A lever that is byte-identical when off AND byte-identical
+    # when on is dead code that looks alive; a lever that changes the energy but not the
+    # gradient is worse -- it silently minimises a different function than it reports.
+    # The first table for this test put every bond INSIDE its band, so the weight
+    # multiplied zero and the term looked inert.  The bands below sit far outside, and
+    # deliberately differ in WIDTH by a factor ~15 so the weights actually diverge.
+    print("\nU_bond — inverse-variance weighting:")
+    import tempfile as _tf
+    with _tf.NamedTemporaryFile("w", suffix=".tsv", delete=False) as _fh:
+        _tbl = _fh.name
+        _fh.write("L4\tH|N|1.0\t9999\t0.50\t0.51\t0.52\n")   # sigma = 0.0078
+        _fh.write("L4\tH|O|1.0\t9999\t0.40\t0.55\t0.70\n")   # sigma = 0.117
+    _prev = {k: os.environ.get(k) for k in
+             ("DELFIN_FFREE_BOND_BAND", "DELFIN_FFREE_BOND_BANDS", "DELFIN_FFREE_INVVAR")}
+    try:
+        os.environ["DELFIN_FFREE_BOND_BAND"] = "1"
+        os.environ["DELFIN_FFREE_BOND_BANDS"] = _tbl
+        os.environ.pop("DELFIN_FFREE_INVVAR", None)
+        _e_off, _g_off = U_bond(coords, mol)
+        os.environ["DELFIN_FFREE_INVVAR"] = "1"
+        _e_on, _g_on = U_bond(coords, mol)
+        _gfd = _fd_gradient(lambda c: U_bond(c, mol), coords, eps=1.0e-6)
+        _d = float(np.max(np.abs(_g_on - _gfd)))
+        _r = _d / max(1.0e-9, float(np.max(np.abs(_g_on))))
+        _moved = abs(_e_on - _e_off) > 1.0e-6
+        _gdiff = float(np.max(np.abs(_g_on - _g_off)))
+        print(f"  E off = {_e_off:12.4f}   E on = {_e_on:12.4f}   "
+              f"changed = {_moved}")
+        print(f"  max|g_on - g_off| = {_gdiff:.4e}   (0 would mean the weight never "
+              f"reached the gradient)")
+        print(f"  FD on weighted U_bond: rel = {_r:.3e}   "
+              f"{'PASS' if (_r < 1.0e-3 and _moved and _gdiff > 1.0e-9) else 'FAIL'}")
+    finally:
+        for _k, _v in _prev.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+
+    # ----- U_angle flat bottom: the measured WIDTH, not just the measured centre -----
+    # Key ladder level L4 is "{element},{degree}#{outer}#{outer}".  For [Cu](N)(N)O + Hs
+    # the central atoms are N (degree 3) and O (degree 2); metal-centred triples are
+    # skipped by the term itself.  The two bands differ in width by ~14x and both sit far
+    # from the actual ~109 deg, so every angle is outside and the weights diverge.
+    print("\nU_angle — measured band as a flat bottom:")
+    with _tf.NamedTemporaryFile("w", suffix=".tsv", delete=False) as _fh:
+        _atbl = _fh.name
+        _fh.write("L4\tN,3#Cu#H\t9999\t10.0\t12.0\t14.0\n")     # sigma = 1.56 deg
+        _fh.write("L4\tN,3#H#H\t9999\t10.0\t12.0\t14.0\n")
+        _fh.write("L4\tO,2#Cu#H\t9999\t150.0\t160.0\t179.0\n")  # sigma = 11.3 deg
+    _prev = {k: os.environ.get(k) for k in
+             ("DELFIN_FFREE_ANGLE_BAND", "DELFIN_FFREE_ANGLE_BANDS", "DELFIN_FFREE_INVVAR")}
+    try:
+        os.environ.pop("DELFIN_FFREE_ANGLE_BAND", None)
+        os.environ.pop("DELFIN_FFREE_INVVAR", None)
+        os.environ["DELFIN_FFREE_ANGLE_BANDS"] = _atbl
+        _ea_plain, _ = U_angle(coords, mol)
+        os.environ["DELFIN_FFREE_ANGLE_BAND"] = "1"
+        _ea_band, _ga_band = U_angle(coords, mol)
+        os.environ["DELFIN_FFREE_INVVAR"] = "1"
+        _ea_w, _ga_w = U_angle(coords, mol)
+        _gfd = _fd_gradient(lambda c: U_angle(c, mol), coords, eps=1.0e-6)
+        _r = (float(np.max(np.abs(_ga_w - _gfd)))
+              / max(1.0e-9, float(np.max(np.abs(_ga_w)))))
+        _ok = (abs(_ea_band - _ea_plain) > 1.0e-6      # band changed the shape
+               and abs(_ea_w - _ea_band) > 1.0e-6      # weight changed it again
+               and _r < 1.0e-3)                        # and the gradient followed
+        print(f"  E harmonic = {_ea_plain:10.4f}   E band = {_ea_band:10.4f}   "
+              f"E band+invvar = {_ea_w:10.4f}")
+        print(f"  FD on weighted U_angle: rel = {_r:.3e}   "
+              f"{'PASS' if _ok else 'FAIL'}")
+    finally:
+        for _k, _v in _prev.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v

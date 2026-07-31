@@ -5471,11 +5471,44 @@ def _fix_organometallic_carbon_h(mol):
     return rwmol.GetMol()
 
 
+def _hapto_h_always() -> bool:
+    """Should the hapto donor-H repair run outside the experimental hapto mode?
+
+    WHY THIS EXISTS (user, 2026-07-31, on KEHWEA).  The user opened a built frame and saw
+    the hydrogens missing on the eta2 alkene coordinating the Pd.  They are missing in the
+    INPUT: the SMILES writes the pi interaction as a sigma bond,
+
+        ... [C+]1=[C+](C6H5) -> [Pd-4] ...
+
+    and a bracketed carbon with no H spec carries ZERO hydrogens, so every eta2 alkene CH,
+    eta5 Cp CH and eta6 arene CH loses its proton before construction ever begins.  The
+    builder is not at fault; it builds exactly what it is handed, and no seating can rescue
+    a molecule that is short an atom.
+
+    Measured over the 1000-system pool with the hapto discriminator (in a hapto block
+    SEVERAL CONTIGUOUS carbons bond the SAME metal, in a sigma bond exactly one -- which is
+    what separates a real eta2 alkene from an NHC carbene carbon or a sigma-aryl ipso
+    carbon, both correctly H-free): 52 systems, 322 hydrogens missing.
+
+    The repair itself already existed and was correct -- it was simply never reached,
+    because it only ran under the experimental ``hapto_approx`` mode.  Same shape as the
+    other holes found this week: not a missing mechanism, a mechanism out of scope.
+
+    Default OFF -> byte-identical.
+    """
+    return _delfin_env_int("DELFIN_FFFREE_HAPTO_H", 0) == 1
+
+
 def _fix_hapto_donor_h(mol):
     """Adjust H on hapto donor carbons so each C has at most 4 bonding partners.
 
     Simple rule: desired_h = max(0, 4 - number_of_non_H_neighbors).
     Metal neighbors ARE counted (they occupy a coordination site).
+
+    Scope is already exactly right and must stay that way: it acts only inside blocks of
+    >= 2 contiguous metal-bound carbons, so a carbene or a sigma-aryl is never touched.
+    For the hapto cases the arithmetic lands on the correct answer -- an eta-bound CH has
+    two heavy ring/chain neighbours plus the metal, so 4 - 3 = 1 hydrogen.
     """
     if not RDKIT_AVAILABLE or mol is None:
         return mol
@@ -16378,12 +16411,12 @@ def _prepare_mol_for_embedding_uncached(smiles: str, hapto_approx: bool = False)
                 mol = _fix_organometallic_carbon_h(mol)
             else:
                 mol = Chem.AddHs(mol, addCoords=False)
-            if hapto_approx:
+            if hapto_approx or _hapto_h_always():
                 mol = _fix_hapto_donor_h(mol)
         except Exception:
             try:
                 mol = Chem.AddHs(mol, addCoords=False)
-                if hapto_approx:
+                if hapto_approx or _hapto_h_always():
                     mol = _fix_hapto_donor_h(mol)
             except Exception:
                 pass
@@ -16412,7 +16445,7 @@ def _prepare_mol_for_embedding_uncached(smiles: str, hapto_approx: bool = False)
             pass
         try:
             mol = Chem.AddHs(mol, addCoords=False)
-            if hapto_approx:
+            if hapto_approx or _hapto_h_always():
                 mol = _fix_hapto_donor_h(mol)
         except Exception:
             pass
