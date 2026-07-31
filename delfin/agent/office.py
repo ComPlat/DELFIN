@@ -1028,6 +1028,283 @@ def _flatten_form(writer: Any) -> None:
 # Word
 # ---------------------------------------------------------------------------
 
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]{1,80}?)\s*\}\}")
+
+
+def _iter_paragraphs(container: Any) -> Any:
+    """Every paragraph of a document part, tables and nesting included.
+
+    Templates put placeholders in table cells and in the header and
+    footer (the letterhead, the file reference, the page footer) at
+    least as often as in the body. A filler that only walks
+    ``doc.paragraphs`` silently leaves those in place, and the result
+    looks complete until someone prints it.
+    """
+    for para in getattr(container, "paragraphs", []) or []:
+        yield para
+    for table in getattr(container, "tables", []) or []:
+        for row in table.rows:
+            for cell in row.cells:
+                yield from _iter_paragraphs(cell)
+
+
+def _document_parts(document: Any) -> Any:
+    """The body plus every header/footer variant a section can carry."""
+    yield document
+    for section in getattr(document, "sections", []) or []:
+        for attr in (
+            "header", "footer",
+            "first_page_header", "first_page_footer",
+            "even_page_header", "even_page_footer",
+        ):
+            part = getattr(section, attr, None)
+            if part is not None:
+                yield part
+
+
+def _splice_runs(runs: list, start: int, end: int, replacement: str) -> None:
+    """Replace the character range [start, end) spread across *runs*.
+
+    The replacement takes the formatting of the run the placeholder
+    starts in; every other run keeps its own text and formatting. The
+    naive alternative — writing the whole paragraph into its first run —
+    would flatten bold, spacing and font changes across the line.
+    """
+    pos = 0
+    first = True
+    for run in runs:
+        begin, stop = pos, pos + len(run.text)
+        pos = stop
+        if stop <= start or begin >= end:
+            continue
+        prefix = run.text[: max(0, start - begin)]
+        suffix = run.text[max(0, end - begin):] if stop > end else ""
+        if first:
+            run.text = prefix + replacement + suffix
+            first = False
+        else:
+            run.text = prefix + suffix
+
+
+def _fill_paragraph(paragraph: Any, values: dict, unfilled: set) -> int:
+    """Substitute placeholders in one paragraph. Returns the count.
+
+    Works on the paragraph's joined text rather than run by run: Word
+    splits a placeholder across runs whenever it feels like it (spell
+    check, an edit, a formatting change), so ``{{anrede}}`` routinely
+    arrives as ``{{`` + ``an`` + ``rede`` + ``}}``. Per-run replacement
+    finds nothing and reports success.
+    """
+    filled = 0
+    offset = 0
+    for _ in range(500):                      # bound: pathological templates
+        runs = list(paragraph.runs)
+        if not runs:
+            return filled
+        text = "".join(r.text for r in runs)
+        match = _PLACEHOLDER_RE.search(text, offset)
+        if match is None:
+            return filled
+        name = match.group(1).strip()
+        if name not in values:
+            unfilled.add(name)
+            offset = match.end()
+            continue
+        replacement = "" if values[name] is None else str(values[name])
+        _splice_runs(runs, match.start(), match.end(), replacement)
+        offset = match.start() + len(replacement)
+        filled += 1
+    return filled
+
+
+def docx_placeholders(path: Any) -> dict:
+    """List the ``{{name}}`` placeholders a template contains.
+
+    Reported per location (body / table / header / footer) so a
+    placeholder that only appears in the letterhead is visible before
+    the fill, not after.
+    """
+    p = _resolve(path)
+    if document_kind(p) != "word":
+        raise OfficeError(f"{p.name} is not a .docx file")
+    docx = _require("word")
+    try:
+        doc = docx.Document(str(p))
+    except Exception as exc:
+        raise OfficeError(f"could not open document: {exc}") from exc
+
+    counts: dict[str, int] = {}
+    for part in _document_parts(doc):
+        for para in _iter_paragraphs(part):
+            for match in _PLACEHOLDER_RE.finditer(para.text):
+                name = match.group(1).strip()
+                counts[name] = counts.get(name, 0) + 1
+
+    notes: list[str] = []
+    if not counts:
+        notes.append(
+            "no {{placeholder}} markers in this document. Word mail-merge "
+            "fields (MERGEFIELD) are not text placeholders and are not "
+            "handled — check what the template actually uses.")
+    return {
+        "path": str(p),
+        "placeholders": [
+            {"name": n, "occurrences": c} for n, c in sorted(counts.items())
+        ],
+        "notes": notes,
+    }
+
+
+def fill_docx_template(
+    path: Any, values: dict, *, output: Any, strict: bool = True
+) -> dict:
+    """Substitute ``{{name}}`` placeholders and write a new document.
+
+    The template is never written to, so it stays reusable. With
+    *strict* a value whose placeholder does not exist is an error rather
+    than a silent no-op — the same contract as the PDF form filler,
+    because a typo would otherwise read as a completed document.
+
+    Placeholders left without a value are reported and stay in the text
+    verbatim: a half-filled letter that still shows ``{{betrag}}`` is
+    recoverable, one that silently dropped it is not.
+    """
+    src = _resolve(path)
+    if document_kind(src) != "word":
+        raise OfficeError(f"{src.name} is not a .docx file")
+    if not isinstance(values, dict) or not values:
+        raise OfficeError("values must be a non-empty object of name -> value")
+    out = _resolve(output, must_exist=False)
+    if out.resolve() == src.resolve():
+        raise OfficeError(
+            "output must differ from the template — filling it in place "
+            "destroys the blank original")
+
+    known = {
+        entry["name"] for entry in docx_placeholders(src)["placeholders"]
+    }
+    unknown = sorted(str(k) for k in values if str(k) not in known)
+    if unknown and strict:
+        raise OfficeError(
+            f"no such placeholder(s): {', '.join(unknown)}. The template "
+            f"contains: {', '.join(sorted(known)) or '(none)'}"
+        )
+
+    docx = _require("word")
+    try:
+        doc = docx.Document(str(src))
+    except Exception as exc:
+        raise OfficeError(f"could not open template: {exc}") from exc
+
+    normalised = {str(k): v for k, v in values.items()}
+    unfilled: set[str] = set()
+    filled = 0
+    for part in _document_parts(doc):
+        for para in _iter_paragraphs(part):
+            filled += _fill_paragraph(para, normalised, unfilled)
+
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(out))
+    except Exception as exc:
+        raise OfficeError(f"could not save the document: {exc}") from exc
+
+    # Verify against the written file rather than reporting the intent.
+    remaining = {
+        entry["name"]
+        for entry in docx_placeholders(out)["placeholders"]
+    }
+    notes: list[str] = []
+    if unknown:
+        notes.append(
+            "ignored, no such placeholder in the template: "
+            + ", ".join(unknown))
+    still_open = sorted(remaining)
+    if still_open:
+        notes.append(
+            "these placeholders had no value and are still in the text: "
+            + ", ".join(still_open)
+            + ". The document is not ready to hand over as it stands.")
+    leaked = sorted(n for n in normalised if n in remaining)
+    if leaked:
+        notes.append(
+            "a value was given but the placeholder survived in the output: "
+            + ", ".join(leaked) + " — treat this fill as failed.")
+    return {
+        "template": str(src),
+        "path": str(out),
+        "filled": filled,
+        "unfilled": still_open,
+        "complete": not still_open,
+        "notes": notes,
+    }
+
+
+def create_docx(
+    path: Any, blocks: list[dict], *, overwrite: bool = False
+) -> dict:
+    """Write a new .docx from a list of content blocks.
+
+    Each block is one of ``{"heading": str, "level": int}``,
+    ``{"paragraph": str}``, ``{"table": [[...], ...], "header_row":
+    bool}`` or ``{"page_break": true}``.
+    """
+    p = _resolve(path, must_exist=False)
+    if document_kind(p) != "word":
+        raise OfficeError(
+            f"cannot write {p.suffix!r} as a Word document — use .docx")
+    if p.exists() and not overwrite:
+        raise OfficeError(
+            f"{p.name} already exists — pass overwrite=True to replace it")
+    if not isinstance(blocks, list) or not blocks:
+        raise OfficeError("blocks must be a non-empty list")
+
+    docx = _require("word")
+    doc = docx.Document()
+    counts = {"headings": 0, "paragraphs": 0, "tables": 0}
+    for index, block in enumerate(blocks, start=1):
+        if not isinstance(block, dict):
+            raise OfficeError(f"block {index} is not an object: {block!r}")
+        if "heading" in block:
+            level = max(0, min(int(block.get("level", 1) or 1), 9))
+            doc.add_heading(str(block["heading"]), level=level)
+            counts["headings"] += 1
+        elif "paragraph" in block:
+            doc.add_paragraph(str(block["paragraph"]))
+            counts["paragraphs"] += 1
+        elif "table" in block:
+            rows = block["table"]
+            if not isinstance(rows, list) or not rows or not all(
+                    isinstance(r, (list, tuple)) for r in rows):
+                raise OfficeError(
+                    f"block {index}: table must be a non-empty list of lists")
+            width = max(len(r) for r in rows)
+            table = doc.add_table(rows=len(rows), cols=width)
+            if block.get("header_row"):
+                try:
+                    table.style = "Table Grid"
+                except Exception:
+                    pass
+            for r_idx, row in enumerate(rows):
+                for c_idx in range(width):
+                    value = row[c_idx] if c_idx < len(row) else ""
+                    table.cell(r_idx, c_idx).text = _fmt(value)
+            counts["tables"] += 1
+        elif block.get("page_break"):
+            doc.add_page_break()
+        else:
+            raise OfficeError(
+                f"block {index}: expected one of heading / paragraph / "
+                f"table / page_break, got keys {sorted(block)}")
+
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(p))
+    except Exception as exc:
+        raise OfficeError(f"could not save the document: {exc}") from exc
+    return {"path": str(p), "blocks": len(blocks), **counts}
+
+
 def read_docx(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
     """Extract paragraphs and tables from a .docx file."""
     p = _resolve(path)
@@ -1086,6 +1363,10 @@ def read_document(path: Any, **kwargs: Any) -> dict:
             return pdf_form_fields(p)
         return read_pdf(p, pages=kwargs.get("pages"))
     if kind == "word":
+        # Same switch as for a PDF form: "show me what can be filled in"
+        # is one question, whatever the format underneath.
+        if kwargs.get("fields"):
+            return docx_placeholders(p)
         return read_docx(p)
     raise OfficeError(
         f"{p.name}: no document reader for {p.suffix!r}. Supported: "

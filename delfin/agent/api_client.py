@@ -2280,6 +2280,63 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "fill_docx_template",
+            "description": (
+                "Substitute {{placeholder}} markers in a .docx template and "
+                "write a NEW file. List the markers first with "
+                "read_document(fields=true). Placeholders left without a "
+                "value stay visible in the text and are reported."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The template.",
+                    },
+                    "output": {"type": "string"},
+                    "values": {
+                        "type": "object",
+                        "description": "placeholder -> value.",
+                    },
+                    "strict": {
+                        "type": "boolean",
+                        "description": (
+                            "Default true: a value for a placeholder the "
+                            "template lacks is an error."
+                        ),
+                    },
+                },
+                "required": ["path", "output", "values"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_docx",
+            "description": (
+                "Write a new Word document from content blocks. Each block "
+                "is {heading, level} | {paragraph} | {table: [[...]], "
+                "header_row} | {page_break: true}. For plain text or "
+                "markdown use write_file instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "blocks": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+                "required": ["path", "blocks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_permission",
             "description": (
                 "Persist ONE permission rule to ~/.delfin/settings.json "
@@ -3570,6 +3627,7 @@ _CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
 # not installed" — advertising them there only buys a wasted round-trip.
 _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
+    "fill_docx_template", "create_docx",
 })
 
 _OFFICE_BACKENDS_CACHE: Optional[bool] = None
@@ -5369,7 +5427,7 @@ class _DocToolExecutor:
         "notebook_edit",
         # Document writes change user files like any other write, so they
         # belong in the audit trail /changes reads.
-        "edit_sheet", "fill_pdf_form",
+        "edit_sheet", "fill_pdf_form", "fill_docx_template", "create_docx",
         "remember_permission", "remember_permission_bundle",
     })
 
@@ -5444,7 +5502,8 @@ class _DocToolExecutor:
         # executors: edit_sheet gates the file it edits, fill_pdf_form
         # gates its OUTPUT (the source is only read), so they cannot
         # share the block above.
-        if name in ("edit_sheet", "fill_pdf_form"):
+        if name in ("edit_sheet", "fill_pdf_form",
+                    "fill_docx_template", "create_docx"):
             if permissions is None:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured."
@@ -5456,7 +5515,11 @@ class _DocToolExecutor:
                 )})
             if name == "edit_sheet":
                 return self._execute_edit_sheet(arguments, permissions)
-            return self._execute_fill_pdf_form(arguments, permissions)
+            if name == "fill_pdf_form":
+                return self._execute_fill_pdf_form(arguments, permissions)
+            if name == "fill_docx_template":
+                return self._execute_fill_docx_template(arguments, permissions)
+            return self._execute_create_docx(arguments, permissions)
 
         # Background-job inspection tools — no command execution, just
         # reading the registry. Permissions optional.
@@ -5928,6 +5991,15 @@ class _DocToolExecutor:
                 if f.get("states"):
                     row += f"  states: {', '.join(f['states'])}"
                 lines.append(row)
+        elif "placeholders" in result:
+            found = result["placeholders"]
+            lines.append(
+                f"{disp} — Word template, {len(found)} placeholder(s)")
+            lines.append("")
+            for entry in found:
+                suffix = (f"  ({entry['occurrences']}x)"
+                          if entry["occurrences"] > 1 else "")
+                lines.append(f"  {{{{{entry['name']}}}}}{suffix}")
         elif result.get("kind") in ("spreadsheet", "csv"):
             head = f"{disp} — {result['rows']} rows x {result['columns']} columns"
             if result.get("sheet"):
@@ -6143,6 +6215,143 @@ class _DocToolExecutor:
         if result.get("notes"):
             out["notes"] = result["notes"]
         return json.dumps(out, ensure_ascii=False)
+
+    def _execute_fill_docx_template(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        src, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        out_path, err = self._office_target(arguments, perms, key="output")
+        if err is not None:
+            return json.dumps({"error": err})
+
+        denied = self._check_read_access(
+            perms, src, label=str(arguments.get("path", "")))
+        if denied is not None:
+            return json.dumps({"error": denied})
+
+        values = arguments.get("values")
+        if not isinstance(values, dict) or not values:
+            return json.dumps({"error": (
+                "values must be an object of placeholder -> value; list the "
+                "placeholders with read_document(fields=true) first")})
+
+        gate_err = self._gate_write_path(
+            str(out_path), perms, "fill_docx_template", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Fill {self._display_path(src, perms)}\n"
+                f"  -> {self._display_path(out_path, perms)}\n\n"
+                + "\n".join(f"  {{{{{k}}}}} = {v}" for k, v in values.items())
+            )
+            approved = self._confirm_office_change(
+                "fill_docx_template", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        pre_bytes: Optional[bytes] = None
+        if out_path.exists():
+            try:
+                pre_bytes = out_path.read_bytes()
+            except OSError:
+                pre_bytes = None
+
+        strict = arguments.get("strict")
+        try:
+            result = _office.fill_docx_template(
+                src, values, output=out_path,
+                strict=True if strict is None else bool(strict))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"filling the template failed: {exc}"},
+                ensure_ascii=False)
+
+        self._capture_binary_change(
+            "fill_docx_template", out_path, pre_bytes, perms)
+
+        out = {
+            "status": "ok",
+            "path": self._display_path(out_path, perms),
+            "filled": result["filled"],
+            "complete": result["complete"],
+        }
+        if result["unfilled"]:
+            out["unfilled"] = result["unfilled"]
+        if result.get("notes"):
+            out["notes"] = result["notes"]
+        return json.dumps(out, ensure_ascii=False)
+
+    def _execute_create_docx(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        target, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        blocks = arguments.get("blocks")
+        if not isinstance(blocks, list) or not blocks:
+            return json.dumps({"error": (
+                "blocks must be a non-empty list of content blocks: "
+                "{heading, level} | {paragraph} | {table} | {page_break}")})
+        if target.exists():
+            return json.dumps({"error": (
+                f"'{self._display_path(target, perms)}' already exists — "
+                "write to a new path, or edit the existing file")})
+
+        gate_err = self._gate_write_path(
+            str(target), perms, "create_docx", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            lines = []
+            for block in blocks[:20]:
+                if not isinstance(block, dict):
+                    continue
+                if "heading" in block:
+                    lines.append(f"  # {block['heading']}")
+                elif "paragraph" in block:
+                    lines.append(f"  {str(block['paragraph'])[:80]}")
+                elif "table" in block:
+                    rows = block.get("table") or []
+                    lines.append(f"  [table, {len(rows)} row(s)]")
+                elif block.get("page_break"):
+                    lines.append("  [page break]")
+            if len(blocks) > 20:
+                lines.append(f"  … {len(blocks) - 20} more block(s)")
+            preview = (
+                f"Create {self._display_path(target, perms)} with "
+                f"{len(blocks)} block(s)\n" + "\n".join(lines)
+            )
+            approved = self._confirm_office_change(
+                "create_docx", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        try:
+            result = _office.create_docx(target, blocks)
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"could not write the document: {exc}"},
+                ensure_ascii=False)
+
+        self._capture_binary_change("create_docx", target, None, perms)
+        return json.dumps({
+            "status": "ok",
+            "path": self._display_path(target, perms),
+            "headings": result["headings"],
+            "paragraphs": result["paragraphs"],
+            "tables": result["tables"],
+        }, ensure_ascii=False)
 
     def _sheet_change_preview(
         self, path: Path, perms: "KitToolPermissions", plan: dict

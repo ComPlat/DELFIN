@@ -34,9 +34,9 @@ from delfin.agent.api_client import (
 # Measured on the pre-compaction catalogue (60 tools, same estimator).
 _BASELINE_TOKENS = 11_422
 # Budget with headroom for a few future tools. The compaction target was a
-# 35% cut of the baseline, which lands around 7.35k; the office tools were
-# added on top of that and cost ~490 tokens for three tools.
-_TOKEN_BUDGET = 7_900
+# 35% cut of the baseline, which lands around 7.35k; the document tools
+# were added on top of that and cost ~770 tokens for five.
+_TOKEN_BUDGET = 8_200
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -44,6 +44,7 @@ _TOKEN_BUDGET = 7_900
 # like growth that was paid for.
 _POST_COMPACTION_TOOLS = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
+    "fill_docx_template", "create_docx",
 })
 
 

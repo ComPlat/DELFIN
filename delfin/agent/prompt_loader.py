@@ -772,8 +772,9 @@ class PromptLoader:
             ".xlsx", ".xlsm", ".csv", ".pdf", ".docx",
             "spreadsheet", "excel", "tabelle", "tabellen",
             "formular", "pdf form", "form field", "acroform",
-            "invoice", "rechnung", "read_document", "edit_sheet",
-            "fill_pdf_form",
+            "invoice", "rechnung", "vorlage", "template", "serienbrief",
+            "anschreiben", "read_document", "edit_sheet",
+            "fill_pdf_form", "fill_docx_template", "create_docx",
         ),
         "project_dev": (
             "pyproject.toml", "package.json", "cargo.toml", "go.mod",

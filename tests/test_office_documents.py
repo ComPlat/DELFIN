@@ -761,3 +761,207 @@ def test_creating_a_sheet_also_goes_up_for_approval(ws, home):
     assert "declined" in out["error"]
     assert not target.exists()
     assert "Create" in seen["preview"] and "Reise" in seen["preview"]
+
+
+# ---------------------------------------------------------------------------
+# Word templates and new documents
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def template(ws):
+    """A letter template with a placeholder split across runs.
+
+    Word splits a placeholder into several runs whenever it feels like
+    it — a spell-check mark, an edit, a formatting change. Building the
+    fixture that way is the point: per-run replacement finds nothing.
+    """
+    docx = pytest.importorskip("docx")
+    doc = docx.Document()
+    para = doc.add_paragraph()
+    for piece in ("Sehr geehrte(r) {{", "an", "rede", "}}, ", "hiermit ..."):
+        para.add_run(piece)
+    doc.add_paragraph("{{ort}}, den {{datum}}")
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Betrag"
+    table.cell(0, 1).text = "{{betrag}}"
+    section = doc.sections[0]
+    section.header.paragraphs[0].text = "Amt für {{abteilung}}"
+    section.footer.paragraphs[0].text = "Az. {{aktenzeichen}}"
+    path = ws / "vorlage.docx"
+    doc.save(path)
+    return path
+
+
+def _docx_text(path) -> str:
+    import docx
+    doc = docx.Document(str(path))
+    parts = [p.text for p in doc.paragraphs]
+    parts += [c.text for t in doc.tables for r in t.rows for c in r.cells]
+    section = doc.sections[0]
+    parts += [p.text for p in section.header.paragraphs]
+    parts += [p.text for p in section.footer.paragraphs]
+    return "\n".join(parts)
+
+
+def test_placeholders_are_listed_from_body_table_header_and_footer(template):
+    names = {p["name"]
+             for p in office.docx_placeholders(template)["placeholders"]}
+    assert names == {"anrede", "ort", "datum", "betrag",
+                     "abteilung", "aktenzeichen"}
+
+
+def test_a_placeholder_split_across_runs_is_still_replaced(template, ws):
+    out = ws / "brief.docx"
+    result = office.fill_docx_template(
+        template,
+        {"anrede": "Frau Meier", "ort": "Karlsruhe", "datum": "31.07.2026",
+         "betrag": "1.234,50 EUR", "abteilung": "Beschaffung",
+         "aktenzeichen": "IV-7"},
+        output=out)
+    assert result["complete"] is True
+    text = _docx_text(out)
+    assert "Sehr geehrte(r) Frau Meier, hiermit" in text
+    assert "Beschaffung" in text and "IV-7" in text   # header + footer
+    assert "1.234,50 EUR" in text                     # table cell
+    assert "{{" not in text
+
+
+def test_substitution_keeps_the_surrounding_formatting(ws):
+    docx = pytest.importorskip("docx")
+    doc = docx.Document()
+    para = doc.add_paragraph()
+    para.add_run("Betrag: ")
+    for piece in ("{{be", "trag}}"):
+        run = para.add_run(piece)
+        run.bold = True
+    tail = para.add_run(" (brutto)")
+    tail.italic = True
+    src = ws / "fmt.docx"
+    doc.save(src)
+
+    out = ws / "fmt_out.docx"
+    office.fill_docx_template(src, {"betrag": "240,00"}, output=out)
+    runs = docx.Document(str(out)).paragraphs[0].runs
+    by_text = {r.text: r for r in runs if r.text}
+    assert by_text["240,00"].bold is True        # the placeholder's format
+    assert by_text["Betrag: "].bold is not True  # untouched neighbours
+    assert by_text[" (brutto)"].italic is True
+
+
+def test_unfilled_placeholders_stay_visible_and_are_reported(template, ws):
+    out = ws / "teil.docx"
+    result = office.fill_docx_template(
+        template, {"anrede": "Herr Yilmaz"}, output=out, strict=False)
+    assert result["complete"] is False
+    assert "betrag" in result["unfilled"]
+    assert any("not ready to hand over" in n for n in result["notes"])
+    # Left in the text on purpose: a visible gap is recoverable.
+    assert "{{betrag}}" in _docx_text(out)
+
+
+def test_a_placeholder_typo_is_refused(template, ws):
+    with pytest.raises(office.OfficeError) as exc:
+        office.fill_docx_template(
+            template, {"anrde": "x"}, output=ws / "x.docx")
+    assert "anrde" in str(exc.value) and "anrede" in str(exc.value)
+    assert not (ws / "x.docx").exists()
+
+
+def test_filling_a_template_in_place_is_refused(template):
+    with pytest.raises(office.OfficeError) as exc:
+        office.fill_docx_template(
+            template, {"anrede": "x"}, output=template)
+    assert "blank original" in str(exc.value)
+
+
+def test_a_document_without_placeholders_says_so(ws):
+    docx = pytest.importorskip("docx")
+    doc = docx.Document()
+    doc.add_paragraph("Nur Text")
+    p = ws / "plain.docx"
+    doc.save(p)
+    result = office.docx_placeholders(p)
+    assert result["placeholders"] == []
+    assert any("MERGEFIELD" in n for n in result["notes"])
+
+
+def test_create_docx_writes_headings_paragraphs_and_tables(ws):
+    out = ws / "bericht.docx"
+    result = office.create_docx(out, [
+        {"heading": "Quartalsbericht", "level": 1},
+        {"paragraph": "Zusammenfassung der Ausgaben."},
+        {"table": [["Posten", "Betrag"], ["Reise", "240"]],
+         "header_row": True},
+        {"page_break": True},
+        {"heading": "Anhang", "level": 2},
+    ])
+    assert result["headings"] == 2 and result["tables"] == 1
+    text = _docx_text(out)
+    assert "Quartalsbericht" in text and "Reise" in text and "Anhang" in text
+
+
+def test_create_docx_refuses_a_bad_block(ws):
+    with pytest.raises(office.OfficeError) as exc:
+        office.create_docx(ws / "x.docx", [{"nonsense": 1}])
+    assert "block 1" in str(exc.value)
+
+
+def test_create_docx_refuses_to_clobber(ws):
+    out = ws / "einmal.docx"
+    office.create_docx(out, [{"paragraph": "eins"}])
+    with pytest.raises(office.OfficeError):
+        office.create_docx(out, [{"paragraph": "zwei"}])
+
+
+def test_read_document_lists_placeholders_like_pdf_fields(ws, template):
+    ex = _DocToolExecutor()
+    out = _read(ex, _perms(ws), template, fields=True)
+    assert "anrede" in out and "aktenzeichen" in out
+
+
+def test_fill_docx_template_through_the_tool(ws, template, home):
+    ex = _DocToolExecutor()
+    out = json.loads(ex._dispatch("fill_docx_template", {
+        "path": str(template), "output": str(ws / "fertig.docx"),
+        "values": {"anrede": "Frau Meier", "ort": "KA", "datum": "1.8.",
+                   "betrag": "10", "abteilung": "IT", "aktenzeichen": "A-1"},
+    }, _perms(ws)))
+    assert out["status"] == "ok" and out["complete"] is True
+
+
+def test_the_tool_reports_an_incomplete_letter(ws, template, home):
+    ex = _DocToolExecutor()
+    out = json.loads(ex._dispatch("fill_docx_template", {
+        "path": str(template), "output": str(ws / "halb.docx"),
+        "values": {"anrede": "Frau Meier"}, "strict": False,
+    }, _perms(ws)))
+    assert out["complete"] is False
+    assert "betrag" in out["unfilled"]
+
+
+def test_create_docx_through_the_tool_is_undoable(ws, home):
+    ex = _DocToolExecutor()
+    target = ws / "neu.docx"
+    out = json.loads(ex._dispatch("create_docx", {
+        "path": str(target),
+        "blocks": [{"heading": "Titel", "level": 1},
+                   {"paragraph": "Inhalt"}],
+    }, _perms(ws)))
+    assert out["status"] == "ok" and target.exists()
+
+    assert cj.revert("office-test", scope="last")["reverted"] == [str(target)]
+    assert not target.exists()
+
+
+def test_word_writes_are_refused_in_plan_mode(ws, template):
+    ex = _DocToolExecutor()
+    perms = _perms(ws, mode="plan")
+    for name, args in (
+        ("fill_docx_template", {"path": str(template),
+                                "output": str(ws / "o.docx"),
+                                "values": {"anrede": "x"}}),
+        ("create_docx", {"path": str(ws / "n.docx"),
+                         "blocks": [{"paragraph": "x"}]}),
+    ):
+        out = json.loads(ex._dispatch(name, args, perms))
+        assert "plan mode" in out["error"], name
