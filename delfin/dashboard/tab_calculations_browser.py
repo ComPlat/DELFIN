@@ -32,6 +32,7 @@ from .input_processing import (
     is_smiles,
 )
 from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
+from . import pdf_view as _pdf
 from . import spreadsheet_view as _sheet
 from .molecule_viewer import (
     VIEWER_CONTAINER_DYNAMIC_SCALE,
@@ -201,6 +202,10 @@ def create_tab(ctx):
         # keeps unsaved buffers per path across file switches.
         'text_edit': {},
         'text_pending': {},
+        # PDF viewer: the panel is created once per tab, 'pdf_active' says
+        # whether it currently owns the content frame.
+        'pdf_panel': None,
+        'pdf_active': False,
         'preselect': {
             'active': False,
             'entries': [],
@@ -763,6 +768,13 @@ def create_tab(ctx):
             width='100%', display='block', overflow_x='hidden',
             flex='1 1 0', min_height='0',
         ),
+    )
+
+    # PDF pages are rendered to PNG in the kernel and shown here. The panel
+    # itself is built on first use -- most browser tabs never open a PDF.
+    calc_pdf_container = widgets.VBox(
+        [],
+        layout=widgets.Layout(display='none', width='100%', flex='1 1 0', min_height='0'),
     )
 
     # Molecule viewer
@@ -5796,6 +5808,22 @@ def create_tab(ctx):
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
             return
+        if state.get('pdf_active'):
+            # The PDF panel brings its own toolbar (pages, zoom, search); the
+            # text toolbar below would search a buffer that does not exist.
+            calc_pdf_container.layout.display = 'flex'
+            calc_mol_container.layout.display = 'none'
+            calc_content_area.layout.display = 'none'
+            calc_edit_area.layout.display = 'none'
+            calc_text_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_content_toolbar.layout.display = 'none'
+            calc_recalc_toolbar.layout.display = 'none'
+            calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_nmr_panel.layout.display = 'none'
+            calc_censo_nmr_panel.layout.display = 'none'
+            return
+        calc_pdf_container.layout.display = 'none'
         show_mol = calc_view_toggle.value
         if show_mol:
             calc_mol_container.layout.display = 'block'
@@ -7723,6 +7751,7 @@ def create_tab(ctx):
         _calc_show_print_mode_panel(False)
         _calc_show_mo_plot_panel(False)
         _calc_hide_chunk_controls()
+        _calc_pdf_close()
         calc_update_view()
         calc_set_message('Select a file...')
         _calc_process_staged_uploads()
@@ -11074,6 +11103,39 @@ def create_tab(ctx):
             _calc_render_sheet(path, sheet_name=sheet_name, row_offset=new_offset)
             return
 
+    # -- PDF viewer ---------------------------------------------------------
+
+    def _calc_pdf_panel():
+        """The tab's PDF panel, built on first use."""
+        panel = state.get('pdf_panel')
+        if panel is None:
+            # Leave room for the panel's own toolbar inside the content frame.
+            panel = _pdf.PdfPanel(height_px=max(240, CALC_CONTENT_HEIGHT - 80))
+            state['pdf_panel'] = panel
+            calc_pdf_container.children = [panel.widget]
+        return panel
+
+    def _calc_pdf_close():
+        """Release the open document and hand the frame back to the text view."""
+        panel = state.get('pdf_panel')
+        if panel is not None:
+            panel.close()
+        state['pdf_active'] = False
+        calc_pdf_container.layout.display = 'none'
+
+    def _calc_render_pdf(path):
+        """Show a PDF; failures land in the panel as text, never as a traceback."""
+        panel = _calc_pdf_panel()
+        state['pdf_active'] = True
+        calc_pdf_container.layout.display = 'flex'
+        try:
+            panel.open(Path(path))
+        except _pdf.PdfError as exc:
+            panel.show_error(str(exc))
+        except Exception as exc:
+            panel.show_error(f'PDF konnte nicht angezeigt werden: {exc}')
+        calc_update_view()
+
     # -- item open logic (shared by dblclick and single-click on files) ------
 
     def _calc_open_item(selected):
@@ -11122,6 +11184,9 @@ def create_tab(ctx):
         # fukui-result.json handler re-shows + populates it on demand.
         calc_fukui_panel_container.children = []
         calc_fukui_panel_container.layout.display = 'none'
+        # Close any open PDF so the document is not kept mapped behind an
+        # unrelated file; the .pdf handler re-opens on demand.
+        _calc_pdf_close()
         # Restore the standard 3D viewer row in case the previous render
         # was a Fukui panel (which hides this row to claim the full frame).
         calc_mol_view_row.layout.display = ''
@@ -11527,6 +11592,20 @@ def create_tab(ctx):
                 f' ({size_str})'
             )
             calc_set_message(f'Binary file ({size_str})\n\nCannot display binary content.')
+            return
+
+        # --- PDF documents ---
+        if suffix in _pdf.PDF_SUFFIXES:
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            _set_view_toggle(False, True)
+            # There is no text buffer behind a rendered page; only the path
+            # can be copied.
+            calc_copy_btn.disabled = True
+            calc_copy_path_btn.disabled = False
+            _calc_render_pdf(full_path)
             return
 
         # --- Spreadsheets: Excel workbooks and delimited text ---
@@ -13409,6 +13488,7 @@ def create_tab(ctx):
         calc_content_toolbar,
         calc_chunk_hidden_row,
         calc_override_status,
+        calc_pdf_container,
         calc_content_area,
         calc_edit_area,
         calc_text_area,
