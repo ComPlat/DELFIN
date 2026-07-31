@@ -9,13 +9,22 @@ irrecoverably. This module keeps that pre-image:
 Storage layout (per session, under ``~/.delfin/undo/<sid>/``)::
 
     journal.jsonl               one JSON record per captured change
-    <seq:06d>-<prehash8>.txt    full pre-image (content-addressed)
+    <seq:06d>-<prehash8>.txt    full pre-image, text   (content-addressed)
+    <seq:06d>-<prehash8>.bin    full pre-image, binary (content-addressed)
 
 Journal record schema::
 
     {seq, ts, tool, path, pre_hash, post_hash, pre_file,
      created: bool,      # True → the file did not exist before the write
-     truncated: bool}    # True → pre-image exceeded MAX_PRE_IMAGE_BYTES
+     truncated: bool,    # True → pre-image exceeded MAX_PRE_IMAGE_BYTES
+     binary: bool}       # True → pre-image and hashes are raw bytes
+
+Text and binary changes are recorded by separate entry points
+(``record_change`` / ``record_binary_change``) because the hashing and
+the restore differ: a spreadsheet or PDF survives neither a utf-8
+decode nor the ``errors="replace"`` substitution the text path applies.
+Records without a ``binary`` flag are text records, so journals written
+before binary support keep reverting exactly as they did.
 
 Guarantees:
 
@@ -58,6 +67,26 @@ _JOURNAL_NAME = "journal.jsonl"
 def sha256_text(text: str) -> str:
     """sha256 hex digest of ``text`` (utf-8)."""
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    """sha256 hex digest of raw bytes."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file_bytes(path: Path) -> Optional[str]:
+    """sha256 of a file's raw bytes, or None if unreadable.
+
+    Distinct from :func:`sha256_file`, which hashes the lossy utf-8
+    decoding used by the text write path. A spreadsheet or PDF round-trips
+    only as bytes: decoding it with ``errors="replace"`` maps whole ranges
+    of byte values onto U+FFFD, so a text hash cannot tell two different
+    binaries apart, and a text pre-image cannot restore either of them.
+    """
+    try:
+        return sha256_bytes(path.read_bytes())
+    except OSError:
+        return None
 
 
 def sha256_file(path: Path) -> Optional[str]:
@@ -142,6 +171,53 @@ def _atomic_restore(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
+        if mode is not None:
+            try:
+                os.chmod(tmp, mode)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Byte-exact counterpart of :func:`_atomic_write`."""
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+        _set_file_perms(path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _atomic_restore_bytes(path: Path, data: bytes) -> None:
+    """Byte-exact counterpart of :func:`_atomic_restore`."""
+    import tempfile
+    mode: Optional[int] = None
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        pass
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".undo.tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         if mode is not None:
             try:
                 os.chmod(tmp, mode)
@@ -241,26 +317,94 @@ def record_change(
             "created": created,
             "truncated": truncated,
         }
-        journal = _journal_path(session_id)
-        line = json.dumps(rec, ensure_ascii=False) + "\n"
-        with journal.open("a", encoding="utf-8") as fh:
-            fh.write(line)
-        _set_file_perms(journal)
+        _append_and_prune(session_id, sdir, records, rec)
+        return {"seq": seq, "pre_hash": pre_hash, "post_hash": post_hash}
+    except Exception:
+        return None
 
-        # Per-session cap: prune oldest entries (journal rewritten
-        # atomically, orphaned pre-image files unlinked).
-        records.append(rec)
-        if len(records) > MAX_ENTRIES_PER_SESSION:
-            drop = records[: len(records) - MAX_ENTRIES_PER_SESSION]
-            keep = records[len(records) - MAX_ENTRIES_PER_SESSION:]
-            _atomic_write(journal, "".join(
-                json.dumps(r, ensure_ascii=False) + "\n" for r in keep))
-            for old in drop:
-                try:
-                    (sdir / str(old.get("pre_file", ""))).unlink()
-                except OSError:
-                    pass
 
+def _append_and_prune(
+    session_id: Any, sdir: Path, records: list[dict], rec: dict
+) -> None:
+    """Append one record and enforce the per-session entry cap.
+
+    The journal is rewritten atomically when pruning, and the pre-image
+    files of dropped entries are unlinked so the store cannot grow
+    without bound.
+    """
+    journal = _journal_path(session_id)
+    with journal.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    _set_file_perms(journal)
+
+    records.append(rec)
+    if len(records) > MAX_ENTRIES_PER_SESSION:
+        drop = records[: len(records) - MAX_ENTRIES_PER_SESSION]
+        keep = records[len(records) - MAX_ENTRIES_PER_SESSION:]
+        _atomic_write(journal, "".join(
+            json.dumps(r, ensure_ascii=False) + "\n" for r in keep))
+        for old in drop:
+            try:
+                (sdir / str(old.get("pre_file", ""))).unlink()
+            except OSError:
+                pass
+
+
+def record_binary_change(
+    session_id: Any,
+    *,
+    tool: str,
+    path: Any,
+    pre_bytes: Optional[bytes],
+) -> Optional[dict]:
+    """Capture a change to a file that is not text — spreadsheets, PDFs.
+
+    The text journal cannot serve these: it stores the utf-8 decoding of
+    the pre-image, and restoring that decoding would write a corrupt
+    file. Records written here carry ``binary: True``, hold the raw
+    pre-image, and are restored byte-for-byte by :func:`revert`.
+
+    ``pre_bytes is None`` means the file did not exist before the write.
+    The post-image hash is taken from the file as it is on disk now, so
+    this must be called after the write it records. Like
+    :func:`record_change` it never raises.
+    """
+    try:
+        target = Path(str(path))
+        sdir = _session_dir(session_id)
+        sdir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(sdir, 0o700)
+        except OSError:
+            pass
+
+        created = pre_bytes is None
+        raw = b"" if created else bytes(pre_bytes or b"")
+        pre_hash = sha256_bytes(raw)
+        post_hash = sha256_file_bytes(target) or ""
+
+        truncated = len(raw) > MAX_PRE_IMAGE_BYTES
+        stored = b"" if truncated else raw
+
+        records = _read_journal(session_id)
+        seq = (records[-1]["seq"] + 1) if records else 1
+
+        pre_file = f"{seq:06d}-{pre_hash[:8]}.bin"
+        _atomic_write_bytes(sdir / pre_file, stored)
+
+        rec = {
+            "seq": seq,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "tool": str(tool),
+            "path": str(target),
+            "pre_hash": pre_hash,
+            "post_hash": post_hash,
+            "pre_file": pre_file,
+            "created": created,
+            "truncated": truncated,
+            "binary": True,
+        }
+        _append_and_prune(session_id, sdir, records, rec)
         return {"seq": seq, "pre_hash": pre_hash, "post_hash": post_hash}
     except Exception:
         return None
@@ -362,8 +506,14 @@ def revert(
                 })
                 continue
 
+            is_binary = bool(rec.get("binary"))
             exists = target.exists()
-            current = sha256_file(target) if exists else None
+            if not exists:
+                current = None
+            elif is_binary:
+                current = sha256_file_bytes(target)
+            else:
+                current = sha256_file(target)
 
             if not exists:
                 if rec.get("created"):
@@ -390,6 +540,23 @@ def revert(
                 continue
 
             pre_path = sdir / str(rec.get("pre_file", ""))
+
+            if is_binary:
+                try:
+                    pre_data = pre_path.read_bytes()
+                except OSError:
+                    result["conflicts"].append(
+                        {"path": path_str, "reason": "pre-image file missing"})
+                    continue
+                if sha256_bytes(pre_data) != rec.get("pre_hash"):
+                    result["conflicts"].append(
+                        {"path": path_str, "reason": "pre-image corrupt "
+                         "(stored hash mismatch)"})
+                    continue
+                _atomic_restore_bytes(target, pre_data)
+                result["reverted"].append(path_str)
+                continue
+
             try:
                 # Byte-exact read (no universal-newline translation).
                 pre_text = pre_path.read_bytes().decode("utf-8")
