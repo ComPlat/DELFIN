@@ -171,3 +171,31 @@ def test_mode_round_trips_through_user_settings(tmp_path, monkeypatch):
     settings["agent"]["mode"] = "office"
     us.save_settings(settings)
     assert us.load_settings()["agent"]["mode"] == "office"
+
+
+# ---------------------------------------------------------------------------
+# The mode is pointed at the Office folder, which is what the lock encloses
+# ---------------------------------------------------------------------------
+
+def test_office_sessions_are_pointed_at_the_office_folder():
+    """The permission workspace comes from repo_dir (create_client passes it
+    as cwd), so that is the line that decides which folder is enclosed."""
+    source = _tab_agent_source()
+    block = source.split('if mode_dropdown.value == "office":', 1)[1][:900]
+    assert "ctx.office_dir" in block
+    assert "repo_dir = _office_p" in block
+
+
+def test_office_sessions_drop_the_other_reachable_roots():
+    source = _tab_agent_source()
+    block = source.split('if mode_dropdown.value == "office":', 1)[1][:900]
+    for cleared in ("_extra_dirs = []", "_read_only_dirs = []",
+                    "_confirm_write_dirs = []"):
+        assert cleared in block
+
+
+def test_the_office_role_is_stamped_before_the_first_turn():
+    """Otherwise a directory could be granted in the window between
+    constructing the engine and the first turn."""
+    source = _tab_agent_source()
+    assert '_kp.agent_role = "office_agent"' in source

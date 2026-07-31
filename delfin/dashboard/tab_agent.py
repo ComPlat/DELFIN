@@ -5619,6 +5619,33 @@ def create_tab(ctx):
             _read_only_dirs = [p for p in (_abs_dir(getattr(ctx, "archive_dir", None)),
                                            _abs_dir(getattr(ctx, "repo_dir", None))) if p]
             _ws_dir = str(ctx.agent_dir) if ctx.agent_dir else ""
+
+            # Office mode works in the Office folder and nowhere else. The
+            # permission layer refuses everything outside the workspace for
+            # this role, so the workspace IS the boundary the user sees in
+            # the Office tab — pointing it anywhere else would confine the
+            # agent to the wrong folder. The other reachable roots (calc,
+            # archive, the DELFIN checkout) are dropped here as well; the
+            # lock ignores them anyway, and passing them would only suggest
+            # a reach the session does not have.
+            if mode_dropdown.value == "office":
+                _office_p = _abs_dir(getattr(ctx, "office_dir", None))
+                if not _office_p:
+                    try:
+                        ctx.office_dir.mkdir(parents=True, exist_ok=True)
+                        _office_p = _abs_dir(ctx.office_dir)
+                    except Exception:
+                        _office_p = None
+                if _office_p:
+                    # repo_dir is what becomes the permission workspace
+                    # (create_client passes it as cwd), so this is the line
+                    # that decides which folder the lock encloses.
+                    repo_dir = _office_p
+                    _ws_dir = _office_p
+                    _extra_dirs = []
+                    _read_only_dirs = []
+                    _confirm_write_dirs = []
+
             if mode_dropdown.value == "dashboard":
                 _cli_tools = [
                     "Read", "Grep", "Glob",      # read code + data
@@ -5686,6 +5713,18 @@ def create_tab(ctx):
             if provider == "kit" and _kit_callback is not None:
                 try:
                     engine.set_kit_confirm_callback(_kit_callback)
+                except Exception:
+                    pass
+
+            # The engine stamps the role onto the permissions when a turn
+            # starts. Stamp it now as well, so an office session is locked
+            # from construction — otherwise a directory could be granted
+            # through the settings UI in the window before the first turn.
+            if mode_dropdown.value == "office":
+                try:
+                    _kp = getattr(engine, "kit_permissions", None)
+                    if _kp is not None:
+                        _kp.agent_role = "office_agent"
                 except Exception:
                     pass
 
