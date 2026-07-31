@@ -789,6 +789,85 @@ def _bash_outside_reads(cmd: str) -> list[str]:
     return out
 
 
+# Directories a command legitimately names even under a locked scope:
+# interpreters, system binaries and libraries. They hold no user data,
+# and refusing them would block `/usr/bin/env python3` rather than an
+# escape attempt.
+_SYSTEM_PATH_PREFIXES: tuple[str, ...] = (
+    "/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/opt/", "/proc/self/",
+)
+# The same directories named without a trailing component ("ls /bin").
+_SYSTEM_DIRS: frozenset[str] = frozenset(
+    p.rstrip("/") for p in _SYSTEM_PATH_PREFIXES)
+
+
+# ".." as a PATH SEGMENT — deliberately not a bare substring, so the
+# brace range in `for i in {1..10}` and a float like 1..2 do not match.
+_PARENT_SEGMENT_RE = re.compile(r"(?:^|[\s'\"=(:])\.\.(?:[/\\]|[\s'\")]|$)")
+
+
+def _bash_climbs_out(cmd: str) -> bool:
+    """True if a command walks up out of its directory.
+
+    Inside a single locked folder ``..`` has no legitimate use: it aims
+    either at the folder's parent or past it. This is what catches
+    ``cd .. && cat ../other/file`` — a relative escape names no absolute
+    path, so the path scanner never sees it. Filesystem isolation is the
+    real containment; this is what stands in for it where bwrap does not
+    run.
+    """
+    return bool(_PARENT_SEGMENT_RE.search(cmd or ""))
+
+
+# Absolute-path-shaped runs anywhere in a command string. Not preceded
+# by ':' or '/' so a URL's "//host/path" is not read as a path. Scanned
+# over the RAW command rather than over shell tokens: an absolute path
+# inside a quoted string — python3 -c "open('/etc/passwd')" — is a
+# single token that does not begin with '/', which is exactly how the
+# earlier read-refusal was circumvented in the field.
+_ABS_PATH_RE = re.compile(r"(?<![:/\w])(~?/[\w.\-+/]*[\w.\-+])")
+
+
+def _bash_paths_outside(cmd: str, workspace: Path) -> list[str]:
+    """Absolute paths in *cmd* that point outside *workspace*.
+
+    Coarser than the read/write scanners on purpose: under a locked scope
+    the question is not what a command does with a path but whether it
+    names one at all. System and interpreter directories are exempt.
+
+    A candidate counts only when it — or its parent — exists on disk.
+    That keeps `sed 's/a/b/'` and similar slash-shaped arguments from
+    reading as paths, while still catching a write to a new file in an
+    existing directory. Never raises: an unparseable command yields
+    nothing rather than a false refusal, because filesystem isolation is
+    the containment this backs up.
+    """
+    out: list[str] = []
+    try:
+        ws = str(Path(workspace).resolve())
+        for match in _ABS_PATH_RE.finditer(cmd or ""):
+            candidate = match.group(1)
+            try:
+                expanded = Path(candidate).expanduser()
+            except Exception:
+                continue
+            text = str(expanded)
+            if text.startswith(_SYSTEM_PATH_PREFIXES) or text in _SYSTEM_DIRS:
+                continue
+            if text == ws or text.startswith(ws.rstrip("/") + "/"):
+                continue
+            try:
+                if not (expanded.exists() or expanded.parent.exists()):
+                    continue
+            except OSError:
+                continue
+            if text not in out:
+                out.append(text)
+    except Exception:
+        return out
+    return out
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -1245,6 +1324,14 @@ _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # shape when a role differs from the default by a handful of tools:
 # spelling out the other fifty would be a list nobody keeps correct, and
 # every tool forgotten in it would fail silently.
+# Roles whose sandbox has no door: everything outside the workspace is
+# refused rather than offered for confirmation, and the workspace cannot
+# be widened while the session runs. The office agent works on one
+# folder of administrative documents; there is no legitimate reason for
+# it to read the rest of the machine, and "ask the user" is the wrong
+# answer when the answer is always no.
+_SCOPE_LOCKED_ROLES: frozenset[str] = frozenset({"office_agent"})
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
@@ -1513,6 +1600,12 @@ class KitToolPermissions:
     #     confirmation, so the agent can't silently destroy results).
     read_only_workspace_dirs: tuple[Path, ...] = ()
     confirm_write_dirs: tuple[Path, ...] = ()
+    # Hard containment: the agent may not touch anything outside
+    # ``workspace``, and outside paths are REFUSED rather than offered
+    # for confirmation. Normally derived from the role (see
+    # ``scope_locked``); settable directly for callers that want the
+    # containment without that role.
+    lock_workspace: bool = False
     bash_timeout_s: int = 120
     bash_max_timeout_s: int = 600
     max_output_chars: int = 12_000
@@ -1615,7 +1708,29 @@ class KitToolPermissions:
                 _DEFAULT_BASH_AUTO_ALLOW + _DELFIN_BASH_AUTO_ALLOW
             )
 
+    @property
+    def scope_locked(self) -> bool:
+        """True when the agent may not leave its workspace at all.
+
+        Normally the sandbox is a boundary with a door: reads outside it
+        are offered to the user for confirmation, and a directory can be
+        granted at runtime. A locked scope has no door — outside is
+        refused, not asked about, and cannot be widened while the session
+        runs.
+
+        It follows the ROLE rather than a flag the UI has to remember to
+        set. A guarantee that depends on the caller wiring it correctly
+        is not a guarantee; deriving it here means every path that builds
+        permissions for this role gets the containment, including
+        sub-agents (``_derive_perms`` copies the role) and any future
+        entry point.
+        """
+        return bool(self.lock_workspace
+                    or (self.agent_role or "") in _SCOPE_LOCKED_ROLES)
+
     def all_workspace_roots(self) -> tuple[Path, ...]:
+        if self.scope_locked:
+            return (self.workspace,)
         return (self.workspace,) + tuple(self.extra_workspace_dirs)
 
     def add_extra_dir(self, path) -> Path:
@@ -1623,7 +1738,13 @@ class KitToolPermissions:
 
         Returns the resolved path. Raises ValueError if the path does not
         exist or is not a directory. Idempotent: re-adding is a no-op.
+        Refused outright when the scope is locked — otherwise the agent
+        could widen its own sandbox by asking for a grant.
         """
+        if self.scope_locked:
+            raise ValueError(
+                f"this session is locked to {self.workspace} and no further "
+                "directory can be added to it")
         p = Path(path).expanduser().resolve()
         if not p.exists():
             raise ValueError(f"path does not exist: {p}")
@@ -1655,7 +1776,16 @@ class KitToolPermissions:
         return False
 
     def all_readable_roots(self) -> tuple[Path, ...]:
-        """Roots the agent may READ from: writable + read-only + confirm-write."""
+        """Roots the agent may READ from: writable + read-only + confirm-write.
+
+        Under a locked scope this collapses to the workspace alone. The
+        archive and calc roots are reachable in a normal session because
+        the agent works on chemistry data that lives there; an office
+        session has no business reading either, and "reachable" is what
+        every read gate is built on.
+        """
+        if self.scope_locked:
+            return (self.workspace,)
         return (self.all_workspace_roots()
                 + tuple(self.read_only_workspace_dirs)
                 + tuple(self.confirm_write_dirs))
@@ -7057,6 +7187,21 @@ class _DocToolExecutor:
                 "use instead."
             )
 
+        # Locked scope: outside is refused outright. Offering it for
+        # confirmation would make the containment a matter of the user
+        # noticing every dialog, and the whole point of this mode is that
+        # the answer is decided in advance.
+        if perms.scope_locked:
+            _record_security_event(
+                "locked_scope_read", "read", str(resolved), blocked=True)
+            return (
+                f"read denied: '{label or resolved}' is outside "
+                f"{perms.workspace}, and this session is limited to that "
+                "folder. Nothing outside it can be read, and no "
+                "confirmation can grant it. If the file is needed, it has "
+                "to be placed in the folder first — ask the user to do that."
+            )
+
         # Outside the sandbox: ask the user.
         if perms.confirm_callback is None:
             return (
@@ -8126,6 +8271,31 @@ class _DocToolExecutor:
         ignores is not a refusal.
         """
         try:
+            # A locked scope refuses any command that names a path outside
+            # the workspace, whatever it means to do with it. The finer
+            # read/write scanners below stay in place for normal sessions;
+            # here the boundary is the whole answer, so the coarse rule is
+            # the correct one.
+            if perms.scope_locked:
+                if _bash_climbs_out(cmd):
+                    _record_security_event(
+                        "locked_scope_bash", "bash", cmd[:80], blocked=True)
+                    return json.dumps({"error": (
+                        f"blocked: this command walks up out of "
+                        f"{perms.workspace} with '..'. This session works "
+                        "only inside that folder — use paths relative to it."
+                    )})
+                strays = _bash_paths_outside(cmd, perms.workspace)
+                if strays:
+                    _record_security_event(
+                        "locked_scope_bash", "bash", cmd[:80], blocked=True)
+                    return json.dumps({"error": (
+                        f"blocked: this command names {strays[0]}, which is "
+                        f"outside {perms.workspace}. This session works only "
+                        "in that folder — nothing outside it can be read or "
+                        "written, and no confirmation can grant it. Files "
+                        "have to be placed in the folder first."
+                    )})
             denied = _bash_reads_denied_path(
                 cmd, getattr(perms, "denied_paths", set()) or set())
             if denied:
@@ -9947,7 +10117,16 @@ def _bash_isolation_argv(
     # command — that's where containment matters most. Interactive modes keep
     # plain bash, so HPC coding workflows are unaffected. "off" is the explicit
     # escape hatch (truly no isolation); "bwrap" forces it everywhere.
-    if mode == "auto":
+    # A locked scope promises the agent cannot leave one folder. The
+    # path gates enforce that for the file tools and for the shell
+    # commands they can parse, but a shell is a general-purpose
+    # interpreter and a command can always be written in a form no
+    # parser catches. Where bwrap works, take the real containment
+    # instead of relying on that parsing — the promise is only worth
+    # what the weakest path enforces.
+    if getattr(perms, "scope_locked", False) and _bwrap_functional():
+        mode = "bwrap"
+    elif mode == "auto":
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
         if perm_mode == "bypassPermissions" and _bwrap_functional():
             mode = "bwrap"

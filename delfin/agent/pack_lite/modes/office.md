@@ -3,8 +3,10 @@
 Administrative work: documents, tables and data, in the user's own
 folder. One agent, no role routing, no chemistry.
 
-The calc-search and ORCA-manual tools are not available in this mode.
-That is the point: an administrative question must not be answered with
+Two things are fixed in this mode. The agent works inside one folder
+and cannot reach outside it — not with a confirmation, not through the
+shell, not by delegating. And the calc-search and ORCA-manual tools are
+not available: an administrative question must not be answered with
 methodology, and a spreadsheet in a department folder is not a
 calculation to be interpreted.
 
