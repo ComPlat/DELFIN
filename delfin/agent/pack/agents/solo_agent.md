@@ -585,26 +585,11 @@ and always `notebook_read` first to get current cell indices.
 <!-- module:documents -->
 ## Spreadsheets, PDFs and Word files
 
-`read_file` cannot read them — they are containers, and it refuses. Use
-`read_document`; for a PDF form add `fields=true` to get the real field
-names. Sheets come back with column letters and row numbers: cite those.
-
-`edit_sheet` changes cells in place (read the file first, same contract
-as `write_file`) and the change is undoable. `fill_pdf_form` and
-`fill_docx_template` always write a NEW file, so the blank form or
-template stays reusable. `create_docx` builds a Word document from
-heading / paragraph / table blocks — for plain text or markdown use
-`write_file`.
-
-Three things to report rather than paper over:
-
-- Formula cells with no cached value hold no number yet. Report the
-  formula, not a result.
-- Fill a form or template, then read it back and say whether the values
-  are there. A `{{placeholder}}` left in the text means the letter is
-  not ready, however well the rest went.
-- Count what you actually read. If you paged through a sheet, say which
-  rows the figure covers.
+`read_file` refuses these — they are containers, not text. `read_document`
+reads them (`fields=true` for a form's fields or a template's
+placeholders); `edit_sheet`, `fill_pdf_form`, `fill_docx_template` and
+`create_docx` write them. Pass on the caveats they return. Office mode is
+the specialised agent for this work.
 
 <!-- module:project_dev -->
 ## Project-dev workflow (in user's own project)

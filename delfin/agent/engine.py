@@ -275,6 +275,7 @@ _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "test_agent":      _FULL_TOOLS,
     "builder_agent":   _FULL_TOOLS,
     "solo_agent":      _SOLO_TOOLS,
+    "office_agent":    _SOLO_TOOLS,          # documents + shell, no chemistry
 }
 
 

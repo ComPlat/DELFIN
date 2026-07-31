@@ -1240,18 +1240,35 @@ _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# Roles defined by what they must NOT reach, rather than by an
+# enumeration of everything they may. A subtractive rule is the right
+# shape when a role differs from the default by a handful of tools:
+# spelling out the other fifty would be a list nobody keeps correct, and
+# every tool forgotten in it would fail silently.
+_ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
+    # The office agent works on documents and data, not on chemistry.
+    # The calc and ORCA-manual tools are not merely useless there — they
+    # invite the model to answer an administrative question with
+    # methodology it has no business applying.
+    "office_agent": _DELFIN_ONLY_TOOL_NAMES,
+}
+
+
 def _tool_denied_for_role(role: str, name: str) -> bool:
     """Deny-by-default per-role execution check (pure, testable).
 
     Returns True when *role* has a defined execution allow-list AND *name*
-    is not on it. Roles without an allow-list are never denied here. The
-    ``mcp__server__tool`` namespace is stripped so a namespaced call is
-    judged by its underlying tool name.
+    is not on it, or when *role* has a deny-list that names it. Roles with
+    neither are never denied here. The ``mcp__server__tool`` namespace is
+    stripped so a namespaced call is judged by its underlying tool name.
     """
+    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    deny = _ROLE_EXEC_DENYLIST.get(role or "")
+    if deny is not None and base in deny:
+        return True
     allow = _ROLE_EXEC_ALLOWLIST.get(role or "")
     if allow is None:
         return False
-    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
     if name in _ALWAYS_ALLOWED_TOOLS or base in _ALWAYS_ALLOWED_TOOLS:
         return False
     return base not in allow
@@ -3743,6 +3760,9 @@ def tool_unavailable_reason(
     """
     ctx = ctx or ToolSurfaceContext()
     base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    deny = _ROLE_EXEC_DENYLIST.get(ctx.role or "")
+    if deny is not None and base in deny:
+        return f"role {ctx.role!r} may not execute this tool"
     allow = _ROLE_EXEC_ALLOWLIST.get(ctx.role or "")
     if allow is not None and base not in allow:
         return f"role {ctx.role!r} may not execute this tool"
@@ -3785,7 +3805,8 @@ def role_tool_surface_report(
     the saving from role scoping is measurable rather than asserted.
     """
     catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
-    names = roles if roles is not None else ["", *sorted(_ROLE_EXEC_ALLOWLIST)]
+    names = roles if roles is not None else [
+        "", *sorted(set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_EXEC_DENYLIST))]
     out: dict[str, dict[str, Any]] = {}
     for role in names:
         advertised = advertisable_tools(catalogue, ToolSurfaceContext(role=role))
