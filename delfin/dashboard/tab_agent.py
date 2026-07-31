@@ -9762,14 +9762,25 @@ def create_tab(ctx):
                     from delfin.agent.memory_store import (
                         prune_memories, save_typed_memory,
                     )
+                    # In Office mode the memory belongs to the office
+                    # folder, not to the DELFIN checkout. Passing repo_dir
+                    # here would file it as a code-domain memory: it would
+                    # miss the personal-data check that guards office
+                    # writes, and it would never be recalled in the folder
+                    # it was written for.
+                    _mem_root = ctx.repo_dir or "."
+                    if mode_dropdown.value == "office":
+                        _office_root = getattr(ctx, "office_dir", None)
+                        if _office_root:
+                            _mem_root = _office_root
                     fpath, slug, mem_type = save_typed_memory(
-                        text_to_save, repo_root=ctx.repo_dir or ".",
+                        text_to_save, repo_root=_mem_root,
                     )
                     # Self-limit on every write path — auto-memory distill
                     # is opt-in, so /remember alone must not grow the store
                     # unbounded.
                     try:
-                        prune_memories(ctx.repo_dir or ".")
+                        prune_memories(_mem_root)
                     except Exception:
                         pass
                     short = str(fpath).replace(str(Path.home()), "~")

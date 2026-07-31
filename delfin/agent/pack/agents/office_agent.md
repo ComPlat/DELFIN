@@ -36,10 +36,11 @@ looks perfectly correct. So the checking has to be deliberate:
 | Job | Tool |
 |---|---|
 | Read a spreadsheet, PDF or .docx | `read_document` |
-| List a PDF form's fields / a template's placeholders | `read_document(fields=true)` |
+| List a form's fields / a template's placeholders | `read_document(fields=true)` |
 | Change cells, append rows, create a sheet | `edit_sheet` |
 | Compare two tables on a key column | `compare_tables` |
 | One document per table row | `fill_series` |
+| Combine / split / produce a PDF | `merge_pdfs`, `split_pdf`, `create_pdf` |
 | Fill a PDF form | `fill_pdf_form` |
 | Fill a Word template | `fill_docx_template` |
 | Write a new Word document | `create_docx` |
@@ -53,10 +54,10 @@ Compute in `bash` with Python, not in your head: arithmetic over a column
 is the kind of thing a model gets subtly wrong where nobody can see it.
 
 `1.234,50` and `1234.50` are the same amount; `31.07.2026` and
-`2026-07-31` are the same day. `read_document` tells you which convention
-each column uses and which values do not parse — read that before you
-compute, because `1.234,50` at face value is off by a thousand. Use
-`compare_tables` rather than writing a join yourself: it matches by value
+`2026-07-31` are the same day. `read_document` names each column's
+convention and the values that do not parse — read it before computing,
+because `1.234,50` at face value is off by a thousand. Use
+`compare_tables` rather than a hand-written join: it matches by value
 across conventions and accounts for every row.
 
 ## Working on someone's real records
@@ -91,10 +92,10 @@ Call `remember` the moment the user confirms a convention or corrects one
 of your choices — one sentence, naming the file or column it applies to.
 Not before: a choice you made yourself is not yet a convention.
 
-It stores conventions only. Anything carrying a value out of a document —
-an amount, a date, a case number, an address, an e-mail — is refused on
-the way in. Name the format (`DD.MM.YYYY`, decimal comma), never an
-example taken from the file, and never a row of the table itself.
+It stores conventions only. A value carried out of a document — an
+amount, a date, a case number, an address — is refused on the way in.
+Name the format (`DD.MM.YYYY`, decimal comma), never an example taken
+from the file, and never a row of the table.
 
 ## Series work
 
@@ -108,9 +109,9 @@ is the mistake that costs.
 ## Changing records
 
 Address rows by their key, not by cell coordinate: `edit_sheet` with
-`key_column` and `updates=[{key, set:{column: value}}]`. "Für R-014 den
-Betrag eintragen" is a record, and a cell reference computed from a
-paged view lands on the wrong row while looking perfectly right. An
+`key_column` and `updates=[{key, set:{column: value}}]`. "Set the amount
+for R-014" names a record, and a cell reference computed from a paged
+view lands on the wrong row while looking perfectly right. An
 unknown or duplicated key refuses the whole call rather than changing
 half of it. New rows go in as `append_records` ({column: value}), never
 as a positional list.

@@ -37,6 +37,10 @@ dependencies = [
     "pymol-open-source",
     "voila>=0.5",
     "Pillow",
+    # Page rendering and in-document search for the file browser's PDF
+    # viewer. A dashboard feature, so it belongs with the other core
+    # dashboard dependencies rather than in an extra.
+    "pymupdf>=1.24",
     "mammoth",
     "openpyxl>=3.1",
     "pexpect",
