@@ -763,6 +763,18 @@ class PromptLoader:
             ".ipynb", "notebook_read", "notebook_edit", "jupyter",
             "notebook cell",
         ),
+        # Office documents. The triggers cover both languages the users
+        # write in — a task phrased "Tabelle auswerten" has to reach the
+        # same module as "evaluate the spreadsheet". Substrings are kept
+        # long enough not to fire on unrelated words ("formular", not
+        # "form", which lives inside "format" and "information").
+        "documents": (
+            ".xlsx", ".xlsm", ".csv", ".pdf", ".docx",
+            "spreadsheet", "excel", "tabelle", "tabellen",
+            "formular", "pdf form", "form field", "acroform",
+            "invoice", "rechnung", "read_document", "edit_sheet",
+            "fill_pdf_form",
+        ),
         "project_dev": (
             "pyproject.toml", "package.json", "cargo.toml", "go.mod",
             "venv", "pip install", "npm ", "pnpm", "yarn",

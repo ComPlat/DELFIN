@@ -209,6 +209,10 @@ def make_record(
 _WRITE_TOOLS = frozenset({
     "write_file", "edit_file", "multi_edit", "notebook_edit",
     "apply_patch", "publish_report",
+    # Document writes. fill_pdf_form records the blank form as its
+    # ``path``; the file it produced is named in the result, so the
+    # report shows which form was worked on either way.
+    "edit_sheet", "fill_pdf_form",
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})

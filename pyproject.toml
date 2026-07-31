@@ -88,10 +88,25 @@ agent = [
     "anthropic>=0.40",
     "openai>=1.0",
     "pyyaml",
+    # Document handling travels with the agent: the tools that need it
+    # are part of its surface, and shipping the agent without them means
+    # read_file refuses a spreadsheet while pointing at a tool that was
+    # never advertised.
+    "delfin-complat[office]",
 ]
 docs = [
     "mcp>=1.0",
     "pypdf>=4.0",
+]
+# Office-document handling for the agent (read_document / edit_sheet /
+# fill_pdf_form). These were previously reachable only because other
+# packages happened to pull them in, so a clean install had spreadsheet
+# and form support by accident or not at all. Without them the three
+# tools are not advertised and the agent keeps working without them.
+office = [
+    "openpyxl>=3.1",
+    "pypdf>=4.0",
+    "python-docx>=0.8.11",
 ]
 dev = [
     "pytest>=6.0",

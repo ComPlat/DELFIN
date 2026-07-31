@@ -582,6 +582,25 @@ edit code, plan next steps) and check progress periodically.
 delimiters. Use the cell-aware `notebook_read` / `notebook_edit` instead,
 and always `notebook_read` first to get current cell indices.
 
+<!-- module:documents -->
+## Spreadsheets, PDFs and Word files
+
+`read_file` cannot read them — they are containers, and it refuses. Use
+`read_document`; for a PDF form add `fields=true` to get the real field
+names. Sheets come back with column letters and row numbers: cite those.
+
+`edit_sheet` changes cells in place (read the file first, same contract
+as `write_file`) and the change is undoable. `fill_pdf_form` always
+writes a NEW file, so the blank form stays reusable.
+
+Three things to report rather than paper over:
+
+- Formula cells with no cached value hold no number yet. Report the
+  formula, not a result.
+- Fill a form, then read it back and say whether the values are there.
+- Count what you actually read. If you paged through a sheet, say which
+  rows the figure covers.
+
 <!-- module:project_dev -->
 ## Project-dev workflow (in user's own project)
 
