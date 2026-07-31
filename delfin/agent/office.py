@@ -851,11 +851,88 @@ def plan_sheet_edits(
             pass
 
 
+def _verify_cells(path: Path, sheet_name: str, applied: list[dict]) -> list[str]:
+    """Re-read the saved file and report cells that do not hold the new value.
+
+    The form filler reads its result back before reporting success; a
+    spreadsheet edit reported from the in-memory workbook would be
+    claiming an outcome from the intent. Never raises — a verification
+    that cannot run is reported as unverified, not as a failure.
+    """
+    if not applied:
+        return []
+    try:
+        import openpyxl as _op
+        wb = _op.load_workbook(path, data_only=False)
+    except Exception:
+        return []
+    try:
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+        out: list[str] = []
+        for change in applied:
+            ref = str(change.get("cell", ""))
+            try:
+                row, col = parse_cell(ref)
+            except OfficeError:
+                continue
+            if _fmt(ws.cell(row=row, column=col).value) != str(change.get("new", "")):
+                out.append(ref)
+        return out
+    except Exception:
+        return []
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def _sheet_header(ws: Any) -> list[str]:
+    """The first row as column names (blank cells become empty strings)."""
+    for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+        return [str(v).strip() if v is not None else "" for v in row]
+    return []
+
+
+def _locate_rows(ws: Any, key_column: str) -> tuple[int, dict, list[str]]:
+    """``(column index, key -> row, duplicate keys)`` for a key column.
+
+    Duplicates are collected rather than resolved: updating "the row of
+    Müller" when there are two of them is not a decision a tool may make
+    silently.
+    """
+    header = _sheet_header(ws)
+    wanted = str(key_column).strip().lower()
+    index = next((i for i, name in enumerate(header)
+                  if name.strip().lower() == wanted), -1)
+    if index < 0:
+        raise OfficeError(
+            f"no column {key_column!r} in this sheet. Columns: "
+            + (", ".join(h for h in header if h) or "(none)"))
+    by_key: dict[str, int] = {}
+    duplicates: list[str] = []
+    for number, row in enumerate(
+            ws.iter_rows(min_row=2, values_only=True), start=2):
+        raw = row[index] if index < len(row) else None
+        token = str(raw).strip() if raw is not None else ""
+        if not token:
+            continue
+        if token in by_key:
+            if token not in duplicates:
+                duplicates.append(token)
+        else:
+            by_key[token] = number
+    return index, by_key, duplicates
+
+
 def edit_sheet(
     path: Any,
     *,
     edits: Optional[list[dict]] = None,
     append_rows: Optional[list[list[Any]]] = None,
+    key_column: Optional[str] = None,
+    updates: Optional[list[dict]] = None,
+    append_records: Optional[list[dict]] = None,
     sheet: Optional[str] = None,
 ) -> dict:
     """Set cells and append rows in an existing workbook, in place.
@@ -874,8 +951,14 @@ def edit_sheet(
     if document_kind(p) != "spreadsheet":
         raise OfficeError(
             f"{p.name} is not a spreadsheet (suffix {p.suffix!r})")
-    if not edits and not append_rows:
-        raise OfficeError("nothing to do: pass edits and/or append_rows")
+    if not any((edits, append_rows, updates, append_records)):
+        raise OfficeError(
+            "nothing to do: pass edits/append_rows (by cell) or "
+            "updates/append_records (by key and column name)")
+    if updates and not key_column:
+        raise OfficeError(
+            "updates need key_column — the column whose value identifies a "
+            "row (a document number, a case reference)")
 
     openpyxl = _require("spreadsheet")
     keep_vba = p.suffix.lower() in (".xlsm", ".xltm")
@@ -896,6 +979,75 @@ def edit_sheet(
 
         applied: list[dict] = []
         wrote_formula = False
+
+        # Record-oriented changes. Everything is validated BEFORE the first
+        # cell is written: an unknown key, a duplicate key or an unknown
+        # column stops the whole call. A half-applied batch on someone's
+        # records is worse than a refused one, because nothing about the
+        # file afterwards says which half went through.
+        if updates or append_records:
+            header = _sheet_header(ws)
+            named = {h.strip().lower(): i for i, h in enumerate(header) if h}
+            if not named:
+                raise OfficeError(
+                    "this sheet has no header row, so columns cannot be "
+                    "addressed by name — use edits with cell references")
+            wanted_columns: set[str] = set()
+            for entry in list(updates or []) + list(append_records or []):
+                if not isinstance(entry, dict):
+                    raise OfficeError(f"expected an object, got {entry!r}")
+                values = entry.get("set") if updates and "set" in entry else entry
+                if not isinstance(values, dict):
+                    raise OfficeError(
+                        f"each update needs a 'set' object of column -> value, "
+                        f"got {entry!r}")
+                wanted_columns.update(str(c) for c in values
+                                      if str(c).strip().lower() != "key")
+            unknown = sorted(c for c in wanted_columns
+                             if c.strip().lower() not in named)
+            if unknown:
+                raise OfficeError(
+                    f"no column(s) {', '.join(unknown)} in this sheet. "
+                    "Columns: " + ", ".join(h for h in header if h))
+
+        if updates:
+            _key_index, by_key, duplicates = _locate_rows(ws, key_column)
+            header = _sheet_header(ws)
+            named = {h.strip().lower(): i for i, h in enumerate(header) if h}
+            wanted_keys = [str(u.get("key", "")).strip() for u in updates]
+            missing = sorted({k for k in wanted_keys if k and k not in by_key})
+            blank = [i for i, k in enumerate(wanted_keys, start=1) if not k]
+            ambiguous = sorted(set(wanted_keys) & set(duplicates))
+            if blank:
+                raise OfficeError(
+                    f"update {blank[0]} has no key — every update needs the "
+                    f"value in '{key_column}' that identifies its row")
+            if missing:
+                raise OfficeError(
+                    f"no row with {key_column} = "
+                    + ", ".join(repr(k) for k in missing)
+                    + f". The sheet holds {len(by_key)} distinct key(s).")
+            if ambiguous:
+                raise OfficeError(
+                    f"{key_column} = " + ", ".join(repr(k) for k in ambiguous)
+                    + " appears more than once — which row is meant is not "
+                    "decidable, so nothing was changed.")
+            for update in updates:
+                row_number = by_key[str(update.get("key", "")).strip()]
+                for column, value in (update.get("set") or {}).items():
+                    col_index = named[str(column).strip().lower()] + 1
+                    cell = ws.cell(row=row_number, column=col_index)
+                    old_value = cell.value
+                    cell.value = value
+                    if isinstance(value, str) and value.startswith("="):
+                        wrote_formula = True
+                    applied.append({
+                        "cell": f"{column_letter(col_index)}{row_number}",
+                        "key": str(update.get("key", "")).strip(),
+                        "column": str(column),
+                        "old": _fmt(old_value), "new": _fmt(value),
+                    })
+
         for edit in edits or []:
             if not isinstance(edit, dict):
                 raise OfficeError(f"each edit must be an object, got {edit!r}")
@@ -914,6 +1066,24 @@ def edit_sheet(
 
         first_appended = 0
         appended = 0
+
+        # Records are placed by column NAME. A positional list silently
+        # lands in the wrong columns as soon as the sheet's order differs
+        # from the caller's assumption, and the result reads perfectly.
+        if append_records:
+            header = _sheet_header(ws)
+            named = {h.strip().lower(): i for i, h in enumerate(header) if h}
+            for record in append_records:
+                if not appended:
+                    first_appended = int(ws.max_row or 0) + 1
+                target_row = int(ws.max_row or 0) + 1
+                for column, value in record.items():
+                    col_index = named[str(column).strip().lower()] + 1
+                    ws.cell(row=target_row, column=col_index).value = value
+                    if isinstance(value, str) and value.startswith("="):
+                        wrote_formula = True
+                appended += 1
+
         for new_row in append_rows or []:
             if not isinstance(new_row, (list, tuple)):
                 raise OfficeError(
@@ -942,12 +1112,21 @@ def edit_sheet(
         except Exception as exc:
             raise OfficeError(f"could not save workbook: {exc}") from exc
 
+        sheet_name = ws.title
+        unverified = _verify_cells(p, sheet_name, applied)
+        if unverified:
+            notes.append(
+                "these cells do not hold the new value in the saved file: "
+                + ", ".join(unverified)
+                + ". Do not report this edit as done.")
+
         return {
             "path": str(p),
-            "sheet": ws.title,
+            "sheet": sheet_name,
             "applied": applied,
             "appended_rows": appended,
             "first_appended_row": first_appended,
+            "verified": not unverified,
             "notes": notes,
         }
     finally:
@@ -1272,6 +1451,226 @@ def compare_tables(
         "not_comparable": not_comparable[:max_report],
         "not_comparable_count": len(not_comparable),
         "rows_accounted_for": balanced,
+        "notes": notes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Series: one document per row
+# ---------------------------------------------------------------------------
+
+_UNSAFE_NAME_RE = re.compile(r"[^\w.\- ()äöüÄÖÜß]+")
+
+MAX_SERIES_ROWS = 500
+
+
+def _safe_name(text: str) -> str:
+    """A file name that cannot escape its directory or collide with shell."""
+    cleaned = _UNSAFE_NAME_RE.sub("_", str(text or "").strip())
+    # Collapse dot runs: separators are already gone, so "../etc" cannot
+    # escape, but a name still carrying ".." invites doubt every time
+    # someone reads the output listing.
+    cleaned = re.sub(r"\.{2,}", ".", cleaned)
+    cleaned = cleaned.strip(" .") or "unbenannt"
+    return cleaned[:120]
+
+
+def _series_name(pattern: str, record: dict, index: int, suffix: str) -> str:
+    """Build one output file name from the row's own values."""
+    out = pattern
+    for column, value in record.items():
+        out = out.replace("{" + column + "}", _safe_name(_fmt(value)))
+    out = out.replace("{row}", str(index))
+    out = _UNSAFE_NAME_RE.sub("_", out).strip(" .") or f"dokument_{index}"
+    if not out.lower().endswith(suffix):
+        out += suffix
+    return out[:150]
+
+
+def fill_series(
+    table: Any,
+    template: Any,
+    *,
+    output_dir: Any,
+    mapping: Optional[dict] = None,
+    name_pattern: str = "",
+    sheet: Optional[str] = None,
+    limit: int = MAX_SERIES_ROWS,
+) -> dict:
+    """One filled document per row of *table*, from one form or template.
+
+    The whole point is the report. A series that ends in "done" while six
+    rows quietly failed is the expensive kind of mistake in
+    administrative work, so every row gets its own outcome and the counts
+    are what the caller reports.
+
+    Everything that can be checked is checked BEFORE the first file is
+    written: the template's fields, the table's columns, the mapping
+    between them. A batch that fails halfway leaves a directory of
+    documents nobody can tell apart from a complete one.
+
+    Nothing is ever overwritten. A name that already exists — on disk or
+    from an earlier row — fails that row and says which row took it,
+    because two different records writing to one file is data loss that
+    looks like success.
+    """
+    rows = _table_rows(table, sheet)
+    if len(rows) < 2:
+        raise OfficeError(
+            "the table needs a header row and at least one data row")
+    header = [str(h or "").strip() for h in rows[0]]
+    if not any(header):
+        raise OfficeError("the table's first row is empty — no column names")
+
+    tpl = _resolve(template)
+    kind = document_kind(tpl)
+    if kind == "pdf":
+        available = {f["name"] for f in pdf_form_fields(tpl)["fields"]}
+        if not available:
+            raise OfficeError(
+                f"{tpl.name} has no form fields to fill")
+        suffix = ".pdf"
+    elif kind == "word":
+        available = {p["name"]
+                     for p in docx_placeholders(tpl)["placeholders"]}
+        if not available:
+            raise OfficeError(
+                f"{tpl.name} contains no {{{{placeholder}}}} markers")
+        suffix = ".docx"
+    else:
+        raise OfficeError(
+            f"{tpl.name} is neither a PDF form nor a .docx template")
+
+    # Mapping field -> column. Without one, match by name: a template
+    # built for this table usually already uses the column names.
+    if mapping:
+        resolved_map = {str(k): str(v) for k, v in mapping.items()}
+    else:
+        lowered = {h.lower(): h for h in header if h}
+        resolved_map = {
+            field: lowered[field.lower()]
+            for field in available if field.lower() in lowered
+        }
+        if not resolved_map:
+            raise OfficeError(
+                "no field name matches a column name, so there is nothing to "
+                f"map automatically. Template fields: {', '.join(sorted(available))}. "
+                f"Columns: {', '.join(h for h in header if h)}. "
+                "Pass mapping={field: column}.")
+
+    unknown_fields = sorted(f for f in resolved_map if f not in available)
+    if unknown_fields:
+        raise OfficeError(
+            f"the template has no field(s) {', '.join(unknown_fields)}. "
+            f"It has: {', '.join(sorted(available))}")
+    unknown_columns = sorted(
+        c for c in resolved_map.values() if c not in header)
+    if unknown_columns:
+        raise OfficeError(
+            f"the table has no column(s) {', '.join(unknown_columns)}. "
+            f"It has: {', '.join(h for h in header if h)}")
+
+    out_dir = _resolve(output_dir, must_exist=False)
+    if out_dir.exists() and not out_dir.is_dir():
+        raise OfficeError(f"{out_dir} exists and is not a directory")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    pattern = name_pattern or (tpl.stem + "_{row}" + suffix)
+    limit = max(1, min(int(limit or MAX_SERIES_ROWS), MAX_SERIES_ROWS))
+
+    data_rows = rows[1:]
+    truncated = len(data_rows) > limit
+    used_names: dict[str, int] = {}
+    results: list[dict] = []
+
+    for offset, row in enumerate(data_rows[:limit], start=2):
+        record = {
+            header[i]: (row[i] if i < len(row) else "")
+            for i in range(len(header)) if header[i]
+        }
+        values = {field: record.get(column, "")
+                  for field, column in resolved_map.items()}
+        empty = sorted(f for f, v in values.items()
+                       if str(v or "").strip() == "")
+
+        name = _series_name(pattern, record, offset, suffix)
+        if name in used_names:
+            results.append({
+                "row": offset, "output": name, "status": "failed",
+                "detail": (f"the file name is already used by row "
+                           f"{used_names[name]} — two records would write "
+                           "to one file"),
+            })
+            continue
+        target = out_dir / name
+        if target.exists():
+            results.append({
+                "row": offset, "output": name, "status": "failed",
+                "detail": "a file of that name already exists; nothing was "
+                          "overwritten",
+            })
+            continue
+
+        try:
+            if kind == "pdf":
+                filled = fill_pdf_form(
+                    tpl, {k: v for k, v in values.items()}, output=target)
+                ok = filled["verified"]
+                detail = "; ".join(filled.get("notes", []))
+            else:
+                filled = fill_docx_template(
+                    tpl, {k: v for k, v in values.items()}, output=target,
+                    strict=False)
+                ok = filled["complete"]
+                detail = "; ".join(filled.get("notes", []))
+        except OfficeError as exc:
+            results.append({"row": offset, "output": name,
+                            "status": "failed", "detail": str(exc)})
+            continue
+        except Exception as exc:                      # pragma: no cover
+            results.append({"row": offset, "output": name,
+                            "status": "failed", "detail": str(exc)})
+            continue
+
+        used_names[name] = offset
+        if empty:
+            results.append({
+                "row": offset, "output": name, "status": "incomplete",
+                "detail": "no value for " + ", ".join(empty),
+            })
+        elif not ok:
+            results.append({"row": offset, "output": name,
+                            "status": "incomplete",
+                            "detail": detail or "the result did not verify"})
+        else:
+            results.append({"row": offset, "output": name, "status": "ok"})
+
+    counts = {
+        "ok": sum(1 for r in results if r["status"] == "ok"),
+        "incomplete": sum(1 for r in results if r["status"] == "incomplete"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+    }
+    notes: list[str] = []
+    if truncated:
+        notes.append(
+            f"the table has {len(data_rows)} data rows and only the first "
+            f"{limit} were processed. Raise limit, or narrow the table.")
+    if counts["incomplete"]:
+        notes.append(
+            f"{counts['incomplete']} document(s) are incomplete — they exist "
+            "but are missing values. They are not ready to hand over.")
+    if counts["failed"]:
+        notes.append(
+            f"{counts['failed']} row(s) produced no document.")
+    return {
+        "table": str(_resolve(table)),
+        "template": str(tpl),
+        "output_dir": str(out_dir),
+        "mapping": resolved_map,
+        "rows": len(data_rows),
+        "processed": len(results),
+        "counts": counts,
+        "results": results,
         "notes": notes,
     }
 

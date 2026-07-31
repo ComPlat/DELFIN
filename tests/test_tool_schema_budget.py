@@ -35,8 +35,8 @@ from delfin.agent.api_client import (
 _BASELINE_TOKENS = 11_422
 # Budget with headroom for a few future tools. The compaction target was a
 # 35% cut of the baseline, which lands around 7.35k; the document tools
-# were added on top of that and cost ~940 tokens for six.
-_TOKEN_BUDGET = 8_400
+# were added on top of that and cost ~1.2k tokens for seven.
+_TOKEN_BUDGET = 8_600
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -44,7 +44,7 @@ _TOKEN_BUDGET = 8_400
 # like growth that was paid for.
 _POST_COMPACTION_TOOLS = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
-    "fill_docx_template", "create_docx", "compare_tables",
+    "fill_docx_template", "create_docx", "compare_tables", "fill_series",
 })
 
 

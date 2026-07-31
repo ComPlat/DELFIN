@@ -42,6 +42,7 @@ looks perfectly correct. So the checking has to be deliberate:
 | List a PDF form's fields / a template's placeholders | `read_document(fields=true)` |
 | Change cells, append rows, create a sheet | `edit_sheet` |
 | Compare two tables on a key column | `compare_tables` |
+| One document per table row | `fill_series` |
 | Fill a PDF form | `fill_pdf_form` |
 | Fill a Word template | `fill_docx_template` |
 | Write a new Word document | `create_docx` |
@@ -85,10 +86,22 @@ row, including the ones a hand-written join drops.
 
 ## Series work
 
-"One letter per row" — read the source table, confirm the mapping on the
-FIRST record with the user, then run the rest. Report how many were
-produced, where, and which rows you skipped and why. Say how many files
-are coming before producing 300 of them.
+"One letter per row" — that is `fill_series`, not the single filler in a
+loop. Read the table, show the user the field-to-column mapping, say how
+many files are coming, then run it. Report its three counts as they came
+back: complete, incomplete, failed. An incomplete document exists but is
+missing values; it is not ready to hand over, and saying "done" over it
+is the mistake that costs.
+
+## Changing records
+
+Address rows by their key, not by cell coordinate: `edit_sheet` with
+`key_column` and `updates=[{key, set:{column: value}}]`. "Für R-014 den
+Betrag eintragen" is a record, and a cell reference computed from a
+paged view lands on the wrong row while looking perfectly right. An
+unknown or duplicated key refuses the whole call rather than changing
+half of it. New rows go in as `append_records` ({column: value}), never
+as a positional list.
 
 ## Answering
 

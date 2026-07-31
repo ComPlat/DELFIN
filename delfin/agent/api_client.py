@@ -2388,6 +2388,29 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "description": "Added below the last used row.",
                         "items": {"type": "array", "items": {}},
                     },
+                    "key_column": {
+                        "type": "string",
+                        "description": (
+                            "Column identifying a row (e.g. a document "
+                            "number), for updates."
+                        ),
+                    },
+                    "updates": {
+                        "type": "array",
+                        "description": (
+                            "Preferred over edits: [{key, set:{column: "
+                            "value}}]. An unknown or duplicated key refuses "
+                            "the whole call."
+                        ),
+                        "items": {"type": "object"},
+                    },
+                    "append_records": {
+                        "type": "array",
+                        "description": (
+                            "Rows as {column: value}, placed by column name."
+                        ),
+                        "items": {"type": "object"},
+                    },
                     "create": {"type": "boolean"},
                 },
                 "required": ["path"],
@@ -2452,6 +2475,43 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "right_sheet": {"type": "string"},
                 },
                 "required": ["left", "right", "key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fill_series",
+            "description": (
+                "One document per table row, from one PDF form or .docx "
+                "template — use this instead of the single filler in a loop. "
+                "Reports every row as ok / incomplete / failed and never "
+                "overwrites."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table": {"type": "string"},
+                    "template": {
+                        "type": "string",
+                        "description": "The blank form or template.",
+                    },
+                    "output_dir": {"type": "string"},
+                    "mapping": {
+                        "type": "object",
+                        "description": (
+                            "field/placeholder -> column. Omit when the names "
+                            "already match."
+                        ),
+                    },
+                    "name_pattern": {
+                        "type": "string",
+                        "description": "e.g. 'Antrag_{Beleg}.pdf'; {row} works.",
+                    },
+                    "sheet": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["table", "template", "output_dir"],
             },
         },
     },
@@ -3806,6 +3866,7 @@ _CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
 _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
     "fill_docx_template", "create_docx", "compare_tables",
+    "fill_series",
 })
 
 _OFFICE_BACKENDS_CACHE: Optional[bool] = None
@@ -5610,6 +5671,7 @@ class _DocToolExecutor:
         # Document writes change user files like any other write, so they
         # belong in the audit trail /changes reads.
         "edit_sheet", "fill_pdf_form", "fill_docx_template", "create_docx",
+        "fill_series",
         "remember_permission", "remember_permission_bundle",
     })
 
@@ -5685,7 +5747,7 @@ class _DocToolExecutor:
         # gates its OUTPUT (the source is only read), so they cannot
         # share the block above.
         if name in ("edit_sheet", "fill_pdf_form",
-                    "fill_docx_template", "create_docx"):
+                    "fill_docx_template", "create_docx", "fill_series"):
             if permissions is None:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured."
@@ -5701,6 +5763,8 @@ class _DocToolExecutor:
                 return self._execute_fill_pdf_form(arguments, permissions)
             if name == "fill_docx_template":
                 return self._execute_fill_docx_template(arguments, permissions)
+            if name == "fill_series":
+                return self._execute_fill_series(arguments, permissions)
             return self._execute_create_docx(arguments, permissions)
 
         # Background-job inspection tools — no command execution, just
@@ -6318,9 +6382,11 @@ class _DocToolExecutor:
                 return json.dumps({"error": (
                     f"'{self._display_path(full, perms)}' does not exist — "
                     "pass create=true with append_rows to write a new file")})
-            if not edits and not append_rows:
+            if not any((edits, append_rows, arguments.get("updates"),
+                        arguments.get("append_records"))):
                 return json.dumps({"error": (
-                    "nothing to do: pass edits and/or append_rows")})
+                    "nothing to do: pass edits/append_rows (by cell) or "
+                    "updates/append_records (by key and column name)")})
             # Same contract as write_file: the model must have looked at the
             # file in this session, and the file must not have moved under it.
             tracked = perms.read_tracker.get(str(full.resolve()))
@@ -6393,8 +6459,14 @@ class _DocToolExecutor:
             else:
                 result = _office.edit_sheet(
                     full, edits=edits, append_rows=append_rows,
+                    key_column=arguments.get("key_column"),
+                    updates=arguments.get("updates"),
+                    append_records=arguments.get("append_records"),
                     sheet=arguments.get("sheet"))
                 parts = [
+                    (f"{c['key']}/{c['column']} ({c['cell']}): "
+                     f"{c['old'] or '(empty)'} -> {c['new']}")
+                    if c.get("key") else
                     f"{c['cell']}: {c['old'] or '(empty)'} -> {c['new']}"
                     for c in result["applied"]
                 ]
@@ -6419,6 +6491,9 @@ class _DocToolExecutor:
             pass
 
         out = {"status": "ok", "summary": summary}
+        if not creating:
+            # Read back from the saved file rather than reporting the intent.
+            out["verified"] = bool(result.get("verified", True))
         if notes:
             out["notes"] = notes
         return json.dumps(out, ensure_ascii=False)
@@ -6493,6 +6568,80 @@ class _DocToolExecutor:
         if result.get("notes"):
             out["notes"] = result["notes"]
         return json.dumps(out, ensure_ascii=False)
+
+    def _execute_fill_series(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        table, err = self._office_target(arguments, perms, key="table")
+        if err is not None:
+            return json.dumps({"error": err})
+        template, err = self._office_target(arguments, perms, key="template")
+        if err is not None:
+            return json.dumps({"error": err})
+        out_dir, err = self._office_target(arguments, perms, key="output_dir")
+        if err is not None:
+            return json.dumps({"error": err})
+
+        for source in (table, template):
+            denied = self._check_read_access(perms, source, label=source.name)
+            if denied is not None:
+                return json.dumps({"error": denied})
+        gate_err = self._gate_write_path(
+            str(out_dir), perms, "fill_series", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        mapping = arguments.get("mapping")
+        if mapping is not None and not isinstance(mapping, dict):
+            return json.dumps({"error": (
+                "mapping must be an object of field -> column")})
+
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Fill {self._display_path(template, perms)} once per row of "
+                f"{self._display_path(table, perms)}\n"
+                f"  -> {self._display_path(out_dir, perms)}"
+            )
+            approved = self._confirm_office_change(
+                "fill_series", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        try:
+            result = _office.fill_series(
+                table, template, output_dir=out_dir, mapping=mapping,
+                name_pattern=str(arguments.get("name_pattern", "") or ""),
+                sheet=arguments.get("sheet"),
+                limit=_as_int(arguments.get("limit"),
+                              _office.MAX_SERIES_ROWS))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"the series failed: {exc}"}, ensure_ascii=False)
+
+        counts = result["counts"]
+        lines = [
+            f"{self._display_path(out_dir, perms)}: {counts['ok']} document(s) "
+            f"complete, {counts['incomplete']} incomplete, "
+            f"{counts['failed']} failed "
+            f"(of {result['processed']} row(s) processed)",
+            "mapping: " + ", ".join(
+                f"{f} <- {c}" for f, c in sorted(result["mapping"].items())),
+        ]
+        problems = [r for r in result["results"] if r["status"] != "ok"]
+        if problems:
+            lines.append("")
+            for entry in problems[:50]:
+                lines.append(
+                    f"  row {entry['row']} [{entry['status']}] "
+                    f"{entry['output']}: {entry['detail']}")
+            if len(problems) > 50:
+                lines.append(f"  … {len(problems) - 50} more")
+        for note in result["notes"]:
+            lines.append(f"\nNOTE: {note}")
+        return "\n".join(lines)
 
     def _execute_fill_docx_template(
         self, arguments: dict, perms: "KitToolPermissions"
