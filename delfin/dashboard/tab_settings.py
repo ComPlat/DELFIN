@@ -51,7 +51,7 @@ from delfin.user_settings import (
 )
 
 
-def create_tab(ctx, calc_refs=None, archive_refs=None):
+def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     """Create the dashboard Settings tab."""
     settings_path = get_settings_path()
     status_html = widgets.HTML(value='')
@@ -274,6 +274,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     archive_path_input = widgets.Text(
         placeholder=str(ctx.default_archive_dir),
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    office_path_input = widgets.Text(
+        placeholder=str(getattr(ctx, 'default_office_dir', '')),
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
     # Bug-report archive: where the 🐞 Bug Report button drops reproducible
@@ -601,6 +605,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         'remote_archive_enabled': False,
         'calculations_dir': str(ctx.calc_dir),
         'archive_dir': str(ctx.archive_dir),
+        'office_dir': str(getattr(ctx, 'office_dir', '')),
         'tab_prefs': {
             'order': [],
             'hidden': [],
@@ -1006,6 +1011,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         paths_payload = ((settings_payload or {}).get('paths') or {})
         calc_path_input.value = str(paths_payload.get('calculations_dir') or '')
         archive_path_input.value = str(paths_payload.get('archive_dir') or '')
+        office_path_input.value = str(paths_payload.get('office_dir') or '')
         agent_payload = ((settings_payload or {}).get('agent') or {})
         bug_archive_input.value = str(agent_payload.get('bug_archive_dir') or '')
         jobmon_payload = agent_payload.get('job_monitor') or {}
@@ -1109,6 +1115,17 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         )
         return calc_override, archive_override, effective_calc_dir, effective_archive_dir
 
+    def _effective_office_from_widgets():
+        office_override = normalize_local_directory_setting(
+            office_path_input.value,
+            'Office path',
+        )
+        default_office = getattr(ctx, 'default_office_dir', None)
+        effective = Path(office_override) if office_override else (
+            Path(default_office) if default_office else None
+        )
+        return office_override, effective
+
     def _runtime_payload_from_widgets():
         tool_binaries = {}
         for tool_name in _selectable_tool_names:
@@ -1191,13 +1208,25 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             },
         }
 
-    def _apply_workspace_paths(effective_calc_dir, effective_archive_dir):
+    def _apply_workspace_paths(effective_calc_dir, effective_archive_dir,
+                               effective_office_dir=None):
         effective_calc_dir.mkdir(parents=True, exist_ok=True)
         effective_archive_dir.mkdir(parents=True, exist_ok=True)
         ctx.calc_dir = effective_calc_dir
         ctx.archive_dir = effective_archive_dir
         state['calculations_dir'] = str(effective_calc_dir)
         state['archive_dir'] = str(effective_archive_dir)
+
+        if effective_office_dir is None:
+            _unused, effective_office_dir = _effective_office_from_widgets()
+        if effective_office_dir is not None:
+            effective_office_dir.mkdir(parents=True, exist_ok=True)
+            ctx.office_dir = effective_office_dir
+            state['office_dir'] = str(effective_office_dir)
+            if office_refs and callable(office_refs.get('calc_set_root')):
+                office_refs['calc_set_root'](effective_office_dir)
+            if office_refs and callable(office_refs.get('calc_set_primary_root')):
+                office_refs['calc_set_primary_root'](effective_calc_dir)
 
         if calc_refs and callable(calc_refs.get('calc_set_root')):
             calc_refs['calc_set_root'](effective_calc_dir)
@@ -2986,6 +3015,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 paths_payload['calculations_dir'] = calc_override
             if archive_override:
                 paths_payload['archive_dir'] = archive_override
+            office_override, _effective_office = _effective_office_from_widgets()
+            if office_override:
+                paths_payload['office_dir'] = office_override
             settings_payload['paths'] = paths_payload
             settings_payload['runtime'] = runtime_payload
             # Bug-report archive dir (agent section — preserve other agent
@@ -3105,7 +3137,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     # ── dirty-tracking: enable Save button when any setting widget changes ──
     _settings_widgets_to_watch = [
-        calc_path_input, archive_path_input,
+        calc_path_input, archive_path_input, office_path_input,
         backend_dropdown, global_orca_input, qm_tools_root_input,
         csp_tools_root_input, mlp_tools_root_input,
         *[tool_binary_inputs[name] for name in _selectable_tool_names],
@@ -3222,6 +3254,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             widgets.HBox(
                 [widgets.HTML('<b>Archive</b>'), archive_path_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Office</b>'), office_path_input],
                 layout=_row_layout,
             ),
             widgets.HBox(

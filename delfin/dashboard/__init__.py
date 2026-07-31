@@ -70,6 +70,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tab_agent,
         tab_agent_activity,
         tab_archive_statistics,
+        tab_office,
         tab_calculations_browser,
         tab_literature,
         tab_remote_archive,
@@ -107,6 +108,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     else:
         default_calc_dir = home / 'calc'
     default_archive_dir = default_calc_dir.parent / 'archive'
+    default_office_dir = default_calc_dir.parent / 'office'
 
     if calc_dir is None:
         calc_dir = configured_paths.get('calculations_dir') or default_calc_dir
@@ -115,6 +117,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     archive_dir = configured_paths.get('archive_dir') or default_archive_dir
     archive_dir = Path(archive_dir).expanduser()
     archive_dir.mkdir(parents=True, exist_ok=True)
+    office_dir = configured_paths.get('office_dir') or default_office_dir
+    office_dir = Path(office_dir).expanduser()
+    office_dir.mkdir(parents=True, exist_ok=True)
     agent_dir = Path(configured_paths.get('agent_dir') or Path.home() / 'agent_workspace')
     agent_dir.mkdir(parents=True, exist_ok=True)
 
@@ -202,10 +207,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     ctx = DashboardContext(
         calc_dir=calc_dir,
         archive_dir=archive_dir,
+        office_dir=office_dir,
         agent_dir=agent_dir,
         primary_calc_dir=calc_dir,
         default_calc_dir=default_calc_dir,
         default_archive_dir=default_archive_dir,
+        default_office_dir=default_office_dir,
         runtime_settings=runtime_settings,
         runtime_backend=backend,
         notebook_dir=notebook_dir,
@@ -250,6 +257,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     ctx.calc_browser_refs = refs5
     tab6, refs6 = tab_archive_statistics.create_tab(ctx)
+    tab_off, refs_off = tab_office.create_tab(ctx)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     ctx.remote_archive_refs = refs7
     tab_lit, _refs_lit = tab_literature.create_tab(ctx)
@@ -370,6 +378,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'reason': '',
         },
         {
+            'id': 'office',
+            'title': 'Office',
+            'widget': tab_off,
+            'default_order': 82,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            'reason': '',
+        },
+        {
             'id': 'literature',
             'title': 'Literature',
             'widget': tab_lit,
@@ -436,7 +454,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         pass
 
     ctx.tab_specs = tab_specs
-    tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6)
+    tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6, office_refs=refs_off)
     for spec in ctx.tab_specs:
         if spec['id'] == 'settings':
             spec['widget'] = tab8

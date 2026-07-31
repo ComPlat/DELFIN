@@ -20,10 +20,12 @@ class DashboardContext:
     # Paths
     calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
     archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
+    office_dir: Path = field(default_factory=lambda: Path.home() / 'office')
     agent_dir: Path = field(default_factory=lambda: Path.home() / 'agent_workspace')
     primary_calc_dir: Optional[Path] = None
     default_calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
     default_archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
+    default_office_dir: Path = field(default_factory=lambda: Path.home() / 'office')
     runtime_settings: dict = field(default_factory=dict)
     runtime_backend: str = 'auto'
     notebook_dir: Path = field(default_factory=Path.cwd)
