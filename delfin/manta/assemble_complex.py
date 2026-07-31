@@ -716,7 +716,27 @@ def _rigid_planar_central_arm(mol, dons):
     return None
 
 
-def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False):
+def _hydrogens_riding_on(syms, P, idx, cut=1.35):
+    """Indices of the hydrogens covalently attached to atom ``idx``.
+
+    Geometric, so it needs no molecule object and no vocabulary: an H whose distance to
+    ``idx`` is inside a covalent X-H range belongs to it.  1.35 A clears every real X-H
+    (C-H 1.09, N-H 1.03, O-H 0.99, B-H 1.19, Si-H 1.48 is the only common one above it and
+    a silane donor is not a case this path seats) while staying far below any H...X contact.
+    """
+    out = []
+    if syms is None:
+        return out
+    p = np.asarray(P[idx], float)
+    for j in range(len(syms)):
+        if syms[j] != "H" or j == idx:
+            continue
+        if float(np.linalg.norm(np.asarray(P[j], float) - p)) <= cut:
+            out.append(j)
+    return out
+
+
+def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False, lsyms=None):
     """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
     donors seat onto the target vertex directions, then per-donor rescale to the
     ideal M-donor distance.  The ring geometry (backbone clears the metal) is
@@ -872,11 +892,19 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
             # ratio (never SMILES/refcode); byte-id OFF; healthy cages (ratio ~0.9,
             # QEBLOC/FEKZON) have no donor below threshold -> untouched.
             _nfix = 0
+            _hf = (lsyms is not None
+                   and os.environ.get("DELFIN_FFREE_H_FOLLOW", "0") == "1")
             for _i, _d in enumerate(donor_idxs):
                 _r = float(np.linalg.norm(Qr[_d]))
                 _idl = float(tgt_md[perm[_i]])
                 if _r > 1e-6 and _idl > 1e-6 and _r < _frac * _idl:
-                    Qr[_d] = Qr[_d] / _r * _idl
+                    _nv = Qr[_d] / _r * _idl
+                    if _hf:                      # hydrogens ride with their parent, as above
+                        _rd = _hydrogens_riding_on(lsyms, Qr, _d)
+                        _dl = _nv - Qr[_d]
+                        for _h in _rd:
+                            Qr[_h] = Qr[_h] + _dl
+                    Qr[_d] = _nv
                     _nfix += 1
             if os.environ.get("DELFIN_CAGE_DEBUG", "0") == "1" and _nfix:
                 os.write(2, ("[CAGE_GUARD] dent=%d reset %d/%d donors to ideal M-D\n"
@@ -889,10 +917,39 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
     # the FEKZON CCDC defect).  Keep each donor's Kabsch-rotated DIRECTION (so the embed's
     # natural bite angle is preserved) and set only its radius to md.  The constrained
     # relax (donors fixed here) then pulls the backbone into consistency.
+    # HYDROGENS RIDE WITH THEIR PARENT (DELFIN_FFREE_H_FOLLOW=1, default OFF -> byte-id).
+    #
+    # The loop below moves the DONOR ATOM and nothing else.  A donor that carries hydrogens
+    # -- an amine N-H, a hydroxyl O-H, an agostic C-H -- therefore has its heavy atom
+    # displaced radially while its H stay where the embed put them, which corrupts both the
+    # X-H length and its direction by exactly the displacement.
+    #
+    # MEASURED, reference-free (weddell/tools/h_geometry.py over 296696 X-H bonds of the
+    # champion archive): the MEDIAN X-H length is textbook-correct everywhere -- aromatic
+    # C-H 1.080, methyl 1.109, N-H 1.034, O-H 0.990 -- so the placement RULE is right and
+    # must not be touched.  What is wrong is a TAIL: C|2|2|1 has p10 = 0.948 A, C|1|3|1
+    # spans 0.886 to 1.237, and the direction deviation reaches p90 = 58 deg where its own
+    # median is 6.  A rule that produced correct medians does not produce that tail; being
+    # left behind by a later move does.
+    #
+    # (The CCDC comparison cannot referee this and was nearly a trap: crystal C-H sit at
+    # p10/p50/p90 = 0.930/0.949/0.960 with a 0.45 deg direction width, i.e. a RIDING MODEL,
+    # not a measurement.  "Fixing" our lengths towards it would have broken correct H.)
+    #
+    # This is additive in the strict sense: it invents no geometry, it preserves the X-H
+    # geometry the embed already had.  Nothing about heavy-atom placement changes.
+    _hfollow = (lsyms is not None
+                and os.environ.get("DELFIN_FFREE_H_FOLLOW", "0") == "1")
     for i, di in enumerate(donor_idxs):
         r = float(np.linalg.norm(Q[di]))
         if r > 1e-6:
-            Q[di] = Q[di] / r * tgt_md[perm[i]]
+            _new = Q[di] / r * tgt_md[perm[i]]
+            if _hfollow:
+                _riders = _hydrogens_riding_on(lsyms, Q, di)   # BEFORE the move
+                _delta = _new - Q[di]
+                for _h in _riders:
+                    Q[_h] = Q[_h] + _delta
+            Q[di] = _new
     return Q
 
 
@@ -2773,7 +2830,7 @@ def assemble_hapto(metal, geometry, d, variant=None):
                     _rigid_seat = (os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
                                    and dent >= 3)
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=True,
-                                                    rigid=_rigid_seat)
+                                                    rigid=_rigid_seat, lsyms=lsyms)
                 if Q is None:
                     continue
                 cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
@@ -3320,7 +3377,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
                         or os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1"))
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
-                                                    rigid=_rigid_seat)
+                                                    rigid=_rigid_seat, lsyms=lsyms)
                     # Collapse-rigid-fallback (DELFIN_FFFREE_CHELATE_RIGID_FALLBACK,
                     # default OFF -> byte-id).  The per-donor RADIAL rescale moves each
                     # donor independently onto its exact ideal radius, which on many
@@ -3335,7 +3392,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                             and os.environ.get("DELFIN_FFFREE_CHELATE_RIGID_FALLBACK", "0") == "1"
                             and _has_collapsed_heavy_bonds(lsyms, Q)):
                         _Qr = _orient_chelate_to_vertices(lP, dons_d, targets,
-                                                          asym=_asym, rigid=True)
+                                                          asym=_asym, rigid=True, lsyms=lsyms)
                         if (_Qr is not None and np.all(np.isfinite(_Qr))
                                 and not _has_collapsed_heavy_bonds(lsyms, _Qr)):
                             Q = _Qr
