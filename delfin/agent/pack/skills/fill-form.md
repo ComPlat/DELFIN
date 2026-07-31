@@ -17,8 +17,10 @@ values that go in it.
    The output is a NEW file; the blank original stays reusable.
 4. Read the result back — `read_document` again — and report the check
    as part of the answer.
-5. For a series (one letter per row of a table), read the table first,
-   then loop. Report how many were produced and which rows you skipped.
+5. For a series (one document per row of a table) use `fill_series` —
+   never the single filler in a loop. Show the mapping and the expected
+   file count first, then report its three counts back: complete,
+   incomplete, failed.
 
 Constraints:
 - A field or placeholder name that does not exist is refused, not
