@@ -229,23 +229,355 @@ def render_grid(
 
 
 # ---------------------------------------------------------------------------
+# Values: numbers and dates as they are actually written
+# ---------------------------------------------------------------------------
+#
+# A cell reading "1.234,50" is a string. Handed to arithmetic as-is it
+# either raises or, worse, parses as 1.234 — the thousands separator
+# read as a decimal point, off by a factor of a thousand, with no error
+# anywhere. The same trap sits in dates: 03.04.2026 and 04/03/2026 are
+# the same day written under two conventions, and guessing per value
+# gets it wrong half the time.
+#
+# The way out is to decide per COLUMN rather than per value. A single
+# "1.234" is genuinely ambiguous; a column containing it alongside one
+# value with both separators, or one with two dots, or one with a
+# non-three-digit group, is not. So: gather the evidence over the whole
+# column, and where the column stays ambiguous, say so instead of
+# picking the reading that happens to look plausible.
+
+_NUM_CLEAN_RE = re.compile(r"[^0-9,.\-+]")
+# Any run of digits, optionally broken by separators. Deliberately NOT
+# "1-3 digits then groups": that shape is right for 1.234,50 and wrong
+# for 1234.50, and rejecting the ungrouped form makes a plain numeric
+# column read as text — which then compares by spelling rather than by
+# value.
+_NUMERIC_SHAPE_RE = re.compile(r"^[-+]?[0-9]+(?:[.,][0-9]+)*$")
+_DATE_SEP_RE = re.compile(r"^\s*(\d{1,4})([./-])(\d{1,2})\2(\d{1,4})\s*$")
+
+DECIMAL_COMMA = "decimal_comma"     # 1.234,50 — German / most of Europe
+DECIMAL_POINT = "decimal_point"     # 1,234.50 — English
+PLAIN_NUMBER = "plain"              # 1234.5 / 1234 — no grouping in play
+AMBIGUOUS = "ambiguous"
+
+DAY_FIRST = "day_first"             # 31.07.2026
+MONTH_FIRST = "month_first"         # 07/31/2026
+ISO_DATE = "iso"                    # 2026-07-31
+
+
+def _number_evidence(text: str) -> Optional[str]:
+    """What one value proves about its column's convention, if anything."""
+    body = _NUM_CLEAN_RE.sub("", str(text or "")).strip()
+    if not body or not _NUMERIC_SHAPE_RE.match(body):
+        return None
+    dots, commas = body.count("."), body.count(",")
+
+    # Both separators present: the LAST one is the decimal separator.
+    # This is decisive and needs no column context.
+    if dots and commas:
+        return DECIMAL_COMMA if body.rfind(",") > body.rfind(".") else DECIMAL_POINT
+    # More than one of the same separator can only be grouping.
+    if dots > 1:
+        return DECIMAL_COMMA
+    if commas > 1:
+        return DECIMAL_POINT
+    # Exactly one separator: a group that is not three digits cannot be a
+    # thousands separator, so the separator is decimal.
+    for sep, convention in ((".", DECIMAL_POINT), (",", DECIMAL_COMMA)):
+        if body.count(sep) == 1:
+            tail = body.split(sep)[1]
+            if len(tail) != 3:
+                return convention
+            return None                      # 1.234 / 1,234 — undecidable
+    return PLAIN_NUMBER                       # no separator at all
+
+
+def detect_number_convention(values: list) -> tuple[str, str]:
+    """Decide a column's number convention. Returns ``(convention, why)``.
+
+    ``PLAIN_NUMBER`` means every value parses the same either way (no
+    grouping separators in play). ``AMBIGUOUS`` means the column contains
+    only values like "1.234" that read as 1234 or as 1.234 depending on
+    the convention, and nothing in the column settles it — the caller
+    must ask rather than pick.
+    """
+    votes: dict[str, int] = {}
+    for value in values:
+        evidence = _number_evidence(value)
+        if evidence in (DECIMAL_COMMA, DECIMAL_POINT):
+            votes[evidence] = votes.get(evidence, 0) + 1
+    if len(votes) > 1:
+        top = max(votes, key=lambda k: votes[k])
+        other = min(votes, key=lambda k: votes[k])
+        return AMBIGUOUS, (
+            f"the column mixes conventions: {votes[top]} value(s) look like "
+            f"{top}, {votes[other]} like {other}")
+    if votes:
+        convention = next(iter(votes))
+        return convention, f"{votes[convention]} value(s) settle it"
+
+    undecided = [
+        v for v in values
+        if _number_evidence(v) is None
+        and _NUMERIC_SHAPE_RE.match(_NUM_CLEAN_RE.sub("", str(v or "")).strip())
+    ]
+    if undecided:
+        return AMBIGUOUS, (
+            f"values like {str(undecided[0])!r} read as two different numbers "
+            "depending on the convention, and nothing in the column decides it")
+    return PLAIN_NUMBER, "no grouping separators in this column"
+
+
+def parse_number(text: Any, convention: str = PLAIN_NUMBER) -> Optional[float]:
+    """Parse one value under a known convention. None if it is not a number."""
+    if isinstance(text, bool):
+        return None
+    if isinstance(text, (int, float)):
+        return float(text)
+    body = _NUM_CLEAN_RE.sub("", str(text or "")).strip()
+    if not body or not _NUMERIC_SHAPE_RE.match(body):
+        return None
+    if convention == DECIMAL_COMMA:
+        body = body.replace(".", "").replace(",", ".")
+    elif convention == DECIMAL_POINT:
+        body = body.replace(",", "")
+    else:
+        # No convention decided: a lone separator with a 3-digit tail is
+        # left alone only when it cannot change the value.
+        if body.count(",") == 1 and "." not in body:
+            body = body.replace(",", ".")
+        else:
+            body = body.replace(",", "")
+    try:
+        return float(body)
+    except ValueError:
+        return None
+
+
+def _date_parts(text: Any) -> Optional[tuple[int, int, int, str]]:
+    """``(a, b, c, separator)`` of a date-shaped value, else None."""
+    match = _DATE_SEP_RE.match(str(text or ""))
+    if match is None:
+        return None
+    a, sep, b, c = match.group(1), match.group(2), match.group(3), match.group(4)
+    return int(a), int(b), int(c), sep
+
+
+def detect_date_convention(values: list) -> tuple[str, str]:
+    """Decide a column's date convention. Returns ``(convention, why)``."""
+    saw_iso = saw_dot = False
+    day_first_proof = month_first_proof = 0
+    for value in values:
+        parts = _date_parts(value)
+        if parts is None:
+            continue
+        a, b, _c, sep = parts
+        if sep == "-" and a > 31:
+            saw_iso = True
+            continue
+        if sep == ".":
+            saw_dot = True
+        # A first field above 12 can only be a day; a second field above
+        # 12 can only be a day in second position.
+        if a > 12:
+            day_first_proof += 1
+        elif b > 12:
+            month_first_proof += 1
+    if saw_iso and not (day_first_proof or month_first_proof):
+        return ISO_DATE, "ISO dates (YYYY-MM-DD)"
+    if day_first_proof and month_first_proof:
+        return AMBIGUOUS, (
+            f"{day_first_proof} value(s) can only be day-first and "
+            f"{month_first_proof} can only be month-first — the column mixes "
+            "two conventions")
+    if day_first_proof:
+        return DAY_FIRST, f"{day_first_proof} value(s) have a day above 12"
+    if month_first_proof:
+        return MONTH_FIRST, f"{month_first_proof} value(s) have a month above 12"
+    if saw_dot:
+        # Dotted dates are day-first everywhere they are written.
+        return DAY_FIRST, "dot-separated dates are written day-first"
+    if saw_iso:
+        return ISO_DATE, "ISO dates (YYYY-MM-DD)"
+    return AMBIGUOUS, (
+        "every value could be read either way (no day above 12 anywhere)")
+
+
+def parse_date(text: Any, convention: str = ISO_DATE) -> Optional[str]:
+    """Parse one date under a known convention, returned as ISO ``YYYY-MM-DD``."""
+    import datetime as _dt
+
+    if isinstance(text, _dt.datetime):
+        return text.date().isoformat()
+    if isinstance(text, _dt.date):
+        return text.isoformat()
+    parts = _date_parts(text)
+    if parts is None:
+        return None
+    a, b, c, sep = parts
+    if convention == ISO_DATE or (sep == "-" and a > 31):
+        year, month, day = a, b, c
+    elif convention == MONTH_FIRST:
+        month, day, year = a, b, c
+    elif convention == DAY_FIRST:
+        day, month, year = a, b, c
+    else:
+        return None
+    if year < 100:                     # two-digit year, as spreadsheets do
+        year += 2000 if year < 70 else 1900
+    try:
+        return _dt.date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def profile_column(values: list, *, name: str = "") -> dict:
+    """Describe one column: what it holds, under which convention.
+
+    ``kind`` is ``number`` / ``date`` / ``text`` / ``empty``. A column is
+    only called numeric or date-like when most of its non-empty values
+    parse that way — one stray "n/a" must not turn a money column into
+    text, and one date-shaped code must not turn a text column into
+    dates. Values that do NOT parse are listed, because those are the
+    rows a total would silently omit.
+    """
+    filled = [v for v in values if str(v or "").strip() != ""]
+    if not filled:
+        return {"name": name, "kind": "empty", "convention": "",
+                "values": 0, "parsed": 0, "unparsed": []}
+
+    date_shaped = sum(1 for v in filled if _date_parts(v) is not None)
+    numeric_shaped = sum(
+        1 for v in filled
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+        or _NUMERIC_SHAPE_RE.match(_NUM_CLEAN_RE.sub("", str(v or "")).strip() or "x")
+    )
+
+    if date_shaped >= max(1, int(0.8 * len(filled))):
+        convention, why = detect_date_convention(filled)
+        parsed = [(v, parse_date(v, convention)) for v in filled]
+        return {
+            "name": name, "kind": "date", "convention": convention,
+            "convention_reason": why, "values": len(filled),
+            "parsed": sum(1 for _, p in parsed if p is not None),
+            "unparsed": [str(v) for v, p in parsed if p is None][:10],
+        }
+    if numeric_shaped >= max(1, int(0.8 * len(filled))):
+        convention, why = detect_number_convention(filled)
+        parsed = [(v, parse_number(v, convention)) for v in filled]
+        return {
+            "name": name, "kind": "number", "convention": convention,
+            "convention_reason": why, "values": len(filled),
+            "parsed": sum(1 for _, p in parsed if p is not None),
+            "unparsed": [str(v) for v, p in parsed if p is None][:10],
+        }
+    return {"name": name, "kind": "text", "convention": "",
+            "values": len(filled), "parsed": len(filled), "unparsed": []}
+
+
+def profile_table(rows: list[list], *, header: bool = True) -> list[dict]:
+    """Profile every column of a table (first row taken as the header)."""
+    if not rows:
+        return []
+    width = max(len(r) for r in rows)
+    names = (
+        [str(rows[0][i]) if i < len(rows[0]) else f"col{i + 1}"
+         for i in range(width)]
+        if header else [column_letter(i + 1) for i in range(width)]
+    )
+    body = rows[1:] if header else rows
+    out = []
+    for index in range(width):
+        column = [r[index] if index < len(r) else "" for r in body]
+        out.append(profile_column(column, name=names[index]))
+    return out
+
+
+def column_notes(profiles: list[dict]) -> list[str]:
+    """The findings from a profile that a reader must not miss."""
+    notes: list[str] = []
+    for entry in profiles:
+        name = entry.get("name") or "?"
+        if entry.get("convention") == AMBIGUOUS:
+            notes.append(
+                f"column '{name}': {entry.get('convention_reason', '')}. "
+                "Ask which reading is meant — do not compute on it as it is.")
+        # The two findings are independent: a column can both use a
+        # decimal comma AND hold values that are not numbers, and each
+        # one on its own is enough to make a naive total wrong.
+        if entry.get("kind") == "number" and entry.get("convention") == DECIMAL_COMMA:
+            notes.append(
+                f"column '{name}': numbers use a decimal comma "
+                "(1.234,50 = 1234.5). Convert before computing — read as-is "
+                "they are off by a factor of a thousand.")
+        elif entry.get("kind") == "date" and entry.get("convention") == DAY_FIRST:
+            notes.append(
+                f"column '{name}': dates are day-first (31.07.2026 = "
+                "2026-07-31).")
+        unparsed = entry.get("unparsed") or []
+        if unparsed:
+            missing = entry["values"] - entry["parsed"]
+            notes.append(
+                f"column '{name}': {missing} of {entry['values']} value(s) "
+                f"are not {entry['kind']}s (e.g. {', '.join(unparsed[:3])}). "
+                "A total over this column would leave them out.")
+    return notes
+
+
+# ---------------------------------------------------------------------------
 # Spreadsheets — reading
 # ---------------------------------------------------------------------------
+
+# Encodings tried in order when reading a text table. utf-8 first (it
+# fails loudly on non-utf-8 bytes rather than producing plausible
+# nonsense), then the two Windows encodings a spreadsheet program on a
+# German-language system writes. cp1252 before latin-1 because it is a
+# superset for the printable range and decodes the Euro sign and typographic
+# quotes that latin-1 turns into control characters.
+_TEXT_ENCODINGS: tuple[str, ...] = ("utf-8-sig", "cp1252", "latin-1")
+
+
+def decode_text(raw: bytes) -> tuple[str, str]:
+    """Decode table bytes, returning ``(text, encoding_used)``.
+
+    A CSV exported from a spreadsheet program on a German-language
+    Windows system is cp1252, not utf-8. Decoding it as utf-8 with
+    ``errors="replace"`` does not fail — it turns 'Müller' into
+    'M�ller' and 'Straße' into 'Stra�e', and the agent then
+    writes those broken names into letters. Every name and street in a
+    German data set carries at least one of those bytes, so guessing
+    wrong here corrupts essentially the whole file, silently.
+    """
+    for encoding in _TEXT_ENCODINGS:
+        try:
+            return raw.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    # latin-1 maps every byte, so this is unreachable in practice; keep a
+    # defined outcome rather than an exception if that ever changes.
+    return raw.decode("utf-8", errors="replace"), "utf-8 (with damage)"
+
 
 def _read_csv(
     path: Path, *, max_rows: int, max_cols: int, start_row: int
 ) -> dict:
+    import io
+
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise OfficeError(f"could not read {path.name}: {exc}") from exc
+    text, encoding = decode_text(raw)
+
     delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
-    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as fh:
-        sample = fh.read(8192)
-        fh.seek(0)
-        if path.suffix.lower() != ".tsv":
-            try:
-                delimiter = csv.Sniffer().sniff(
-                    sample, delimiters=",;\t|").delimiter
-            except csv.Error:
-                delimiter = ","
-        all_rows = list(csv.reader(fh, delimiter=delimiter))
+    if path.suffix.lower() != ".tsv":
+        try:
+            delimiter = csv.Sniffer().sniff(
+                text[:8192], delimiters=",;\t|").delimiter
+        except csv.Error:
+            delimiter = ","
+    all_rows = list(csv.reader(io.StringIO(text, newline=""),
+                              delimiter=delimiter))
 
     total_rows = len(all_rows)
     total_cols = max((len(r) for r in all_rows), default=0)
@@ -254,12 +586,19 @@ def _read_csv(
     notes = []
     if delimiter != ",":
         notes.append(f"delimiter detected: {delimiter!r}")
+    if encoding != "utf-8-sig":
+        notes.append(
+            f"decoded as {encoding} (not utf-8) — this file came from a "
+            "spreadsheet program on Windows. Anything you write back should "
+            "keep the accented characters intact.")
     if total_rows > begin + len(window):
         notes.append(
             f"showing rows {begin + 1}-{begin + len(window)} of {total_rows} "
             f"— pass start_row to page further")
     if total_cols > max_cols:
         notes.append(f"showing {max_cols} of {total_cols} columns")
+    profiles = profile_table(all_rows[:2000])
+    notes.extend(column_notes(profiles))
     return {
         "path": str(path),
         "kind": "csv",
@@ -268,6 +607,7 @@ def _read_csv(
         "rows": total_rows,
         "columns": total_cols,
         "grid": render_grid(window, first_row=begin + 1),
+        "column_profile": profiles,
         "notes": notes,
     }
 
@@ -420,6 +760,12 @@ def read_sheet(
         if fragile:
             notes.append("fragile content present: " + "; ".join(fragile))
 
+        # Profile the window that was read, treating its first row as the
+        # header only when it really is one (paging into the middle of a
+        # sheet must not promote a data row to a column name).
+        profiles = profile_table(window, header=(start_row == 1))
+        notes.extend(column_notes(profiles))
+
         return {
             "path": str(p),
             "kind": "spreadsheet",
@@ -428,6 +774,7 @@ def read_sheet(
             "rows": total_rows,
             "columns": total_cols,
             "grid": render_grid(window, first_row=start_row),
+            "column_profile": profiles,
             "notes": notes,
         }
     finally:
@@ -631,7 +978,12 @@ def create_sheet(
     p.parent.mkdir(parents=True, exist_ok=True)
     if kind == "csv":
         delimiter = "\t" if p.suffix.lower() == ".tsv" else ","
-        with p.open("w", encoding="utf-8", newline="") as fh:
+        # utf-8 WITH a BOM: a spreadsheet program opening a plain utf-8 CSV
+        # by double-click assumes the system code page and renders every
+        # umlaut as mojibake. The BOM is what makes it detect utf-8. It is
+        # invisible to every other reader that matters here (Python's csv
+        # strips it via utf-8-sig, as does the reader above).
+        with p.open("w", encoding="utf-8-sig", newline="") as fh:
             csv.writer(fh, delimiter=delimiter).writerows(
                 [list(r) for r in rows])
     elif kind == "spreadsheet":
@@ -651,6 +1003,276 @@ def create_sheet(
         "kind": kind,
         "rows": len(rows),
         "columns": max((len(r) for r in rows), default=0),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reconciling two tables
+# ---------------------------------------------------------------------------
+
+def _table_rows(path: Any, sheet: Optional[str] = None) -> list[list]:
+    """Every row of a table file, as lists (no window, no cap on width)."""
+    p = _resolve(path)
+    kind = document_kind(p)
+    if kind == "csv":
+        raw = p.read_bytes()
+        text, _enc = decode_text(raw)
+        delimiter = "\t" if p.suffix.lower() == ".tsv" else ","
+        if p.suffix.lower() != ".tsv":
+            try:
+                delimiter = csv.Sniffer().sniff(
+                    text[:8192], delimiters=",;\t|").delimiter
+            except csv.Error:
+                delimiter = ","
+        import io
+        return list(csv.reader(io.StringIO(text, newline=""),
+                               delimiter=delimiter))
+    if kind != "spreadsheet":
+        raise OfficeError(
+            f"{p.name} is not a table (need .xlsx, .csv or .tsv)")
+    openpyxl = _require("spreadsheet")
+    try:
+        wb = openpyxl.load_workbook(p, data_only=True, read_only=True)
+    except Exception as exc:
+        raise OfficeError(f"could not open workbook: {exc}") from exc
+    try:
+        if sheet:
+            if sheet not in wb.sheetnames:
+                raise OfficeError(
+                    f"no sheet named {sheet!r} in {p.name} — available: "
+                    f"{', '.join(wb.sheetnames)}")
+            ws = wb[sheet]
+        else:
+            ws = wb.active
+        return [list(r) for r in ws.iter_rows(values_only=True)]
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def _header_index(header: list, column: str, where: str) -> int:
+    wanted = str(column).strip().lower()
+    for index, name in enumerate(header):
+        if str(name or "").strip().lower() == wanted:
+            return index
+    raise OfficeError(
+        f"no column {column!r} in the {where} table. Columns: "
+        + ", ".join(str(h) for h in header if str(h or "").strip()))
+
+
+def _comparable(value: Any, profile: dict) -> Any:
+    """Normalise one value for comparison under its column's convention."""
+    kind = profile.get("kind")
+    convention = profile.get("convention", "")
+    if kind == "number":
+        parsed = parse_number(value, convention)
+        return parsed if parsed is not None else str(value or "").strip()
+    if kind == "date":
+        parsed = parse_date(value, convention)
+        return parsed if parsed is not None else str(value or "").strip()
+    return str(value or "").strip()
+
+
+def compare_tables(
+    left: Any,
+    right: Any,
+    *,
+    key: str,
+    columns: Optional[list[str]] = None,
+    left_sheet: Optional[str] = None,
+    right_sheet: Optional[str] = None,
+    max_report: int = 200,
+) -> dict:
+    """Reconcile two tables on a key column.
+
+    Every row of both inputs lands in exactly one group — equal,
+    differing, only-left, only-right, or not-comparable — and the counts
+    add up to the inputs. That is the whole point: the failure mode of
+    doing this by hand is not a wrong comparison, it is rows that quietly
+    fall out of the report and are never noticed.
+
+    Values are compared under the convention their column actually uses,
+    so "1.234,50" and 1234.5 are equal and 31.07.2026 matches 2026-07-31.
+    Duplicate keys are reported rather than joined: a duplicate key turns
+    a comparison into a cross product, and the result looks plausible.
+    """
+    left_rows = _table_rows(left, left_sheet)
+    right_rows = _table_rows(right, right_sheet)
+    if len(left_rows) < 2 or len(right_rows) < 2:
+        raise OfficeError(
+            "both tables need a header row and at least one data row")
+
+    left_header, right_header = left_rows[0], right_rows[0]
+    left_key = _header_index(left_header, key, "left")
+    right_key = _header_index(right_header, key, "right")
+
+    if columns:
+        wanted = [str(c) for c in columns]
+    else:
+        # Default: every column both tables share, key excluded.
+        right_names = {str(h or "").strip().lower() for h in right_header}
+        wanted = [
+            str(h) for h in left_header
+            if str(h or "").strip()
+            and str(h or "").strip().lower() in right_names
+            and str(h or "").strip().lower() != str(key).strip().lower()
+        ]
+    if not wanted:
+        raise OfficeError(
+            "the two tables share no comparable column besides the key — "
+            "name the columns explicitly")
+
+    left_idx = {c: _header_index(left_header, c, "left") for c in wanted}
+    right_idx = {c: _header_index(right_header, c, "right") for c in wanted}
+
+    # Each side is profiled on its own. The two tables routinely come from
+    # different systems and are written under different conventions —
+    # 1.234,50 out of a German export against 1234.50 out of a database.
+    # Applying one side's convention to both would report every such pair
+    # as a difference, which is exactly the noise that makes a
+    # reconciliation useless.
+    left_profiles = {
+        c: profile_column([r[i] if i < len(r) else ""
+                           for r in left_rows[1:]], name=c)
+        for c, i in left_idx.items()
+    }
+    right_profiles = {
+        c: profile_column([r[i] if i < len(r) else ""
+                           for r in right_rows[1:]], name=c)
+        for c, i in right_idx.items()
+    }
+
+    def _index(rows: list[list], key_at: int) -> tuple[dict, list, list]:
+        by_key: dict[str, list] = {}
+        blank: list[int] = []
+        for offset, row in enumerate(rows[1:], start=2):
+            raw = row[key_at] if key_at < len(row) else ""
+            token = str(raw or "").strip()
+            if not token:
+                blank.append(offset)
+                continue
+            by_key.setdefault(token, []).append((offset, row))
+        duplicates = [
+            {"key": k, "rows": [o for o, _ in v]}
+            for k, v in by_key.items() if len(v) > 1
+        ]
+        return by_key, duplicates, blank
+
+    left_by_key, left_dupes, left_blank = _index(left_rows, left_key)
+    right_by_key, right_dupes, right_blank = _index(right_rows, right_key)
+
+    not_comparable: list[dict] = []
+    for line in left_blank:
+        not_comparable.append(
+            {"side": "left", "row": line, "reason": "empty key"})
+    for line in right_blank:
+        not_comparable.append(
+            {"side": "right", "row": line, "reason": "empty key"})
+    for entry in left_dupes:
+        not_comparable.append({
+            "side": "left", "key": entry["key"], "rows": entry["rows"],
+            "reason": "key appears more than once"})
+    for entry in right_dupes:
+        not_comparable.append({
+            "side": "right", "key": entry["key"], "rows": entry["rows"],
+            "reason": "key appears more than once"})
+
+    duplicate_keys = ({e["key"] for e in left_dupes}
+                      | {e["key"] for e in right_dupes})
+    comparable_left = {k: v[0] for k, v in left_by_key.items()
+                       if k not in duplicate_keys}
+    comparable_right = {k: v[0] for k, v in right_by_key.items()
+                        if k not in duplicate_keys}
+
+    equal: list[str] = []
+    differing: list[dict] = []
+    for token, (line, row) in sorted(comparable_left.items()):
+        if token not in comparable_right:
+            continue
+        other_line, other_row = comparable_right[token]
+        diffs = []
+        for column in wanted:
+            a = row[left_idx[column]] if left_idx[column] < len(row) else ""
+            b = (other_row[right_idx[column]]
+                 if right_idx[column] < len(other_row) else "")
+            left_p, right_p = left_profiles[column], right_profiles[column]
+            if left_p.get("kind") == right_p.get("kind"):
+                # Same kind on both sides: normalise each under its OWN
+                # convention, so the comparison is of values, not spellings.
+                same = _comparable(a, left_p) == _comparable(b, right_p)
+            else:
+                # One side is text where the other is a number or a date.
+                # Comparing the normalised forms would be comparing two
+                # different things, so fall back to the literal text.
+                same = str(a or "").strip() == str(b or "").strip()
+            if not same:
+                diffs.append({"column": column,
+                              "left": _fmt(a), "right": _fmt(b)})
+        if diffs:
+            differing.append({"key": token, "left_row": line,
+                              "right_row": other_line, "differences": diffs})
+        else:
+            equal.append(token)
+
+    only_left = sorted(set(comparable_left) - set(comparable_right))
+    only_right = sorted(set(comparable_right) - set(comparable_left))
+
+    notes: list[str] = []
+    for column in wanted:
+        for side, profile in (("left", left_profiles[column]),
+                              ("right", right_profiles[column])):
+            if profile.get("convention") == AMBIGUOUS:
+                notes.append(
+                    f"column '{column}' ({side}): "
+                    f"{profile.get('convention_reason', '')} — the comparison "
+                    "treated its values as text.")
+        if left_profiles[column].get("kind") != right_profiles[column].get("kind"):
+            notes.append(
+                f"column '{column}': the left side looks like "
+                f"{left_profiles[column].get('kind')}s and the right side like "
+                f"{right_profiles[column].get('kind')}s — compared as text, so "
+                "a difference here may be a formatting difference only.")
+    if duplicate_keys:
+        notes.append(
+            f"{len(duplicate_keys)} key(s) appear more than once and were NOT "
+            "compared — a duplicate key would make the join a cross product. "
+            "Resolve them or pick a different key.")
+    if left_blank or right_blank:
+        notes.append(
+            f"{len(left_blank) + len(right_blank)} row(s) have an empty key "
+            "and could not be matched.")
+
+    # Every input row must be accounted for. If this ever fails, the
+    # report is wrong in a way the caller could not see.
+    accounted = (len(equal) + len(differing) + len(only_left)
+                 + len(only_right) + len(left_blank) + len(right_blank)
+                 + sum(len(e["rows"]) for e in left_dupes)
+                 + sum(len(e["rows"]) for e in right_dupes))
+    expected = (len(left_rows) - 1) + (len(right_rows) - 1)
+    # Matched pairs consume one row from each side.
+    balanced = accounted + len(equal) + len(differing) == expected
+
+    return {
+        "left": str(_resolve(left)),
+        "right": str(_resolve(right)),
+        "key": key,
+        "compared_columns": wanted,
+        "left_rows": len(left_rows) - 1,
+        "right_rows": len(right_rows) - 1,
+        "equal": equal[:max_report],
+        "equal_count": len(equal),
+        "differing": differing[:max_report],
+        "differing_count": len(differing),
+        "only_left": only_left[:max_report],
+        "only_left_count": len(only_left),
+        "only_right": only_right[:max_report],
+        "only_right_count": len(only_right),
+        "not_comparable": not_comparable[:max_report],
+        "not_comparable_count": len(not_comparable),
+        "rows_accounted_for": balanced,
+        "notes": notes,
     }
 
 

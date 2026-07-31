@@ -2297,6 +2297,37 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "compare_tables",
+            "description": (
+                "Reconcile two tables on a key column: equal / differing / "
+                "only-left / only-right / not-comparable, every row "
+                "accounted for. Compares by value, so 1.234,50 equals "
+                "1234.50. Use this rather than writing the join yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "left": {"type": "string"},
+                    "right": {"type": "string"},
+                    "key": {
+                        "type": "string",
+                        "description": "Column name present in both.",
+                    },
+                    "columns": {
+                        "type": "array",
+                        "description": "Default: all shared columns.",
+                        "items": {"type": "string"},
+                    },
+                    "left_sheet": {"type": "string"},
+                    "right_sheet": {"type": "string"},
+                },
+                "required": ["left", "right", "key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fill_docx_template",
             "description": (
                 "Substitute {{placeholder}} markers in a .docx template and "
@@ -3644,7 +3675,7 @@ _CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
 # not installed" — advertising them there only buys a wasted round-trip.
 _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
-    "fill_docx_template", "create_docx",
+    "fill_docx_template", "create_docx", "compare_tables",
 })
 
 _OFFICE_BACKENDS_CACHE: Optional[bool] = None
@@ -5728,6 +5759,8 @@ class _DocToolExecutor:
             return self._execute_read_file(arguments, permissions)
         elif name == "read_document":
             return self._execute_read_document(arguments, permissions)
+        elif name == "compare_tables":
+            return self._execute_compare_tables(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
         elif name == "forget":
@@ -6026,12 +6059,106 @@ class _DocToolExecutor:
             if result.get("sheet"):
                 head += f", sheet '{result['sheet']}'"
             lines += [head, "", result["grid"]]
+            # Column kinds and conventions come with the grid, not on
+            # request: the model decides whether to sum a column while
+            # it is looking at it, and "1.234,50" looks like a number
+            # long before anyone checks how it would parse.
+            profile = [p for p in result.get("column_profile", [])
+                       if p.get("kind") in ("number", "date")]
+            if profile:
+                lines.append("")
+                for entry in profile:
+                    detail = f"  {entry['name']}: {entry['kind']}"
+                    if entry.get("convention"):
+                        detail += f" ({entry['convention']})"
+                    if entry["parsed"] != entry["values"]:
+                        detail += (f", {entry['values'] - entry['parsed']} of "
+                                   f"{entry['values']} not parseable")
+                    lines.append(detail)
         else:
             head = f"{disp} — {result.get('kind', 'document')}"
             if result.get("pages"):
                 head += f", {result['pages']} page(s)"
             lines += [head, "", result.get("text", "")]
         for note in result.get("notes", []):
+            lines.append(f"\nNOTE: {note}")
+        return "\n".join(lines)
+
+    def _execute_compare_tables(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        left, err = self._office_target(arguments, perms, key="left")
+        if err is not None:
+            return json.dumps({"error": err})
+        right, err = self._office_target(arguments, perms, key="right")
+        if err is not None:
+            return json.dumps({"error": err})
+        key = str(arguments.get("key", "") or "").strip()
+        if not key:
+            return json.dumps({"error": (
+                "key is required — the column both tables are matched on. "
+                "Read them first if you do not know the column names.")})
+
+        if perms is not None:
+            for path in (left, right):
+                denied = self._check_read_access(perms, path, label=path.name)
+                if denied is not None:
+                    return json.dumps({"error": denied})
+
+        from . import office as _office
+        columns = arguments.get("columns")
+        try:
+            result = _office.compare_tables(
+                left, right, key=key,
+                columns=[str(c) for c in columns] if columns else None,
+                left_sheet=arguments.get("left_sheet"),
+                right_sheet=arguments.get("right_sheet"))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"comparison failed: {exc}"}, ensure_ascii=False)
+
+        lines = [
+            f"{self._display_path(left, perms)} ({result['left_rows']} rows) "
+            f"vs {self._display_path(right, perms)} "
+            f"({result['right_rows']} rows), matched on '{key}'",
+            f"compared columns: {', '.join(result['compared_columns'])}",
+            "",
+            f"equal:          {result['equal_count']}",
+            f"differing:      {result['differing_count']}",
+            f"only left:      {result['only_left_count']}",
+            f"only right:     {result['only_right_count']}",
+            f"not comparable: {result['not_comparable_count']}",
+        ]
+        if result["differing"]:
+            lines.append("\ndifferences:")
+            for entry in result["differing"][:50]:
+                for diff in entry["differences"]:
+                    lines.append(
+                        f"  {entry['key']}  {diff['column']}: "
+                        f"{diff['left']} | {diff['right']}")
+            if result["differing_count"] > 50:
+                lines.append(
+                    f"  … {result['differing_count'] - 50} more differing key(s)")
+        for label, field in (("only in the left table", "only_left"),
+                             ("only in the right table", "only_right")):
+            if result[field]:
+                shown = ", ".join(result[field][:30])
+                more = (f" … +{result[field + '_count'] - 30}"
+                        if result[field + "_count"] > 30 else "")
+                lines.append(f"\n{label}: {shown}{more}")
+        if result["not_comparable"]:
+            lines.append("\nnot comparable:")
+            for entry in result["not_comparable"][:30]:
+                where = entry.get("key") or f"row {entry.get('row')}"
+                lines.append(
+                    f"  [{entry['side']}] {where}: {entry['reason']}")
+        if not result["rows_accounted_for"]:
+            lines.append(
+                "\nWARNING: the group counts do not add up to the input rows. "
+                "Do not report this comparison as complete.")
+        for note in result["notes"]:
             lines.append(f"\nNOTE: {note}")
         return "\n".join(lines)
 

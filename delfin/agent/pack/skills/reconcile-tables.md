@@ -1,31 +1,33 @@
 # Reconcile two tables
 > Compare two lists on a key column and report matches, gaps and differing values.
 
-Two tables should agree — a list of bookings against a list of invoices,
-an inventory against a delivery note, last month's figures against this
-month's. The user wants to know where they do not.
+Two tables should agree — bookings against invoices, an inventory
+against a delivery note, last month's figures against this month's. The
+user wants to know where they do not.
 
-1. `read_document` both files. Name the key column you will join on and
-   confirm it is actually unique in each table — a duplicate key silently
-   turns a comparison into nonsense. If it is not unique, say so and ask
-   which key to use.
-2. Do the comparison in `bash` with Python, not by eye. Normalise before
-   comparing: strip whitespace, unify decimal separators, compare numbers
-   as numbers and dates as dates.
-3. Report four groups, each with counts: present in both and equal;
-   present in both but differing (with the differing values); only in the
-   first table; only in the second.
-4. Write the result where the user can use it — `edit_sheet(create=true)`
-   for a spreadsheet, `write_file` for CSV or text. Do not paste hundreds
-   of rows into the chat; give the counts and the path.
+1. `read_document` both files first. You need the real column names, and
+   the column profile tells you what each column holds and under which
+   convention.
+2. `compare_tables(left=..., right=..., key=...)`. Do NOT write the join
+   yourself: the tool compares by value (so `1.234,50` equals `1234.50`
+   and `31.07.2026` equals `2026-07-31`), accounts for every input row,
+   and reports duplicate and empty keys instead of quietly joining them.
+3. Report all five groups with their counts: equal, differing, only in
+   the left, only in the right, and not comparable. The last one is not
+   an afterthought — a duplicate key or an empty key is a finding.
+4. If there are few differences, list them. If there are many, write the
+   result where the user can work with it (`edit_sheet(create=true)` or
+   `write_file`) and give the path plus the counts.
 
 Constraints:
 - Never "fix" a difference on your own. Reconciling reports differences;
   changing a record is a separate instruction.
-- State every normalisation you applied. A match that only exists because
-  you rounded is a finding, not a match.
-- Rows you could not compare (missing key, unparsable value) get their
-  own group. They must never be silently counted as agreeing.
+- If the tool reports an ambiguous column, say so and ask. A comparison
+  over a column whose numbers could be read two ways is not a result.
+- If the key column is not unique, the comparison is not valid for those
+  rows. Report them and ask which key to use instead — do not pick one
+  yourself.
+- Never state a match count without the not-comparable count next to it.
 
-Output format: the four counts, the differing rows in full if there are
+Output format: the five counts, the differing rows in full if there are
 few, otherwise the path to the written result.

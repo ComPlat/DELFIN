@@ -287,7 +287,9 @@ def test_create_writes_xlsx_and_csv(ws):
     x = office.create_sheet(ws / "neu.xlsx", [["A", "B"], [1, 2]])
     assert x["rows"] == 2 and (ws / "neu.xlsx").exists()
     c = office.create_sheet(ws / "neu.csv", [["A", "B"], [1, 2]])
-    assert (ws / "neu.csv").read_text().startswith("A,B")
+    # utf-8-sig: the file carries a BOM so a spreadsheet program opening it
+    # by double-click detects utf-8 instead of the system code page.
+    assert (ws / "neu.csv").read_text(encoding="utf-8-sig").startswith("A,B")
     assert c["columns"] == 2
 
 
@@ -965,3 +967,68 @@ def test_word_writes_are_refused_in_plan_mode(ws, template):
     ):
         out = json.loads(ex._dispatch(name, args, perms))
         assert "plan mode" in out["error"], name
+
+
+# ---------------------------------------------------------------------------
+# Text encodings — the silent corruption in German office data
+# ---------------------------------------------------------------------------
+
+_GERMAN_CSV = "Name;Straße;Betrag\nMüller;Hauptstr. 5;1.234,50\nÖzdemir;Gänseweg 3;89,90\n"
+
+
+def test_a_windows_csv_export_keeps_its_umlauts(ws):
+    """What a spreadsheet program on a German system writes is cp1252.
+
+    Decoded as utf-8 with errors="replace" it does not fail — it turns
+    'Müller' into 'M�ller'. Every name and street in a German data
+    set carries such a byte, so the whole file is quietly corrupted and
+    the broken names end up in letters.
+    """
+    p = ws / "export.csv"
+    p.write_bytes(_GERMAN_CSV.encode("cp1252"))
+    result = office.read_sheet(p)
+    assert "Müller" in result["grid"]
+    assert "Straße" in result["grid"]
+    assert "Özdemir" in result["grid"]
+    assert "�" not in result["grid"]
+    assert any("cp1252" in n for n in result["notes"])
+
+
+def test_utf8_files_are_read_as_utf8_without_a_warning(ws):
+    p = ws / "utf.csv"
+    p.write_text(_GERMAN_CSV, encoding="utf-8")
+    result = office.read_sheet(p)
+    assert "Müller" in result["grid"]
+    assert not any("cp1252" in n or "latin" in n for n in result["notes"])
+
+
+def test_a_utf8_bom_is_not_mistaken_for_content(ws):
+    p = ws / "bom.csv"
+    p.write_text("Name;Ort\nMüller;Köln\n", encoding="utf-8-sig")
+    result = office.read_sheet(p)
+    assert result["grid"].splitlines()[2].split("|")[1].strip() == "Name"
+
+
+def test_decode_text_reports_which_encoding_it_used():
+    text, enc = office.decode_text("Größe".encode("cp1252"))
+    assert text == "Größe" and enc == "cp1252"
+    text, enc = office.decode_text("Größe".encode("utf-8"))
+    assert text == "Größe" and enc == "utf-8-sig"
+
+
+def test_written_csv_opens_correctly_in_a_spreadsheet_program(ws):
+    """Plain utf-8 renders as mojibake on double-click; the BOM fixes it."""
+    out = ws / "neu.csv"
+    office.create_sheet(out, [["Name", "Ort"], ["Özdemir", "Gänserndorf"]])
+    assert out.read_bytes().startswith(b"\xef\xbb\xbf")
+    # …and it round-trips through our own reader unchanged.
+    assert "Özdemir" in office.read_sheet(out)["grid"]
+
+
+def test_a_german_csv_round_trips_through_read_and_write(ws):
+    src = ws / "in.csv"
+    src.write_bytes(_GERMAN_CSV.encode("cp1252"))
+    rows = [["Name", "Straße"], ["Müller", "Hauptstr. 5"]]
+    out = ws / "out.csv"
+    office.create_sheet(out, rows)
+    assert "Straße" in office.read_sheet(out)["grid"]

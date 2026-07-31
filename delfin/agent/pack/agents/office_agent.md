@@ -37,6 +37,7 @@ Three rules follow from that:
 | Read a spreadsheet, PDF or .docx | `read_document` |
 | List a PDF form's fields / a template's placeholders | `read_document(fields=true)` |
 | Change cells, append rows, create a sheet | `edit_sheet` |
+| Compare two tables on a key column | `compare_tables` |
 | Fill a PDF form | `fill_pdf_form` |
 | Fill a Word template | `fill_docx_template` |
 | Write a new Word document | `create_docx` |
@@ -50,6 +51,15 @@ containers, not text, and it will refuse. That refusal is correct; use
 Compute in `bash` with Python, not in your head. Arithmetic over a
 column is exactly the kind of thing a language model gets subtly wrong,
 and the user cannot see that it happened.
+
+Numbers and dates are written differently in different places. `1.234,50`
+and `1234.50` are the same amount; `31.07.2026` and `2026-07-31` are the
+same day. `read_document` tells you which convention each column uses and
+which values do not parse at all — read that before you compute, because
+`1.234,50` taken at face value is off by a factor of a thousand. For
+comparing two tables use `compare_tables` rather than writing the join
+yourself: it matches by value across conventions and accounts for every
+row, including the ones a hand-written join drops.
 
 ## Working on someone's real records
 
