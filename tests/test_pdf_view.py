@@ -34,12 +34,10 @@ def png_pixels(png_bytes):
 # Document builders
 # ---------------------------------------------------------------------------
 
-def make_text_pdf(path, pages, *, term='Rechnung', per_page=1, rotate=0):
+def make_text_pdf(path, pages, *, term='Rechnung', per_page=1):
     """A text PDF where page i carries ``term`` ``per_page`` times."""
     c = _canvas.Canvas(str(path), pagesize=A4)
     for index in range(pages):
-        if rotate:
-            c.setPageRotation(rotate)
         c.setFont('Helvetica', 12)
         c.drawString(60, 500, f'Seite {index + 1} Inhalt')
         for k in range(per_page):
@@ -406,26 +404,33 @@ def test_render_marks_the_active_hit_differently(tmp_path):
     assert corner_a != corner_b
 
 
-def test_render_highlight_lands_on_the_glyphs_of_a_rotated_page(tmp_path):
-    path = make_text_pdf(tmp_path / 'rot.pdf', 1, rotate=90)
+@pytest.mark.parametrize('rotation', [0, 90, 180, 270])
+def test_render_highlight_lands_on_the_glyphs_of_a_rotated_page(tmp_path, rotation):
+    # One word on an otherwise empty page: every dark pixel of the rendered
+    # page belongs to the hit, so the highlight has to cover all of them.
+    # Without the page rotation matrix it lands somewhere else entirely.
+    path = tmp_path / 'rot.pdf'
+    c = _canvas.Canvas(str(path), pagesize=A4)
+    c.setFont('Helvetica', 14)
+    c.drawString(72, 300, 'Rechnung')
+    c.showPage()
+    c.save()
     doc = pv.open_document(path)
     try:
-        assert doc[0].rotation == 90
+        doc[0].set_rotation(rotation)
+        assert doc[0].rotation == rotation
         result = pv.search_document(doc, 'Rechnung')
         assert result.hits, 'rotated page should still be searchable'
-        rect = result.hits[0].rect
         plain = png_pixels(pv.render_page_png(doc, 0, 150))
-        marked = png_pixels(pv.render_page_png(doc, 0, 150, highlights=[rect]))
+        marked = png_pixels(
+            pv.render_page_png(doc, 0, 150, highlights=[result.hits[0].rect]))
     finally:
         doc.close()
     changed = np.any(plain != marked, axis=2)
-    ys, xs = np.nonzero(changed)
-    assert len(xs), 'highlight was drawn nowhere'
-    # The repainted area has to contain the dark glyph pixels of the hit,
-    # which is what proves the rotation matrix was applied.
+    assert changed.sum() > 0, 'highlight was drawn nowhere'
     dark = (plain < 128).any(axis=2)
-    dark[:] = dark & changed
     assert dark.sum() > 0
+    assert int((dark & changed).sum()) == int(dark.sum())
 
 
 # ---------------------------------------------------------------------------
