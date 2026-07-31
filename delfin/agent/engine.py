@@ -1115,6 +1115,28 @@ class AgentEngine:
                 f"folder or switch to a different directory name mid-task; that "
                 f"splits the project and breaks imports/tests.")
 
+    def _scope_memory_domain(self, role: str) -> str:
+        """Tell the memory store which kind of work this turn is.
+
+        Recall is gated on the domain of the role that runs, and every
+        stored memory carries the domain of the folder it was written for.
+        Registering the folder here is what connects the two: the write
+        path reaches the store through the permission workspace and has no
+        other way to learn that this folder is where administrative work
+        happens. Returns the domain; best-effort, never raises.
+        """
+        try:
+            from .memory_store import (
+                DOMAIN_OFFICE, domain_for_role, register_office_workspace,
+            )
+            domain = domain_for_role(role, getattr(self, "mode", "") or "")
+            if domain == DOMAIN_OFFICE:
+                workspace = getattr(self.kit_permissions, "workspace", None)
+                register_office_workspace(workspace or self.repo_dir)
+            return domain
+        except Exception:
+            return ""
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -1124,6 +1146,8 @@ class AgentEngine:
         role = self.current_role
         if not role:
             role = self.route[0] if self.route else "builder_agent"
+
+        self._scope_memory_domain(role)
 
         # Inject session error context into memory (Feature 4)
         error_ctx = self.format_error_context()

@@ -197,6 +197,7 @@ class PromptLoader:
         base: Path,
         task_text: str,
         label: str = "MEMORY.md",
+        domain: str = "",
     ) -> tuple[str, list[tuple[str, str, str]]]:
         """Read one memory store (MEMORY.md index + referenced files).
 
@@ -204,6 +205,13 @@ class PromptLoader:
         ``(title, rel_filename, raw_file_text)`` in BM25-ranked order
         against ``task_text`` (MEMORY.md order kept on ties / without task
         tokens). An empty index_chunk means the store contributes nothing.
+
+        With a non-empty ``domain`` the store is read through the domain
+        gate: memories written for a different kind of work are dropped
+        before anything about them enters the prompt — index line included,
+        because the pointer hook alone already names the subject. The gate
+        is deliberately not a ranking penalty; a high text similarity must
+        not be able to pull an out-of-domain memory back in.
         """
         index = base / "MEMORY.md"
         if not index.exists():
@@ -212,6 +220,17 @@ class PromptLoader:
             index_text = index.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return "", []
+
+        if domain:
+            try:
+                from .memory_store import filter_memory_index
+                index_text = filter_memory_index(index_text, base, domain)
+            except Exception:
+                # A gate that cannot run must not degrade to "recall
+                # everything" — that is the leak it exists to prevent.
+                return "", []
+            if not index_text.strip():
+                return "", []
 
         # Resolve [[name]] wiki-style cross-links to inline markdown links
         # so the agent sees concrete targets instead of opaque braces.
@@ -239,6 +258,16 @@ class PromptLoader:
                 body = target.read_text(encoding="utf-8", errors="replace").strip()
             except (OSError, ValueError):
                 continue
+            # Second, independent domain check on the file itself: the index
+            # is user-editable, so a hand-added pointer must not be able to
+            # smuggle a memory past the gate above.
+            if domain:
+                try:
+                    from .memory_store import domain_visible, memory_text_domain
+                    if not domain_visible(memory_text_domain(body), domain):
+                        continue
+                except Exception:
+                    continue
             # Also resolve wiki-links *inside* the body so the recursive
             # references the user wrote in memory_X.md don't stay as raw
             # "[[Y]]" tokens in the agent's prompt.
@@ -269,6 +298,7 @@ class PromptLoader:
         max_chars: int = 6000,
         memory_root: Path | None = None,
         task_text: str = "",
+        domain: str = "",
     ) -> str:
         """Load the user's memory for the current repo — global store first.
 
@@ -291,6 +321,12 @@ class PromptLoader:
         anchored references whose cited line moved away ``[drifted: …]``,
         so a rotted memory is not replayed as authoritative ground truth.
 
+        A non-empty ``domain`` restricts BOTH stores to memories written in
+        that kind of work plus the explicitly neutral ones. The user-wide
+        store is the case that needs it most: it is read from every
+        workspace, so without the gate a preference recorded while working
+        on code would surface in an office turn.
+
         An explicit ``memory_root`` (tests) reads that single store only.
         Empty string if nothing is found. Failures (no home dir, missing
         files, encoding issues) degrade silently to an empty string — this
@@ -301,6 +337,20 @@ class PromptLoader:
         except Exception:
             return ""
         repo_root = Path(self.repo_root).resolve()
+        try:
+            from .memory_store import DOMAIN_OFFICE as _DOMAIN_OFFICE
+        except Exception:
+            _DOMAIN_OFFICE = "office"
+        if domain == _DOMAIN_OFFICE and self.workspace_root:
+            # Office memories belong to the folder the work happens in, and
+            # that folder is what the write path keys them by. repo_root
+            # locates the prompt pack (the DELFIN source tree), so reading
+            # the project store from it would look in a folder no office
+            # session ever wrote to.
+            try:
+                repo_root = Path(self.workspace_root).resolve()
+            except OSError:
+                pass
         global_base: Path | None = None
         if memory_root is not None:
             base = memory_root
@@ -319,7 +369,8 @@ class PromptLoader:
             except Exception:
                 global_base = None
 
-        proj_index, proj_entries = self._gather_memory_entries(base, task_text)
+        proj_index, proj_entries = self._gather_memory_entries(
+            base, task_text, domain=domain)
         glob_index: str = ""
         glob_entries: list[tuple[str, str, str]] = []
         if global_base is not None:
@@ -327,6 +378,7 @@ class PromptLoader:
                 glob_index, glob_entries = self._gather_memory_entries(
                     global_base, task_text,
                     label="GLOBAL MEMORY.md (applies across all projects)",
+                    domain=domain,
                 )
             except Exception:
                 glob_index, glob_entries = "", []
@@ -1303,10 +1355,18 @@ class PromptLoader:
 
             # External memory — bridge to the user-level memory file, so
             # dashboard solo mode inherits the same memories the terminal
-            # CLI uses.
+            # CLI uses. Read through the domain gate of the role that is
+            # about to run: administrative and technical work keep separate
+            # memories, and the separation has to hold before the text is
+            # composed, not after.
+            try:
+                from .memory_store import domain_for_role
+                _mem_domain = domain_for_role(role_id, mode_id)
+            except Exception:
+                _mem_domain = ""
             try:
                 ext_mem = self._load_external_memory_context(
-                    task_text=task_text)
+                    task_text=task_text, domain=_mem_domain)
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):
@@ -1591,8 +1651,13 @@ class PromptLoader:
         # its turns are short and a guide model should not drown in memos.
         if role_id == "dashboard_agent":
             try:
+                from .memory_store import domain_for_role
+                _mem_domain = domain_for_role(role_id, mode_id)
+            except Exception:
+                _mem_domain = ""
+            try:
                 ext_mem = self._load_external_memory_context(
-                    max_chars=2000, task_text=task_text)
+                    max_chars=2000, task_text=task_text, domain=_mem_domain)
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):
@@ -1608,6 +1673,33 @@ class PromptLoader:
                 add("episodes", self.LAYER_VOLATILE,
                     f"--- Past Sessions ---\n{episode_ctx}")
                 injected.append("episodes")
+
+        # Office recall — the conventions of the folder being worked in:
+        # which template belongs to which list, the mapping that was
+        # confirmed, the naming pattern that was approved, the key column
+        # and how its values are written. Without this the same questions
+        # get asked again every session.
+        #
+        # Deliberately narrower than the other roles: the domain gate is
+        # passed explicitly, and episodic recall is left out because past
+        # SESSIONS are recorded against the source tree and would carry
+        # technical work into an administrative turn.
+        if role_id == "office_agent":
+            try:
+                from .memory_store import domain_for_role
+                _office_domain = domain_for_role(role_id, mode_id)
+            except Exception:
+                _office_domain = "office"
+            try:
+                ext_mem = self._load_external_memory_context(
+                    max_chars=2000, task_text=task_text,
+                    domain=_office_domain)
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                add("external_memory", self.LAYER_VOLATILE,
+                    f"--- Folder Conventions (remembered) ---\n{ext_mem}")
+                injected.append("external_memory")
 
         # Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
