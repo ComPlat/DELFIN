@@ -3018,6 +3018,10 @@ def create_tab(ctx):
                     "pipelines via the delfin-tools MCP server (get_guide → discover → "
                     "build → validate → save → submit). Results in ~/calc; needs the "
                     "delfin-tools MCP server registered.",
+        "office": "Office — administrative work on your documents and data: "
+                  "spreadsheets, PDF forms, Word templates, letters, lists. No "
+                  "chemistry tools; the calc search and the ORCA manual are off "
+                  "in this mode.",
         "plan": "Read-only research first — the agent explores the codebase, drafts a "
                 "step-by-step plan in markdown, and waits for your approval via "
                 "ExitPlanMode before any file edits or bash run.",
@@ -3045,11 +3049,15 @@ def create_tab(ctx):
         #   Code      — general terminal-style coding agent (internal id stays
         #               "solo" so the engine's mode logic + saved sessions keep
         #               working; /mode solo remains a back-compat alias).
+        #   Office     — documents, tables and administrative work; the
+        #               chemistry tools are denied for this role so an
+        #               administrative question cannot be answered with
+        #               methodology.
         # The old multi-agent pipeline modes (quick/reviewed/tdd/cluster/full)
         # are retired. "Plan" is NOT a mode — it's a permission profile (set
         # Perms = Plan for read-only-first / draft-a-plan-then-approve).
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Pipeline", "pipeline")],
+                 ("Office", "office"), ("Pipeline", "pipeline")],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -15438,6 +15446,18 @@ def create_tab(ctx):
         old_mode = (change.get("old") or "")
         if not state.get("_mode_change_internal"):
             state["_mode_manual_override"] = True
+            # Remember the choice like provider / model / effort. Only a
+            # user-driven switch is stored: an internal one (mode routing,
+            # the restore below) is not a preference and must not silently
+            # become the new default.
+            try:
+                from delfin.user_settings import load_settings, save_settings
+                _s = load_settings()
+                _s.setdefault("agent", {})
+                _s["agent"]["mode"] = new_mode
+                save_settings(_s)
+            except Exception:
+                pass
         # Update mode description label
         desc = _MODE_DESCRIPTIONS.get(new_mode, "")
         mode_desc_html.value = (
@@ -15507,7 +15527,7 @@ def create_tab(ctx):
         _update_cycle_inspector()
 
         # Solo-minimal UI: hide pipeline overhead for solo/dashboard
-        _is_minimal = new_mode in ("solo", "dashboard", "plan")
+        _is_minimal = new_mode in ("solo", "dashboard", "plan", "office")
         # Hide mode description (saves vertical space)
         mode_desc_html.layout.display = "none" if _is_minimal else "block"
         # Hide pipeline-only buttons (but keep commit/push visible)
@@ -15914,6 +15934,19 @@ def create_tab(ctx):
     push_confirm_btn.on_click(_on_push_confirm)
     push_cancel_btn.on_click(_on_push_cancel)
     mode_dropdown.observe(_on_mode_change, names="value")
+
+    # Restore the last mode the user chose. This runs AFTER the observer is
+    # wired on purpose: setting the value here goes through _on_mode_change,
+    # so the restored mode brings its own UI rules (permission locks, the
+    # minimal layout, the cycle inspector) instead of a mismatch between the
+    # dropdown label and the panel around it. Marked internal, so restoring
+    # does not re-save what it just read.
+    try:
+        _saved_mode = str(_load_agent_settings().get("mode", "") or "").strip()
+        if _saved_mode and _saved_mode != mode_dropdown.value:
+            _set_mode_programmatically(_saved_mode)
+    except Exception:
+        pass
     provider_dropdown.observe(_on_provider_change, names="value")
     model_dropdown.observe(_on_model_change, names="value")
     effort_dropdown.observe(_on_effort_change, names="value")

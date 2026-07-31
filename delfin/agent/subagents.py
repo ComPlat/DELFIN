@@ -1548,6 +1548,12 @@ def _derive_perms(parent_perms, mode: str, workspace=None):
     if parent_perms is None:
         return None
     mode = _clamp_child_mode(getattr(parent_perms, "mode", "") or "default", mode)
+    # A locked session may not move its workspace. The child inherits the
+    # lock through the role, but a workspace override (worktree isolation)
+    # would relocate the boundary — the child would still be contained to
+    # one folder, just not the folder the user confined the session to.
+    if workspace is not None and getattr(parent_perms, "scope_locked", False):
+        workspace = None
     # Bump nesting depth so the child's own subagent calls are refused once the
     # depth cap is hit (anti-recursion). Falls back gracefully if the perms
     # type predates the field.

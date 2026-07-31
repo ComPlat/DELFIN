@@ -582,6 +582,15 @@ edit code, plan next steps) and check progress periodically.
 delimiters. Use the cell-aware `notebook_read` / `notebook_edit` instead,
 and always `notebook_read` first to get current cell indices.
 
+<!-- module:documents -->
+## Spreadsheets, PDFs and Word files
+
+`read_file` refuses these — they are containers, not text. `read_document`
+reads them (`fields=true` for a form's fields or a template's
+placeholders); `edit_sheet`, `fill_pdf_form`, `fill_docx_template` and
+`create_docx` write them. Pass on the caveats they return. Office mode is
+the specialised agent for this work.
+
 <!-- module:project_dev -->
 ## Project-dev workflow (in user's own project)
 

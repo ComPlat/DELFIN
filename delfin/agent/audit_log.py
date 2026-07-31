@@ -209,6 +209,10 @@ def make_record(
 _WRITE_TOOLS = frozenset({
     "write_file", "edit_file", "multi_edit", "notebook_edit",
     "apply_patch", "publish_report",
+    # Document writes. The fillers record the blank form/template as
+    # their ``path``; the file they produced is named in the result, so
+    # the report shows what was worked on either way.
+    "edit_sheet", "fill_pdf_form", "fill_docx_template", "create_docx",
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})

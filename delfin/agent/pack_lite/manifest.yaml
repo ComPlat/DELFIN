@@ -21,6 +21,10 @@ modes:
     file: modes/pipeline.md
     route:
       - solo_agent
+  - id: office
+    file: modes/office.md
+    route:
+      - office_agent
   - id: research
     file: modes/research.md
     route:

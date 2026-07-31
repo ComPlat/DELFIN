@@ -322,6 +322,36 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
              "stays active either way"}]
 
 
+def _check_document_backends(ctx: dict) -> list[dict]:
+    """Spreadsheet / PDF / Word support — one row per backend.
+
+    A missing backend is a WARN, not a FAIL: the agent works without it,
+    the affected tools are simply not advertised. It is reported because
+    the alternative is discovering the gap halfway through a document
+    task, when the tool the model was told to use is not there.
+    """
+    out: list[dict] = []
+    for kind, module, dist, capability in (
+        ("spreadsheets", "openpyxl", "openpyxl",
+         "read_document / edit_sheet on .xlsx"),
+        ("PDF", "pypdf", "pypdf", "read_document / fill_pdf_form"),
+        ("Word", "docx", "python-docx", "read_document on .docx"),
+    ):
+        label = f"documents: {kind}"
+        try:
+            importlib.import_module(module)
+        except Exception as exc:
+            out.append(_row(
+                label, WARN,
+                f"{dist} not importable ({type(exc).__name__}) — "
+                f"{capability} unavailable",
+                "pip install 'delfin-complat[office]'",
+            ))
+        else:
+            out.append(_row(label, PASS, f"{dist} available"))
+    return out
+
+
 def _check_memory_store(ctx: dict) -> list[dict]:
     """~/.delfin writable — memory/credential/session stores live there."""
     delfin_dir = Path.home() / ".delfin"
@@ -384,6 +414,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
+    ("document backends", "_check_document_backends"),
 )
 
 

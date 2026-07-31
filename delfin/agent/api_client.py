@@ -789,6 +789,85 @@ def _bash_outside_reads(cmd: str) -> list[str]:
     return out
 
 
+# Directories a command legitimately names even under a locked scope:
+# interpreters, system binaries and libraries. They hold no user data,
+# and refusing them would block `/usr/bin/env python3` rather than an
+# escape attempt.
+_SYSTEM_PATH_PREFIXES: tuple[str, ...] = (
+    "/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/opt/", "/proc/self/",
+)
+# The same directories named without a trailing component ("ls /bin").
+_SYSTEM_DIRS: frozenset[str] = frozenset(
+    p.rstrip("/") for p in _SYSTEM_PATH_PREFIXES)
+
+
+# ".." as a PATH SEGMENT — deliberately not a bare substring, so the
+# brace range in `for i in {1..10}` and a float like 1..2 do not match.
+_PARENT_SEGMENT_RE = re.compile(r"(?:^|[\s'\"=(:])\.\.(?:[/\\]|[\s'\")]|$)")
+
+
+def _bash_climbs_out(cmd: str) -> bool:
+    """True if a command walks up out of its directory.
+
+    Inside a single locked folder ``..`` has no legitimate use: it aims
+    either at the folder's parent or past it. This is what catches
+    ``cd .. && cat ../other/file`` — a relative escape names no absolute
+    path, so the path scanner never sees it. Filesystem isolation is the
+    real containment; this is what stands in for it where bwrap does not
+    run.
+    """
+    return bool(_PARENT_SEGMENT_RE.search(cmd or ""))
+
+
+# Absolute-path-shaped runs anywhere in a command string. Not preceded
+# by ':' or '/' so a URL's "//host/path" is not read as a path. Scanned
+# over the RAW command rather than over shell tokens: an absolute path
+# inside a quoted string — python3 -c "open('/etc/passwd')" — is a
+# single token that does not begin with '/', which is exactly how the
+# earlier read-refusal was circumvented in the field.
+_ABS_PATH_RE = re.compile(r"(?<![:/\w])(~?/[\w.\-+/]*[\w.\-+])")
+
+
+def _bash_paths_outside(cmd: str, workspace: Path) -> list[str]:
+    """Absolute paths in *cmd* that point outside *workspace*.
+
+    Coarser than the read/write scanners on purpose: under a locked scope
+    the question is not what a command does with a path but whether it
+    names one at all. System and interpreter directories are exempt.
+
+    A candidate counts only when it — or its parent — exists on disk.
+    That keeps `sed 's/a/b/'` and similar slash-shaped arguments from
+    reading as paths, while still catching a write to a new file in an
+    existing directory. Never raises: an unparseable command yields
+    nothing rather than a false refusal, because filesystem isolation is
+    the containment this backs up.
+    """
+    out: list[str] = []
+    try:
+        ws = str(Path(workspace).resolve())
+        for match in _ABS_PATH_RE.finditer(cmd or ""):
+            candidate = match.group(1)
+            try:
+                expanded = Path(candidate).expanduser()
+            except Exception:
+                continue
+            text = str(expanded)
+            if text.startswith(_SYSTEM_PATH_PREFIXES) or text in _SYSTEM_DIRS:
+                continue
+            if text == ws or text.startswith(ws.rstrip("/") + "/"):
+                continue
+            try:
+                if not (expanded.exists() or expanded.parent.exists()):
+                    continue
+            except OSError:
+                continue
+            if text not in out:
+                out.append(text)
+    except Exception:
+        return out
+    return out
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -1240,18 +1319,43 @@ _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# Roles defined by what they must NOT reach, rather than by an
+# enumeration of everything they may. A subtractive rule is the right
+# shape when a role differs from the default by a handful of tools:
+# spelling out the other fifty would be a list nobody keeps correct, and
+# every tool forgotten in it would fail silently.
+# Roles whose sandbox has no door: everything outside the workspace is
+# refused rather than offered for confirmation, and the workspace cannot
+# be widened while the session runs. The office agent works on one
+# folder of administrative documents; there is no legitimate reason for
+# it to read the rest of the machine, and "ask the user" is the wrong
+# answer when the answer is always no.
+_SCOPE_LOCKED_ROLES: frozenset[str] = frozenset({"office_agent"})
+
+_ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
+    # The office agent works on documents and data, not on chemistry.
+    # The calc and ORCA-manual tools are not merely useless there — they
+    # invite the model to answer an administrative question with
+    # methodology it has no business applying.
+    "office_agent": _DELFIN_ONLY_TOOL_NAMES,
+}
+
+
 def _tool_denied_for_role(role: str, name: str) -> bool:
     """Deny-by-default per-role execution check (pure, testable).
 
     Returns True when *role* has a defined execution allow-list AND *name*
-    is not on it. Roles without an allow-list are never denied here. The
-    ``mcp__server__tool`` namespace is stripped so a namespaced call is
-    judged by its underlying tool name.
+    is not on it, or when *role* has a deny-list that names it. Roles with
+    neither are never denied here. The ``mcp__server__tool`` namespace is
+    stripped so a namespaced call is judged by its underlying tool name.
     """
+    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    deny = _ROLE_EXEC_DENYLIST.get(role or "")
+    if deny is not None and base in deny:
+        return True
     allow = _ROLE_EXEC_ALLOWLIST.get(role or "")
     if allow is None:
         return False
-    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
     if name in _ALWAYS_ALLOWED_TOOLS or base in _ALWAYS_ALLOWED_TOOLS:
         return False
     return base not in allow
@@ -1284,8 +1388,12 @@ _REASONING_MIN_TOKENS = 2048
 
 
 _WEAK_MODEL_CORE_TOOLS: frozenset[str] = frozenset({
-    # File-system core
-    "read_file", "write_file", "edit_file", "multi_edit",
+    # File-system core. read_document is here for the same reason as
+    # read_file: it is the ONLY way to see inside a spreadsheet or PDF,
+    # and read_file's refusal for those formats points at it. Without it
+    # a weak model is told to use a tool it was never offered. The
+    # document WRITE tools stay out — this set is deliberately minimal.
+    "read_file", "read_document", "write_file", "edit_file", "multi_edit",
     "grep_file", "list_files",
     # Shell + verification
     "bash", "run_tests",
@@ -1492,6 +1600,12 @@ class KitToolPermissions:
     #     confirmation, so the agent can't silently destroy results).
     read_only_workspace_dirs: tuple[Path, ...] = ()
     confirm_write_dirs: tuple[Path, ...] = ()
+    # Hard containment: the agent may not touch anything outside
+    # ``workspace``, and outside paths are REFUSED rather than offered
+    # for confirmation. Normally derived from the role (see
+    # ``scope_locked``); settable directly for callers that want the
+    # containment without that role.
+    lock_workspace: bool = False
     bash_timeout_s: int = 120
     bash_max_timeout_s: int = 600
     max_output_chars: int = 12_000
@@ -1594,7 +1708,29 @@ class KitToolPermissions:
                 _DEFAULT_BASH_AUTO_ALLOW + _DELFIN_BASH_AUTO_ALLOW
             )
 
+    @property
+    def scope_locked(self) -> bool:
+        """True when the agent may not leave its workspace at all.
+
+        Normally the sandbox is a boundary with a door: reads outside it
+        are offered to the user for confirmation, and a directory can be
+        granted at runtime. A locked scope has no door — outside is
+        refused, not asked about, and cannot be widened while the session
+        runs.
+
+        It follows the ROLE rather than a flag the UI has to remember to
+        set. A guarantee that depends on the caller wiring it correctly
+        is not a guarantee; deriving it here means every path that builds
+        permissions for this role gets the containment, including
+        sub-agents (``_derive_perms`` copies the role) and any future
+        entry point.
+        """
+        return bool(self.lock_workspace
+                    or (self.agent_role or "") in _SCOPE_LOCKED_ROLES)
+
     def all_workspace_roots(self) -> tuple[Path, ...]:
+        if self.scope_locked:
+            return (self.workspace,)
         return (self.workspace,) + tuple(self.extra_workspace_dirs)
 
     def add_extra_dir(self, path) -> Path:
@@ -1602,7 +1738,13 @@ class KitToolPermissions:
 
         Returns the resolved path. Raises ValueError if the path does not
         exist or is not a directory. Idempotent: re-adding is a no-op.
+        Refused outright when the scope is locked — otherwise the agent
+        could widen its own sandbox by asking for a grant.
         """
+        if self.scope_locked:
+            raise ValueError(
+                f"this session is locked to {self.workspace} and no further "
+                "directory can be added to it")
         p = Path(path).expanduser().resolve()
         if not p.exists():
             raise ValueError(f"path does not exist: {p}")
@@ -1634,7 +1776,16 @@ class KitToolPermissions:
         return False
 
     def all_readable_roots(self) -> tuple[Path, ...]:
-        """Roots the agent may READ from: writable + read-only + confirm-write."""
+        """Roots the agent may READ from: writable + read-only + confirm-write.
+
+        Under a locked scope this collapses to the workspace alone. The
+        archive and calc roots are reachable in a normal session because
+        the agent works on chemistry data that lives there; an office
+        session has no business reading either, and "reachable" is what
+        every read gate is built on.
+        """
+        if self.scope_locked:
+            return (self.workspace,)
         return (self.all_workspace_roots()
                 + tuple(self.read_only_workspace_dirs)
                 + tuple(self.confirm_write_dirs))
@@ -2166,6 +2317,198 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["path", "edits"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_document",
+            "description": (
+                "Read a spreadsheet (.xlsx/.csv), PDF or .docx — read_file "
+                "cannot, these are containers. Sheets come back as a grid "
+                "with column letters and row numbers to cite in edit_sheet. "
+                "fields=true lists a PDF form's fields instead of its text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "sheet": {
+                        "type": "string",
+                        "description": "Default: the active one.",
+                    },
+                    "start_row": {
+                        "type": "integer",
+                        "description": "1-based, for paging.",
+                    },
+                    "max_rows": {"type": "integer"},
+                    "max_cols": {"type": "integer"},
+                    "pages": {
+                        "type": "string",
+                        "description": "PDF: '3', '2-5' or '1,4,7'.",
+                    },
+                    "fields": {"type": "boolean"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_sheet",
+            "description": (
+                "Set cells and/or append rows in a spreadsheet, in place; "
+                "read_document it first. Formulas are preserved and the "
+                "change is undoable. create=true writes a NEW file from "
+                "append_rows."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "sheet": {"type": "string"},
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "cell": {
+                                    "type": "string",
+                                    "description": "e.g. 'B7'",
+                                },
+                                "value": {},
+                            },
+                            "required": ["cell", "value"],
+                        },
+                    },
+                    "append_rows": {
+                        "type": "array",
+                        "description": "Added below the last used row.",
+                        "items": {"type": "array", "items": {}},
+                    },
+                    "create": {"type": "boolean"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fill_pdf_form",
+            "description": (
+                "Fill a PDF form and write the result to a NEW file; get the "
+                "field names from read_document(fields=true) first. Check "
+                "boxes take true/false."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The blank form.",
+                    },
+                    "output": {"type": "string"},
+                    "values": {
+                        "type": "object",
+                        "description": "field -> value.",
+                    },
+                    "flatten": {
+                        "type": "boolean",
+                        "description": "Fields become non-editable.",
+                    },
+                },
+                "required": ["path", "output", "values"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_tables",
+            "description": (
+                "Reconcile two tables on a key column: equal / differing / "
+                "only-left / only-right / not-comparable, every row "
+                "accounted for. Compares by value, so 1.234,50 equals "
+                "1234.50. Use this rather than writing the join yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "left": {"type": "string"},
+                    "right": {"type": "string"},
+                    "key": {
+                        "type": "string",
+                        "description": "Column name present in both.",
+                    },
+                    "columns": {
+                        "type": "array",
+                        "description": "Default: all shared columns.",
+                        "items": {"type": "string"},
+                    },
+                    "left_sheet": {"type": "string"},
+                    "right_sheet": {"type": "string"},
+                },
+                "required": ["left", "right", "key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fill_docx_template",
+            "description": (
+                "Substitute {{placeholder}} markers in a .docx template and "
+                "write a NEW file. List the markers first with "
+                "read_document(fields=true). Placeholders left without a "
+                "value stay visible in the text and are reported."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The template.",
+                    },
+                    "output": {"type": "string"},
+                    "values": {
+                        "type": "object",
+                        "description": "placeholder -> value.",
+                    },
+                    "strict": {
+                        "type": "boolean",
+                        "description": (
+                            "Default true: a value for a placeholder the "
+                            "template lacks is an error."
+                        ),
+                    },
+                },
+                "required": ["path", "output", "values"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_docx",
+            "description": (
+                "Write a new Word document from content blocks. Each block "
+                "is {heading, level} | {paragraph} | {table: [[...]], "
+                "header_row} | {page_break: true}. For plain text or "
+                "markdown use write_file instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "blocks": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+                "required": ["path", "blocks"],
             },
         },
     },
@@ -3456,6 +3799,32 @@ _DOC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
 _CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
     "search_calcs", "get_calc_info", "calc_summary",
 })
+# Tools whose executor needs a document backend (openpyxl / pypdf /
+# python-docx). Those ship in the ``office`` extra, so a plain install
+# has none of them and every call would come straight back as "package
+# not installed" — advertising them there only buys a wasted round-trip.
+_OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_document", "edit_sheet", "fill_pdf_form",
+    "fill_docx_template", "create_docx", "compare_tables",
+})
+
+_OFFICE_BACKENDS_CACHE: Optional[bool] = None
+
+
+def _office_backends_available() -> bool:
+    """True if at least one document backend can be imported.
+
+    Cached: this decides the advertised tool surface and would otherwise
+    run three imports on every turn.
+    """
+    global _OFFICE_BACKENDS_CACHE
+    if _OFFICE_BACKENDS_CACHE is None:
+        try:
+            from . import office as _office
+            _OFFICE_BACKENDS_CACHE = bool(_office.have_office_support())
+        except Exception:
+            _OFFICE_BACKENDS_CACHE = False
+    return _OFFICE_BACKENDS_CACHE
 # Tools refused once the sub-agent nesting cap is reached: a child at the cap
 # may neither spawn further sub-agents nor drive an orchestration (see
 # ``_execute_subagent`` / ``_execute_orchestrate``). subagent_result is NOT
@@ -3526,6 +3895,7 @@ class ToolSurfaceContext:
     subagent_depth: int = 0
     has_doc_index: bool = True
     has_calc_index: bool = True
+    has_office_libs: bool = True
 
 
 def tool_unavailable_reason(
@@ -3536,7 +3906,8 @@ def tool_unavailable_reason(
     Mirrors the executor's own refusals:
       * per-role execution allow-list (``_ROLE_EXEC_ALLOWLIST``),
       * sub-agent nesting cap (subagent / orchestrate at/above the cap),
-      * missing doc / calc index (those executors refuse outright).
+      * missing doc / calc index (those executors refuse outright),
+      * missing document backend (the office tools cannot run without it).
     Anything this returns non-None for is pure waste in the advertised
     surface — and a source of tool calls the model then sees refused.
 
@@ -3550,6 +3921,9 @@ def tool_unavailable_reason(
     """
     ctx = ctx or ToolSurfaceContext()
     base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    deny = _ROLE_EXEC_DENYLIST.get(ctx.role or "")
+    if deny is not None and base in deny:
+        return f"role {ctx.role!r} may not execute this tool"
     allow = _ROLE_EXEC_ALLOWLIST.get(ctx.role or "")
     if allow is not None and base not in allow:
         return f"role {ctx.role!r} may not execute this tool"
@@ -3564,6 +3938,8 @@ def tool_unavailable_reason(
         return "doc index not available"
     if base in _CALC_INDEX_TOOL_NAMES and not ctx.has_calc_index:
         return "calc index not available"
+    if base in _OFFICE_TOOL_NAMES and not ctx.has_office_libs:
+        return "document backend not installed"
     return None
 
 
@@ -3590,7 +3966,8 @@ def role_tool_surface_report(
     the saving from role scoping is measurable rather than asserted.
     """
     catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
-    names = roles if roles is not None else ["", *sorted(_ROLE_EXEC_ALLOWLIST)]
+    names = roles if roles is not None else [
+        "", *sorted(set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_EXEC_DENYLIST))]
     out: dict[str, dict[str, Any]] = {}
     for role in names:
         advertised = advertisable_tools(catalogue, ToolSurfaceContext(role=role))
@@ -4458,6 +4835,77 @@ def _looks_binary(path: Path) -> bool:
         return True  # unreadable -> treat as skippable
 
 
+# Binary formats read_file must refuse. Suffix -> what it is, plus how to
+# get at the content. Splitting "there is a tool for this" from "convert
+# it first" matters: the first is one call away, the second is not, and a
+# model told only "this is binary" tries the same read through bash next.
+_UNREADABLE_SUFFIXES: dict[str, str] = {
+    ".xlsx": "spreadsheet", ".xlsm": "spreadsheet",
+    ".xltx": "spreadsheet", ".xltm": "spreadsheet",
+    ".pdf": "PDF", ".docx": "Word document",
+}
+_CONVERT_FIRST_SUFFIXES: dict[str, str] = {
+    ".xls": "legacy Excel workbook", ".doc": "legacy Word document",
+    ".ppt": "legacy PowerPoint file", ".pptx": "PowerPoint file",
+    ".ods": "OpenDocument spreadsheet", ".odt": "OpenDocument text",
+    ".odp": "OpenDocument presentation", ".rtf": "rich-text document",
+    ".zip": "ZIP archive", ".tar": "tar archive", ".gz": "gzip archive",
+    ".7z": "7z archive", ".rar": "RAR archive",
+    ".sqlite": "SQLite database", ".db": "database file",
+    ".parquet": "Parquet file", ".pickle": "pickled Python object",
+    ".pkl": "pickled Python object", ".npy": "NumPy array",
+    ".npz": "NumPy archive", ".so": "shared library",
+    ".mp4": "video file", ".mp3": "audio file", ".wav": "audio file",
+}
+
+
+def _binary_read_hint(path: Path) -> Optional[str]:
+    """Why read_file must not decode *path* as text, or None if it may.
+
+    A container format decoded as UTF-8 returns its compressed bytes as
+    replacement characters: several thousand tokens that look like data
+    and are not. The formats with a reader are pointed at it; the rest
+    are named so the model stops rather than reaching for bash to do the
+    same thing.
+    """
+    suffix = path.suffix.lower()
+    kind = _UNREADABLE_SUFFIXES.get(suffix)
+    if kind is not None:
+        return (
+            f"{path.name} is a {kind} — a compressed container, not text. "
+            "Reading it as text returns thousands of characters of binary "
+            "noise, not its contents. Use read_document(path=...) instead; "
+            "for a PDF form pass fields=true to list its fields."
+        )
+    kind = _CONVERT_FIRST_SUFFIXES.get(suffix)
+    if kind is not None:
+        return (
+            f"{path.name} is a {kind}, which is not text and has no reader "
+            "here. Reading it as text gives binary noise. Extract or convert "
+            "it first (via bash), then read the result — do not retry this "
+            "read through another tool."
+        )
+    # Unknown suffix: sniff the content, so an unnamed binary is caught
+    # too. Deliberately not _looks_binary, which reports an unreadable
+    # file as binary — that would replace a permission error with a wrong
+    # explanation. An unreadable file falls through so the read path
+    # reports what actually went wrong.
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8192)
+    except OSError:
+        return None
+    if b"\x00" in head:
+        return (
+            f"{path.name} contains binary data (NUL bytes), so decoding it "
+            "as text would return noise rather than its contents. If it is "
+            "text in another encoding, convert it via bash first."
+        )
+    return None
+
+
 def _as_int(value, default: int) -> int:
     """Coerce a tool-call argument to int, tolerating weak-model quirks.
 
@@ -5067,11 +5515,13 @@ class _DocToolExecutor:
         else:
             result = self._dispatch(name, arguments, permissions)
 
-        # Track mtime after a successful read_file so edit_file can verify the
-        # file hasn't changed since the agent last read it.
+        # Track mtime after a successful read so the write tools can verify
+        # the file hasn't changed since the agent last read it. read_document
+        # counts: it is the only way to read a spreadsheet, so requiring
+        # read_file first would make edit_sheet unreachable.
         if (
             permissions is not None
-            and name == "read_file"
+            and name in ("read_file", "read_document")
             and not result.startswith('{"error"')
         ):
             try:
@@ -5157,6 +5607,9 @@ class _DocToolExecutor:
         "write_file", "edit_file", "multi_edit", "publish_report",
         "bash", "bash_background", "bash_kill",
         "notebook_edit",
+        # Document writes change user files like any other write, so they
+        # belong in the audit trail /changes reads.
+        "edit_sheet", "fill_pdf_form", "fill_docx_template", "create_docx",
         "remember_permission", "remember_permission_bundle",
     })
 
@@ -5226,6 +5679,29 @@ class _DocToolExecutor:
                 return self._execute_bash(arguments, permissions)
             if name == "bash_background":
                 return self._execute_bash_background(arguments, permissions)
+
+        # Document writes. The per-path write gate runs inside the
+        # executors: edit_sheet gates the file it edits, fill_pdf_form
+        # gates its OUTPUT (the source is only read), so they cannot
+        # share the block above.
+        if name in ("edit_sheet", "fill_pdf_form",
+                    "fill_docx_template", "create_docx"):
+            if permissions is None:
+                return json.dumps({"error": (
+                    f"Tool '{name}' requires permissions to be configured."
+                )})
+            if permissions.mode == "plan":
+                return json.dumps({"error": (
+                    f"plan mode (read-only) — '{name}' rejected. Describe "
+                    "the intended change and call exit_plan_mode."
+                )})
+            if name == "edit_sheet":
+                return self._execute_edit_sheet(arguments, permissions)
+            if name == "fill_pdf_form":
+                return self._execute_fill_pdf_form(arguments, permissions)
+            if name == "fill_docx_template":
+                return self._execute_fill_docx_template(arguments, permissions)
+            return self._execute_create_docx(arguments, permissions)
 
         # Background-job inspection tools — no command execution, just
         # reading the registry. Permissions optional.
@@ -5411,6 +5887,10 @@ class _DocToolExecutor:
         # cannot fall back to bash.
         if name == "read_file":
             return self._execute_read_file(arguments, permissions)
+        elif name == "read_document":
+            return self._execute_read_document(arguments, permissions)
+        elif name == "compare_tables":
+            return self._execute_compare_tables(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
         elif name == "forget":
@@ -5613,6 +6093,9 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 f"{rel_path} is an image, not text — reading it as text gives "
                 "garbage. Use the view_image tool to actually LOOK at it.")})
+        binary_hint = _binary_read_hint(full)
+        if binary_hint is not None:
+            return json.dumps({"error": binary_hint}, ensure_ascii=False)
         try:
             lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as exc:
@@ -5628,6 +6111,592 @@ class _DocToolExecutor:
         if len(lines) > offset + limit:
             result += f"\n... ({len(lines)} lines total, showing {offset}-{offset + limit})"
         return result
+
+    # ------------------------------------------------------------------
+    # Office documents (spreadsheets, PDFs, Word)
+    # ------------------------------------------------------------------
+
+    def _office_target(
+        self, arguments: dict, perms: Optional["KitToolPermissions"],
+        key: str = "path",
+    ) -> "tuple[Optional[Path], Optional[str]]":
+        """Resolve a document path argument against the workspace."""
+        rel = (self._get_path_arg(arguments) if key == "path"
+               else str(arguments.get(key, "") or "").strip())
+        if not rel:
+            return None, f"{key} is required"
+        root = perms.workspace if perms is not None else self._repo_root()
+        full = (root / rel) if not Path(rel).is_absolute() else Path(rel)
+        return full, None
+
+    def _execute_read_document(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        full, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        if perms is not None:
+            denied = self._check_read_access(
+                perms, full, label=str(arguments.get("path", "")))
+            if denied is not None:
+                return json.dumps({"error": denied})
+
+        from . import office as _office
+        try:
+            result = _office.read_document(
+                full,
+                sheet=arguments.get("sheet"),
+                # _as_int, not int(): a model that sends "200" or 200.0
+                # for a count should page the sheet, not get a traceback.
+                max_rows=_as_int(arguments.get("max_rows"),
+                                 _office.DEFAULT_MAX_ROWS),
+                max_cols=_as_int(arguments.get("max_cols"),
+                                 _office.DEFAULT_MAX_COLS),
+                start_row=_as_int(arguments.get("start_row"), 1),
+                pages=arguments.get("pages"),
+                fields=bool(arguments.get("fields")),
+            )
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"could not read the document: {exc}"},
+                ensure_ascii=False)
+
+        disp = self._display_path(full, perms)
+        lines: list[str] = []
+        if "fields" in result:
+            lines.append(f"{disp} — PDF form, {result['field_count']} field(s)")
+            lines.append("")
+            for f in result["fields"]:
+                row = f"  {f['name']}  [{f['type']}]"
+                if f.get("value"):
+                    row += f"  = {f['value']}"
+                if f.get("states"):
+                    row += f"  states: {', '.join(f['states'])}"
+                lines.append(row)
+        elif "placeholders" in result:
+            found = result["placeholders"]
+            lines.append(
+                f"{disp} — Word template, {len(found)} placeholder(s)")
+            lines.append("")
+            for entry in found:
+                suffix = (f"  ({entry['occurrences']}x)"
+                          if entry["occurrences"] > 1 else "")
+                lines.append(f"  {{{{{entry['name']}}}}}{suffix}")
+        elif result.get("kind") in ("spreadsheet", "csv"):
+            head = f"{disp} — {result['rows']} rows x {result['columns']} columns"
+            if result.get("sheet"):
+                head += f", sheet '{result['sheet']}'"
+            lines += [head, "", result["grid"]]
+            # Column kinds and conventions come with the grid, not on
+            # request: the model decides whether to sum a column while
+            # it is looking at it, and "1.234,50" looks like a number
+            # long before anyone checks how it would parse.
+            profile = [p for p in result.get("column_profile", [])
+                       if p.get("kind") in ("number", "date")]
+            if profile:
+                lines.append("")
+                for entry in profile:
+                    detail = f"  {entry['name']}: {entry['kind']}"
+                    if entry.get("convention"):
+                        detail += f" ({entry['convention']})"
+                    if entry["parsed"] != entry["values"]:
+                        detail += (f", {entry['values'] - entry['parsed']} of "
+                                   f"{entry['values']} not parseable")
+                    lines.append(detail)
+        else:
+            head = f"{disp} — {result.get('kind', 'document')}"
+            if result.get("pages"):
+                head += f", {result['pages']} page(s)"
+            lines += [head, "", result.get("text", "")]
+        for note in result.get("notes", []):
+            lines.append(f"\nNOTE: {note}")
+        return "\n".join(lines)
+
+    def _execute_compare_tables(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        left, err = self._office_target(arguments, perms, key="left")
+        if err is not None:
+            return json.dumps({"error": err})
+        right, err = self._office_target(arguments, perms, key="right")
+        if err is not None:
+            return json.dumps({"error": err})
+        key = str(arguments.get("key", "") or "").strip()
+        if not key:
+            return json.dumps({"error": (
+                "key is required — the column both tables are matched on. "
+                "Read them first if you do not know the column names.")})
+
+        if perms is not None:
+            for path in (left, right):
+                denied = self._check_read_access(perms, path, label=path.name)
+                if denied is not None:
+                    return json.dumps({"error": denied})
+
+        from . import office as _office
+        columns = arguments.get("columns")
+        try:
+            result = _office.compare_tables(
+                left, right, key=key,
+                columns=[str(c) for c in columns] if columns else None,
+                left_sheet=arguments.get("left_sheet"),
+                right_sheet=arguments.get("right_sheet"))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"comparison failed: {exc}"}, ensure_ascii=False)
+
+        lines = [
+            f"{self._display_path(left, perms)} ({result['left_rows']} rows) "
+            f"vs {self._display_path(right, perms)} "
+            f"({result['right_rows']} rows), matched on '{key}'",
+            f"compared columns: {', '.join(result['compared_columns'])}",
+            "",
+            f"equal:          {result['equal_count']}",
+            f"differing:      {result['differing_count']}",
+            f"only left:      {result['only_left_count']}",
+            f"only right:     {result['only_right_count']}",
+            f"not comparable: {result['not_comparable_count']}",
+        ]
+        if result["differing"]:
+            lines.append("\ndifferences:")
+            for entry in result["differing"][:50]:
+                for diff in entry["differences"]:
+                    lines.append(
+                        f"  {entry['key']}  {diff['column']}: "
+                        f"{diff['left']} | {diff['right']}")
+            if result["differing_count"] > 50:
+                lines.append(
+                    f"  … {result['differing_count'] - 50} more differing key(s)")
+        for label, field in (("only in the left table", "only_left"),
+                             ("only in the right table", "only_right")):
+            if result[field]:
+                shown = ", ".join(result[field][:30])
+                more = (f" … +{result[field + '_count'] - 30}"
+                        if result[field + "_count"] > 30 else "")
+                lines.append(f"\n{label}: {shown}{more}")
+        if result["not_comparable"]:
+            lines.append("\nnot comparable:")
+            for entry in result["not_comparable"][:30]:
+                where = entry.get("key") or f"row {entry.get('row')}"
+                lines.append(
+                    f"  [{entry['side']}] {where}: {entry['reason']}")
+        if not result["rows_accounted_for"]:
+            lines.append(
+                "\nWARNING: the group counts do not add up to the input rows. "
+                "Do not report this comparison as complete.")
+        for note in result["notes"]:
+            lines.append(f"\nNOTE: {note}")
+        return "\n".join(lines)
+
+    def _execute_edit_sheet(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        full, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+
+        from . import office as _office
+        edits = arguments.get("edits") or []
+        append_rows = arguments.get("append_rows") or []
+        creating = bool(arguments.get("create"))
+
+        if creating:
+            if not append_rows:
+                return json.dumps({"error": (
+                    "create=true needs the content in append_rows (a list of "
+                    "rows, the first one usually the header)")})
+            if full.exists():
+                return json.dumps({"error": (
+                    f"'{self._display_path(full, perms)}' already exists — "
+                    "drop create=true to edit it in place")})
+        else:
+            if not full.exists():
+                return json.dumps({"error": (
+                    f"'{self._display_path(full, perms)}' does not exist — "
+                    "pass create=true with append_rows to write a new file")})
+            if not edits and not append_rows:
+                return json.dumps({"error": (
+                    "nothing to do: pass edits and/or append_rows")})
+            # Same contract as write_file: the model must have looked at the
+            # file in this session, and the file must not have moved under it.
+            tracked = perms.read_tracker.get(str(full.resolve()))
+            if tracked is None:
+                return json.dumps({"error": (
+                    f"refusing to edit '{self._display_path(full, perms)}' "
+                    "without reading it first in this session — call "
+                    "read_document on it, so the cell references are the "
+                    "real ones.")})
+            try:
+                if full.stat().st_mtime > tracked + 1e-3:
+                    return json.dumps({"error": (
+                        "the file changed since you read it — re-read it "
+                        "with read_document before editing.")})
+            except OSError:
+                pass
+
+        gate_err = self._gate_write_path(
+            str(full), perms, "edit_sheet", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        # diff_approval stages a text diff, which a spreadsheet has no
+        # useful form of. Ask instead, showing the cell changes — that is
+        # the decision the user is actually being asked to make. A NEW
+        # file is put up for approval too, the same way write_file stages
+        # a creation.
+        if getattr(perms, "mode", "") == "diff_approval":
+            if creating:
+                preview_rows = [
+                    "  " + " | ".join(str(c) for c in row)
+                    for row in append_rows[:20]
+                ]
+                if len(append_rows) > 20:
+                    preview_rows.append(
+                        f"  … {len(append_rows) - 20} more row(s)")
+                preview = (
+                    f"Create {self._display_path(full, perms)} with "
+                    f"{len(append_rows)} row(s)\n" + "\n".join(preview_rows)
+                )
+            else:
+                try:
+                    plan = _office.plan_sheet_edits(
+                        full, edits=edits, append_rows=append_rows,
+                        sheet=arguments.get("sheet"))
+                except _office.OfficeError as exc:
+                    return json.dumps({"error": str(exc)}, ensure_ascii=False)
+                preview = self._sheet_change_preview(full, perms, plan)
+            approved = self._confirm_office_change(
+                "edit_sheet", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        pre_bytes: Optional[bytes] = None
+        if full.exists():
+            try:
+                pre_bytes = full.read_bytes()
+            except OSError:
+                pre_bytes = None
+
+        try:
+            if creating:
+                result = _office.create_sheet(
+                    full, [list(r) for r in append_rows],
+                    sheet_name=str(arguments.get("sheet") or "Sheet1"))
+                summary = (
+                    f"created {self._display_path(full, perms)} — "
+                    f"{result['rows']} rows x {result['columns']} columns")
+                notes: list[str] = []
+            else:
+                result = _office.edit_sheet(
+                    full, edits=edits, append_rows=append_rows,
+                    sheet=arguments.get("sheet"))
+                parts = [
+                    f"{c['cell']}: {c['old'] or '(empty)'} -> {c['new']}"
+                    for c in result["applied"]
+                ]
+                if result["appended_rows"]:
+                    parts.append(
+                        f"{result['appended_rows']} row(s) appended from row "
+                        f"{result['first_appended_row']}")
+                summary = (
+                    f"{self._display_path(full, perms)} "
+                    f"[{result['sheet']}]: " + "; ".join(parts))
+                notes = list(result.get("notes", []))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"edit failed: {exc}"}, ensure_ascii=False)
+
+        self._capture_binary_change("edit_sheet", full, pre_bytes, perms)
+        try:
+            perms.read_tracker[str(full.resolve())] = full.stat().st_mtime
+        except OSError:
+            pass
+
+        out = {"status": "ok", "summary": summary}
+        if notes:
+            out["notes"] = notes
+        return json.dumps(out, ensure_ascii=False)
+
+    def _execute_fill_pdf_form(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        src, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        out_path, err = self._office_target(arguments, perms, key="output")
+        if err is not None:
+            return json.dumps({"error": err})
+
+        if perms is not None:
+            denied = self._check_read_access(
+                perms, src, label=str(arguments.get("path", "")))
+            if denied is not None:
+                return json.dumps({"error": denied})
+
+        values = arguments.get("values")
+        if not isinstance(values, dict) or not values:
+            return json.dumps({"error": (
+                "values must be an object of field name -> value; list the "
+                "field names with read_document(fields=true) first")})
+
+        gate_err = self._gate_write_path(
+            str(out_path), perms, "fill_pdf_form", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Fill {self._display_path(src, perms)}\n"
+                f"  -> {self._display_path(out_path, perms)}\n\n"
+                + "\n".join(f"  {k} = {v}" for k, v in values.items())
+            )
+            approved = self._confirm_office_change(
+                "fill_pdf_form", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        existed = out_path.exists()
+        pre_bytes: Optional[bytes] = None
+        if existed:
+            try:
+                pre_bytes = out_path.read_bytes()
+            except OSError:
+                pre_bytes = None
+
+        try:
+            result = _office.fill_pdf_form(
+                src, values, output=out_path,
+                flatten=bool(arguments.get("flatten")))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"filling the form failed: {exc}"},
+                ensure_ascii=False)
+
+        self._capture_binary_change("fill_pdf_form", out_path, pre_bytes, perms)
+
+        out = {
+            "status": "ok",
+            "path": self._display_path(out_path, perms),
+            "filled": result["filled"],
+            # Read back from the file that was written, not from the intent.
+            "verified": result["verified"],
+        }
+        if result.get("notes"):
+            out["notes"] = result["notes"]
+        return json.dumps(out, ensure_ascii=False)
+
+    def _execute_fill_docx_template(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        src, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        out_path, err = self._office_target(arguments, perms, key="output")
+        if err is not None:
+            return json.dumps({"error": err})
+
+        denied = self._check_read_access(
+            perms, src, label=str(arguments.get("path", "")))
+        if denied is not None:
+            return json.dumps({"error": denied})
+
+        values = arguments.get("values")
+        if not isinstance(values, dict) or not values:
+            return json.dumps({"error": (
+                "values must be an object of placeholder -> value; list the "
+                "placeholders with read_document(fields=true) first")})
+
+        gate_err = self._gate_write_path(
+            str(out_path), perms, "fill_docx_template", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Fill {self._display_path(src, perms)}\n"
+                f"  -> {self._display_path(out_path, perms)}\n\n"
+                + "\n".join(f"  {{{{{k}}}}} = {v}" for k, v in values.items())
+            )
+            approved = self._confirm_office_change(
+                "fill_docx_template", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        pre_bytes: Optional[bytes] = None
+        if out_path.exists():
+            try:
+                pre_bytes = out_path.read_bytes()
+            except OSError:
+                pre_bytes = None
+
+        strict = arguments.get("strict")
+        try:
+            result = _office.fill_docx_template(
+                src, values, output=out_path,
+                strict=True if strict is None else bool(strict))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"filling the template failed: {exc}"},
+                ensure_ascii=False)
+
+        self._capture_binary_change(
+            "fill_docx_template", out_path, pre_bytes, perms)
+
+        out = {
+            "status": "ok",
+            "path": self._display_path(out_path, perms),
+            "filled": result["filled"],
+            "complete": result["complete"],
+        }
+        if result["unfilled"]:
+            out["unfilled"] = result["unfilled"]
+        if result.get("notes"):
+            out["notes"] = result["notes"]
+        return json.dumps(out, ensure_ascii=False)
+
+    def _execute_create_docx(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        target, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        blocks = arguments.get("blocks")
+        if not isinstance(blocks, list) or not blocks:
+            return json.dumps({"error": (
+                "blocks must be a non-empty list of content blocks: "
+                "{heading, level} | {paragraph} | {table} | {page_break}")})
+        if target.exists():
+            return json.dumps({"error": (
+                f"'{self._display_path(target, perms)}' already exists — "
+                "write to a new path, or edit the existing file")})
+
+        gate_err = self._gate_write_path(
+            str(target), perms, "create_docx", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            lines = []
+            for block in blocks[:20]:
+                if not isinstance(block, dict):
+                    continue
+                if "heading" in block:
+                    lines.append(f"  # {block['heading']}")
+                elif "paragraph" in block:
+                    lines.append(f"  {str(block['paragraph'])[:80]}")
+                elif "table" in block:
+                    rows = block.get("table") or []
+                    lines.append(f"  [table, {len(rows)} row(s)]")
+                elif block.get("page_break"):
+                    lines.append("  [page break]")
+            if len(blocks) > 20:
+                lines.append(f"  … {len(blocks) - 20} more block(s)")
+            preview = (
+                f"Create {self._display_path(target, perms)} with "
+                f"{len(blocks)} block(s)\n" + "\n".join(lines)
+            )
+            approved = self._confirm_office_change(
+                "create_docx", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        try:
+            result = _office.create_docx(target, blocks)
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"could not write the document: {exc}"},
+                ensure_ascii=False)
+
+        self._capture_binary_change("create_docx", target, None, perms)
+        return json.dumps({
+            "status": "ok",
+            "path": self._display_path(target, perms),
+            "headings": result["headings"],
+            "paragraphs": result["paragraphs"],
+            "tables": result["tables"],
+        }, ensure_ascii=False)
+
+    def _sheet_change_preview(
+        self, path: Path, perms: "KitToolPermissions", plan: dict
+    ) -> str:
+        lines = [f"{self._display_path(path, perms)} [{plan['sheet']}]"]
+        for change in plan["changes"]:
+            lines.append(
+                f"  {change['cell']}: {change['old'] or '(empty)'} "
+                f"-> {change['new']}")
+        if plan["appended_rows"]:
+            lines.append(
+                f"  + {plan['appended_rows']} row(s) appended from row "
+                f"{plan['first_appended_row']}")
+        if plan["fragile"]:
+            lines.append(
+                "  the workbook is rebuilt on save; it contains "
+                + "; ".join(plan["fragile"]))
+        return "\n".join(lines)
+
+    def _confirm_office_change(
+        self, name: str, arguments: dict, perms: "KitToolPermissions",
+        preview: str,
+    ) -> "bool | str":
+        """Ask the user about a document write. True, or an error string."""
+        if perms.confirm_callback is None:
+            return json.dumps({"error": (
+                f"diff-approval mode: '{name}' changes a document, which "
+                "cannot be staged as a text diff, and no approval dialog is "
+                "configured — refused. Switch the mode to acceptEdits to "
+                "proceed."
+            )})
+        try:
+            ok = bool(perms.confirm_callback(name, arguments, preview))
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        if ok:
+            return True
+        timed_out = bool(getattr(
+            getattr(perms.confirm_callback, "__self__", None),
+            "last_timed_out", False))
+        if timed_out:
+            return json.dumps({"error": (
+                f"the confirmation for '{name}' TIMED OUT — the user is "
+                "away. This is NOT a refusal; the document was not changed. "
+                "Report what is waiting for approval instead of retrying."
+            )})
+        return json.dumps({"error": (
+            f"the user declined '{name}' — the document was NOT changed. "
+            "Do not attempt the same change through another tool."
+        )})
+
+    def _capture_binary_change(
+        self, tool: str, path: Path, pre_bytes: Optional[bytes],
+        perms: "KitToolPermissions",
+    ) -> None:
+        """Record a document write in the undo journal (never raises)."""
+        try:
+            from . import change_journal as _cj
+            rec = _cj.record_binary_change(
+                getattr(perms, "task_session_id", "") or "",
+                tool=tool, path=str(path), pre_bytes=pre_bytes)
+            if rec is not None:
+                if not hasattr(self, "_turn_change_seqs"):
+                    self._turn_change_seqs = []
+                self._turn_change_seqs.append(rec["seq"])
+        except Exception:
+            pass
 
     def _execute_view_image(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
@@ -6097,9 +7166,41 @@ class _DocToolExecutor:
                 "These are never readable, regardless of mode or confirm."
             )
 
-        # Inside any allowed root: free read.
+        # Inside any allowed root: free read. Checked BEFORE the refusal
+        # ledger on purpose — if the user has since granted the directory
+        # (extra_dir / "Erlaubte Verzeichnisse"), that later, explicit
+        # decision supersedes the earlier decline. Only the agent is kept
+        # from re-asking; the user can always change their mind.
         if in_root is not None:
             return None
+
+        # Already refused in this session: do not ask again. The refusal
+        # this function issues promises the path stays refused for the
+        # session; without this check the same tool could ask a second
+        # time and be let through, which makes the promise false and turns
+        # a "no" into a retry prompt.
+        if str(resolved) in getattr(perms, "denied_paths", set()):
+            return (
+                f"read denied: the user already declined '{resolved}' in "
+                "this session. It stays refused — do not ask again and do "
+                "not reach it through another tool. Ask the user what to "
+                "use instead."
+            )
+
+        # Locked scope: outside is refused outright. Offering it for
+        # confirmation would make the containment a matter of the user
+        # noticing every dialog, and the whole point of this mode is that
+        # the answer is decided in advance.
+        if perms.scope_locked:
+            _record_security_event(
+                "locked_scope_read", "read", str(resolved), blocked=True)
+            return (
+                f"read denied: '{label or resolved}' is outside "
+                f"{perms.workspace}, and this session is limited to that "
+                "folder. Nothing outside it can be read, and no "
+                "confirmation can grant it. If the file is needed, it has "
+                "to be placed in the folder first — ask the user to do that."
+            )
 
         # Outside the sandbox: ask the user.
         if perms.confirm_callback is None:
@@ -7170,6 +8271,31 @@ class _DocToolExecutor:
         ignores is not a refusal.
         """
         try:
+            # A locked scope refuses any command that names a path outside
+            # the workspace, whatever it means to do with it. The finer
+            # read/write scanners below stay in place for normal sessions;
+            # here the boundary is the whole answer, so the coarse rule is
+            # the correct one.
+            if perms.scope_locked:
+                if _bash_climbs_out(cmd):
+                    _record_security_event(
+                        "locked_scope_bash", "bash", cmd[:80], blocked=True)
+                    return json.dumps({"error": (
+                        f"blocked: this command walks up out of "
+                        f"{perms.workspace} with '..'. This session works "
+                        "only inside that folder — use paths relative to it."
+                    )})
+                strays = _bash_paths_outside(cmd, perms.workspace)
+                if strays:
+                    _record_security_event(
+                        "locked_scope_bash", "bash", cmd[:80], blocked=True)
+                    return json.dumps({"error": (
+                        f"blocked: this command names {strays[0]}, which is "
+                        f"outside {perms.workspace}. This session works only "
+                        "in that folder — nothing outside it can be read or "
+                        "written, and no confirmation can grant it. Files "
+                        "have to be placed in the folder first."
+                    )})
             denied = _bash_reads_denied_path(
                 cmd, getattr(perms, "denied_paths", set()) or set())
             if denied:
@@ -8991,7 +10117,16 @@ def _bash_isolation_argv(
     # command — that's where containment matters most. Interactive modes keep
     # plain bash, so HPC coding workflows are unaffected. "off" is the explicit
     # escape hatch (truly no isolation); "bwrap" forces it everywhere.
-    if mode == "auto":
+    # A locked scope promises the agent cannot leave one folder. The
+    # path gates enforce that for the file tools and for the shell
+    # commands they can parse, but a shell is a general-purpose
+    # interpreter and a command can always be written in a form no
+    # parser catches. Where bwrap works, take the real containment
+    # instead of relying on that parsing — the promise is only worth
+    # what the weakest path enforces.
+    if getattr(perms, "scope_locked", False) and _bwrap_functional():
+        mode = "bwrap"
+    elif mode == "auto":
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
         if perm_mode == "bypassPermissions" and _bwrap_functional():
             mode = "bwrap"
@@ -9563,6 +10698,7 @@ class OpenAIClient(_BaseClient):
                 getattr(self._permissions, "subagent_depth", 0) or 0),
             has_doc_index=bool(has_doc_tools),
             has_calc_index=bool(has_calc_tools),
+            has_office_libs=_office_backends_available(),
         )
         advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
 

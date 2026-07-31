@@ -126,3 +126,45 @@ def test_denial_ledger_records_a_real_refusal_only(monkeypatch):
     perms2.confirm_callback = broker.callback
     res2 = ex.execute("read_file", {"path": str(target)}, perms2)
     assert "TIMED OUT" in res2 and not perms2.denied_paths
+
+
+# --- a refusal must not be re-askable -------------------------------------
+
+def test_a_second_ask_for_a_declined_path_is_refused_without_a_dialog():
+    """The refusal says "for the rest of the session" — so it has to hold.
+
+    Recording the path was not enough: the read gate itself never consulted
+    the ledger, so asking again (and getting a yes on the second dialog)
+    let the agent through the door the user had just closed.
+    """
+    ex, perms, ws, outside = _setup()
+    perms.mode = "default"
+    asked = []
+
+    def decline(*a):
+        asked.append(a)
+        return False
+
+    perms.confirm_callback = decline
+    target = outside / "parser.py"
+    first = ex.execute("read_file", {"path": str(target)}, perms)
+    assert "declined" in first
+    assert len(asked) == 1
+
+    perms.confirm_callback = lambda *a: asked.append(a) or True
+    second = ex.execute("read_file", {"path": str(target)}, perms)
+    assert "already declined" in second
+    assert len(asked) == 1, "the user was asked again about a refused path"
+
+
+def test_a_later_grant_of_the_directory_beats_the_earlier_refusal():
+    """The ledger binds the agent, not the user."""
+    ex, perms, ws, outside = _setup()
+    perms.mode = "default"
+    perms.confirm_callback = lambda *a: False
+    target = outside / "parser.py"
+    assert "declined" in ex.execute("read_file", {"path": str(target)}, perms)
+
+    perms.add_extra_dir(outside)          # the user grants the directory
+    out = ex.execute("read_file", {"path": str(target)}, perms)
+    assert "SOURCE" in out
