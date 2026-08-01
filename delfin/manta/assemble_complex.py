@@ -736,6 +736,45 @@ def _hydrogens_riding_on(syms, P, idx, cut=1.35):
     return out
 
 
+_H_CONTACT_FLOOR = 1.6      # inter-ligand H...H stays above this in crystals (eye: hhclash)
+
+
+def _riders_that_may_move(syms, P, riders, delta, parent):
+    """Which riding hydrogens may follow their parent WITHOUT tightening a contact.
+
+    MEASURED CAUSE, KIQNUT 2026-08-01.  H_FOLLOW moved every rider along the M-D radial
+    direction with no clash check at all.  On a crowded CN6 hexaamine that drove
+    inter-ligand hydrogens into each other -- H13..H44 went 1.34 -> 1.21 A where crystals
+    stay above 1.6 -- and the tightened contact cost the topology match: topo_correct
+    true -> false, broken_frac 0.0 -> 1.0.  That ONE system was the cap_LOST that blocked
+    the entire A/B, which was otherwise a win (12 affected, valid 5->5, mean_delta -0.836:
+    the eye read the rest as BETTER).
+
+    The heavy-atom graph was never the problem -- BOTH arms carry the identical N-C
+    compression (1.32 / 1.34 / 1.39 A vs crystal 1.47), so the rescale is not what broke
+    it.  The hydrogens were.
+
+    RULE: a rider moves only if the move does not leave its closest contact both TIGHTER
+    than before and below the crystal floor.  Never-worse by construction: the outcome is
+    either today's champion behaviour (the rider simply stays) or a move that does not
+    tighten anything past what crystals show.
+    """
+    if not len(riders):
+        return riders
+    A = np.asarray(P, float)
+    keep = []
+    for h in riders:
+        others = [j for j in range(len(A)) if j != h and j != parent and j not in riders]
+        if not others:
+            keep.append(h); continue
+        O = A[others]
+        d_before = float(np.min(np.linalg.norm(O - A[h], axis=1)))
+        d_after = float(np.min(np.linalg.norm(O - (A[h] + delta), axis=1)))
+        if d_after >= d_before or d_after >= _H_CONTACT_FLOOR:
+            keep.append(h)
+    return keep
+
+
 def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False, lsyms=None):
     """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
     donors seat onto the target vertex directions, then per-donor rescale to the
@@ -902,7 +941,7 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
                     if _hf:                      # hydrogens ride with their parent, as above
                         _rd = _hydrogens_riding_on(lsyms, Qr, _d)
                         _dl = _nv - Qr[_d]
-                        for _h in _rd:
+                        for _h in _riders_that_may_move(lsyms, Qr, _rd, _dl, _d):
                             Qr[_h] = Qr[_h] + _dl
                     Qr[_d] = _nv
                     _nfix += 1
@@ -947,7 +986,7 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
             if _hfollow:
                 _riders = _hydrogens_riding_on(lsyms, Q, di)   # BEFORE the move
                 _delta = _new - Q[di]
-                for _h in _riders:
+                for _h in _riders_that_may_move(lsyms, Q, _riders, _delta, di):
                     Q[_h] = Q[_h] + _delta
             Q[di] = _new
     return Q
