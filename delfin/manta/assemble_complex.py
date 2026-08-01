@@ -758,6 +758,20 @@ def _riders_that_may_move(syms, P, riders, delta, parent):
     than before and below the crystal floor.  Never-worse by construction: the outcome is
     either today's champion behaviour (the rider simply stays) or a move that does not
     tighten anything past what crystals show.
+
+    ⛔ MEASURED NOT TO FIX KIQNUT, and the reason is structural.  isoH_FOLLOW2 came back
+    identical to isoH_FOLLOW down to the MD5 of the built file: this guard moved nothing.
+    It runs inside _orient_chelate_to_vertices, which works on ONE ligand's coordinates in
+    the metal frame, while the clash is INTER-ligand (H13 on C2 against H44 on N31).  At
+    rescale time the neighbouring ligand is not in the array, so the guard cannot see the
+    contact it was written to catch -- checkable before building, and I did not check it.
+
+    The guard is kept: it is correct for intra-ligand contacts and costs nothing where it
+    cannot fire.  But H_FOLLOW's real defect is one step earlier -- the DONOR is pushed onto
+    its ideal radius with no knowledge of where its hydrogen will then point, and without
+    H_FOLLOW that same move merely stretches the X-H bond instead.  Both are wrong in
+    different ways and neither repairs the other.  A next attempt must run on the ASSEMBLED
+    complex, or better, the seating must account for the neighbour before it places the donor.
     """
     if not len(riders):
         return riders
