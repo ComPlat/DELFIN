@@ -829,12 +829,43 @@ def _iso_trace(reason, k, geom_tag):
     for tetradentates, bent sp centres, hydrogens left behind by the rescale).
     Counting is the cheapest way to tell them apart, and nothing counted before.
     """
-    if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") != "1":
+    if not _ff_trace_on():
         return
     try:
         os.write(2, ("[ISO_DROP] %s config=%d geom=%s\n" % (reason, k, geom_tag)).encode())
     except Exception:
         pass
+
+
+def _ff_trace_on():
+    """The ONE place the FF-free trace flag is read (DELFIN_FFFREE_ISO_TRACE)."""
+    return os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") == "1"
+
+
+def _scope_no(reason, detail=""):
+    """Say WHY the FF-free builder declined a whole system, then decline it.
+
+    Returns None exactly as the bare `return None` did, and is silent unless the trace is on.
+
+    THE MEASUREMENT THIS EXISTS FOR (User 2026-08-01: "ausrollen ... bis alle fffree laufen
+    und besser als legacy sind").  On the shipped champion the FF-free builder fires for 187
+    of 995 systems -- the other 808 fall through to legacy, and NOTHING recorded why.  That
+    matters more than the quality gap does: measured on 934 identical systems with an
+    identical denominator and an isomer counted only when a CLEAN frame realises it, FF-free
+    reaches 50.5 % against legacy's 54.0 % and holds EIGHT TIMES as many defect-free manifolds
+    (57.2 % vs 6.9 %).  So the distance to dropping legacy is not quality, it is SCOPE -- and
+    a scope you cannot see cannot be rolled out class by class, largest first.
+
+    Every `return None` in _fffree_isomers is a silent decline today; naming them turns 808
+    anonymous fall-throughs into a ranked work list.
+    """
+    if _ff_trace_on():
+        try:
+            os.write(2, ("[FFREE_SCOPE] %s%s\n"
+                         % (reason, (" " + detail) if detail else "")).encode())
+        except Exception:
+            pass
+    return None
 
 
 def _fffree_chelate_isomers(d, geom_key, max_isomers):
@@ -1349,7 +1380,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                     ) -> Optional[List[Tuple[str, str]]]:
     d = DEC.decompose(smiles)
     if d is None:
-        return None
+        return _scope_no("DECOMPOSE_NONE")
     # The coordination number is one number per complex and constant for the whole build,
     # and it is what actually moves a metal-donor distance: measured, Cd-N runs 2.283 /
     # 2.342 / 2.357 at CN 4 / 5 / 6.  Record it once here rather than threading it through
@@ -1362,9 +1393,11 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         pass
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
-        return None
+        return _scope_no("GEOM_NOT_IN_POLYA",
+                         "geom=%s cn=%s key=%s" % (d.get("geometry"), d.get("cn"), geom_key))
     if d.get("has_eta"):
-        return _coord_filter(_fffree_hapto_isomers(d, max_isomers))
+        return (_coord_filter(_fffree_hapto_isomers(d, max_isomers))
+                or _scope_no("HAPTO_EMPTY", "cn=%s geom=%s" % (d.get("cn"), d.get("geometry"))))
     if d.get("has_chelate"):
         chel = _fffree_chelate_isomers(d, geom_key, max_isomers) or []
         # CN4 dual-geometry completeness (DELFIN_FFFREE_CN4_BOTH, default OFF ->
@@ -1402,14 +1435,18 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
             os.write(2, ("[CN4_BOTH] after _coord_filter: %d (was %d)\n"
                          % (len(_r or []), len(chel))).encode())
-        return _r
+        # A chelate complex that produced nothing falls through to legacy here.  That is the
+        # single most consequential silent decline in the file -- chelates are the bulk of the
+        # corpus -- so it is named like every other one.
+        return _r or _scope_no("CHELATE_EMPTY", "cn=%s geom=%s nchel=%d"
+                               % (d.get("cn"), d.get("geometry"), len(chel)))
     # ligand identity = canonical SMILES of each fragment; group by it
     lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:
         try:
             lab = Chem.MolToSmiles(lg["mol"])
         except Exception:
-            return None
+            return _scope_no("LIGAND_SMILES_FAIL", "cn=%s" % d.get("cn"))
         lig_label.append(lab)
         lig_ref.setdefault(lab, (lg["mol"], lg["donor_local_idx"]))
         lab_elem[lab] = lg["donor_elem"]
@@ -1417,9 +1454,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     try:
         colorings = PIC.enumerate_isomers(geom_key, spec)
     except Exception:
-        return None
+        return _scope_no("ENUM_ERROR", "geom=%s cn=%s" % (geom_key, d.get("cn")))
     if not colorings:
-        return None
+        return _scope_no("NO_COLORINGS", "geom=%s cn=%s nlig=%d"
+                         % (geom_key, d.get("cn"), len(lig_label)))
     results: List[Tuple[str, str]] = []
     # CN2-ensemble (iter-32g): the rigid FF-free CN2 path emits ONE frame per coloring,
     # but the legacy multi-frame path sprays ~3-7 conformers, and best-of-ensemble MIN
@@ -1465,7 +1503,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             except Exception:
                 ens = None
             if not ens:
-                return None
+                return _scope_no("ENSEMBLE_EMPTY", "cn=%s k=%d" % (d.get("cn"), k))
             kept = 0
             for fi, (syms, P) in enumerate(ens):
                 syms, P = _maybe_relax(syms, P)
@@ -1480,14 +1518,17 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                                     syms, P, lbl, cn=d.get("cn"), geom=d.get("geometry"))
                 kept += 1
             if kept == 0:               # whole coloring unbuildable -> legacy (never-worse)
-                return None
+                return _scope_no("ENSEMBLE_ALL_REJECTED", "cn=%s k=%d n=%d"
+                                 % (d.get("cn"), k, len(ens)))
             continue
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], d["geometry"], vertex_specs)
         except Exception:
-            return None
+            return _scope_no("ASSEMBLE_EXC", "cn=%s geom=%s k=%d"
+                             % (d.get("cn"), geom_tag, k))
         if built is None:
-            return None
+            return _scope_no("ASSEMBLE_NONE", "cn=%s geom=%s k=%d"
+                             % (d.get("cn"), geom_tag, k))
         syms, P = built
         syms, P = _maybe_relax(syms, P)
         _lg = _lig_groups_from_vertex_specs(vertex_specs)
@@ -1501,11 +1542,14 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             # are re-seated (cheap ligands seat fine rigidly).  No clean fold -> legacy
             # (never-worse).  Byte-identical when the flag is off (this branch returns).
             if not (_seating_enabled() and _has_large_ligand(_lg)):
-                return None
+                return _scope_no("GATE_NO_RESEAT", "cn=%s geom=%s k=%d seating=%d"
+                                 % (d.get("cn"), geom_tag, k, int(_seating_enabled())))
             reseated = _seat_via_conformers(d["metal"], _lg, syms, P,
                                             cn=d.get("cn"), geom=d.get("geometry"))
             if reseated is None:
-                return None                 # no conformer seats cleanly -> legacy
+                # no conformer seats cleanly -> legacy
+                return _scope_no("RESEAT_FAILED", "cn=%s geom=%s k=%d"
+                                 % (d.get("cn"), geom_tag, k))
             syms, P = reseated
         label = base_label
         results.append((_xyz(syms, P), label))
@@ -1564,7 +1608,9 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                                        "TPY-3 trigonal pyramidal",
                                        lig_ref, lab_elem, spec, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
-    return _coord_filter(results) or None
+    return (_coord_filter(results)
+            or _scope_no("COORD_FILTER_EMPTY", "cn=%s geom=%s nres=%d"
+                         % (d.get("cn"), d.get("geometry"), len(results))))
 
 
 def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_isomers):
