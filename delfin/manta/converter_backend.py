@@ -680,7 +680,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
             continue                                  # length-matches a multibond ideal -> pass
         n_coll += 1
     if n_coll > 0:
-        return False
+        return _gate_no("COLLAPSED_BOND")
     # GRAPH ANCHOR (DELFIN_FFFREE_TORN_GATE, default OFF -> byte-identical).  Everything above
     # judges bonds that geometric perception FOUND -- "is this contact too short?".  Nothing asks
     # the opposite question: "is a bond the MOLECULE REQUIRES missing?".  A torn ligand is therefore
@@ -698,7 +698,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
             if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
                 continue
             if float(np.linalg.norm(P[i] - P[j])) > _torn_f * _bd._ideal_bond(syms[i], syms[j]):
-                return False                              # the graph requires this bond; it is torn
+                return _gate_no("TORN_BOND")                              # the graph requires this bond; it is torn
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
     for i in range(n):
@@ -711,7 +711,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 continue
             d = float(np.linalg.norm(P[i] - P[j]))
             if d < 0.60 * _bd._ideal_bond(syms[i], syms[j]):   # gross overlap
-                return False
+                return _gate_no("GROSS_OVERLAP")
     mi = next((i for i in range(n) if _bd._is_metal(syms[i])), None)
     donor_set = set(donors) if donors else None
     # UNDER-coordination / decoordination guard (#324b, env DELFIN_FFFREE_COORD_INTEGRITY,
@@ -739,7 +739,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
             except Exception:
                 _ideal_md = 2.2
             if float(np.linalg.norm(P[_d] - P[mi])) > _ideal_md + _coord_slack:
-                return False
+                return _gate_no("DONOR_DECOORD")
     # over-coordination / spurious intrusion into the metal's first shell.
     if cn and mi is not None:
         if donor_set is not None:
@@ -753,7 +753,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 if j == mi or j in donor_set or syms[j] == "H":
                     continue
                 if float(np.linalg.norm(P[j] - P[mi])) < 0.92 * md_min:
-                    return False
+                    return _gate_no("SHELL_INTRUDER")
         else:
             close = 0
             for j in range(n):
@@ -763,7 +763,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 if float(np.linalg.norm(P[j] - P[mi])) < cutoff:
                     close += 1
             if close > cn + 1:                          # +1 slack for borderline
-                return False
+                return _gate_no("OVERCOORD")
     # #39: reject catastrophic coordination-SHAPE outliers (CShM >> typical sets the
     # worst-case poly_max/cshm_max above UFF; legacy is better for that tail).
     # Threshold sits deep in the valley (p75 0.14 <-> p90 10.7).  Env DELFIN_FFFREE_SHAPE_MAX.
@@ -791,6 +791,50 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
             except Exception:
                 pass
     return True
+
+
+def _gate_no(reason):
+    """Say WHICH self-gate criterion rejected a build, then reject it.
+
+    Behaviour is unchanged: it returns False exactly as the bare `return False` did, and says
+    nothing unless the trace is on -- it delegates that decision to _iso_trace so the flag is
+    read in ONE place (the alternative was a second copy of the env lookup, which is how this
+    codebase ended up with nine different metal predicates).
+
+    WHY THE NAME MATTERS.  The self-gate discards one enumerated isomer in three (measured
+    2026-08-01: 66 enumerated, 24 dropped by the gate, 0 build failures), and that gap IS the
+    distance between the paper's "complete by construction" and the 73 % the FF-free builder
+    realises.  But "the gate said no" is not a root: COLLAPSED_BOND, TORN_BOND, GROSS_OVERLAP,
+    DONOR_DECOORD, SHELL_INTRUDER and OVERCOORD are six different defects with six different
+    fixes, and picking one without the counts would be guessing.
+    """
+    _iso_trace("GATE_" + reason, -1, "-")
+    return False
+
+
+def _iso_trace(reason, k, geom_tag):
+    """Say WHY an enumerated coordination isomer never became a frame.
+
+    DELFIN_FFFREE_ISO_TRACE=1, default silent -> byte-identical.
+
+    THE MEASUREMENT THIS EXISTS FOR.  Against Burnside-Polya theory the FF-free builder
+    realises 73 % of the predicted isomers where it fires, while the legacy path realises
+    97 % (measured 2026-08-01 over 187 systems: 522 vs 692 of 706).  The paper claims
+    "complete by construction", so that 27 % is the gap between the claim and the code.
+    The enumerator is NOT the hole -- enumerate_chelate_configs produces the configs and
+    they are then dropped one by one, either because the build returns None or because the
+    self-gate rejects the geometry.  Which of the two decides where the work goes:
+    a failing BUILD is a constructor problem, a failing SELF-GATE is a SEATING problem --
+    and the seating roots are already measured (metal out of the donor plane at 15.9 deg
+    for tetradentates, bent sp centres, hydrogens left behind by the rescale).
+    Counting is the cheapest way to tell them apart, and nothing counted before.
+    """
+    if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") != "1":
+        return
+    try:
+        os.write(2, ("[ISO_DROP] %s config=%d geom=%s\n" % (reason, k, geom_tag)).encode())
+    except Exception:
+        pass
 
 
 def _fffree_chelate_isomers(d, geom_key, max_isomers):
@@ -830,6 +874,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     if not configs:
         return None
     geom_tag = d["geometry"].split()[0]
+    # the denominator: how many isomers the enumerator OFFERED, before any is dropped
+    _iso_trace("ENUMERATED", len(configs[:max_isomers]), geom_tag)
     results = []
     # SIGMA-ensemble (Task A.1): the chelate σ sub-path emits ONE frame per config,
     # but the legacy converter sprays 4-25 frames per refcode (chelate-ring PUCKER +
@@ -903,6 +949,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             continue
         built = _build_config_never_worse(d, config, ligands, geom_key)
         if built is None:
+            _iso_trace("BUILD_NONE", k, geom_tag)
             continue
         syms, P, donors = built
         syms, P = _maybe_relax(syms, P)
@@ -932,6 +979,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                                                     cn=d.get("cn"), geom=d.get("geometry"),
                                                     donors=donors)
                 if reseated is None:
+                    _iso_trace("SELFGATE", k, geom_tag)
                     continue                          # skip this config
                 syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"

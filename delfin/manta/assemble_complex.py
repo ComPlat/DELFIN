@@ -1096,6 +1096,68 @@ def _donor_c_angle(mol, atom):
     return None                           # hypervalent / unknown -> keep linear
 
 
+def _straighten_sp_chain(lsyms, lP, lmol, di, flag="DELFIN_FFREE_SP_LINEAR"):
+    """An SP centre in the donor's substituent chain is LINEAR.  Make it so.
+
+    (DELFIN_FFREE_SP_LINEAR=1, default OFF -> byte-identical.)
+
+    MEASURED, and the measurement is what located it.  smiles_sp-not-linear fires on 437
+    findings of the champion archive, 148 of them on frames where it is the ONLY hard finding,
+    and on 1500 clean CCDC crystals it fires ZERO times.  Its distance to the nearest metal is
+    a razor-thin band -- p10/p50/p90 = 2.89 / 3.10 / 3.36 A, 0.2 % beyond 5 A -- i.e. always
+    exactly ONE BOND beyond the coordination sphere.  Every case is a cumulated pseudohalide,
+    M-N=C=S / M-N=C=Se (UJAZUD02, JEJSID, ADITIT, QUHWAT, QINJAB), built at 105-116 deg where
+    the SMILES itself says 180.
+
+    WHY THE EXISTING MECHANISM MISSES IT -- a scope, not a blindness.  _vsepr_reconstruct
+    reads the hybridisation OF THE DONOR and sets the M-D-substituent angle; for these ligands
+    the donor is the N (correctly placed linear, k==1) and the sp atom is the CARBON one bond
+    further out, which nothing in that function ever touches.  67-90 % of each affected
+    system's frames carry it, so the geometry IS reachable -- the build simply does not
+    insist on it.
+
+    No table, no fit, no crystal reference: a centre carrying a triple bond, or two double
+    bonds, is linear by definition, and the input graph already states the bond orders.  The
+    far subtree is rotated rigidly about the sp atom, so every bond LENGTH and every angle
+    inside that subtree is preserved exactly -- only the one angle that was wrong changes.
+    """
+    if os.environ.get(flag, "0") != "1":
+        return lP
+    try:
+        P = np.array(lP, float).copy()
+        for a in lmol.GetAtomWithIdx(int(di)).GetNeighbors():
+            ai = int(a.GetIdx())
+            nb = [n.GetIdx() for n in a.GetNeighbors()]
+            if len(nb) != 2 or a.IsInRing():
+                continue
+            orders = sorted(float(b.GetBondTypeAsDouble()) for b in a.GetBonds())
+            # sp iff a triple bond, or two doubles (a cumulene) -- read off the graph.
+            if not (orders[-1] >= 2.9 or (len(orders) == 2 and orders[0] >= 1.9
+                                          and orders[1] >= 1.9)):
+                continue
+            far = int(nb[0]) if int(nb[1]) == int(di) else int(nb[1])
+            v1 = P[int(di)] - P[ai]; v2 = P[far] - P[ai]
+            n1 = float(np.linalg.norm(v1)); n2 = float(np.linalg.norm(v2))
+            if n1 < 1e-6 or n2 < 1e-6:
+                continue
+            c = float(np.dot(v1 / n1, v2 / n2))
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, c))))
+            if ang > 170.0:
+                continue                       # already linear
+            axis = np.cross(v2, v1)
+            na = float(np.linalg.norm(axis))
+            if na < 1e-6:
+                continue
+            # rotate the FAR subtree (never the donor side) onto the straight continuation
+            grp = _subtree(lmol, far, ai)
+            R = _axis_rot(axis / na, math.radians(180.0 - ang))
+            for g in grp:
+                P[g] = (P[g] - P[ai]) @ R.T + P[ai]
+        return P
+    except Exception:
+        return lP
+
+
 def _vsepr_reconstruct(lsyms, lP, lmol, di):
     """Re-pyramidalise the donor's LOCAL geometry to ideal VSEPR with one
     coordination vacancy for the metal, rigidly dragging each substituent's
@@ -1113,6 +1175,7 @@ def _vsepr_reconstruct(lsyms, lP, lmol, di):
     DELFIN_FFFREE_DONOR_VSEPR=0."""
     if os.environ.get("DELFIN_FFFREE_DONOR_VSEPR", "1") == "0":
         return lP, _donor_and_lp(lsyms, lP, lmol, di)
+    lP = _straighten_sp_chain(lsyms, lP, lmol, di)
     atom = lmol.GetAtomWithIdx(di)
     nbrs = [n.GetIdx() for n in atom.GetNeighbors()]
     k = len(nbrs)
