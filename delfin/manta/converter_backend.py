@@ -1051,7 +1051,12 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                     reseated = _seat_via_conformers(d["metal"], _clg, syms, P,
                                                     cn=d.get("cn"), geom=d.get("geometry"),
                                                     donors=donors)
-                if reseated is None:                  # last rung before skipping the config
+                # Last rung -- but ONLY once this system already has an accepted config.
+                # `results` non-empty means FF-free is definitely keeping the system, so a
+                # rescued config can only ADD an isomer; it cannot flip the system away from
+                # legacy.  That is the additivity the heteroleptic branch could not have,
+                # and the difference is exactly what trilatresc measured.
+                if reseated is None and results:
                     reseated = _trilat_rescue(
                         lambda: _build_config_never_worse(d, config, ligands, geom_key),
                         cn=d.get("cn"), geom=d.get("geometry"),
@@ -1588,17 +1593,18 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             # (±0.05 A guard) and keep the first clean fold; only large-ligand complexes
             # are re-seated (cheap ligands seat fine rigidly).  No clean fold -> legacy
             # (never-worse).  Byte-identical when the flag is off (this branch returns).
+            # NO TRILATERATION RESCUE HERE, and the reason is measured (trilatresc, 187
+            # systems, 2026-08-02): this branch RETURNS, i.e. one bad coloring sends the
+            # WHOLE system to legacy.  A rescue here does not fill a discard -- it CANCELS
+            # THE HANDOVER, and legacy was building those systems better (FUBJAP 4 isomers
+            # -> 1, TAJFAP 6 -> 2, REYFEI 3 -> 2).  My "additive by construction" claim was
+            # false in exactly one nameable way: FF-free's failure is not a discard, it is a
+            # handover.  Widening reach here trades coverage for quality, which is the whole
+            # roll-out question and must never be decided by a seating fallback.
             _tried_seating = _seating_enabled() and _has_large_ligand(_lg)
             reseated = _seat_via_conformers(d["metal"], _lg, syms, P,
                                             cn=d.get("cn"), geom=d.get("geometry")) \
                 if _tried_seating else None
-            if reseated is None:
-                # LAST RUNG before legacy -- the conformer ladder is exhausted, so this
-                # replaces a discard and cannot displace a clean frame.
-                reseated = _trilat_rescue(
-                    lambda: AC.assemble_heteroleptic_from_mols(
-                        d["metal"], d["geometry"], vertex_specs),
-                    cn=d.get("cn"), geom=d.get("geometry"), exempt_pairs=_ex)
             if reseated is None:
                 return _scope_no("RESEAT_FAILED" if _tried_seating else "GATE_NO_RESEAT",
                                  "cn=%s geom=%s k=%d seating=%d"
