@@ -3504,15 +3504,35 @@ def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
 # the KEJCUZ case.  This pass exists because the donors have to be allowed to move, together.
 _GD_CLASH_F = 0.75      # the same clash factor the self-gate and joint_declash use
 _GD_H_W = 0.05          # H contacts are a tie-breaker only; the gate rejects on heavy-heavy
-_GD_RESID = 0.25        # A, furthest a donor may travel from the vertex it was seated on
+_GD_RESID = 0.05        # A, furthest a donor may travel from the vertex it was seated on
+# 2026-08-02: 0.25 A was MEASURED and lost.  n=53 affected, valid 25->27, cap_gained=4 but
+# cap_LOST=2 (KEGMEP, KIQNUT) and good_regr=1 -> topology_floor=False.  0.25 A at r=2.1 A is
+# ~7 deg, which is enough for a donor to leave the polyhedron vertex it was enumerated onto,
+# and the topology floor is exactly the term that notices.  0.05 A is ~1.4 deg: the bounded
+# stage survives only as a nudge, and what is left is essentially the axis on which the
+# donors PROVABLY do not move.  Set DELFIN_FFFREE_GD_RESID to sweep it; 0 disables the
+# bounded stage outright (free axis only).
 _GD_FREE_STEPS = 24     # 15 deg grid on the zero-cost axis; the objective is smooth
 _GD_BOUND_STEPS = 6     # steps each way inside the residual cap
 _GD_PASSES = 4          # coordinate-descent sweeps over the ligands
+_GD_EPS = 1e-6          # numerical slack on "did not move" -- a rigid rotation about an axis
+                        # THROUGH a donor leaves it put only to float precision, so resid=0
+                        # must still admit that, or the free axis rejects itself.
 
 
 def _global_donor_seat_enabled() -> bool:
     """THE one place DELFIN_FFFREE_GLOBAL_DONORS is read (default OFF -> byte-identical)."""
     return os.environ.get("DELFIN_FFFREE_GLOBAL_DONORS", "0") == "1"
+
+
+def _gd_resid() -> float:
+    """THE one place DELFIN_FFFREE_GD_RESID is read.  Only ever consulted from inside
+    _global_donor_seat, i.e. only when DELFIN_FFFREE_GLOBAL_DONORS is on -- with the flag off
+    this is dead code and the frame is byte-identical whatever the variable says."""
+    try:
+        return max(0.0, float(os.environ["DELFIN_FFFREE_GD_RESID"]))
+    except Exception:
+        return _GD_RESID
 
 
 def _gd_loss(X, mh, ml, fl):
@@ -3525,20 +3545,23 @@ def _gd_loss(X, mh, ml, fl):
     return L, (float(D[mh].min()) if mh.any() else float("inf"))
 
 
-def _gd_move_ok(T, X0, blocks):
+def _gd_move_ok(T, X0, blocks, resid):
     """Re-measure the two invariants instead of trusting the parameterisation.
 
     r(M-D): the metal is the origin, so |x_d| must be unchanged to numerical precision.
     The BITE: every donor-donor distance INSIDE a ligand must be unchanged likewise.
     Plus the one quantity this pass is allowed to spend -- how far a donor has drifted from
-    the vertex the enumeration seated it on -- capped at _GD_RESID against the ORIGINAL
-    frame (not the previous step), so repeated sweeps cannot accumulate a walk-away."""
+    the vertex the enumeration seated it on -- capped at ``resid`` against the ORIGINAL
+    frame (not the previous step), so repeated sweeps cannot accumulate a walk-away.
+    ``resid`` is passed in rather than read here: this runs once per candidate angle per
+    donor, and an environment lookup in that loop would be the most expensive line in it."""
+    cap = resid + _GD_EPS
     for _st, _ln, dn in blocks:
         for a in range(len(dn)):
             da = dn[a]
             if abs(float(np.linalg.norm(T[da])) - float(np.linalg.norm(X0[da]))) > 1e-6:
                 return False                                   # M-D band broken
-            if float(np.linalg.norm(T[da] - X0[da])) > _GD_RESID:
+            if float(np.linalg.norm(T[da] - X0[da])) > cap:
                 return False                                   # drifted off its vertex
             for b in range(a + 1, len(dn)):
                 db = dn[b]
@@ -3565,9 +3588,11 @@ def _global_donor_seat(syms, P, blocks):
          none of them, which is the donorplane3 failure verbatim.
 
       2) rotation of the whole ligand about the METAL, capped so no donor leaves its vertex
-         by more than _GD_RESID (~0.25 A at r=2.1 A is ~7 deg -- a cis contact stays
-         unambiguously cis).  This is the step where the donors genuinely re-seat, and it is
-         the only one available to a rigid tri-/tetradentate.
+         by more than _GD_RESID.  This is the step where the donors genuinely re-seat, and it
+         is the only one available to a rigid tri-/tetradentate -- and it is also the step
+         that lost the 0.25 A measurement, because a donor that leaves its vertex is exactly
+         what the topology floor is watching for.  At resid 0 it is not offered at all and
+         only (1) remains.
 
     Coordinate descent, fixed ligand order, fixed angular grid, no RNG, accept-only-if-better,
     with a never-worse floor on the WORST inter-ligand heavy contact so the sum objective
@@ -3602,6 +3627,7 @@ def _global_donor_seat(syms, P, blocks):
     if L0 <= 1e-12:
         return None            # nothing inter-ligand under the floor -> the frame is returned
     hfloor = h0 - 1e-6         # ... unchanged, which is what makes this cheap on clean frames
+    resid = _gd_resid()        # read ONCE, outside every loop
     Xc = X0.copy()
     bestL = L0
     for _p in range(_GD_PASSES):
@@ -3629,8 +3655,8 @@ def _global_donor_seat(syms, P, blocks):
             #    the whole body -- taking the shortest would let the outer donors overrun the
             #    cap (_gd_move_ok would then throw those candidates away, silently).
             rmax = max(float(np.linalg.norm(Xc[d])) for d in dn)
-            if rmax > 1e-6:
-                tmax = 2.0 * math.asin(min(1.0, _GD_RESID / (2.0 * rmax)))
+            if rmax > 1e-6 and resid > _GD_EPS:
+                tmax = 2.0 * math.asin(min(1.0, resid / (2.0 * rmax)))
                 angs = [s * m for s in
                         [tmax * k / _GD_BOUND_STEPS for k in range(1, _GD_BOUND_STEPS + 1)]
                         for m in (1.0, -1.0)]
@@ -3650,7 +3676,7 @@ def _global_donor_seat(syms, P, blocks):
                     if not np.all(np.isfinite(T)):
                         continue
                     Lt, ht = _gd_loss(T, mh, ml, fl)
-                    if Lt < locL - 1e-9 and ht >= hfloor and _gd_move_ok(T, X0, blocks):
+                    if Lt < locL - 1e-9 and ht >= hfloor and _gd_move_ok(T, X0, blocks, resid):
                         locL, locX = Lt, T
                 if locX is not None:
                     Xc, bestL, improved = locX, locL, True
