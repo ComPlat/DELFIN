@@ -806,6 +806,72 @@ def _riders_that_may_move(syms, P, riders, delta, parent):
 #
 # The env read lives HERE and only here (converter_backend asks through trilat_rescue_enabled /
 # trilaterate_rescue), so the flag has one home and cannot drift out of sync with its callers.
+_DP_RESID_SLACK = 0.15          # A, how much donor-to-vertex residual beta may buy back
+_DP_STEPS = 72                  # 5 deg scan; the objective is smooth, no optimiser needed
+
+
+def _donor_plane_beta(P, syms, d):
+    """beta at donor d: angle between M->D and the plane of d's own substituents.
+
+    The metal is NOT part of the plane fit -- that is the whole point (pyramid_root.py):
+    a three-coordinate donor has one Walsh angle and it does not say WHICH of the three
+    partners is displaced.  Fitting the plane WITHOUT the metal makes the question
+    answerable: if the substituents stay flat and the metal is off, the seating is at fault.
+    Returns None when d has fewer than two substituents (no plane exists to be out of).
+    """
+    _d = np.asarray(P[d], float)
+    nb = [i for i in range(len(syms)) if i != d and syms[i] != "H"
+          and float(np.linalg.norm(np.asarray(P[i], float) - _d)) < 1.95]
+    if len(nb) < 2:
+        return None
+    A = np.array([np.asarray(P[i], float) - _d for i in nb], float)
+    try:                                        # plane normal = smallest singular vector
+        nrm = np.linalg.svd(A)[2][-1]
+    except Exception:
+        return None
+    v = np.asarray(P[0], float) * 0.0 - _d      # M sits at the origin in this frame
+    n_ = float(np.linalg.norm(v))
+    if n_ < 1e-6:
+        return None
+    return abs(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(nrm, v / n_)))))))
+
+
+def _donor_plane_relax(Q, syms, donor_idxs, tgt, tmu):
+    """Rotate the whole ligand about the donor-centroid axis to put the metal into the
+    donor planes.  Rigid -> bonds, internal angles and the BITE are untouched by
+    construction.  Returns the improved coordinates or None if nothing beat the input."""
+    def _beta_sum(X):
+        s = 0.0
+        for d in donor_idxs:
+            b = _donor_plane_beta(X, syms, d)
+            if b is not None:
+                s += b * b
+        return s
+
+    def _resid(X):
+        return float(np.sqrt(np.mean(np.sum(
+            (np.array([np.asarray(X[d], float) for d in donor_idxs]) - tgt) ** 2, axis=1))))
+
+    ax = tmu - np.zeros(3)                      # metal -> donor centroid = the free axis
+    n_ = float(np.linalg.norm(ax))
+    if n_ < 1e-6:
+        return None
+    ax = ax / n_
+    base_b, base_r = _beta_sum(Q), _resid(Q)
+    best = None
+    K = np.array([[0.0, -ax[2], ax[1]], [ax[2], 0.0, -ax[0]], [-ax[1], ax[0], 0.0]])
+    for i in range(1, _DP_STEPS):
+        th = 2.0 * math.pi * i / _DP_STEPS
+        R = np.eye(3) + math.sin(th) * K + (1.0 - math.cos(th)) * (K @ K)
+        X = (np.asarray(Q, float) - tmu) @ R.T + tmu
+        b = _beta_sum(X)
+        if b >= base_b or _resid(X) > base_r + _DP_RESID_SLACK:
+            continue
+        if best is None or b < best[0]:
+            best = (b, X)
+    return None if best is None else best[1]
+
+
 _TRILAT_RESCUE = False
 
 
@@ -958,6 +1024,34 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
         dmu = don.mean(0); tmu = tgt.mean(0)
         Rk = _kabsch_rot(don - dmu, tgt - tmu)
         Qr = (np.asarray(lP, float) - dmu) @ Rk.T + tmu
+        # BETA IN THE SEATING (DELFIN_FFFREE_DONOR_PLANE, default OFF -> byte-identical).
+        #
+        # beta = angle between the M->D bond and the plane of the donor's OWN conjugated
+        # environment (0 deg = metal in plane).  Measured against crystals:
+        #     monodentate 0.9 deg (BETTER than the 3.4 crystals allow)
+        #     bidentate   9.3      tetradentate 15.9   (crystals: 3.7 / 4.8)
+        # The monodentate path is right because it aligns the metal along the lone pair
+        # (_donor_and_lp + _rot_align).  THIS path never looks at the donor plane at all --
+        # it fits donors rigidly onto ideal vertices, and beta comes out as a by-product.
+        # The break is a PATH CHANGE, not physics.  pyramidal_sp2 is our largest INDEPENDENT
+        # defect (15.7 % of our frames vs 1.0 % of crystals; sole hard finding on 37.9 % of
+        # its firings), and trilatresc2 lost its verdict to exactly this axis (OVAVEO,
+        # pyramid_frame_regressed + root_defects_increased).
+        #
+        # THE FREE DEGREE OF FREEDOM: a rigid rotation about the axis through the donor
+        # centroid changes NOTHING that is already right -- every bond, every internal
+        # angle and the coordination BITE are preserved exactly (it is a rigid motion of
+        # the whole ligand, and the bite is an internal distance).  It only trades vertex
+        # alignment, which the polyhedron never had exactly anyway.  So beta can be reduced
+        # at zero cost to the two quantities we already get right.
+        #
+        # Loss-guarded: the rotation is kept ONLY if it reduces the summed beta AND the
+        # donor-to-target residual does not grow beyond _DP_RESID_SLACK.  Otherwise the
+        # rigid fit stands unchanged -- a candidate that helps neither is never taken.
+        if os.environ.get("DELFIN_FFFREE_DONOR_PLANE", "0") == "1" and lsyms is not None:
+            _q = _donor_plane_relax(Qr, lsyms, list(donor_idxs), tgt, tmu)
+            if _q is not None:
+                Qr = _q
         # CAGE-CRUSH GUARD (DELFIN_FFFREE_CAGE_MD_GUARD, default-OFF -> byte-id):
         # the rigid fit preserves the embed's ligand geometry EXACTLY, so it also
         # preserves a CRUSHED embed (ETKDG produced a cavity far too small for the
