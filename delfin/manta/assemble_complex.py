@@ -3456,6 +3456,211 @@ def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
     return builds[:max_builds]
 
 
+# ===== GLOBAL DONOR SEATING: the distance nobody in the construction is looking at ===========
+#
+# WHAT IS MISSING.  Every seating quantity this builder computes is computed for ONE ligand at
+# a time: _orient_chelate_to_vertices takes ONE ligand's coordinates, fits ITS donors onto ITS
+# assigned vertices and resets ITS M-D radii.  The bite is an intra-ligand distance, r(M-D) is
+# a radius, beta is a local plane.  Not one term in the whole seating has a distance between
+# TWO DIFFERENT ligands in it.  The conformer PICK sees the neighbour (_clash_count vs
+# `placed`), but it is greedy and sequential -- ligand 1 is chosen while ligands 2 and 3 do not
+# exist yet -- and once a conformer is picked, nothing can move it relative to its neighbours.
+#
+# MEASURED, three times independently on 2026-08-02:
+#   KEJCUZ dissected: C4...O28 and O15...C39 both sit at 1.85 A = 57 % of the vdW sum, and BOTH
+#     pairs are INTER-LIGAND (donor of one chelate against backbone carbon of another).  The
+#     per-ligand bite is blind to them by construction.
+#   donorplane3 (187 systems): rotating a seated ligand about its donor BEST-FIT line breaks
+#     the topology from THREE donors on -- the line passes through none of them.
+#   donorplane4 (187 systems): even at TWO donors the backbone swing cost 12 systems
+#     (ccdc_arrangement_lost / ccdc_backbone_lost) when the objective was beta.
+#
+# The lesson of the last two is NOT "never move a seated ligand".  It is "do not move it for a
+# reason unrelated to what is broken": beta fired on EVERY system, so it paid the backbone cost
+# everywhere and collected a benefit only sometimes.  This fires ONLY where an inter-ligand
+# contact is actually below the floor -- a frame with no such contact is returned untouched and
+# unchanged, which is most frames.
+#
+# WHAT IS SOLVED FOR, and why the two things we already get right cannot be traded away.
+# The unknowns are the positions of ALL donors of ALL ligands at once.  The two constraints the
+# seating already satisfies are enforced by the PARAMETERISATION, not as penalty terms that an
+# optimiser could sell:
+#     r(M-D)      is invariant under any rotation about the METAL (the metal is the origin in
+#                 this frame), so every M-D band stays exactly where md_distance put it;
+#     the BITE    -- and with it every intra-ligand distance -- is invariant under ANY rigid
+#                 motion of the whole ligand body.  d_DD does not change, so by the ring-closure
+#                 law cos(bite) = (r1^2 + r2^2 - d_DD^2)/(2 r1 r2) the bite ANGLE cannot change
+#                 either.  Nothing is re-solved; it is carried.
+# What is left free is precisely the quantity that was never in any objective: how the ligands
+# sit relative to EACH OTHER.  Both invariants are re-CHECKED numerically per move (_gd_move_ok)
+# rather than asserted -- one instrument that nobody holds against a second says nothing.
+#
+# WHY THIS IS NOT joint_declash.  delfin/manta/joint_declash.py already minimises an
+# inter-ligand heavy-heavy objective, but it runs with the metal AND ALL DONORS FROZEN, and
+# torsion_relax.identify_dofs drops any rotation whose moving half contains a frozen atom other
+# than the pivot.  For a CHELATE the M-D1 whole-body spin moves D2, which is frozen -> the DOF
+# is dropped, and the D1-D2 line is not a bond so it is not a torsion axis either.  A rigid
+# chelate (acac, oxalate, bipy, phen) therefore has NO degree of freedom there at all -- exactly
+# the KEJCUZ case.  This pass exists because the donors have to be allowed to move, together.
+_GD_CLASH_F = 0.75      # the same clash factor the self-gate and joint_declash use
+_GD_H_W = 0.05          # H contacts are a tie-breaker only; the gate rejects on heavy-heavy
+_GD_RESID = 0.25        # A, furthest a donor may travel from the vertex it was seated on
+_GD_FREE_STEPS = 24     # 15 deg grid on the zero-cost axis; the objective is smooth
+_GD_BOUND_STEPS = 6     # steps each way inside the residual cap
+_GD_PASSES = 4          # coordinate-descent sweeps over the ligands
+
+
+def _global_donor_seat_enabled() -> bool:
+    """THE one place DELFIN_FFFREE_GLOBAL_DONORS is read (default OFF -> byte-identical)."""
+    return os.environ.get("DELFIN_FFFREE_GLOBAL_DONORS", "0") == "1"
+
+
+def _gd_loss(X, mh, ml, fl):
+    """(loss, worst inter-ligand heavy contact).  loss = sum of squared shortfalls below the
+    vdW floor over inter-ligand pairs, heavy-heavy dominant.  Same shape as the self-gate's
+    own measure, so a move that lowers this is a move toward passing the gate."""
+    D = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
+    over = np.clip(fl - D, 0.0, None)
+    L = float((over[mh] ** 2).sum() + _GD_H_W * (over[ml] ** 2).sum())
+    return L, (float(D[mh].min()) if mh.any() else float("inf"))
+
+
+def _gd_move_ok(T, X0, blocks):
+    """Re-measure the two invariants instead of trusting the parameterisation.
+
+    r(M-D): the metal is the origin, so |x_d| must be unchanged to numerical precision.
+    The BITE: every donor-donor distance INSIDE a ligand must be unchanged likewise.
+    Plus the one quantity this pass is allowed to spend -- how far a donor has drifted from
+    the vertex the enumeration seated it on -- capped at _GD_RESID against the ORIGINAL
+    frame (not the previous step), so repeated sweeps cannot accumulate a walk-away."""
+    for _st, _ln, dn in blocks:
+        for a in range(len(dn)):
+            da = dn[a]
+            if abs(float(np.linalg.norm(T[da])) - float(np.linalg.norm(X0[da]))) > 1e-6:
+                return False                                   # M-D band broken
+            if float(np.linalg.norm(T[da] - X0[da])) > _GD_RESID:
+                return False                                   # drifted off its vertex
+            for b in range(a + 1, len(dn)):
+                db = dn[b]
+                if abs(float(np.linalg.norm(T[da] - T[db]))
+                       - float(np.linalg.norm(X0[da] - X0[db]))) > 1e-6:
+                    return False                               # bite broken
+    return True
+
+
+def _global_donor_seat(syms, P, blocks):
+    """Move every ligand body -- donors included -- against every OTHER ligand, jointly.
+
+    ``blocks``: one ``(start, n_atoms, [donor global indices])`` per placed ligand; the metal
+    is index 0 and never moves.  Returns the improved frame, or None when there is nothing
+    below the floor / nothing improved (the caller then keeps the seated frame verbatim).
+
+    Two kinds of rigid motion, tried in this order because the first one is FREE:
+
+      1) rotation about the ligand's OWN donor axis -- the M-D bond for a monodentate, the
+         line THROUGH both donors for a bidentate.  The donors lie ON the axis, so they do
+         not move at all: r(M-D), the bite AND the vertex alignment are all untouched, and
+         only the backbone swings.  Cost to everything already right: exactly zero.
+         NOT offered from three donors on: there the "axis" would be a best-fit line through
+         none of them, which is the donorplane3 failure verbatim.
+
+      2) rotation of the whole ligand about the METAL, capped so no donor leaves its vertex
+         by more than _GD_RESID (~0.25 A at r=2.1 A is ~7 deg -- a cis contact stays
+         unambiguously cis).  This is the step where the donors genuinely re-seat, and it is
+         the only one available to a rigid tri-/tetradentate.
+
+    Coordinate descent, fixed ligand order, fixed angular grid, no RNG, accept-only-if-better,
+    with a never-worse floor on the WORST inter-ligand heavy contact so the sum objective
+    cannot buy three mild reliefs by crushing one comfortable pair.
+    """
+    try:
+        X0 = np.array(P, float)
+    except Exception:
+        return None
+    n = len(syms)
+    if len(blocks) < 2 or X0.shape != (n, 3) or not np.all(np.isfinite(X0)):
+        return None
+    try:
+        from delfin.manta.refine import _vdw
+    except Exception:
+        return None
+    lig = np.full(n, -1, dtype=int)
+    for bi, (st, ln, _dn) in enumerate(blocks):
+        if st < 1 or st + ln > n:
+            return None                                  # bookkeeping mismatch -> do nothing
+        lig[st:st + ln] = bi
+    vdw = np.array([_vdw(s) for s in syms], float)
+    fl = _GD_CLASH_F * (vdw[:, None] + vdw[None, :])
+    isH = np.array([s == "H" for s in syms])
+    inter = ((lig[:, None] != lig[None, :]) & (lig[:, None] >= 0) & (lig[None, :] >= 0)
+             & np.triu(np.ones((n, n), bool), 1))
+    mh = inter & ~isH[:, None] & ~isH[None, :]
+    ml = inter & (isH[:, None] | isH[None, :])
+    if not mh.any() and not ml.any():
+        return None
+    L0, h0 = _gd_loss(X0, mh, ml, fl)
+    if L0 <= 1e-12:
+        return None            # nothing inter-ligand under the floor -> the frame is returned
+    hfloor = h0 - 1e-6         # ... unchanged, which is what makes this cheap on clean frames
+    Xc = X0.copy()
+    bestL = L0
+    for _p in range(_GD_PASSES):
+        improved = False
+        for st, ln, dn in blocks:
+            if ln < 1 or not dn:
+                continue
+            sl = slice(st, st + ln)
+            cands = []                         # (origin, axis, angles) in try-order
+            # 1) THE FREE AXIS (see above): donors stay exactly put.  Needs a BODY to swing
+            #    -- for a monatomic ligand (Cl-, the atom IS the donor) it moves nothing, so
+            #    such a ligand only gets the bounded stage below.
+            if len(dn) == 1 and ln >= 2:
+                cands.append((np.zeros(3), np.asarray(Xc[dn[0]], float),
+                              [2.0 * math.pi * k / _GD_FREE_STEPS
+                               for k in range(1, _GD_FREE_STEPS)]))
+            elif len(dn) == 2:
+                cands.append((np.asarray(Xc[dn[0]], float),
+                              np.asarray(Xc[dn[1]], float) - np.asarray(Xc[dn[0]], float),
+                              [2.0 * math.pi * k / _GD_FREE_STEPS
+                               for k in range(1, _GD_FREE_STEPS)]))
+            # 2) THE BOUNDED AXES through the metal: the donors move, together, by at most
+            #    the chord _GD_RESID allows.  The chord of a given rotation grows with the
+            #    radius, so it is the LONGEST M-D in this ligand that decides the angle for
+            #    the whole body -- taking the shortest would let the outer donors overrun the
+            #    cap (_gd_move_ok would then throw those candidates away, silently).
+            rmax = max(float(np.linalg.norm(Xc[d])) for d in dn)
+            if rmax > 1e-6:
+                tmax = 2.0 * math.asin(min(1.0, _GD_RESID / (2.0 * rmax)))
+                angs = [s * m for s in
+                        [tmax * k / _GD_BOUND_STEPS for k in range(1, _GD_BOUND_STEPS + 1)]
+                        for m in (1.0, -1.0)]
+                for e in (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]),
+                          np.array([0.0, 0.0, 1.0])):
+                    cands.append((np.zeros(3), e, angs))
+            for org, ax, angs in cands:
+                na = float(np.linalg.norm(ax))
+                if na < 1e-6:
+                    continue
+                a_ = np.asarray(ax, float) / na
+                locL, locX = bestL, None
+                for th in angs:
+                    R = _axis_rot(a_, th)
+                    T = Xc.copy()
+                    T[sl] = (Xc[sl] - org) @ R.T + org
+                    if not np.all(np.isfinite(T)):
+                        continue
+                    Lt, ht = _gd_loss(T, mh, ml, fl)
+                    if Lt < locL - 1e-9 and ht >= hfloor and _gd_move_ok(T, X0, blocks):
+                        locL, locX = Lt, T
+                if locX is not None:
+                    Xc, bestL, improved = locX, locL, True
+        if not improved:
+            break
+    if bestL >= L0 - 1e-9 or not np.all(np.isfinite(Xc)):
+        return None
+    return Xc
+
+
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
                          n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
                          planar_bite=None, planar_coplanar=None):
@@ -3484,6 +3689,8 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     out_syms = [metal]; placed = [np.zeros(3)]; placed_syms = [metal]
     fixed = {0}; pos = 1
     relax_frags = []          # (AddHs(lg.mol), ligands-only offset) for the internal relax
+    lig_blocks = []           # (start, n_atoms, [donor global idxs]) per placed ligand --
+                              # which atoms form ONE rigid body, for the global donor seating
     # ENSEMBLE refactor (Task A.1): collect per-ligand candidate placements
     # (Q, clash_vs_metal) deduped by intra-ligand RMSD instead of only the single
     # clash-minimal pick, then enumerate full-complex combinations.  n_frames==1
@@ -3771,10 +3978,22 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         # freeze the donor atoms at their vertices
         for d in dons:
             fixed.add(pos + d)
+        # ... and record which atoms belong to this one ligand.  Pure bookkeeping: nothing
+        # reads it unless DELFIN_FFFREE_GLOBAL_DONORS is on, so the frame is unaffected.
+        lig_blocks.append((pos, len(lsyms), sorted(pos + int(d) for d in dons)))
         pos += len(lsyms)
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
     if not ensemble:
         P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
+        # GLOBAL DONOR SEATING (default OFF -> byte-identical).  Every ligand up to here was
+        # seated ALONE; this is the first and only point where all of them exist at once, so
+        # it is the first point where an inter-ligand distance can even be written down.  It
+        # runs BEFORE _finish_config_frame on purpose: the relax there pins the donors, so
+        # whatever this leaves them at is what the coordination is finished around.
+        if _global_donor_seat_enabled():
+            _g = _global_donor_seat(out_syms, P, lig_blocks)
+            if _g is not None:
+                P = _g
         P = _finish_config_frame(out_syms, P, fixed, relax_frags, refine)
         return out_syms, P, donors
 
@@ -3797,6 +4016,12 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         Pc = np.vstack(blocks)
         if not np.all(np.isfinite(Pc)):
             continue
+        # same global seating for the ensemble combos; the per-ligand spans are identical
+        # across combos (same conformer atom counts), so lig_blocks applies unchanged.
+        if _global_donor_seat_enabled():
+            _g = _global_donor_seat(out_syms, Pc, lig_blocks)
+            if _g is not None:
+                Pc = _g
         Pc = _finish_config_frame(out_syms, Pc, fixed, relax_frags, refine)
         if not np.all(np.isfinite(Pc)):
             continue
