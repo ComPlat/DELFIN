@@ -852,11 +852,34 @@ def _donor_plane_relax(Q, syms, donor_idxs, tgt, tmu):
         return float(np.sqrt(np.mean(np.sum(
             (np.array([np.asarray(X[d], float) for d in donor_idxs]) - tgt) ** 2, axis=1))))
 
-    ax = tmu - np.zeros(3)                      # metal -> donor centroid = the free axis
+    # THE FREE AXIS IS THE ONE THROUGH THE DONORS THEMSELVES, not metal -> centroid.
+    #
+    # Measured 2026-08-02 (donorplane, rc=3): with the metal->centroid axis the lever had
+    # ZERO reach on 187 systems -- the loop's own probe refused the A/B before it could
+    # report "no effect" and let me mistake a wiring fault for a verdict.  The reason is
+    # geometry, not code: rotating about metal->centroid swings every donor on a CONE, away
+    # from the vertex it was just fitted to, so the residual guard rightly killed every
+    # candidate.  That rotation is free only for a MONODENTATE -- and the monodentate path
+    # already sits at beta 0.9 deg, better than the crystals.
+    #
+    # Rotating about the line THROUGH the donors leaves the donors themselves on that line
+    # and therefore on their targets: for a bidentate the donor-donor axis IS the bite, so
+    # the bite is untouched by construction and both donors stay put to first order.  What
+    # swings is the backbone -- and with it the donor planes, which is exactly the quantity
+    # we want to move.  Nothing that is already placed pays for it.
+    _D = np.array([np.asarray(Q[d], float) for d in donor_idxs])
+    if len(_D) >= 2:
+        try:
+            ax = np.linalg.svd(_D - _D.mean(0))[2][0]    # principal direction of the donors
+        except Exception:
+            return None
+    else:
+        ax = _D[0] - np.zeros(3)                          # monodentate: the M-D bond itself
     n_ = float(np.linalg.norm(ax))
     if n_ < 1e-6:
         return None
     ax = ax / n_
+    tmu = _D.mean(0)                            # rotate about the donor centroid, on-axis
     base_b, base_r = _beta_sum(Q), _resid(Q)
     best = None
     K = np.array([[0.0, -ax[2], ax[1]], [ax[2], 0.0, -ax[0]], [-ax[1], ax[0], 0.0]])
