@@ -867,12 +867,23 @@ def _donor_plane_relax(Q, syms, donor_idxs, tgt, tmu):
     # the bite is untouched by construction and both donors stay put to first order.  What
     # swings is the backbone -- and with it the donor planes, which is exactly the quantity
     # we want to move.  Nothing that is already placed pays for it.
+    # ONLY WHERE THE ROTATION IS PROVABLY FREE: one or two donors.
+    #
+    # With two donors the axis is the line THROUGH both, so both stay exactly where the
+    # radial reset just put them and the donor-donor distance -- the BITE -- is invariant.
+    # With one donor it is the M-D bond itself: same argument, trivially.
+    #
+    # From THREE donors on the claim fails: the principal direction is a best-fit line that
+    # passes through none of them, so every donor swings off the position it was just given.
+    # Measured (donorplane3, 187 systems): reach 56, valid 32->35, 4 systems gained, but
+    # OVAVEO lost and the TOPOLOGY floor broke -- exactly the polydentate case where "free"
+    # was never true.  The lever keeps the part it can prove and drops the part it cannot;
+    # kappa3+ needs the donors placed GLOBALLY, not one ligand rotated after the fact.
     _D = np.array([np.asarray(Q[d], float) for d in donor_idxs])
-    if len(_D) >= 2:
-        try:
-            ax = np.linalg.svd(_D - _D.mean(0))[2][0]    # principal direction of the donors
-        except Exception:
-            return None
+    if len(_D) > 2:
+        return None
+    if len(_D) == 2:
+        ax = _D[1] - _D[0]                                # the line through both donors
     else:
         ax = _D[0] - np.zeros(3)                          # monodentate: the M-D bond itself
     n_ = float(np.linalg.norm(ax))
