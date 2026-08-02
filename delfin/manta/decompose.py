@@ -783,7 +783,7 @@ def decompose(smiles: str) -> Optional[Dict]:
     if mol is None:
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
     if mol is None:
-        return None
+        return _bail("SMILES_UNPARSEABLE")
     metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
     if len(metals) != 1:
         # Donor-aware metal-centre resolution (DELFIN_FFFREE_METALLOID_DONOR=1, default
@@ -885,7 +885,7 @@ def decompose(smiles: str) -> Optional[Dict]:
             mapping = []
             frags = _kekulize_robust_frags(em, mapping)
         if frags is None:
-            return None
+            return _bail("FRAGMENT_SPLIT_FAILED")
     donor_set = set(donor_idx)
     ligands: List[Dict] = []
     n_chelate_bonds = 0
@@ -988,7 +988,8 @@ def decompose(smiles: str) -> Optional[Dict]:
         else:
             cap = max(MAX_HEAVY_PER_DONOR, _chel_cap)
         if nheavy / max(lg["denticity"], 1) > cap:
-            return None
+            return _bail("LIGAND_TOO_LARGE",
+                         "nheavy=%s dent=%s cap=%s" % (nheavy, lg["denticity"], cap))
     has_rigid_planar = any(lg.get("rigid_planar") for lg in ligands)
     return {"metal": metal, "cn": cn, "geometry": geometry,
             "has_chelate": has_chelate,
