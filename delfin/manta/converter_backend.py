@@ -443,6 +443,14 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
         m.RemoveAllConformers()
         m.AddConformer(conf, assignId=True)
         frozen = {0} | {int(x) for x in (donors or [])}
+        # the PRIMARY's own scores -- the bar every sibling has to clear (see below)
+        _dloc = sorted(int(x) for x in (donors or []))
+        try:
+            from delfin.manta import assemble_complex as _AC
+            _base_bad = (bool(_AC._collapsed_heavy_bonds_strict(list(base_syms), base_P)),
+                         float(_AC._beta_score(list(base_syms), base_P, _dloc)))
+        except Exception:
+            _AC, _base_bad = None, None
         # angle_skip = the METAL alone.  Its angles come from the polyhedron, not from
         # hybridisation: the VSEPR gate sees nh == 4 on a CN4 centre and demands 109.5 deg,
         # so a square-planar d8's two 180 deg trans pairs read as a 70.5 deg error that no
@@ -467,6 +475,28 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
             if not _build_is_clean(_ps, _pP, cn=cn, geom=geom, donors=donors,
                                    exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
                 continue
+            # NEVER-WORSE PER SIBLING.  _build_is_clean asks "is this buildable", which is a
+            # LOWER bar than "is this good".  Measured 2026-08-02 (ffpuck2): the pass was
+            # strictly additive -- the primary frame stayed BYTE-IDENTICAL on every system --
+            # and it still failed the gate, on exactly two: CAZJEW pyramid_frame_regressed,
+            # YAGQIG quality_agg.  Those are arithmetic: 5 frames instead of 1, so a per-frame
+            # count or mean moves even though nothing that existed got worse.
+            #
+            # The metric is not what is wrong.  The goal is "EVERY frame without an anomaly",
+            # so a sibling that carries a defect the primary does not have is a real cost, and
+            # arguing with the aggregate would be exactly the kind of metric-gaming this
+            # project forbids.  So the sibling has to clear the SAME bar as the frame it hangs
+            # off: no new collapsed bond, and no worse out-of-plane.  Both predicates already
+            # exist and are the ones the gate itself judges by.
+            if _AC is not None and _base_bad is not None:
+                try:
+                    if (_AC._collapsed_heavy_bonds_strict(_ps, _pP)
+                            and not _base_bad[0]):
+                        continue                    # introduces a collapse the primary lacks
+                    if _AC._beta_score(_ps, _pP, _dloc) > _base_bad[1] + 1e-9:
+                        continue                    # flatter donors were the point; worse is not
+                except Exception:
+                    pass
             results.append((_xyz(_ps, _pP), f"{base_label}-{_plab}"))
         except Exception:
             continue
