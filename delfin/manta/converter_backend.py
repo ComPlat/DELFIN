@@ -378,14 +378,21 @@ def _config_template_mol(metal, lig_groups, syms):
             _Chem.FastFindRings(mm)          # belt: RingInfo even if sanitize stopped early
         except Exception:
             pass
+        # SAY WHY IT FAILED.  A bare `return None` here is a SILENT null lever, and that is
+        # the exact failure mode that cost two wrong conclusions on 2026-08-02: the first
+        # ring-pucker wiring returned 0 for every system and nothing recorded that it had.
+        # Trace-gated, so the default path stays silent and byte-identical.
         if mm.GetNumAtoms() != len(syms):
-            return None
+            return _scope_no("PUCKER_TEMPLATE_NATOMS",
+                             "tmpl=%d frame=%d" % (mm.GetNumAtoms(), len(syms)))
         for i in range(mm.GetNumAtoms()):
             if mm.GetAtomWithIdx(i).GetSymbol() != syms[i]:
-                return None
+                return _scope_no("PUCKER_TEMPLATE_ORDER",
+                                 "i=%d tmpl=%s frame=%s" % (
+                                     i, mm.GetAtomWithIdx(i).GetSymbol(), syms[i]))
         return mm
-    except Exception:
-        return None
+    except Exception as _e:
+        return _scope_no("PUCKER_TEMPLATE_RAISED", type(_e).__name__)
 
 
 
