@@ -521,6 +521,39 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
                 a = dict(assign); a[v1] = (k, 0); a[v2] = (k, 1); place(a)
                 if spec.get("asym"):
                     b = dict(assign); b[v1] = (k, 1); b[v2] = (k, 0); place(b)
+        elif dent == 3 and not spec.get("rigid_planar") \
+                and os.environ.get("DELFIN_FFFREE_KAPPA3_FLEX", "0") == "1":
+            # FLEXIBLE TRIDENTATE -- the branch that was never written.
+            #
+            # place() knew dent 1, dent 2, dent 3 ONLY IF rigid_planar, dent 4 ONLY IF
+            # rigid_planar.  A flexible kappa3 (dien, tacn, a non-conjugated pincer) matched
+            # nothing and there was no else, so the recursion returned without placing, no
+            # config ever completed, and the caller saw an empty list.  Measured 2026-08-02:
+            # 299 of 299 CHELATE_EMPTY declines carry nchel=0 -- not one exception, and
+            # _coord_filter is innocent.  cn=6 OC-6 223 - cn=4 T-4 76 - cn=4 SP-4 54 -
+            # cn=5 TBP-5 33.  215 systems, one cause.
+            #
+            # The rule is the same doctrine as everywhere else: the RESTRICTION is a property
+            # of the ligand, not the absence of a rule.  A rigid planar tridentate may only
+            # be meridional; a flexible one may take ANY vertex triple (fac and mer both --
+            # dien is facial on OC-6, and that isomer is simply missing today).  Geometrically
+            # impossible triples are removed by canon_key's symmetry collapse and by the
+            # build's own self-gate, so this states what is ALLOWED and lets the later stages
+            # say what is REACHABLE.
+            #
+            # NOT additive, and that is stated up front: these systems currently fall to
+            # legacy (nchel=0 -> CHELATE_EMPTY -> handover).  Building them TAKES them from
+            # legacy, which is the trade trilatresc measured today.  The bar is therefore
+            # legacy's own baseline on this pool: 215 attempted -> 215 built.
+            import itertools as _it
+            _free = [v for v in range(n) if v not in assign]
+            for tri in _it.combinations(_free, 3):
+                for arms in ((0, 1, 2),) if not spec.get("asym") \
+                        else tuple(_it.permutations((0, 1, 2))):
+                    a = dict(assign)
+                    for v, arm in zip(tri, arms):
+                        a[v] = (k, arm)
+                    place(a)
         elif dent == 3 and spec.get("rigid_planar") and _mer_triples is not None:
             # RIGID PLANAR tridentate (terpy / pincer): occupy ONLY meridional vertex
             # triples (a flat conjugated tridentate cannot fold to a facial cap).  Seat
