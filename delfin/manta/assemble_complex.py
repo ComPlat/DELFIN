@@ -3898,7 +3898,24 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         # Single mode: pick the clash-minimal vs already-placed atoms (historic,
         # byte-identical).  Ensemble mode: keep distinct low-clash-vs-metal
         # candidates (placement-order-independent + diverse), deduped intra-ligand.
+        #
+        # COLLAPSE-AWARE SELECTION (DELFIN_FFFREE_COLLAPSE_AWARE_SELECT, default OFF ->
+        # byte-identical).  The pick below ranks conformers by CLASH alone, and is blind to
+        # the one criterion the self-gate will later reject the whole complex for: a bonded
+        # heavy-heavy pair below 0.82 x the covalent sum.  Measured 2026-08-02: 171 of the
+        # 215 CHELATE_EMPTY systems die on exactly that, and the mode of the surviving
+        # frames' tightest bond sits in the first bin ABOVE the floor -- the gate cuts
+        # through the middle of the distribution, it does not trim a tail.
+        #
+        # _collapsed_heavy_bonds_strict is the gate's OWN predicate, same 0.82, same
+        # bonded-pair rule, already unconditional -- it is merely scoped to rigid-planar
+        # tridentates further down.  This widens the KNOWLEDGE of it to every chelate
+        # without widening the REJECTION: a collapsed conformer is only DEPRIORITISED, never
+        # discarded.  If every conformer collapses, the same one wins as today, so the set
+        # of buildable systems cannot shrink -- never-worse by construction, not by measurement.
+        _csel = os.environ.get("DELFIN_FFFREE_COLLAPSE_AWARE_SELECT", "0") == "1"
         best_Q, best_clash = None, 1e18
+        best_coll = True                            # a collapsed pick loses to a clean one
         cands = []                                  # (Q, clash_vs_metal) for ensemble
         seen_local = []                             # intra-ligand RMSD dedup
         for lP in coords_list:
@@ -4011,8 +4028,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             if not np.all(np.isfinite(Q)):
                 continue
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
-            if cl < best_clash:
-                best_clash, best_Q = cl, Q
+            # (collapsed, clash) beats (clash) alone: a clean conformer outranks a colliding
+            # one, and among equals the historic clash order is untouched.  With the flag OFF
+            # _coll is False for every candidate, so the tuple compare degenerates to the
+            # historic `cl < best_clash` exactly -- byte-identical.
+            _coll = bool(_csel and _collapsed_heavy_bonds_strict(lsyms, Q))
+            if (_coll, cl) < (best_coll, best_clash):
+                best_coll, best_clash, best_Q = _coll, cl, Q
             if ensemble:
                 # dedup conformers of THIS ligand by intra-ligand RMSD (identity corr.)
                 dup = False
@@ -4025,7 +4047,10 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 if not dup:
                     seen_local.append(Q)
                     cands.append((Q, _clash_count(Q, metal_P, lsyms, metal_sym)))
-            elif cl == 0:
+            elif cl == 0 and not _coll:
+                # the early exit must not fire on a conformer that is clash-free but carries
+                # a bond the gate will kill the whole complex for -- that is the exact trade
+                # this flag exists to stop.  Flag OFF -> _coll is False -> historic break.
                 break
         if best_Q is None:                  # no conformer could be placed -> bail to legacy
             return None
