@@ -260,7 +260,11 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                 # polyhedron (that re-introduces the cap splay the rigid seating fixes);
                 # only enforce the ring interior angle below.  Keep the cap's natural
                 # donor geometry -> coordination stays emergent.
-                if _ring_b and not (_chel_bite or harden or force_bite):
+                # BITE_FREE belongs in this list too, and for the opposite reason: it wants
+                # the M-D pins that only tp carries, and it drops the donor-donor entries by
+                # itself further down.  Dropping tp here would silently take its radii away
+                # as well, so RING_BOUNDS+BITE_FREE would quietly become RING_BOUNDS alone.
+                if _ring_b and not (_chel_bite or harden or force_bite or _bite_free):
                     tp = None
 
                 def _setb(i, j, dist, tol=0.05):
