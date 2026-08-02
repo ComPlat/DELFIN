@@ -878,13 +878,32 @@ def _donor_plane_beta(P, syms, d):
     return abs(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(nrm, v / n_)))))))
 
 
+_BETA_BAND = 4.8        # deg -- the crystals' own upper beta, measured over clean CCDC
+                        # structures: 3.4 monodentate, 3.7 bidentate, 4.8 tetradentate.
+                        # NOT a tuning knob: below it a donor is as flat as real chemistry
+                        # gets, so there is nothing to win by preferring a flatter conformer.
+
+
 def _beta_score(syms, Q, donor_idxs):
     """Sum of SQUARED out-of-plane angles over the donors that HAVE a plane (degrees^2).
 
     The metal sits at the origin in Q, which is exactly what _donor_plane_beta assumes.
     Donors with fewer than two heavy substituents have no plane to be out of and simply do
     not contribute -- a carboxylate O is not scored here, and must not be: its in-plane
-    statement is a TORSION, a different quantity."""
+    statement is a TORSION, a different quantity.
+
+    ONLY THE EXCESS OVER THE CRYSTAL BAND IS SCORED.  Real complexes are not flat either:
+    measured against clean crystals, beta sits at 3.4 deg for monodentate donors, 3.7 for
+    bidentate and 4.8 for tetradentate.  A donor already inside that band is RIGHT, and
+    preferring an even flatter conformer over it buys nothing while disturbing a pick that
+    the historic clash order had made for a reason.
+
+    Measured 2026-08-02, and this is why the band is here rather than a raw sum: scoring the
+    raw beta (betasel) moved pyramidal_sp2 from 19.05 % to 12.70 % and the hard-finding rate
+    from 50.8 % to 42.5 %, but cost 4 capabilities against 3 gained.  Pairing it with the
+    collapse criterion (betacsel) made it WORSE, not better -- 6 lost against 2 -- so the four
+    losses are not collapse-related; the lever is simply too eager.  _BETA_BAND is not a fitted
+    knob: it is the crystals' own upper figure."""
     s = 0.0
     for d in donor_idxs:
         try:
@@ -892,7 +911,9 @@ def _beta_score(syms, Q, donor_idxs):
         except Exception:
             b = None
         if b is not None:
-            s += float(b) * float(b)
+            e = float(b) - _BETA_BAND
+            if e > 0.0:
+                s += e * e
     return s
 
 
