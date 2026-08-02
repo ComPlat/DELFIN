@@ -506,6 +506,48 @@ def _maybe_decollapse(syms, P):
     return syms, P
 
 
+def _trilat_rescue(build_fn, *, cn=None, geom=None, exempt_pairs=None, graph_bonds=None):
+    """LAST RUNG of the seating ladder: re-assemble with trilaterated donor targets.
+
+    Reached only after the rigid build failed the self-gate AND the conformer ladder is
+    exhausted, so whatever this returns replaces a DISCARD -- it can never displace a clean
+    frame.  That makes it additive BY CONSTRUCTION: never-worse holds structurally instead of
+    having to be re-measured on every pool.
+
+    Why a rung and not the primary path (trilatAB2, 995 systems, 2026-08-02): as the primary
+    path trilateration lost 12 systems that were ALL topo_correct before and gained 11 that
+    ALL had no valid frame before -- not one borderline case in either direction.  It repairs
+    what is broken and damages what is whole; the ladder is the shape that fits that.
+
+    Returns (syms, P) or None.  None whenever anything is off, missing, throws, or still
+    fails the gate -- the caller then proceeds exactly as it did before.
+    """
+    if not AC.trilat_rescue_enabled():
+        return None
+    try:
+        with AC.trilaterate_rescue():
+            _b = build_fn()
+    except Exception:
+        return None
+    if not _b:
+        return None
+    # The chelate builder returns (syms, P, donors); the heteroleptic one (syms, P).  Gate the
+    # rescue against the donors IT produced, not the ones the rejected build had.
+    if len(_b) == 3:
+        _s, _P, _don = _b
+    else:
+        _s, _P = _b
+        _don = None
+    try:
+        _s, _P = _maybe_relax(_s, _P)
+        if not _build_is_clean(_s, _P, cn=cn, geom=geom, donors=_don,
+                               exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+            return None
+    except Exception:
+        return None
+    return _s, _P
+
+
 def _seat_via_conformers(metal, lig_groups, base_syms, base_P,
                          cn=None, geom=None, donors=None):
     """Conformer-aware seating fallback for a large-ligand build that FAILED the
@@ -1009,6 +1051,11 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                     reseated = _seat_via_conformers(d["metal"], _clg, syms, P,
                                                     cn=d.get("cn"), geom=d.get("geometry"),
                                                     donors=donors)
+                if reseated is None:                  # last rung before skipping the config
+                    reseated = _trilat_rescue(
+                        lambda: _build_config_never_worse(d, config, ligands, geom_key),
+                        cn=d.get("cn"), geom=d.get("geometry"),
+                        exempt_pairs=_ex, graph_bonds=_gb)
                 if reseated is None:
                     _iso_trace("SELFGATE", k, geom_tag)
                     continue                          # skip this config
@@ -1541,15 +1588,21 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             # (±0.05 A guard) and keep the first clean fold; only large-ligand complexes
             # are re-seated (cheap ligands seat fine rigidly).  No clean fold -> legacy
             # (never-worse).  Byte-identical when the flag is off (this branch returns).
-            if not (_seating_enabled() and _has_large_ligand(_lg)):
-                return _scope_no("GATE_NO_RESEAT", "cn=%s geom=%s k=%d seating=%d"
-                                 % (d.get("cn"), geom_tag, k, int(_seating_enabled())))
+            _tried_seating = _seating_enabled() and _has_large_ligand(_lg)
             reseated = _seat_via_conformers(d["metal"], _lg, syms, P,
-                                            cn=d.get("cn"), geom=d.get("geometry"))
+                                            cn=d.get("cn"), geom=d.get("geometry")) \
+                if _tried_seating else None
             if reseated is None:
-                # no conformer seats cleanly -> legacy
-                return _scope_no("RESEAT_FAILED", "cn=%s geom=%s k=%d"
-                                 % (d.get("cn"), geom_tag, k))
+                # LAST RUNG before legacy -- the conformer ladder is exhausted, so this
+                # replaces a discard and cannot displace a clean frame.
+                reseated = _trilat_rescue(
+                    lambda: AC.assemble_heteroleptic_from_mols(
+                        d["metal"], d["geometry"], vertex_specs),
+                    cn=d.get("cn"), geom=d.get("geometry"), exempt_pairs=_ex)
+            if reseated is None:
+                return _scope_no("RESEAT_FAILED" if _tried_seating else "GATE_NO_RESEAT",
+                                 "cn=%s geom=%s k=%d seating=%d"
+                                 % (d.get("cn"), geom_tag, k, int(_seating_enabled())))
             syms, P = reseated
         label = base_label
         results.append((_xyz(syms, P), label))

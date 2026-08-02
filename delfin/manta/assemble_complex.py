@@ -789,6 +789,51 @@ def _riders_that_may_move(syms, P, riders, delta, parent):
     return keep
 
 
+# ===== TRILATERATION AS A RESCUE RUNG, NOT AS THE PRIMARY PATH ===============================
+#
+# Measured 2026-08-02 (trilatAB2, 995 systems).  DELFIN_FFREE_TRILATERATE as a PRIMARY path:
+#     12 losses -- 12 of 12 were topo_correct BEFORE
+#     11 gains  --  0 of 11 had a valid frame BEFORE
+# Not one borderline case in either direction: it repairs what was broken and damages what was
+# whole.  PLANAR_MER measured identically.  A switch with that signature is not a better way to
+# place ligands, it is a SECOND way -- and a second way belongs where the first one already
+# failed.  converter_backend already HAS that ladder (_maybe_decollapse -> _seat_via_conformers
+# -> legacy); this adds a rung to it rather than a parallel mechanism.
+#
+# Reached only after the self-gate has rejected the rigid build, the rescue is additive BY
+# CONSTRUCTION: a clean frame can never be replaced by it, so never-worse holds structurally
+# instead of having to be re-measured.
+#
+# The env read lives HERE and only here (converter_backend asks through trilat_rescue_enabled /
+# trilaterate_rescue), so the flag has one home and cannot drift out of sync with its callers.
+_TRILAT_RESCUE = False
+
+
+def trilat_rescue_enabled() -> bool:
+    """THE one place DELFIN_FFREE_TRILAT_RESCUE is read (default OFF -> byte-identical)."""
+    return os.environ.get("DELFIN_FFREE_TRILAT_RESCUE", "0") == "1"
+
+
+class trilaterate_rescue:
+    """Re-run one assembly with trilaterated donor targets instead of ideal vertices."""
+
+    def __enter__(self):
+        global _TRILAT_RESCUE
+        self._prev = _TRILAT_RESCUE
+        _TRILAT_RESCUE = True
+        return self
+
+    def __exit__(self, *_exc):
+        global _TRILAT_RESCUE
+        _TRILAT_RESCUE = self._prev
+        return False
+
+
+def _trilat_targets_on() -> bool:
+    """Primary-path flag (legacy A/B, default OFF) OR an active rescue re-build."""
+    return _TRILAT_RESCUE or os.environ.get("DELFIN_FFREE_TRILATERATE", "0") == "1"
+
+
 def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False, lsyms=None):
     """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
     donors seat onto the target vertex directions, then per-donor rescale to the
@@ -880,7 +925,7 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
     # _bite_aware_targets (the cosine law); this is the same statement for any denticity,
     # and it is the only place polydentates have ever had it: _bite_aware_targets is called
     # from _place_chelate_block alone, which runs only for dent == 2.
-    if os.environ.get("DELFIN_FFREE_TRILATERATE", "0") == "1":
+    if _trilat_targets_on():
         try:
             _tri = _trilaterate_donor_targets(
                 lP, list(donor_idxs), [targets[perm[i]] for i in range(len(donor_idxs))])
