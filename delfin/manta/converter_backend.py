@@ -338,16 +338,131 @@ def _lig_groups_from_config(config, ligands):
     return groups
 
 
-# vdW-level inter-ligand clash floor (Å) for the NEW-frame never-worse gate below.
-# A re-embedded / re-seated conformer must not introduce a non-bonded heavy-heavy
-# contact below this (a backbone folding into a NEIGHBOUR ligand collapses well
-# inside the vdW shell long before the 0.60·Σcov gross-overlap floor _build_is_clean
-# uses fires — measured: ACEQUY Fe(N(Dipp)(SiMe3))3 reembed frames at 1.98-2.01 A
-# inter-ligand C-C, base frame 2.07-2.38 A).
-_INTERLIG_VDW_FLOOR = 2.0
-_INTERLIG_VDW_TOL = 0.05
+def _config_template_mol(metal, lig_groups, syms):
+    """An RDKit mol in the FRAME'S OWN atom order: metal at 0, then AddHs(ligand)
+    blocks in construction order -- the same layout _lig_groups_from_config derives
+    and backbone_reembed already relies on.
+
+    WHY THIS EXISTS.  Every xyz->mol bridge in the tree (_xyz_to_rdkit_conformer)
+    demands the element symbol to match at EVERY index, and the mol parsed from the
+    SMILES carries RDKit's own order -- so it never matches a frame of ours and every
+    consumer silently gets nothing.  That is exactly how the first attempt at wiring
+    ring pucker into the FF-free path measured 185 of 187 systems byte-identical.
+
+    Built here rather than reused from _finish_config_frame's ``cm`` on purpose: that
+    one is deliberately lossy (atoms recreated from atomic number alone, so charge,
+    aromaticity and chirality are dropped, and M-D is a SINGLE bond), because its only
+    consumer is a bond-graph-only sp2 flattener.  CombineMols keeps all of it, and the
+    M-D bond is DATIVE -- a SINGLE bond would push a neutral 3-coordinate donor N to
+    valence 4, sanitisation would stop at SANITIZE_PROPERTIES, RingInfo would never be
+    initialised, and every ring consumer would read zero rings.
+
+    Returns None unless the result matches ``syms`` symbol-for-symbol -- an aggregate
+    count check would pass a compensating pair of errors."""
+    from rdkit import Chem as _Chem
+    try:
+        m = _Chem.RWMol()
+        m.AddAtom(_Chem.Atom(str(metal)))
+        for g in lig_groups:
+            gh = _Chem.AddHs(g["mol"])
+            base = m.GetNumAtoms()
+            m.InsertMol(gh)
+            for d in g["donor_local"]:
+                m.AddBond(0, base + int(d), _Chem.BondType.DATIVE)
+        mm = m.GetMol()
+        try:
+            _Chem.SanitizeMol(mm, catchErrors=True)
+        except Exception:
+            pass
+        try:
+            _Chem.FastFindRings(mm)          # belt: RingInfo even if sanitize stopped early
+        except Exception:
+            pass
+        if mm.GetNumAtoms() != len(syms):
+            return None
+        for i in range(mm.GetNumAtoms()):
+            if mm.GetAtomWithIdx(i).GetSymbol() != syms[i]:
+                return None
+        return mm
+    except Exception:
+        return None
 
 
+
+
+def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, base_label,
+                               cn=None, geom=None, donors=None, exempt_pairs=None,
+                               graph_bonds=None, max_isomers=0, budget=48):
+    """Append the Cremer-Pople ring-pucker SIBLINGS of one accepted FF-free frame.
+
+    Named apart from smiles_converter._append_ring_puckers on purpose: that one drives
+    the METAL-FREE organic pool off a sanitised ETKDG mol.  This one drives a metal
+    complex off OUR frame, in OUR atom order, with the coordination sphere frozen.
+
+    THE conformer lever, and the biggest by reach: over 1000 systems, 655 are torsionally
+    RIGID (one torsional state), so for two thirds of the space the ring pucker IS the
+    entire conformer manifold -- and the FF-free path has none of it (2.23 frames per
+    system, ZERO with a conformer suffix, against 30.6 elsewhere).  ETKDG cannot supply
+    it either: UFF does not cross the ~10 kcal/mol chair-boat barrier, so every ring stays
+    in whatever basin the random seed happened to hit.
+
+    THE ONE PLACE DELFIN_FFFREE_RING_PUCKER IS READ (default OFF -> byte-identical).
+    An earlier attempt read it in smiles_converter at the FF-free return and measured 185
+    of 187 systems byte-identical: the legacy emitter bridges XYZ to a mol through a
+    symbol-per-index match, and the SMILES-parsed mol carries RDKit's order while our
+    frames carry metal-at-0 plus AddHs(ligand) blocks.  They never coincide.
+
+    Additive by construction: the base frame is never touched, every sibling must pass the
+    SAME self-gate the base passed, and a failing pucker is dropped rather than allowed to
+    replace anything.  ``donors`` are the GLOBAL indices the assembler itself returned, so
+    the frozen set is exact -- the legacy emitter has to guess it back from metal neighbours.
+    """
+    if os.environ.get("DELFIN_FFFREE_RING_PUCKER", "0") != "1" or not lig_groups:
+        return
+    try:
+        from delfin.manta import _ring_pucker as _rpuck
+        from rdkit import Chem as _Chem
+        import numpy as _np
+    except Exception:
+        return
+    m = _config_template_mol(metal, lig_groups, base_syms)
+    if m is None:
+        return
+    try:
+        conf = _Chem.Conformer(m.GetNumAtoms())
+        for i in range(m.GetNumAtoms()):
+            conf.SetAtomPosition(i, [float(base_P[i][0]), float(base_P[i][1]),
+                                     float(base_P[i][2])])
+        m.RemoveAllConformers()
+        m.AddConformer(conf, assignId=True)
+        frozen = {0} | {int(x) for x in (donors or [])}
+        # angle_skip = the METAL alone.  Its angles come from the polyhedron, not from
+        # hybridisation: the VSEPR gate sees nh == 4 on a CN4 centre and demands 109.5 deg,
+        # so a square-planar d8's two 180 deg trans pairs read as a 70.5 deg error that no
+        # pucker caused and none can fix.  Without this, EVERY combination of EVERY SP-4
+        # and T-3 complex is rejected -- which reads as "no reach" for entirely the wrong
+        # reason.  Default off in _ring_pucker, so no existing caller changes.
+        _out = _rpuck.generate(m, frozen=frozen, budget=int(budget), angle_skip={0})
+    except Exception:
+        return
+    for _px, _plab in (_out or []):
+        if max_isomers and len(results) >= max_isomers:
+            break
+        try:
+            _lines = [ln.split() for ln in _px.splitlines() if ln.strip()]
+            if len(_lines) != len(base_syms):
+                continue
+            _ps = [t[0] for t in _lines]
+            if _ps != list(base_syms):
+                continue                      # order must survive; never guess a mapping
+            _pP = _np.array([[float(t[1]), float(t[2]), float(t[3])] for t in _lines])
+            _ps, _pP = _maybe_relax(_ps, _pP)
+            if not _build_is_clean(_ps, _pP, cn=cn, geom=geom, donors=donors,
+                                   exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+                continue
+            results.append((_xyz(_ps, _pP), f"{base_label}-{_plab}"))
+        except Exception:
+            continue
 def _interlig_vdw_gate_enabled() -> bool:
     """vdW-level inter-ligand clash filter for the ADDITIONAL conformer frames
     (backbone re-embed / conformer re-seating).  Active by default whenever those
@@ -1067,6 +1182,14 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"
         results.append((_xyz(syms, P), _lab))
+        # Ring-pucker siblings of this accepted frame (default OFF -> byte-identical).
+        # Runs HERE, next to the frame it belongs to, because this is where the frame's
+        # own atom order is known -- see the function for why the same call from the
+        # smiles_converter return point measured 185 of 187 systems byte-identical.
+        _append_ffree_ring_puckers(results, d["metal"], _clg, syms, P, _lab,
+                                   cn=d.get("cn"), geom=d.get("geometry"),
+                                   donors=donors, exempt_pairs=_ex, graph_bonds=_gb,
+                                   max_isomers=max_isomers)
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of this accepted chelate frame.
         _append_reembed(results, d["metal"], _clg,

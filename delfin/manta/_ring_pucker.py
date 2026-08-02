@@ -199,7 +199,7 @@ _VDW = {"H": 1.10, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80,
         "S": 1.80, "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10}
 
 
-def _has_bad_angles(mol, tol: float = 25.0) -> bool:
+def _has_bad_angles(mol, tol: float = 25.0, skip: Optional[Set[int]] = None) -> bool:
     """True if any heavy centre's VSEPR angle is off its hybridisation ideal by
     more than ``tol`` — i.e. the (multi-)ring pucker left a LOCAL geometry broken
     even though nothing clashes.  Essential for FUSED / BRIDGED ring systems
@@ -207,11 +207,23 @@ def _has_bad_angles(mol, tol: float = 25.0) -> bool:
     fusion atoms, distorting their angles; the clash gate is blind to it.  A
     frame is realistic only if EVERY VSEPR body is correct, so any such pucker is
     rejected.  2-coordinate centres are hybridisation-ambiguous (sp/sp2/sp3) ->
-    skipped; >=5 is non-molecular -> skipped."""
+    skipped; >=5 is non-molecular -> skipped.
+
+    ``skip``: centres exempt from the VSEPR ideal, because they do not HAVE one.
+    A COORDINATION centre is the case this exists for: its angles are set by the
+    polyhedron, not by hybridisation.  A CN4 metal has nh == 4, so this function
+    would demand 109.5 deg of it -- and a square-planar d8 has two 180 deg trans
+    angles, i.e. a 70.5 deg "error" that no pucker caused and no pucker can fix.
+    Without the exemption EVERY combination is rejected for every SP-4 and T-3
+    complex, which reads as "the lever has no reach" for entirely the wrong reason.
+    Default None -> empty -> byte-identical for every existing caller."""
+    _skip = skip or frozenset()
     try:
         conf = mol.GetConformer()
         P = conf.GetPositions()
         for c in range(mol.GetNumAtoms()):
+            if c in _skip:
+                continue
             a = mol.GetAtomWithIdx(c)
             if a.GetSymbol() == "H":
                 continue
@@ -391,7 +403,8 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
 
 
 def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
-             budget: int = 64, tfd_thr: float = 0.05) -> List[Tuple[str, str]]:
+             budget: int = 64, tfd_thr: float = 0.05,
+             angle_skip: Optional[Set[int]] = None) -> List[Tuple[str, str]]:
     """Construct the COMBINATORIAL ring-pucker conformers from a base conformer.
 
     ``mol_with_conf`` carries ONE embedded conformer (a chain/rotamer pose whose
@@ -463,7 +476,7 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
             # body distorted (fused/bridged rings strain their shared atoms) is
             # not a physical ensemble member -> drop it.  Everything must be
             # right, or the frame is unrealistic.
-            if _has_clash(m2) or _has_bad_angles(m2):
+            if _has_clash(m2) or _has_bad_angles(m2, skip=angle_skip):
                 continue
             cid = _add_conf(acc, m2)
             if not _tfd_distinct(acc, cid, kept_ids, tfd_thr):

@@ -31652,47 +31652,27 @@ def _smiles_to_xyz_isomers_impl(
                         _b6_mol = None
                     if _b6_mol is not None:
                         _ff = _apply_baustein6_if_enabled(_b6_mol, _ff, False)
-                # RING PUCKER FOR THE FF-FREE PATH (DELFIN_FFFREE_RING_PUCKER, default OFF
-                # -> byte-identical).  Same hole as B6 above, and a bigger one.
+                # RING PUCKER FOR THE FF-FREE PATH: the hook that USED to sit here has been
+                # removed, and the reason is worth keeping.
                 #
-                # THE RING-PUCKER MACHINERY EXISTS, IS THE GOOD ONE, AND IS ON BY DEFAULT --
-                # and the FF-free builder never reaches it, because all three emitters sit
-                # ~1800 lines BELOW this return.  Measured on archive_scopecensus3 (996
-                # champion systems): the FF-free chelate path emits 2.23 frames per system and
-                # ZERO frames carrying a conformer suffix, against 30.6 frames per system on
-                # everything else.  36 % of all systems have no conformer frame at all, and
-                # ccdc_pucker_realized is false for 25.2 % of the census (4288/16988).
-                # So the FF-free conformer manifold is not thin, it is EMPTY.
+                # The gap it addressed is real and large: all three pucker emitters sit ~1800
+                # lines BELOW this return, so the FF-free builder never reaches any of them.
+                # Measured on archive_scopecensus3 (996 champion systems): the FF-free chelate
+                # path emits 2.23 frames per system and ZERO frames carrying a conformer
+                # suffix, against 30.6 on everything else; ccdc_pucker_realized is false for
+                # 25.2 % of the census.  The FF-free conformer manifold is not thin, it is EMPTY.
                 #
-                # _emit_ring_puckers_rp is the Cremer-Pople constructor: it reaches the higher
-                # ring basins ETKDG never samples, it freezes the metal AND its donors so the
-                # coordination sphere is preserved, and it RUNS THE MULTI-RING PRODUCT -- every
-                # combination when a ligand carries several rings.  That is exactly the ask.
+                # But calling _emit_ring_puckers_rp from HERE can never work, and it was
+                # measured: 185 of 187 systems byte-identical.  That emitter bridges XYZ to a
+                # mol through _xyz_to_rdkit_conformer, which requires the element symbol to
+                # match at EVERY index -- and the mol parsed from the SMILES carries RDKit's
+                # own atom order, while our frames carry metal-at-0 plus AddHs(ligand) blocks
+                # in construction order.  They never coincide, so it returned 0 every time.
+                # It failed SAFE (nothing written), but it was a null lever.
                 #
-                # This is NOT the kind of pass the comment above warns about.  A post-hoc fixer
-                # edits a finished frame and is scaffolding we want to drop; this one APPENDS
-                # frames and never touches an existing one.  It is enumeration, i.e. the goal.
-                #
-                # Fails safe on atom-order mismatch: _emit_ring_puckers_rp maps our XYZ onto
-                # the parsed mol via _xyz_to_rdkit_conformer (bare mol, then AddHs) and returns
-                # 0 when neither matches -- it cannot write garbage, only nothing.  The tuple
-                # order agrees on both sides: (xyz, label).
-                if _delfin_env_int("DELFIN_FFFREE_RING_PUCKER", 0):
-                    try:
-                        _rp_mol = _prepare_mol_for_embedding(
-                            smiles, hapto_approx=hapto_mode,
-                        )
-                    except Exception:
-                        _rp_mol = None
-                    if _rp_mol is not None:
-                        try:
-                            _n_rp = _emit_ring_puckers_rp(
-                                _rp_mol, _ff, apply_uff, max_isomers,
-                            )
-                            if _n_rp:
-                                logger.debug("FF-free ring-pucker: +%d frames", _n_rp)
-                        except Exception as _rp_exc:
-                            logger.debug("FF-free ring-pucker skipped: %s", _rp_exc)
+                # The live version therefore lives where the frame's own order is known:
+                # converter_backend._ffree_ring_pucker_frames, called next to the frame it is
+                # a sibling of.  ONE env read site, and it is over there.
                 return _ff, None
 
     # Resolve the quality profile once per call so the seed count,
