@@ -878,6 +878,24 @@ def _donor_plane_beta(P, syms, d):
     return abs(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(nrm, v / n_)))))))
 
 
+def _beta_score(syms, Q, donor_idxs):
+    """Sum of SQUARED out-of-plane angles over the donors that HAVE a plane (degrees^2).
+
+    The metal sits at the origin in Q, which is exactly what _donor_plane_beta assumes.
+    Donors with fewer than two heavy substituents have no plane to be out of and simply do
+    not contribute -- a carboxylate O is not scored here, and must not be: its in-plane
+    statement is a TORSION, a different quantity."""
+    s = 0.0
+    for d in donor_idxs:
+        try:
+            b = _donor_plane_beta(Q, syms, int(d))
+        except Exception:
+            b = None
+        if b is not None:
+            s += float(b) * float(b)
+    return s
+
+
 def _donor_plane_relax(Q, syms, donor_idxs, tgt, tmu):
     """Rotate the whole ligand about the donor-centroid axis to put the metal into the
     donor planes.  Rigid -> bonds, internal angles and the BITE are untouched by
@@ -3914,8 +3932,36 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         # discarded.  If every conformer collapses, the same one wins as today, so the set
         # of buildable systems cannot shrink -- never-worse by construction, not by measurement.
         _csel = os.environ.get("DELFIN_FFFREE_COLLAPSE_AWARE_SELECT", "0") == "1"
+        # BETA-AWARE SELECTION (DELFIN_FFFREE_BETA_AWARE_SELECT, default OFF -> byte-id).
+        #
+        # pyramidal_sp2 -- the metal sitting OUT of its donor's own substituent plane -- is the
+        # largest single defect class we carry: 18-19 % of frames against 0.98 % in 509 clean
+        # crystals, a 19-fold over-representation.  And it is a PATH difference, not physics:
+        # the monodentate path aligns the metal onto the donor's lone-pair axis by construction
+        # (_vsepr_reconstruct + _rot_align) and reaches 0.9 deg, BETTER than the crystals; the
+        # chelate path never looks at the donor plane at all and reaches 9.3 / 15.9 deg.
+        #
+        # WHY THIS IS A SELECTION AND NOT A CONSTRAINT.  beta is SECOND ORDER in distance:
+        # with d^2 = r^2 + a^2 + 2*r*a*cos(beta)*cos(half) the first derivative vanishes at
+        # beta=0, so d changes only as beta^2.  A 0.10 A bound still admits ~37 deg, a 0.05 A
+        # bound ~26 deg, and our worst 15.9 deg costs all of 0.018 A.  Holding beta to 5 deg
+        # would need a 0.002 A tolerance, which triangle smoothing will not survive.  NO set of
+        # distances to atoms IN the donor plane can pin beta to first order -- the distance
+        # from a point to coplanar anchors is stationary against perpendicular displacement.
+        # (The in-plane azimuth theta IS first order, 0.014 A/deg; that one belongs in bounds.)
+        #
+        # WHY IT REACHES THE FRAME.  The per-donor radial rescale below scales a donor along
+        # M->D, a line that lies IN the plane, so plane(D',X1,X2) is the same plane and still
+        # contains M: beta is preserved.  The Kabsch fit is rigid, likewise.  So whatever beta
+        # the chosen conformer has is the beta that ships -- the lever belongs here and nowhere
+        # after.
+        #
+        # beta decides ONLY among conformers of EQUAL clash.  It cannot displace the criterion
+        # that decides today, so it cannot introduce a clash regression at all.
+        _bsel = os.environ.get("DELFIN_FFFREE_BETA_AWARE_SELECT", "0") == "1"
         best_Q, best_clash = None, 1e18
         best_coll = True                            # a collapsed pick loses to a clean one
+        best_beta = float("inf")                    # ... and among equals, the flatter donor
         cands = []                                  # (Q, clash_vs_metal) for ensemble
         seen_local = []                             # intra-ligand RMSD dedup
         for lP in coords_list:
@@ -4033,8 +4079,9 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             # _coll is False for every candidate, so the tuple compare degenerates to the
             # historic `cl < best_clash` exactly -- byte-identical.
             _coll = bool(_csel and _collapsed_heavy_bonds_strict(lsyms, Q))
-            if (_coll, cl) < (best_coll, best_clash):
-                best_coll, best_clash, best_Q = _coll, cl, Q
+            _bta = _beta_score(lsyms, Q, dons) if _bsel else 0.0
+            if (_coll, cl, _bta) < (best_coll, best_clash, best_beta):
+                best_coll, best_clash, best_beta, best_Q = _coll, cl, _bta, Q
             if ensemble:
                 # dedup conformers of THIS ligand by intra-ligand RMSD (identity corr.)
                 dup = False
@@ -4047,10 +4094,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 if not dup:
                     seen_local.append(Q)
                     cands.append((Q, _clash_count(Q, metal_P, lsyms, metal_sym)))
-            elif cl == 0 and not _coll:
+            elif cl == 0 and not _coll and not _bsel:
                 # the early exit must not fire on a conformer that is clash-free but carries
                 # a bond the gate will kill the whole complex for -- that is the exact trade
                 # this flag exists to stop.  Flag OFF -> _coll is False -> historic break.
+                # It must also not fire under BETA_AWARE_SELECT at all: taking the FIRST
+                # clash-free conformer is precisely what makes the beta tie-break unable to
+                # see the others.  At most per_lig_confs candidates, so the cost is bounded.
                 break
         if best_Q is None:                  # no conformer could be placed -> bail to legacy
             return None
