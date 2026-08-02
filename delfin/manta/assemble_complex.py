@@ -94,6 +94,32 @@ def _ring_bounds_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_RING_BOUNDS", "0") == "1"
 
 
+def _bite_free_bounds() -> bool:
+    """THE one place DELFIN_FFFREE_BITE_FREE is read (default OFF -> byte-identical).
+
+    THE BITE IS A RING CLOSURE, NOT AN INPUT.  Measured 2026-07-31 over 18 metals:
+        cos(bite) = (r1^2 + r2^2 - d_DD^2) / (2 r1 r2)      RMS 0.24 deg, no fitted parameter.
+    Two M-D radii and ONE donor-donor distance already determine the bite exactly.  So a
+    bounds matrix that pins BOTH the radii AND the donor-donor separation is not stating one
+    law twice -- it is OVER-DETERMINING a triangle, and when the second statement comes from
+    the ideal polyhedron while the ligand's backbone says otherwise, the two contradict.
+    Triangle smoothing spreads that contradiction over the whole matrix and the embedder
+    returns the least-bad compromise: that is the splay described at the TRILATERATED BOUNDS
+    comment below, and the source of chelate bites beyond 92 deg (real chelates: 98 % below
+    90, none above 95).
+
+    This flag keeps the half that is measured and real -- the M-D radii -- and DROPS the
+    donor-donor entries, leaving them to RDKit's own covalent bounds, i.e. to the separations
+    the ligand actually has.  The bite then comes OUT of the embed as the consequence of the
+    ring closure instead of being asked for, and there is nothing left to correct afterwards.
+
+    Distinct from the trilateration at line 273: that one KEEPS the donor-donor entries and
+    moves the targets instead, which needs a pre-existing conformer to trilaterate from (see
+    the GetConformer guard there).  This needs nothing.  It wins over the bite pin when both
+    are on, because it is the more specific statement about the very same entries."""
+    return os.environ.get("DELFIN_FFFREE_BITE_FREE", "0") == "1"
+
+
 def _tighten_ring_bounds(bm, mh, tol=0.06):
     """Set the 1-3 distance bound of every aromatic 5-/6-ring to the regular-polygon
     interior angle, using the bounds matrix's OWN 1-2 midpoints (so RDKit's bond
@@ -215,7 +241,12 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         _have_targets = (donor_target_pos is not None
                          and len(donor_target_pos) == len(donor_idxs))
         _ring_b = _ring_bounds_enabled()
-        _use_bm = (_have_targets and (_chel_bite or harden or force_bite)) or _oc6_vertex or _ring_b
+        # BITE_FREE opens the bounds path on its own: it needs the M-D radii out of the
+        # targets, so _have_targets, but NOT the bite pin -- dropping the donor-donor entries
+        # is the whole point of it (see _bite_free_bounds).
+        _bite_free = _bite_free_bounds()
+        _use_bm = (_have_targets and (_chel_bite or harden or force_bite or _bite_free)) \
+            or _oc6_vertex or _ring_b
         if _use_bm:
             try:
                 from rdkit.Chem import rdDistGeom as _DG
@@ -282,6 +313,13 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                                 _tp_use = _t2
                     for a, da in enumerate(donor_idxs):   # M-D HARD; donor-donor (soft for backbone)
                         _setb(mi, int(da), float(np.linalg.norm(_tp_use[a])))
+                        if _bite_free:
+                            # RING CLOSURE: the two radii above already fix the bite once the
+                            # ligand's own donor-donor distance is known, so writing that
+                            # distance from the ideal polyhedron as well over-determines the
+                            # triangle.  Leave it to RDKit's covalent bounds and let the bite
+                            # come out.  Deliberately AFTER the M-D line, not instead of it.
+                            continue
                         for b in range(a + 1, len(donor_idxs)):
                             _setb(int(da), int(donor_idxs[b]),
                                   float(np.linalg.norm(_tp_use[a] - _tp_use[b])),
