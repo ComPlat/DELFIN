@@ -1165,6 +1165,32 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
                 for _h in _riders_that_may_move(lsyms, Q, _riders, _delta, di):
                     Q[_h] = Q[_h] + _delta
             Q[di] = _new
+    # BETA IN THE SETTING -- ON THE PATH THAT ACTUALLY RUNS.
+    #
+    # The first two attempts hooked this into the `if rigid:` branch above and had ZERO
+    # reach on 187 systems, twice (donorplane, donorplane2, both rc=3).  Cause, found only
+    # after the second refusal: line ~3654 sets
+    #     _rigid_seat = dent >= 3 and (LIGAND_RIGID or RIGID_LIGAND_SEAT)
+    # and BOTH of those flags are dark.  The rigid branch never executes in the champion, so
+    # the lever was not in the wrong path -- it was in NO path.  Third case of that class in
+    # one day (POLY6 sat in the parked functional), hence the rule: before building into a
+    # branch, grep the ENCLOSING CONDITION, not just the function.
+    #
+    # This is the live default path: every donor has just been reset radially to its ideal
+    # M-D length, so r(M-D) is exactly right and beta is whatever the embed happened to give.
+    # A rotation about the line through the donors leaves the donors on that line -- for a
+    # bidentate the axis IS the donor-donor separation, i.e. the bite, so the bite and the
+    # just-corrected M-D lengths both survive untouched.  Only the backbone swings, and with
+    # it the donor planes.  Loss-guarded inside _donor_plane_relax.
+    if os.environ.get("DELFIN_FFFREE_DONOR_PLANE", "0") == "1" and lsyms is not None:
+        try:
+            _tg = np.array([np.asarray(targets[perm[i]], float)
+                            for i in range(len(donor_idxs))], float)
+            _q = _donor_plane_relax(Q, lsyms, list(donor_idxs), _tg, _tg.mean(0))
+            if _q is not None:
+                Q = _q
+        except Exception:
+            pass
     return Q
 
 
