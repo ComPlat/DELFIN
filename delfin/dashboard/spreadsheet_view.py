@@ -466,7 +466,7 @@ def search_cells(path, term: str, *, delimiter: Optional[str] = None,
             book.close()
         return hits, False
 
-    text = path.read_text(encoding='utf-8', errors='replace')
+    text, _encoding = decode_delimited(path)
     if delimiter is None:
         delimiter = sniff_delimiter(text, path.suffix)
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
@@ -486,6 +486,57 @@ def window_for_row(row: int, page_rows: int) -> int:
     """
     step = max(1, int(page_rows))
     return max(0, ((max(1, int(row)) - 1) // step) * step)
+
+
+# ---------------------------------------------------------------------------
+# Text encoding
+# ---------------------------------------------------------------------------
+
+def decode_delimited(path: Path) -> Tuple[str, str]:
+    """Read a csv/tsv file's text, and say which encoding it was in.
+
+    A CSV exported by a spreadsheet program on a German-language Windows
+    system is cp1252, not utf-8. Reading it as utf-8 with errors="replace"
+    does not fail -- it turns 'Grünwald' into 'Gr\ufffdnwald', and every
+    name and street in a German data set carries one of those bytes, so
+    essentially the whole file is quietly damaged.
+
+    The same detection the agent uses, imported rather than repeated: two
+    answers to this question would eventually disagree, and the one that
+    reads a file has to match the one that writes it back.
+    """
+    import codecs
+
+    from delfin.agent.office import decode_text
+
+    raw = Path(path).read_bytes()
+    text, encoding = decode_text(raw)
+    if encoding == 'utf-8-sig' and not raw.startswith(codecs.BOM_UTF8):
+        # utf-8-sig decodes a plain utf-8 file happily, but encoding with it
+        # writes a byte-order mark -- so reporting it here would put one at
+        # the top of every utf-8 file that is saved.
+        encoding = 'utf-8'
+    return text, encoding
+
+
+def encode_delimited(text: str, encoding: str) -> bytes:
+    """Encode a csv/tsv file's text back into the encoding it came in.
+
+    Writing utf-8 over a cp1252 file would change every umlaut in it,
+    including on the rows the edit never touched. Refused with a reason
+    when a newly typed character has no place in that encoding, because
+    the alternatives are losing the character or silently rewriting the
+    whole file in another encoding.
+    """
+    try:
+        return text.encode(encoding)
+    except (UnicodeEncodeError, LookupError) as exc:
+        bad = getattr(exc, 'object', '')[
+            getattr(exc, 'start', 0):getattr(exc, 'end', 0)] or '?'
+        raise SpreadsheetError(
+            f'This file is {encoding}, and {bad!r} cannot be written in it. '
+            'Save the file as UTF-8 once, then this character can be used.'
+        ) from exc
 
 
 def sniff_delimiter(sample: str, suffix: str = '') -> str:
@@ -512,7 +563,7 @@ def read_delimited(
 ) -> Tuple[SheetData, str]:
     """Read a csv/tsv file into the same grid shape as a worksheet."""
     path = Path(path)
-    text = path.read_text(encoding='utf-8', errors='replace')
+    text, _encoding = decode_delimited(path)
     if delimiter is None:
         delimiter = sniff_delimiter(text, path.suffix)
     all_rows = [list(r) for r in csv.reader(io.StringIO(text), delimiter=delimiter)]
@@ -819,10 +870,11 @@ def apply_ops_delimited(
     made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
             if backup else None)
 
-    # newline='' keeps the original line endings visible; read_text would
-    # translate them and we would silently rewrite a CRLF file as LF.
-    with path.open('r', encoding='utf-8', errors='replace', newline='') as fh:
-        raw_text = fh.read()
+    # Decoded from bytes rather than read as text: that keeps the original
+    # line endings visible (text mode would translate them and we would
+    # silently rewrite a CRLF file as LF), and it is what tells us which
+    # encoding to write back in.
+    raw_text, encoding = decode_delimited(path)
     newline = '\r\n' if '\r\n' in raw_text else '\n'
     trailing_newline = raw_text.endswith(('\n', '\r'))
     raw_lines = raw_text.splitlines()
@@ -879,10 +931,11 @@ def apply_ops_delimited(
     if trailing_newline and text:
         text += newline
 
+    payload = encode_delimited(text, encoding)
     tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix='.dsheet-', suffix=path.suffix)
     try:
-        with os.fdopen(tmp_fd, 'w', encoding='utf-8', newline='') as fh:
-            fh.write(text)
+        with os.fdopen(tmp_fd, 'wb') as fh:
+            fh.write(payload)
         _atomic_replace(tmp_name, path)
     except BaseException:
         try:
