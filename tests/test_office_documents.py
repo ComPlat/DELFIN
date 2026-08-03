@@ -1121,3 +1121,42 @@ def test_the_label_reaches_the_model(ws):
     out = _DocToolExecutor()._dispatch(
         "read_document", {"path": str(form), "fields": True}, _perms(ws))
     assert "Antragsteller" in out and "text1" in out
+
+
+def test_word_runs_carry_bold_and_colour(ws):
+    docx = pytest.importorskip("docx")
+    target = ws / "fmt.docx"
+    office.create_docx(target, [
+        {"paragraph": [
+            {"text": "Betrag: "},
+            {"text": "1.234,50", "bold": True, "color": "red"},
+        ]},
+        {"paragraph": "Ganz grau", "color": "grey", "italic": True},
+    ])
+    doc = docx.Document(str(target))
+    runs = doc.paragraphs[0].runs
+    assert runs[0].text == "Betrag: " and not runs[0].bold
+    assert runs[1].bold is True
+    assert str(runs[1].font.color.rgb) == "C00000"
+    grey = doc.paragraphs[1].runs[0]
+    assert grey.italic is True and str(grey.font.color.rgb) == "6E6E6E"
+
+
+def test_a_table_cell_holds_its_text_in_the_first_run(ws):
+    """A fresh cell already has one empty run; writing past it leaves the
+    text in run 2, where anything reading the first run finds nothing."""
+    docx = pytest.importorskip("docx")
+    target = ws / "tabelle.docx"
+    office.create_docx(target, [
+        {"table": [["Beleg", "Status"],
+                   ["R-002", {"text": "Abweichung", "color": "red",
+                              "bold": True}]],
+         "header_row": True},
+    ])
+    table = docx.Document(str(target)).tables[0]
+    header = table.cell(0, 0).paragraphs[0].runs[0]
+    assert header.text == "Beleg" and header.bold is True
+    cell = table.cell(1, 1).paragraphs[0].runs[0]
+    assert cell.text == "Abweichung" and cell.bold is True
+    assert str(cell.font.color.rgb) == "C00000"
+    assert table.cell(1, 0).text == "R-002"

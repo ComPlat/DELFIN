@@ -555,3 +555,59 @@ def test_a_form_without_default_resources_can_still_be_filled(tmp_path):
     written = {f["name"]: f["value"]
                for f in office.pdf_form_fields(target)["fields"]}
     assert written["begruendung"] == "Zeile eins\nZeile zwei"
+
+
+# ---------------------------------------------------------------------------
+# Bold and colour
+# ---------------------------------------------------------------------------
+
+def test_a_paragraph_can_carry_emphasis_without_becoming_all_bold(ws):
+    """What a report needs: the label plain, the figure red."""
+    target = ws / "bericht.pdf"
+    office.create_pdf(target, [
+        {"paragraph": [
+            {"text": "Abweichung bei "},
+            {"text": "R-2026-002", "bold": True},
+            {"text": " 89,90 gegen 98,90", "bold": True, "color": "red"},
+        ]},
+    ])
+    text = office.read_pdf(target)["text"]
+    assert "Abweichung bei R-2026-002" in text.replace("\n", " ")
+    # The markup must not survive as visible characters.
+    assert "<b>" not in text and "<font" not in text
+
+
+def test_markup_characters_in_formatted_text_stay_text(ws):
+    target = ws / "escape.pdf"
+    office.create_pdf(target, [
+        {"paragraph": "Hinweis & <Sonderzeichen>", "color": "grey"},
+    ])
+    assert "<Sonderzeichen>" in office.read_pdf(target)["text"]
+
+
+def test_an_unknown_colour_is_refused_with_the_ones_that_work(ws):
+    with pytest.raises(office.OfficeError) as exc:
+        office.create_pdf(ws / "x.pdf", [
+            {"paragraph": "text", "color": "himbeere"}])
+    assert "himbeere" in str(exc.value)
+    assert "#RRGGBB" in str(exc.value)
+
+
+def test_colours_parse_by_name_and_by_hex():
+    assert office.parse_colour("red") == (192, 0, 0)
+    assert office.parse_colour("#00A0FF") == (0, 160, 255)
+    assert office.parse_colour("00a0ff") == (0, 160, 255)
+    assert office.parse_colour(None) is None
+    assert office.parse_colour("") is None
+
+
+def test_plain_text_still_works_unchanged(ws):
+    """Every existing caller passes a string; none of them may break."""
+    target = ws / "einfach.pdf"
+    result = office.create_pdf(target, [
+        {"heading": "Titel", "level": 1},
+        {"paragraph": "Ein ganz normaler Absatz."},
+        {"table": [["A", "B"], ["1", "2"]], "header_row": True},
+    ])
+    assert result["verified"] is True
+    assert "normaler Absatz" in office.read_pdf(target)["text"]

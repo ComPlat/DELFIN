@@ -2568,8 +2568,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "description": (
                 "Write a new Word document from content blocks. Each block "
                 "is {heading, level} | {paragraph} | {table: [[...]], "
-                "header_row} | {page_break: true}. For plain text or "
-                "markdown use write_file instead."
+                "header_row} | {page_break: true}. A paragraph or cell may "
+                "be a list of runs [{text, bold, italic, color}] to "
+                "emphasise part of a line. For markdown use write_file."
             ),
             "parameters": {
                 "type": "object",

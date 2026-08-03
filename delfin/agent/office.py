@@ -2661,11 +2661,18 @@ def create_pdf(path: Any, blocks: list[dict]) -> dict:
             counts["headings"] += 1
             probe = probe or _text_probe(text)
         elif "paragraph" in block:
-            text = str(block["paragraph"])
-            story.append(Paragraph(_pdf_markup(text), body))
+            runs = _runs(block["paragraph"])
+            if isinstance(block["paragraph"], (str, int, float)):
+                for run in runs:
+                    run["bold"] = bool(block.get("bold"))
+                    run["italic"] = bool(block.get("italic"))
+                    run["colour"] = parse_colour(
+                        block.get("color", block.get("colour")))
+            story.append(Paragraph(_runs_markup(runs), body))
             story.append(Spacer(1, 4))
             counts["paragraphs"] += 1
-            probe = probe or _text_probe(text)
+            probe = probe or _text_probe(
+                "".join(r["text"] for r in runs))
         elif "table" in block:
             rows = block["table"]
             if not isinstance(rows, list) or not rows or not all(
@@ -2677,12 +2684,20 @@ def create_pdf(path: Any, blocks: list[dict]) -> dict:
             # from its content overflows the page silently, and a table
             # running off the paper is not a document anyone can file.
             col_width = doc.width / width
-            data = [
-                [Paragraph(_pdf_markup(r[c] if c < len(r) else ""), cell_style)
-                 for c in range(width)]
-                for r in rows
-            ]
             header_row = bool(block.get("header_row"))
+
+            def _cell(value, is_header):
+                cell_runs = _runs(value)
+                if is_header:
+                    for run in cell_runs:
+                        run["bold"] = True
+                return Paragraph(_runs_markup(cell_runs), cell_style)
+
+            data = [
+                [_cell(r[c] if c < len(r) else "", header_row and i == 0)
+                 for c in range(width)]
+                for i, r in enumerate(rows)
+            ]
             table = Table(data, colWidths=[col_width] * width,
                           repeatRows=1 if header_row else 0)
             commands = [
@@ -3002,7 +3017,18 @@ def create_docx(
             doc.add_heading(str(block["heading"]), level=level)
             counts["headings"] += 1
         elif "paragraph" in block:
-            doc.add_paragraph(str(block["paragraph"]))
+            para = doc.add_paragraph()
+            runs = _runs(block["paragraph"])
+            # Block-level bold/colour apply to a plain string; a list of
+            # runs carries its own, so the label can stay plain while the
+            # figure beside it is red.
+            if isinstance(block["paragraph"], (str, int, float)):
+                for run in runs:
+                    run["bold"] = bool(block.get("bold"))
+                    run["italic"] = bool(block.get("italic"))
+                    run["colour"] = parse_colour(
+                        block.get("color", block.get("colour")))
+            _apply_runs(para, runs)
             counts["paragraphs"] += 1
         elif "table" in block:
             rows = block["table"]
@@ -3020,7 +3046,18 @@ def create_docx(
             for r_idx, row in enumerate(rows):
                 for c_idx in range(width):
                     value = row[c_idx] if c_idx < len(row) else ""
-                    table.cell(r_idx, c_idx).text = _fmt(value)
+                    cell = table.cell(r_idx, c_idx)
+                    # A fresh cell already holds one empty run. Writing
+                    # past it leaves the text in run 2, where anything
+                    # reading the first run finds nothing.
+                    target = cell.paragraphs[0]
+                    for stale in list(target.runs):
+                        stale._element.getparent().remove(stale._element)
+                    cell_runs = _runs(value)
+                    if r_idx == 0 and block.get("header_row"):
+                        for run in cell_runs:
+                            run["bold"] = True
+                    _apply_runs(target, cell_runs)
             counts["tables"] += 1
         elif block.get("page_break"):
             doc.add_page_break()
@@ -3035,6 +3072,101 @@ def create_docx(
     except Exception as exc:
         raise OfficeError(f"could not save the document: {exc}") from exc
     return {"path": str(p), "blocks": len(blocks), **counts}
+
+
+# Colours a caller may name. Deliberately a short list plus hex: an
+# office document needs "this figure is red", not a palette, and a name
+# that silently resolves to something else is worse than a refusal.
+_COLOURS: dict[str, tuple[int, int, int]] = {
+    "black": (0, 0, 0), "red": (192, 0, 0), "green": (0, 128, 0),
+    "blue": (0, 0, 192), "orange": (224, 112, 0), "grey": (110, 110, 110),
+    "gray": (110, 110, 110), "white": (255, 255, 255),
+}
+
+_HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
+
+
+def parse_colour(value: Any) -> Optional[tuple]:
+    """A colour name or ``#RRGGBB`` as an RGB triple, else None."""
+    if value is None or value == "":
+        return None
+    text = str(value).strip().lower()
+    if text in _COLOURS:
+        return _COLOURS[text]
+    match = _HEX_RE.match(text)
+    if match:
+        digits = match.group(1)
+        return tuple(int(digits[i:i + 2], 16) for i in (0, 2, 4))
+    raise OfficeError(
+        f"unknown colour {value!r}. Use one of "
+        + ", ".join(sorted(_COLOURS)) + ", or #RRGGBB.")
+
+
+def _runs(value: Any) -> list[dict]:
+    """Normalise text into runs of ``{text, bold, italic, colour}``.
+
+    A plain string is one unformatted run, so every existing caller keeps
+    working. A list lets one paragraph carry an emphasised part without
+    turning the whole line bold — which is what a report actually needs:
+    the label plain, the figure red.
+    """
+    if value is None:
+        return [{"text": "", "bold": False, "italic": False, "colour": None}]
+    if isinstance(value, (str, int, float)):
+        return [{"text": _fmt(value), "bold": False, "italic": False,
+                 "colour": None}]
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        raise OfficeError(f"expected text or a list of runs, got {value!r}")
+    out = []
+    for part in value:
+        if isinstance(part, (str, int, float)):
+            out.append({"text": _fmt(part), "bold": False, "italic": False,
+                        "colour": None})
+            continue
+        if not isinstance(part, dict):
+            raise OfficeError(f"a run must be text or an object, got {part!r}")
+        out.append({
+            "text": _fmt(part.get("text", "")),
+            "bold": bool(part.get("bold")),
+            "italic": bool(part.get("italic")),
+            "colour": parse_colour(part.get("color", part.get("colour"))),
+        })
+    return out or [{"text": "", "bold": False, "italic": False,
+                    "colour": None}]
+
+
+def _apply_runs(paragraph: Any, runs: list[dict]) -> None:
+    """Write runs into a python-docx paragraph, keeping its font."""
+    from docx.shared import RGBColor
+
+    for run in runs:
+        written = paragraph.add_run(run["text"])
+        if run["bold"]:
+            written.bold = True
+        if run["italic"]:
+            written.italic = True
+        if run["colour"]:
+            written.font.color.rgb = RGBColor(*run["colour"])
+
+
+def _runs_markup(runs: list[dict]) -> str:
+    """Runs as the inline markup reportlab understands, escaped."""
+    from xml.sax.saxutils import escape
+
+    out = []
+    for run in runs:
+        text = escape(run["text"])
+        if run["colour"]:
+            text = ('<font color="#%02x%02x%02x">%s</font>'
+                    % (*run["colour"], text))
+        if run["bold"]:
+            text = f"<b>{text}</b>"
+        if run["italic"]:
+            text = f"<i>{text}</i>"
+        out.append(text)
+    return "".join(out)
 
 
 def read_docx(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
