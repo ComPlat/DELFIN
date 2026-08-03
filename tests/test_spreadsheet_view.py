@@ -559,3 +559,130 @@ def test_a_file_with_a_bom_keeps_it_and_one_without_does_not_gain_one(tmp_path):
 
     assert not plain.read_bytes().startswith(b'\xef\xbb\xbf')
     assert marked.read_bytes().startswith(b'\xef\xbb\xbf')
+
+
+# ---------------------------------------------------------------------------
+# What a formula works out to
+# ---------------------------------------------------------------------------
+
+def test_a_formula_shows_its_result_and_keeps_its_formula(tmp_path):
+    """A spreadsheet shows 6 and holds =A1*2. Pressing F2 or double-clicking
+    shows the formula -- that is the behaviour people already know, and it
+    is why the cell's own text is left alone."""
+    pytest.importorskip('formulas')
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.title = 'Preise'
+    ws['A1'] = 3
+    ws['A2'] = 4
+    ws['B1'] = '=A1*2'
+    ws['B2'] = '=SUM(A1:A2)'
+    path = tmp_path / 'preise.xlsx'
+    workbook.save(path)
+
+    _names, sheet = sv.read_xlsx(path, None)
+    sv.apply_results(sheet, sv.evaluate_workbook(path))
+
+    assert sheet.values[0][1] == '6'
+    assert sheet.values[1][1] == '7'
+    assert sheet.formulas[0][1] == '=A1*2', 'the cell still holds the formula'
+
+
+def test_an_unknown_function_reads_the_way_a_spreadsheet_reads_it(tmp_path):
+    """#NAME? is what Excel puts there, and showing the same thing is the
+    point: a wrong number would be worse, and so would a formula sitting
+    where every other cell shows a value."""
+    pytest.importorskip('formulas')
+    workbook = openpyxl.Workbook()
+    workbook.active['A1'] = '=SOMETHINGNOBODYHAS(1)'
+    path = tmp_path / 'x.xlsx'
+    workbook.save(path)
+
+    _names, sheet = sv.read_xlsx(path, None)
+    sv.apply_results(sheet, sv.evaluate_workbook(path))
+    assert sheet.values[0][0] == '#NAME?'
+
+
+def test_a_cell_with_no_result_at_all_keeps_its_formula(tmp_path):
+    """When nothing was worked out -- no engine, or a workbook too large --
+    the formula is what the cell shows, not an empty box."""
+    workbook = openpyxl.Workbook()
+    workbook.active['A1'] = '=A2*2'
+    path = tmp_path / 'x.xlsx'
+    workbook.save(path)
+
+    _names, sheet = sv.read_xlsx(path, None)
+    sv.apply_results(sheet, sv.FormulaResults(note='no engine'))
+    assert sheet.values[0][0] == '=A2*2'
+
+
+def test_no_engine_says_so_rather_than_showing_nothing(tmp_path, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def refuse(name, *args, **kwargs):
+        if name == 'formulas':
+            raise ImportError('not installed')
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', refuse)
+    workbook = openpyxl.Workbook()
+    workbook.active['A1'] = '=1+1'
+    path = tmp_path / 'x.xlsx'
+    workbook.save(path)
+
+    results = sv.evaluate_workbook(path)
+    assert not results
+    assert 'formulas' in results.note
+
+
+def test_a_workbook_too_large_to_evaluate_says_so(tmp_path, monkeypatch):
+    """Evaluating builds a graph of every cell. Opening a file must not
+    turn into a wait, and the bound has to be visible."""
+    monkeypatch.setattr(sv, 'MAX_FORMULA_BYTES', 10)
+    workbook = openpyxl.Workbook()
+    workbook.active['A1'] = '=1+1'
+    path = tmp_path / 'x.xlsx'
+    workbook.save(path)
+
+    results = sv.evaluate_workbook(path)
+    assert not results
+    assert 'MB' in results.note
+
+
+def test_too_many_formulas_says_so(tmp_path, monkeypatch):
+    pytest.importorskip('formulas')
+    monkeypatch.setattr(sv, 'MAX_FORMULA_CELLS', 2)
+    workbook = openpyxl.Workbook()
+    for row in range(1, 6):
+        workbook.active.cell(row=row, column=1, value='=1+1')
+    path = tmp_path / 'x.xlsx'
+    workbook.save(path)
+
+    results = sv.evaluate_workbook(path)
+    assert not results
+    assert 'formulas' in results.note
+
+
+def test_results_are_written_the_way_a_sheet_shows_them():
+    assert sv.format_result(6.0) == '6'
+    assert sv.format_result(6.5) == '6.5'
+    assert sv.format_result(True) == 'TRUE'
+    assert sv.format_result('gross') == 'gross'
+    assert sv.format_result(None) == ''
+    assert sv.format_result(float('inf')) == '#NUM!'
+
+
+def test_the_engine_does_not_print_over_the_dashboard(tmp_path, capsys):
+    """It draws a progress bar, and in a notebook that lands under the
+    grid."""
+    pytest.importorskip('formulas')
+    workbook = openpyxl.Workbook()
+    workbook.active['A1'] = '=1+1'
+    path = tmp_path / 'x.xlsx'
+    workbook.save(path)
+
+    sv.evaluate_workbook(path)
+    captured = capsys.readouterr()
+    assert captured.out == '' and captured.err == ''

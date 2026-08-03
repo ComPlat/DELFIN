@@ -199,6 +199,9 @@ def create_tab(ctx):
         'sheet_view': {},
         'sheet_pending': {},
         'sheet_render': 0,
+        # Worked-out formula values, kept against the file's timestamp.
+        'formula_results': None,
+        'formula_note': '',
         # Plain-text editing: 'text_edit' is the file on screen, 'text_pending'
         # keeps unsaved buffers per path across file switches.
         'text_edit': {},
@@ -6216,19 +6219,21 @@ def create_tab(ctx):
             calc_scroll_to(scroll_to)
 
     def calc_scroll_to(target):
+        # Whichever view is up: a text file, a Word document or the grid.
+        scroller = f'window.__delfinCalcScroller({json.dumps(calc_scope_id)})'
         if target == 'top':
-            _run_js("""
-            setTimeout(function(){
-                const box = document.getElementById('calc-content-box');
-                if (box) { box.scrollTop = 0; }
-            }, 0);
+            _run_js(f"""
+            setTimeout(function(){{
+                const box = {scroller};
+                if (box) {{ box.scrollTop = 0; box.scrollLeft = 0; }}
+            }}, 0);
             """)
         elif target == 'bottom':
-            _run_js("""
-            setTimeout(function(){
-                const box = document.getElementById('calc-content-box');
-                if (box) { box.scrollTop = box.scrollHeight; }
-            }, 0);
+            _run_js(f"""
+            setTimeout(function(){{
+                const box = {scroller};
+                if (box) {{ box.scrollTop = box.scrollHeight; }}
+            }}, 0);
             """)
         elif target == 'match' and state['current_match'] >= 0:
             _run_js("""
@@ -11281,6 +11286,10 @@ def create_tab(ctx):
                 f'{_html.escape(str(exc))}</span>')
             return
         count = result['written']
+        # A style or an alignment changes how the paragraph looks, and only
+        # a re-read shows that; text and emphasis are already on screen.
+        restyled = any(isinstance(v, dict) and (v.get('style') or v.get('align'))
+                       for v in edits.values())
         state['docx_pending'] = {}
         state['docx_doc'] = _docx.read_document(path)
         state['file_content'] = state['docx_doc'].text
@@ -11290,6 +11299,15 @@ def create_tab(ctx):
         calc_text_status.layout.display = ''
         calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
         calc_text_save_btn.disabled = True
+        if restyled:
+            # A paragraph that became a heading looks different, and only a
+            # re-read shows that. Text and emphasis are already on screen.
+            _calc_render_docx(path, state['docx_doc'], path.name,
+                              _calc_sheet_size_str(path.stat().st_size))
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>')
+            return
         # Nothing is re-rendered: the blocks on screen already hold what was
         # written, and rebuilding them would take the cursor out of the
         # paragraph the user is still typing in.
@@ -11310,8 +11328,113 @@ def create_tab(ctx):
         address = str(message.get('address') or '')
         if not address:
             return
-        state.setdefault('docx_pending', {})[address] = str(message.get('text') or '')
+        # Three shapes arrive: the runs of a block, a paragraph style, or
+        # plain text. They are merged per address, so setting a style and
+        # then typing in the same paragraph keeps both.
+        pending = state.setdefault('docx_pending', {})
+        change = pending.get(address)
+        if not isinstance(change, dict):
+            change = {} if change is None else {'text': change}
+        if 'runs' in message and isinstance(message.get('runs'), list):
+            change['runs'] = [
+                {'t': str(r.get('t') or ''), 'b': bool(r.get('b')),
+                 'i': bool(r.get('i')), 'u': bool(r.get('u'))}
+                for r in message['runs'] if isinstance(r, dict)
+            ]
+            change.pop('text', None)
+        elif 'text' in message:
+            change['text'] = str(message.get('text') or '')
+        if message.get('align'):
+            try:
+                change['align'] = _docx.check_alignment(message.get('align'))
+            except _docx.DocxError as exc:
+                calc_text_status.layout.display = ''
+                calc_text_status.value = (
+                    f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+                return
+        if message.get('style'):
+            try:
+                change['style'] = _docx.check_style(message.get('style'))
+            except _docx.DocxError as exc:
+                calc_text_status.layout.display = ''
+                calc_text_status.value = (
+                    f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+                return
+        if not change:
+            return
+        pending[address] = change
         _calc_docx_sync_controls()
+
+    def _calc_formula_results(path):
+        """What this workbook's formulas work out to, worked out once.
+
+        Kept against the file's modification time: evaluating builds a graph
+        of every cell, so doing it on each paging step would make moving
+        through a workbook feel like waiting for one.
+        """
+        path = Path(path)
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return _sheet.FormulaResults()
+        cached = state.get('formula_results')
+        if cached and cached[0] == (str(path), stamp):
+            return cached[1]
+        results = _sheet.evaluate_workbook(path)
+        state['formula_results'] = ((str(path), stamp), results)
+        if results.note:
+            state['formula_note'] = results.note
+        else:
+            state['formula_note'] = ''
+        return results
+
+    def _calc_sheet_push_results(path, view):
+        """Show what the formulas work out to after the file was written."""
+        results = _calc_formula_results(path)
+        if not results:
+            return
+        window = state.get('sheet_view') or view
+        first = int(window.get('row_offset') or 0) + 1
+        last = first + int(window.get('page_rows') or 0) - 1
+        cells = []
+        for (row, col), value in results.values.get(
+                str(window.get('sheet') or '').upper(), {}).items():
+            if first <= row <= last:
+                cells.append([row, col, _sheet.format_result(value)])
+        if cells:
+            _calc_sheet_show_cells(view['token'], cells)
+
+    def _calc_sheet_show_cells(token, cells):
+        """Put worked-out values on screen without calling them edits.
+
+        A result is not something the user typed: it must not mark the cell
+        changed, and undo must not offer to take it back.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetShow !== 'function') return;
+            wrap.__dsheetShow({json.dumps(cells)});
+        }})();
+        """)
+
+    def _calc_sheet_apply_cells(token, cells):
+        """Write worked-out values into the grid on screen.
+
+        The grid records them as one step, so one undo takes a whole fill
+        back rather than one cell of it.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetApply !== 'function') return;
+            wrap.__dsheetApply({json.dumps(cells)});
+        }})();
+        """)
 
     def _calc_sheet_mark_saved(token, message):
         """Tell the grid on screen that its edits are on disk.
@@ -11348,6 +11471,7 @@ def create_tab(ctx):
             names, sheet = _sheet.read_xlsx(path, sheet_name, row_offset=row_offset)
             delimiter = ''
             lossy = _sheet.describe_lossy_features(_sheet.inspect_workbook_features(path))
+            _sheet.apply_results(sheet, _calc_formula_results(path))
         else:
             sheet, delimiter = _sheet.read_delimited(path, row_offset=row_offset)
             names = []
@@ -11401,9 +11525,12 @@ def create_tab(ctx):
         detail = _calc_sheet_size_str(path.stat().st_size)
         if is_workbook and sheet.name:
             detail += f', sheet "{_html.escape(sheet.name)}"'
+        note_text = state.get('formula_note') or ''
         calc_file_info.value = (
             f'<b><span style="word-break:break-all;">{label}</span></b> ({detail})'
             + (f' <span style="color:#2e7d32;">{_html.escape(status)}</span>' if status else '')
+            + (f' <span style="color:#8a6d00;">{_html.escape(note_text)}</span>'
+               if note_text else '')
         )
         calc_copy_btn.disabled = False
         calc_copy_path_btn.disabled = False
@@ -11502,6 +11629,10 @@ def create_tab(ctx):
             except OSError:
                 pass
             _calc_sheet_mark_saved(view['token'], note)
+            # The file has changed, so its formulas work out to something
+            # else now. Only the results are pushed in -- the grid is not
+            # rebuilt, so the cursor and the scroll stay where they are.
+            _calc_sheet_push_results(path, view)
             return
 
         if action == 'discard':
@@ -11512,6 +11643,69 @@ def create_tab(ctx):
             _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
                                cursor=cursor if _OFFICE_DOC_FEEL else None,
                                status='Changes discarded')
+            return
+
+        if action == 'fill':
+            block = payload.get('block')
+            at = payload.get('at')
+            if not isinstance(block, list) or not isinstance(at, list):
+                return
+            try:
+                rows = max(0, int(payload.get('rows') or 0))
+                cols = max(0, int(payload.get('cols') or 0))
+                top, left = int(at[0]), int(at[1])
+                filled = _sheet.fill_block(block, rows, cols)
+            except (_sheet.SpreadsheetError, TypeError, ValueError) as exc:
+                _calc_sheet_note(f'Could not fill: {exc}', color='#b26a00')
+                return
+            # fill_block returns what the drag added, not the block itself:
+            # those cells already hold what was dragged.
+            height = len(block)
+            width = len(block[0]) if block else 0
+            ops, cells = [], []
+            for r, row in enumerate(filled):
+                for c, text in enumerate(row):
+                    absolute_row = top + (height + r if rows else r)
+                    column = left + (width + c if cols else c)
+                    ops.append({'op': 'set', 'row': absolute_row,
+                                'col': column, 'text': text})
+                    cells.append([absolute_row, column, text])
+            if not ops:
+                return
+            state['sheet_pending'].setdefault(key, []).extend(
+                _sheet.validate_ops(ops))
+            _calc_sheet_apply_cells(view['token'], cells)
+            return
+
+        if action == 'sort':
+            # Reorders the file, so the same rule as the sheet actions: an
+            # unsaved journal addresses rows that are about to move.
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            if view.get('kind') != 'xlsx':
+                _calc_sheet_note('Sorting writes a workbook; this is a csv.')
+                return
+            try:
+                backup, kept = _sheet.sort_sheet(
+                    path, sheet_name, int(payload.get('col') or 0),
+                    descending=bool(payload.get('desc')),
+                    backup_dir=_calc_backup_dir(path))
+            except _sheet.SpreadsheetError as exc:
+                _calc_sheet_note(str(exc), color='#b26a00')
+                return
+            except Exception as exc:  # noqa: BLE001
+                _calc_sheet_note(f'Could not sort: {exc}')
+                return
+            where = _sheet.col_letter(int(payload.get('col') or 1) - 1)
+            note = f'Sorted by column {where}'
+            if kept:
+                note += ' · first row kept as the heading'
+            if backup is not None:
+                note += f' · backup: {backup.name}'
+            _calc_render_sheet(path, sheet_name=sheet_name,
+                               row_offset=int(view.get('row_offset') or 0),
+                               status=note)
             return
 
         if action in ('new_sheet', 'rename_sheet', 'drop_sheet'):
@@ -13717,6 +13911,17 @@ def create_tab(ctx):
             document.addEventListener('paste', function(e){
                 var selectEl = activeSelectForPaste();
                 if (!selectEl) return;
+                /* Not a paste that landed in something being edited. A copy
+                   out of a spreadsheet program carries the cells as text AND
+                   a picture of them, and this listener runs before the grid's
+                   own: it saw the picture, took the paste, and uploaded an
+                   image into the folder instead of filling the cells. */
+                var into = e.target;
+                if (into && into.closest && into.closest(
+                        '.dsheet-root, .dw-page, textarea, input,'
+                        + ' [contenteditable="true"]')) {
+                    return;
+                }
                 var files = _clipboardFiles(e);
                 if (!files.length) return;
                 var activeInside = root._delfinPasteArmed || root.contains(document.activeElement);
@@ -14131,6 +14336,16 @@ def create_tab(ctx):
         var root = document.querySelector('.' + scope);
         return root ? root.querySelectorAll('.' + sel) : [];
     };
+    /* Whatever is scrolling in this tab right now: the text view and the
+       Word view put their content in .calc-content-box, the spreadsheet
+       grid scrolls its own body. Top and End are about the document on
+       screen, not about one of the ways of showing one. */
+    window.__delfinCalcScroller = window.__delfinCalcScroller || function(scope) {
+        var root = document.querySelector('.' + scope);
+        if (!root) return null;
+        return root.querySelector('.dsheet-scroll')
+            || root.querySelector('.calc-content-box');
+    };
     window.__delfinCalcS = window.__delfinCalcS || function(scope) {
         var all = (window.__delfinCalcStates = window.__delfinCalcStates || {});
         return (all[scope] = all[scope] || {});
@@ -14420,6 +14635,8 @@ def create_tab(ctx):
         'calc_sort_dropdown': calc_sort_dropdown,
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
+        'calc_top_btn': calc_top_btn,
+        'calc_bottom_btn': calc_bottom_btn,
         'calc_search_result': calc_search_result,
         'calc_file_info': calc_file_info,
         'calc_sheet_payload_input': calc_sheet_payload_input,

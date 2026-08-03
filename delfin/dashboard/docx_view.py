@@ -23,9 +23,14 @@ footers, numbering, charts, text boxes, comments, tracked changes. That is
 why editing text here is safe in a way that editing a workbook is not, and
 why the warning a spreadsheet needs has no counterpart in this module.
 
-What is deliberately not offered: changing formatting, adding or removing
-paragraphs, and editing anything outside the body. Those are not text
-edits, and a control that half-does them would be worse than none.
+Emphasis and paragraph style can be set. A heading is made by naming the
+document's own style, never by turning text big and bold: the style is
+what carries the look and what the table of contents reads.
+
+What is deliberately not offered: adding or removing paragraphs, and
+editing anything outside the body. Those shift the addresses every block
+is written back through, and a control that half-does that would be worse
+than none.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 WORD_SUFFIXES = ('.docx',)
 
@@ -69,7 +74,9 @@ class Block:
     # the document rather than like a text dump of it; an edit still works on
     # the paragraph's plain text, and the splice on write puts the changed
     # span back into the run it belongs to.
-    runs: List[Tuple[str, bool, bool, bool]] = field(default_factory=list)
+    runs: List[Tuple[str, bool, bool, bool, Optional[float]]] = field(
+        default_factory=list)
+    align: str = ''
 
     @property
     def in_table(self) -> bool:
@@ -106,15 +113,33 @@ def _docx():
 # Reading
 # ---------------------------------------------------------------------------
 
-def _runs_of(paragraph) -> List[Tuple[str, bool, bool, bool]]:
-    """The paragraph's runs with the emphasis each one carries."""
-    out: List[Tuple[str, bool, bool, bool]] = []
+def _runs_of(paragraph) -> List[Tuple[str, bool, bool, bool, Optional[float]]]:
+    """The paragraph's runs with the emphasis and size each one carries."""
+    out: List[Tuple[str, bool, bool, bool, Optional[float]]] = []
     for run in getattr(paragraph, 'runs', []) or []:
         text = run.text or ''
         if not text:
             continue
-        out.append((text, bool(run.bold), bool(run.italic), bool(run.underline)))
+        size = None
+        try:
+            if run.font.size is not None:
+                size = float(run.font.size.pt)
+        except Exception:
+            size = None
+        out.append((text, bool(run.bold), bool(run.italic),
+                    bool(run.underline), size))
     return out
+
+
+def _alignment_of(paragraph) -> str:
+    try:
+        value = paragraph.alignment
+    except Exception:
+        return ''
+    if value is None:
+        return ''
+    return {0: 'left', 1: 'center', 2: 'right', 3: 'justify'}.get(
+        int(value), '')
 
 
 def _style_of(paragraph) -> Tuple[int, bool]:
@@ -176,12 +201,12 @@ def read_document(path) -> DocxDocument:
         level, listed = _style_of(para)
         blocks.append(Block(address=f'p:{index}', text=para.text,
                             level=level, listed=listed,
-                            runs=_runs_of(para)))
+                            runs=_runs_of(para), align=_alignment_of(para)))
     for address, para, where in _cell_paragraphs(document):
         level, listed = _style_of(para)
         blocks.append(Block(address=address, text=para.text,
                             level=level, listed=listed, table=where,
-                            runs=_runs_of(para)))
+                            runs=_runs_of(para), align=_alignment_of(para)))
 
     if len(blocks) > MAX_BLOCKS:
         result.notes.append(
@@ -246,14 +271,18 @@ def _run_html(runs, fallback: str) -> str:
     if not runs:
         return _html.escape(fallback) or '&nbsp;'
     out = []
-    for text, bold, italic, underline in runs:
+    for run in runs:
+        text, bold, italic, underline = run[:4]
+        size = run[4] if len(run) > 4 else None
         styles = []
         if bold:
-            styles.append('font-weight:600')
+            styles.append('font-weight:700')
         if italic:
             styles.append('font-style:italic')
         if underline:
             styles.append('text-decoration:underline')
+        if size:
+            styles.append(f'font-size:{size:g}pt')
         escaped = _html.escape(text)
         out.append(f'<span style="{";".join(styles)}">{escaped}</span>'
                    if styles else escaped)
@@ -273,6 +302,8 @@ def _block_html(block: Block, editable: bool) -> str:
         f' class="{" ".join(classes)}"'
         f' data-a="{_html.escape(block.address, quote=True)}"'
     )
+    if block.align:
+        attrs += f' style="text-align:{block.align}"'
     if editable:
         attrs += ' contenteditable="true" spellcheck="false"'
     return f'<div{attrs}>{text}</div>'
@@ -281,7 +312,7 @@ def _block_html(block: Block, editable: bool) -> str:
 DOC_CSS = (
     '.dw-page { font-family: Calibri, Carlito, Arial, sans-serif;'
     ' font-size:15px; line-height:1.55; color:#1a1a1a; background:#fff;'
-    ' padding:28px 34px; margin:0 auto; max-width:900px;'
+    ' padding:30px 34px; margin:0 auto; max-width:900px;'
     ' box-shadow:0 1px 4px rgba(0,0,0,0.14); box-sizing:border-box; }'
     '.dw-b { margin:0 0 9px 0; min-height:1em; white-space:pre-wrap;'
     ' overflow-wrap:anywhere; outline:none; border-radius:3px; }'
@@ -305,7 +336,68 @@ DOC_CSS = (
     ' border:1px solid #e0e0e0; border-radius:3px; }'
     '.dw-match { background:#fff59d; }'
     '.dw-match.dw-current { background:#ffb74d; }'
+    '.dw-bar { position:sticky; top:0; z-index:6; display:flex; gap:6px;'
+    ' align-items:center; padding:7px 12px; margin:0 0 14px 0;'
+    ' background:linear-gradient(#fdfdfe,#f1f4f7);'
+    ' border:1px solid #d6dbe0; border-radius:5px;'
+    ' box-shadow:0 1px 3px rgba(0,0,0,0.07); box-sizing:border-box; }'
+    '.dw-btn { font-size:14px; min-width:30px; height:28px; cursor:pointer;'
+    ' border:1px solid #c8ced4; border-radius:4px; background:#fff;'
+    ' color:#1f2937; line-height:1; padding:0;'
+    ' display:inline-flex; align-items:center; justify-content:center; }'
+    '.dw-b { font-weight:700; }'
+    '.dw-i { font-style:italic; font-family:Georgia,serif; }'
+    '.dw-u { text-decoration:underline; text-underline-offset:2px; }'
+    '.dw-btn:hover { border-color:#1565c0; color:#12447a; }'
+    '.dw-btn:active { background:#e8f0fe; }'
+    '.dw-bar-sep { width:1px; height:20px; background:#d6dbe0; margin:0 4px; }'
+    '.dw-style { font-size:13px; height:28px; padding:0 6px;'
+    ' border:1px solid #c8ced4; border-radius:4px; background:#fff;'
+    ' color:#1f2937; min-width:150px; }'
+    '.dw-style:hover { border-color:#1565c0; }'
+    '.dw-size { font-size:13px; height:28px; padding:0 4px;'
+    ' border:1px solid #c8ced4; border-radius:4px; background:#fff;'
+    ' color:#1f2937; min-width:62px; }'
+    '.dw-size:hover { border-color:#1565c0; }'
+    '.dw-align { font-size:15px; }'
+    '.dw-al-right { transform:scaleX(-1); }'
 )
+
+
+# Drawn rather than written: four words in a row would be a sentence, and
+# these are the marks Word uses for the same four things.
+_ALIGN_MARK = {'left': '&#8801;', 'center': '&#8803;',
+               'right': '&#8802;', 'justify': '&#9776;'}
+
+
+def toolbar_html(current: str = 'Normal') -> str:
+    """The formatting controls, shown while a document is being edited."""
+    out = ['<div class="dw-bar">']
+    # The letters are plain and the button carries the styling. A <b>, an
+    # <i> and a <u> inside three buttons have three different line boxes,
+    # so the three buttons stopped lining up with each other.
+    out.append('<button class="dw-btn dw-b" title="Bold (Ctrl+B)">B</button>')
+    out.append('<button class="dw-btn dw-i" title="Italic (Ctrl+I)">I</button>')
+    out.append('<button class="dw-btn dw-u" title="Underline (Ctrl+U)">U</button>')
+    out.append('<select class="dw-size" title="Font size">')
+    out.append('<option value="">Size</option>')
+    for size in FONT_SIZES:
+        out.append(f'<option value="{size}">{size}</option>')
+    out.append('</select>')
+    out.append('<span class="dw-bar-sep"></span>')
+    for label, code in ALIGNMENTS:
+        out.append(f'<button class="dw-btn dw-align dw-al-{code}"'
+                   f' data-align="{code}" title="{_html.escape(label, quote=True)}">'
+                   f'{_ALIGN_MARK[code]}</button>')
+    out.append('<span class="dw-bar-sep"></span>')
+    out.append('<select class="dw-style" title="Paragraph style">')
+    for label, code in PARAGRAPH_STYLES:
+        chosen = ' selected' if code == current else ''
+        out.append(f'<option value="{_html.escape(code, quote=True)}"{chosen}>'
+                   f'{_html.escape(label)}</option>')
+    out.append('</select>')
+    out.append('</div>')
+    return ''.join(out)
 
 
 def render_html(document: DocxDocument, *, editable: bool = False) -> str:
@@ -315,7 +407,10 @@ def render_html(document: DocxDocument, *, editable: bool = False) -> str:
     one; the editable unit inside a cell is the same addressed block as
     everywhere else.
     """
-    out: List[str] = ['<div class="dw-page">']
+    out: List[str] = []
+    if editable:
+        out.append(toolbar_html())
+    out.append('<div class="dw-page">')
     for block in document.blocks:
         if block.in_table:
             continue
@@ -353,6 +448,156 @@ def render_html(document: DocxDocument, *, editable: bool = False) -> str:
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
+
+# The paragraph styles offered, by the name shown in the menu. Small on
+# purpose: these are the ones a letter or a report is actually built from,
+# and a document's own styles are what carry its look and its table of
+# contents -- so a heading is made by naming the style, never by making the
+# text big and bold.
+# Sizes in points, as Word lists them.
+FONT_SIZES: Tuple[int, ...] = (8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32)
+
+# Where the text sits in the line. Paragraph-level, like the style.
+ALIGNMENTS: Tuple[Tuple[str, str], ...] = (
+    ('Left', 'left'),
+    ('Centre', 'center'),
+    ('Right', 'right'),
+    ('Justified', 'justify'),
+)
+_KNOWN_ALIGNMENTS = {code for _label, code in ALIGNMENTS}
+
+
+PARAGRAPH_STYLES: Tuple[Tuple[str, str], ...] = (
+    ('Body text', 'Normal'),
+    ('Heading 1', 'Heading 1'),
+    ('Heading 2', 'Heading 2'),
+    ('Heading 3', 'Heading 3'),
+    ('Bullet list', 'List Bullet'),
+    ('Numbered list', 'List Number'),
+)
+_KNOWN_STYLES = {code for _label, code in PARAGRAPH_STYLES}
+
+
+def check_style(name: Any) -> str:
+    """A paragraph style this view offers."""
+    text = str(name or '').strip()
+    if text not in _KNOWN_STYLES:
+        raise DocxError(f'{text!r} is not a paragraph style this view sets.')
+    return text
+
+
+def check_alignment(name: Any) -> str:
+    text = str(name or '').strip().lower()
+    if text not in _KNOWN_ALIGNMENTS:
+        raise DocxError(f'{name!r} is not an alignment this view sets.')
+    return text
+
+
+def check_size(value: Any) -> Optional[float]:
+    """A font size in points, or None for "as the style says"."""
+    if value in (None, '', 'style'):
+        return None
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        raise DocxError(f'{value!r} is not a font size.') from None
+    if not 1 <= size <= 409:        # what the format itself allows
+        raise DocxError('A font size has to be between 1 and 409 points.')
+    return size
+
+
+def set_paragraph_alignment(document, address: str, alignment: str) -> None:
+    """Put a paragraph left, centred, right or justified."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    paragraph = _paragraph_at(document, address)
+    if paragraph is None:
+        raise DocxError(f'There is no paragraph {address!r} in the document.')
+    paragraph.alignment = {
+        'left': WD_ALIGN_PARAGRAPH.LEFT,
+        'center': WD_ALIGN_PARAGRAPH.CENTER,
+        'right': WD_ALIGN_PARAGRAPH.RIGHT,
+        'justify': WD_ALIGN_PARAGRAPH.JUSTIFY,
+    }[check_alignment(alignment)]
+
+
+def set_paragraph_style(document, address: str, style: str) -> None:
+    """Give a paragraph one of the document's own styles.
+
+    Named rather than imitated: a heading made by turning text big and bold
+    is not a heading, and the table of contents will not have it.
+    """
+    paragraph = _paragraph_at(document, address)
+    if paragraph is None:
+        raise DocxError(f'There is no paragraph {address!r} in the document.')
+    style = check_style(style)
+    try:
+        paragraph.style = document.styles[style]
+    except KeyError as exc:
+        raise DocxError(
+            f'This document has no {style!r} style. It was made from a '
+            'template that does not define one.') from exc
+
+
+def _set_paragraph_runs(paragraph, runs: Sequence[Mapping[str, Any]]) -> None:
+    """Rebuild a paragraph from runs that carry their own emphasis.
+
+    Used only when the emphasis changed. A plain text edit goes through the
+    splice instead, which keeps every run exactly as it was -- this path
+    cannot, because the runs are being redrawn. What it can keep is the
+    look the paragraph was written in, so the font, size and colour of the
+    first run are carried onto all of them.
+    """
+    existing = list(paragraph.runs)
+    base = existing[0] if existing else None
+    for run in existing:
+        run._element.getparent().remove(run._element)
+    for spec in runs:
+        text = str(spec.get('t') or '')
+        if not text:
+            continue
+        run = paragraph.add_run(text)
+        run.bold = bool(spec.get('b'))
+        run.italic = bool(spec.get('i'))
+        run.underline = bool(spec.get('u'))
+        size = check_size(spec.get('s'))
+        if base is not None:
+            run.font.name = base.font.name
+            run.font.size = base.font.size
+            if base.font.color is not None and base.font.color.rgb is not None:
+                run.font.color.rgb = base.font.color.rgb
+        # After the base, not before: a size that was asked for has to win
+        # over the one the paragraph was written in, or setting it would
+        # look like it did nothing.
+        if size is not None:
+            from docx.shared import Pt
+
+            run.font.size = Pt(size)
+    if not paragraph.runs:
+        paragraph.add_run('')
+
+
+def runs_differ(before: Sequence[Sequence[Any]],
+                after: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the emphasis changed, as opposed to only the text.
+
+    Deciding this is what lets an ordinary edit keep the paragraph's runs
+    untouched and only a formatting change redraw them.
+    """
+    def _size(value):
+        try:
+            return round(float(value), 1) if value else None
+        except (TypeError, ValueError):
+            return None
+
+    was = [(bool(run[1]), bool(run[2]), bool(run[3]),
+            _size(run[4] if len(run) > 4 else None)) for run in before]
+    now = [(bool(r.get('b')), bool(r.get('i')), bool(r.get('u')),
+            _size(r.get('s'))) for r in after if str(r.get('t') or '')]
+    if len(was) != len(now):
+        return True
+    return was != now
+
 
 def _paragraph_at(document, address: str):
     """Resolve a block address back to the paragraph it came from."""
@@ -454,12 +699,31 @@ def apply_edits(path, edits: Dict[str, str]) -> Dict[str, Any]:
 
     written = 0
     unknown: List[str] = []
-    for address, text in edits.items():
+    for address, change in edits.items():
         paragraph = _paragraph_at(document, str(address))
         if paragraph is None:
             unknown.append(str(address))
             continue
-        _set_paragraph_text(paragraph, '' if text is None else str(text))
+        if isinstance(change, Mapping):
+            style = change.get('style')
+            if style:
+                set_paragraph_style(document, str(address), style)
+            if change.get('align'):
+                set_paragraph_alignment(document, str(address), change['align'])
+            runs = change.get('runs')
+            if runs is not None:
+                before = _runs_of(paragraph)
+                if runs_differ(before, runs):
+                    # The emphasis changed, so the runs have to be redrawn.
+                    _set_paragraph_runs(paragraph, runs)
+                else:
+                    # Only the text did: the splice keeps every run as it is.
+                    _set_paragraph_text(
+                        paragraph, ''.join(str(r.get('t') or '') for r in runs))
+            elif 'text' in change:
+                _set_paragraph_text(paragraph, str(change.get('text') or ''))
+        else:
+            _set_paragraph_text(paragraph, '' if change is None else str(change))
         written += 1
 
     if unknown:
@@ -568,12 +832,7 @@ _EDIT_JS_TEMPLATE = r"""
     if (page.dataset.editBound === '1') return;
     page.dataset.editBound = '1';
 
-    function send(block){
-      var payload = {
-        kind: 'docx',
-        address: block.getAttribute('data-a'),
-        text: block.innerText.replace(/ /g, ' ')
-      };
+    function send(payload){
       var field = root.querySelector('.calc-sheet-payload textarea')
                || root.querySelector('.calc-sheet-payload input');
       if (!field) return;
@@ -590,17 +849,155 @@ _EDIT_JS_TEMPLATE = r"""
       if (btn) btn.click();
     }
 
-    function report(block){
+    /* The runs of a block, read back off the page. What is sent is the
+       structure, not the text: an emphasis change has to arrive as one, or
+       the paragraph would be written back with its old runs and the new
+       words. */
+    function runsOf(block){
+      var runs = [];
+      (function walk(node, bold, italic, under, size){
+        for (var i = 0; i < node.childNodes.length; i++) {
+          var child = node.childNodes[i];
+          if (child.nodeType === 3) {
+            if (child.nodeValue) {
+              runs.push({t: child.nodeValue, b: bold ? 1 : 0,
+                         i: italic ? 1 : 0, u: under ? 1 : 0,
+                         s: size || 0});
+            }
+            continue;
+          }
+          if (child.nodeType !== 1) continue;
+          var name = child.tagName;
+          var style = child.style || {};
+          var weight = style.fontWeight || '';
+          /* A size set on this element wins over the one inherited: it
+             is what a font-size control on the selection produces. */
+          var own = (style.fontSize || '').trim();
+          var pt = size;
+          if (own) {
+            var px = parseFloat(own);
+            if (!isNaN(px)) {
+              pt = own.indexOf('pt') >= 0 ? px : Math.round(px * 0.75 * 10) / 10;
+            }
+          }
+          walk(child,
+               bold || name === 'B' || name === 'STRONG'
+                 || weight === 'bold' || weight === '700' || weight === '600',
+               italic || name === 'I' || name === 'EM'
+                 || style.fontStyle === 'italic',
+               under || name === 'U'
+                 || (style.textDecoration || '').indexOf('underline') >= 0,
+               pt);
+        }
+      })(block, false, false, false, 0);
+      return runs;
+    }
+
+    function report(block, force){
       if (!block || block.getAttribute('contenteditable') !== 'true') return;
-      if (block.innerText === block.dataset.was) return;
+      if (!force && block.innerText === block.dataset.was) return;
       block.classList.add('dw-dirty');
       block.dataset.was = block.innerText;   /* sent; only resend on change */
-      send(block);
+      send({kind: 'docx', address: block.getAttribute('data-a'),
+            runs: runsOf(block)});
     }
+
+    /* The block being worked on, whether or not it still has focus: a
+       toolbar button takes focus away the moment it is pressed. */
+    var active = null;
+    function currentBlock(){
+      var node = document.activeElement;
+      var block = node && node.closest ? node.closest('.dw-b') : null;
+      return block || active;
+    }
+
+    function emphasise(command){
+      var block = currentBlock();
+      if (!block) return;
+      block.focus();
+      document.execCommand(command, false, null);
+      report(block, true);
+    }
+
+    var bar = root.querySelector('.dw-bar');
+    if (bar) {
+      var press = {'.dw-b': 'bold', '.dw-i': 'italic', '.dw-u': 'underline'};
+      Object.keys(press).forEach(function(sel){
+        var button = bar.querySelector(sel);
+        if (!button) return;
+        /* mousedown, not click: by the time click fires, the selection in
+           the paragraph is already gone. */
+        button.addEventListener('mousedown', function(e){
+          e.preventDefault();
+          emphasise(press[sel]);
+        });
+      });
+      /* execCommand has no font-size in points, only the seven HTML sizes.
+         The selection is wrapped by hand so the size that is asked for is
+         the size that is written. */
+      var sizeBox = bar.querySelector('.dw-size');
+      if (sizeBox) sizeBox.addEventListener('change', function(){
+        var block = currentBlock();
+        var points = parseFloat(sizeBox.value);
+        if (!block || !points) { sizeBox.value = ''; return; }
+        block.focus();
+        var range = window.getSelection();
+        if (range && range.rangeCount && !range.isCollapsed) {
+          var span = document.createElement('span');
+          span.style.fontSize = points + 'pt';
+          try {
+            range.getRangeAt(0).surroundContents(span);
+          } catch (_err) {
+            /* A selection across several runs cannot be wrapped in one
+               element; the whole paragraph is the honest fallback. */
+            block.style.fontSize = points + 'pt';
+          }
+        } else {
+          block.style.fontSize = points + 'pt';
+        }
+        report(block, true);
+        sizeBox.value = '';
+      });
+
+      Array.prototype.forEach.call(bar.querySelectorAll('.dw-align'),
+        function(button){
+          button.addEventListener('mousedown', function(e){
+            e.preventDefault();
+            var block = currentBlock();
+            if (!block) return;
+            var where = button.getAttribute('data-align');
+            block.style.textAlign = where;
+            block.classList.add('dw-dirty');
+            send({kind: 'docx', address: block.getAttribute('data-a'),
+                  align: where});
+          });
+        });
+
+      var styleBox = bar.querySelector('.dw-style');
+      if (styleBox) styleBox.addEventListener('change', function(){
+        var block = currentBlock();
+        if (!block) return;
+        block.classList.add('dw-dirty');
+        send({kind: 'docx', address: block.getAttribute('data-a'),
+              style: styleBox.value});
+        styleBox.blur();
+      });
+    }
+
+    page.addEventListener('keydown', function(e){
+      if (!(e.ctrlKey || e.metaKey)) return;
+      var key = String(e.key || '').toLowerCase();
+      var command = key === 'b' ? 'bold'
+                  : key === 'i' ? 'italic'
+                  : key === 'u' ? 'underline' : '';
+      if (!command) return;
+      e.preventDefault();
+      emphasise(command);
+    });
 
     page.addEventListener('focusin', function(e){
       var block = e.target.closest && e.target.closest('.dw-b');
-      if (block) block.dataset.was = block.innerText;
+      if (block) { block.dataset.was = block.innerText; active = block; }
     }, true);
 
     page.addEventListener('focusout', function(e){

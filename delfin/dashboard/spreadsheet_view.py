@@ -23,8 +23,10 @@ is imported lazily, so it can be unit tested in a stripped environment.
 
 from __future__ import annotations
 
+import copy
 import csv
 import datetime as _dt
+import decimal as _dec
 import html as _html
 import io
 import json
@@ -95,6 +97,8 @@ class SheetData:
     total_cols: int = 0
     has_formulas: bool = False
     truncated_cols: bool = False
+    # Per cell, only what differs from plain: {'b','i','u','bg','fmt'}.
+    styles: List[List[Dict[str, Any]]] = field(default_factory=list)
 
     @property
     def n_rows(self) -> int:
@@ -157,6 +161,163 @@ def format_cell(value: Any) -> str:
     if isinstance(value, _dt.timedelta):
         return str(value)
     return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Cell formatting
+# ---------------------------------------------------------------------------
+
+# The formats offered, by the name shown in the menu. Small on purpose: the
+# point is a table that reads well, not a format designer. Everything else a
+# workbook already carries is left exactly as it is.
+NUMBER_FORMATS: Tuple[Tuple[str, str], ...] = (
+    ('Standard', 'General'),
+    ('1235', '0'),
+    ('1234,50', '0.00'),
+    ('1.234,50', '#,##0.00'),
+    ('1.234,50 €', '#,##0.00\\ "€"'),
+    ('12,3 %', '0.0%'),
+    ('31.12.2026', 'DD.MM.YYYY'),
+    ('Text', '@'),
+)
+_KNOWN_FORMATS = {code for _label, code in NUMBER_FORMATS}
+
+# Fill colours, light enough that black text stays readable on them. A
+# palette rather than a colour picker: the aim is telling rows apart.
+FILL_COLOURS: Tuple[Tuple[str, str], ...] = (
+    ('None', ''),
+    ('Yellow', 'FFF2CC'),
+    ('Green', 'E2EFDA'),
+    ('Blue', 'DDEBF7'),
+    ('Red', 'FCE4EC'),
+    ('Orange', 'FDE9D9'),
+    ('Purple', 'EDE7F6'),
+    ('Grey', 'EDEDED'),
+)
+_KNOWN_FILLS = {code for _label, code in FILL_COLOURS if code}
+
+_HEX_RE = re.compile(r'^[0-9A-Fa-f]{6}$')
+
+
+def check_fill(colour: Any) -> str:
+    """A fill colour as six hex digits, or '' for none."""
+    text = str(colour or '').strip().lstrip('#').upper()
+    if not text:
+        return ''
+    if len(text) == 8:          # openpyxl writes ARGB; the alpha is not ours
+        text = text[2:]
+    if not _HEX_RE.match(text):
+        raise SpreadsheetError(f'{colour!r} is not a colour.')
+    return text
+
+
+def check_number_format(code: Any) -> str:
+    """A number format the menu offers, or whatever the cell already had."""
+    text = str(code or '').strip()
+    if not text:
+        return 'General'
+    if len(text) > 60:
+        raise SpreadsheetError('That number format is too long.')
+    return text
+
+
+def cell_style(cell: Any) -> Dict[str, Any]:
+    """The parts of a cell's look that this grid shows and can set.
+
+    Only what differs from plain: an empty dictionary per cell is what
+    keeps the markup for a few thousand cells to a readable size.
+    """
+    style: Dict[str, Any] = {}
+    try:
+        font = cell.font
+        if font is not None:
+            if font.bold:
+                style['b'] = 1
+            if font.italic:
+                style['i'] = 1
+            if font.underline and font.underline != 'none':
+                style['u'] = 1
+    except Exception:
+        pass
+    try:
+        fill = cell.fill
+        if fill is not None and fill.patternType == 'solid':
+            colour = check_fill(getattr(fill.fgColor, 'rgb', '') or '')
+            # White is the sheet's own background; marking it would put a
+            # colour on every cell of a workbook that has none.
+            if colour and colour not in ('FFFFFF', '000000'):
+                style['bg'] = colour
+    except Exception:
+        pass
+    try:
+        code = str(cell.number_format or 'General')
+        if code != 'General':
+            style['fmt'] = code
+    except Exception:
+        pass
+    return style
+
+
+def style_css(style: Mapping[str, Any]) -> str:
+    """The style of one cell, as CSS."""
+    parts = []
+    if style.get('b'):
+        # 700, not 600: at this size 600 is barely a difference.
+        parts.append('font-weight:700')
+    if style.get('i'):
+        parts.append('font-style:italic')
+    if style.get('u'):
+        parts.append('text-decoration:underline')
+    background = style.get('bg')
+    if background:
+        parts.append(f'background:#{background}')
+    return ';'.join(parts)
+
+
+def display_value(value: Any, code: str = 'General') -> str:
+    """Show a value the way its number format says to.
+
+    Only the formats this grid offers are worked out here. A workbook can
+    carry any format string at all, and one that is not understood shows
+    the plain value rather than a guess at what Excel would draw.
+    """
+    code = str(code or 'General')
+    if value is None or code in ('General', '@') or isinstance(value, str):
+        return format_cell(value)
+    if isinstance(value, (_dt.date, _dt.datetime)) and 'DD' in code.upper():
+        return value.strftime('%d.%m.%Y')
+    if code not in _KNOWN_FORMATS:
+        # A workbook can carry any format string, conditional colours and
+        # sections included. Guessing at what Excel would draw would put a
+        # number on screen that is not in the file.
+        return format_cell(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return format_cell(value)
+
+    number = float(value)
+    if code.endswith('%'):
+        decimals = len(code.split('.')[-1].rstrip('%')) if '.' in code else 0
+        return _german_number(number * 100, decimals) + ' %'
+    decimals = 0
+    if '.' in code:
+        decimals = len(re.split(r'[.]', code)[-1].split('\\')[0].split('"')[0].strip())
+    grouped = ',' in code.split('.')[0]
+    text = _german_number(number, decimals, grouped=grouped)
+    if '€' in code:
+        text += ' €'
+    return text
+
+
+def _german_number(value: float, decimals: int, *, grouped: bool = False) -> str:
+    # Half away from zero, which is what a spreadsheet does. Python rounds
+    # half to even, so 1234.5 with no decimals would come out as 1234 where
+    # Excel writes 1235.
+    quantum = _dec.Decimal(1).scaleb(-decimals)
+    rounded = _dec.Decimal(repr(value)).quantize(quantum, rounding=_dec.ROUND_HALF_UP)
+    text = f'{rounded:,.{decimals}f}' if grouped else f'{rounded:.{decimals}f}'
+    # en-US separators out, German ones in, in one pass so the swap cannot
+    # trip over its own output.
+    return text.translate(str.maketrans({',': '.', '.': ','}))
 
 
 def coerce_value(text: Any) -> Any:
@@ -330,6 +491,30 @@ def _read_window(ws, start0: int, count: int, max_cols: int) -> List[List[str]]:
     return rows
 
 
+def apply_results(sheet: SheetData, results: 'FormulaResults') -> None:
+    """Show what the formulas work out to, in the cells that hold them.
+
+    A workbook that Excel has opened carries its own cached results and
+    those are already on screen; one written here has none, and the cell
+    would otherwise show =A1*2 where a spreadsheet shows 6. What the cell
+    holds is unchanged -- the formula is still there, and pressing F2 or
+    double-clicking still shows it, exactly as in Excel.
+    """
+    if not results or not sheet.formulas:
+        return
+    for r_idx, row in enumerate(sheet.formulas):
+        for c_idx, formula in enumerate(row):
+            if not formula:
+                continue
+            value = results.get(sheet.name,
+                                sheet.row_offset + r_idx + 1, c_idx + 1)
+            if value is None:
+                continue
+            shown = format_result(value)
+            if r_idx < len(sheet.values) and c_idx < len(sheet.values[r_idx]):
+                sheet.values[r_idx][c_idx] = shown
+
+
 def read_xlsx(
     path: Path,
     sheet: Optional[str] = None,
@@ -366,6 +551,41 @@ def read_xlsx(
     n_rows_view = len(values)
     n_cols_view = len(values[0]) if values else 1
 
+    # What the cells look like, and how their numbers are written. Read from
+    # the same window so a cell's value and its format cannot come from
+    # different rows.
+    styles: List[List[Dict[str, Any]]] = []
+    try:
+        book_s = _load_workbook(filename=str(path), read_only=True, data_only=True)
+        try:
+            sheet_s = (book_s[active] if active in book_s.sheetnames
+                       else book_s.worksheets[0])
+            for r_idx, row in enumerate(sheet_s.iter_rows(
+                    min_row=start0 + 1, max_row=start0 + n_rows_view,
+                    min_col=1, max_col=n_cols_view)):
+                if r_idx >= n_rows_view:
+                    break
+                found = []
+                for c_idx, cell in enumerate(row):
+                    style = cell_style(cell)
+                    found.append(style)
+                    # The value is taken from the cell here rather than from
+                    # the window of strings: a number and the format that
+                    # says how to write it have to come from the same cell.
+                    code = style.get('fmt')
+                    if (code and cell.value is not None
+                            and r_idx < len(values)
+                            and c_idx < len(values[r_idx])):
+                        values[r_idx][c_idx] = display_value(cell.value, code)
+                found.extend({} for _ in range(n_cols_view - len(found)))
+                styles.append(found)
+        finally:
+            book_s.close()
+        while len(styles) < n_rows_view:
+            styles.append([{} for _ in range(n_cols_view)])
+    except Exception:
+        styles = []
+
     formulas: List[List[str]] = []
     has_formulas = False
     try:
@@ -401,6 +621,7 @@ def read_xlsx(
         total_rows=max(total_rows, start0 + n_rows_view),
         total_cols=total_cols or n_cols_view,
         has_formulas=has_formulas,
+        styles=styles,
         truncated_cols=truncated_cols,
     )
     return names, data
@@ -539,6 +760,308 @@ def encode_delimited(text: str, encoding: str) -> bytes:
         ) from exc
 
 
+# ---------------------------------------------------------------------------
+# What a formula works out to
+# ---------------------------------------------------------------------------
+
+# Evaluating a workbook builds a graph of every cell in it, which costs
+# seconds on a large one. Bounded so that opening a file never turns into a
+# wait, and the bound is reported rather than passed off as "no result".
+MAX_FORMULA_CELLS = 3000
+MAX_FORMULA_BYTES = 8 * 1024 * 1024
+
+_CELL_KEY_RE = re.compile(r"^'\[[^\]]*\](?P<sheet>[^']*)'!(?P<col>[A-Z]{1,3})(?P<row>\d+)$")
+
+
+class FormulaResults:
+    """What a workbook's formulas work out to, per sheet and cell.
+
+    ``note`` says why a value is missing when one is: the engine is not
+    installed, the workbook was too large to evaluate, or that particular
+    formula is beyond it. A cell with no result keeps showing its formula,
+    which is honest -- a wrong number would not be.
+    """
+
+    def __init__(self, values: Optional[Dict[str, Dict[Tuple[int, int], Any]]] = None,
+                 note: str = ''):
+        self.values = values or {}
+        self.note = note
+
+    def get(self, sheet: str, row: int, col: int) -> Any:
+        return self.values.get(str(sheet).upper(), {}).get((int(row), int(col)))
+
+    def __bool__(self) -> bool:
+        return bool(self.values)
+
+
+def count_formulas(path: Path) -> int:
+    """How many formula cells a workbook holds, without evaluating any."""
+    book = _load_workbook(filename=str(path), read_only=True, data_only=False)
+    try:
+        total = 0
+        for worksheet in book.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value.startswith('='):
+                        total += 1
+                        if total > MAX_FORMULA_CELLS:
+                            return total
+        return total
+    finally:
+        book.close()
+
+
+def evaluate_workbook(path: Path) -> FormulaResults:
+    """Work out every formula in a workbook.
+
+    Runs on the file, so it shows what the file says -- unsaved edits are
+    not in it yet, which is why the caller re-runs this after a save.
+    """
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return FormulaResults(note=f'could not read the file: {exc}')
+    if size > MAX_FORMULA_BYTES:
+        return FormulaResults(
+            note=f'workbook is {size / (1024 * 1024):.0f} MB; formulas are '
+                 'shown as written rather than worked out')
+    try:
+        import formulas
+    except ImportError:
+        return FormulaResults(
+            note='formula results need the "formulas" package '
+                 '(pip install formulas)')
+
+    try:
+        if count_formulas(path) > MAX_FORMULA_CELLS:
+            return FormulaResults(
+                note=f'more than {MAX_FORMULA_CELLS} formulas; they are shown '
+                     'as written rather than worked out')
+    except Exception:
+        pass
+
+    try:
+        # The engine draws a progress bar. In a notebook that is not a
+        # terminal it lands in the dashboard's own output, under the grid.
+        import contextlib
+        import io
+
+        sink = io.StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            model = formulas.ExcelModel().loads(str(path)).finish()
+            solution = model.calculate()
+    except Exception as exc:  # noqa: BLE001 - the engine raises many kinds
+        return FormulaResults(note=f'could not work out the formulas: {exc}')
+
+    values: Dict[str, Dict[Tuple[int, int], Any]] = {}
+    for key, value in (solution or {}).items():
+        match = _CELL_KEY_RE.match(str(key))
+        if match is None:
+            continue          # ranges and named things, not single cells
+        cell = _single_value(value)
+        if cell is None:
+            continue
+        sheet = match.group('sheet').upper()
+        row = int(match.group('row'))
+        col = col_index(match.group('col')) + 1
+        values.setdefault(sheet, {})[(row, col)] = cell
+    return FormulaResults(values)
+
+
+def _single_value(value: Any) -> Any:
+    """Unwrap the engine's 1x1 matrix. Anything else is not a cell value."""
+    try:
+        array = getattr(value, 'value', value)
+        while hasattr(array, '__len__') and not isinstance(array, (str, bytes)):
+            if len(array) != 1:
+                return None
+            array = array[0]
+        return array
+    except Exception:
+        return None
+
+
+def format_result(value: Any) -> str:
+    """Write a worked-out value the way a spreadsheet shows it."""
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return 'TRUE' if value else 'FALSE'
+    if isinstance(value, float):
+        if value != value or value in (float('inf'), float('-inf')):
+            return '#NUM!'
+        if float(value).is_integer():
+            return str(int(value))
+        return f'{value:.10g}'
+    return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Filling by dragging the handle
+# ---------------------------------------------------------------------------
+
+# An A1-style reference, with the two places a $ can lock it.
+_REF_RE = re.compile(r'(\$?)([A-Za-z]{1,3})(\$?)([1-9][0-9]{0,6})')
+# Text ending in digits: "Pos 7" continues as "Pos 8".
+_TRAILING_NUMBER_RE = re.compile(r'^(.*?)(\d+)$')
+_ISO_DATE_RE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})$')
+
+
+def shift_formula(text: str, d_row: int, d_col: int) -> str:
+    """Move a formula's relative references by (d_row, d_col).
+
+    What makes dragging a formula down useful: =B2*C2 has to become
+    =B3*C3, or the copies all read the row they came from. A reference
+    locked with $ stays put, which is the whole reason $ exists.
+
+    Text inside quotes is left alone -- ="A1 bis A9" is a label, not two
+    references.
+    """
+    text = str(text)
+    if not text.startswith('='):
+        return text
+
+    out = []
+    index = 0
+    in_string = False
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            in_string = not in_string
+            out.append(char)
+            index += 1
+            continue
+        if in_string:
+            out.append(char)
+            index += 1
+            continue
+        match = _REF_RE.match(text, index)
+        if match is None:
+            out.append(char)
+            index += 1
+            continue
+        col_lock, col_text, row_lock, row_text = match.groups()
+        column = col_index(col_text.upper()) + 1
+        row = int(row_text)
+        if not col_lock:
+            column += d_col
+        if not row_lock:
+            row += d_row
+        if column < 1 or row < 1:
+            # Off the sheet: Excel writes #REF! and so do we, rather than
+            # silently clamping to A1 and reading the wrong cell.
+            out.append('#REF!')
+        else:
+            out.append(f'{col_lock}{col_letter(column - 1)}{row_lock}{row}')
+        index = match.end()
+    return ''.join(out)
+
+
+def _as_number(text: str) -> Optional[float]:
+    try:
+        return float(str(text).strip().replace(',', '.'))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_number(value: float, like: str) -> str:
+    """Write a continued number the way the ones it continues are written."""
+    text = str(like).strip()
+    decimals = 0
+    if '.' in text or ',' in text:
+        decimals = len(re.split(r'[.,]', text)[-1])
+    formatted = f'{value:.{decimals}f}' if decimals else f'{round(value):d}'
+    return formatted.replace('.', ',') if ',' in text else formatted
+
+
+def _as_date(text: str):
+    match = _ISO_DATE_RE.match(str(text).strip())
+    if match is None:
+        return None
+    try:
+        return _dt.date(*(int(part) for part in match.groups()))
+    except ValueError:
+        return None
+
+
+def fill_series(source: Sequence[str], count: int, *,
+                d_row: int = 0, d_col: int = 0) -> List[str]:
+    """Continue ``source`` for ``count`` more cells.
+
+    The rules are the ones a spreadsheet user expects, and no more:
+
+    * formulas move with the cell, so a column of =B2*C2 keeps pointing at
+      its own row;
+    * two or more numbers set a step and it carries on -- one number on its
+      own is copied, which is what Excel does and what stops a column of
+      identical prices turning into a count;
+    * a single date steps by a day, several set their own step;
+    * text ending in digits counts on ("Pos 7", "Pos 8");
+    * anything else repeats, cycling through the block that was dragged.
+    """
+    source = [('' if v is None else str(v)) for v in source]
+    count = max(0, int(count))
+    if not source or not count:
+        return []
+
+    if all(v.startswith('=') for v in source if v.strip()) and any(
+            v.startswith('=') for v in source):
+        return [
+            shift_formula(source[i % len(source)],
+                          d_row * (i // len(source) + 1),
+                          d_col * (i // len(source) + 1))
+            for i in range(count)
+        ]
+
+    numbers = [_as_number(v) for v in source]
+    if all(n is not None for n in numbers) and len(numbers) >= 2:
+        step = numbers[-1] - numbers[-2]
+        return [_format_number(numbers[-1] + step * (i + 1), source[-1])
+                for i in range(count)]
+
+    dates = [_as_date(v) for v in source]
+    if all(d is not None for d in dates):
+        step = ((dates[-1] - dates[-2]).days if len(dates) >= 2 else 1) or 1
+        return [(dates[-1] + _dt.timedelta(days=step * (i + 1))).isoformat()
+                for i in range(count)]
+
+    if len(source) == 1 and numbers[0] is None:
+        match = _TRAILING_NUMBER_RE.match(source[0])
+        if match is not None:
+            head, digits = match.groups()
+            width = len(digits) if digits.startswith('0') else 0
+            return [f'{head}{str(int(digits) + i + 1).zfill(width)}'
+                    for i in range(count)]
+
+    return [source[i % len(source)] for i in range(count)]
+
+
+def fill_block(source: Sequence[Sequence[str]], rows: int, cols: int
+               ) -> List[List[str]]:
+    """Extend a rectangular block downwards or to the right.
+
+    One direction at a time, the way the handle is dragged. ``rows`` and
+    ``cols`` are how many cells to add beyond the block itself.
+    """
+    grid = [list(row) for row in source]
+    if not grid or not grid[0]:
+        return []
+    rows, cols = max(0, int(rows)), max(0, int(cols))
+    if rows and cols:
+        raise SpreadsheetError('A fill goes down or across, not both at once.')
+
+    if rows:
+        height = len(grid)
+        columns = list(zip(*grid))
+        filled = [fill_series(list(column), rows, d_row=height)
+                  for column in columns]
+        return [list(values) for values in zip(*filled)]
+
+    width = len(grid[0])
+    return [fill_series(row, cols, d_col=width) for row in grid]
+
+
 def sniff_delimiter(sample: str, suffix: str = '') -> str:
     """Pick the field separator for a delimited text file."""
     if str(suffix).lower() in ('.tsv', '.tab'):
@@ -615,6 +1138,26 @@ def validate_ops(ops: Any) -> List[Dict[str, Any]]:
                 raise ValueError(f'cell out of range: r{row}c{col}')
             text = op.get('text', '')
             clean.append({'op': 'set', 'row': row, 'col': col, 'text': '' if text is None else str(text)})
+        elif kind == 'format':
+            box = {}
+            for key in ('r1', 'c1', 'r2', 'c2'):
+                box[key] = int(op.get(key, 0))
+            if (box['r1'] < 1 or box['c1'] < 1 or box['r2'] < box['r1']
+                    or box['c2'] < box['c1']
+                    or box['r2'] > 1048576 or box['c2'] > 16384):
+                raise ValueError(f'bad range: {box}')
+            clean_op: Dict[str, Any] = {'op': 'format', **box}
+            for key in ('bold', 'italic', 'underline'):
+                if op.get(key) is not None:
+                    clean_op[key] = bool(op.get(key))
+            if op.get('fill') is not None:
+                clean_op['fill'] = check_fill(op.get('fill'))
+            if op.get('number_format') is not None:
+                clean_op['number_format'] = check_number_format(
+                    op.get('number_format'))
+            if len(clean_op) == 5:
+                raise ValueError('a format op has to change something')
+            clean.append(clean_op)
         elif kind in ('insert_rows', 'delete_rows', 'insert_cols', 'delete_cols'):
             at = int(op.get('at', 0))
             count = int(op.get('count', 1))
@@ -637,8 +1180,47 @@ def replay_ops(sheet: SheetData, ops: Sequence[Mapping[str, Any]]) -> Set[Tuple[
     def _width() -> int:
         return len(sheet.values[0]) if sheet.values else 0
 
+    def _restyle(op: Mapping[str, Any]) -> None:
+        for row in range(op['r1'], op['r2'] + 1):
+            r_idx = row - 1 - sheet.row_offset
+            if not 0 <= r_idx < len(sheet.values):
+                continue
+            while len(sheet.styles) <= r_idx:
+                sheet.styles.append([{} for _ in range(_width())])
+            row_styles = sheet.styles[r_idx]
+            while len(row_styles) < _width():
+                row_styles.append({})
+            for col in range(op['c1'], op['c2'] + 1):
+                c_idx = col - 1
+                if not 0 <= c_idx < len(row_styles):
+                    continue
+                style = dict(row_styles[c_idx] or {})
+                for key, mark in (('bold', 'b'), ('italic', 'i'),
+                                  ('underline', 'u')):
+                    if key in op:
+                        if op[key]:
+                            style[mark] = 1
+                        else:
+                            style.pop(mark, None)
+                if 'fill' in op:
+                    if op['fill']:
+                        style['bg'] = op['fill']
+                    else:
+                        style.pop('bg', None)
+                if 'number_format' in op:
+                    code = op['number_format']
+                    if code and code != 'General':
+                        style['fmt'] = code
+                    else:
+                        style.pop('fmt', None)
+                row_styles[c_idx] = style
+                dirty.add((r_idx, c_idx))
+
     for op in ops:
         kind = op['op']
+        if kind == 'format':
+            _restyle(op)
+            continue
         if kind == 'set':
             r = op['row'] - 1 - sheet.row_offset
             c = op['col'] - 1
@@ -790,6 +1372,141 @@ def check_sheet_name(name: str, existing: Sequence[str] = ()) -> str:
     return name
 
 
+def _sort_key(value: Any):
+    """Order the way a spreadsheet orders: numbers, then text, blanks last.
+
+    Blanks sink to the bottom whichever way round the sort goes, which is
+    what Excel does -- a column sorted descending should not start with its
+    empty rows.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return (2, 0.0, '')
+    if isinstance(value, bool):
+        return (1, 0.0, 'TRUE' if value else 'FALSE')
+    if isinstance(value, (int, float)):
+        return (0, float(value), '')
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return (0, float(_dt.datetime.combine(
+            value if isinstance(value, _dt.date) and not isinstance(
+                value, _dt.datetime) else value.date(),
+            _dt.time()).timestamp()), '')
+    text = str(value)
+    number = _as_number(text)
+    if number is not None:
+        return (0, number, '')
+    return (1, 0.0, text.casefold())
+
+
+def looks_like_a_header(rows: Sequence[Sequence[Any]]) -> bool:
+    """Whether the first row is a heading rather than data.
+
+    Read across the whole row, not down the column being sorted: a column
+    of names under the heading "Name" is text over text and says nothing,
+    while the "Betrag" beside it sits over numbers and settles it.
+
+    With nothing to go on -- text everywhere -- it is taken as a heading,
+    which is what a spreadsheet assumes too. Sorting a heading into the
+    middle of the data is the worse mistake of the two, and not one that
+    can be spotted by looking at the top of the sheet.
+    """
+    if len(rows) < 2:
+        return False
+    first = rows[0]
+    if not any(isinstance(cell, str) and cell.strip() for cell in first):
+        return False
+    for row in rows[1:6]:
+        for index, top in enumerate(first):
+            if index >= len(row):
+                continue
+            below = row[index]
+            if below is None or not isinstance(top, str) or not top.strip():
+                continue
+            if _as_number(str(top)) is not None:
+                continue          # the heading is itself a number
+            if not isinstance(below, str) or _as_number(str(below)) is not None:
+                return True
+    return True
+
+
+def sort_sheet(path: Path, sheet_name: str, column: int, *,
+               descending: bool = False, header: Optional[bool] = None,
+               backup: bool = True, backup_dir: Optional[Path] = None
+               ) -> Tuple[Optional[Path], bool]:
+    """Sort a whole sheet by one column, in the file. Returns (backup, header).
+
+    The whole sheet, not the window on screen: sorting the rows that happen
+    to be visible would interleave them with the ones that are not, and the
+    file would be scrambled in a way nobody could see.
+
+    Formulas move with their row. A reference that pointed at the row it
+    sits in still does afterwards -- which is the common case and the one
+    that silently reads the wrong cell if it is left alone.
+    """
+    path = Path(path)
+    column = int(column)
+    if column < 1:
+        raise SpreadsheetError('There is no such column to sort by.')
+
+    book = _load_workbook(filename=str(path), keep_vba=path.suffix.lower() == '.xlsm')
+    try:
+        if sheet_name not in book.sheetnames:
+            raise SpreadsheetError(f'There is no sheet called {sheet_name!r}.')
+        worksheet = book[sheet_name]
+        rows = list(worksheet.iter_rows())
+        if len(rows) < 2:
+            return None, False
+        values = [[cell.value for cell in row] for row in rows]
+        if column > len(values[0]) and all(column > len(v) for v in values):
+            raise SpreadsheetError('There is no such column to sort by.')
+
+        keep = looks_like_a_header(values) if header is None else bool(header)
+        start = 1 if keep else 0
+        index = column - 1
+
+        def _value(r):
+            return values[r][index] if index < len(values[r]) else None
+
+        def _blank(r):
+            cell = _value(r)
+            return cell is None or (isinstance(cell, str) and not cell.strip())
+
+        # Blanks last whichever way the sort goes: reversing the order would
+        # otherwise start a descending column with its empty rows. Sorting
+        # them separately is also what keeps them in the order they were in.
+        filled = [r for r in range(start, len(rows)) if not _blank(r)]
+        empty = [r for r in range(start, len(rows)) if _blank(r)]
+        filled.sort(key=lambda r: _sort_key(_value(r)), reverse=bool(descending))
+        body = filled + empty
+        if body == list(range(start, len(rows))):
+            return None, keep
+
+        made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+                if backup else None)
+
+        # Read everything out before writing anything back: the source and
+        # the target of a move overlap.
+        taken = []
+        for source in body:
+            row = []
+            for cell in rows[source]:
+                row.append((cell.value, copy.copy(cell._style)))
+            taken.append((source, row))
+
+        for offset, (source, row) in enumerate(taken):
+            target = start + offset
+            shift = target - source
+            for col_index, (value, style) in enumerate(row, start=1):
+                cell = worksheet.cell(row=target + 1, column=col_index)
+                if isinstance(value, str) and value.startswith('=') and shift:
+                    value = shift_formula(value, shift, 0)
+                cell.value = value
+                cell._style = style
+        _save_workbook(book, path)
+    finally:
+        book.close()
+    return made, keep
+
+
 def add_sheet(path: Path, name: str, *, backup: bool = True,
               backup_dir: Optional[Path] = None) -> Tuple[Optional[Path], str]:
     """Add an empty sheet to a workbook. Returns (backup, the name used)."""
@@ -866,6 +1583,36 @@ def _save_workbook(book: Any, path: Path) -> None:
         raise
 
 
+def _apply_format(worksheet: Any, op: Mapping[str, Any]) -> None:
+    """Write one format op into a worksheet.
+
+    Each attribute is set on top of what the cell already has: a workbook
+    carries fonts, borders and colours this grid never shows, and replacing
+    the whole style would throw those away for the sake of one bold.
+    """
+    from openpyxl.styles import Font, PatternFill
+
+    for row in range(op['r1'], op['r2'] + 1):
+        for col in range(op['c1'], op['c2'] + 1):
+            cell = worksheet.cell(row=row, column=col)
+            if any(key in op for key in ('bold', 'italic', 'underline')):
+                font = cell.font
+                cell.font = Font(
+                    name=font.name, size=font.size, color=font.color,
+                    bold=op.get('bold', font.bold),
+                    italic=op.get('italic', font.italic),
+                    underline=('single' if op['underline'] else None)
+                    if 'underline' in op else font.underline,
+                    strike=font.strike, vertAlign=font.vertAlign,
+                )
+            if 'fill' in op:
+                colour = op['fill']
+                cell.fill = (PatternFill('solid', fgColor=f'FF{colour}')
+                             if colour else PatternFill(fill_type=None))
+            if 'number_format' in op:
+                cell.number_format = op['number_format'] or 'General'
+
+
 def apply_ops_xlsx(
     path: Path,
     sheet_name: str,
@@ -910,6 +1657,8 @@ def apply_ops_xlsx(
                 ws.insert_cols(op['at'], op['count'])
             elif kind == 'delete_cols':
                 ws.delete_cols(op['at'], op['count'])
+            elif kind == 'format':
+                _apply_format(ws, op)
         wb.save(tmp_name)
         _atomic_replace(tmp_name, path)
     except BaseException:
@@ -976,6 +1725,11 @@ def apply_ops_delimited(
         if row is not None and len(row['fields']) < c_count:
             row['fields'].extend([''] * (c_count - len(row['fields'])))
             row['dirty'] = True
+
+    if any(op['op'] == 'format' for op in clean):
+        raise SpreadsheetError(
+            'A csv file holds text, not formatting. Save it as .xlsx to keep '
+            'colours and number formats.')
 
     for op in clean:
         kind = op['op']
@@ -1067,6 +1821,12 @@ GRID_CSS = (
     ' flex:0 0 auto; }'
     '.dsheet-btn { font-size:11px; padding:2px 8px; height:22px; line-height:1;'
     ' border:1px solid #c3c9d0; border-radius:3px; background:#fff; cursor:pointer; color:#333; }'
+    # One box, one baseline, whatever the letter in it is doing.
+    '.dsheet-mark { display:inline-flex; align-items:center;'
+    ' justify-content:center; width:24px; padding:0; font-size:13px; }'
+    '.dsheet-b { font-weight:700; }'
+    '.dsheet-i { font-style:italic; font-family:Georgia,serif; }'
+    '.dsheet-u { text-decoration:underline; text-underline-offset:2px; }'
     '.dsheet-btn:hover:not(:disabled) { background:#e8f0fe; border-color:#7aa7e8; }'
     '.dsheet-btn:disabled { opacity:0.45; cursor:default; }'
     '.dsheet-btn.dsheet-primary { background:#1976d2; border-color:#1565c0; color:#fff; }'
@@ -1103,6 +1863,17 @@ GRID_CSS = (
     '.dsheet td.dsheet-sel { background:#e3f0fd; }'
     '.dsheet td.dsheet-cur { outline:2px solid #1976d2; outline-offset:-2px; position:relative; z-index:1; }'
     '.dsheet td.dsheet-hit { outline:2px solid #ff9800; outline-offset:-2px; }'
+    '.dsheet-fills { display:inline-flex; gap:4px; align-items:center;'
+    ' margin:0 6px; }'
+    '.dsheet-swatch { width:22px; height:22px; border:1px solid #b7bec6;'
+    ' border-radius:3px; cursor:pointer; display:inline-block; }'
+    '.dsheet-swatch:hover { outline:2px solid #1565c0; outline-offset:1px; }'
+    '.dsheet-swatch-none { background:#fff; color:#b3261e; font-size:15px;'
+    ' line-height:20px; text-align:center; }'
+    '.dsheet-fill { position:absolute; width:7px; height:7px; background:#1565c0;'
+    ' border:1px solid #fff; cursor:crosshair; z-index:4; display:none; }'
+    '.dsheet td.dsheet-fill-target { background:#e3f0ff;'
+    ' outline:1px dashed #1565c0; outline-offset:-1px; }'
     '.dsheet td.dsheet-dirty { background:#fff6cc; }'
     '.dsheet td.dsheet-dirty.dsheet-sel { background:#f3e9b4; }'
     '.dsheet td[contenteditable="true"] { background:#fff; outline:2px solid #1976d2;'
@@ -1196,6 +1967,35 @@ def render_grid_html(
         out.append(f'<button class="dsheet-btn dsheet-primary dsheet-save"{dis}>Save</button>')
         out.append(f'<button class="dsheet-btn dsheet-discard"{dis}>Discard</button>')
         out.append('<span class="dsheet-sep"></span>')
+        if kind == 'xlsx':
+            # A csv holds text, not formatting, so these are not offered there.
+            # The letters are plain and the button carries the styling. A
+            # <b>, an <i> and a <u> inside three buttons have three
+            # different line boxes, so the three buttons stopped lining up.
+            out.append('<button class="dsheet-btn dsheet-mark dsheet-b"'
+                       ' title="Bold (Ctrl+B)">B</button>')
+            out.append('<button class="dsheet-btn dsheet-mark dsheet-i"'
+                       ' title="Italic (Ctrl+I)">I</button>')
+            out.append('<button class="dsheet-btn dsheet-mark dsheet-u"'
+                       ' title="Underline (Ctrl+U)">U</button>')
+            out.append('<span class="dsheet-fills">')
+            for label, colour in FILL_COLOURS:
+                if colour:
+                    out.append(
+                        f'<span class="dsheet-swatch" data-fill="{colour}"'
+                        f' title="{_attr(label)}"'
+                        f' style="background:#{colour}"></span>')
+                else:
+                    out.append(
+                        '<span class="dsheet-swatch dsheet-swatch-none"'
+                        f' data-fill="" title="{_attr(label)}">&times;</span>')
+            out.append('</span>')
+            # No control for the number format yet. Setting one changes how a
+            # number should read, and the browser cannot re-read it: picking
+            # a format did nothing visible until the file had been saved and
+            # opened again, which is worse than not offering it. A format a
+            # workbook already carries is still read and shown.
+            out.append('<span class="dsheet-sep"></span>')
         if office:
             out.append('<button class="dsheet-btn dsheet-undo" disabled'
                        ' title="Undo (Ctrl+Z)">&#8630;</button>')
@@ -1266,7 +2066,16 @@ def render_grid_html(
                 classes.append('dsheet-dirty')
             cls = f' class="{" ".join(classes)}"' if classes else ''
             f_attr = f' data-f="{_attr(formula)}"' if formula else ''
-            out.append(f'<td{cls}{f_attr}>{_html.escape(cell)}</td>')
+            style = {}
+            if r_idx < len(sheet.styles) and c_idx < len(sheet.styles[r_idx]):
+                style = sheet.styles[r_idx][c_idx] or {}
+            css = style_css(style)
+            s_attr = f' style="{css}"' if css else ''
+            bg = style.get('bg')
+            bg_attr = f' data-bg="{_attr(bg)}"' if bg else ''
+            fmt = style.get('fmt')
+            n_attr = f' data-n="{_attr(fmt)}"' if fmt else ''
+            out.append(f'<td{cls}{s_attr}{bg_attr}{f_attr}{n_attr}>{_html.escape(cell)}</td>')
         out.append('</tr>')
     out.append('</tbody></table></div>')
 
@@ -1472,6 +2281,245 @@ _GRID_JS_TEMPLATE = r"""
     return s;
   }
 
+  /* ---------- formatting ---------- */
+  /* Applied to the selection and shown at once, then sent. Waiting for the
+     kernel to answer before the cells change would make every click feel
+     like a request rather than like formatting. */
+  function readFormat(td){
+    return {
+      bold: td.style.fontWeight === '700',
+      italic: td.style.fontStyle === 'italic',
+      underline: td.style.textDecoration === 'underline',
+      fill: td.getAttribute('data-bg') || '',
+      number_format: td.getAttribute('data-n') || 'General'
+    };
+  }
+
+  function paintCell(td, change){
+    if ('bold' in change) td.style.fontWeight = change.bold ? '700' : '';
+    if ('italic' in change) td.style.fontStyle = change.italic ? 'italic' : '';
+    if ('underline' in change) {
+      td.style.textDecoration = change.underline ? 'underline' : '';
+    }
+    if ('fill' in change) {
+      if (change.fill) {
+        td.style.background = '#' + change.fill;
+        td.setAttribute('data-bg', change.fill);
+      } else {
+        td.style.background = '';
+        td.removeAttribute('data-bg');
+      }
+    }
+    if ('number_format' in change) {
+      if (change.number_format && change.number_format !== 'General') {
+        td.setAttribute('data-n', change.number_format);
+      } else {
+        td.removeAttribute('data-n');
+      }
+    }
+  }
+
+  /* One op per cell, carrying only the keys that changed. A range is rarely
+     uniform -- half of it may already be bold -- so putting it back needs
+     each cell's own previous state, not the range's. */
+  function formatOps(cells, pick){
+    var ops = [];
+    for (var i = 0; i < cells.length; i++) {
+      var entry = cells[i];
+      var op = {op: 'format', r1: entry.row, c1: entry.col,
+                r2: entry.row, c2: entry.col};
+      var values = pick(entry);
+      var touched = false;
+      for (var key in values) { op[key] = values[key]; touched = true; }
+      if (touched) ops.push(op);
+    }
+    return ops;
+  }
+
+  function applyFormat(change){
+    if (!editable) return;
+    var s = selRange();
+    var cells = [];
+    for (var r = s.r1; r <= s.r2; r++) {
+      var tr = tbody.rows[r];
+      if (!tr) continue;
+      for (var c = s.c1; c <= s.c2; c++) {
+        var td = cellAt(r, c);
+        if (!td) continue;
+        var was = readFormat(td);
+        var before = {};
+        for (var key in change) before[key] = was[key];
+        cells.push({td: td, row: parseInt(tr.dataset.r, 10), col: c,
+                    before: before});
+      }
+    }
+    if (!cells.length) return;
+
+    function run(pick){
+      for (var i = 0; i < cells.length; i++) paintCell(cells[i].td, pick(cells[i]));
+      var ops = formatOps(cells, pick);
+      if (ops.length) push(ops);
+    }
+
+    run(function(){ return change; });
+    remember({
+      undo: function(){ run(function(entry){ return entry.before; }); },
+      redo: function(){ run(function(){ return change; }); }
+    });
+  }
+
+  function selectionHas(prop){
+    var s = selRange();
+    var td = cellAt(s.r1, s.c1);
+    return td ? !!readFormat(td)[prop] : false;
+  }
+
+  var boldBtn = wrap.querySelector('.dsheet-b');
+  var italicBtn = wrap.querySelector('.dsheet-i');
+  var underlineBtn = wrap.querySelector('.dsheet-u');
+  if (boldBtn) boldBtn.addEventListener('click', function(){
+    applyFormat({bold: !selectionHas('bold')});
+  });
+  if (italicBtn) italicBtn.addEventListener('click', function(){
+    applyFormat({italic: !selectionHas('italic')});
+  });
+  if (underlineBtn) underlineBtn.addEventListener('click', function(){
+    applyFormat({underline: !selectionHas('underline')});
+  });
+  Array.prototype.forEach.call(wrap.querySelectorAll('.dsheet-swatch'),
+    function(swatch){
+      swatch.addEventListener('click', function(){
+        applyFormat({fill: swatch.getAttribute('data-fill') || ''});
+      });
+    });
+
+  /* ---------- fill handle ---------- */
+  /* The square at the bottom right of the selection. Dragging it is how a
+     spreadsheet copies a cell down a column, and it is the difference
+     between entering a formula once and entering it three hundred times. */
+  var fillHandle = null;
+  if (editable) {
+    fillHandle = document.createElement('div');
+    fillHandle.className = 'dsheet-fill';
+    fillHandle.title = 'Drag to fill down or across';
+    scroll.appendChild(fillHandle);
+  }
+  var filling = null;
+
+  function placeHandle(){
+    if (!fillHandle) return;
+    var s = selRange();
+    var td = cellAt(s.r2, s.c2);
+    if (!td || filling) { if (!filling) fillHandle.style.display = 'none'; return; }
+    fillHandle.style.display = 'block';
+    fillHandle.style.left = (td.offsetLeft + td.offsetWidth - 5) + 'px';
+    fillHandle.style.top = (td.offsetTop + td.offsetHeight - 5) + 'px';
+  }
+
+  function clearFillTargets(){
+    Array.prototype.forEach.call(
+      tbody.querySelectorAll('td.dsheet-fill-target'),
+      function(td){ td.classList.remove('dsheet-fill-target'); });
+  }
+
+  function markFillTargets(){
+    clearFillTargets();
+    if (!filling || (!filling.rows && !filling.cols)) return;
+    var s = filling.from;
+    for (var r = s.r1; r <= s.r2 + filling.rows; r++) {
+      for (var c = s.c1; c <= s.c2 + filling.cols; c++) {
+        if (r <= s.r2 && c <= s.c2) continue;
+        var td = cellAt(r, c);
+        if (td) td.classList.add('dsheet-fill-target');
+      }
+    }
+  }
+
+  if (fillHandle) {
+    fillHandle.addEventListener('mousedown', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      if (editing) commitEdit();
+      filling = {from: selRange(), rows: 0, cols: 0};
+      fillHandle.style.display = 'none';
+    });
+  }
+
+  scroll.addEventListener('mousemove', function(e){
+    if (!filling) return;
+    var td = e.target.closest ? e.target.closest('td') : null;
+    if (!td || td.parentNode.parentNode !== tbody) return;
+    var r = rowIndexOf(td.parentNode), c = td.cellIndex;
+    var s = filling.from;
+    /* One axis at a time, like the handle in a spreadsheet: whichever the
+       pointer has travelled further along. */
+    var down = Math.max(0, r - s.r2), across = Math.max(0, c - s.c2);
+    if (down >= across) { filling.rows = down; filling.cols = 0; }
+    else { filling.rows = 0; filling.cols = across; }
+    markFillTargets();
+  }, false);
+
+  document.addEventListener('mouseup', function(){
+    if (!filling) return;
+    var job = filling;
+    filling = null;
+    clearFillTargets();
+    placeHandle();
+    if (!job.rows && !job.cols) return;
+    var s = job.from;
+    var block = [];
+    for (var r = s.r1; r <= s.r2; r++) {
+      var row = [];
+      for (var c = s.c1; c <= s.c2; c++) {
+        var td = cellAt(r, c);
+        row.push(td ? cellText(td) : '');
+      }
+      block.push(row);
+    }
+    var firstRow = tbody.rows[s.r1];
+    send('fill', [], {
+      block: block,
+      rows: job.rows,
+      cols: job.cols,
+      at: [parseInt(firstRow.dataset.r, 10) || (s.r1 + 1 + rowOffset), s.c1]
+    });
+    /* Extend the selection over what was just filled, as a spreadsheet does. */
+    anchor = {r: s.r1, c: s.c1};
+    moveTo(s.r2 + job.rows, s.c2 + job.cols, true, true);
+  }, false);
+
+  /* Worked-out results. Not an edit: the cell keeps its formula, is not
+     marked changed, and undo has nothing to take back -- the user did not
+     type these. */
+  wrap.__dsheetShow = function(cells){
+    for (var i = 0; i < cells.length; i++) {
+      var absRow = cells[i][0], col = cells[i][1], text = cells[i][2];
+      for (var j = 0; j < tbody.rows.length; j++) {
+        if (parseInt(tbody.rows[j].dataset.r, 10) !== absRow) continue;
+        var td = cellAt(j, col);
+        if (td && td.getAttribute('data-f')) td.textContent = text;
+        break;
+      }
+    }
+  };
+
+  /* Values worked out by the kernel, written in as one step so one undo
+     takes the whole fill back. */
+  wrap.__dsheetApply = function(cells){
+    var writes = [];
+    for (var i = 0; i < cells.length; i++) {
+      var absRow = cells[i][0], col = cells[i][1], text = cells[i][2];
+      var target = -1;
+      for (var j = 0; j < tbody.rows.length; j++) {
+        if (parseInt(tbody.rows[j].dataset.r, 10) === absRow) { target = j; break; }
+      }
+      if (target < 0) continue;
+      var td = cellAt(target, col);
+      if (td) writes.push({td: td, text: text});
+    }
+    writeCells(writes);
+  };
+
   /* ---------- selection ---------- */
   function paint(){
     var r1 = Math.min(anchor.r, cur.r), r2 = Math.max(anchor.r, cur.r);
@@ -1486,6 +2534,7 @@ _GRID_JS_TEMPLATE = r"""
     }
     var tr0 = tbody.rows[cur.r];
     if (tr0 && addrEl) addrEl.textContent = colName(cur.c) + (tr0.dataset.r || '');
+    placeHandle();
   }
   /* keepView: select without scrolling. Picking a whole column or row is a
      selection, not a journey -- the sheet has to stay where the eye left it. */
@@ -1979,6 +3028,15 @@ _GRID_JS_TEMPLATE = r"""
       items.push({label: 'Insert column left', run: function(){ insertCols(colNo, 1); }});
       items.push({label: 'Insert column right', run: function(){ insertCols(colNo + 1, 1); }});
       items.push({label: 'Delete column', run: function(){ deleteCols(colNo, 1); }});
+      if (editable && wrap.dataset.kind === 'xlsx') {
+        /* These reorder the sheet itself, over every row of it and not
+           only the ones on screen. Clicking a heading still sorts the view
+           and changes nothing -- that is the one to reach for by accident. */
+        items.push({label: 'Sort A → Z (whole sheet)',
+                    run: function(){ send('sort', [], {col: colNo}); }});
+        items.push({label: 'Sort Z → A (whole sheet)',
+                    run: function(){ send('sort', [], {col: colNo, desc: true}); }});
+      }
     }
     if (items.length) openMenu(e.clientX, e.clientY, items);
   }, false);
@@ -2014,6 +3072,15 @@ _GRID_JS_TEMPLATE = r"""
     }
     else if (ctrl && (e.key === 'v' || e.key === 'V')) { handled = false; }
     else if (ctrl && (e.key === 's' || e.key === 'S')) { if (pending) send('save'); }
+    else if (ctrl && (e.key === 'b' || e.key === 'B')) {
+      applyFormat({bold: !selectionHas('bold')});
+    }
+    else if (ctrl && (e.key === 'i' || e.key === 'I')) {
+      applyFormat({italic: !selectionHas('italic')});
+    }
+    else if (ctrl && (e.key === 'u' || e.key === 'U')) {
+      applyFormat({underline: !selectionHas('underline')});
+    }
     else if (ctrl && (e.key === 'z' || e.key === 'Z')) { e.shiftKey ? redo() : undo(); }
     else if (ctrl && (e.key === 'y' || e.key === 'Y')) { redo(); }
     else if (ctrl && (e.key === 'a' || e.key === 'A')) {

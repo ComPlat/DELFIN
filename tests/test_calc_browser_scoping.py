@@ -168,3 +168,57 @@ def test_the_splitter_binds_without_borrowing_another_tab(roots):
     startup = '\n'.join(scripts)
     assert '.calc-splitter' in startup, 'no splitter binding was registered'
     assert "document.querySelector('.calc-tab')" not in startup
+
+
+# ---------------------------------------------------------------------------
+# Pasting, and getting to the top and the bottom
+# ---------------------------------------------------------------------------
+
+def test_the_file_upload_does_not_take_a_paste_meant_for_an_editor(roots):
+    """A copy out of a spreadsheet program carries the cells as text AND a
+    picture of them. This listener runs in the capture phase, before the
+    grid's own, so it saw the picture and uploaded an image into the folder
+    instead of filling the cells."""
+    _scope, scripts = _build(roots, 'office')
+    startup = '\n'.join(scripts)
+    block = startup[startup.index("document.addEventListener('paste'"):][:900]
+    assert '.dsheet-root' in block
+    assert '.dw-page' in block
+    assert 'contenteditable' in block
+    assert block.index('return;') < block.index('_clipboardFiles'), (
+        'the guard has to come before the files are taken')
+
+
+def test_top_and_end_find_whichever_view_is_scrolling(roots):
+    """The text and Word views scroll .calc-content-box; the grid scrolls
+    its own body. Top and End are about the document on screen, not about
+    one of the ways of showing one."""
+    _scope, scripts = _build(roots, 'office')
+    startup = '\n'.join(scripts)
+    assert 'window.__delfinCalcScroller = window.__delfinCalcScroller ||' in startup
+    resolver = startup[startup.index('window.__delfinCalcScroller ='):][:400]
+    assert ".querySelector('.dsheet-scroll')" in resolver
+    assert ".querySelector('.calc-content-box')" in resolver
+    assert resolver.index('dsheet-scroll') < resolver.index('calc-content-box'), (
+        'a grid also sits inside the content area, so it has to be asked first')
+
+
+def test_the_scroll_buttons_go_through_that_resolver(roots, tmp_path):
+    scripts: list[str] = []
+    ctx = DashboardContext(
+        calc_dir=roots / 'office', archive_dir=roots / 'archive',
+        office_dir=roots / 'office')
+    ctx.run_js = scripts.append
+    _widget, refs = browser.create_tab(ctx)
+    refs['calc_list_directory']()
+    file_list = refs['calc_file_list']
+    target = [o for o in file_list.options if 'note.txt' in str(o)]
+    value = target[0][1] if isinstance(target[0], tuple) else target[0]
+    file_list.value = (value,) if isinstance(file_list.value, tuple) else value
+
+    scripts.clear()
+    refs['calc_top_btn'].click()
+    refs['calc_bottom_btn'].click()
+    sent = '\n'.join(scripts)
+    assert sent.count('__delfinCalcScroller') >= 2
+    assert 'scrollTop = 0' in sent and 'scrollHeight' in sent

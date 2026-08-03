@@ -257,7 +257,7 @@ def test_bold_and_italic_survive_into_the_view(letter):
     """A Word view that drops the emphasis is a text dump with headings."""
     read = dv.read_document(letter)
     html = dv.render_html(read, editable=True)
-    assert 'font-weight:600' in html
+    assert 'font-weight:700' in html
     block = [b for b in read.blocks if b.address == 'p:1'][0]
     assert [r[0] for r in block.runs] == [
         'Sehr geehrte Damen, ', 'vielen Dank', ' für Ihre Anfrage.']
@@ -357,3 +357,237 @@ def test_clearing_a_paragraph_completely(tmp_path):
 
     dv.save(dv.apply_edits(path, {'p:0': ''})['document'], path)
     assert docx.Document(str(path)).paragraphs[0].text == ''
+
+
+# ---------------------------------------------------------------------------
+# Formatting
+# ---------------------------------------------------------------------------
+
+def test_the_controls_appear_only_while_editing(letter):
+    read = dv.read_document(letter)
+    assert 'dw-bar' not in dv.render_html(read, editable=False)
+    assert 'dw-bar' in dv.render_html(read, editable=True)
+
+
+def test_the_styles_offered_are_the_ones_a_letter_is_built_from():
+    codes = [code for _label, code in dv.PARAGRAPH_STYLES]
+    assert codes[:4] == ['Normal', 'Heading 1', 'Heading 2', 'Heading 3']
+    assert 'List Bullet' in codes and 'List Number' in codes
+
+
+def test_a_style_this_view_does_not_set_is_refused():
+    with pytest.raises(dv.DocxError):
+        dv.check_style('Intense Quote')
+
+
+def test_a_heading_is_made_by_naming_the_style(letter):
+    """Not by turning the text big and bold: the style is what carries the
+    look, and the table of contents reads styles."""
+    result = dv.apply_edits(letter, {'p:1': {'style': 'Heading 2'}})
+    dv.save(result['document'], letter)
+
+    reopened = docx.Document(str(letter))
+    assert reopened.paragraphs[1].style.name == 'Heading 2'
+    assert reopened.paragraphs[1].text.startswith('Sehr geehrte'), (
+        'the text was rewritten as well')
+
+
+def test_a_paragraph_becomes_a_list_and_comes_back(letter):
+    dv.save(dv.apply_edits(letter, {'p:1': {'style': 'List Bullet'}})['document'],
+            letter)
+    assert docx.Document(str(letter)).paragraphs[1].style.name == 'List Bullet'
+    dv.save(dv.apply_edits(letter, {'p:1': {'style': 'Normal'}})['document'],
+            letter)
+    assert docx.Document(str(letter)).paragraphs[1].style.name == 'Normal'
+
+
+def test_a_document_without_the_style_says_so(letter, monkeypatch):
+    """A template that does not define one is not a broken document."""
+    document = docx.Document(str(letter))
+
+    class Missing:
+        def __getitem__(self, name):
+            raise KeyError(name)
+
+    monkeypatch.setattr(type(document), 'styles', property(lambda self: Missing()))
+    with pytest.raises(dv.DocxError) as excinfo:
+        dv.set_paragraph_style(document, 'p:1', 'Heading 1')
+    assert 'template' in str(excinfo.value)
+
+
+def test_a_text_edit_still_keeps_every_run_as_it_was(letter):
+    """Only the emphasis changing may redraw the runs; a typing edit must
+    not, or every bold word in the paragraph would be flattened."""
+    read = dv.read_document(letter)
+    block = next(b for b in read.blocks if b.address == 'p:1')
+    runs = [{'t': r[0], 'b': r[1], 'i': r[2], 'u': r[3]} for r in block.runs]
+    runs[-1]['t'] = ' für Ihre Nachricht.'
+
+    dv.save(dv.apply_edits(letter, {'p:1': {'runs': runs}})['document'], letter)
+    after = [(r.text, r.bold) for r in docx.Document(str(letter)).paragraphs[1].runs
+             if r.text]
+    assert ('vielen Dank', True) in after
+    assert after[-1][0] == ' für Ihre Nachricht.'
+
+
+def test_changing_the_emphasis_redraws_the_runs(letter):
+    read = dv.read_document(letter)
+    block = next(b for b in read.blocks if b.address == 'p:1')
+    runs = [{'t': r[0], 'b': r[1], 'i': r[2], 'u': r[3]} for r in block.runs]
+    runs[0]['i'] = True
+
+    dv.save(dv.apply_edits(letter, {'p:1': {'runs': runs}})['document'], letter)
+    after = [(r.text, r.bold, r.italic)
+             for r in docx.Document(str(letter)).paragraphs[1].runs if r.text]
+    assert after[0][2] is True
+    assert after[1][1] is True, 'the bold run was lost along the way'
+
+
+def test_the_look_the_paragraph_was_written_in_is_carried_over(tmp_path):
+    """Redrawing the runs cannot keep them, but it can keep the font."""
+    document = docx.Document()
+    para = document.add_paragraph()
+    run = para.add_run('Angebot')
+    run.font.name = 'Georgia'
+    run.font.size = docx.shared.Pt(14)
+    path = tmp_path / 'schrift.docx'
+    document.save(path)
+
+    dv.save(dv.apply_edits(path, {'p:0': {'runs': [
+        {'t': 'Angebot', 'b': 1}]}})['document'], path)
+
+    after = docx.Document(str(path)).paragraphs[0].runs[0]
+    assert after.bold is True
+    assert after.font.name == 'Georgia'
+    assert after.font.size == docx.shared.Pt(14)
+
+
+def test_only_an_emphasis_change_counts_as_one():
+    before = [('Hallo ', False, False, False), ('Welt', True, False, False)]
+    same_text = [{'t': 'Hallo ', 'b': 0}, {'t': 'Welt', 'b': 1}]
+    assert dv.runs_differ(before, same_text) is False
+    changed = [{'t': 'Hallo ', 'b': 1}, {'t': 'Welt', 'b': 1}]
+    assert dv.runs_differ(before, changed) is True
+    split = [{'t': 'Hallo', 'b': 0}, {'t': ' ', 'b': 0}, {'t': 'Welt', 'b': 1}]
+    assert dv.runs_differ(before, split) is True
+
+
+def test_the_browser_sends_the_runs_not_the_text():
+    """An emphasis change has to arrive as one, or the paragraph would be
+    written back with its old runs and the new words."""
+    script = dv.edit_js('calc-scope-1')
+    assert 'function runsOf(block)' in script
+    assert 'runs: runsOf(block)' in script
+
+
+def test_the_buttons_act_before_the_selection_is_gone():
+    """By the time click fires, the selection in the paragraph is lost."""
+    script = dv.edit_js('calc-scope-1')
+    body = script[script.index("var press = {"):][:600]
+    assert "addEventListener('mousedown'" in body
+    assert 'preventDefault' in body
+
+
+def test_the_shortcuts_are_the_ones_people_already_use():
+    script = dv.edit_js('calc-scope-1')
+    assert "key === 'b' ? 'bold'" in script
+    assert "key === 'i' ? 'italic'" in script
+    assert "key === 'u' ? 'underline'" in script
+
+
+# ---------------------------------------------------------------------------
+# Size and alignment
+# ---------------------------------------------------------------------------
+
+def test_a_run_carries_its_size(tmp_path):
+    document = docx.Document()
+    para = document.add_paragraph()
+    para.add_run('klein').font.size = docx.shared.Pt(9)
+    para.add_run(' normal')
+    path = tmp_path / 'groessen.docx'
+    document.save(path)
+
+    block = dv.read_document(path).blocks[0]
+    assert block.runs[0][4] == 9.0
+    assert block.runs[1][4] is None
+
+
+def test_a_size_shows_in_the_view(tmp_path):
+    document = docx.Document()
+    document.add_paragraph().add_run('gross').font.size = docx.shared.Pt(18)
+    path = tmp_path / 'gross.docx'
+    document.save(path)
+    assert 'font-size:18pt' in dv.render_html(dv.read_document(path))
+
+
+def test_a_size_is_written_back(letter):
+    read = dv.read_document(letter)
+    block = next(b for b in read.blocks if b.address == 'p:1')
+    runs = [{'t': r[0], 'b': r[1], 'i': r[2], 'u': r[3], 's': r[4]}
+            for r in block.runs]
+    runs[0]['s'] = 14
+
+    dv.save(dv.apply_edits(letter, {'p:1': {'runs': runs}})['document'], letter)
+    after = docx.Document(str(letter)).paragraphs[1].runs
+    assert after[0].font.size == docx.shared.Pt(14)
+
+
+def test_a_size_change_counts_as_a_formatting_change():
+    """Otherwise it would go through the splice, which writes text only,
+    and the size would be dropped without a word."""
+    before = [('Hallo', False, False, False, None)]
+    assert dv.runs_differ(before, [{'t': 'Hallo', 's': 14}]) is True
+    assert dv.runs_differ(before, [{'t': 'Hallo'}]) is False
+
+
+def test_a_size_that_is_not_one_is_refused():
+    assert dv.check_size('') is None
+    assert dv.check_size(12) == 12.0
+    for bad in ('riesig', 0, 500):
+        with pytest.raises(dv.DocxError):
+            dv.check_size(bad)
+
+
+def test_a_paragraph_can_be_centred(letter):
+    dv.save(dv.apply_edits(letter, {'p:1': {'align': 'center'}})['document'],
+            letter)
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    assert docx.Document(str(letter)).paragraphs[1].alignment == (
+        WD_ALIGN_PARAGRAPH.CENTER)
+    assert dv.read_document(letter).blocks[1].align == 'center'
+
+
+def test_an_alignment_this_view_does_not_set_is_refused():
+    with pytest.raises(dv.DocxError):
+        dv.check_alignment('middle-ish')
+
+
+def test_the_alignment_shows_in_the_view(letter):
+    dv.save(dv.apply_edits(letter, {'p:1': {'align': 'right'}})['document'],
+            letter)
+    assert 'text-align:right' in dv.render_html(dv.read_document(letter))
+
+
+def test_the_controls_are_all_on_the_bar(letter):
+    markup = dv.render_html(dv.read_document(letter), editable=True)
+    assert 'dw-size' in markup
+    assert markup.count('dw-align') == len(dv.ALIGNMENTS)
+    assert 'dw-style' in markup
+
+
+def test_the_size_is_written_in_points_not_in_html_sizes():
+    """execCommand only offers the seven HTML sizes, so the size that is
+    asked for would not be the size that is written."""
+    script = dv.edit_js('calc-scope-1')
+    body = script[script.index('sizeBox.addEventListener'):][:800]
+    assert "fontSize = points + 'pt'" in body
+    assert 'execCommand' not in body
+
+
+def test_the_letters_on_the_buttons_carry_no_markup_of_their_own():
+    """A <b>, an <i> and a <u> inside three buttons have three different
+    line boxes, and the three buttons stopped lining up."""
+    markup = dv.toolbar_html()
+    assert '<b>B</b>' not in markup and '<i>I</i>' not in markup
+    assert '>B</button>' in markup and '>I</button>' in markup
