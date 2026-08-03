@@ -32,6 +32,7 @@ from .input_processing import (
     is_smiles,
 )
 from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
+from . import docx_view as _docx
 from . import pdf_view as _pdf
 from . import spreadsheet_view as _sheet
 from .molecule_viewer import (
@@ -202,6 +203,14 @@ def create_tab(ctx):
         # keeps unsaved buffers per path across file switches.
         'text_edit': {},
         'text_pending': {},
+        # Word: the document on screen, the blocks the browser reported as
+        # changed, and how the search box should look for things.
+        'docx_doc': None,
+        'docx_path': '',
+        'docx_edit': {},
+        'docx_pending': {},
+        'docx_hits': [],
+        'search_kind': 'text',
         # PDF viewer: the panel is created once per tab, 'pdf_active' says
         # whether it currently owns the content frame.
         'pdf_panel': None,
@@ -278,6 +287,16 @@ def create_tab(ctx):
         not _is_archive_tab
         and ctx.calc_dir.resolve() == Path(ctx.office_dir).resolve()
     )
+
+    # Behaviour that makes a document behave the way an office application
+    # does: selecting a column without travelling to the last row, saving
+    # without rebuilding the view, scrolling a PDF instead of paging it,
+    # fullscreen, editing Word. Confined to Office on purpose -- the
+    # calculations browser is to stay exactly as it was.
+    #
+    # One name, read everywhere, so moving a feature across later is this
+    # line rather than a hunt through the file.
+    _OFFICE_DOC_FEEL = _is_office_tab
     try:
         _remote_archive_enabled = load_remote_archive_enabled()
     except Exception:
@@ -1108,7 +1127,7 @@ def create_tab(ctx):
     # there for a text file, a spreadsheet, a Word document, a PDF and the
     # 3D view alike -- several of those hide the content toolbar entirely.
     calc_fullscreen_btn = widgets.ToggleButton(
-        value=False, description='⛶', tooltip='Vollbild (Esc beendet)',
+        value=False, description='⛶', tooltip='Fullscreen (Esc exits)',
         layout=widgets.Layout(width='44px', min_width='44px', height='26px'),
     )
     calc_fullscreen_btn.add_class('calc-fullscreen-btn')
@@ -1565,20 +1584,20 @@ def create_tab(ctx):
     # Plain-text editing. Read-only is the default; nothing is ever written
     # without an explicit click on Save.
     calc_text_edit_btn = widgets.Button(
-        description='✏ Bearbeiten',
-        tooltip='Diese Datei bearbeiten',
+        description='✏ Edit',
+        tooltip='Edit this file',
         layout=widgets.Layout(width='118px', height='26px', display='none'),
     )
     calc_text_save_btn = widgets.Button(
         description='Speichern',
         button_style='primary',
         disabled=True,
-        tooltip='Änderungen in die Datei schreiben',
+        tooltip='Write the changes to the file',
         layout=widgets.Layout(width='100px', height='26px', display='none'),
     )
     calc_text_cancel_btn = widgets.Button(
         description='Verwerfen',
-        tooltip='Bearbeitung beenden, Änderungen verwerfen',
+        tooltip='Leave editing, discard the changes',
         layout=widgets.Layout(width='130px', height='26px', display='none'),
     )
     calc_text_status = widgets.HTML('', layout=widgets.Layout(display='none'))
@@ -8099,6 +8118,19 @@ def create_tab(ctx):
                 f'<span style="color:green;">{len(state["search_spans"])} matches</span>{note_html}'
             )
             return
+        if state.get('search_kind') == 'docx':
+            hits = state.get('docx_hits') or []
+            index = state['current_match']
+            where = ''
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                where = ('table' if hit.address.startswith('t:')
+                         else f'paragraph {hit.block + 1}')
+            calc_search_result.value = (
+                f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
+                f'<span style="color:#555;">({where})</span>{note_html}'
+            )
+            return
         start, _ = state['search_spans'][state['current_match']]
         if _calc_is_chunk_mode():
             path_str = state.get('selected_file_path')
@@ -8118,6 +8150,14 @@ def create_tab(ctx):
             return
         calc_update_nav_buttons()
         calc_update_search_result()
+        if state.get('search_kind') == 'docx':
+            hits = state.get('docx_hits') or []
+            index = state['current_match']
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                _run_js(_docx.focus_js(
+                    calc_scope_id, hit.address, hit.start, hit.end))
+            return
         if _calc_is_chunk_mode():
             start, end = state['search_spans'][state['current_match']]
             chunk_start = int(state.get('file_chunk_start') or 0)
@@ -8325,6 +8365,26 @@ def create_tab(ctx):
             return
         calc_scroll_to('bottom')
 
+    def _calc_docx_search(query):
+        """Find a term in the open Word document, and go to the first hit."""
+        document = state.get('docx_doc')
+        hits = _docx.search(document, query) if query else []
+        if len(hits) > CALC_SEARCH_MAX_MATCHES:
+            state['search_truncated'] = True
+            hits = hits[:CALC_SEARCH_MAX_MATCHES]
+        state['docx_hits'] = hits
+        # The counter, the prev/next buttons and the truncation note all read
+        # this list, so the Word search gets them without knowing about them.
+        state['search_spans'] = [(hit.start, hit.end) for hit in hits]
+        if not hits:
+            calc_search_result.value = (
+                '' if not query else '<span style="color:red;">0 matches</span>')
+            calc_update_nav_buttons()
+            _run_js(_docx.focus_js(calc_scope_id, '', 0, 0))
+            return
+        state['current_match'] = 0
+        calc_show_match()
+
     def calc_do_search(b=None):
         query = calc_search_input.value.strip()
         if not query and calc_search_suggest.value and calc_search_suggest.value != '(Select)':
@@ -8333,6 +8393,14 @@ def create_tab(ctx):
         state['search_spans'] = []
         state['current_match'] = -1
         state['search_truncated'] = False
+
+        # A Word document is not a stream of characters with line numbers; it
+        # is addressed paragraphs, and a hit is a place inside one of them.
+        # Searching its flattened text would count correctly and be unable to
+        # say where anything is.
+        if state.get('search_kind') == 'docx' and state.get('docx_doc'):
+            _calc_docx_search(query)
+            return
 
         if not query or not state['file_content']:
             calc_search_result.value = ''
@@ -10821,8 +10889,8 @@ def create_tab(ctx):
     # -- Plain-text editing -------------------------------------------------
 
     def _calc_text_reset_buttons():
-        calc_text_save_btn.description = 'Speichern'
-        calc_text_cancel_btn.description = 'Verwerfen'
+        calc_text_save_btn.description = 'Save'
+        calc_text_cancel_btn.description = 'Discard'
 
     def _calc_text_sync_controls():
         info = state['text_edit']
@@ -10841,14 +10909,14 @@ def create_tab(ctx):
             if not dirty:
                 _calc_text_reset_buttons()
             calc_text_status.value = (
-                '<span style="color:#b26a00; font-weight:600;">● nicht gespeichert</span>'
-                if dirty else '<span style="color:#666;">Bearbeitungsmodus</span>'
+                '<span style="color:#b26a00; font-weight:600;">● not saved</span>'
+                if dirty else '<span style="color:#666;">Editing</span>'
             )
             calc_text_status.layout.display = ''
         elif has_pending:
             calc_text_status.value = (
                 '<span style="color:#b26a00; font-weight:600;">'
-                '● ungespeicherte Änderungen</span>'
+                '● unsaved changes</span>'
             )
             calc_text_status.layout.display = ''
         else:
@@ -10866,6 +10934,9 @@ def create_tab(ctx):
         _calc_text_sync_controls()
 
     def calc_on_text_edit(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_edit()
+            return
         info = state['text_edit']
         path_str = info.get('path')
         if not path_str or not info.get('editable') or info.get('active'):
@@ -10903,6 +10974,9 @@ def create_tab(ctx):
         _calc_text_sync_controls()
 
     def calc_on_text_save(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_save()
+            return
         info = state['text_edit']
         path_str = info.get('path')
         if not info.get('active') or not path_str:
@@ -10915,17 +10989,17 @@ def create_tab(ctx):
             on_disk = None
         except Exception as exc:
             calc_text_status.value = (
-                f'<span style="color:#d32f2f;">Fehler beim Lesen: {_html.escape(str(exc))}</span>'
+                f'<span style="color:#d32f2f;">Could not read: {_html.escape(str(exc))}</span>'
             )
             return
         # Somebody (or a running job) changed the file while it was open here.
         # Never overwrite that silently -- make the second click deliberate.
         if on_disk is not None and on_disk != (info.get('original') or '') and not info.get('force'):
             info['force'] = True
-            calc_text_save_btn.description = 'Überschreiben?'
+            calc_text_save_btn.description = 'Overwrite?'
             calc_text_status.value = (
                 '<span style="color:#d32f2f; font-weight:600;">'
-                'Datei wurde zwischenzeitlich geändert – nochmal klicken zum Überschreiben.'
+                'The file changed on disk meanwhile - click again to overwrite.'
                 '</span>'
             )
             calc_text_status.layout.display = ''
@@ -10935,7 +11009,7 @@ def create_tab(ctx):
             _sheet.write_text_atomic(path, new_text)
         except Exception as exc:
             calc_text_status.value = (
-                f'<span style="color:#d32f2f;">Speichern fehlgeschlagen: {_html.escape(str(exc))}</span>'
+                f'<span style="color:#d32f2f;">Saving failed: {_html.escape(str(exc))}</span>'
             )
             calc_text_status.layout.display = ''
             return
@@ -10946,20 +11020,23 @@ def create_tab(ctx):
         state['selected_file_size'] = len(new_text.encode('utf-8'))
         _calc_text_reset_buttons()
         _calc_text_sync_controls()
-        saved = 'gespeichert'
+        saved = 'saved'
         if backup is not None:
-            saved += f' · Sicherung: {backup.name}'
+            saved += f' · backup: {backup.name}'
         calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
         calc_text_status.layout.display = ''
 
     def calc_on_text_cancel(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_cancel()
+            return
         info = state['text_edit']
         path_str = info.get('path') or ''
         if not info.get('active'):
             return
         if path_str in state['text_pending'] and not info.get('confirm_cancel'):
             info['confirm_cancel'] = True
-            calc_text_cancel_btn.description = 'Wirklich verwerfen?'
+            calc_text_cancel_btn.description = 'Really discard?'
             return
         info['confirm_cancel'] = False
         info['active'] = False
@@ -10984,6 +11061,150 @@ def create_tab(ctx):
 
     def _calc_sheet_has_pending(path_str):
         return any(key[0] == path_str and ops for key, ops in state['sheet_pending'].items())
+
+    # -- Word ---------------------------------------------------------------
+
+    def _calc_render_docx(path, document, name, size_str):
+        """Put a Word document on screen, read-only until Edit is pressed."""
+        state['docx_doc'] = document
+        state['docx_path'] = str(path)
+        state['docx_hits'] = []
+        state['search_kind'] = 'docx'
+        editable = _docx.is_editable(document) and bool(state['docx_edit'].get('active'))
+        calc_content_area.value = (
+            f'<style>{_docx.DOC_CSS}</style>'
+            "<div class='calc-content-box' style='height:100%;"
+            " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd;"
+            " background:#e9e9e9; padding:14px 0; width:100%;"
+            " box-sizing:border-box;'>"
+            + _docx.render_html(document, editable=editable)
+            + '</div>'
+        )
+        # For the Copy button and for anything that wants the plain text.
+        state['file_content'] = document.text
+        state['file_is_preview'] = False
+        state['file_preview_note'] = ''
+        state['chunk_dom_initialized'] = False
+        state['selected_file_path'] = str(path)
+
+        detail = size_str
+        if document.tables:
+            detail += f', {document.tables} table{"" if document.tables == 1 else "s"}'
+        if document.images:
+            detail += f', {len(document.images)} image{"" if len(document.images) == 1 else "s"}'
+        note = ' · '.join(document.notes)
+        calc_file_info.value = (
+            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+            f' ({detail})'
+            + (f' <span style="color:#b26a00;">{_html.escape(note)}</span>'
+               if note else '')
+        )
+        calc_copy_btn.disabled = False
+        calc_copy_path_btn.disabled = False
+        _calc_docx_sync_controls()
+        calc_update_view()
+        if editable:
+            _run_js(_docx.edit_js(calc_scope_id))
+
+    def _calc_docx_sync_controls():
+        """Show the edit controls a Word document can actually use."""
+        info = state['docx_edit']
+        document = state.get('docx_doc')
+        can_edit = document is not None and _docx.is_editable(document)
+        active = bool(info.get('active'))
+        pending = bool(state.get('docx_pending'))
+        calc_text_edit_btn.layout.display = (
+            '' if (can_edit and not active) else 'none')
+        calc_text_save_btn.layout.display = '' if active else 'none'
+        calc_text_cancel_btn.layout.display = '' if active else 'none'
+        calc_text_save_btn.disabled = not pending
+        if active:
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                '<span style="color:#b26a00;">● not saved</span>'
+                if pending else
+                '<span style="color:#555;">Editing</span>')
+        elif not calc_text_status.value:
+            calc_text_status.layout.display = 'none'
+
+    def _calc_docx_edit(_button=None):
+        document = state.get('docx_doc')
+        if document is None or not _docx.is_editable(document):
+            return
+        state['docx_edit'] = {'active': True}
+        state['docx_pending'] = {}
+        path = Path(state['docx_path'])
+        _calc_render_docx(path, document, path.name,
+                          _calc_sheet_size_str(path.stat().st_size))
+
+    def _calc_docx_cancel(_button=None):
+        if not state['docx_edit'].get('active'):
+            return
+        if state.get('docx_pending') and not state['docx_edit'].get('confirm'):
+            state['docx_edit']['confirm'] = True
+            calc_text_cancel_btn.description = 'Really discard?'
+            return
+        state['docx_edit'] = {}
+        state['docx_pending'] = {}
+        _calc_text_reset_buttons()
+        path = Path(state['docx_path'])
+        # Re-read: the blocks on screen hold the discarded text.
+        document = _docx.read_document(path)
+        _calc_render_docx(path, document, path.name,
+                          _calc_sheet_size_str(path.stat().st_size))
+
+    def _calc_docx_save(_button=None):
+        edits = state.get('docx_pending') or {}
+        if not state['docx_edit'].get('active') or not edits:
+            return
+        path = Path(state['docx_path'])
+        try:
+            result = _docx.apply_edits(path, edits)
+            backup = _sheet.make_backup(path) if path.exists() else None
+            _docx.save(result['document'], path)
+        except _docx.DocxError as exc:
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+            return
+        except Exception as exc:  # noqa: BLE001
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">Saving failed: '
+                f'{_html.escape(str(exc))}</span>')
+            return
+        count = result['written']
+        state['docx_pending'] = {}
+        state['docx_doc'] = _docx.read_document(path)
+        state['file_content'] = state['docx_doc'].text
+        saved = f'{count} paragraph{"" if count == 1 else "s"} saved'
+        if backup is not None:
+            saved += f' · backup: {backup.name}'
+        calc_text_status.layout.display = ''
+        calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
+        calc_text_save_btn.disabled = True
+        # Nothing is re-rendered: the blocks on screen already hold what was
+        # written, and rebuilding them would take the cursor out of the
+        # paragraph the user is still typing in.
+        _run_js(_docx.mark_saved_js(calc_scope_id))
+
+    def _calc_on_docx_block_edit(_button=None):
+        """One edited block, reported by the browser as it is left."""
+        raw = calc_sheet_payload_input.value or ''
+        calc_sheet_payload_input.value = ''
+        if not raw:
+            return
+        try:
+            message = json.loads(raw)
+        except Exception:
+            return
+        if message.get('kind') != 'docx':
+            return
+        address = str(message.get('address') or '')
+        if not address:
+            return
+        state.setdefault('docx_pending', {})[address] = str(message.get('text') or '')
+        _calc_docx_sync_controls()
 
     def _calc_sheet_mark_saved(token, message):
         """Tell the grid on screen that its edits are on disk.
@@ -11058,6 +11279,7 @@ def create_tab(ctx):
             lossy_note=lossy,
             scroll_top=scroll_top,
             cursor=cursor,
+            office=_OFFICE_DOC_FEEL,
         )
         # Plain-text fallback for the tab's search box and the Copy button.
         state['file_content'] = _sheet.grid_to_tsv(sheet)
@@ -11070,7 +11292,7 @@ def create_tab(ctx):
         label = _html.escape(path.name)
         detail = _calc_sheet_size_str(path.stat().st_size)
         if is_workbook and sheet.name:
-            detail += f', Blatt „{_html.escape(sheet.name)}“'
+            detail += f', sheet "{_html.escape(sheet.name)}"'
         calc_file_info.value = (
             f'<b><span style="word-break:break-all;">{label}</span></b> ({detail})'
             + (f' <span style="color:#2e7d32;">{_html.escape(status)}</span>' if status else '')
@@ -11089,7 +11311,10 @@ def create_tab(ctx):
         )
 
     def calc_on_sheet_action(button=None):
-        """Handle one message from the spreadsheet grid in the browser."""
+        """Handle one message from the document on screen in the browser."""
+        if (calc_sheet_payload_input.value or '').find('"docx"') >= 0:
+            _calc_on_docx_block_edit()
+            return
         raw = calc_sheet_payload_input.value or ''
         calc_sheet_payload_input.value = ''
         if not raw:
@@ -11129,7 +11354,7 @@ def create_tab(ctx):
             try:
                 ops = _sheet.validate_ops(payload.get('ops'))
             except (ValueError, TypeError) as exc:
-                _calc_sheet_note(f'Änderung verworfen: {exc}')
+                _calc_sheet_note(f'Change rejected: {exc}')
                 return
             if ops:
                 state['sheet_pending'].setdefault(key, []).extend(ops)
@@ -11140,7 +11365,7 @@ def create_tab(ctx):
             if not ops:
                 return
             if not path.exists():
-                _calc_sheet_note('Datei nicht mehr vorhanden.')
+                _calc_sheet_note('The file is gone.')
                 return
             try:
                 if view['kind'] == 'xlsx':
@@ -11148,12 +11373,16 @@ def create_tab(ctx):
                 else:
                     backup = _sheet.apply_ops_delimited(path, ops, view['delimiter'])
             except Exception as exc:
-                _calc_sheet_note(f'Speichern fehlgeschlagen: {exc}')
+                _calc_sheet_note(f'Saving failed: {exc}')
                 return
             state['sheet_pending'].pop(key, None)
-            note = f'{len(ops)} Änderung{"" if len(ops) == 1 else "en"} gespeichert'
+            note = f'{len(ops)} change{"" if len(ops) == 1 else "s"} saved'
             if backup is not None:
-                note += f' · Sicherung: {backup.name}'
+                note += f' · backup: {backup.name}'
+            if not _OFFICE_DOC_FEEL:
+                _calc_render_sheet(path, sheet_name=sheet_name,
+                                   scroll_top=scroll_top, status=note)
+                return
             # The cells on screen already show what was written, so nothing
             # about the grid needs rebuilding -- and rebuilding it is what
             # threw the user back to A1 with the view somewhere else.
@@ -11170,7 +11399,8 @@ def create_tab(ctx):
             # user back where they were standing.
             state['sheet_pending'].pop(key, None)
             _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
-                               cursor=cursor, status='Änderungen verworfen')
+                               cursor=cursor if _OFFICE_DOC_FEEL else None,
+                               status='Changes discarded')
             return
 
         if action in ('switch_sheet', 'page'):
@@ -11178,7 +11408,7 @@ def create_tab(ctx):
             # the window while they are unsaved would show them in the wrong
             # place, so make the user decide first.
             if _calc_sheet_has_pending(view['path']):
-                _calc_sheet_note('Bitte erst speichern oder verwerfen.', color='#b26a00')
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
                 return
             if action == 'switch_sheet':
                 target = str(payload.get('target') or '')
@@ -11199,10 +11429,16 @@ def create_tab(ctx):
         """The tab's PDF panel, built on first use."""
         panel = state.get('pdf_panel')
         if panel is None:
-            # No fixed height: the frame takes the space the pane has, the
-            # same way the text view and the grid do, so it reaches the
-            # bottom and follows the tab into fullscreen.
-            panel = _pdf.PdfPanel(run_js=_run_js)
+            # In Office the frame takes the space the pane has, the same
+            # way the text view and the grid do, so it reaches the bottom and
+            # follows the tab into fullscreen. Elsewhere it keeps the fixed
+            # height and the one-page-at-a-time view it always had.
+            panel = _pdf.PdfPanel(
+                run_js=_run_js,
+                continuous=_OFFICE_DOC_FEEL,
+                height_px=(None if _OFFICE_DOC_FEEL
+                           else max(240, CALC_CONTENT_HEIGHT - 80)),
+            )
             state['pdf_panel'] = panel
             calc_pdf_container.children = [panel.widget]
         return panel
@@ -11311,6 +11547,16 @@ def create_tab(ctx):
         # selection change -- a stray click must not discard someone's work.
         state['sheet_view'] = {}
         state['text_edit'] = {}
+        # Word: unsaved block edits are deliberately not kept across a
+        # selection change. They address paragraphs of the document that was
+        # open, and replaying them into another one would write into whatever
+        # paragraph happens to carry that index.
+        state['docx_doc'] = None
+        state['docx_path'] = ''
+        state['docx_edit'] = {}
+        state['docx_pending'] = {}
+        state['docx_hits'] = []
+        state['search_kind'] = 'text'
         calc_text_area.value = ''
         _calc_text_sync_controls()
         _calc_stop_xyz_playback(update_button=True)
@@ -11708,7 +11954,7 @@ def create_tab(ctx):
             )
             if size > _sheet.MAX_FILE_BYTES:
                 calc_set_message(
-                    f'Datei zu groß für die Tabellenansicht ({size_str}).'
+                    f'File is too large for the sheet view ({size_str}).'
                 )
                 return
             try:
@@ -11717,7 +11963,7 @@ def create_tab(ctx):
                 calc_set_message(str(exc))
                 return
             except Exception as exc:
-                calc_set_message(f'Tabelle konnte nicht gelesen werden: {exc}')
+                calc_set_message(f'The sheet could not be read: {exc}')
                 return
             # Mutation-space CSVs keep their preselection workflow: the grid is
             # the text view, the Visualize toggle still opens the card browser.
@@ -11733,14 +11979,37 @@ def create_tab(ctx):
                 f' ({size_str})'
             )
             calc_set_message(
-                'Altes Excel-Format (.xls).\n\n'
-                'Bitte in Excel oder LibreOffice als .xlsx speichern – '
-                'dann lässt sich die Datei hier anzeigen und bearbeiten.'
+                'Old Excel format (.xls).\n\n'
+                'Save it as .xlsx in Excel or LibreOffice, then it can be '
+                'shown and edited here.'
             )
             return
 
         # --- DOCX files ---
-        if suffix in ['.doc', '.docx']:
+        if suffix == '.docx' and _OFFICE_DOC_FEEL:
+            # Rendered from the document itself so every paragraph carries
+            # the address an edit is written back to. mammoth below produces
+            # nicer HTML but nothing in it says which paragraph a line came
+            # from, so it can carry a view and nothing else.
+            try:
+                document = _docx.read_document(full_path)
+            except _docx.DocxError as exc:
+                document = None
+                _calc_docx_note = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                document = None
+                _calc_docx_note = f'Dokument konnte nicht gelesen werden: {exc}'
+            if document is not None:
+                _calc_render_docx(full_path, document, name, size_str)
+                return
+            calc_set_message(_calc_docx_note)
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            return
+
+        if suffix in ('.doc', '.docx'):
             try:
                 import mammoth
 
@@ -12081,7 +12350,7 @@ def create_tab(ctx):
         on = bool(change.get('new'))
         calc_fullscreen_btn.description = '⤫' if on else '⛶'
         calc_fullscreen_btn.tooltip = (
-            'Vollbild beenden (Esc)' if on else 'Vollbild (Esc beendet)')
+            'Leave fullscreen (Esc)' if on else 'Fullscreen (Esc exits)')
         _run_js(f"""
         (function() {{
             var root = document.querySelector('.{calc_scope_id}');
@@ -13591,7 +13860,7 @@ def create_tab(ctx):
                     calc_download_btn,
                     calc_report_btn,
                     calc_view_toggle,
-                    calc_fullscreen_btn,
+                    *([calc_fullscreen_btn] if _OFFICE_DOC_FEEL else []),
                 ],
                 layout=widgets.Layout(
                     gap='10px',

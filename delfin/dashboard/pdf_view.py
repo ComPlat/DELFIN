@@ -27,7 +27,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import ipywidgets as widgets
 import numpy as np
@@ -52,7 +52,7 @@ ZOOM_LABELS = ('100 %', '150 %', '200 %', '300 %')
 # the tab goes fullscreen. Kept out of DPI_STEPS because it is not a step --
 # it is a rule for computing one.
 FIT_WIDTH = -1
-FIT_WIDTH_LABEL = 'Seitenbreite'
+FIT_WIDTH_LABEL = 'Fit width'
 FIT_WIDTH_MAX_DPI = 300
 # Until the browser reports the real width. An A4 page at 100 dpi is ~830 px,
 # which is what the pane used to be sized for.
@@ -424,7 +424,7 @@ def _fitz():
         import fitz  # noqa: PLC0415 -- optional at import time by design
     except Exception as exc:                     # pragma: no cover - env specific
         raise PdfError(
-            'PDF-Anzeige nicht verfügbar: PyMuPDF ist nicht installiert '
+            'PDF viewing is unavailable: PyMuPDF is not installed '
             f'({exc}).'
         ) from exc
     return fitz
@@ -445,12 +445,12 @@ def open_document(path: Path):
         raise PdfError(f'Datei nicht lesbar: {exc}') from exc
     if size > MAX_FILE_BYTES:
         raise PdfError(
-            f'PDF zu groß für die Anzeige ({size / (1024 * 1024):.1f} MB).'
+            f'PDF is too large to display ({size / (1024 * 1024):.1f} MB).'
         )
     try:
         doc = fitz.open(str(path))
     except Exception as exc:
-        raise PdfError(f'PDF konnte nicht geöffnet werden: {exc}') from exc
+        raise PdfError(f'PDF could not be opened: {exc}') from exc
     if doc.needs_pass:
         # An empty owner password unlocks plenty of "protected" office output.
         unlocked = False
@@ -461,8 +461,7 @@ def open_document(path: Path):
         if not unlocked:
             doc.close()
             raise PdfError(
-                'Das PDF ist passwortgeschützt und kann hier nicht '
-                'angezeigt werden.'
+                'The PDF is password protected and cannot be shown here.'
             )
     try:
         page_count = int(doc.page_count)
@@ -471,7 +470,7 @@ def open_document(path: Path):
         raise PdfError(f'PDF konnte nicht gelesen werden: {exc}') from exc
     if page_count <= 0:
         doc.close()
-        raise PdfError('Das PDF enthält keine Seiten.')
+        raise PdfError('The PDF has no pages.')
     return doc
 
 
@@ -557,7 +556,7 @@ def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX
     try:
         page = doc[index]
     except Exception as exc:
-        raise PdfError(f'Seite {index + 1} konnte nicht geladen werden: {exc}') from exc
+        raise PdfError(f'Page {index + 1} could not be loaded: {exc}') from exc
 
     rect = page.rect
     dpi = effective_dpi(rect.width, rect.height, dpi)
@@ -566,7 +565,7 @@ def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX
         pix = page.get_pixmap(
             matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csRGB, alpha=False)
     except Exception as exc:
-        raise PdfError(f'Seite {index + 1} konnte nicht gezeichnet werden: {exc}') from exc
+        raise PdfError(f'Page {index + 1} could not be drawn: {exc}') from exc
 
     boxes = list(highlights or ())
     if active is not None:
@@ -605,7 +604,7 @@ def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX
 def hit_labels(result: SearchResult) -> List[str]:
     """One entry per hit for the jump list, carrying its page number."""
     return [
-        f'Treffer {i + 1} · Seite {hit.page + 1}'
+        f'Hit {i + 1} · page {hit.page + 1}'
         for i, hit in enumerate(result.hits)
     ]
 
@@ -614,7 +613,7 @@ def cap_note(result: SearchResult) -> str:
     """Plain sentence about what the search did *not* look at."""
     notes = []
     if result.hit_cap_reached:
-        notes.append(f'bei {result.n_hits} Treffern abgebrochen')
+        notes.append(f'stopped at {result.n_hits} hits')
     if result.page_cap_reached:
         notes.append(
             f'nur Seite 1–{result.pages_searched} von {result.total_pages} durchsucht'
@@ -635,26 +634,26 @@ def search_summary_html(result: SearchResult, current: int = -1) -> str:
     if not result.hits:
         if not result.has_text:
             scope = (
-                f'den ersten {result.pages_searched} Seiten'
-                if result.page_cap_reached else 'diesem Dokument'
+                f'the first {result.pages_searched} pages'
+                if result.page_cap_reached else 'this document'
             )
             return (
-                '<span style="color:#b26a00;">Kein durchsuchbarer Text in '
-                f'{_html.escape(scope)} – vermutlich ein Scan '
-                '(Bildseiten ohne Textebene).</span>'
+                '<span style="color:#b26a00;">No searchable text in '
+                f'{_html.escape(scope)} - probably a scan '
+                '(page images without a text layer).</span>'
             )
-        return f'<span style="color:#d32f2f;">0 Treffer</span>{note_html}'
+        return f'<span style="color:#d32f2f;">0 hits</span>{note_html}'
     pages = len(result.pages_hit)
-    page_word = 'Seite' if pages == 1 else 'Seiten'
+    page_word = 'page' if pages == 1 else 'pages'
     if current is None or current < 0:
         return (
-            f'<span style="color:#2e7d32;">{result.n_hits} Treffer auf '
+            f'<span style="color:#2e7d32;">{result.n_hits} hits on '
             f'{pages} {page_word}</span>{note_html}'
         )
     hit = result.hits[max(0, min(int(current), result.n_hits - 1))]
     return (
         f'<b>{int(current) + 1}/{result.n_hits}</b> '
-        f'<span style="color:#555;">(Seite {hit.page + 1} von {result.total_pages})</span>'
+        f'<span style="color:#555;">(page {hit.page + 1} of {result.total_pages})</span>'
         f'{note_html}'
     )
 
@@ -663,16 +662,16 @@ def scan_hint_html(has_text: bool, pages_probed: int, total_pages: int) -> str:
     """Note shown when a document is opened, before anyone searches."""
     if has_text or total_pages <= 0:
         return ''
-    scope = 'Alle Seiten' if pages_probed >= total_pages else f'Die ersten {pages_probed} Seiten'
+    scope = 'All pages' if pages_probed >= total_pages else f'The first {pages_probed} pages'
     return (
-        f'<span style="color:#b26a00;">{scope} enthalten keinen Text – '
-        'vermutlich ein Scan. Die Volltextsuche findet hier nichts.</span>'
+        f'<span style="color:#b26a00;">{scope} hold no text - '
+        'probably a scan. Full-text search will not find anything here.</span>'
     )
 
 
 def page_status_html(page_index: int, total_pages: int, dpi: int) -> str:
     return (
-        f'<span style="color:#555;">Seite {page_index + 1} von {total_pages} '
+        f'<span style="color:#555;">Page {page_index + 1} of {total_pages} '
         f'· {dpi} dpi</span>'
     )
 
@@ -689,19 +688,21 @@ class PdfPanel:
     file mapped, and the last rendered PNG is worth freeing too.
     """
 
-    def __init__(self, *, height_px: Optional[int] = None, run_js=None):
+    def __init__(self, *, height_px: Optional[int] = None, run_js=None,
+                 continuous: bool = True):
         self._doc = None
         self._path: Optional[Path] = None
         self._page = 0
-        self._zoom = FIT_WIDTH
+        self._continuous = bool(continuous)
+        self._zoom = FIT_WIDTH if self._continuous else DEFAULT_DPI_INDEX
         self._result = SearchResult()
         self._hit = -1
         self._syncing = False
         self._run_js = run_js
         self._token = f'pdfv-{id(self):x}'
         self._sizes: List[Tuple[float, float]] = []
-        self._page_images: List[widgets.Image] = []
-        self._page_boxes: List[widgets.Box] = []
+        self._page_images: Dict[int, widgets.Image] = {}
+        self._page_boxes: Dict[int, widgets.Box] = {}
         self._filled: set = set()
         self._frame_px = ASSUMED_FRAME_WIDTH
 
@@ -711,32 +712,36 @@ class PdfPanel:
                 layout=widgets.Layout(width='40px', height='28px'),
             )
 
-        self.prev_page_btn = _step_button('◀', 'Vorherige Seite')
-        self.next_page_btn = _step_button('▶', 'Nächste Seite')
+        self.prev_page_btn = _step_button('◀', 'Previous page')
+        self.next_page_btn = _step_button('▶', 'Next page')
         self.page_input = widgets.BoundedIntText(
             value=1, min=1, max=1,
             layout=widgets.Layout(width='70px', height='28px'),
         )
-        self.page_total = widgets.HTML('von 1')
+        self.page_total = widgets.HTML('of 1')
+        # Fit-to-width only where the frame is measured; the one-page view
+        # keeps the fixed steps it always had.
+        _zoom_options = [(label, i) for i, label in enumerate(ZOOM_LABELS)]
+        if self._continuous:
+            _zoom_options.insert(0, (FIT_WIDTH_LABEL, FIT_WIDTH))
         self.zoom_dd = widgets.Dropdown(
-            options=([(FIT_WIDTH_LABEL, FIT_WIDTH)]
-                     + [(label, i) for i, label in enumerate(ZOOM_LABELS)]),
-            value=FIT_WIDTH,
-            layout=widgets.Layout(width='124px'),
+            options=_zoom_options,
+            value=self._zoom,
+            layout=widgets.Layout(width='124px' if self._continuous else '92px'),
         )
         # Searching a long document is not free, so the term is taken on Enter
         # or on leaving the field -- never on every keystroke.
         self.search_input = widgets.Text(
-            value='', placeholder='Im Dokument suchen', continuous_update=False,
+            value='', placeholder='Search in document', continuous_update=False,
             layout=widgets.Layout(width='210px', height='28px'),
         )
         self.search_input.add_class('delfin-nospell')
         self.search_btn = widgets.Button(
-            description='Suchen',
+            description='Search',
             layout=widgets.Layout(width='84px', height='28px'),
         )
-        self.hit_prev_btn = _step_button('◀', 'Vorheriger Treffer', disabled=True)
-        self.hit_next_btn = _step_button('▶', 'Nächster Treffer', disabled=True)
+        self.hit_prev_btn = _step_button('◀', 'Previous hit', disabled=True)
+        self.hit_next_btn = _step_button('▶', 'Next hit', disabled=True)
         self.hit_select = widgets.Dropdown(
             options=[], value=None,
             layout=widgets.Layout(width='190px', display='none'),
@@ -864,24 +869,36 @@ class PdfPanel:
 
     def dpi(self) -> int:
         """The DPI pages are drawn at right now."""
-        if self._zoom == FIT_WIDTH:
+        if self._zoom == FIT_WIDTH and self._continuous:
             widest = max((w for w, _h in self._sizes), default=595.0)
             # The frame's own padding and the scroll bar are not page.
             return fit_width_dpi(widest, max(120, self._frame_px - 28))
         return dpi_for_index(self._zoom)
 
-    def _build_pages(self) -> None:
-        """One placeholder per page, at the size that page will be.
+    def _shown_pages(self) -> List[int]:
+        """Which pages have a widget.
 
-        The scroll bar is then right before anything has been rasterised,
-        which is what makes scrolling through a long document feel like a
-        document rather than like a queue of requests.
+        All of them when the view scrolls; only the current one otherwise,
+        which is the one-page-at-a-time view the calculations browser has
+        always had and keeps.
+        """
+        if not self._continuous:
+            return [self._page] if self._sizes else []
+        return list(range(len(self._sizes)))
+
+    def _build_pages(self) -> None:
+        """A placeholder per shown page, at the size that page will be.
+
+        In the scrolling view that makes the scroll bar right before
+        anything has been rasterised, rather than growing under the reader.
         """
         dpi = self.dpi()
-        self._page_images = []
-        self._page_boxes = []
+        self._page_images = {}
+        self._page_boxes = {}
         self._filled = set()
-        for index, (width_pt, height_pt) in enumerate(self._sizes):
+        order = []
+        for index in self._shown_pages():
+            width_pt, height_pt = self._sizes[index]
             width_px, height_px = page_pixel_size(width_pt, height_pt, dpi)
             image = widgets.Image(
                 format='png',
@@ -898,18 +915,18 @@ class PdfPanel:
                 ),
             )
             box.add_class('pdfv-page')
-            self._page_images.append(image)
-            self._page_boxes.append(box)
-        self.pages_box.children = tuple(self._page_boxes)
+            self._page_images[index] = image
+            self._page_boxes[index] = box
+            order.append(box)
+        self.pages_box.children = tuple(order)
 
     def _resize_pages(self) -> None:
         """Re-size the placeholders after a zoom or a frame-width change."""
         dpi = self.dpi()
-        for index, (width_pt, height_pt) in enumerate(self._sizes):
-            if index >= len(self._page_boxes):
-                break
+        for index, box in self._page_boxes.items():
+            width_pt, height_pt = self._sizes[index]
             width_px, height_px = page_pixel_size(width_pt, height_pt, dpi)
-            for node in (self._page_boxes[index], self._page_images[index]):
+            for node in (box, self._page_images[index]):
                 node.layout.width = f'{width_px}px'
                 node.layout.height = f'{height_px}px'
         # Every rendered page is now the wrong size; drop and redraw.
@@ -919,12 +936,10 @@ class PdfPanel:
 
     def page_image(self, index: int) -> Optional[widgets.Image]:
         """The widget holding page ``index``, for tests and callers."""
-        if 0 <= int(index) < len(self._page_images):
-            return self._page_images[int(index)]
-        return None
+        return self._page_images.get(int(index))
 
     def _fill_page(self, index: int) -> None:
-        if self._doc is None or not (0 <= index < len(self._page_images)):
+        if self._doc is None or index not in self._page_images:
             return
         page_hits = [h.rect for h in self._result.hits if h.page == index]
         active = None
@@ -961,8 +976,10 @@ class PdfPanel:
                 self._filled.discard(index)
 
     def _visible_window(self, centre: int) -> List[int]:
+        if not self._continuous:
+            return [self._page]
         first = max(0, centre - RENDER_WINDOW)
-        last = min(len(self._page_images) - 1, centre + RENDER_WINDOW)
+        last = min(len(self._sizes) - 1, centre + RENDER_WINDOW)
         return list(range(first, last + 1))
 
     # -- browser bridge ------------------------------------------------------
@@ -1021,8 +1038,13 @@ class PdfPanel:
             return
 
     def _install_observer(self) -> None:
-        """Ask the browser to report what is on screen, and how wide it is."""
-        self._emit(_pages_js(self._token))
+        """Ask the browser to report what is on screen, and how wide it is.
+
+        Only the scrolling view needs it: the one-page view shows what it
+        was told to show and never has to ask.
+        """
+        if self._continuous:
+            self._emit(_pages_js(self._token))
 
     def close(self) -> None:
         """Drop the document and the rendered page."""
@@ -1037,8 +1059,8 @@ class PdfPanel:
         self._hit = -1
         self._sizes = []
         self._filled = set()
-        self._page_images = []
-        self._page_boxes = []
+        self._page_images = {}
+        self._page_boxes = {}
         self.pages_box.children = ()
         self.status.value = ''
         self.page_status.value = ''
@@ -1071,6 +1093,11 @@ class PdfPanel:
             self._hit = -1
             self._sync_hit_controls()
         self._sync_page_controls()
+        if not self._continuous:
+            # One page on screen: going to another one replaces it.
+            self._build_pages()
+            self._render()
+            return
         self._render()
         # The pages are all on screen already, so going to one means
         # scrolling to it rather than replacing what is shown.
@@ -1091,7 +1118,8 @@ class PdfPanel:
             return
         self._resize_pages()
         self._render()
-        self._emit(_goto_js(self._token, self._page))
+        if self._continuous:
+            self._emit(_goto_js(self._token, self._page))
 
     def set_zoom_index(self, index: int) -> None:
         """Kept for callers that only know the fixed steps."""
@@ -1177,7 +1205,7 @@ class PdfPanel:
             self.page_input.value = self._page + 1
         finally:
             self._syncing = False
-        self.page_total.value = f'von {total}'
+        self.page_total.value = f'of {total}'
         self.prev_page_btn.disabled = self._page <= 0
         self.next_page_btn.disabled = self._page >= total - 1
         self.page_status.value = page_status_html(

@@ -208,7 +208,7 @@ def test_open_document_rejects_a_password_protected_file(tmp_path):
     c.save()
     with pytest.raises(pv.PdfError) as excinfo:
         pv.open_document(path)
-    assert 'passwortgesch' in str(excinfo.value).lower()
+    assert 'password protected' in str(excinfo.value).lower()
 
 
 def test_open_document_rejects_an_oversized_file(tmp_path, monkeypatch):
@@ -245,7 +245,7 @@ def test_search_without_matches_reports_zero_not_a_scan(tmp_path):
         doc.close()
     assert result.n_hits == 0
     assert result.has_text is True
-    assert '0 Treffer' in pv.search_summary_html(result)
+    assert '0 hits' in pv.search_summary_html(result)
 
 
 def test_search_on_a_page_without_text_reports_a_scan(tmp_path):
@@ -259,7 +259,7 @@ def test_search_on_a_page_without_text_reports_a_scan(tmp_path):
     assert result.n_hits == 0
     assert result.has_text is False
     summary = pv.search_summary_html(result)
-    assert 'Scan' in summary
+    assert 'scan' in summary
     assert '0 Treffer' not in summary
 
 
@@ -273,7 +273,7 @@ def test_search_is_capped_by_hit_count_and_says_so(tmp_path):
     assert result.n_hits == 5
     assert result.hit_cap_reached
     assert result.capped
-    assert 'abgebrochen' in pv.cap_note(result)
+    assert 'stopped at' in pv.cap_note(result)
     assert '5' in pv.search_summary_html(result)
 
 
@@ -312,15 +312,15 @@ def test_hit_labels_carry_page_numbers(tmp_path):
     finally:
         doc.close()
     labels = pv.hit_labels(result)
-    assert labels[0].endswith('Seite 1')
-    assert labels[1].endswith('Seite 2')
+    assert labels[0].endswith('page 1')
+    assert labels[1].endswith('page 2')
 
 
 def test_scan_hint_only_fires_without_text():
     assert pv.scan_hint_html(True, 8, 20) == ''
     hint = pv.scan_hint_html(False, 8, 20)
-    assert 'ersten 8' in hint and 'Scan' in hint
-    assert 'Alle Seiten' in pv.scan_hint_html(False, 3, 3)
+    assert 'first 8' in hint and 'scan' in hint
+    assert 'All pages' in pv.scan_hint_html(False, 3, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +445,7 @@ def test_panel_opens_on_the_first_page(tmp_path):
         assert panel.total_pages == 5
         assert panel.page_input.value == 1
         assert panel.page_input.max == 5
-        assert panel.page_total.value == 'von 5'
+        assert panel.page_total.value == 'of 5'
         assert panel.prev_page_btn.disabled
         assert not panel.next_page_btn.disabled
         assert bytes(panel.page_image(0).value).startswith(b'\x89PNG')
@@ -540,9 +540,9 @@ def test_panel_reports_a_scan_instead_of_zero_hits(tmp_path):
     panel = pv.PdfPanel()
     try:
         panel.open(make_image_only_pdf(tmp_path / 'scan.pdf', pages=2))
-        assert 'Scan' in panel.status.value
+        assert 'scan' in panel.status.value
         panel.run_search('Rechnung')
-        assert 'Scan' in panel.status.value
+        assert 'scan' in panel.status.value
         assert '0 Treffer' not in panel.status.value
     finally:
         panel.close()
@@ -651,5 +651,5 @@ def test_browser_shows_a_message_for_a_damaged_pdf(browser_tab):
     (root / 'kaputt.pdf').write_bytes(b'%PDF-1.7\nno body here')
     _select(refs, 'kaputt.pdf')
     panel = refs['xyz_batch_state']['pdf_panel']
-    assert 'konnte nicht ge' in panel.page_status.value
+    assert 'could not be opened' in panel.page_status.value
     assert panel.pages_box.children == ()

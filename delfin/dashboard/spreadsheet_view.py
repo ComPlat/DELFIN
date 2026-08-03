@@ -63,11 +63,11 @@ DELIMITED_SUFFIXES = ('.csv', '.tsv', '.tab')
 # Parts of the xlsx container openpyxl cannot round-trip. Detected with zipfile
 # alone so the warning works even where openpyxl is missing.
 LOSSY_PARTS = (
-    ('xl/charts/', 'Diagramme'),
-    ('xl/chartsheets/', 'Diagrammblätter'),
-    ('xl/media/', 'eingebettete Bilder'),
+    ('xl/charts/', 'charts'),
+    ('xl/chartsheets/', 'chart sheets'),
+    ('xl/media/', 'embedded images'),
     ('xl/drawings/drawing', 'Zeichnungen'),
-    ('xl/pivotTables/', 'Pivot-Tabellen'),
+    ('xl/pivotTables/', 'pivot tables'),
     ('xl/threadedComments/', 'Unterhaltungs-Kommentare'),
     ('xl/slicers', 'Datenschnitte'),
     ('customXml/', 'benutzerdefiniertes XML'),
@@ -288,8 +288,8 @@ def describe_lossy_features(features: Sequence[str]) -> str:
         return ''
     listed = ', '.join(features)
     return (
-        f'Diese Datei enthält {listed}. Beim Speichern aus DELFIN gehen diese '
-        f'verloren (die Sicherungskopie bleibt erhalten).'
+        f'This file contains {listed}. Saving from DELFIN drops them '
+        f'(the backup copy keeps them).'
     )
 
 
@@ -348,7 +348,7 @@ def read_xlsx(
     try:
         names = list(wb.sheetnames)
         if not names:
-            raise SpreadsheetError('Die Arbeitsmappe enthält keine Tabellenblätter.')
+            raise SpreadsheetError('The workbook has no sheets.')
         active = sheet if sheet in names else names[0]
         ws = wb[active]
         # max_row/max_column come from the sheet's <dimension> record, which some
@@ -884,6 +884,7 @@ def render_grid_html(
     lossy_note: str = '',
     scroll_top: int = 0,
     cursor: Optional[Tuple[int, int]] = None,
+    office: bool = False,
 ) -> str:
     """Build the complete grid markup for the tab's content area.
 
@@ -915,6 +916,7 @@ def render_grid_html(
         f' data-pending="{int(pending)}"'
         f' data-scrolltop="{int(scroll_top)}"'
         f'{cursor_attr}'
+        f' data-office="{"1" if office else "0"}"'
         f' data-editable="{"1" if editable else "0"}">'
     )
 
@@ -922,13 +924,13 @@ def render_grid_html(
     out.append('<div class="dsheet-bar">')
     if editable:
         dis = '' if pending else ' disabled'
-        out.append(f'<button class="dsheet-btn dsheet-primary dsheet-save"{dis}>Speichern</button>')
-        out.append(f'<button class="dsheet-btn dsheet-discard"{dis}>Verwerfen</button>')
+        out.append(f'<button class="dsheet-btn dsheet-primary dsheet-save"{dis}>Save</button>')
+        out.append(f'<button class="dsheet-btn dsheet-discard"{dis}>Discard</button>')
         out.append('<span class="dsheet-sep"></span>')
-        out.append('<button class="dsheet-btn" data-act="insert_rows">+ Zeile</button>')
-        out.append('<button class="dsheet-btn" data-act="delete_rows">&minus; Zeile</button>')
-        out.append('<button class="dsheet-btn" data-act="insert_cols">+ Spalte</button>')
-        out.append('<button class="dsheet-btn" data-act="delete_cols">&minus; Spalte</button>')
+        out.append('<button class="dsheet-btn" data-act="insert_rows">+ Row</button>')
+        out.append('<button class="dsheet-btn" data-act="delete_rows">&minus; Row</button>')
+        out.append('<button class="dsheet-btn" data-act="insert_cols">+ Column</button>')
+        out.append('<button class="dsheet-btn" data-act="delete_cols">&minus; Column</button>')
         out.append('<span class="dsheet-sep"></span>')
     out.append('<span class="dsheet-addr">A1</span>')
     out.append('<input class="dsheet-filter" placeholder="Filter…" spellcheck="false">')
@@ -985,20 +987,20 @@ def render_grid_html(
     last = sheet.row_offset + sheet.n_rows
     out.append('<div class="dsheet-foot">')
     out.append(
-        f'<span>Zeilen {first}–{last} von {max(sheet.total_rows, last)}'
-        f' &middot; {sheet.total_cols} Spalten</span>'
+        f'<span>Rows {first}–{last} of {max(sheet.total_rows, last)}'
+        f' &middot; {sheet.total_cols} columns</span>'
     )
     if sheet.row_offset > 0:
-        out.append('<button class="dsheet-btn" data-page="prev">&laquo; vorherige</button>')
+        out.append('<button class="dsheet-btn" data-page="prev">&laquo; previous</button>')
     if sheet.total_rows > last:
-        out.append('<button class="dsheet-btn" data-page="next">nächste &raquo;</button>')
+        out.append('<button class="dsheet-btn" data-page="next">next &raquo;</button>')
     if sheet.truncated_cols:
         out.append(
-            f'<span class="dsheet-warn">Nur die ersten {sheet.n_cols} Spalten werden angezeigt.</span>'
+            f'<span class="dsheet-warn">Only the first {sheet.n_cols} columns are shown.</span>'
         )
     if sheet.has_formulas:
         out.append(
-            '<span class="dsheet-warn">Formeln werden erst beim Öffnen in Excel neu berechnet.</span>'
+            '<span class="dsheet-warn">Formulas are recalculated when Excel opens the file.</span>'
         )
     out.append('</div></div>')
     return ''.join(out)
@@ -1035,6 +1037,9 @@ _GRID_JS_TEMPLATE = r"""
   if (!table || !scroll || !tbody || !thead) return;
 
   var editable = wrap.dataset.editable === '1';
+  /* Office keeps the viewport still when a whole column or row is picked;
+     the calculations browser keeps the behaviour it always had. */
+  var OFFICE = wrap.dataset.office === '1';
   var pending = parseInt(wrap.dataset.pending || '0', 10) || 0;
   var rowOffset = parseInt(wrap.dataset.rowoffset || '0', 10) || 0;
   var sortState = null;
@@ -1168,7 +1173,7 @@ _GRID_JS_TEMPLATE = r"""
     if (discardBtn) discardBtn.disabled = pending === 0;
     if (statusEl) {
       statusEl.textContent = pending
-        ? (pending + ' Änderung' + (pending === 1 ? '' : 'en') + ' nicht gespeichert')
+        ? (pending + (pending === 1 ? ' change' : ' changes') + ' not saved')
         : '';
       statusEl.classList.toggle('dsheet-warn', pending > 0);
     }
@@ -1195,7 +1200,7 @@ _GRID_JS_TEMPLATE = r"""
   };
   function structuralAllowed(){
     if (sortState || filterActive) {
-      flash('Erst Sortierung/Filter aufheben – sonst ist die Zielzeile mehrdeutig.');
+      flash('Clear the sort or filter first - the target row is ambiguous otherwise.');
       return false;
     }
     return true;
@@ -1416,8 +1421,8 @@ _GRID_JS_TEMPLATE = r"""
     }
     for (var i = 0; i < rows.length; i++) tbody.appendChild(rows[i]);
     flash(sortState
-      ? ('Sortiert nach Spalte ' + colName(c) + (sortState.dir === 1 ? ' ↑' : ' ↓') + ' – nur Ansicht')
-      : 'Sortierung aufgehoben');
+      ? ('Sorted by column ' + colName(c) + (sortState.dir === 1 ? ' ↑' : ' ↓') + ' - view only')
+      : 'Sort cleared');
   }
   function applyFilter(q){
     var needle = String(q || '').trim().toLowerCase();
@@ -1468,22 +1473,32 @@ _GRID_JS_TEMPLATE = r"""
     if (editing && editing.td === td) return;
     if (editing) commitEdit();
     if (th && th.parentNode === thead && th.cellIndex > 0) {
-      /* Whole column: anchor at the far end so the active cell is the top one,
-         and hold the viewport -- revealing the last row would drop the user at
-         the bottom of the sheet for wanting to pick a column. */
+      /* Whole column. With the office feel, anchor at the far end so the
+         active cell is the top one and the viewport holds still: revealing
+         the last row would drop the user at the bottom of the sheet for
+         wanting to pick a column. */
       e.preventDefault();
-      anchor = {r: tbody.rows.length - 1, c: th.cellIndex};
-      moveTo(0, th.cellIndex, true, true);
+      if (OFFICE) {
+        anchor = {r: tbody.rows.length - 1, c: th.cellIndex};
+        moveTo(0, th.cellIndex, true, true);
+      } else {
+        anchor = {r: 0, c: th.cellIndex};
+        moveTo(tbody.rows.length - 1, th.cellIndex, true);
+      }
       scroll.focus({preventScroll: true});
       return;
     }
     if (th && th.parentNode.parentNode === tbody) {
-      /* Whole row, same reasoning sideways: the active cell is the leftmost
-         one and the horizontal scroll does not move. */
+      /* Whole row, the same reasoning sideways. */
       e.preventDefault();
       var ri = rowIndexOf(th.parentNode);
-      anchor = {r: ri, c: colCount()};
-      moveTo(ri, 1, true, true);
+      if (OFFICE) {
+        anchor = {r: ri, c: colCount()};
+        moveTo(ri, 1, true, true);
+      } else {
+        anchor = {r: ri, c: 1};
+        moveTo(ri, colCount(), true);
+      }
       scroll.focus({preventScroll: true});
       return;
     }
@@ -1526,14 +1541,14 @@ _GRID_JS_TEMPLATE = r"""
     }
     var items = [];
     if (rowNo !== null) {
-      items.push({label: 'Zeile darüber einfügen', run: function(){ insertRows(rowNo, 1); }});
-      items.push({label: 'Zeile darunter einfügen', run: function(){ insertRows(rowNo + 1, 1); }});
-      items.push({label: 'Zeile löschen', run: function(){ deleteRows(rowNo, 1); }});
+      items.push({label: 'Insert row above', run: function(){ insertRows(rowNo, 1); }});
+      items.push({label: 'Insert row below', run: function(){ insertRows(rowNo + 1, 1); }});
+      items.push({label: 'Delete row', run: function(){ deleteRows(rowNo, 1); }});
     }
     if (colNo !== null) {
-      items.push({label: 'Spalte links einfügen', run: function(){ insertCols(colNo, 1); }});
-      items.push({label: 'Spalte rechts einfügen', run: function(){ insertCols(colNo + 1, 1); }});
-      items.push({label: 'Spalte löschen', run: function(){ deleteCols(colNo, 1); }});
+      items.push({label: 'Insert column left', run: function(){ insertCols(colNo, 1); }});
+      items.push({label: 'Insert column right', run: function(){ insertCols(colNo + 1, 1); }});
+      items.push({label: 'Delete column', run: function(){ deleteCols(colNo, 1); }});
     }
     if (items.length) openMenu(e.clientX, e.clientY, items);
   }, false);
@@ -1570,8 +1585,10 @@ _GRID_JS_TEMPLATE = r"""
     else if (ctrl && (e.key === 'v' || e.key === 'V')) { handled = false; }
     else if (ctrl && (e.key === 's' || e.key === 'S')) { if (pending) send('save'); }
     else if (ctrl && (e.key === 'a' || e.key === 'A')) {
-      anchor = {r: tbody.rows.length - 1, c: colCount()};
-      moveTo(0, 1, true, true);
+      if (OFFICE) { anchor = {r: tbody.rows.length - 1, c: colCount()};
+                    moveTo(0, 1, true, true); }
+      else { anchor = {r: 0, c: 1};
+             moveTo(tbody.rows.length - 1, colCount(), true); }
     }
     else if (e.key === 'ArrowUp') { moveTo(cur.r - 1, cur.c, e.shiftKey); }
     else if (e.key === 'ArrowDown') { moveTo(cur.r + 1, cur.c, e.shiftKey); }
