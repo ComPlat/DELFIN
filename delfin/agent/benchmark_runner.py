@@ -143,6 +143,10 @@ def _cost_delta(before: float, after: float) -> float:
 _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     Path("tests") / "fixtures" / "behavior_workspace",
     Path("tests") / "fixtures" / "user_project_workspace",
+    # Office tasks read and edit the same small tables; without a restore
+    # between attempts a later run scores against rows an earlier one
+    # changed.
+    Path("tests") / "fixtures" / "office_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
