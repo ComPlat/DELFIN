@@ -1440,6 +1440,19 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         # frame as well and append it, leaving the primary byte-identical.  The eye's crystal
         # floors read the BEST frame over the manifold, so a second, flatter frame can only
         # help them -- and it cannot take anything away, because nothing was removed.
+        #
+        # A SIBLING MUST CLEAR THE SAME BAR AS THE FRAME IT HANGS OFF.  The self-gate alone is
+        # not that bar: it asks "is this buildable", not "is this as good as what we already
+        # have".  Measured 2026-08-03 on the 25-system A/B -- with the eye correction and the
+        # round-trip axis both in place, EVERY term was zero except one, and that one was a
+        # single system:
+        #     AVUNUC02   frames 1 -> 2   n_root_defects 0 -> 2   broken_frac 0.0 -> 0.5
+        # The added beta frame was itself BROKEN, carrying two independent root causes, and the
+        # gate was right to refuse it (the term already forgives a rise up to the number of
+        # frames ADDED; this one exceeded it).  The ring-pucker siblings pass the same gate
+        # cleanly because they already carry these three checks -- so the beta sibling gets
+        # them too: no NEW collapsed bond, no TIGHTER closest contact than the primary already
+        # has.  ("No worse beta" is trivially true here: this frame IS the beta-optimal one.)
         if os.environ.get("DELFIN_FFFREE_BETA_SIBLING", "0") == "1":
             try:
                 _bb = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
@@ -1454,7 +1467,20 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                         and (not max_isomers or len(results) < max_isomers)
                         and _build_is_clean(_bs, _bP, cn=d.get("cn"), geom=d.get("geometry"),
                                             donors=_bd, exempt_pairs=_ex, graph_bonds=_gb)):
-                    results.append((_bx, f"{_lab}-beta"))
+                    _ok = True
+                    if os.environ.get("DELFIN_FFFREE_BETA_SIBLING_STRICT", "0") == "1":
+                        try:
+                            if (AC._collapsed_heavy_bonds_strict(_bs, _bP)
+                                    and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                                _ok = False                   # a collapse the primary does not have
+                            if _ok:
+                                _pmin = _min_nonbonded_heavy(syms, P)
+                                if _pmin is not None and not _interlig_clash_ok(_bs, _bP, _pmin):
+                                    _ok = False               # closer contact than the primary
+                        except Exception:
+                            _ok = False                       # cannot prove it is as good -> do not add
+                    if _ok:
+                        results.append((_bx, f"{_lab}-beta"))
         # Ring-pucker siblings of this accepted frame (default OFF -> byte-identical).
         # Runs HERE, next to the frame it belongs to, because this is where the frame's
         # own atom order is known -- see the function for why the same call from the
