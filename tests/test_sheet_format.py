@@ -231,7 +231,15 @@ def test_the_controls_are_offered_on_a_workbook():
     markup = _grid()
     assert 'dsheet-b' in markup and 'dsheet-i' in markup and 'dsheet-u' in markup
     assert 'dsheet-swatch' in markup
-    assert 'dsheet-numfmt' in markup
+
+
+def test_no_control_sets_a_number_format_yet():
+    """Setting one changes how a number should read, and the browser cannot
+    re-read it: picking a format did nothing visible until the file had been
+    saved and opened again. A format a workbook already carries is still
+    read and shown -- only the control is gone."""
+    assert 'dsheet-numfmt' not in _grid()
+    assert 'dsheet-numfmt' not in sheet.grid_js('calc-scope-1', 'tok')
 
 
 def test_a_csv_is_not_offered_them():

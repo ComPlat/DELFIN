@@ -11286,6 +11286,8 @@ def create_tab(ctx):
                 f'{_html.escape(str(exc))}</span>')
             return
         count = result['written']
+        restyled = any(isinstance(v, dict) and v.get('style')
+                       for v in edits.values())
         state['docx_pending'] = {}
         state['docx_doc'] = _docx.read_document(path)
         state['file_content'] = state['docx_doc'].text
@@ -11295,6 +11297,15 @@ def create_tab(ctx):
         calc_text_status.layout.display = ''
         calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
         calc_text_save_btn.disabled = True
+        if restyled:
+            # A paragraph that became a heading looks different, and only a
+            # re-read shows that. Text and emphasis are already on screen.
+            _calc_render_docx(path, state['docx_doc'], path.name,
+                              _calc_sheet_size_str(path.stat().st_size))
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>')
+            return
         # Nothing is re-rendered: the blocks on screen already hold what was
         # written, and rebuilding them would take the cursor out of the
         # paragraph the user is still typing in.
@@ -11315,7 +11326,33 @@ def create_tab(ctx):
         address = str(message.get('address') or '')
         if not address:
             return
-        state.setdefault('docx_pending', {})[address] = str(message.get('text') or '')
+        # Three shapes arrive: the runs of a block, a paragraph style, or
+        # plain text. They are merged per address, so setting a style and
+        # then typing in the same paragraph keeps both.
+        pending = state.setdefault('docx_pending', {})
+        change = pending.get(address)
+        if not isinstance(change, dict):
+            change = {} if change is None else {'text': change}
+        if 'runs' in message and isinstance(message.get('runs'), list):
+            change['runs'] = [
+                {'t': str(r.get('t') or ''), 'b': bool(r.get('b')),
+                 'i': bool(r.get('i')), 'u': bool(r.get('u'))}
+                for r in message['runs'] if isinstance(r, dict)
+            ]
+            change.pop('text', None)
+        elif 'text' in message:
+            change['text'] = str(message.get('text') or '')
+        if message.get('style'):
+            try:
+                change['style'] = _docx.check_style(message.get('style'))
+            except _docx.DocxError as exc:
+                calc_text_status.layout.display = ''
+                calc_text_status.value = (
+                    f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+                return
+        if not change:
+            return
+        pending[address] = change
         _calc_docx_sync_controls()
 
     def _calc_formula_results(path):

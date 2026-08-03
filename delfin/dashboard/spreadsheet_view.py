@@ -261,7 +261,8 @@ def style_css(style: Mapping[str, Any]) -> str:
     """The style of one cell, as CSS."""
     parts = []
     if style.get('b'):
-        parts.append('font-weight:600')
+        # 700, not 600: at this size 600 is barely a difference.
+        parts.append('font-weight:700')
     if style.get('i'):
         parts.append('font-style:italic')
     if style.get('u'):
@@ -1720,15 +1721,13 @@ GRID_CSS = (
     '.dsheet td.dsheet-sel { background:#e3f0fd; }'
     '.dsheet td.dsheet-cur { outline:2px solid #1976d2; outline-offset:-2px; position:relative; z-index:1; }'
     '.dsheet td.dsheet-hit { outline:2px solid #ff9800; outline-offset:-2px; }'
-    '.dsheet-fills { display:inline-flex; gap:2px; align-items:center;'
-    ' margin:0 2px; }'
-    '.dsheet-swatch { width:15px; height:15px; border:1px solid #b7bec6;'
-    ' border-radius:2px; cursor:pointer; display:inline-block; }'
-    '.dsheet-swatch:hover { outline:1px solid #1565c0; }'
-    '.dsheet-swatch-none { background:#fff; color:#b3261e; font-size:11px;'
-    ' line-height:14px; text-align:center; }'
-    '.dsheet-numfmt { font-size:11px; height:22px; border:1px solid #c8ced4;'
-    ' border-radius:3px; background:#fff; }'
+    '.dsheet-fills { display:inline-flex; gap:4px; align-items:center;'
+    ' margin:0 6px; }'
+    '.dsheet-swatch { width:22px; height:22px; border:1px solid #b7bec6;'
+    ' border-radius:3px; cursor:pointer; display:inline-block; }'
+    '.dsheet-swatch:hover { outline:2px solid #1565c0; outline-offset:1px; }'
+    '.dsheet-swatch-none { background:#fff; color:#b3261e; font-size:15px;'
+    ' line-height:20px; text-align:center; }'
     '.dsheet-fill { position:absolute; width:7px; height:7px; background:#1565c0;'
     ' border:1px solid #fff; cursor:crosshair; z-index:4; display:none; }'
     '.dsheet td.dsheet-fill-target { background:#e3f0ff;'
@@ -1846,10 +1845,11 @@ def render_grid_html(
                         '<span class="dsheet-swatch dsheet-swatch-none"'
                         f' data-fill="" title="{_attr(label)}">&times;</span>')
             out.append('</span>')
-            out.append('<select class="dsheet-numfmt" title="Number format">')
-            for label, code in NUMBER_FORMATS:
-                out.append(f'<option value="{_attr(code)}">{_html.escape(label)}</option>')
-            out.append('</select>')
+            # No control for the number format yet. Setting one changes how a
+            # number should read, and the browser cannot re-read it: picking
+            # a format did nothing visible until the file had been saved and
+            # opened again, which is worse than not offering it. A format a
+            # workbook already carries is still read and shown.
             out.append('<span class="dsheet-sep"></span>')
         if office:
             out.append('<button class="dsheet-btn dsheet-undo" disabled'
@@ -2142,7 +2142,7 @@ _GRID_JS_TEMPLATE = r"""
      like a request rather than like formatting. */
   function readFormat(td){
     return {
-      bold: td.style.fontWeight === '600',
+      bold: td.style.fontWeight === '700',
       italic: td.style.fontStyle === 'italic',
       underline: td.style.textDecoration === 'underline',
       fill: td.getAttribute('data-bg') || '',
@@ -2151,7 +2151,7 @@ _GRID_JS_TEMPLATE = r"""
   }
 
   function paintCell(td, change){
-    if ('bold' in change) td.style.fontWeight = change.bold ? '600' : '';
+    if ('bold' in change) td.style.fontWeight = change.bold ? '700' : '';
     if ('italic' in change) td.style.fontStyle = change.italic ? 'italic' : '';
     if ('underline' in change) {
       td.style.textDecoration = change.underline ? 'underline' : '';
@@ -2247,11 +2247,6 @@ _GRID_JS_TEMPLATE = r"""
         applyFormat({fill: swatch.getAttribute('data-fill') || ''});
       });
     });
-  var numfmt = wrap.querySelector('.dsheet-numfmt');
-  if (numfmt) numfmt.addEventListener('change', function(){
-    applyFormat({number_format: numfmt.value});
-    numfmt.blur();
-  });
 
   /* ---------- fill handle ---------- */
   /* The square at the bottom right of the selection. Dragging it is how a
