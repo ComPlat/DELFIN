@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import datetime as _dt
+import decimal as _dec
 import html as _html
 import io
 import json
@@ -95,6 +96,8 @@ class SheetData:
     total_cols: int = 0
     has_formulas: bool = False
     truncated_cols: bool = False
+    # Per cell, only what differs from plain: {'b','i','u','bg','fmt'}.
+    styles: List[List[Dict[str, Any]]] = field(default_factory=list)
 
     @property
     def n_rows(self) -> int:
@@ -157,6 +160,162 @@ def format_cell(value: Any) -> str:
     if isinstance(value, _dt.timedelta):
         return str(value)
     return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Cell formatting
+# ---------------------------------------------------------------------------
+
+# The formats offered, by the name shown in the menu. Small on purpose: the
+# point is a table that reads well, not a format designer. Everything else a
+# workbook already carries is left exactly as it is.
+NUMBER_FORMATS: Tuple[Tuple[str, str], ...] = (
+    ('Standard', 'General'),
+    ('1235', '0'),
+    ('1234,50', '0.00'),
+    ('1.234,50', '#,##0.00'),
+    ('1.234,50 €', '#,##0.00\\ "€"'),
+    ('12,3 %', '0.0%'),
+    ('31.12.2026', 'DD.MM.YYYY'),
+    ('Text', '@'),
+)
+_KNOWN_FORMATS = {code for _label, code in NUMBER_FORMATS}
+
+# Fill colours, light enough that black text stays readable on them. A
+# palette rather than a colour picker: the aim is telling rows apart.
+FILL_COLOURS: Tuple[Tuple[str, str], ...] = (
+    ('None', ''),
+    ('Yellow', 'FFF2CC'),
+    ('Green', 'E2EFDA'),
+    ('Blue', 'DDEBF7'),
+    ('Red', 'FCE4EC'),
+    ('Orange', 'FDE9D9'),
+    ('Purple', 'EDE7F6'),
+    ('Grey', 'EDEDED'),
+)
+_KNOWN_FILLS = {code for _label, code in FILL_COLOURS if code}
+
+_HEX_RE = re.compile(r'^[0-9A-Fa-f]{6}$')
+
+
+def check_fill(colour: Any) -> str:
+    """A fill colour as six hex digits, or '' for none."""
+    text = str(colour or '').strip().lstrip('#').upper()
+    if not text:
+        return ''
+    if len(text) == 8:          # openpyxl writes ARGB; the alpha is not ours
+        text = text[2:]
+    if not _HEX_RE.match(text):
+        raise SpreadsheetError(f'{colour!r} is not a colour.')
+    return text
+
+
+def check_number_format(code: Any) -> str:
+    """A number format the menu offers, or whatever the cell already had."""
+    text = str(code or '').strip()
+    if not text:
+        return 'General'
+    if len(text) > 60:
+        raise SpreadsheetError('That number format is too long.')
+    return text
+
+
+def cell_style(cell: Any) -> Dict[str, Any]:
+    """The parts of a cell's look that this grid shows and can set.
+
+    Only what differs from plain: an empty dictionary per cell is what
+    keeps the markup for a few thousand cells to a readable size.
+    """
+    style: Dict[str, Any] = {}
+    try:
+        font = cell.font
+        if font is not None:
+            if font.bold:
+                style['b'] = 1
+            if font.italic:
+                style['i'] = 1
+            if font.underline and font.underline != 'none':
+                style['u'] = 1
+    except Exception:
+        pass
+    try:
+        fill = cell.fill
+        if fill is not None and fill.patternType == 'solid':
+            colour = check_fill(getattr(fill.fgColor, 'rgb', '') or '')
+            # White is the sheet's own background; marking it would put a
+            # colour on every cell of a workbook that has none.
+            if colour and colour not in ('FFFFFF', '000000'):
+                style['bg'] = colour
+    except Exception:
+        pass
+    try:
+        code = str(cell.number_format or 'General')
+        if code != 'General':
+            style['fmt'] = code
+    except Exception:
+        pass
+    return style
+
+
+def style_css(style: Mapping[str, Any]) -> str:
+    """The style of one cell, as CSS."""
+    parts = []
+    if style.get('b'):
+        parts.append('font-weight:600')
+    if style.get('i'):
+        parts.append('font-style:italic')
+    if style.get('u'):
+        parts.append('text-decoration:underline')
+    background = style.get('bg')
+    if background:
+        parts.append(f'background:#{background}')
+    return ';'.join(parts)
+
+
+def display_value(value: Any, code: str = 'General') -> str:
+    """Show a value the way its number format says to.
+
+    Only the formats this grid offers are worked out here. A workbook can
+    carry any format string at all, and one that is not understood shows
+    the plain value rather than a guess at what Excel would draw.
+    """
+    code = str(code or 'General')
+    if value is None or code in ('General', '@') or isinstance(value, str):
+        return format_cell(value)
+    if isinstance(value, (_dt.date, _dt.datetime)) and 'DD' in code.upper():
+        return value.strftime('%d.%m.%Y')
+    if code not in _KNOWN_FORMATS:
+        # A workbook can carry any format string, conditional colours and
+        # sections included. Guessing at what Excel would draw would put a
+        # number on screen that is not in the file.
+        return format_cell(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return format_cell(value)
+
+    number = float(value)
+    if code.endswith('%'):
+        decimals = len(code.split('.')[-1].rstrip('%')) if '.' in code else 0
+        return _german_number(number * 100, decimals) + ' %'
+    decimals = 0
+    if '.' in code:
+        decimals = len(re.split(r'[.]', code)[-1].split('\\')[0].split('"')[0].strip())
+    grouped = ',' in code.split('.')[0]
+    text = _german_number(number, decimals, grouped=grouped)
+    if '€' in code:
+        text += ' €'
+    return text
+
+
+def _german_number(value: float, decimals: int, *, grouped: bool = False) -> str:
+    # Half away from zero, which is what a spreadsheet does. Python rounds
+    # half to even, so 1234.5 with no decimals would come out as 1234 where
+    # Excel writes 1235.
+    quantum = _dec.Decimal(1).scaleb(-decimals)
+    rounded = _dec.Decimal(repr(value)).quantize(quantum, rounding=_dec.ROUND_HALF_UP)
+    text = f'{rounded:,.{decimals}f}' if grouped else f'{rounded:.{decimals}f}'
+    # en-US separators out, German ones in, in one pass so the swap cannot
+    # trip over its own output.
+    return text.translate(str.maketrans({',': '.', '.': ','}))
 
 
 def coerce_value(text: Any) -> Any:
@@ -390,6 +549,41 @@ def read_xlsx(
     n_rows_view = len(values)
     n_cols_view = len(values[0]) if values else 1
 
+    # What the cells look like, and how their numbers are written. Read from
+    # the same window so a cell's value and its format cannot come from
+    # different rows.
+    styles: List[List[Dict[str, Any]]] = []
+    try:
+        book_s = _load_workbook(filename=str(path), read_only=True, data_only=True)
+        try:
+            sheet_s = (book_s[active] if active in book_s.sheetnames
+                       else book_s.worksheets[0])
+            for r_idx, row in enumerate(sheet_s.iter_rows(
+                    min_row=start0 + 1, max_row=start0 + n_rows_view,
+                    min_col=1, max_col=n_cols_view)):
+                if r_idx >= n_rows_view:
+                    break
+                found = []
+                for c_idx, cell in enumerate(row):
+                    style = cell_style(cell)
+                    found.append(style)
+                    # The value is taken from the cell here rather than from
+                    # the window of strings: a number and the format that
+                    # says how to write it have to come from the same cell.
+                    code = style.get('fmt')
+                    if (code and cell.value is not None
+                            and r_idx < len(values)
+                            and c_idx < len(values[r_idx])):
+                        values[r_idx][c_idx] = display_value(cell.value, code)
+                found.extend({} for _ in range(n_cols_view - len(found)))
+                styles.append(found)
+        finally:
+            book_s.close()
+        while len(styles) < n_rows_view:
+            styles.append([{} for _ in range(n_cols_view)])
+    except Exception:
+        styles = []
+
     formulas: List[List[str]] = []
     has_formulas = False
     try:
@@ -425,6 +619,7 @@ def read_xlsx(
         total_rows=max(total_rows, start0 + n_rows_view),
         total_cols=total_cols or n_cols_view,
         has_formulas=has_formulas,
+        styles=styles,
         truncated_cols=truncated_cols,
     )
     return names, data
@@ -941,6 +1136,26 @@ def validate_ops(ops: Any) -> List[Dict[str, Any]]:
                 raise ValueError(f'cell out of range: r{row}c{col}')
             text = op.get('text', '')
             clean.append({'op': 'set', 'row': row, 'col': col, 'text': '' if text is None else str(text)})
+        elif kind == 'format':
+            box = {}
+            for key in ('r1', 'c1', 'r2', 'c2'):
+                box[key] = int(op.get(key, 0))
+            if (box['r1'] < 1 or box['c1'] < 1 or box['r2'] < box['r1']
+                    or box['c2'] < box['c1']
+                    or box['r2'] > 1048576 or box['c2'] > 16384):
+                raise ValueError(f'bad range: {box}')
+            clean_op: Dict[str, Any] = {'op': 'format', **box}
+            for key in ('bold', 'italic', 'underline'):
+                if op.get(key) is not None:
+                    clean_op[key] = bool(op.get(key))
+            if op.get('fill') is not None:
+                clean_op['fill'] = check_fill(op.get('fill'))
+            if op.get('number_format') is not None:
+                clean_op['number_format'] = check_number_format(
+                    op.get('number_format'))
+            if len(clean_op) == 5:
+                raise ValueError('a format op has to change something')
+            clean.append(clean_op)
         elif kind in ('insert_rows', 'delete_rows', 'insert_cols', 'delete_cols'):
             at = int(op.get('at', 0))
             count = int(op.get('count', 1))
@@ -963,8 +1178,47 @@ def replay_ops(sheet: SheetData, ops: Sequence[Mapping[str, Any]]) -> Set[Tuple[
     def _width() -> int:
         return len(sheet.values[0]) if sheet.values else 0
 
+    def _restyle(op: Mapping[str, Any]) -> None:
+        for row in range(op['r1'], op['r2'] + 1):
+            r_idx = row - 1 - sheet.row_offset
+            if not 0 <= r_idx < len(sheet.values):
+                continue
+            while len(sheet.styles) <= r_idx:
+                sheet.styles.append([{} for _ in range(_width())])
+            row_styles = sheet.styles[r_idx]
+            while len(row_styles) < _width():
+                row_styles.append({})
+            for col in range(op['c1'], op['c2'] + 1):
+                c_idx = col - 1
+                if not 0 <= c_idx < len(row_styles):
+                    continue
+                style = dict(row_styles[c_idx] or {})
+                for key, mark in (('bold', 'b'), ('italic', 'i'),
+                                  ('underline', 'u')):
+                    if key in op:
+                        if op[key]:
+                            style[mark] = 1
+                        else:
+                            style.pop(mark, None)
+                if 'fill' in op:
+                    if op['fill']:
+                        style['bg'] = op['fill']
+                    else:
+                        style.pop('bg', None)
+                if 'number_format' in op:
+                    code = op['number_format']
+                    if code and code != 'General':
+                        style['fmt'] = code
+                    else:
+                        style.pop('fmt', None)
+                row_styles[c_idx] = style
+                dirty.add((r_idx, c_idx))
+
     for op in ops:
         kind = op['op']
+        if kind == 'format':
+            _restyle(op)
+            continue
         if kind == 'set':
             r = op['row'] - 1 - sheet.row_offset
             c = op['col'] - 1
@@ -1192,6 +1446,36 @@ def _save_workbook(book: Any, path: Path) -> None:
         raise
 
 
+def _apply_format(worksheet: Any, op: Mapping[str, Any]) -> None:
+    """Write one format op into a worksheet.
+
+    Each attribute is set on top of what the cell already has: a workbook
+    carries fonts, borders and colours this grid never shows, and replacing
+    the whole style would throw those away for the sake of one bold.
+    """
+    from openpyxl.styles import Font, PatternFill
+
+    for row in range(op['r1'], op['r2'] + 1):
+        for col in range(op['c1'], op['c2'] + 1):
+            cell = worksheet.cell(row=row, column=col)
+            if any(key in op for key in ('bold', 'italic', 'underline')):
+                font = cell.font
+                cell.font = Font(
+                    name=font.name, size=font.size, color=font.color,
+                    bold=op.get('bold', font.bold),
+                    italic=op.get('italic', font.italic),
+                    underline=('single' if op['underline'] else None)
+                    if 'underline' in op else font.underline,
+                    strike=font.strike, vertAlign=font.vertAlign,
+                )
+            if 'fill' in op:
+                colour = op['fill']
+                cell.fill = (PatternFill('solid', fgColor=f'FF{colour}')
+                             if colour else PatternFill(fill_type=None))
+            if 'number_format' in op:
+                cell.number_format = op['number_format'] or 'General'
+
+
 def apply_ops_xlsx(
     path: Path,
     sheet_name: str,
@@ -1236,6 +1520,8 @@ def apply_ops_xlsx(
                 ws.insert_cols(op['at'], op['count'])
             elif kind == 'delete_cols':
                 ws.delete_cols(op['at'], op['count'])
+            elif kind == 'format':
+                _apply_format(ws, op)
         wb.save(tmp_name)
         _atomic_replace(tmp_name, path)
     except BaseException:
@@ -1302,6 +1588,11 @@ def apply_ops_delimited(
         if row is not None and len(row['fields']) < c_count:
             row['fields'].extend([''] * (c_count - len(row['fields'])))
             row['dirty'] = True
+
+    if any(op['op'] == 'format' for op in clean):
+        raise SpreadsheetError(
+            'A csv file holds text, not formatting. Save it as .xlsx to keep '
+            'colours and number formats.')
 
     for op in clean:
         kind = op['op']
@@ -1429,6 +1720,15 @@ GRID_CSS = (
     '.dsheet td.dsheet-sel { background:#e3f0fd; }'
     '.dsheet td.dsheet-cur { outline:2px solid #1976d2; outline-offset:-2px; position:relative; z-index:1; }'
     '.dsheet td.dsheet-hit { outline:2px solid #ff9800; outline-offset:-2px; }'
+    '.dsheet-fills { display:inline-flex; gap:2px; align-items:center;'
+    ' margin:0 2px; }'
+    '.dsheet-swatch { width:15px; height:15px; border:1px solid #b7bec6;'
+    ' border-radius:2px; cursor:pointer; display:inline-block; }'
+    '.dsheet-swatch:hover { outline:1px solid #1565c0; }'
+    '.dsheet-swatch-none { background:#fff; color:#b3261e; font-size:11px;'
+    ' line-height:14px; text-align:center; }'
+    '.dsheet-numfmt { font-size:11px; height:22px; border:1px solid #c8ced4;'
+    ' border-radius:3px; background:#fff; }'
     '.dsheet-fill { position:absolute; width:7px; height:7px; background:#1565c0;'
     ' border:1px solid #fff; cursor:crosshair; z-index:4; display:none; }'
     '.dsheet td.dsheet-fill-target { background:#e3f0ff;'
@@ -1526,6 +1826,31 @@ def render_grid_html(
         out.append(f'<button class="dsheet-btn dsheet-primary dsheet-save"{dis}>Save</button>')
         out.append(f'<button class="dsheet-btn dsheet-discard"{dis}>Discard</button>')
         out.append('<span class="dsheet-sep"></span>')
+        if kind == 'xlsx':
+            # A csv holds text, not formatting, so these are not offered there.
+            out.append('<button class="dsheet-btn dsheet-b" title="Bold (Ctrl+B)">'
+                       '<b>B</b></button>')
+            out.append('<button class="dsheet-btn dsheet-i" title="Italic (Ctrl+I)">'
+                       '<i>I</i></button>')
+            out.append('<button class="dsheet-btn dsheet-u" title="Underline (Ctrl+U)">'
+                       '<u>U</u></button>')
+            out.append('<span class="dsheet-fills">')
+            for label, colour in FILL_COLOURS:
+                if colour:
+                    out.append(
+                        f'<span class="dsheet-swatch" data-fill="{colour}"'
+                        f' title="{_attr(label)}"'
+                        f' style="background:#{colour}"></span>')
+                else:
+                    out.append(
+                        '<span class="dsheet-swatch dsheet-swatch-none"'
+                        f' data-fill="" title="{_attr(label)}">&times;</span>')
+            out.append('</span>')
+            out.append('<select class="dsheet-numfmt" title="Number format">')
+            for label, code in NUMBER_FORMATS:
+                out.append(f'<option value="{_attr(code)}">{_html.escape(label)}</option>')
+            out.append('</select>')
+            out.append('<span class="dsheet-sep"></span>')
         if office:
             out.append('<button class="dsheet-btn dsheet-undo" disabled'
                        ' title="Undo (Ctrl+Z)">&#8630;</button>')
@@ -1596,7 +1921,16 @@ def render_grid_html(
                 classes.append('dsheet-dirty')
             cls = f' class="{" ".join(classes)}"' if classes else ''
             f_attr = f' data-f="{_attr(formula)}"' if formula else ''
-            out.append(f'<td{cls}{f_attr}>{_html.escape(cell)}</td>')
+            style = {}
+            if r_idx < len(sheet.styles) and c_idx < len(sheet.styles[r_idx]):
+                style = sheet.styles[r_idx][c_idx] or {}
+            css = style_css(style)
+            s_attr = f' style="{css}"' if css else ''
+            bg = style.get('bg')
+            bg_attr = f' data-bg="{_attr(bg)}"' if bg else ''
+            fmt = style.get('fmt')
+            n_attr = f' data-n="{_attr(fmt)}"' if fmt else ''
+            out.append(f'<td{cls}{s_attr}{bg_attr}{f_attr}{n_attr}>{_html.escape(cell)}</td>')
         out.append('</tr>')
     out.append('</tbody></table></div>')
 
@@ -1801,6 +2135,123 @@ _GRID_JS_TEMPLATE = r"""
     while (n > 0) { var rem = (n - 1) % 26; s = String.fromCharCode(65 + rem) + s; n = Math.floor((n - 1) / 26); }
     return s;
   }
+
+  /* ---------- formatting ---------- */
+  /* Applied to the selection and shown at once, then sent. Waiting for the
+     kernel to answer before the cells change would make every click feel
+     like a request rather than like formatting. */
+  function readFormat(td){
+    return {
+      bold: td.style.fontWeight === '600',
+      italic: td.style.fontStyle === 'italic',
+      underline: td.style.textDecoration === 'underline',
+      fill: td.getAttribute('data-bg') || '',
+      number_format: td.getAttribute('data-n') || 'General'
+    };
+  }
+
+  function paintCell(td, change){
+    if ('bold' in change) td.style.fontWeight = change.bold ? '600' : '';
+    if ('italic' in change) td.style.fontStyle = change.italic ? 'italic' : '';
+    if ('underline' in change) {
+      td.style.textDecoration = change.underline ? 'underline' : '';
+    }
+    if ('fill' in change) {
+      if (change.fill) {
+        td.style.background = '#' + change.fill;
+        td.setAttribute('data-bg', change.fill);
+      } else {
+        td.style.background = '';
+        td.removeAttribute('data-bg');
+      }
+    }
+    if ('number_format' in change) {
+      if (change.number_format && change.number_format !== 'General') {
+        td.setAttribute('data-n', change.number_format);
+      } else {
+        td.removeAttribute('data-n');
+      }
+    }
+  }
+
+  /* One op per cell, carrying only the keys that changed. A range is rarely
+     uniform -- half of it may already be bold -- so putting it back needs
+     each cell's own previous state, not the range's. */
+  function formatOps(cells, pick){
+    var ops = [];
+    for (var i = 0; i < cells.length; i++) {
+      var entry = cells[i];
+      var op = {op: 'format', r1: entry.row, c1: entry.col,
+                r2: entry.row, c2: entry.col};
+      var values = pick(entry);
+      var touched = false;
+      for (var key in values) { op[key] = values[key]; touched = true; }
+      if (touched) ops.push(op);
+    }
+    return ops;
+  }
+
+  function applyFormat(change){
+    if (!editable) return;
+    var s = selRange();
+    var cells = [];
+    for (var r = s.r1; r <= s.r2; r++) {
+      var tr = tbody.rows[r];
+      if (!tr) continue;
+      for (var c = s.c1; c <= s.c2; c++) {
+        var td = cellAt(r, c);
+        if (!td) continue;
+        var was = readFormat(td);
+        var before = {};
+        for (var key in change) before[key] = was[key];
+        cells.push({td: td, row: parseInt(tr.dataset.r, 10), col: c,
+                    before: before});
+      }
+    }
+    if (!cells.length) return;
+
+    function run(pick){
+      for (var i = 0; i < cells.length; i++) paintCell(cells[i].td, pick(cells[i]));
+      var ops = formatOps(cells, pick);
+      if (ops.length) push(ops);
+    }
+
+    run(function(){ return change; });
+    remember({
+      undo: function(){ run(function(entry){ return entry.before; }); },
+      redo: function(){ run(function(){ return change; }); }
+    });
+  }
+
+  function selectionHas(prop){
+    var s = selRange();
+    var td = cellAt(s.r1, s.c1);
+    return td ? !!readFormat(td)[prop] : false;
+  }
+
+  var boldBtn = wrap.querySelector('.dsheet-b');
+  var italicBtn = wrap.querySelector('.dsheet-i');
+  var underlineBtn = wrap.querySelector('.dsheet-u');
+  if (boldBtn) boldBtn.addEventListener('click', function(){
+    applyFormat({bold: !selectionHas('bold')});
+  });
+  if (italicBtn) italicBtn.addEventListener('click', function(){
+    applyFormat({italic: !selectionHas('italic')});
+  });
+  if (underlineBtn) underlineBtn.addEventListener('click', function(){
+    applyFormat({underline: !selectionHas('underline')});
+  });
+  Array.prototype.forEach.call(wrap.querySelectorAll('.dsheet-swatch'),
+    function(swatch){
+      swatch.addEventListener('click', function(){
+        applyFormat({fill: swatch.getAttribute('data-fill') || ''});
+      });
+    });
+  var numfmt = wrap.querySelector('.dsheet-numfmt');
+  if (numfmt) numfmt.addEventListener('change', function(){
+    applyFormat({number_format: numfmt.value});
+    numfmt.blur();
+  });
 
   /* ---------- fill handle ---------- */
   /* The square at the bottom right of the selection. Dragging it is how a
@@ -2472,6 +2923,15 @@ _GRID_JS_TEMPLATE = r"""
     }
     else if (ctrl && (e.key === 'v' || e.key === 'V')) { handled = false; }
     else if (ctrl && (e.key === 's' || e.key === 'S')) { if (pending) send('save'); }
+    else if (ctrl && (e.key === 'b' || e.key === 'B')) {
+      applyFormat({bold: !selectionHas('bold')});
+    }
+    else if (ctrl && (e.key === 'i' || e.key === 'I')) {
+      applyFormat({italic: !selectionHas('italic')});
+    }
+    else if (ctrl && (e.key === 'u' || e.key === 'U')) {
+      applyFormat({underline: !selectionHas('underline')});
+    }
     else if (ctrl && (e.key === 'z' || e.key === 'Z')) { e.shiftKey ? redo() : undo(); }
     else if (ctrl && (e.key === 'y' || e.key === 'Y')) { redo(); }
     else if (ctrl && (e.key === 'a' || e.key === 'A')) {
