@@ -884,6 +884,53 @@ _BETA_BAND = 4.8        # deg -- the crystals' own upper beta, measured over cle
                         # gets, so there is nothing to win by preferring a flatter conformer.
 
 
+_COMBO_MATERIALISE_MAX = 200_000    # above this the full product is never built at all
+
+
+def _ranked_combos(rank_lists, k):
+    """The first ``k`` index-combinations in (sum, lexicographic) order -- WITHOUT ever
+    materialising the Cartesian product.
+
+    WHY THIS EXISTS.  Both ensemble paths did
+
+        combos = list(itertools.product(*rank_lists))
+        combos.sort(key=lambda cb: (sum(cb), cb))
+        ... combos[:MAX_EVAL]
+
+    i.e. they built and sorted the WHOLE product to use 64 of it.  Eight ligands with ten
+    conformers each is 10^8 tuples -- per system, times every parallel worker.  That is the
+    measured cause of four consecutive OOM kills of the sigma-ensemble path (journal:
+    "Failed with result 'oom-kill'"), which is why the biggest conformer lever in the tree
+    has never once produced a verdict.  Note the shape of the mistake: the memory blows up
+    in the SELECTION, not in the chemistry -- a single build peaks near 0.25 G.
+
+    EXACTLY ORDER-EQUIVALENT to the sort it replaces.  Best-first over the index lattice:
+    pop the smallest (sum, tuple), push its one-step increments.  Every combination is
+    reachable by incrementing coordinates from all-zeros, and the heap key IS the sort key,
+    so the k-th element out is the k-th element of the sorted product.  Memory O(k * n).
+
+    Below _COMBO_MATERIALISE_MAX the caller keeps the historic path verbatim, so nothing
+    changes for the small cases that always worked."""
+    import heapq as _hq
+    n = len(rank_lists)
+    if n == 0:
+        return []
+    start = tuple(0 for _ in range(n))
+    heap = [(0, start)]
+    seen = {start}
+    out = []
+    while heap and len(out) < k:
+        s, cb = _hq.heappop(heap)
+        out.append(cb)
+        for i in range(n):
+            if cb[i] + 1 < len(rank_lists[i]):
+                nxt = cb[:i] + (cb[i] + 1,) + cb[i + 1:]
+                if nxt not in seen:
+                    seen.add(nxt)
+                    _hq.heappush(heap, (s + 1, nxt))
+    return out
+
+
 def _beta_score(syms, Q, donor_idxs):
     """Sum of SQUARED out-of-plane angles over the donors that HAVE a plane (degrees^2).
 
@@ -2634,7 +2681,15 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
     # complex level, keep up to n_frames.  Capped product keeps it bounded+fast.
     import itertools as _it
     rank_lists = [list(range(len(c))) for c in per_vertex_cands]
-    combos = list(_it.product(*rank_lists))
+    _nprod = 1
+    for _rl in rank_lists:
+        _nprod *= max(1, len(_rl))
+        if _nprod > _COMBO_MATERIALISE_MAX:
+            break
+    if _nprod > _COMBO_MATERIALISE_MAX:      # never materialise a 10^8 product to use 64
+        combos = _ranked_combos(rank_lists, 256)
+    else:
+        combos = list(_it.product(*rank_lists))
     # order combos by total rank (frame 0 = all best = the single-path pick), then
     # lexicographically -> deterministic.
     combos.sort(key=lambda cb: (sum(cb), cb))
@@ -4167,7 +4222,15 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     # at the complex level, keep up to n_frames.  Capped product keeps it bounded.
     import itertools as _it
     rank_lists = [list(range(len(c))) for c in per_lig_cands]
-    combos = list(_it.product(*rank_lists))
+    _nprod = 1
+    for _rl in rank_lists:
+        _nprod *= max(1, len(_rl))
+        if _nprod > _COMBO_MATERIALISE_MAX:
+            break
+    if _nprod > _COMBO_MATERIALISE_MAX:      # never materialise a 10^8 product to use 64
+        combos = _ranked_combos(rank_lists, 256)
+    else:
+        combos = list(_it.product(*rank_lists))
     combos.sort(key=lambda cb: (sum(cb), cb))      # deterministic; frame 0 = all-best
     MAX_EVAL = 64
     frames = []                                    # (syms, P) kept (deduped)
