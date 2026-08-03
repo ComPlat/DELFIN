@@ -23,6 +23,7 @@ is imported lazily, so it can be unit tested in a stripped environment.
 
 from __future__ import annotations
 
+import copy
 import csv
 import datetime as _dt
 import decimal as _dec
@@ -1369,6 +1370,141 @@ def check_sheet_name(name: str, existing: Sequence[str] = ()) -> str:
     if name.lower() in lowered:
         raise SpreadsheetError(f'There is already a sheet called {name!r}.')
     return name
+
+
+def _sort_key(value: Any):
+    """Order the way a spreadsheet orders: numbers, then text, blanks last.
+
+    Blanks sink to the bottom whichever way round the sort goes, which is
+    what Excel does -- a column sorted descending should not start with its
+    empty rows.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return (2, 0.0, '')
+    if isinstance(value, bool):
+        return (1, 0.0, 'TRUE' if value else 'FALSE')
+    if isinstance(value, (int, float)):
+        return (0, float(value), '')
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return (0, float(_dt.datetime.combine(
+            value if isinstance(value, _dt.date) and not isinstance(
+                value, _dt.datetime) else value.date(),
+            _dt.time()).timestamp()), '')
+    text = str(value)
+    number = _as_number(text)
+    if number is not None:
+        return (0, number, '')
+    return (1, 0.0, text.casefold())
+
+
+def looks_like_a_header(rows: Sequence[Sequence[Any]]) -> bool:
+    """Whether the first row is a heading rather than data.
+
+    Read across the whole row, not down the column being sorted: a column
+    of names under the heading "Name" is text over text and says nothing,
+    while the "Betrag" beside it sits over numbers and settles it.
+
+    With nothing to go on -- text everywhere -- it is taken as a heading,
+    which is what a spreadsheet assumes too. Sorting a heading into the
+    middle of the data is the worse mistake of the two, and not one that
+    can be spotted by looking at the top of the sheet.
+    """
+    if len(rows) < 2:
+        return False
+    first = rows[0]
+    if not any(isinstance(cell, str) and cell.strip() for cell in first):
+        return False
+    for row in rows[1:6]:
+        for index, top in enumerate(first):
+            if index >= len(row):
+                continue
+            below = row[index]
+            if below is None or not isinstance(top, str) or not top.strip():
+                continue
+            if _as_number(str(top)) is not None:
+                continue          # the heading is itself a number
+            if not isinstance(below, str) or _as_number(str(below)) is not None:
+                return True
+    return True
+
+
+def sort_sheet(path: Path, sheet_name: str, column: int, *,
+               descending: bool = False, header: Optional[bool] = None,
+               backup: bool = True, backup_dir: Optional[Path] = None
+               ) -> Tuple[Optional[Path], bool]:
+    """Sort a whole sheet by one column, in the file. Returns (backup, header).
+
+    The whole sheet, not the window on screen: sorting the rows that happen
+    to be visible would interleave them with the ones that are not, and the
+    file would be scrambled in a way nobody could see.
+
+    Formulas move with their row. A reference that pointed at the row it
+    sits in still does afterwards -- which is the common case and the one
+    that silently reads the wrong cell if it is left alone.
+    """
+    path = Path(path)
+    column = int(column)
+    if column < 1:
+        raise SpreadsheetError('There is no such column to sort by.')
+
+    book = _load_workbook(filename=str(path), keep_vba=path.suffix.lower() == '.xlsm')
+    try:
+        if sheet_name not in book.sheetnames:
+            raise SpreadsheetError(f'There is no sheet called {sheet_name!r}.')
+        worksheet = book[sheet_name]
+        rows = list(worksheet.iter_rows())
+        if len(rows) < 2:
+            return None, False
+        values = [[cell.value for cell in row] for row in rows]
+        if column > len(values[0]) and all(column > len(v) for v in values):
+            raise SpreadsheetError('There is no such column to sort by.')
+
+        keep = looks_like_a_header(values) if header is None else bool(header)
+        start = 1 if keep else 0
+        index = column - 1
+
+        def _value(r):
+            return values[r][index] if index < len(values[r]) else None
+
+        def _blank(r):
+            cell = _value(r)
+            return cell is None or (isinstance(cell, str) and not cell.strip())
+
+        # Blanks last whichever way the sort goes: reversing the order would
+        # otherwise start a descending column with its empty rows. Sorting
+        # them separately is also what keeps them in the order they were in.
+        filled = [r for r in range(start, len(rows)) if not _blank(r)]
+        empty = [r for r in range(start, len(rows)) if _blank(r)]
+        filled.sort(key=lambda r: _sort_key(_value(r)), reverse=bool(descending))
+        body = filled + empty
+        if body == list(range(start, len(rows))):
+            return None, keep
+
+        made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+                if backup else None)
+
+        # Read everything out before writing anything back: the source and
+        # the target of a move overlap.
+        taken = []
+        for source in body:
+            row = []
+            for cell in rows[source]:
+                row.append((cell.value, copy.copy(cell._style)))
+            taken.append((source, row))
+
+        for offset, (source, row) in enumerate(taken):
+            target = start + offset
+            shift = target - source
+            for col_index, (value, style) in enumerate(row, start=1):
+                cell = worksheet.cell(row=target + 1, column=col_index)
+                if isinstance(value, str) and value.startswith('=') and shift:
+                    value = shift_formula(value, shift, 0)
+                cell.value = value
+                cell._style = style
+        _save_workbook(book, path)
+    finally:
+        book.close()
+    return made, keep
 
 
 def add_sheet(path: Path, name: str, *, backup: bool = True,
@@ -2883,6 +3019,15 @@ _GRID_JS_TEMPLATE = r"""
       items.push({label: 'Insert column left', run: function(){ insertCols(colNo, 1); }});
       items.push({label: 'Insert column right', run: function(){ insertCols(colNo + 1, 1); }});
       items.push({label: 'Delete column', run: function(){ deleteCols(colNo, 1); }});
+      if (editable && wrap.dataset.kind === 'xlsx') {
+        /* These reorder the sheet itself, over every row of it and not
+           only the ones on screen. Clicking a heading still sorts the view
+           and changes nothing -- that is the one to reach for by accident. */
+        items.push({label: 'Sort A → Z (whole sheet)',
+                    run: function(){ send('sort', [], {col: colNo}); }});
+        items.push({label: 'Sort Z → A (whole sheet)',
+                    run: function(){ send('sort', [], {col: colNo, desc: true}); }});
+      }
     }
     if (items.length) openMenu(e.clientX, e.clientY, items);
   }, false);

@@ -11667,6 +11667,37 @@ def create_tab(ctx):
             _calc_sheet_apply_cells(view['token'], cells)
             return
 
+        if action == 'sort':
+            # Reorders the file, so the same rule as the sheet actions: an
+            # unsaved journal addresses rows that are about to move.
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            if view.get('kind') != 'xlsx':
+                _calc_sheet_note('Sorting writes a workbook; this is a csv.')
+                return
+            try:
+                backup, kept = _sheet.sort_sheet(
+                    path, sheet_name, int(payload.get('col') or 0),
+                    descending=bool(payload.get('desc')),
+                    backup_dir=_calc_backup_dir(path))
+            except _sheet.SpreadsheetError as exc:
+                _calc_sheet_note(str(exc), color='#b26a00')
+                return
+            except Exception as exc:  # noqa: BLE001
+                _calc_sheet_note(f'Could not sort: {exc}')
+                return
+            where = _sheet.col_letter(int(payload.get('col') or 1) - 1)
+            note = f'Sorted by column {where}'
+            if kept:
+                note += ' · first row kept as the heading'
+            if backup is not None:
+                note += f' · backup: {backup.name}'
+            _calc_render_sheet(path, sheet_name=sheet_name,
+                               row_offset=int(view.get('row_offset') or 0),
+                               status=note)
+            return
+
         if action in ('new_sheet', 'rename_sheet', 'drop_sheet'):
             # These write the workbook straight away, so an unsaved journal
             # would be replayed against a file it no longer describes.

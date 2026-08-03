@@ -286,7 +286,7 @@ def _block_html(block: Block, editable: bool) -> str:
 DOC_CSS = (
     '.dw-page { font-family: Calibri, Carlito, Arial, sans-serif;'
     ' font-size:15px; line-height:1.55; color:#1a1a1a; background:#fff;'
-    ' padding:28px 34px; margin:0 auto; max-width:900px;'
+    ' padding:30px 34px; margin:0 auto; max-width:900px;'
     ' box-shadow:0 1px 4px rgba(0,0,0,0.14); box-sizing:border-box; }'
     '.dw-b { margin:0 0 9px 0; min-height:1em; white-space:pre-wrap;'
     ' overflow-wrap:anywhere; outline:none; border-radius:3px; }'
@@ -310,14 +310,21 @@ DOC_CSS = (
     ' border:1px solid #e0e0e0; border-radius:3px; }'
     '.dw-match { background:#fff59d; }'
     '.dw-match.dw-current { background:#ffb74d; }'
-    '.dw-bar { position:sticky; top:0; z-index:6; display:flex; gap:4px;'
-    ' align-items:center; padding:5px 8px; background:#eef1f4;'
-    ' border-bottom:1px solid #d6d6d6; margin:-28px -34px 14px -34px; }'
-    '.dw-btn { font-size:12px; min-width:26px; height:24px; cursor:pointer;'
-    ' border:1px solid #c8ced4; border-radius:3px; background:#fafbfc; }'
-    '.dw-btn:hover { background:#fff; border-color:#7aa7e8; }'
-    '.dw-style { font-size:12px; height:24px; border:1px solid #c8ced4;'
-    ' border-radius:3px; background:#fff; margin-left:4px; }'
+    '.dw-bar { position:sticky; top:0; z-index:6; display:flex; gap:6px;'
+    ' align-items:center; padding:7px 12px; margin:0 0 14px 0;'
+    ' background:linear-gradient(#fdfdfe,#f1f4f7);'
+    ' border:1px solid #d6dbe0; border-radius:5px;'
+    ' box-shadow:0 1px 3px rgba(0,0,0,0.07); box-sizing:border-box; }'
+    '.dw-btn { font-size:13px; min-width:30px; height:28px; cursor:pointer;'
+    ' border:1px solid #c8ced4; border-radius:4px; background:#fff;'
+    ' color:#1f2937; line-height:1; }'
+    '.dw-btn:hover { border-color:#1565c0; color:#12447a; }'
+    '.dw-btn:active { background:#e8f0fe; }'
+    '.dw-bar-sep { width:1px; height:20px; background:#d6dbe0; margin:0 4px; }'
+    '.dw-style { font-size:13px; height:28px; padding:0 6px;'
+    ' border:1px solid #c8ced4; border-radius:4px; background:#fff;'
+    ' color:#1f2937; min-width:150px; }'
+    '.dw-style:hover { border-color:#1565c0; }'
 )
 
 
@@ -328,6 +335,7 @@ def toolbar_html(current: str = 'Normal') -> str:
     out.append('<button class="dw-btn dw-i" title="Italic (Ctrl+I)"><i>I</i></button>')
     out.append('<button class="dw-btn dw-u" title="Underline (Ctrl+U)">'
                '<u>U</u></button>')
+    out.append('<span class="dw-bar-sep"></span>')
     out.append('<select class="dw-style" title="Paragraph style">')
     for label, code in PARAGRAPH_STYLES:
         chosen = ' selected' if code == current else ''
@@ -345,9 +353,10 @@ def render_html(document: DocxDocument, *, editable: bool = False) -> str:
     one; the editable unit inside a cell is the same addressed block as
     everywhere else.
     """
-    out: List[str] = ['<div class="dw-page">']
+    out: List[str] = []
     if editable:
         out.append(toolbar_html())
+    out.append('<div class="dw-page">')
     for block in document.blocks:
         if block.in_table:
             continue
