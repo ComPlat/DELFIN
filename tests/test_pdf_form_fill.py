@@ -425,3 +425,40 @@ def test_the_browser_reports_a_text_area_the_same_way():
     script = pv._pages_js('pdfv-1')
     assert "el.tagName === 'TEXTAREA'" in script, (
         "a text area's type is not 'text', so it would never be reported")
+
+
+def test_the_page_is_drawn_without_the_fields_when_the_overlay_has_them(panel, form):
+    """A filled field is drawn into the page by the renderer, so an editable
+    form showed its old value under the box being typed into -- and clearing
+    a field left the previous text sitting there."""
+    from delfin.agent import office
+
+    # Give the form a value, so there is something that could show through.
+    filled = form.with_name('gefuellt.pdf')
+    office.fill_pdf_form(form, {'name0': 'Musterfrau'}, output=filled)
+
+    panel.open(filled)
+    with_fields = bytes(panel.page_image(0).value)
+
+    doc = pv.open_document(filled)
+    try:
+        without = pv.render_page_png(doc, 0, panel.dpi(), annots=False)
+        with_annots = pv.render_page_png(doc, 0, panel.dpi(), annots=True)
+    finally:
+        doc.close()
+
+    assert with_annots != without, 'the value is drawn into the page'
+    assert with_fields == without, 'the panel drew the value under its own box'
+
+
+def test_a_document_without_a_form_still_shows_its_annotations(panel, tmp_path):
+    """Leaving annotations out is for forms the overlay replaces, not for
+    every stamp and comment in every document."""
+    panel.open(make_paper_with_a_link_button(tmp_path / 'paper.pdf'))
+    assert panel._fields == []
+    doc = pv.open_document(tmp_path / 'paper.pdf')
+    try:
+        expected = pv.render_page_png(doc, 0, panel.dpi(), annots=True)
+    finally:
+        doc.close()
+    assert bytes(panel.page_image(0).value) == expected
