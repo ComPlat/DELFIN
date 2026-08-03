@@ -31601,6 +31601,7 @@ def _smiles_to_xyz_isomers_impl(
     # metal, so those fall through to the legacy pipeline below unchanged.
     # Bit-exact OFF (default).  See delfin/manta/.
     _hapto_ff_fallback: Optional[List[Tuple[str, str]]] = None
+    _ffree_union: Optional[List[Tuple[str, str]]] = None   # DELFIN_FFFREE_UNION, see below
     if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
         try:
             from delfin.manta.converter_backend import _fffree_isomers
@@ -31673,7 +31674,34 @@ def _smiles_to_xyz_isomers_impl(
                 # The live version therefore lives where the frame's own order is known:
                 # converter_backend._ffree_ring_pucker_frames, called next to the frame it is
                 # a sibling of.  ONE env read site, and it is over there.
-                return _ff, None
+                #
+                # ===== UNION INSTEAD OF EITHER-OR (DELFIN_FFFREE_UNION, default OFF) =====
+                #
+                # THE ONE PLACE DELFIN_FFFREE_UNION IS READ.
+                #
+                # The architecture treats the two constructors as ALTERNATIVES: whoever
+                # answers first owns the system, and the self-gate picks.  Measured
+                # 2026-08-02, five times, that is exactly what makes scope impossible --
+                # CONFORMER_SEATING -78 capabilities, BITE_FREE -52, CHELATE_BACKBONE -52,
+                # COLLAPSE_SELECT -15, TET_CHELATE -3.  Every one of them let FF-free WIN a
+                # system it used to hand over, and legacy had built it better.  The loss is
+                # not chemistry, it is the either-or.
+                #
+                # They do not have to be alternatives.  A manifold is a SET of frames, and
+                # two constructors can both contribute to it.  The eye's crystal floors read
+                # the BEST frame over the manifold, so adding legacy's frames next to ours
+                # can only raise them; and nothing of ours is removed, so nothing of ours can
+                # regress.  This is the same shape as every flag that ever landed here
+                # (D8_SQ_ADD, CN6_OH_ADD, STEREOCENTER_ENUM, CN4_BOTH): ADD, never replace.
+                #
+                # Mechanically it is the _hapto_ff_fallback pattern one line up, with the
+                # early return dropped instead of conditioned: stash our frames, let the
+                # legacy pipeline run to completion, concatenate at the end.  Costs a second
+                # build per system -- and the machine sat half idle all night.
+                if _delfin_env_int("DELFIN_FFFREE_UNION", 0):
+                    _ffree_union = _ff
+                else:
+                    return _ff, None
 
     # Resolve the quality profile once per call so the seed count,
     # chelate ranks, topK and Pre-UFF cap follow the requested preset.
@@ -34761,6 +34789,18 @@ def _smiles_to_xyz_isomers_impl(
     # sees the FINAL collapsed frames those steps add (an earlier hook missed them: the frames were not yet
     # collapsed).  Default-OFF byte-id (DELFIN_FFFREE_ISOLATED_SEAT); per-frame rollback keeps never-worse.
     results = _apply_isolated_reseat_if_enabled(mol, results, _dual_parse_done)
+
+    # UNION (see the DELFIN_FFFREE_UNION block at the FF-free return): when the FF-free
+    # builder produced frames and was told not to short-circuit, its frames are PREPENDED
+    # here so frame 0 stays the FF-free pick -- the deterministic, construction-first one --
+    # and legacy's spray follows as additional manifold members.  Strictly additive in both
+    # directions: neither constructor's frames are altered or dropped.
+    if _ffree_union:
+        try:
+            _seen_x = {x for x, _l in results}
+            results = list(_ffree_union) + [(x, l) for x, l in results if x not in _seen_x]
+        except Exception:
+            results = list(_ffree_union) + list(results)
 
     return results, None
 
