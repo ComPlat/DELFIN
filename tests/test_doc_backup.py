@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import pathlib
+
 import pytest
 
 from delfin import doc_backup as bk
@@ -71,15 +73,33 @@ def test_the_first_copy_carries_no_number(book):
     assert bk.make_backup(book).name.endswith(".bak.xlsx")
 
 
-def test_the_naming_matches_the_file_browser(book):
-    """Pinned against the browser's own helper: when one of the two moves,
-    this fails instead of the histories quietly splitting."""
+def test_the_file_browser_writes_this_history_and_not_its_own(book):
+    """The browser used to carry a copy of this numbering. It now asks for
+    a versioned backup and gets one from here, so the two cannot drift --
+    there is only one of them. What is pinned is that it still delegates:
+    a local implementation reappearing here is what would split the folder
+    the user opens into half a history each."""
     sheet_view = pytest.importorskip("delfin.dashboard.spreadsheet_view")
+    source = pathlib.Path(sheet_view.__file__).read_text(encoding="utf-8")
+    assert "def versioned_backup_path" not in source, (
+        "the browser grew its own numbering again"
+    )
+
     folder = book.parent / "Backups"
-    folder.mkdir(exist_ok=True)
-    theirs = sheet_view.versioned_backup_path(book, folder)
-    ours = bk.versioned_backup_path(book, folder)
-    assert theirs.name == ours.name
+    made = sheet_view.make_backup(book, folder=folder, versioned=True)
+    assert made == bk.versioned_backup_path(book, folder).with_name(made.name)
+    assert made.name == "vorgaenge.bak.xlsx"
+
+    book.write_bytes(b"changed")
+    assert bk.make_backup(book, folder=folder).name == "vorgaenge.bak2.xlsx", (
+        "the two started separate sequences"
+    )
+
+
+def test_the_browser_still_keeps_one_copy_beside_a_calculation(book):
+    """Its own users have always found it there, and that half is not
+    this module's business."""
+    sheet_view = pytest.importorskip("delfin.dashboard.spreadsheet_view")
     assert sheet_view.backup_path_for(book).name == "vorgaenge.bak.xlsx"
 
 

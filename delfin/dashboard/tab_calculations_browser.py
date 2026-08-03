@@ -6216,19 +6216,21 @@ def create_tab(ctx):
             calc_scroll_to(scroll_to)
 
     def calc_scroll_to(target):
+        # Whichever view is up: a text file, a Word document or the grid.
+        scroller = f'window.__delfinCalcScroller({json.dumps(calc_scope_id)})'
         if target == 'top':
-            _run_js("""
-            setTimeout(function(){
-                const box = document.getElementById('calc-content-box');
-                if (box) { box.scrollTop = 0; }
-            }, 0);
+            _run_js(f"""
+            setTimeout(function(){{
+                const box = {scroller};
+                if (box) {{ box.scrollTop = 0; box.scrollLeft = 0; }}
+            }}, 0);
             """)
         elif target == 'bottom':
-            _run_js("""
-            setTimeout(function(){
-                const box = document.getElementById('calc-content-box');
-                if (box) { box.scrollTop = box.scrollHeight; }
-            }, 0);
+            _run_js(f"""
+            setTimeout(function(){{
+                const box = {scroller};
+                if (box) {{ box.scrollTop = box.scrollHeight; }}
+            }}, 0);
             """)
         elif target == 'match' and state['current_match'] >= 0:
             _run_js("""
@@ -13717,6 +13719,17 @@ def create_tab(ctx):
             document.addEventListener('paste', function(e){
                 var selectEl = activeSelectForPaste();
                 if (!selectEl) return;
+                /* Not a paste that landed in something being edited. A copy
+                   out of a spreadsheet program carries the cells as text AND
+                   a picture of them, and this listener runs before the grid's
+                   own: it saw the picture, took the paste, and uploaded an
+                   image into the folder instead of filling the cells. */
+                var into = e.target;
+                if (into && into.closest && into.closest(
+                        '.dsheet-root, .dw-page, textarea, input,'
+                        + ' [contenteditable="true"]')) {
+                    return;
+                }
                 var files = _clipboardFiles(e);
                 if (!files.length) return;
                 var activeInside = root._delfinPasteArmed || root.contains(document.activeElement);
@@ -14131,6 +14144,16 @@ def create_tab(ctx):
         var root = document.querySelector('.' + scope);
         return root ? root.querySelectorAll('.' + sel) : [];
     };
+    /* Whatever is scrolling in this tab right now: the text view and the
+       Word view put their content in .calc-content-box, the spreadsheet
+       grid scrolls its own body. Top and End are about the document on
+       screen, not about one of the ways of showing one. */
+    window.__delfinCalcScroller = window.__delfinCalcScroller || function(scope) {
+        var root = document.querySelector('.' + scope);
+        if (!root) return null;
+        return root.querySelector('.dsheet-scroll')
+            || root.querySelector('.calc-content-box');
+    };
     window.__delfinCalcS = window.__delfinCalcS || function(scope) {
         var all = (window.__delfinCalcStates = window.__delfinCalcStates || {});
         return (all[scope] = all[scope] || {});
@@ -14420,6 +14443,8 @@ def create_tab(ctx):
         'calc_sort_dropdown': calc_sort_dropdown,
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
+        'calc_top_btn': calc_top_btn,
+        'calc_bottom_btn': calc_bottom_btn,
         'calc_search_result': calc_search_result,
         'calc_file_info': calc_file_info,
         'calc_sheet_payload_input': calc_sheet_payload_input,

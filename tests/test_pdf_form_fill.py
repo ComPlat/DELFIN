@@ -462,3 +462,112 @@ def test_a_document_without_a_form_still_shows_its_annotations(panel, tmp_path):
     finally:
         doc.close()
     assert bytes(panel.page_image(0).value) == expected
+
+
+# ---------------------------------------------------------------------------
+# Renaming a field
+# ---------------------------------------------------------------------------
+
+def make_badly_named_pdf(path):
+    """What a form often arrives as: Text3, Text4, Check5."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    for index, (name, top) in enumerate((('Text3', 100), ('Text4', 140))):
+        widget = fitz.Widget()
+        widget.field_name = name
+        widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+        widget.rect = fitz.Rect(60, top, 300, top + 20)
+        page.add_widget(widget)
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_a_field_can_be_given_a_name_that_says_what_it_holds(tmp_path):
+    path = make_badly_named_pdf(tmp_path / 'antrag.pdf')
+    assert pv.rename_form_field(path, 'Text3', 'Nachname') == 'Nachname'
+
+    doc = pv.open_document(path)
+    try:
+        names = [f.name for f in pv.form_fields(doc)]
+    finally:
+        doc.close()
+    assert names == ['Nachname', 'Text4']
+
+
+def test_the_new_name_is_what_the_writer_fills_by(tmp_path):
+    """The name is the whole point: it is how the agent and anyone
+    processing the document afterwards address the field."""
+    from delfin.agent import office
+
+    path = make_badly_named_pdf(tmp_path / 'antrag.pdf')
+    pv.rename_form_field(path, 'Text3', 'Nachname')
+    office.fill_pdf_form(path, {'Nachname': 'Musterfrau'},
+                         output=tmp_path / 'out.pdf')
+    written = {f['name']: f['value']
+               for f in office.pdf_form_fields(tmp_path / 'out.pdf')['fields']}
+    assert written['Nachname'] == 'Musterfrau'
+
+
+def test_a_name_already_in_use_is_refused(tmp_path):
+    path = make_badly_named_pdf(tmp_path / 'antrag.pdf')
+    before = path.read_bytes()
+    with pytest.raises(pv.PdfError) as excinfo:
+        pv.rename_form_field(path, 'Text3', 'Text4')
+    assert 'already' in str(excinfo.value)
+    assert path.read_bytes() == before
+
+
+def test_a_name_the_format_cannot_carry_is_refused(tmp_path):
+    """A dot is the separator in the form's own hierarchy, so a field
+    called a.b becomes a child of something that does not exist."""
+    path = make_badly_named_pdf(tmp_path / 'antrag.pdf')
+    for bad in ('a.b', 'x[1]', '   '):
+        with pytest.raises(pv.PdfError):
+            pv.rename_form_field(path, 'Text3', bad)
+
+
+def test_renaming_a_field_that_is_not_there(tmp_path):
+    path = make_badly_named_pdf(tmp_path / 'antrag.pdf')
+    with pytest.raises(pv.PdfError) as excinfo:
+        pv.rename_form_field(path, 'Nope', 'X')
+    assert 'no field called' in str(excinfo.value)
+
+
+def test_the_same_name_again_is_a_no_op(tmp_path):
+    path = make_badly_named_pdf(tmp_path / 'antrag.pdf')
+    before = path.read_bytes()
+    assert pv.rename_form_field(path, 'Text3', 'Text3') == 'Text3'
+    assert path.read_bytes() == before
+
+
+def test_renaming_is_refused_while_entries_are_unsaved(panel, tmp_path):
+    """The entries are held against the name they were typed into."""
+    panel.open(make_badly_named_pdf(tmp_path / 'antrag.pdf'))
+    _tell(panel, action='fields', values={'Text3': 'etwas'})
+    _tell(panel, action='rename_field', old='Text3', name='Nachname')
+
+    assert 'Save or reset' in panel.form_status.value
+    doc = pv.open_document(tmp_path / 'antrag.pdf')
+    try:
+        assert [f.name for f in pv.form_fields(doc)] == ['Text3', 'Text4']
+    finally:
+        doc.close()
+
+
+def test_renaming_through_the_panel_shows_the_new_name(panel, tmp_path):
+    panel.open(make_badly_named_pdf(tmp_path / 'antrag.pdf'))
+    _tell(panel, action='rename_field', old='Text3', name='Nachname')
+
+    assert 'Nachname' in panel.form_status.value
+    assert 'data-field="Nachname"' in panel._overlays[0].value
+
+
+def test_the_rename_box_opens_on_the_field_itself():
+    script = pv._pages_js('pdfv-1')
+    assert "addEventListener('contextmenu'" in script
+    body = script[script.index("addEventListener('contextmenu'"):][:900]
+    assert 'pdfv-rename' in body
+    assert "action: 'rename_field'" in body

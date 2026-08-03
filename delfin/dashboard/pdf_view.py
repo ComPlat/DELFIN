@@ -208,6 +208,44 @@ _PAGES_JS_TEMPLATE = r"""
       typing = setTimeout(function(){ typing = null; reportField(el); }, 300);
     });
 
+    /* The field's name is what it is filled in by, and a form that arrived
+       with Text3 and Text4 on it cannot be filled in by name until those
+       say what they hold. Renaming lives on the field itself rather than in
+       a list beside the page: the name belongs to the box it names. */
+    pages.addEventListener('contextmenu', function(e){
+      var el = e.target;
+      if (!el.classList || !el.classList.contains('pdfv-f')) return;
+      e.preventDefault();
+      if (pages.querySelector('.pdfv-rename')) return;
+      var box = document.createElement('input');
+      box.className = 'pdfv-rename';
+      box.value = el.dataset.field || '';
+      box.title = 'New name for this field';
+      box.style.left = el.style.left;
+      box.style.top = el.style.top;
+      box.style.width = el.style.width;
+      el.parentNode.appendChild(box);
+      box.focus();
+      box.select();
+      var done = false;
+      function finish(ok){
+        if (done) return;
+        done = true;
+        var name = box.value.trim();
+        var was = el.dataset.field;
+        box.remove();
+        if (ok && name && name !== was) {
+          send({action: 'rename_field', old: was, name: name});
+        }
+      }
+      box.addEventListener('keydown', function(ev){
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+        ev.stopPropagation();
+      });
+      box.addEventListener('blur', function(){ finish(false); });
+    });
+
     /* Scroll to a page, asked for by the kernel when the page number, a
        search hit or the step buttons move. */
     root.__pdfvGoto = function(index){
@@ -437,6 +475,10 @@ FORM_CSS = (
     '.pdfv-f.pdfv-changed { background:#fff6cc; border-color:#ef9a00; }'
     '.pdfv-f[disabled] { background:#f0f0f0; border-style:dashed;'
     ' cursor:not-allowed; color:#555; }'
+    '.pdfv-rename { position:absolute; box-sizing:border-box;'
+    ' pointer-events:auto; z-index:5; background:#fff; color:#111;'
+    ' border:2px solid #1565c0; border-radius:2px; padding:0 3px;'
+    ' font-size:13px; min-height:22px; }'
 )
 
 
@@ -522,6 +564,86 @@ def overlay_html(placed: Sequence[Tuple['FormField', Tuple[int, int, int, int]]]
                 f'<input type="text"{common} '
                 f'value="{_html.escape(str(current), quote=True)}">')
     return ''.join(out)
+
+
+# A field name is a path in the form's own hierarchy, so a dot in one
+# makes it a child of something that does not exist.
+_BAD_FIELD_CHARS = set('.[]')
+
+
+def check_field_name(name: str, existing: Sequence[str] = ()) -> str:
+    """Return a usable field name, or say why this one is not."""
+    name = str(name or '').strip()
+    if not name:
+        raise PdfError('A field needs a name.')
+    bad = sorted(set(name) & _BAD_FIELD_CHARS)
+    if bad:
+        raise PdfError(
+            'A field name cannot contain ' + ' '.join(repr(c) for c in bad) + '.')
+    if name in set(existing):
+        raise PdfError(f'There is already a field called {name!r}.')
+    return name
+
+
+def rename_form_field(path, old: str, new: str) -> str:
+    """Rename one form field in place. Returns the name that was used.
+
+    The name is what the field is filled in by -- by the agent, by whoever
+    processes the document afterwards, and by anyone reading the form's own
+    logic. A form that arrived with Text3 and Text4 on it cannot be filled
+    in by name until those say what they hold.
+    """
+    fitz = _fitz()
+    path = Path(path)
+    try:
+        doc = fitz.open(str(path))
+    except Exception as exc:
+        raise PdfError(f'PDF could not be opened: {exc}') from exc
+    try:
+        names = []
+        target = None
+        # The pages are kept: a widget belongs to its page, and letting the
+        # page go makes the widget unusable ("Annot is not bound to a page")
+        # at the moment it is written to.
+        pages = []
+        for index in range(int(getattr(doc, 'page_count', 0) or 0)):
+            page = doc.load_page(index)
+            pages.append(page)
+            for widget in (page.widgets() or []):
+                found = str(getattr(widget, 'field_name', '') or '')
+                names.append(found)
+                if found == old and target is None:
+                    target = widget
+        if target is None:
+            raise PdfError(f'There is no field called {old!r}.')
+        new = check_field_name(new, [n for n in names if n != old])
+        if new == old:
+            return old
+        target.field_name = new
+        target.update()
+        _save_pdf(doc, path)
+    finally:
+        doc.close()
+    return new
+
+
+def _save_pdf(doc, path: Path) -> None:
+    """Write a document over itself without risking a half-written file."""
+    import os
+    import tempfile
+
+    handle, temporary = tempfile.mkstemp(
+        dir=str(path.parent), prefix='.pdfv-', suffix='.pdf')
+    os.close(handle)
+    try:
+        doc.save(temporary)
+        os.replace(temporary, str(path))
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def clamp_page(page: Any, total_pages: int) -> int:
@@ -1487,6 +1609,36 @@ class PdfPanel:
             if self._zoom == FIT_WIDTH:
                 self._resize_pages()
                 self._render()
+            return
+
+        if action == 'rename_field':
+            if self._values:
+                self.form_status.value = (
+                    '<span style="color:#b26a00;">Save or reset the entries '
+                    'first.</span>')
+                return
+            try:
+                used = rename_form_field(
+                    self._path, str(message.get('old') or ''),
+                    str(message.get('name') or ''))
+            except PdfError as exc:
+                self.form_status.value = (
+                    f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.form_status.value = (
+                    f'<span style="color:#d32f2f;">Could not rename: '
+                    f'{_html.escape(str(exc))}</span>')
+                return
+            page, zoom = self._page, self._zoom
+            source = self._path
+            self.close()
+            self.open(source)
+            self._zoom = zoom
+            self.goto_page(page)
+            self.form_status.value = (
+                f'<span style="color:#2e7d32;">Field renamed to '
+                f'{_html.escape(used)}</span>')
             return
 
         if action == 'fields':
