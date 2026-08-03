@@ -809,6 +809,54 @@ def _sp2_planarity_worst(syms, P) -> float:
     return worst
 
 
+def _org_bond_worst(syms, P) -> float:
+    """Worst RELATIVE deviation of a bonded heavy-heavy pair from its covalent ideal.
+
+    WHY THIS AND NOT THE COLLAPSE TEST.  The collapse tests fire below 0.82 x ideal, which is a
+    destroyed bond.  The eye's org_bond axis is graded and fires far earlier, and that is what
+    actually blocked the beta sibling: on AVUNUC02 -- the ONE system standing between that
+    lever and the gate -- the added frame carried n_root_defects 0 -> 2 with no collapse and no
+    contact, and the rows say why:
+
+        org_bond_worst_sev   2.22 -> 2.71        (worse)
+        coord_angle_best_maxdev  28.5 -> 22.8    (better)
+        arrangement_worst_dev    87.4 -> 85.1    (better)
+
+    The beta-optimal pick is a DIFFERENT conformer out of the pool, so it brings its own
+    internal bond lengths; it was chosen for being flat at the donor and paid for it with a
+    strained backbone bond.  Flatness does not buy a stretched bond, so a sibling that is worse
+    here is not added.  Symmetric and relative, so it reads the same for any element pair.
+    """
+    P = np.asarray(P, float)
+    n = len(syms)
+    worst = 0.0
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            ideal = _bd._ideal_bond(syms[i], syms[j])
+            d = float(np.linalg.norm(P[i] - P[j]))
+            if d > 1.30 * ideal or ideal <= 0:
+                continue                       # not a bond
+            dev = abs(d - ideal) / ideal
+            if dev > worst:
+                worst = dev
+    return worst
+
+
+_ORG_BOND_BAND = 0.02         # 2 % of the covalent ideal: deterministic wobble, not a defect
+
+
+def _org_bond_ok(syms, P, base_worst) -> bool:
+    """A sibling may not strain a ligand bond further than the frame it hangs off already does."""
+    try:
+        return _org_bond_worst(syms, P) <= float(base_worst) + _ORG_BOND_BAND
+    except Exception:
+        return False
+
+
 def _sp2_planarity_ok(syms, P, base_worst) -> bool:
     """A sibling may not bend an sp2 centre further than the frame it hangs off already does."""
     try:
@@ -1524,6 +1572,14 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                             if (AC._collapsed_heavy_bonds_strict(_bs, _bP)
                                     and not AC._collapsed_heavy_bonds_strict(syms, P)):
                                 _ok = False                   # a collapse the primary does not have
+                            # ... and the graded bond axis, which is what AVUNUC02 actually
+                            # failed on: no collapse, no contact, a STRAINED ligand bond
+                            # (org_bond_worst_sev 2.22 -> 2.71).  See _org_bond_worst.
+                            if _ok and not _org_bond_ok(_bs, _bP, _org_bond_worst(syms, P)):
+                                _ok = False
+                            if _ok and not _sp2_planarity_ok(_bs, _bP,
+                                                             _sp2_planarity_worst(syms, P)):
+                                _ok = False                   # bends an sp2 the primary keeps flat
                         except Exception:
                             _ok = False                       # cannot prove it is as good -> do not add
                     if _ok:
