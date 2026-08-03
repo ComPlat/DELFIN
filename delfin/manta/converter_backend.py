@@ -1490,9 +1490,6 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                     if (AC._beta_score(_ss, _sP, _dloc)
                             > AC._beta_score(list(syms), P, _dloc) + 1e-9):
                         continue
-                    _pmin = _min_nonbonded_heavy(syms, P)
-                    if _pmin is not None and not _interlig_clash_ok(_ss, _sP, _pmin):
-                        continue
                 except Exception:
                     continue                          # cannot prove equivalence -> do not add
                 results.append((_sxyz, f"{_lab}-conf{_sfi+1}"))
@@ -2075,14 +2072,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                     continue                # skip a bad frame; keep the clean ones
                 # Same bar as the primary, for the same reason as in the chelate path above.
                 # No donor indices are available on this branch (the ensemble returns symbols
-                # and coordinates only), so beta cannot be scored here -- collapse and contact
-                # can, and they are checked.
+                # and coordinates only), so beta cannot be scored here; collapse can.
                 try:
                     if (AC._collapsed_heavy_bonds_strict(_es, _eP)
                             and not AC._collapsed_heavy_bonds_strict(syms, P)):
-                        continue
-                    _pmin = _min_nonbonded_heavy(syms, P)
-                    if _pmin is not None and not _interlig_clash_ok(_es, _eP, _pmin):
                         continue
                 except Exception:
                     continue                # cannot prove equivalence -> do not add
