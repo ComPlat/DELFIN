@@ -747,6 +747,76 @@ def _min_nonbonded_heavy(syms, P) -> float:
     return best
 
 
+_SP2_PLANAR_BAND = 3.0        # deg of angle-sum deficit a sibling may add; same width as the
+                              # gate's own pyramid band (harness/loop.py:1255)
+
+
+def _sp2_planarity_worst(syms, P) -> float:
+    """Worst deviation from planarity (deg) over every THREE-COORDINATE heavy atom.
+
+    THE QUANTITY THE GATE ACTUALLY READS.  pyramid_frame_regressed compares
+    ``pyramid_over_worst`` -- the WORST frame's sp2 Walsh excess -- and it has NO allowance for
+    added frames, deliberately: a manifold is only complete up to frames that are themselves
+    realistic, so a conformer that pyramidalises an sp2 centre is a defect and not coverage.
+
+    The sibling bars first used ``_beta_score`` for this and it did not work: measured on 187
+    systems, adding that test to both ensemble paths left the blocked systems EXACTLY unchanged
+    (LIBCEH, TIBMEX, TIQFAB, XUYXOE before and after).  The two are different quantities.
+    ``_beta_score`` asks whether the METAL lies in a DONOR's plane, scores only donors that
+    have a plane, and counts only the excess over the crystal band; the gate asks whether ANY
+    sp2 centre in the frame -- backbone included -- has been bent out of its own plane.  A
+    conformer can be flawless at both donors and still fold a backbone sp2.
+
+    Geometry only, no mol and no hybridisation label: an atom with exactly three bonded
+    neighbours is planar when its three bond angles sum to 360 deg, and the deficit from 360
+    is the deviation (0 for planar, about 31.5 for a perfect tetrahedral centre).  Atom-
+    specific by construction -- no functional group is named, and a centre nobody has
+    classified reads the same as any other.  Metals are skipped, so the metal-donor bond is
+    never one of the three.
+    """
+    P = np.asarray(P, float)
+    n = len(syms)
+    heavy = [i for i in range(n) if not _bd._is_metal(syms[i])]
+    nbrs = {i: [] for i in heavy}
+    for ai in range(len(heavy)):
+        i = heavy[ai]
+        for bj in range(ai + 1, len(heavy)):
+            j = heavy[bj]
+            if float(np.linalg.norm(P[i] - P[j])) <= 1.30 * _bd._ideal_bond(syms[i], syms[j]):
+                nbrs[i].append(j)
+                nbrs[j].append(i)
+    worst = 0.0
+    for i in heavy:
+        v = nbrs[i]
+        if len(v) != 3 or syms[i] == "H":
+            continue
+        u = []
+        for j in v:
+            d = P[j] - P[i]
+            nd = float(np.linalg.norm(d))
+            if nd < 1e-9:
+                u = []
+                break
+            u.append(d / nd)
+        if len(u) != 3:
+            continue
+        s = 0.0
+        for a, b in ((0, 1), (0, 2), (1, 2)):
+            s += float(np.degrees(np.arccos(max(-1.0, min(1.0, float(np.dot(u[a], u[b])))))))
+        dev = 360.0 - s
+        if dev > worst:
+            worst = dev
+    return worst
+
+
+def _sp2_planarity_ok(syms, P, base_worst) -> bool:
+    """A sibling may not bend an sp2 centre further than the frame it hangs off already does."""
+    try:
+        return _sp2_planarity_worst(syms, P) <= float(base_worst) + _SP2_PLANAR_BAND
+    except Exception:
+        return False
+
+
 def _interlig_clash_ok(syms, P, base_min) -> bool:
     """NEVER-WORSE inter-ligand vdW gate for a NEW conformer frame (re-embed/re-seat).
 
@@ -1512,6 +1582,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             except Exception:
                 _sens = None
             _pxyz = _xyz(syms, P)
+            _pworst = None                            # primary's worst sp2 bend, on first need
             for _sfi, _sfr in enumerate(_sens or []):
                 if max_isomers and len(results) >= max_isomers:
                     break
@@ -1537,6 +1608,10 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                     if (AC._beta_score(_ss, _sP, _dloc)
                             > AC._beta_score(list(syms), P, _dloc) + 1e-9):
                         continue
+                    if _pworst is None:
+                        _pworst = _sp2_planarity_worst(syms, P)
+                    if not _sp2_planarity_ok(_ss, _sP, _pworst):
+                        continue                      # bends an sp2 the primary keeps flat
                 except Exception:
                     continue                          # cannot prove equivalence -> do not add
                 results.append((_sxyz, f"{_lab}-conf{_sfi+1}"))
@@ -2108,6 +2183,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                 _ens = None
             _pxyz = _xyz(syms, P)
             _hdons = None                   # donor indices, derived once on first need
+            _hworst = None                  # primary's worst sp2 bend, on first need
             for _efi, _efr in enumerate(_ens or []):
                 if max_isomers and len(results) >= max_isomers:
                     break
@@ -2140,6 +2216,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                     if (AC._beta_score(_es, _eP, _hdons)
                             > AC._beta_score(list(syms), P, _hdons) + 1e-9):
                         continue            # a conformer that pyramidalises a donor is a defect
+                    if _hworst is None:
+                        _hworst = _sp2_planarity_worst(syms, P)
+                    if not _sp2_planarity_ok(_es, _eP, _hworst):
+                        continue            # ... and one that bends a BACKBONE sp2 likewise
                 except Exception:
                     continue                # cannot prove equivalence -> do not add
                 results.append((_exyz, f"{base_label}-conf{_efi+1}"))
