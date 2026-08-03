@@ -2103,6 +2103,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             except Exception:
                 _ens = None
             _pxyz = _xyz(syms, P)
+            _hdons = None                   # donor indices, derived once on first need
             for _efi, _efr in enumerate(_ens or []):
                 if max_isomers and len(results) >= max_isomers:
                     break
@@ -2114,12 +2115,27 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                                        exempt_pairs=_ex):
                     continue                # skip a bad frame; keep the clean ones
                 # Same bar as the primary, for the same reason as in the chelate path above.
-                # No donor indices are available on this branch (the ensemble returns symbols
-                # and coordinates only), so beta cannot be scored here; collapse can.
+                # The ensemble returns symbols and coordinates only, but the donors ARE known
+                # here: the frame is [metal] + one AddHs block per vertex_spec in order, so
+                # donor i sits at its block start plus its own local index -- the very layout
+                # _heteroleptic_block_offsets already computes.  Measured why it matters: of
+                # the four systems still blocking the additive ensemble on pyramid_frame_
+                # regressed, THREE (LIBCEH, TIQFAB, XUYXOE) build no chelate frame at all and
+                # come through here, where the beta test was missing.
                 try:
                     if (AC._collapsed_heavy_bonds_strict(_es, _eP)
                             and not AC._collapsed_heavy_bonds_strict(syms, P)):
                         continue
+                    if _hdons is None:
+                        _hdons = []
+                        _hp = 1
+                        for _hfrag, _hdi in vertex_specs:
+                            _hdons.append(_hp + int(_hdi))
+                            _hp += Chem.AddHs(_hfrag).GetNumAtoms()
+                        _hdons = sorted(_hdons)
+                    if (AC._beta_score(_es, _eP, _hdons)
+                            > AC._beta_score(list(syms), P, _hdons) + 1e-9):
+                        continue            # a conformer that pyramidalises a donor is a defect
                 except Exception:
                     continue                # cannot prove equivalence -> do not add
                 results.append((_exyz, f"{base_label}-conf{_efi+1}"))
