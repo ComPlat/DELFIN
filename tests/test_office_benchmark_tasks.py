@@ -115,3 +115,29 @@ def test_no_office_task_expects_a_tool_that_does_not_exist():
             if getattr(signal, "against", "") == "tool_name":
                 assert signal.pattern in known, (
                     f"{task.id} expects a tool named {signal.pattern!r}")
+
+
+def test_office_tasks_start_inside_the_office_folder():
+    """Office mode is defined by working inside one folder, so a task in
+    that mode has to start there. Pointed at the repository root, the
+    fixtures sat three levels down and whether the model found them was
+    luck — one run cited the full path, the next answered "the file is
+    not in the working directory", and that scored as a failure of a
+    rubric it never got to exercise."""
+    import inspect
+
+    from delfin.agent import benchmark_runner
+
+    source = inspect.getsource(benchmark_runner._build_engine) if hasattr(
+        benchmark_runner, "_build_engine") else inspect.getsource(
+        benchmark_runner)
+    assert 'if (mode or "") == "office":' in source
+    assert '"office_workspace"' in source
+
+
+def test_the_office_prompts_name_files_the_way_a_user_would():
+    """Bare file names, not fixture paths — the workspace is what makes
+    them resolvable, and a prompt carrying a repository path would be
+    testing something no user ever types."""
+    for task in _office_tasks():
+        assert "tests/fixtures" not in task.prompt, task.id
