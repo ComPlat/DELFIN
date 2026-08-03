@@ -1122,7 +1122,9 @@ _GRID_JS_TEMPLATE = r"""
     var tr0 = tbody.rows[cur.r];
     if (tr0 && addrEl) addrEl.textContent = colName(cur.c) + (tr0.dataset.r || '');
   }
-  function moveTo(r, c, extend){
+  /* keepView: select without scrolling. Picking a whole column or row is a
+     selection, not a journey -- the sheet has to stay where the eye left it. */
+  function moveTo(r, c, extend, keepView){
     var maxR = tbody.rows.length - 1, maxC = colCount();
     r = Math.max(0, Math.min(maxR, r));
     c = Math.max(1, Math.min(maxC, c));
@@ -1138,7 +1140,7 @@ _GRID_JS_TEMPLATE = r"""
     if (!extend) anchor = {r: r, c: c};
     paint();
     var td = cellAt(r, c);
-    if (td) reveal(td);
+    if (td && !keepView) reveal(td);
   }
   function reveal(td){
     var headH = thead.getBoundingClientRect().height || 22;
@@ -1442,17 +1444,22 @@ _GRID_JS_TEMPLATE = r"""
     if (editing && editing.td === td) return;
     if (editing) commitEdit();
     if (th && th.parentNode === thead && th.cellIndex > 0) {
+      /* Whole column: anchor at the far end so the active cell is the top one,
+         and hold the viewport -- revealing the last row would drop the user at
+         the bottom of the sheet for wanting to pick a column. */
       e.preventDefault();
-      anchor = {r: 0, c: th.cellIndex};
-      moveTo(tbody.rows.length - 1, th.cellIndex, true);
+      anchor = {r: tbody.rows.length - 1, c: th.cellIndex};
+      moveTo(0, th.cellIndex, true, true);
       scroll.focus({preventScroll: true});
       return;
     }
     if (th && th.parentNode.parentNode === tbody) {
+      /* Whole row, same reasoning sideways: the active cell is the leftmost
+         one and the horizontal scroll does not move. */
       e.preventDefault();
       var ri = rowIndexOf(th.parentNode);
-      anchor = {r: ri, c: 1};
-      moveTo(ri, colCount(), true);
+      anchor = {r: ri, c: colCount()};
+      moveTo(ri, 1, true, true);
       scroll.focus({preventScroll: true});
       return;
     }
@@ -1539,7 +1546,8 @@ _GRID_JS_TEMPLATE = r"""
     else if (ctrl && (e.key === 'v' || e.key === 'V')) { handled = false; }
     else if (ctrl && (e.key === 's' || e.key === 'S')) { if (pending) send('save'); }
     else if (ctrl && (e.key === 'a' || e.key === 'A')) {
-      anchor = {r: 0, c: 1}; moveTo(tbody.rows.length - 1, colCount(), true);
+      anchor = {r: tbody.rows.length - 1, c: colCount()};
+      moveTo(0, 1, true, true);
     }
     else if (e.key === 'ArrowUp') { moveTo(cur.r - 1, cur.c, e.shiftKey); }
     else if (e.key === 'ArrowDown') { moveTo(cur.r + 1, cur.c, e.shiftKey); }
@@ -1658,7 +1666,9 @@ _GRID_JS_TEMPLATE = r"""
 
   /* ---------- init ---------- */
   reflectPending();
-  moveTo(0, 1, false);
+  /* Seed the cursor without revealing it: the saved scroll position is set
+     right after, and a reveal here would first drag the sheet back to A1. */
+  moveTo(0, 1, false, true);
   var st = parseInt(wrap.dataset.scrolltop || '0', 10) || 0;
   if (st) scroll.scrollTop = st;
   scroll.focus({preventScroll: true});
