@@ -32,6 +32,7 @@ from .input_processing import (
     is_smiles,
 )
 from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
+from . import docx_view as _docx
 from . import pdf_view as _pdf
 from . import spreadsheet_view as _sheet
 from .molecule_viewer import (
@@ -202,6 +203,15 @@ def create_tab(ctx):
         # keeps unsaved buffers per path across file switches.
         'text_edit': {},
         'text_pending': {},
+        # Word: the document on screen, the blocks the browser reported as
+        # changed, and how the search box should look for things.
+        'docx_doc': None,
+        'docx_path': '',
+        'docx_edit': {},
+        'docx_pending': {},
+        'docx_hits': [],
+        'sheet_hits': [],
+        'search_kind': 'text',
         # PDF viewer: the panel is created once per tab, 'pdf_active' says
         # whether it currently owns the content frame.
         'pdf_panel': None,
@@ -269,8 +279,34 @@ def create_tab(ctx):
         layout=widgets.Layout(width='96px', height='26px'),
     )
 
-    # Detect whether we are inside the Archive tab (calc_dir == archiv_dir)
+    # Which of the three browsers this is. Both mirrors are the same builder
+    # on a different root, so the root is what tells them apart -- and it is
+    # the only place that decides, so a control cannot be chemistry-only in
+    # one part of this file and general in another.
     _is_archive_tab = ctx.calc_dir.resolve() == ctx.archive_dir.resolve()
+    _is_office_tab = (
+        not _is_archive_tab
+        and ctx.calc_dir.resolve() == Path(ctx.office_dir).resolve()
+    )
+
+    # Behaviour that makes a document behave the way an office application
+    # does: selecting a column without travelling to the last row, saving
+    # without rebuilding the view, scrolling a PDF instead of paging it,
+    # fullscreen, editing Word. Confined to Office on purpose -- the
+    # calculations browser is to stay exactly as it was.
+    #
+    # One name, read everywhere, so moving a feature across later is this
+    # line rather than a hunt through the file.
+    _OFFICE_DOC_FEEL = _is_office_tab
+
+    # Saving keeps a copy of the original. Beside every document that is a
+    # file list nobody can read; in one folder it is a folder that can be
+    # opened when something has to come back.
+    OFFICE_BACKUP_DIR = 'Backups'
+
+    def _calc_backup_dir(path):
+        """Where a copy of *path* goes before it is overwritten."""
+        return Path(path).parent / OFFICE_BACKUP_DIR if _OFFICE_DOC_FEEL else None
     try:
         _remote_archive_enabled = load_remote_archive_enabled()
     except Exception:
@@ -291,6 +327,7 @@ def create_tab(ctx):
             display='none' if _is_archive_tab else 'inline-flex',
         ),
     )
+    calc_move_archive_btn.add_class('calc-move-archive-btn')
     calc_back_to_calculations_btn = widgets.Button(
         description='← Calculations', button_style='info',
         layout=widgets.Layout(
@@ -507,6 +544,7 @@ def create_tab(ctx):
         ),
         disabled=not _remote_archive_enabled,
     )
+    calc_transfer_jobs_btn.add_class('calc-transfer-jobs-btn')
     calc_transfer_jobs_refresh_btn = widgets.Button(
         description='Refresh Jobs',
         layout=widgets.Layout(width='106px', height='26px'),
@@ -1070,6 +1108,7 @@ def create_tab(ctx):
         description='Report', button_style='success',
         layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
     )
+    calc_report_btn.add_class('calc-report-btn')
     calc_download_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
@@ -1084,14 +1123,30 @@ def create_tab(ctx):
     calc_path_display = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    # The label said "File Content:" above a pane that plainly holds the
+    # file's content. In Office the space goes to the document instead.
     calc_content_label = widgets.HTML(
-        value='<b>📄 File Content:</b>',
-        layout=widgets.Layout(width='100%', overflow_x='hidden', margin='8px 0 0 0'),
+        value='' if _is_office_tab else '<b>📄 File Content:</b>',
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            margin='0' if _is_office_tab else '8px 0 0 0',
+            display='none' if _is_office_tab else 'block',
+        ),
     )
     calc_view_toggle = widgets.ToggleButton(
         description='Visualize', value=False, disabled=True, button_style='warning',
         layout=widgets.Layout(width='110px', min_width='110px', height='26px'),
     )
+
+    calc_view_toggle.add_class('calc-view-toggle')
+    # Sits in the header row rather than in the content toolbar, so it is
+    # there for a text file, a spreadsheet, a Word document, a PDF and the
+    # 3D view alike -- several of those hide the content toolbar entirely.
+    calc_fullscreen_btn = widgets.ToggleButton(
+        value=False, description='⛶', tooltip='Fullscreen (Esc exits)',
+        layout=widgets.Layout(width='44px', min_width='44px', height='26px'),
+    )
+    calc_fullscreen_btn.add_class('calc-fullscreen-btn')
 
     # Recalc widgets
     calc_recalc_btn = widgets.Button(
@@ -1210,6 +1265,7 @@ def create_tab(ctx):
         value='(Select)',
         layout=widgets.Layout(width='200px', min_width='200px', height='26px'),
     )
+    calc_search_suggest.add_class('calc-search-suggest')
     calc_search_btn = widgets.Button(
         description='🔍',
         layout=widgets.Layout(width='85px', min_width='85px', height='26px'),
@@ -1544,20 +1600,20 @@ def create_tab(ctx):
     # Plain-text editing. Read-only is the default; nothing is ever written
     # without an explicit click on Save.
     calc_text_edit_btn = widgets.Button(
-        description='✏ Bearbeiten',
-        tooltip='Diese Datei bearbeiten',
+        description='✏ Edit',
+        tooltip='Edit this file',
         layout=widgets.Layout(width='118px', height='26px', display='none'),
     )
     calc_text_save_btn = widgets.Button(
-        description='Speichern',
+        description='Save',
         button_style='primary',
         disabled=True,
-        tooltip='Änderungen in die Datei schreiben',
+        tooltip='Write the changes to the file',
         layout=widgets.Layout(width='100px', height='26px', display='none'),
     )
     calc_text_cancel_btn = widgets.Button(
-        description='Verwerfen',
-        tooltip='Bearbeitung beenden, Änderungen verwerfen',
+        description='Discard',
+        tooltip='Leave editing, discard the changes',
         layout=widgets.Layout(width='130px', height='26px', display='none'),
     )
     calc_text_status = widgets.HTML('', layout=widgets.Layout(display='none'))
@@ -3489,8 +3545,39 @@ def create_tab(ctx):
         _calc_preselect_save_state()
         _calc_preselect_render_current()
 
+    # Calculations, Archive and Office are three instances of this same
+    # builder, so they render the same markup into one page. A lookup by
+    # document -- getElementById, or document.querySelector on a class this
+    # tab owns -- therefore answers with whichever instance was built first.
+    # That is why Top/End, the search and the chunk loader appeared dead in
+    # Office: they were scrolling the Calculations tab.
+    #
+    # Rewriting the scripts here rather than at each call site, because there
+    # are around thirty lookups and sixty state reads, and one that gets
+    # missed is a bug that shows up as "nothing happens" in one tab only.
+    _SCOPED_ID_RE = re.compile(r"document\.getElementById\('(calc-[a-z0-9-]+)'\)")
+    _SCOPED_SEL_RE = re.compile(r"document\.querySelector(All)?\('\.(calc-(?!scope-)[^']*)'\)")
+
+    def _scope_js(script):
+        """Point a script at this tab's DOM and its own chunk state."""
+        scope = json.dumps(calc_scope_id)
+        script = _SCOPED_ID_RE.sub(
+            lambda m: f'window.__delfinCalcQ({scope}, {json.dumps(m.group(1))})',
+            script,
+        )
+        script = _SCOPED_SEL_RE.sub(
+            lambda m: 'window.__delfinCalcQ'
+                      + ('A' if m.group(1) else '')
+                      + f'({scope}, {json.dumps(m.group(2))})',
+            script,
+        )
+        # The chunk loader keeps its bookkeeping on window. Shared between two
+        # open browsers, one tab's scroll would cancel the other's pending load.
+        return script.replace(
+            'window.__calcChunk', f'window.__delfinCalcS({scope}).__calcChunk')
+
     def _run_js(script):
-        ctx.run_js(script)
+        ctx.run_js(_scope_js(script))
 
     def _calc_build_png_filename():
         selected_path = _calc_get_selected_path()
@@ -5691,7 +5778,7 @@ def create_tab(ctx):
             const end = Math.min(e, text.length);
             el.innerHTML =
                 esc(text.slice(0, s))
-                + '<mark class="calc-match current" id="calc-current-match">'
+                + '<mark class="calc-match current calc-current-match">'
                 + esc(text.slice(s, end))
                 + '</mark>'
                 + esc(text.slice(end));
@@ -5781,7 +5868,7 @@ def create_tab(ctx):
 
             const mark = document.createElement('mark');
             mark.className = 'calc-match current';
-            mark.id = 'calc-current-match';
+            mark.className = 'calc-match current calc-current-match';
             try {
                 range.surroundContents(mark);
             } catch (_err) {
@@ -5839,7 +5926,8 @@ def create_tab(ctx):
         else:
             _calc_stop_xyz_playback(update_button=True)
             calc_mol_container.layout.display = 'none'
-            calc_content_label.layout.display = 'block'
+            calc_content_label.layout.display = (
+                'none' if _is_office_tab else 'block')
             if state['text_edit'].get('active'):
                 calc_content_toolbar.layout.display = 'flex'
                 calc_content_area.layout.display = 'none'
@@ -5922,19 +6010,19 @@ def create_tab(ctx):
             virtual_h = max(12000, min(180000, int(total_size / 96)))
             top_px = int((chunk_start / total_size) * virtual_h)
             bottom_px = int((max(0, total_size - chunk_end) / total_size) * virtual_h)
-            top_spacer_html = f"<div id='calc-chunk-top-spacer' style='height:{top_px}px;'></div>"
-            bottom_spacer_html = f"<div id='calc-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
+            top_spacer_html = f"<div class='calc-chunk-top-spacer' style='height:{top_px}px;'></div>"
+            bottom_spacer_html = f"<div class='calc-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
             text_opacity = '0'
         calc_content_area.value = (
             "<style>"
             ".calc-match { background: #fff59d; padding: 0 2px; }"
             ".calc-match.current { background: #ffcc80; }"
             "</style>"
-            "<div id='calc-content-box' style='height:100%;"
+            "<div class='calc-content-box' style='height:100%;"
             " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd; padding:6px;"
             " background:#fafafa; width:100%; box-sizing:border-box;'>"
             f"{top_spacer_html}"
-            "<div id='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
+            "<div class='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
             f" word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3; opacity:{text_opacity};'>"
             f"{_html.escape(text)}"
             "</div>"
@@ -7800,6 +7888,10 @@ def create_tab(ctx):
                     unread_set = update_calc_running_transitions(current_running)
                 except Exception:
                     unread_set = set()
+            if _OFFICE_DOC_FEEL:
+                # A dot folder is DELFIN's own bookkeeping, not the user's
+                # filing. It is still on disk and still reachable by path.
+                entries = [e for e in entries if not e.name.startswith('.')]
             for entry in entries:
                 if entry.is_dir():
                     if is_top_level_calc_view:
@@ -8047,6 +8139,33 @@ def create_tab(ctx):
                 f'<span style="color:green;">{len(state["search_spans"])} matches</span>{note_html}'
             )
             return
+        if state.get('search_kind') == 'sheet':
+            hits = state.get('sheet_hits') or []
+            index = state['current_match']
+            where = ''
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                where = hit.label
+                if state['sheet_view'].get('kind') == 'xlsx' and hit.sheet:
+                    where = f'{hit.sheet} · {where}'
+            calc_search_result.value = (
+                f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
+                f'<span style="color:#555;">({where})</span>{note_html}'
+            )
+            return
+        if state.get('search_kind') == 'docx':
+            hits = state.get('docx_hits') or []
+            index = state['current_match']
+            where = ''
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                where = ('table' if hit.address.startswith('t:')
+                         else f'paragraph {hit.block + 1}')
+            calc_search_result.value = (
+                f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
+                f'<span style="color:#555;">({where})</span>{note_html}'
+            )
+            return
         start, _ = state['search_spans'][state['current_match']]
         if _calc_is_chunk_mode():
             path_str = state.get('selected_file_path')
@@ -8066,6 +8185,20 @@ def create_tab(ctx):
             return
         calc_update_nav_buttons()
         calc_update_search_result()
+        if state.get('search_kind') == 'docx':
+            hits = state.get('docx_hits') or []
+            index = state['current_match']
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                _run_js(_docx.focus_js(
+                    calc_scope_id, hit.address, hit.start, hit.end))
+            return
+        if state.get('search_kind') == 'sheet':
+            hits = state.get('sheet_hits') or []
+            index = state['current_match']
+            if 0 <= index < len(hits):
+                _calc_sheet_goto_hit(hits[index])
+            return
         if _calc_is_chunk_mode():
             start, end = state['search_spans'][state['current_match']]
             chunk_start = int(state.get('file_chunk_start') or 0)
@@ -8273,6 +8406,80 @@ def create_tab(ctx):
             return
         calc_scroll_to('bottom')
 
+    def _calc_sheet_search(query):
+        """Find a term anywhere in the workbook, not just in the rows loaded."""
+        view = state['sheet_view']
+        path = Path(view['path'])
+        try:
+            hits, capped = _sheet.search_cells(
+                path, query, delimiter=view.get('delimiter') or None)
+        except Exception as exc:  # noqa: BLE001
+            calc_search_result.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+            calc_update_nav_buttons()
+            return
+        state['sheet_hits'] = hits
+        state['search_truncated'] = capped
+        state['search_spans'] = [(hit.row, hit.col) for hit in hits]
+        if not hits:
+            calc_search_result.value = (
+                '' if not query else '<span style="color:red;">0 matches</span>')
+            calc_update_nav_buttons()
+            return
+        state['current_match'] = 0
+        calc_show_match()
+
+    def _calc_sheet_goto_hit(hit):
+        """Put the cursor on a found cell, loading its window if need be."""
+        view = state['sheet_view']
+        if not view:
+            return
+        path = Path(view['path'])
+        page_rows = int(view.get('page_rows') or _sheet.MAX_ROWS)
+        wanted_offset = _sheet.window_for_row(hit.row, page_rows)
+        needs_sheet = (view.get('kind') == 'xlsx'
+                       and hit.sheet and hit.sheet != view.get('sheet'))
+        needs_window = wanted_offset != int(view.get('row_offset') or 0)
+        if needs_sheet or needs_window:
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            _calc_render_sheet(
+                path,
+                sheet_name=hit.sheet if needs_sheet else view.get('sheet'),
+                row_offset=wanted_offset,
+            )
+            view = state['sheet_view']
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(view["token"])}]');
+            if (!wrap || typeof wrap.__dsheetGoto !== 'function') return;
+            wrap.__dsheetGoto({int(hit.row)}, {int(hit.col)});
+        }})();
+        """)
+
+    def _calc_docx_search(query):
+        """Find a term in the open Word document, and go to the first hit."""
+        document = state.get('docx_doc')
+        hits = _docx.search(document, query) if query else []
+        if len(hits) > CALC_SEARCH_MAX_MATCHES:
+            state['search_truncated'] = True
+            hits = hits[:CALC_SEARCH_MAX_MATCHES]
+        state['docx_hits'] = hits
+        # The counter, the prev/next buttons and the truncation note all read
+        # this list, so the Word search gets them without knowing about them.
+        state['search_spans'] = [(hit.start, hit.end) for hit in hits]
+        if not hits:
+            calc_search_result.value = (
+                '' if not query else '<span style="color:red;">0 matches</span>')
+            calc_update_nav_buttons()
+            _run_js(_docx.focus_js(calc_scope_id, '', 0, 0))
+            return
+        state['current_match'] = 0
+        calc_show_match()
+
     def calc_do_search(b=None):
         query = calc_search_input.value.strip()
         if not query and calc_search_suggest.value and calc_search_suggest.value != '(Select)':
@@ -8281,6 +8488,21 @@ def create_tab(ctx):
         state['search_spans'] = []
         state['current_match'] = -1
         state['search_truncated'] = False
+
+        # A Word document is not a stream of characters with line numbers; it
+        # is addressed paragraphs, and a hit is a place inside one of them.
+        # Searching its flattened text would count correctly and be unable to
+        # say where anything is.
+        if state.get('search_kind') == 'docx' and state.get('docx_doc'):
+            _calc_docx_search(query)
+            return
+
+        # A spreadsheet is addressed in cells, and the grid holds one window
+        # of rows at a time -- searching the flattened window would answer a
+        # narrower question than the one that was asked.
+        if state.get('search_kind') == 'sheet' and state.get('sheet_view'):
+            _calc_sheet_search(query)
+            return
 
         if not query or not state['file_content']:
             calc_search_result.value = ''
@@ -10769,8 +10991,8 @@ def create_tab(ctx):
     # -- Plain-text editing -------------------------------------------------
 
     def _calc_text_reset_buttons():
-        calc_text_save_btn.description = 'Speichern'
-        calc_text_cancel_btn.description = 'Verwerfen'
+        calc_text_save_btn.description = 'Save'
+        calc_text_cancel_btn.description = 'Discard'
 
     def _calc_text_sync_controls():
         info = state['text_edit']
@@ -10789,14 +11011,14 @@ def create_tab(ctx):
             if not dirty:
                 _calc_text_reset_buttons()
             calc_text_status.value = (
-                '<span style="color:#b26a00; font-weight:600;">● nicht gespeichert</span>'
-                if dirty else '<span style="color:#666;">Bearbeitungsmodus</span>'
+                '<span style="color:#b26a00; font-weight:600;">● not saved</span>'
+                if dirty else '<span style="color:#666;">Editing</span>'
             )
             calc_text_status.layout.display = ''
         elif has_pending:
             calc_text_status.value = (
                 '<span style="color:#b26a00; font-weight:600;">'
-                '● ungespeicherte Änderungen</span>'
+                '● unsaved changes</span>'
             )
             calc_text_status.layout.display = ''
         else:
@@ -10814,6 +11036,9 @@ def create_tab(ctx):
         _calc_text_sync_controls()
 
     def calc_on_text_edit(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_edit()
+            return
         info = state['text_edit']
         path_str = info.get('path')
         if not path_str or not info.get('editable') or info.get('active'):
@@ -10851,6 +11076,9 @@ def create_tab(ctx):
         _calc_text_sync_controls()
 
     def calc_on_text_save(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_save()
+            return
         info = state['text_edit']
         path_str = info.get('path')
         if not info.get('active') or not path_str:
@@ -10863,27 +11091,29 @@ def create_tab(ctx):
             on_disk = None
         except Exception as exc:
             calc_text_status.value = (
-                f'<span style="color:#d32f2f;">Fehler beim Lesen: {_html.escape(str(exc))}</span>'
+                f'<span style="color:#d32f2f;">Could not read: {_html.escape(str(exc))}</span>'
             )
             return
         # Somebody (or a running job) changed the file while it was open here.
         # Never overwrite that silently -- make the second click deliberate.
         if on_disk is not None and on_disk != (info.get('original') or '') and not info.get('force'):
             info['force'] = True
-            calc_text_save_btn.description = 'Überschreiben?'
+            calc_text_save_btn.description = 'Overwrite?'
             calc_text_status.value = (
                 '<span style="color:#d32f2f; font-weight:600;">'
-                'Datei wurde zwischenzeitlich geändert – nochmal klicken zum Überschreiben.'
+                'The file changed on disk meanwhile - click again to overwrite.'
                 '</span>'
             )
             calc_text_status.layout.display = ''
             return
         try:
-            backup = _sheet.make_backup(path) if path.exists() else None
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path),
+                                         versioned=_OFFICE_DOC_FEEL)
+                      if path.exists() else None)
             _sheet.write_text_atomic(path, new_text)
         except Exception as exc:
             calc_text_status.value = (
-                f'<span style="color:#d32f2f;">Speichern fehlgeschlagen: {_html.escape(str(exc))}</span>'
+                f'<span style="color:#d32f2f;">Saving failed: {_html.escape(str(exc))}</span>'
             )
             calc_text_status.layout.display = ''
             return
@@ -10894,20 +11124,23 @@ def create_tab(ctx):
         state['selected_file_size'] = len(new_text.encode('utf-8'))
         _calc_text_reset_buttons()
         _calc_text_sync_controls()
-        saved = 'gespeichert'
+        saved = 'saved'
         if backup is not None:
-            saved += f' · Sicherung: {backup.name}'
+            saved += f' · backup: {backup.name}'
         calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
         calc_text_status.layout.display = ''
 
     def calc_on_text_cancel(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_cancel()
+            return
         info = state['text_edit']
         path_str = info.get('path') or ''
         if not info.get('active'):
             return
         if path_str in state['text_pending'] and not info.get('confirm_cancel'):
             info['confirm_cancel'] = True
-            calc_text_cancel_btn.description = 'Wirklich verwerfen?'
+            calc_text_cancel_btn.description = 'Really discard?'
             return
         info['confirm_cancel'] = False
         info['active'] = False
@@ -10933,7 +11166,172 @@ def create_tab(ctx):
     def _calc_sheet_has_pending(path_str):
         return any(key[0] == path_str and ops for key, ops in state['sheet_pending'].items())
 
-    def _calc_render_sheet(path, *, sheet_name=None, row_offset=None, scroll_top=0, status=''):
+    # -- Word ---------------------------------------------------------------
+
+    def _calc_render_docx(path, document, name, size_str):
+        """Put a Word document on screen, read-only until Edit is pressed."""
+        state['docx_doc'] = document
+        state['docx_path'] = str(path)
+        state['docx_hits'] = []
+        state['search_kind'] = 'docx'
+        editable = _docx.is_editable(document) and bool(state['docx_edit'].get('active'))
+        calc_content_area.value = (
+            f'<style>{_docx.DOC_CSS}</style>'
+            "<div class='calc-content-box' style='height:100%;"
+            " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd;"
+            " background:#e9e9e9; padding:14px 0; width:100%;"
+            " box-sizing:border-box;'>"
+            + _docx.render_html(document, editable=editable)
+            + '</div>'
+        )
+        # For the Copy button and for anything that wants the plain text.
+        state['file_content'] = document.text
+        state['file_is_preview'] = False
+        state['file_preview_note'] = ''
+        state['chunk_dom_initialized'] = False
+        state['selected_file_path'] = str(path)
+
+        detail = size_str
+        if document.tables:
+            detail += f', {document.tables} table{"" if document.tables == 1 else "s"}'
+        if document.images:
+            detail += f', {len(document.images)} image{"" if len(document.images) == 1 else "s"}'
+        note = ' · '.join(document.notes)
+        calc_file_info.value = (
+            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+            f' ({detail})'
+            + (f' <span style="color:#b26a00;">{_html.escape(note)}</span>'
+               if note else '')
+        )
+        calc_copy_btn.disabled = False
+        calc_copy_path_btn.disabled = False
+        _calc_docx_sync_controls()
+        calc_update_view()
+        if editable:
+            _run_js(_docx.edit_js(calc_scope_id))
+
+    def _calc_docx_sync_controls():
+        """Show the edit controls a Word document can actually use."""
+        info = state['docx_edit']
+        document = state.get('docx_doc')
+        can_edit = document is not None and _docx.is_editable(document)
+        active = bool(info.get('active'))
+        pending = bool(state.get('docx_pending'))
+        calc_text_edit_btn.layout.display = (
+            '' if (can_edit and not active) else 'none')
+        calc_text_save_btn.layout.display = '' if active else 'none'
+        calc_text_cancel_btn.layout.display = '' if active else 'none'
+        calc_text_save_btn.disabled = not pending
+        if active:
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                '<span style="color:#b26a00;">● not saved</span>'
+                if pending else
+                '<span style="color:#555;">Editing</span>')
+        elif not calc_text_status.value:
+            calc_text_status.layout.display = 'none'
+
+    def _calc_docx_edit(_button=None):
+        document = state.get('docx_doc')
+        if document is None or not _docx.is_editable(document):
+            return
+        state['docx_edit'] = {'active': True}
+        state['docx_pending'] = {}
+        path = Path(state['docx_path'])
+        _calc_render_docx(path, document, path.name,
+                          _calc_sheet_size_str(path.stat().st_size))
+
+    def _calc_docx_cancel(_button=None):
+        if not state['docx_edit'].get('active'):
+            return
+        if state.get('docx_pending') and not state['docx_edit'].get('confirm'):
+            state['docx_edit']['confirm'] = True
+            calc_text_cancel_btn.description = 'Really discard?'
+            return
+        state['docx_edit'] = {}
+        state['docx_pending'] = {}
+        _calc_text_reset_buttons()
+        path = Path(state['docx_path'])
+        # Re-read: the blocks on screen hold the discarded text.
+        document = _docx.read_document(path)
+        _calc_render_docx(path, document, path.name,
+                          _calc_sheet_size_str(path.stat().st_size))
+
+    def _calc_docx_save(_button=None):
+        edits = state.get('docx_pending') or {}
+        if not state['docx_edit'].get('active') or not edits:
+            return
+        path = Path(state['docx_path'])
+        try:
+            result = _docx.apply_edits(path, edits)
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path),
+                                         versioned=_OFFICE_DOC_FEEL)
+                      if path.exists() else None)
+            _docx.save(result['document'], path)
+        except _docx.DocxError as exc:
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+            return
+        except Exception as exc:  # noqa: BLE001
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">Saving failed: '
+                f'{_html.escape(str(exc))}</span>')
+            return
+        count = result['written']
+        state['docx_pending'] = {}
+        state['docx_doc'] = _docx.read_document(path)
+        state['file_content'] = state['docx_doc'].text
+        saved = f'{count} paragraph{"" if count == 1 else "s"} saved'
+        if backup is not None:
+            saved += f' · backup: {backup.name}'
+        calc_text_status.layout.display = ''
+        calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
+        calc_text_save_btn.disabled = True
+        # Nothing is re-rendered: the blocks on screen already hold what was
+        # written, and rebuilding them would take the cursor out of the
+        # paragraph the user is still typing in.
+        _run_js(_docx.mark_saved_js(calc_scope_id))
+
+    def _calc_on_docx_block_edit(_button=None):
+        """One edited block, reported by the browser as it is left."""
+        raw = calc_sheet_payload_input.value or ''
+        calc_sheet_payload_input.value = ''
+        if not raw:
+            return
+        try:
+            message = json.loads(raw)
+        except Exception:
+            return
+        if message.get('kind') != 'docx':
+            return
+        address = str(message.get('address') or '')
+        if not address:
+            return
+        state.setdefault('docx_pending', {})[address] = str(message.get('text') or '')
+        _calc_docx_sync_controls()
+
+    def _calc_sheet_mark_saved(token, message):
+        """Tell the grid on screen that its edits are on disk.
+
+        Nothing is re-rendered: the grid clears its own dirty marks, disables
+        its buttons and shows the message. Selection, scroll position, active
+        cell and column widths are never touched, which is the whole point --
+        pressing save in a spreadsheet does not move the spreadsheet.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetSaved !== 'function') return;
+            wrap.__dsheetSaved({json.dumps(message)});
+        }})();
+        """)
+
+    def _calc_render_sheet(path, *, sheet_name=None, row_offset=None, scroll_top=0,
+                           cursor=None, status=''):
         """Read one window of a spreadsheet and put the editable grid on screen."""
         path = Path(path)
         path_str = str(path)
@@ -10986,8 +11384,11 @@ def create_tab(ctx):
             col_px=keep_widths,
             lossy_note=lossy,
             scroll_top=scroll_top,
+            cursor=cursor,
+            office=_OFFICE_DOC_FEEL,
         )
         # Plain-text fallback for the tab's search box and the Copy button.
+        state['search_kind'] = 'sheet' if _OFFICE_DOC_FEEL else 'text'
         state['file_content'] = _sheet.grid_to_tsv(sheet)
         state['file_is_preview'] = False
         state['file_preview_note'] = ''
@@ -10998,7 +11399,7 @@ def create_tab(ctx):
         label = _html.escape(path.name)
         detail = _calc_sheet_size_str(path.stat().st_size)
         if is_workbook and sheet.name:
-            detail += f', Blatt „{_html.escape(sheet.name)}“'
+            detail += f', sheet "{_html.escape(sheet.name)}"'
         calc_file_info.value = (
             f'<b><span style="word-break:break-all;">{label}</span></b> ({detail})'
             + (f' <span style="color:#2e7d32;">{_html.escape(status)}</span>' if status else '')
@@ -11017,7 +11418,10 @@ def create_tab(ctx):
         )
 
     def calc_on_sheet_action(button=None):
-        """Handle one message from the spreadsheet grid in the browser."""
+        """Handle one message from the document on screen in the browser."""
+        if (calc_sheet_payload_input.value or '').find('"docx"') >= 0:
+            _calc_on_docx_block_edit()
+            return
         raw = calc_sheet_payload_input.value or ''
         calc_sheet_payload_input.value = ''
         if not raw:
@@ -11038,6 +11442,14 @@ def create_tab(ctx):
         key = (view['path'], sheet_name)
         action = payload.get('action')
         scroll_top = int(payload.get('scroll') or 0)
+        cursor = payload.get('cur')
+        if isinstance(cursor, list) and len(cursor) == 2:
+            try:
+                cursor = (int(cursor[0]), int(cursor[1]))
+            except (TypeError, ValueError):
+                cursor = None
+        else:
+            cursor = None
         cols = payload.get('cols')
         if isinstance(cols, list) and cols:
             try:
@@ -11049,7 +11461,7 @@ def create_tab(ctx):
             try:
                 ops = _sheet.validate_ops(payload.get('ops'))
             except (ValueError, TypeError) as exc:
-                _calc_sheet_note(f'Änderung verworfen: {exc}')
+                _calc_sheet_note(f'Change rejected: {exc}')
                 return
             if ops:
                 state['sheet_pending'].setdefault(key, []).extend(ops)
@@ -11060,27 +11472,45 @@ def create_tab(ctx):
             if not ops:
                 return
             if not path.exists():
-                _calc_sheet_note('Datei nicht mehr vorhanden.')
+                _calc_sheet_note('The file is gone.')
                 return
             try:
+                where = _calc_backup_dir(path)
                 if view['kind'] == 'xlsx':
-                    backup = _sheet.apply_ops_xlsx(path, sheet_name, ops)
+                    backup = _sheet.apply_ops_xlsx(path, sheet_name, ops,
+                                                   backup_dir=where)
                 else:
-                    backup = _sheet.apply_ops_delimited(path, ops, view['delimiter'])
+                    backup = _sheet.apply_ops_delimited(path, ops, view['delimiter'],
+                                                        backup_dir=where)
             except Exception as exc:
-                _calc_sheet_note(f'Speichern fehlgeschlagen: {exc}')
+                _calc_sheet_note(f'Saving failed: {exc}')
                 return
             state['sheet_pending'].pop(key, None)
-            note = f'{len(ops)} Änderung{"" if len(ops) == 1 else "en"} gespeichert'
+            note = f'{len(ops)} change{"" if len(ops) == 1 else "s"} saved'
             if backup is not None:
-                note += f' · Sicherung: {backup.name}'
-            _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top, status=note)
+                note += f' · backup: {backup.name}'
+            if not _OFFICE_DOC_FEEL:
+                _calc_render_sheet(path, sheet_name=sheet_name,
+                                   scroll_top=scroll_top, status=note)
+                return
+            # The cells on screen already show what was written, so nothing
+            # about the grid needs rebuilding -- and rebuilding it is what
+            # threw the user back to A1 with the view somewhere else.
+            try:
+                state['selected_file_size'] = int(path.stat().st_size)
+            except OSError:
+                pass
+            _calc_sheet_mark_saved(view['token'], note)
             return
 
         if action == 'discard':
+            # This one does have to rebuild: the values on screen are the
+            # discarded ones and have to come back from the file. Put the
+            # user back where they were standing.
             state['sheet_pending'].pop(key, None)
             _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
-                               status='Änderungen verworfen')
+                               cursor=cursor if _OFFICE_DOC_FEEL else None,
+                               status='Changes discarded')
             return
 
         if action in ('switch_sheet', 'page'):
@@ -11088,7 +11518,7 @@ def create_tab(ctx):
             # the window while they are unsaved would show them in the wrong
             # place, so make the user decide first.
             if _calc_sheet_has_pending(view['path']):
-                _calc_sheet_note('Bitte erst speichern oder verwerfen.', color='#b26a00')
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
                 return
             if action == 'switch_sheet':
                 target = str(payload.get('target') or '')
@@ -11109,8 +11539,17 @@ def create_tab(ctx):
         """The tab's PDF panel, built on first use."""
         panel = state.get('pdf_panel')
         if panel is None:
-            # Leave room for the panel's own toolbar inside the content frame.
-            panel = _pdf.PdfPanel(height_px=max(240, CALC_CONTENT_HEIGHT - 80))
+            # In Office the frame takes the space the pane has, the same
+            # way the text view and the grid do, so it reaches the bottom and
+            # follows the tab into fullscreen. Elsewhere it keeps the fixed
+            # height and the one-page-at-a-time view it always had.
+            panel = _pdf.PdfPanel(
+                run_js=_run_js,
+                continuous=_OFFICE_DOC_FEEL,
+                backup_dir_name=OFFICE_BACKUP_DIR if _OFFICE_DOC_FEEL else None,
+                height_px=(None if _OFFICE_DOC_FEEL
+                           else max(240, CALC_CONTENT_HEIGHT - 80)),
+            )
             state['pdf_panel'] = panel
             calc_pdf_container.children = [panel.widget]
         return panel
@@ -11219,6 +11658,17 @@ def create_tab(ctx):
         # selection change -- a stray click must not discard someone's work.
         state['sheet_view'] = {}
         state['text_edit'] = {}
+        # Word: unsaved block edits are deliberately not kept across a
+        # selection change. They address paragraphs of the document that was
+        # open, and replaying them into another one would write into whatever
+        # paragraph happens to carry that index.
+        state['docx_doc'] = None
+        state['docx_path'] = ''
+        state['docx_edit'] = {}
+        state['docx_pending'] = {}
+        state['docx_hits'] = []
+        state['sheet_hits'] = []
+        state['search_kind'] = 'text'
         calc_text_area.value = ''
         _calc_text_sync_controls()
         _calc_stop_xyz_playback(update_button=True)
@@ -11616,7 +12066,7 @@ def create_tab(ctx):
             )
             if size > _sheet.MAX_FILE_BYTES:
                 calc_set_message(
-                    f'Datei zu groß für die Tabellenansicht ({size_str}).'
+                    f'File is too large for the sheet view ({size_str}).'
                 )
                 return
             try:
@@ -11625,7 +12075,7 @@ def create_tab(ctx):
                 calc_set_message(str(exc))
                 return
             except Exception as exc:
-                calc_set_message(f'Tabelle konnte nicht gelesen werden: {exc}')
+                calc_set_message(f'The sheet could not be read: {exc}')
                 return
             # Mutation-space CSVs keep their preselection workflow: the grid is
             # the text view, the Visualize toggle still opens the card browser.
@@ -11641,14 +12091,37 @@ def create_tab(ctx):
                 f' ({size_str})'
             )
             calc_set_message(
-                'Altes Excel-Format (.xls).\n\n'
-                'Bitte in Excel oder LibreOffice als .xlsx speichern – '
-                'dann lässt sich die Datei hier anzeigen und bearbeiten.'
+                'Old Excel format (.xls).\n\n'
+                'Save it as .xlsx in Excel or LibreOffice, then it can be '
+                'shown and edited here.'
             )
             return
 
         # --- DOCX files ---
-        if suffix in ['.doc', '.docx']:
+        if suffix == '.docx' and _OFFICE_DOC_FEEL:
+            # Rendered from the document itself so every paragraph carries
+            # the address an edit is written back to. mammoth below produces
+            # nicer HTML but nothing in it says which paragraph a line came
+            # from, so it can carry a view and nothing else.
+            try:
+                document = _docx.read_document(full_path)
+            except _docx.DocxError as exc:
+                document = None
+                _calc_docx_note = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                document = None
+                _calc_docx_note = f'Dokument konnte nicht gelesen werden: {exc}'
+            if document is not None:
+                _calc_render_docx(full_path, document, name, size_str)
+                return
+            calc_set_message(_calc_docx_note)
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            return
+
+        if suffix in ('.doc', '.docx'):
             try:
                 import mammoth
 
@@ -11702,7 +12175,7 @@ def create_tab(ctx):
                     f' ({size_str}{img_info})'
                 )
                 calc_content_area.value = (
-                    "<div id='calc-content-box' style='height:100%; overflow-y:auto;"
+                    "<div class='calc-content-box' style='height:100%; overflow-y:auto;"
                     " overflow-x:hidden; border:1px solid #ddd; background:#fafafa;"
                     " width:100%; box-sizing:border-box;'>" + styled_html + "</div>"
                 )
@@ -11980,6 +12453,32 @@ def create_tab(ctx):
     # -- wiring -------------------------------------------------------------
     calc_back_btn.on_click(calc_on_back)
     calc_home_btn.on_click(calc_on_home)
+    def _calc_on_fullscreen(change):
+        """Give the tab the whole window, or hand it back.
+
+        Python owns the state so the button always reflects it; Escape
+        reaches here as a click on that same button.
+        """
+        on = bool(change.get('new'))
+        calc_fullscreen_btn.description = '⤫' if on else '⛶'
+        calc_fullscreen_btn.tooltip = (
+            'Leave fullscreen (Esc)' if on else 'Fullscreen (Esc exits)')
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) return;
+            root.classList.toggle('calc-zen', {json.dumps(on)});
+            /* The 3D viewer sizes itself in pixels from the free space it
+               measured, so it has to measure again once the tab has resized. */
+            setTimeout(function() {{
+                var fn = window["{calc_resize_mol_fn}"];
+                if (typeof fn === 'function') fn();
+                window.dispatchEvent(new Event('resize'));
+            }}, 60);
+        }})();
+        """)
+
+    calc_fullscreen_btn.observe(_calc_on_fullscreen, names='value')
     calc_refresh_btn.on_click(calc_on_refresh)
     calc_path_input.observe(calc_on_path_change, names='value')
     calc_top_btn.on_click(calc_go_top)
@@ -12348,6 +12847,28 @@ def create_tab(ctx):
             var node = root.querySelector('.calc-ops-status .widget-html-content') || root.querySelector('.calc-ops-status');
             if (!node) return;
             node.innerHTML = '<span style="color:' + String(color || '#555') + ';">' + String(message || '') + '</span>';
+            /* A status line is about the thing that just happened. Left on
+               screen it reports an upload that finished ten minutes ago, so
+               the next thing the user does takes it away. The stamp is what
+               keeps a stale listener from clearing a newer message. */
+            if (root.__opsStatusClear) {
+                root.removeEventListener('pointerdown', root.__opsStatusClear, true);
+                root.__opsStatusClear = null;
+            }
+            if (!String(message || '')) return;
+            var stamp = (root.__opsStatusStamp = (root.__opsStatusStamp || 0) + 1);
+            root.__opsStatusClear = function(){
+                if (root.__opsStatusStamp !== stamp) return;
+                node.innerHTML = '';
+                root.removeEventListener('pointerdown', root.__opsStatusClear, true);
+                root.__opsStatusClear = null;
+            };
+            /* Not on the click that produced the message. */
+            setTimeout(function(){
+                if (root.__opsStatusClear) {
+                    root.addEventListener('pointerdown', root.__opsStatusClear, true);
+                }
+            }, 0);
         }
         function _encodeContentsPath(path){
             return String(path || '')
@@ -13288,7 +13809,28 @@ def create_tab(ctx):
 
     calc_css = widgets.HTML(
         '<style>'
-        '#calc-content-box { overflow-x:hidden !important; }'
+        '.calc-content-box { overflow-x:hidden !important; }'
+        # Fullscreen. The tab lifts out of the page instead of moving its
+        # children into an overlay: everything inside already sizes itself
+        # from the tab's height, so giving the tab the viewport is the whole
+        # change, and no widget is reparented and re-rendered to get there.
+        '.calc-tab.calc-zen { position:fixed !important; top:0; left:0;'
+        ' right:0; bottom:0; width:100vw !important; height:100vh !important;'
+        ' max-height:100vh !important; max-width:100vw !important;'
+        ' z-index:9990 !important; background:#fff !important;'
+        ' margin:0 !important; padding:10px !important; }'
+        '.calc-tab.calc-zen > h3 { display:none !important; }'
+        # Office holds documents, not jobs. These controls report on
+        # calculations -- a keyword menu of ORCA section headings, a DELFIN
+        # report, a 3D structure, the calculation archive, running SSH
+        # transfers -- and none of them has anything to act on here. Retired
+        # in CSS rather than by a display flag: the flag is set again by the
+        # per-file-type code that enables them.
+        '.calc-office .calc-search-suggest,'
+        ' .calc-office .calc-report-btn,'
+        ' .calc-office .calc-view-toggle,'
+        ' .calc-office .calc-move-archive-btn,'
+        ' .calc-office .calc-transfer-jobs-btn { display:none !important; }'
         '.calc-tab, .calc-tab * { overflow-x:hidden !important; box-sizing:border-box; }'
         '.calc-tab { overflow:hidden !important;'
         ' height:calc(100vh - 145px) !important;'
@@ -13452,6 +13994,7 @@ def create_tab(ctx):
                     calc_download_btn,
                     calc_report_btn,
                     calc_view_toggle,
+                    *([calc_fullscreen_btn] if _OFFICE_DOC_FEEL else []),
                 ],
                 layout=widgets.Layout(
                     gap='10px',
@@ -13505,7 +14048,10 @@ def create_tab(ctx):
 
     tab_widget = widgets.VBox([
         calc_css,
-        widgets.HTML('<h3>📂 Calculations Browser</h3>'),
+        widgets.HTML(
+            '<h3>📁 Office</h3>' if _is_office_tab
+            else '<h3>📂 Calculations Browser</h3>'
+        ),
         widgets.HBox(
             [calc_left, calc_splitter, calc_right],
             layout=widgets.Layout(
@@ -13520,6 +14066,8 @@ def create_tab(ctx):
     ))
     tab_widget.add_class('calc-tab')
     tab_widget.add_class(calc_scope_id)
+    if _is_office_tab:
+        tab_widget.add_class('calc-office')
     calc_left.add_class('calc-left')
     calc_right.add_class('calc-right')
     calc_nav_controls_row.add_class('calc-nav-controls-row')
@@ -13534,8 +14082,28 @@ def create_tab(ctx):
     # Stored as a plain string; the CALLER (create_dashboard in __init__.py)
     # runs ALL tab init scripts in one ctx.run_js() call so that no tab's
     # clear_output() wipes another tab's init JS.
+    # Resolvers the tab's scripts are rewritten to use (see _scope_js). Defined
+    # once for the page and keyed by scope, so each browser instance reaches
+    # only its own DOM and only its own chunk-loader state.
+    _scope_resolvers_js = """
+    window.__delfinCalcQ = window.__delfinCalcQ || function(scope, sel) {
+        var root = document.querySelector('.' + scope);
+        return root ? root.querySelector('.' + sel) : null;
+    };
+    window.__delfinCalcQA = window.__delfinCalcQA || function(scope, sel) {
+        var root = document.querySelector('.' + scope);
+        return root ? root.querySelectorAll('.' + sel) : [];
+    };
+    window.__delfinCalcS = window.__delfinCalcS || function(scope) {
+        var all = (window.__delfinCalcStates = window.__delfinCalcStates || {});
+        return (all[scope] = all[scope] || {});
+    };
+    """
+
     _init_js = (
-        _explorer_interactions_js
+        _scope_resolvers_js
+        + "\n"
+        + _explorer_interactions_js
         + "\n"
         + f"""
     (function() {{
@@ -13549,9 +14117,11 @@ def create_tab(ctx):
                     }}, 100);
                     return;
                 }}
-                // Fallback to old global behavior if scoped root is unavailable.
-                root = document.querySelector('.calc-tab');
-                if (!root) return;
+                // No fallback to the first .calc-tab on the page: with three
+                // browsers open that is somebody else's tab, and binding this
+                // tab's splitter and upload target to it is worse than not
+                // binding at all.
+                return;
             }}
             window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
             window.__delfinCalcUploadStagingRoots[scopeKey] = {json.dumps(CALC_BROWSER_UPLOAD_STAGING_SCOPE_REL)};
@@ -13756,6 +14326,20 @@ def create_tab(ctx):
                 }}, 220);
             }}).observe(root, {{attributes: true, subtree: true, attributeFilter: ['style']}});
         }}
+
+        /* Escape leaves fullscreen by pressing the same button, so the
+           button and the tab can never disagree about the state. */
+        if (root && root.dataset.zenEscBound !== '1') {{
+            root.dataset.zenEscBound = '1';
+            document.addEventListener('keydown', function(e) {{
+                if (e.key !== 'Escape') return;
+                if (!root.classList.contains('calc-zen')) return;
+                var holder = root.querySelector('.calc-fullscreen-btn');
+                var btn = holder && (holder.tagName === 'BUTTON'
+                    ? holder : holder.querySelector('button'));
+                if (btn) {{ e.preventDefault(); btn.click(); }}
+            }}, true);
+        }}
         }}
         initCalcScopeBind(0);
     }})();
@@ -13787,17 +14371,21 @@ def create_tab(ctx):
     if _remote_archive_enabled:
         _calc_update_transfer_jobs_visibility()
 
+    ctx.add_init_js(_init_js)
+
     return tab_widget, {
         'calc_list_directory': calc_list_directory,
         'calc_set_root': calc_set_root,
         'calc_set_primary_root': calc_set_primary_root,
-        'init_js': _init_js,
         # --- Agent-accessible widgets ---
         # Navigation
         'calc_path_input': calc_path_input,
         'calc_sort_dropdown': calc_sort_dropdown,
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
+        'calc_search_result': calc_search_result,
+        'calc_sheet_payload_input': calc_sheet_payload_input,
+        'calc_sheet_action_btn': calc_sheet_action_btn,
         # File operations
         'calc_new_folder_btn': calc_new_folder_btn,
         'calc_new_folder_input': calc_new_folder_input,

@@ -1170,4 +1170,6 @@ def create_tab(ctx):
     # ── Initial load ──────────────────────────────────────────────────
     list_directory()
 
-    return tab_widget, {'init_js': _init_js}
+    ctx.add_init_js(_init_js)
+
+    return tab_widget, {}

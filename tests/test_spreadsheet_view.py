@@ -307,10 +307,10 @@ def test_inspect_workbook_features_detects_charts_and_media(tmp_path):
     path = tmp_path / 'rich.xlsx'
     _fake_xlsx(path, ['xl/charts/chart1.xml', 'xl/media/image1.png'])
     found = sv.inspect_workbook_features(path)
-    assert 'Diagramme' in found
-    assert 'eingebettete Bilder' in found
+    assert 'charts' in found
+    assert 'embedded images' in found
     note = sv.describe_lossy_features(found)
-    assert 'Diagramme' in note
+    assert 'charts' in note
 
 
 def test_inspect_workbook_features_survives_garbage(tmp_path):

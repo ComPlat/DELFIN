@@ -1958,6 +1958,7 @@ def fill_pdf_form(
     try:
         writer = pypdf.PdfWriter(clone_from=str(src))
         _set_need_appearances(writer)
+        _ensure_form_resources(writer)
         for page in writer.pages:
             writer.update_page_form_field_values(
                 page, resolved_values, auto_regenerate=False)
@@ -2048,6 +2049,48 @@ def _set_need_appearances(writer: Any) -> None:
     except Exception:
         # Cosmetic in viewers that render appearances themselves; never
         # worth failing an otherwise good fill.
+        pass
+
+
+def _ensure_form_resources(writer: Any) -> None:
+    """Give the form the default-resources dictionary the writer expects.
+
+    An AcroForm may legally omit ``/DR``, and some producers do. pypdf
+    reads it while writing a field value and calls ``get_object()`` on the
+    plain dictionary it substitutes, which fails with an AttributeError
+    that names neither the form nor the field -- so a form that is simply
+    missing an optional entry reads as a broken document.
+
+    An empty but real ``/DR`` costs nothing here: ``/NeedAppearances`` is
+    set, so the viewer builds the appearance itself.
+    """
+    try:
+        from pypdf.generic import DictionaryObject, NameObject
+
+        acro = writer._root_object.get("/AcroForm")
+        if acro is None:
+            return
+        try:
+            acro = acro.get_object()
+        except Exception:
+            pass
+
+        def _resolved(container: Any, key: str) -> Any:
+            value = container.get(key)
+            try:
+                return value.get_object() if value is not None else None
+            except Exception:
+                return None
+
+        resources = _resolved(acro, "/DR")
+        if not isinstance(resources, DictionaryObject):
+            resources = DictionaryObject()
+            acro[NameObject("/DR")] = resources
+        if not isinstance(_resolved(resources, "/Font"), DictionaryObject):
+            resources[NameObject("/Font")] = DictionaryObject()
+    except Exception:
+        # Best effort. Failing here would replace a confusing error with a
+        # different confusing error.
         pass
 
 

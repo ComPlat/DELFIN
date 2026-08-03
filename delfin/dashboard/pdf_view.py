@@ -23,10 +23,11 @@ and (except for the few functions that take a page) without PyMuPDF.
 from __future__ import annotations
 
 import html as _html
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import ipywidgets as widgets
 import numpy as np
@@ -45,6 +46,22 @@ MAX_FILE_BYTES = 400 * 1024 * 1024
 DPI_STEPS = (100, 150, 200, 300)
 DEFAULT_DPI_INDEX = 0
 ZOOM_LABELS = ('100 %', '150 %', '200 %', '300 %')
+
+# Fit-to-width is the default: a document is read at the width it has room
+# for, and that width changes when the splitter moves, the window resizes or
+# the tab goes fullscreen. Kept out of DPI_STEPS because it is not a step --
+# it is a rule for computing one.
+FIT_WIDTH = -1
+FIT_WIDTH_LABEL = 'Fit width'
+FIT_WIDTH_MAX_DPI = 300
+# Until the browser reports the real width. An A4 page at 100 dpi is ~830 px,
+# which is what the pane used to be sized for.
+ASSUMED_FRAME_WIDTH = 860
+
+# Pages are stacked in one scroll container. Each page keeps its own widget,
+# and only the ones near the viewport hold pixels.
+PAGE_GAP_PX = 12
+RENDER_WINDOW = 2
 
 # A page image crosses the comm channel as PNG on every navigation step, and an
 # oversized sheet (posters, plans) at 300 dpi would be tens of megapixels. The
@@ -65,6 +82,173 @@ ACTIVE_HIGHLIGHT_COLOR = (255, 109, 0)  # the hit the user is standing on
 HIGHLIGHT_ALPHA = 0.42
 
 IDENTITY_MATRIX = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+_PAGES_JS_TEMPLATE = r"""
+(function(){
+  var TOKEN = __TOKEN__;
+  var tries = 0;
+
+  function boot(){
+    var root = document.querySelector('.' + TOKEN);
+    var frame = root && root.querySelector('.pdfv-frame');
+    var pages = root && root.querySelector('.pdfv-pages');
+    if (!root || !frame || !pages || !pages.children.length) {
+      if (++tries < 60) setTimeout(boot, 50);
+      return;
+    }
+    if (root.dataset.bound === TOKEN) { report(); measure(); return; }
+    root.dataset.bound = TOKEN;
+    install(root, frame, pages);
+  }
+
+  function install(root, frame, pages){
+    function send(payload){
+      payload.token = TOKEN;
+      var field = root.querySelector('.pdfv-bridge-input input');
+      if (!field) return;
+      var desc = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value');
+      if (desc && desc.set) desc.set.call(field, JSON.stringify(payload));
+      else field.value = JSON.stringify(payload);
+      field.dispatchEvent(new Event('input', {bubbles: true}));
+      field.dispatchEvent(new Event('change', {bubbles: true}));
+      var holder = root.querySelector('.pdfv-bridge-action');
+      var btn = holder && (holder.tagName === 'BUTTON'
+        ? holder : holder.querySelector('button'));
+      if (btn) btn.click();
+    }
+
+    /* Which pages are on screen. Reported as one message after scrolling
+       settles: asking per page would send a burst the kernel answers one
+       render at a time, and the user would watch it catch up. */
+    var pending = null;
+    function report(){
+      if (pending) clearTimeout(pending);
+      pending = setTimeout(function(){
+        pending = null;
+        var top = frame.scrollTop, bottom = top + frame.clientHeight;
+        var want = [];
+        var kids = pages.children;
+        for (var i = 0; i < kids.length; i++) {
+          var el = kids[i];
+          var elTop = el.offsetTop, elBottom = elTop + el.offsetHeight;
+          if (elBottom > top - 40 && elTop < bottom + 40) want.push(i);
+        }
+        if (want.length) send({action: 'pages', want: want});
+      }, 90);
+    }
+    root.__pdfvReport = report;
+
+    var lastWidth = 0;
+    function measure(){
+      var width = Math.round(frame.clientWidth);
+      if (!width || Math.abs(width - lastWidth) < 8) return;
+      lastWidth = width;
+      send({action: 'width', px: width});
+    }
+    root.__pdfvMeasure = measure;
+
+    frame.addEventListener('scroll', report, {passive: true});
+    if (window.ResizeObserver) {
+      var timer = null;
+      new ResizeObserver(function(){
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(measure, 160);
+      }).observe(frame);
+    } else {
+      window.addEventListener('resize', function(){ setTimeout(measure, 160); });
+    }
+
+    /* A form field lives on the page. Typing is reported when the field is
+       left and, for a tick or a choice, as soon as it changes -- those have
+       no "finished typing" moment. */
+    function fieldValue(el){
+      if (el.type === 'checkbox') return el.checked;
+      return el.value;
+    }
+    /* Collected and sent together. Two fields changed in the same tick --
+       tabbing quickly through a form -- would otherwise each write the one
+       bridge field before the first had been read, and one of them would be
+       lost. */
+    var pendingFields = null, fieldTimer = null;
+    function reportField(el){
+      if (!el || !el.dataset || !el.dataset.field || el.disabled) return;
+      el.classList.add('pdfv-changed');
+      pendingFields = pendingFields || {};
+      pendingFields[el.dataset.field] = fieldValue(el);
+      if (fieldTimer) clearTimeout(fieldTimer);
+      fieldTimer = setTimeout(function(){
+        fieldTimer = null;
+        var batch = pendingFields;
+        pendingFields = null;
+        if (batch) send({action: 'fields', values: batch});
+      }, 120);
+    }
+    pages.addEventListener('change', function(e){
+      if (e.target.classList && e.target.classList.contains('pdfv-f')) {
+        reportField(e.target);
+      }
+    }, true);
+    pages.addEventListener('focusout', function(e){
+      var el = e.target;
+      if (el.classList && el.classList.contains('pdfv-f')
+          && (el.type === 'text' || el.tagName === 'TEXTAREA')) {
+        reportField(el);
+      }
+    }, true);
+    /* And while typing, once it pauses: pressing Save is a click, and
+       whether that takes focus out of the field first is up to the browser. */
+    var typing = null;
+    pages.addEventListener('input', function(e){
+      var el = e.target;
+      if (!el.classList || !el.classList.contains('pdfv-f')) return;
+      if (el.type === 'checkbox') return;
+      if (typing) clearTimeout(typing);
+      typing = setTimeout(function(){ typing = null; reportField(el); }, 300);
+    });
+
+    /* Scroll to a page, asked for by the kernel when the page number, a
+       search hit or the step buttons move. */
+    root.__pdfvGoto = function(index){
+      var el = pages.children[index];
+      if (!el) return;
+      frame.scrollTop = Math.max(0, el.offsetTop - 6);
+      report();
+    };
+
+    measure();
+    report();
+  }
+
+  function report(){
+    var root = document.querySelector('.' + TOKEN);
+    if (root && root.__pdfvReport) root.__pdfvReport();
+  }
+  function measure(){
+    var root = document.querySelector('.' + TOKEN);
+    if (root && root.__pdfvMeasure) root.__pdfvMeasure();
+  }
+
+  boot();
+})();
+"""
+
+
+def _pages_js(token: str) -> str:
+    """Browser side of the page stack: report what is visible, measure width.
+
+    Must go through the dashboard's JS channel: ipywidgets sets HTML content
+    with ``innerHTML``, which never runs an inline script.
+    """
+    return _PAGES_JS_TEMPLATE.replace('__TOKEN__', json.dumps(str(token)))
+
+
+def _goto_js(token: str, index: int) -> str:
+    return (
+        f"(function(){{var r=document.querySelector('.{token}');"
+        f"if(r&&r.__pdfvGoto)r.__pdfvGoto({int(index)});}})();"
+    )
 
 
 class PdfError(RuntimeError):
@@ -125,6 +309,221 @@ class SearchResult:
 # Bounds and geometry (pure)
 # ---------------------------------------------------------------------------
 
+@dataclass
+class FormField:
+    """One fillable field, and where on the page it sits."""
+
+    name: str
+    kind: str                       # text | check | choice | radio | other
+    value: str = ''
+    options: List[str] = field(default_factory=list)
+    on_state: str = ''              # what a check box calls "ticked"
+    page: int = 0
+    rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    readonly: bool = False
+    multiline: bool = False
+    font_size: float = 0.0        # in points; 0 means the form says "auto"
+
+
+# Only what a person can fill in. A pushbutton (a "CrossMark" link on a
+# journal article, say) is a widget too, and listing it turned a paper into a
+# document with a one-field form that could not be saved.
+_WIDGET_KINDS = {2: 'check', 3: 'choice', 4: 'choice', 5: 'radio', 7: 'text'}
+
+# Bit 13 of a text field's flags. A form that sets it wants several lines.
+TEXT_MULTILINE_FLAG = 1 << 12
+# A box tall enough for this many lines is treated as several lines even when
+# the flag is missing -- plenty of forms are built by hand and never set it,
+# and a two-centimetre box that scrolls one line sideways is unusable.
+MULTILINE_HEIGHT_LINES = 2.2
+DEFAULT_FIELD_FONT_PT = 11.0
+
+
+def form_fields(doc) -> List[FormField]:
+    """The fillable fields of a document, in page order.
+
+    Read with the same library that draws the pages, because the field's
+    rectangle is what lets a click on a field scroll to the place it fills
+    in. Writing is a different question and goes elsewhere -- see
+    :func:`delfin.agent.office.fill_pdf_form`.
+    """
+    fields: List[FormField] = []
+    total = int(getattr(doc, 'page_count', 0) or 0)
+    for index in range(total):
+        try:
+            page = doc.load_page(index)
+            widgets_on_page = list(page.widgets() or [])
+        except Exception:
+            continue
+        for widget in widgets_on_page:
+            name = str(getattr(widget, 'field_name', '') or '')
+            if not name:
+                continue
+            kind = _WIDGET_KINDS.get(
+                int(getattr(widget, 'field_type', 0) or 0), '')
+            if not kind:
+                continue
+            rect = getattr(widget, 'rect', None)
+            try:
+                box = (float(rect.x0), float(rect.y0),
+                       float(rect.x1), float(rect.y1))
+            except Exception:
+                box = (0.0, 0.0, 0.0, 0.0)
+            # A choice entry is either a value or an (export, display) pair.
+            # What gets written is the export value, so that is what is kept:
+            # storing the label would fill the field with a word the document
+            # does not recognise.
+            options = []
+            for option in (getattr(widget, 'choice_values', None) or []):
+                if isinstance(option, (list, tuple)) and option:
+                    options.append(str(option[0]))
+                else:
+                    options.append(str(option))
+            states = getattr(widget, 'button_states', None)
+            on_state = ''
+            if callable(states):
+                try:
+                    found = states() or {}
+                    normal = found.get('normal') or []
+                    on_state = next(
+                        (str(s) for s in normal if str(s) != 'Off'), '')
+                except Exception:
+                    on_state = ''
+            flags = int(getattr(widget, 'field_flags', 0) or 0)
+            try:
+                font_size = float(getattr(widget, 'text_fontsize', 0) or 0)
+            except (TypeError, ValueError):
+                font_size = 0.0
+            height_pt = max(0.0, box[3] - box[1])
+            line_pt = font_size or DEFAULT_FIELD_FONT_PT
+            multiline = kind == 'text' and (
+                bool(flags & TEXT_MULTILINE_FLAG)
+                or height_pt >= line_pt * MULTILINE_HEIGHT_LINES
+            )
+            fields.append(FormField(
+                name=name, kind=kind,
+                value=str(getattr(widget, 'field_value', '') or ''),
+                options=options, on_state=on_state,
+                page=index, rect=box,
+                readonly=bool(flags & 1),
+                multiline=multiline,
+                font_size=font_size,
+            ))
+    return fields
+
+
+FORM_CSS = (
+    '.pdfv-page { position:relative !important; }'
+    '.pdfv-overlay { position:absolute !important; top:0; left:0;'
+    ' width:100%; height:100%; pointer-events:none; }'
+    '.pdfv-overlay .widget-html-content { width:100%; height:100%; }'
+    # Opaque, not translucent. A filled field is also drawn into the page
+    # image by the renderer, so a see-through box shows the value twice,
+    # half a pixel apart.
+    '.pdfv-f { position:absolute; box-sizing:border-box; pointer-events:auto;'
+    ' font-family:inherit; background:#eaf1fd;'
+    ' border:1px solid #7aa7dd; border-radius:2px;'
+    ' padding:0 3px; margin:0; color:#111; }'
+    '.pdfv-f:hover { background:#dfeaff; }'
+    '.pdfv-f:focus { outline:2px solid #1565c0; outline-offset:0;'
+    ' background:#fff; }'
+    '.pdfv-f[type="checkbox"] { padding:0; cursor:pointer;'
+    ' appearance:none; -webkit-appearance:none; }'
+    '.pdfv-f[type="checkbox"]:checked:after { content:"\\2713";'
+    ' display:block; text-align:center; line-height:1;'
+    ' font-size:inherit; color:#12447a; }'
+    'textarea.pdfv-f { white-space:pre-wrap; overflow:auto; resize:none;'
+    ' line-height:1.25; padding:2px 3px; }'
+    '.pdfv-f.pdfv-changed { background:#fff6cc; border-color:#ef9a00; }'
+    '.pdfv-f[disabled] { background:#f0f0f0; border-style:dashed;'
+    ' cursor:not-allowed; color:#555; }'
+)
+
+
+def field_boxes(fields: Sequence['FormField'], page_index: int, zoom: float,
+                bounds: Optional[Tuple[int, int]] = None
+                ) -> List[Tuple['FormField', Tuple[int, int, int, int]]]:
+    """Where each field of a page sits on the rendered image, in pixels.
+
+    The same mapping the search highlights use, so a field and a hit on the
+    same page agree about where the page is.
+    """
+    out = []
+    for found in fields:
+        if found.page != int(page_index):
+            continue
+        box = rect_to_pixels(found.rect, zoom, bounds=bounds)
+        if box is None:
+            continue
+        out.append((found, box))
+    return out
+
+
+def field_font_px(found: 'FormField', height_px: int, zoom: float) -> int:
+    """How big the text in a field should be drawn.
+
+    The form's own size when it states one -- that is what the printed
+    document will use. "Auto" is what most forms say, and then a single
+    line is sized to its box while a multi-line box is not: filling one
+    would give it letters as tall as the paragraph it has to hold.
+    """
+    if found.font_size:
+        return max(7, int(round(found.font_size * zoom)))
+    if found.multiline:
+        return max(9, int(round(DEFAULT_FIELD_FONT_PT * zoom)))
+    return max(9, min(int(height_px * 0.62), 22))
+
+
+def overlay_html(placed: Sequence[Tuple['FormField', Tuple[int, int, int, int]]],
+                 values: Optional[Dict[str, Any]] = None,
+                 zoom: float = 1.0) -> str:
+    """Real inputs, sized and placed over the page they belong to.
+
+    A form is filled in where it is read. The alternative -- a list of field
+    names beside the page -- asks the reader to hold the mapping between a
+    name and a box in their head, which is the one thing the document
+    already does for them.
+    """
+    values = values or {}
+    if not placed:
+        return ''
+    out: List[str] = []
+    for found, (left, top, right, bottom) in placed:
+        width, height = right - left, bottom - top
+        current = values.get(found.name, found.value)
+        style = (f'left:{left}px; top:{top}px; '
+                 f'width:{width}px; height:{height}px; '
+                 f'font-size:{field_font_px(found, height, zoom)}px;')
+        changed = ' pdfv-changed' if found.name in values else ''
+        multiline = ' pdfv-multi' if found.multiline else ''
+        common = (f' class="pdfv-f{multiline}{changed}" style="{style}"'
+                  f' data-field="{_html.escape(found.name, quote=True)}"'
+                  f' title="{_html.escape(found.name, quote=True)}"'
+                  + (' disabled' if found.readonly else ''))
+        if found.kind == 'text' and found.multiline:
+            # A box several lines tall holds a paragraph. On one line the
+            # text scrolls sideways out of sight while the room for it is
+            # right there.
+            out.append(f'<textarea{common} wrap="soft">'
+                       f'{_html.escape(str(current))}</textarea>')
+        elif found.kind == 'check':
+            ticked = ' checked' if str(current) not in ('', 'Off', 'False') else ''
+            out.append(f'<input type="checkbox"{common}{ticked}>')
+        elif found.kind in ('choice', 'radio') and found.options:
+            options = []
+            for option in found.options:
+                selected = ' selected' if str(current) == option else ''
+                options.append(
+                    f'<option value="{_html.escape(option, quote=True)}"{selected}>'
+                    f'{_html.escape(option)}</option>')
+            out.append(f'<select{common}>{"".join(options)}</select>')
+        else:
+            out.append(
+                f'<input type="text"{common} '
+                f'value="{_html.escape(str(current), quote=True)}">')
+    return ''.join(out)
+
+
 def clamp_page(page: Any, total_pages: int) -> int:
     """Clamp a 0-based page index into ``[0, total_pages - 1]``.
 
@@ -151,6 +550,45 @@ def clamp_dpi_index(index: Any) -> int:
 
 def dpi_for_index(index: Any) -> int:
     return DPI_STEPS[clamp_dpi_index(index)]
+
+
+def fit_width_dpi(width_pt: float, frame_px: float) -> int:
+    """DPI at which a page of ``width_pt`` fills ``frame_px`` across.
+
+    Bounded at both ends: below :data:`MIN_RENDER_DPI` the page is unreadable
+    anyway, and above :data:`FIT_WIDTH_MAX_DPI` a wide pane would ask for a
+    rasterisation nobody can see the benefit of but everybody waits for.
+    """
+    width_pt = max(1.0, float(width_pt))
+    frame_px = max(1.0, float(frame_px))
+    dpi = int(frame_px * 72.0 / width_pt)
+    return max(MIN_RENDER_DPI, min(FIT_WIDTH_MAX_DPI, dpi))
+
+
+def page_sizes(doc) -> List[Tuple[float, float]]:
+    """Width and height in points for every page, without rendering any.
+
+    This is what lets the scroll bar be right from the first moment: the
+    placeholders are the size the pages will be.
+    """
+    sizes: List[Tuple[float, float]] = []
+    for index in range(int(getattr(doc, 'page_count', 0) or 0)):
+        try:
+            rect = doc.load_page(index).rect
+            sizes.append((float(rect.width), float(rect.height)))
+        except Exception:
+            # One unreadable page must not cost the whole document its
+            # scroll bar; A4 is a better guess than nothing.
+            sizes.append((595.0, 842.0))
+    return sizes
+
+
+def page_pixel_size(width_pt: float, height_pt: float, dpi: int
+                    ) -> Tuple[int, int]:
+    """On-screen size of a page at ``dpi``, after the pixel budget applies."""
+    dpi = effective_dpi(width_pt, height_pt, dpi)
+    scale = dpi / 72.0
+    return max(1, int(width_pt * scale)), max(1, int(height_pt * scale))
 
 
 def effective_dpi(width_pt: float, height_pt: float, dpi: int,
@@ -249,7 +687,7 @@ def _fitz():
         import fitz  # noqa: PLC0415 -- optional at import time by design
     except Exception as exc:                     # pragma: no cover - env specific
         raise PdfError(
-            'PDF-Anzeige nicht verfügbar: PyMuPDF ist nicht installiert '
+            'PDF viewing is unavailable: PyMuPDF is not installed '
             f'({exc}).'
         ) from exc
     return fitz
@@ -267,15 +705,15 @@ def open_document(path: Path):
     try:
         size = path.stat().st_size
     except OSError as exc:
-        raise PdfError(f'Datei nicht lesbar: {exc}') from exc
+        raise PdfError(f'File cannot be read: {exc}') from exc
     if size > MAX_FILE_BYTES:
         raise PdfError(
-            f'PDF zu groß für die Anzeige ({size / (1024 * 1024):.1f} MB).'
+            f'PDF is too large to display ({size / (1024 * 1024):.1f} MB).'
         )
     try:
         doc = fitz.open(str(path))
     except Exception as exc:
-        raise PdfError(f'PDF konnte nicht geöffnet werden: {exc}') from exc
+        raise PdfError(f'PDF could not be opened: {exc}') from exc
     if doc.needs_pass:
         # An empty owner password unlocks plenty of "protected" office output.
         unlocked = False
@@ -286,8 +724,7 @@ def open_document(path: Path):
         if not unlocked:
             doc.close()
             raise PdfError(
-                'Das PDF ist passwortgeschützt und kann hier nicht '
-                'angezeigt werden.'
+                'The PDF is password protected and cannot be shown here.'
             )
     try:
         page_count = int(doc.page_count)
@@ -296,7 +733,7 @@ def open_document(path: Path):
         raise PdfError(f'PDF konnte nicht gelesen werden: {exc}') from exc
     if page_count <= 0:
         doc.close()
-        raise PdfError('Das PDF enthält keine Seiten.')
+        raise PdfError('The PDF has no pages.')
     return doc
 
 
@@ -382,7 +819,7 @@ def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX
     try:
         page = doc[index]
     except Exception as exc:
-        raise PdfError(f'Seite {index + 1} konnte nicht geladen werden: {exc}') from exc
+        raise PdfError(f'Page {index + 1} could not be loaded: {exc}') from exc
 
     rect = page.rect
     dpi = effective_dpi(rect.width, rect.height, dpi)
@@ -391,7 +828,7 @@ def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX
         pix = page.get_pixmap(
             matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csRGB, alpha=False)
     except Exception as exc:
-        raise PdfError(f'Seite {index + 1} konnte nicht gezeichnet werden: {exc}') from exc
+        raise PdfError(f'Page {index + 1} could not be drawn: {exc}') from exc
 
     boxes = list(highlights or ())
     if active is not None:
@@ -430,7 +867,7 @@ def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX
 def hit_labels(result: SearchResult) -> List[str]:
     """One entry per hit for the jump list, carrying its page number."""
     return [
-        f'Treffer {i + 1} · Seite {hit.page + 1}'
+        f'Hit {i + 1} · page {hit.page + 1}'
         for i, hit in enumerate(result.hits)
     ]
 
@@ -439,7 +876,7 @@ def cap_note(result: SearchResult) -> str:
     """Plain sentence about what the search did *not* look at."""
     notes = []
     if result.hit_cap_reached:
-        notes.append(f'bei {result.n_hits} Treffern abgebrochen')
+        notes.append(f'stopped at {result.n_hits} hits')
     if result.page_cap_reached:
         notes.append(
             f'nur Seite 1–{result.pages_searched} von {result.total_pages} durchsucht'
@@ -460,26 +897,26 @@ def search_summary_html(result: SearchResult, current: int = -1) -> str:
     if not result.hits:
         if not result.has_text:
             scope = (
-                f'den ersten {result.pages_searched} Seiten'
-                if result.page_cap_reached else 'diesem Dokument'
+                f'the first {result.pages_searched} pages'
+                if result.page_cap_reached else 'this document'
             )
             return (
-                '<span style="color:#b26a00;">Kein durchsuchbarer Text in '
-                f'{_html.escape(scope)} – vermutlich ein Scan '
-                '(Bildseiten ohne Textebene).</span>'
+                '<span style="color:#b26a00;">No searchable text in '
+                f'{_html.escape(scope)} - probably a scan '
+                '(page images without a text layer).</span>'
             )
-        return f'<span style="color:#d32f2f;">0 Treffer</span>{note_html}'
+        return f'<span style="color:#d32f2f;">0 hits</span>{note_html}'
     pages = len(result.pages_hit)
-    page_word = 'Seite' if pages == 1 else 'Seiten'
+    page_word = 'page' if pages == 1 else 'pages'
     if current is None or current < 0:
         return (
-            f'<span style="color:#2e7d32;">{result.n_hits} Treffer auf '
+            f'<span style="color:#2e7d32;">{result.n_hits} hits on '
             f'{pages} {page_word}</span>{note_html}'
         )
     hit = result.hits[max(0, min(int(current), result.n_hits - 1))]
     return (
         f'<b>{int(current) + 1}/{result.n_hits}</b> '
-        f'<span style="color:#555;">(Seite {hit.page + 1} von {result.total_pages})</span>'
+        f'<span style="color:#555;">(page {hit.page + 1} of {result.total_pages})</span>'
         f'{note_html}'
     )
 
@@ -488,16 +925,16 @@ def scan_hint_html(has_text: bool, pages_probed: int, total_pages: int) -> str:
     """Note shown when a document is opened, before anyone searches."""
     if has_text or total_pages <= 0:
         return ''
-    scope = 'Alle Seiten' if pages_probed >= total_pages else f'Die ersten {pages_probed} Seiten'
+    scope = 'All pages' if pages_probed >= total_pages else f'The first {pages_probed} pages'
     return (
-        f'<span style="color:#b26a00;">{scope} enthalten keinen Text – '
-        'vermutlich ein Scan. Die Volltextsuche findet hier nichts.</span>'
+        f'<span style="color:#b26a00;">{scope} hold no text - '
+        'probably a scan. Full-text search will not find anything here.</span>'
     )
 
 
 def page_status_html(page_index: int, total_pages: int, dpi: int) -> str:
     return (
-        f'<span style="color:#555;">Seite {page_index + 1} von {total_pages} '
+        f'<span style="color:#555;">Page {page_index + 1} of {total_pages} '
         f'· {dpi} dpi</span>'
     )
 
@@ -514,14 +951,29 @@ class PdfPanel:
     file mapped, and the last rendered PNG is worth freeing too.
     """
 
-    def __init__(self, *, height_px: int = 700):
+    def __init__(self, *, height_px: Optional[int] = None, run_js=None,
+                 continuous: bool = True, backup_dir_name: Optional[str] = None):
         self._doc = None
         self._path: Optional[Path] = None
         self._page = 0
-        self._dpi_index = DEFAULT_DPI_INDEX
+        self._continuous = bool(continuous)
+        self._zoom = FIT_WIDTH if self._continuous else DEFAULT_DPI_INDEX
         self._result = SearchResult()
         self._hit = -1
         self._syncing = False
+        self._run_js = run_js
+        self._backup_dir_name = backup_dir_name
+        self._token = f'pdfv-{id(self):x}'
+        self._sizes: List[Tuple[float, float]] = []
+        self._page_images: Dict[int, widgets.Image] = {}
+        self._page_boxes: Dict[int, widgets.Box] = {}
+        self._overlays: Dict[int, widgets.HTML] = {}
+        self._values: Dict[str, Any] = {}
+        self._filled: set = set()
+        self._frame_px = ASSUMED_FRAME_WIDTH
+        self._fields: List[FormField] = []
+        # A field the user clicked, outlined on the page until they move on.
+        self._focus_rect: Optional[Tuple[int, Tuple[float, float, float, float]]] = None
 
         def _step_button(symbol, tooltip, disabled=False):
             return widgets.Button(
@@ -529,43 +981,76 @@ class PdfPanel:
                 layout=widgets.Layout(width='40px', height='28px'),
             )
 
-        self.prev_page_btn = _step_button('◀', 'Vorherige Seite')
-        self.next_page_btn = _step_button('▶', 'Nächste Seite')
+        self.prev_page_btn = _step_button('◀', 'Previous page')
+        self.next_page_btn = _step_button('▶', 'Next page')
         self.page_input = widgets.BoundedIntText(
             value=1, min=1, max=1,
             layout=widgets.Layout(width='70px', height='28px'),
         )
-        self.page_total = widgets.HTML('von 1')
+        self.page_total = widgets.HTML('of 1')
+        # Fit-to-width only where the frame is measured; the one-page view
+        # keeps the fixed steps it always had.
+        _zoom_options = [(label, i) for i, label in enumerate(ZOOM_LABELS)]
+        if self._continuous:
+            _zoom_options.insert(0, (FIT_WIDTH_LABEL, FIT_WIDTH))
         self.zoom_dd = widgets.Dropdown(
-            options=[(label, i) for i, label in enumerate(ZOOM_LABELS)],
-            value=DEFAULT_DPI_INDEX,
-            layout=widgets.Layout(width='92px'),
+            options=_zoom_options,
+            value=self._zoom,
+            layout=widgets.Layout(width='124px' if self._continuous else '92px'),
         )
         # Searching a long document is not free, so the term is taken on Enter
         # or on leaving the field -- never on every keystroke.
         self.search_input = widgets.Text(
-            value='', placeholder='Im Dokument suchen', continuous_update=False,
+            value='', placeholder='Search in document', continuous_update=False,
             layout=widgets.Layout(width='210px', height='28px'),
         )
         self.search_input.add_class('delfin-nospell')
         self.search_btn = widgets.Button(
-            description='Suchen',
+            description='Search',
             layout=widgets.Layout(width='84px', height='28px'),
         )
-        self.hit_prev_btn = _step_button('◀', 'Vorheriger Treffer', disabled=True)
-        self.hit_next_btn = _step_button('▶', 'Nächster Treffer', disabled=True)
+        self.hit_prev_btn = _step_button('◀', 'Previous hit', disabled=True)
+        self.hit_next_btn = _step_button('▶', 'Next hit', disabled=True)
         self.hit_select = widgets.Dropdown(
             options=[], value=None,
             layout=widgets.Layout(width='190px', display='none'),
         )
         self.status = widgets.HTML('')
         self.page_status = widgets.HTML('')
-        # No max-width: the image has to keep its rendered pixel size, or the
-        # zoom steps would be scaled away again by the browser.
-        self.image = widgets.Image(
-            format='png',
-            layout=widgets.Layout(margin='0'),
+
+        # The pages, stacked. Built when a document is opened.
+        self.pages_box = widgets.VBox(
+            [],
+            layout=widgets.Layout(width='100%', margin='0'),
         )
+        self.pages_box.add_class('pdfv-pages')
+
+        # Browser -> kernel. The browser reports which pages came into view
+        # and how wide the frame is; the kernel answers by setting widget
+        # values, which is a normal traitlet sync rather than another script.
+        self._bridge_input = widgets.Text(
+            value='', layout=widgets.Layout(width='1px', height='1px'))
+        self._bridge_input.add_class('pdfv-bridge-input')
+        self._bridge_btn = widgets.Button(
+            description='', layout=widgets.Layout(width='1px', height='1px'))
+        self._bridge_btn.add_class('pdfv-bridge-action')
+        self._bridge_btn.on_click(self._on_bridge)
+        self._bridge = widgets.Box(
+            [self._bridge_input, self._bridge_btn],
+            layout=widgets.Layout(display='none'),
+        )
+
+        # The form is filled in on the page; only what acts on the whole
+        # form belongs in the toolbar, and only when there is one.
+        self.form_save_btn = widgets.Button(
+            description='Save form', button_style='primary',
+            layout=widgets.Layout(width='100px', height='28px', display='none'))
+        self.form_reset_btn = widgets.Button(
+            description='Reset',
+            layout=widgets.Layout(width='70px', height='28px', display='none'))
+        self.form_status = widgets.HTML('')
+        self.form_save_btn.on_click(self.save_form)
+        self.form_reset_btn.on_click(self.reset_form)
 
         self.toolbar = widgets.HBox(
             [
@@ -575,6 +1060,7 @@ class PdfPanel:
                 self.search_input, self.search_btn,
                 self.hit_prev_btn, self.hit_next_btn, self.hit_select,
                 self.status,
+                self.form_save_btn, self.form_reset_btn, self.form_status,
             ],
             layout=widgets.Layout(
                 width='100%', margin='4px 0', gap='6px',
@@ -583,18 +1069,36 @@ class PdfPanel:
         )
         # A zoomed page is meant to overflow and scroll; centring it would put
         # the top-left corner out of reach as soon as it does.
+        #
+        # Height comes from flex, not from a pixel count: every other view in
+        # the browser fills the pane down to the bottom, and a PDF frame with
+        # a fixed height stopped short of it and stayed short in fullscreen.
+        frame_layout = dict(
+            width='100%', overflow='auto', border='1px solid #ddd',
+            padding='6px', justify_content='flex-start',
+            align_items='flex-start',
+        )
+        if height_px:
+            frame_layout['height'] = f'{int(height_px)}px'
+        else:
+            frame_layout.update(flex='1 1 0', min_height='0')
         self.frame = widgets.Box(
-            [self.image],
-            layout=widgets.Layout(
-                width='100%', height=f'{int(height_px)}px',
-                overflow='auto', border='1px solid #ddd', padding='6px',
-                justify_content='flex-start', align_items='flex-start',
-            ),
-        )
+            [self.pages_box], layout=widgets.Layout(**frame_layout))
+        self.frame.add_class('pdfv-frame')
+
+        body_layout = dict(width='100%', align_items='stretch')
+        if not height_px:
+            body_layout.update(flex='1 1 0', min_height='0')
+        self.body = widgets.HBox([self.frame], layout=widgets.Layout(**body_layout))
+
         self.widget = widgets.VBox(
-            [self.toolbar, self.page_status, self.frame],
-            layout=widgets.Layout(width='100%', display='none'),
+            [widgets.HTML(f'<style>{FORM_CSS}</style>'),
+             self.toolbar, self.page_status, self.body, self._bridge],
+            layout=widgets.Layout(
+                width='100%', display='none', flex='1 1 0', min_height='0'),
         )
+        self.widget.add_class('pdfv-root')
+        self.widget.add_class(self._token)
 
         self.prev_page_btn.on_click(lambda _b: self.step_page(-1))
         self.next_page_btn.on_click(lambda _b: self.step_page(1))
@@ -625,7 +1129,7 @@ class PdfPanel:
         return self._result
 
     def open(self, path) -> None:
-        """Show the first page of ``path``; raises :class:`PdfError` on failure."""
+        """Show ``path``; raises :class:`PdfError` on failure."""
         self.close()
         doc = open_document(Path(path))
         self._doc = doc
@@ -641,10 +1145,380 @@ class PdfPanel:
         self._sync_hit_controls()
         has_text, probed = probe_has_text(doc)
         self.status.value = scan_hint_html(has_text, probed, self.total_pages)
+        self._sizes = page_sizes(doc)
+        self._build_pages()
         self._sync_page_controls()
         self.toolbar.layout.display = 'flex'
         self.widget.layout.display = 'flex'
         self._render()
+        self._load_form()
+        self._install_observer()
+
+    # -- the page stack ------------------------------------------------------
+
+    def dpi(self) -> int:
+        """The DPI pages are drawn at right now."""
+        if self._zoom == FIT_WIDTH and self._continuous:
+            widest = max((w for w, _h in self._sizes), default=595.0)
+            # The frame's own padding and the scroll bar are not page.
+            return fit_width_dpi(widest, max(120, self._frame_px - 28))
+        return dpi_for_index(self._zoom)
+
+    def _shown_pages(self) -> List[int]:
+        """Which pages have a widget.
+
+        All of them when the view scrolls; only the current one otherwise,
+        which is the one-page-at-a-time view the calculations browser has
+        always had and keeps.
+        """
+        if not self._continuous:
+            return [self._page] if self._sizes else []
+        return list(range(len(self._sizes)))
+
+    def _build_pages(self) -> None:
+        """A placeholder per shown page, at the size that page will be.
+
+        In the scrolling view that makes the scroll bar right before
+        anything has been rasterised, rather than growing under the reader.
+        """
+        dpi = self.dpi()
+        self._page_images = {}
+        self._page_boxes = {}
+        self._overlays = {}
+        self._filled = set()
+        order = []
+        for index in self._shown_pages():
+            width_pt, height_pt = self._sizes[index]
+            width_px, height_px = page_pixel_size(width_pt, height_pt, dpi)
+            image = widgets.Image(
+                format='png',
+                layout=widgets.Layout(
+                    width=f'{width_px}px', height=f'{height_px}px', margin='0'),
+            )
+            overlay = widgets.HTML('')
+            overlay.add_class('pdfv-overlay')
+            self._overlays[index] = overlay
+            box = widgets.Box(
+                [image, overlay],
+                layout=widgets.Layout(
+                    width=f'{width_px}px', height=f'{height_px}px',
+                    margin=f'0 0 {PAGE_GAP_PX}px 0',
+                    background_color='#f4f4f4',
+                    # No border on the page and no scrolling. A border is
+                    # drawn inside the box, so the image no longer fits and
+                    # every page grew a scroll bar of its own beside the one
+                    # that scrolls the document. The gap between pages is
+                    # what separates them.
+                    overflow='hidden',
+                ),
+            )
+            box.add_class('pdfv-page')
+            self._page_images[index] = image
+            self._page_boxes[index] = box
+            order.append(box)
+            self._paint_overlay(index)
+        self.pages_box.children = tuple(order)
+
+    def _resize_pages(self) -> None:
+        """Re-size the placeholders after a zoom or a frame-width change."""
+        dpi = self.dpi()
+        for index, box in self._page_boxes.items():
+            width_pt, height_pt = self._sizes[index]
+            width_px, height_px = page_pixel_size(width_pt, height_pt, dpi)
+            for node in (box, self._page_images[index]):
+                node.layout.width = f'{width_px}px'
+                node.layout.height = f'{height_px}px'
+        # Every rendered page is now the wrong size; drop and redraw.
+        for index in list(self._filled):
+            self._page_images[index].value = b''
+        self._filled = set()
+        for index in list(self._overlays):
+            self._paint_overlay(index)
+
+    def page_image(self, index: int) -> Optional[widgets.Image]:
+        """The widget holding page ``index``, for tests and callers."""
+        return self._page_images.get(int(index))
+
+    def _fill_page(self, index: int) -> None:
+        if self._doc is None or index not in self._page_images:
+            return
+        page_hits = [h.rect for h in self._result.hits if h.page == index]
+        active = None
+        if 0 <= self._hit < self._result.n_hits:
+            current = self._result.hits[self._hit]
+            if current.page == index:
+                active = current.rect
+                page_hits = [r for r in page_hits if r != active]
+        if (self._focus_rect is not None
+                and self._focus_rect[0] == index):
+            # A clicked field is marked the same way a search hit is, so the
+            # eye has one thing to look for rather than two.
+            active = self._focus_rect[1]
+        try:
+            self._page_images[index].value = render_page_png(
+                self._doc, index, self.dpi(),
+                highlights=page_hits, active=active,
+            )
+            self._filled.add(index)
+        except Exception as exc:
+            # A page that cannot be drawn is one damaged page, not a broken
+            # viewer -- the rest of the document stays reachable.
+            self._page_images[index].value = b''
+            self._filled.discard(index)
+            self.page_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>'
+            )
+
+    def _free_outside(self, keep) -> None:
+        """Let go of pages nobody is looking at.
+
+        A rendered page is a PNG in the kernel and a copy in the browser; a
+        few hundred of them is how a viewer turns into a memory leak.
+        """
+        keep = set(keep)
+        for index in list(self._filled):
+            if index not in keep:
+                self._page_images[index].value = b''
+                self._filled.discard(index)
+
+    def _visible_window(self, centre: int) -> List[int]:
+        if not self._continuous:
+            return [self._page]
+        first = max(0, centre - RENDER_WINDOW)
+        last = min(len(self._sizes) - 1, centre + RENDER_WINDOW)
+        return list(range(first, last + 1))
+
+    # -- forms ---------------------------------------------------------------
+
+    def _paint_overlay(self, index: int) -> None:
+        """Put the page's fields on the page, at the size it is drawn."""
+        overlay = self._overlays.get(int(index))
+        if overlay is None:
+            return
+        if not self._fields or not self._continuous:
+            overlay.value = ''
+            return
+        try:
+            width_pt, height_pt = self._sizes[int(index)]
+        except (IndexError, TypeError):
+            overlay.value = ''
+            return
+        dpi = effective_dpi(width_pt, height_pt, self.dpi())
+        bounds = page_pixel_size(width_pt, height_pt, self.dpi())
+        zoom = dpi / 72.0
+        placed = field_boxes(self._fields, int(index), zoom, bounds)
+        overlay.value = overlay_html(placed, self._values, zoom)
+
+    def _load_form(self) -> None:
+        """Find the fields, and show what can be done with them.
+
+        Nothing appears when there are none: a Save button over a document
+        with nothing to fill in is a button that can only disappoint.
+        """
+        self._fields = []
+        self._values = {}
+        self.form_status.value = ''
+        if self._doc is not None and self._continuous:
+            try:
+                self._fields = form_fields(self._doc)
+            except Exception:
+                self._fields = []
+        has_form = bool(self._fields)
+        note = self._xfa_note() if has_form else ''
+        for control in (self.form_save_btn, self.form_reset_btn):
+            control.layout.display = '' if has_form else 'none'
+        self.form_save_btn.disabled = bool(note)
+        if note:
+            self.form_status.value = (
+                f'<span style="color:#b26a00;">{_html.escape(note)}</span>')
+        elif has_form:
+            fillable = sum(1 for f in self._fields if not f.readonly)
+            self.form_status.value = (
+                f'<span style="color:#555;">{fillable} field'
+                f'{"" if fillable == 1 else "s"} to fill in</span>')
+        for index in list(self._overlays):
+            self._paint_overlay(index)
+
+    def _xfa_note(self) -> str:
+        """Say when writing values would report success and change nothing."""
+        if self._path is None:
+            return ''
+        try:
+            from delfin.agent import office
+            if office.pdf_form_fields(self._path).get('xfa'):
+                return ('XFA form: field values can be written but a viewer '
+                        'will not show them. Filling this here is not enough.')
+        except Exception:
+            return ''
+        return ''
+
+    def goto_field(self, index: int) -> None:
+        """Scroll to a field and outline it on the page."""
+        if not (0 <= index < len(self._fields)):
+            return
+        found = self._fields[index]
+        self._focus_rect = (found.page, found.rect)
+        self.goto_page(found.page, keep_hit=True)
+        self._fill_page(found.page)
+
+    def form_values(self) -> Dict[str, Any]:
+        """What was typed into the page, as the writer wants it.
+
+        Only the fields that were touched: writing back every field would
+        rewrite ones nobody edited, and for a check box that means deciding
+        on the user's behalf what "untouched" meant.
+        """
+        by_name = {f.name: f for f in self._fields}
+        values: Dict[str, Any] = {}
+        for name, raw in self._values.items():
+            found = by_name.get(name)
+            if found is None or found.readonly:
+                continue
+            if found.kind == 'check':
+                ticked = raw not in (False, '', 'false', 'Off', None)
+                values[name] = (found.on_state or 'Yes') if ticked else 'Off'
+            else:
+                values[name] = str(raw)
+        return values
+
+    def save_form(self, _button=None) -> None:
+        """Write the fields back, keeping a copy of the original.
+
+        The write goes through the agent's filler rather than a second
+        implementation here: it is already hardened against the ways this
+        format fails quietly -- appearances that viewers do not build, check
+        boxes whose "on" is not called Yes, and a field name that is simply
+        not in the document.
+        """
+        if self._doc is None or self._path is None or not self._fields:
+            return
+        values = self.form_values()
+        if not values:
+            self.form_status.value = (
+                '<span style="color:#555;">nothing filled in yet</span>')
+            return
+        try:
+            from delfin.agent import office
+            from . import spreadsheet_view as _sheet
+        except Exception as exc:  # pragma: no cover - depends on the install
+            self.form_status.value = f'<span style="color:#d32f2f;">{exc}</span>'
+            return
+
+        source = self._path
+        target = source.with_name(source.name + '.filling.pdf')
+        try:
+            office.fill_pdf_form(source, values, output=target)
+            backup = _sheet.make_backup(
+                source,
+                folder=(source.parent / self._backup_dir_name
+                        if self._backup_dir_name else None),
+                versioned=bool(self._backup_dir_name))
+            # The open document holds the file mapped; let go before replacing.
+            page, zoom = self._page, self._zoom
+            self.close()
+            target.replace(source)
+        except Exception as exc:  # noqa: BLE001
+            if target.exists():
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+            self.form_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+            return
+
+        self.open(source)
+        self._zoom = zoom
+        self.goto_page(page)
+        self.form_status.value = (
+            '<span style="color:#2e7d32;">saved'
+            + (f' · backup: {_html.escape(backup.name)}' if backup else '')
+            + '</span>')
+
+    def reset_form(self, _button=None) -> None:
+        """Put the page back to what the file says."""
+        self._values = {}
+        for index in list(self._overlays):
+            self._paint_overlay(index)
+        self.form_status.value = (
+            '<span style="color:#555;">entries cleared</span>')
+
+    # -- browser bridge ------------------------------------------------------
+
+    def _emit(self, script: str) -> None:
+        if callable(self._run_js) and script.strip():
+            self._run_js(script)
+
+    def _on_bridge(self, _button=None) -> None:
+        """One message from the page stack in the browser."""
+        raw = self._bridge_input.value or ''
+        self._bridge_input.value = ''
+        if not raw or self._doc is None:
+            return
+        try:
+            message = json.loads(raw)
+        except Exception:
+            return
+        if message.get('token') != self._token:
+            return  # from a document that is no longer on screen
+
+        action = message.get('action')
+        if action == 'width':
+            try:
+                width = int(message.get('px') or 0)
+            except (TypeError, ValueError):
+                return
+            if width <= 0 or abs(width - self._frame_px) < 24:
+                return  # not a change worth re-rasterising the document for
+            self._frame_px = width
+            if self._zoom == FIT_WIDTH:
+                self._resize_pages()
+                self._render()
+            return
+
+        if action == 'fields':
+            values = message.get('values')
+            if not isinstance(values, dict) or not values:
+                return
+            for name, raw in values.items():
+                if str(name):
+                    self._values[str(name)] = raw
+            filled = len(self.form_values())
+            self.form_status.value = (
+                f'<span style="color:#b26a00;">{filled} field'
+                f'{"" if filled == 1 else "s"} not saved</span>')
+            return
+
+        if action == 'pages':
+            wanted = message.get('want') or []
+            try:
+                wanted = [int(p) for p in wanted]
+            except (TypeError, ValueError):
+                return
+            wanted = [p for p in wanted if 0 <= p < len(self._page_images)]
+            if not wanted:
+                return
+            # Which page the user is on follows what they are looking at, so
+            # the page number in the toolbar keeps up while they scroll.
+            self._page = clamp_page(wanted[0], self.total_pages)
+            self._sync_page_controls()
+            keep = set()
+            for page in wanted:
+                keep.update(self._visible_window(page))
+            self._free_outside(keep)
+            for page in wanted:
+                if page not in self._filled:
+                    self._fill_page(page)
+            return
+
+    def _install_observer(self) -> None:
+        """Ask the browser to report what is on screen, and how wide it is.
+
+        Only the scrolling view needs it: the one-page view shows what it
+        was told to show and never has to ask.
+        """
+        if self._continuous:
+            self._emit(_pages_js(self._token))
 
     def close(self) -> None:
         """Drop the document and the rendered page."""
@@ -657,7 +1531,18 @@ class PdfPanel:
         self._path = None
         self._result = SearchResult()
         self._hit = -1
-        self.image.value = b''
+        self._sizes = []
+        self._filled = set()
+        self._fields = []
+        self._values = {}
+        self._overlays = {}
+        self._focus_rect = None
+        for control in (self.form_save_btn, self.form_reset_btn):
+            control.layout.display = 'none'
+        self.form_status.value = ''
+        self._page_images = {}
+        self._page_boxes = {}
+        self.pages_box.children = ()
         self.status.value = ''
         self.page_status.value = ''
         self.widget.layout.display = 'none'
@@ -689,15 +1574,37 @@ class PdfPanel:
             self._hit = -1
             self._sync_hit_controls()
         self._sync_page_controls()
+        if not self._continuous:
+            # One page on screen: going to another one replaces it.
+            self._build_pages()
+            self._render()
+            return
         self._render()
+        # The pages are all on screen already, so going to one means
+        # scrolling to it rather than replacing what is shown.
+        self._emit(_goto_js(self._token, target))
 
     def step_page(self, delta: int) -> None:
         self.goto_page(self._page + int(delta))
 
-    def set_zoom_index(self, index: int) -> None:
-        self._dpi_index = clamp_dpi_index(index)
+    def set_zoom(self, value: Any) -> None:
+        """Fit to width, or one of the fixed steps."""
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = FIT_WIDTH
+        self._zoom = FIT_WIDTH if value == FIT_WIDTH else clamp_dpi_index(value)
         self._sync_page_controls()
+        if self._doc is None:
+            return
+        self._resize_pages()
         self._render()
+        if self._continuous:
+            self._emit(_goto_js(self._token, self._page))
+
+    def set_zoom_index(self, index: int) -> None:
+        """Kept for callers that only know the fixed steps."""
+        self.set_zoom(clamp_dpi_index(index))
 
     # -- search --------------------------------------------------------------
 
@@ -757,27 +1664,17 @@ class PdfPanel:
     # -- rendering -----------------------------------------------------------
 
     def _render(self) -> None:
+        """Draw the pages around the current one.
+
+        The browser refines this as soon as it reports what is actually on
+        screen; this is what makes the first paint show something.
+        """
         if self._doc is None:
             return
-        page_hits = [hit.rect for hit in self._result.hits if hit.page == self._page]
-        active = None
-        if 0 <= self._hit < self._result.n_hits:
-            current = self._result.hits[self._hit]
-            if current.page == self._page:
-                active = current.rect
-                page_hits = [r for r in page_hits if r != active]
-        try:
-            self.image.value = render_page_png(
-                self._doc, self._page, dpi_for_index(self._dpi_index),
-                highlights=page_hits, active=active,
-            )
-        except Exception as exc:
-            # A page that cannot be drawn is one damaged page, not a broken
-            # viewer -- the rest of the document stays reachable.
-            self.image.value = b''
-            self.page_status.value = (
-                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>'
-            )
+        window = self._visible_window(self._page)
+        self._free_outside(window)
+        for index in window:
+            self._fill_page(index)
 
     # -- widget sync ---------------------------------------------------------
 
@@ -789,11 +1686,13 @@ class PdfPanel:
             self.page_input.value = self._page + 1
         finally:
             self._syncing = False
-        self.page_total.value = f'von {total}'
+        self.page_total.value = f'of {total}'
         self.prev_page_btn.disabled = self._page <= 0
         self.next_page_btn.disabled = self._page >= total - 1
-        self.page_status.value = page_status_html(
-            self._page, total, dpi_for_index(self._dpi_index))
+        # No page/dpi line: the page number is in the toolbar and the
+        # rendering resolution is not the reader's business.
+        if self.page_status.value and 'color:#d32f2f' not in self.page_status.value:
+            self.page_status.value = ''
 
     def _sync_hit_controls(self) -> None:
         hits = self._result.n_hits
@@ -825,7 +1724,7 @@ class PdfPanel:
     def _on_zoom(self, change) -> None:
         if self._syncing:
             return
-        self.set_zoom_index(change.get('new'))
+        self.set_zoom(change.get('new'))
 
     def _on_hit_select(self, change) -> None:
         if self._syncing or self._doc is None:

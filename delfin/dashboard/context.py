@@ -49,6 +49,14 @@ class DashboardContext:
     busy_indicator: widgets.HTML = field(default_factory=lambda: widgets.HTML(value=''))
     busy_css: Optional[widgets.HTML] = None
 
+    # Startup JavaScript, collected from the tabs that need it. A tab appends
+    # its own script here; create_dashboard sends them as ONE run_js call,
+    # because run_js clears the output first and a second call would wipe the
+    # first script before the browser ran it. Collected rather than listed by
+    # the caller: when the caller kept the list, a tab that was added later was
+    # left out of it and its script silently never ran.
+    init_js_parts: list = field(default_factory=list)
+
     # Cross-tab widget references (set by ORCA Builder, read by Calc Browser)
     orca_pal_widget: Any = None
     orca_maxcore_widget: Any = None
@@ -85,6 +93,16 @@ class DashboardContext:
     # Templates
     default_control: str = ''
     only_goat_template: str = ''
+
+    def add_init_js(self, script):
+        """Register startup JavaScript for a tab.
+
+        Call this from the tab that owns the script. ``create_dashboard``
+        sends everything registered here in one go, so a tab cannot be
+        forgotten by whoever assembles the dashboard.
+        """
+        if script and str(script).strip():
+            self.init_js_parts.append(str(script))
 
     def run_js(self, script):
         """Execute JavaScript in a way that works in both Jupyter and Voila."""

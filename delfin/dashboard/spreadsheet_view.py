@@ -63,11 +63,11 @@ DELIMITED_SUFFIXES = ('.csv', '.tsv', '.tab')
 # Parts of the xlsx container openpyxl cannot round-trip. Detected with zipfile
 # alone so the warning works even where openpyxl is missing.
 LOSSY_PARTS = (
-    ('xl/charts/', 'Diagramme'),
-    ('xl/chartsheets/', 'Diagrammblätter'),
-    ('xl/media/', 'eingebettete Bilder'),
+    ('xl/charts/', 'charts'),
+    ('xl/chartsheets/', 'chart sheets'),
+    ('xl/media/', 'embedded images'),
     ('xl/drawings/drawing', 'Zeichnungen'),
-    ('xl/pivotTables/', 'Pivot-Tabellen'),
+    ('xl/pivotTables/', 'pivot tables'),
     ('xl/threadedComments/', 'Unterhaltungs-Kommentare'),
     ('xl/slicers', 'Datenschnitte'),
     ('customXml/', 'benutzerdefiniertes XML'),
@@ -288,8 +288,8 @@ def describe_lossy_features(features: Sequence[str]) -> str:
         return ''
     listed = ', '.join(features)
     return (
-        f'Diese Datei enthält {listed}. Beim Speichern aus DELFIN gehen diese '
-        f'verloren (die Sicherungskopie bleibt erhalten).'
+        f'This file contains {listed}. Saving from DELFIN drops them '
+        f'(the backup copy keeps them).'
     )
 
 
@@ -302,7 +302,7 @@ def _load_workbook(**kwargs):
         from openpyxl import load_workbook
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise SpreadsheetError(
-            'openpyxl ist nicht installiert.\n\nInstallation: pip install openpyxl'
+            'openpyxl is not installed.\n\nInstall it with: pip install openpyxl'
         ) from exc
     return load_workbook(**kwargs)
 
@@ -348,7 +348,7 @@ def read_xlsx(
     try:
         names = list(wb.sheetnames)
         if not names:
-            raise SpreadsheetError('Die Arbeitsmappe enthält keine Tabellenblätter.')
+            raise SpreadsheetError('The workbook has no sheets.')
         active = sheet if sheet in names else names[0]
         ws = wb[active]
         # max_row/max_column come from the sheet's <dimension> record, which some
@@ -404,6 +404,88 @@ def read_xlsx(
         truncated_cols=truncated_cols,
     )
     return names, data
+
+
+@dataclass
+class CellHit:
+    """A match, addressed as a cell rather than as a character offset."""
+
+    sheet: str
+    row: int          # 1-based, as the sheet numbers it
+    col: int          # 1-based
+    text: str = ''
+
+    @property
+    def label(self) -> str:
+        # col is 1-based the way the sheet numbers it; col_letter counts
+        # from zero.
+        return f'{col_letter(self.col - 1)}{self.row}'
+
+
+# A search that walks the file rather than the loaded window has to stop
+# somewhere; where it stopped is reported rather than quietly dropped.
+MAX_SEARCH_HITS = 2000
+
+
+def search_cells(path, term: str, *, delimiter: Optional[str] = None,
+                 limit: int = MAX_SEARCH_HITS) -> Tuple[List[CellHit], bool]:
+    """Every cell containing ``term``, across the whole file.
+
+    The grid shows one window of rows at a time, so searching what is on
+    screen would answer a different question than the user asked. Returns
+    the hits and whether the cap stopped it early.
+
+    Reading is streamed: a match on row 90000 must not cost the whole file
+    in memory first.
+    """
+    term = str(term or '')
+    if not term:
+        return [], False
+    needle = term.lower()
+    path = Path(path)
+    hits: List[CellHit] = []
+
+    def take(sheet_name, row, col, value) -> bool:
+        text = '' if value is None else str(value)
+        if needle not in text.lower():
+            return True
+        hits.append(CellHit(sheet=sheet_name, row=row, col=col, text=text))
+        return len(hits) < limit
+
+    if path.suffix.lower() in WORKBOOK_SUFFIXES:
+        book = _load_workbook(
+            filename=str(path), read_only=True, data_only=True)
+        try:
+            for worksheet in book.worksheets:
+                for row_index, row in enumerate(
+                        worksheet.iter_rows(values_only=True), start=1):
+                    for col_index, value in enumerate(row, start=1):
+                        if not take(worksheet.title, row_index, col_index, value):
+                            return hits, True
+        finally:
+            book.close()
+        return hits, False
+
+    text = path.read_text(encoding='utf-8', errors='replace')
+    if delimiter is None:
+        delimiter = sniff_delimiter(text, path.suffix)
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    for row_index, row in enumerate(reader, start=1):
+        for col_index, value in enumerate(row, start=1):
+            if not take(path.name, row_index, col_index, value):
+                return hits, True
+    return hits, False
+
+
+def window_for_row(row: int, page_rows: int) -> int:
+    """The row offset whose window contains ``row`` (1-based).
+
+    Aligned to the paging step the grid already uses, so jumping to a hit
+    lands on the same windows the page buttons produce rather than on a
+    third set of boundaries.
+    """
+    step = max(1, int(page_rows))
+    return max(0, ((max(1, int(row)) - 1) // step) * step)
 
 
 def sniff_delimiter(sample: str, suffix: str = '') -> str:
@@ -574,11 +656,53 @@ def backup_path_for(path: Path) -> Path:
     return path.with_name(f'{path.stem}.bak{path.suffix}')
 
 
-def make_backup(path: Path) -> Optional[Path]:
-    """Copy the file aside once. Returns the new backup, or None if one exists."""
+# How far the numbering counts before giving up looking for a free name.
+MAX_BACKUP_VERSIONS = 999
+
+
+def versioned_backup_path(path: Path, folder: Path) -> Optional[Path]:
+    """The next free ``name.bakN.ext`` in ``folder``.
+
+    Each save keeps its own copy rather than replacing the previous one, so
+    the folder is a history that can be walked back through. Returns None
+    when the numbering is exhausted.
+    """
+    path, folder = Path(path), Path(folder)
+    stem, suffix = path.stem, path.suffix
+    for version in range(1, MAX_BACKUP_VERSIONS + 1):
+        mark = 'bak' if version == 1 else f'bak{version}'
+        candidate = folder / f'{stem}.{mark}{suffix}'
+        if not candidate.exists():
+            return candidate
+    return None
+
+
+def make_backup(path: Path, *, folder: Optional[Path] = None,
+                versioned: bool = False) -> Optional[Path]:
+    """Copy the file aside. Returns the new backup, or None if there is none.
+
+    ``folder`` puts the copy somewhere other than beside the original. One
+    folder of backups is a folder the user can open; a .bak file next to
+    every document is a file list nobody can read.
+
+    ``versioned`` numbers each copy instead of keeping only the first. That
+    is the difference between a safety net for the current edit and a
+    history: without it, the second save of a file finds a backup already
+    there and keeps nothing.
+    """
     path = Path(path)
-    target = backup_path_for(path)
-    if target.exists():
+    if folder is None:
+        target = backup_path_for(path)
+    else:
+        folder = Path(folder)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            target = backup_path_for(path)   # unwritable: beside it is better
+        else:
+            target = (versioned_backup_path(path, folder) if versioned
+                      else folder / backup_path_for(path).name)
+    if target is None or target.exists():
         return None
     shutil.copy2(str(path), str(target))
     return target
@@ -614,6 +738,7 @@ def apply_ops_xlsx(
     ops: Any,
     *,
     backup: bool = True,
+    backup_dir: Optional[Path] = None,
 ) -> Optional[Path]:
     """Replay an edit journal against a workbook and save it in place.
 
@@ -633,7 +758,8 @@ def apply_ops_xlsx(
     if path.suffix.lower() == '.xlsm':
         kwargs['keep_vba'] = True
     wb = _load_workbook(**kwargs)
-    made = make_backup(path) if backup else None
+    made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+            if backup else None)
     tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix='.dsheet-', suffix=path.suffix)
     os.close(tmp_fd)
     try:
@@ -678,6 +804,7 @@ def apply_ops_delimited(
     delimiter: str,
     *,
     backup: bool = True,
+    backup_dir: Optional[Path] = None,
 ) -> Optional[Path]:
     """Replay the same edit journal against a csv/tsv file.
 
@@ -689,7 +816,8 @@ def apply_ops_delimited(
     clean = validate_ops(ops)
     if not clean:
         return None
-    made = make_backup(path) if backup else None
+    made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+            if backup else None)
 
     # newline='' keeps the original line endings visible; read_text would
     # translate them and we would silently rewrite a CRLF file as LF.
@@ -834,6 +962,7 @@ GRID_CSS = (
     '.dsheet td.dsheet-num { text-align:right; }'
     '.dsheet td.dsheet-sel { background:#e3f0fd; }'
     '.dsheet td.dsheet-cur { outline:2px solid #1976d2; outline-offset:-2px; position:relative; z-index:1; }'
+    '.dsheet td.dsheet-hit { outline:2px solid #ff9800; outline-offset:-2px; }'
     '.dsheet td.dsheet-dirty { background:#fff6cc; }'
     '.dsheet td.dsheet-dirty.dsheet-sel { background:#f3e9b4; }'
     '.dsheet td[contenteditable="true"] { background:#fff; outline:2px solid #1976d2;'
@@ -883,6 +1012,8 @@ def render_grid_html(
     col_px: Optional[Sequence[int]] = None,
     lossy_note: str = '',
     scroll_top: int = 0,
+    cursor: Optional[Tuple[int, int]] = None,
+    office: bool = False,
 ) -> str:
     """Build the complete grid markup for the tab's content area.
 
@@ -897,6 +1028,11 @@ def render_grid_html(
         widths.extend([DEFAULT_COL_WIDTH] * (sheet.n_cols - len(widths)))
     total_px = ROW_HEADER_WIDTH + sum(int(w) for w in widths[:sheet.n_cols])
 
+    # Where to put the user back when the grid has to be rebuilt. Absent on a
+    # first render, where the top-left cell is the right answer.
+    cursor_attr = (
+        f' data-cursor="{int(cursor[0])},{int(cursor[1])}"' if cursor else ''
+    )
     out: List[str] = [f'<style>{GRID_CSS}</style>']
     out.append(
         '<div class="dsheet-root"'
@@ -908,6 +1044,8 @@ def render_grid_html(
         f' data-rowoffset="{sheet.row_offset}"'
         f' data-pending="{int(pending)}"'
         f' data-scrolltop="{int(scroll_top)}"'
+        f'{cursor_attr}'
+        f' data-office="{"1" if office else "0"}"'
         f' data-editable="{"1" if editable else "0"}">'
     )
 
@@ -915,13 +1053,19 @@ def render_grid_html(
     out.append('<div class="dsheet-bar">')
     if editable:
         dis = '' if pending else ' disabled'
-        out.append(f'<button class="dsheet-btn dsheet-primary dsheet-save"{dis}>Speichern</button>')
-        out.append(f'<button class="dsheet-btn dsheet-discard"{dis}>Verwerfen</button>')
+        out.append(f'<button class="dsheet-btn dsheet-primary dsheet-save"{dis}>Save</button>')
+        out.append(f'<button class="dsheet-btn dsheet-discard"{dis}>Discard</button>')
         out.append('<span class="dsheet-sep"></span>')
-        out.append('<button class="dsheet-btn" data-act="insert_rows">+ Zeile</button>')
-        out.append('<button class="dsheet-btn" data-act="delete_rows">&minus; Zeile</button>')
-        out.append('<button class="dsheet-btn" data-act="insert_cols">+ Spalte</button>')
-        out.append('<button class="dsheet-btn" data-act="delete_cols">&minus; Spalte</button>')
+        if office:
+            out.append('<button class="dsheet-btn dsheet-undo" disabled'
+                       ' title="Undo (Ctrl+Z)">&#8630;</button>')
+            out.append('<button class="dsheet-btn dsheet-redo" disabled'
+                       ' title="Redo (Ctrl+Shift+Z)">&#8631;</button>')
+            out.append('<span class="dsheet-sep"></span>')
+        out.append('<button class="dsheet-btn" data-act="insert_rows">+ Row</button>')
+        out.append('<button class="dsheet-btn" data-act="delete_rows">&minus; Row</button>')
+        out.append('<button class="dsheet-btn" data-act="insert_cols">+ Column</button>')
+        out.append('<button class="dsheet-btn" data-act="delete_cols">&minus; Column</button>')
         out.append('<span class="dsheet-sep"></span>')
     out.append('<span class="dsheet-addr">A1</span>')
     out.append('<input class="dsheet-filter" placeholder="Filter…" spellcheck="false">')
@@ -978,20 +1122,20 @@ def render_grid_html(
     last = sheet.row_offset + sheet.n_rows
     out.append('<div class="dsheet-foot">')
     out.append(
-        f'<span>Zeilen {first}–{last} von {max(sheet.total_rows, last)}'
-        f' &middot; {sheet.total_cols} Spalten</span>'
+        f'<span>Rows {first}–{last} of {max(sheet.total_rows, last)}'
+        f' &middot; {sheet.total_cols} columns</span>'
     )
     if sheet.row_offset > 0:
-        out.append('<button class="dsheet-btn" data-page="prev">&laquo; vorherige</button>')
+        out.append('<button class="dsheet-btn" data-page="prev">&laquo; previous</button>')
     if sheet.total_rows > last:
-        out.append('<button class="dsheet-btn" data-page="next">nächste &raquo;</button>')
+        out.append('<button class="dsheet-btn" data-page="next">next &raquo;</button>')
     if sheet.truncated_cols:
         out.append(
-            f'<span class="dsheet-warn">Nur die ersten {sheet.n_cols} Spalten werden angezeigt.</span>'
+            f'<span class="dsheet-warn">Only the first {sheet.n_cols} columns are shown.</span>'
         )
     if sheet.has_formulas:
         out.append(
-            '<span class="dsheet-warn">Formeln werden erst beim Öffnen in Excel neu berechnet.</span>'
+            '<span class="dsheet-warn">Formulas are recalculated when Excel opens the file.</span>'
         )
     out.append('</div></div>')
     return ''.join(out)
@@ -1028,6 +1172,9 @@ _GRID_JS_TEMPLATE = r"""
   if (!table || !scroll || !tbody || !thead) return;
 
   var editable = wrap.dataset.editable === '1';
+  /* Office keeps the viewport still when a whole column or row is picked;
+     the calculations browser keeps the behaviour it always had. */
+  var OFFICE = wrap.dataset.office === '1';
   var pending = parseInt(wrap.dataset.pending || '0', 10) || 0;
   var rowOffset = parseInt(wrap.dataset.rowoffset || '0', 10) || 0;
   var sortState = null;
@@ -1040,6 +1187,8 @@ _GRID_JS_TEMPLATE = r"""
 
   var saveBtn = wrap.querySelector('.dsheet-save');
   var discardBtn = wrap.querySelector('.dsheet-discard');
+  var undoBtn = wrap.querySelector('.dsheet-undo');
+  var redoBtn = wrap.querySelector('.dsheet-redo');
   var statusEl = wrap.querySelector('.dsheet-status');
   var addrEl = wrap.querySelector('.dsheet-addr');
   var filterEl = wrap.querySelector('.dsheet-filter');
@@ -1069,7 +1218,10 @@ _GRID_JS_TEMPLATE = r"""
     var payload = {
       action: action, token: TOKEN,
       sheet: wrap.dataset.sheet, kind: wrap.dataset.kind,
-      ops: ops || [], cols: colWidths(), scroll: scroll.scrollTop
+      ops: ops || [], cols: colWidths(), scroll: scroll.scrollTop,
+      /* Where the user was. Anything that has to rebuild the grid puts them
+         back here, instead of at A1 with the selection gone. */
+      cur: [cur.r, cur.c]
     };
     if (extra) { for (var k in extra) { payload[k] = extra[k]; } }
     if (!setField('calc-sheet-payload', JSON.stringify(payload))) return;
@@ -1081,6 +1233,66 @@ _GRID_JS_TEMPLATE = r"""
     pending += ops.length;
     reflectPending();
     send('edit', ops);
+  }
+
+  /* ---------- undo / redo ----------
+     An undo is applied as a further change rather than by rewinding the
+     journal: the file may already have been saved, and in a spreadsheet
+     undoing after a save is allowed and marks the file changed again.
+     Each step therefore knows how to do itself and how to take itself
+     back, and both go to Python the ordinary way. */
+  var history = [], future = [], replaying = false;
+  var HISTORY_MAX = 300;
+
+  function remember(step){
+    if (replaying) return;
+    history.push(step);
+    if (history.length > HISTORY_MAX) history.shift();
+    future.length = 0;          /* a new change ends the redo branch */
+    reflectHistory();
+  }
+  function quietly(fn){
+    replaying = true;
+    try { fn(); } finally { replaying = false; }
+  }
+  function undo(){
+    var step = history.pop();
+    if (!step) return;
+    quietly(step.undo);
+    future.push(step);
+    reflectHistory();
+  }
+  function redo(){
+    var step = future.pop();
+    if (!step) return;
+    quietly(step.redo);
+    history.push(step);
+    reflectHistory();
+  }
+  function reflectHistory(){
+    if (undoBtn) undoBtn.disabled = history.length === 0;
+    if (redoBtn) redoBtn.disabled = future.length === 0;
+  }
+  function cellText(td){
+    return td.getAttribute('data-f') || td.textContent;
+  }
+  /* Write cells and keep what was there, so the step can take itself back.
+     An entry may carry its own `was`: a cell being edited is contenteditable,
+     so by the time the edit is committed the DOM already holds the new text
+     and reading it back would record the change as its own undo. */
+  function writeCells(entries){
+    if (!entries.length) return;
+    var before = entries.map(function(e){
+      return {td: e.td, text: e.was === undefined ? cellText(e.td) : e.was};
+    });
+    function apply(list){
+      push(list.map(function(e){ return applyText(e.td, e.text); }));
+    }
+    apply(entries);
+    remember({
+      undo: function(){ apply(before); },
+      redo: function(){ apply(entries); }
+    });
   }
 
   /* ---------- geometry ---------- */
@@ -1122,7 +1334,9 @@ _GRID_JS_TEMPLATE = r"""
     var tr0 = tbody.rows[cur.r];
     if (tr0 && addrEl) addrEl.textContent = colName(cur.c) + (tr0.dataset.r || '');
   }
-  function moveTo(r, c, extend){
+  /* keepView: select without scrolling. Picking a whole column or row is a
+     selection, not a journey -- the sheet has to stay where the eye left it. */
+  function moveTo(r, c, extend, keepView){
     var maxR = tbody.rows.length - 1, maxC = colCount();
     r = Math.max(0, Math.min(maxR, r));
     c = Math.max(1, Math.min(maxC, c));
@@ -1138,7 +1352,7 @@ _GRID_JS_TEMPLATE = r"""
     if (!extend) anchor = {r: r, c: c};
     paint();
     var td = cellAt(r, c);
-    if (td) reveal(td);
+    if (td && !keepView) reveal(td);
   }
   function reveal(td){
     var headH = thead.getBoundingClientRect().height || 22;
@@ -1156,7 +1370,7 @@ _GRID_JS_TEMPLATE = r"""
     if (discardBtn) discardBtn.disabled = pending === 0;
     if (statusEl) {
       statusEl.textContent = pending
-        ? (pending + ' Änderung' + (pending === 1 ? '' : 'en') + ' nicht gespeichert')
+        ? (pending + (pending === 1 ? ' change' : ' changes') + ' not saved')
         : '';
       statusEl.classList.toggle('dsheet-warn', pending > 0);
     }
@@ -1167,9 +1381,50 @@ _GRID_JS_TEMPLATE = r"""
     statusEl.classList.add('dsheet-warn');
     setTimeout(reflectPending, 4000);
   }
+  /* Saving is not a reason to rebuild the grid. The file is on disk and the
+     cells on screen already show what was written, so all that changes here
+     is the marks, the buttons and the message. Re-rendering would hand back
+     a fresh table with the cursor on A1, the selection gone and the scroll
+     wherever the new markup happened to measure -- which is not what
+     pressing save in a spreadsheet does. */
+  /* Go to a cell the kernel found. The row is the sheet's own number, so
+     it is looked up rather than computed: the window on screen starts at
+     an offset, and a filter can hide rows in between. Centred rather than
+     merely revealed -- a hit at the edge of the view reads as "not found"
+     until the eye finds it. */
+  wrap.__dsheetGoto = function(rowNo, colNo){
+    var target = -1;
+    for (var i = 0; i < tbody.rows.length; i++) {
+      if (parseInt(tbody.rows[i].dataset.r, 10) === rowNo) { target = i; break; }
+    }
+    if (target < 0) return false;
+    var col = Math.max(1, Math.min(colCount(), colNo));
+    anchor = {r: target, c: col};
+    moveTo(target, col, false, true);
+    var td = cellAt(target, col);
+    if (td) {
+      scroll.scrollTop = Math.max(
+        0, td.offsetTop - Math.floor(scroll.clientHeight / 2));
+      scroll.scrollLeft = Math.max(
+        0, td.offsetLeft - Math.floor(scroll.clientWidth / 2));
+      Array.prototype.forEach.call(
+        tbody.querySelectorAll('td.dsheet-hit'),
+        function(c){ c.classList.remove('dsheet-hit'); });
+      td.classList.add('dsheet-hit');
+    }
+    return true;
+  };
+  wrap.__dsheetSaved = function(message){
+    pending = 0;
+    Array.prototype.forEach.call(
+      tbody.querySelectorAll('td.dsheet-dirty'),
+      function(td){ td.classList.remove('dsheet-dirty'); });
+    reflectPending();
+    if (statusEl && message) statusEl.textContent = message;
+  };
   function structuralAllowed(){
     if (sortState || filterActive) {
-      flash('Erst Sortierung/Filter aufheben – sonst ist die Zielzeile mehrdeutig.');
+      flash('Clear the sort or filter first - the target row is ambiguous otherwise.');
       return false;
     }
     return true;
@@ -1205,7 +1460,7 @@ _GRID_JS_TEMPLATE = r"""
     if (text === source) {
       td.textContent = disp;
     } else {
-      push([applyText(td, text)]);
+      writeCells([{td: td, text: text, was: source}]);
     }
     scroll.focus({preventScroll: true});
   }
@@ -1260,31 +1515,31 @@ _GRID_JS_TEMPLATE = r"""
     var lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     while (lines.length && lines[lines.length - 1] === '') lines.pop();
     if (!lines.length) return;
-    var ops = [], wide = 1;
+    var writes = [], wide = 1;
     for (var i = 0; i < lines.length; i++) {
       var cells = lines[i].split('\t');
       wide = Math.max(wide, cells.length);
       for (var j = 0; j < cells.length; j++) {
         var td = cellAt(cur.r + i, cur.c + j);
-        if (td && td.textContent !== cells[j]) ops.push(applyText(td, cells[j]));
+        if (td && td.textContent !== cells[j]) writes.push({td: td, text: cells[j]});
       }
     }
     var r0 = cur.r, c0 = cur.c;
-    if (ops.length) push(ops);
+    writeCells(writes);
     anchor = {r: r0, c: c0};
     moveTo(Math.min(tbody.rows.length - 1, r0 + lines.length - 1),
            Math.min(colCount(), c0 + wide - 1), true);
   }
   function clearSelection(){
     if (!editable) return;
-    var s = selRange(), ops = [];
+    var s = selRange(), writes = [];
     for (var i = s.r1; i <= s.r2; i++) {
       for (var j = s.c1; j <= s.c2; j++) {
         var td = cellAt(i, j);
-        if (td && td.textContent !== '') ops.push(applyText(td, ''));
+        if (td && td.textContent !== '') writes.push({td: td, text: ''});
       }
     }
-    if (ops.length) push(ops);
+    writeCells(writes);
   }
 
   /* ---------- structural edits (mirror what openpyxl will do) ---------- */
@@ -1320,6 +1575,10 @@ _GRID_JS_TEMPLATE = r"""
     }
     renumberRows();
     push([{op: 'insert_rows', at: at, count: count}]);
+    remember({
+      undo: function(){ deleteRows(at, count); },
+      redo: function(){ insertRows(at, count); }
+    });
     moveTo(idx, cur.c, false);
   }
   function deleteRows(at, count){
@@ -1327,9 +1586,30 @@ _GRID_JS_TEMPLATE = r"""
     var idx = at - 1 - rowOffset;
     if (idx < 0 || idx >= tbody.rows.length) return;
     count = Math.min(count, tbody.rows.length - idx);
-    for (var k = 0; k < count; k++) tbody.deleteRow(idx);
+    var removed = [];
+    for (var k = 0; k < count; k++) {
+      var tr = tbody.rows[idx + k], values = [];
+      for (var j = 1; j < tr.cells.length; j++) values.push(cellText(tr.cells[j]));
+      removed.push(values);
+    }
+    for (var k2 = 0; k2 < count; k2++) tbody.deleteRow(idx);
     renumberRows();
     push([{op: 'delete_rows', at: at, count: count}]);
+    remember({
+      undo: function(){
+        insertRows(at, count);
+        var writes = [];
+        for (var r = 0; r < removed.length; r++) {
+          for (var c = 0; c < removed[r].length; c++) {
+            if (removed[r][c] === '') continue;
+            var td = cellAt(at - 1 - rowOffset + r, c + 1);
+            if (td) writes.push({td: td, text: removed[r][c]});
+          }
+        }
+        writeCells(writes);
+      },
+      redo: function(){ deleteRows(at, count); }
+    });
     moveTo(Math.min(idx, tbody.rows.length - 1), cur.c, false);
   }
   function insertCols(at, count){
@@ -1348,12 +1628,25 @@ _GRID_JS_TEMPLATE = r"""
     relabelCols();
     retotal();
     push([{op: 'insert_cols', at: at, count: count}]);
+    remember({
+      undo: function(){ deleteCols(at, count); },
+      redo: function(){ insertCols(at, count); }
+    });
     moveTo(cur.r, at, false);
   }
   function deleteCols(at, count){
     if (!editable || !structuralAllowed()) return;
     if (at < 1 || at > colCount()) return;
     count = Math.min(count, colCount() - at + 1);
+    var removedCols = [];
+    for (var i0 = 0; i0 < tbody.rows.length; i0++) {
+      var row = [];
+      for (var k0 = 0; k0 < count; k0++) {
+        var cell = tbody.rows[i0].cells[at + k0];
+        row.push(cell ? cellText(cell) : '');
+      }
+      removedCols.push(row);
+    }
     for (var k = 0; k < count; k++) {
       thead.deleteCell(at);
       var cols = colgroup.querySelectorAll('col');
@@ -1363,6 +1656,21 @@ _GRID_JS_TEMPLATE = r"""
     relabelCols();
     retotal();
     push([{op: 'delete_cols', at: at, count: count}]);
+    remember({
+      undo: function(){
+        insertCols(at, count);
+        var writes = [];
+        for (var r = 0; r < removedCols.length; r++) {
+          for (var c = 0; c < removedCols[r].length; c++) {
+            if (removedCols[r][c] === '') continue;
+            var td = cellAt(r, at + c);
+            if (td) writes.push({td: td, text: removedCols[r][c]});
+          }
+        }
+        writeCells(writes);
+      },
+      redo: function(){ deleteCols(at, count); }
+    });
     moveTo(cur.r, Math.min(at, colCount()), false);
   }
 
@@ -1390,8 +1698,8 @@ _GRID_JS_TEMPLATE = r"""
     }
     for (var i = 0; i < rows.length; i++) tbody.appendChild(rows[i]);
     flash(sortState
-      ? ('Sortiert nach Spalte ' + colName(c) + (sortState.dir === 1 ? ' ↑' : ' ↓') + ' – nur Ansicht')
-      : 'Sortierung aufgehoben');
+      ? ('Sorted by column ' + colName(c) + (sortState.dir === 1 ? ' ↑' : ' ↓') + ' - view only')
+      : 'Sort cleared');
   }
   function applyFilter(q){
     var needle = String(q || '').trim().toLowerCase();
@@ -1442,17 +1750,32 @@ _GRID_JS_TEMPLATE = r"""
     if (editing && editing.td === td) return;
     if (editing) commitEdit();
     if (th && th.parentNode === thead && th.cellIndex > 0) {
+      /* Whole column. With the office feel, anchor at the far end so the
+         active cell is the top one and the viewport holds still: revealing
+         the last row would drop the user at the bottom of the sheet for
+         wanting to pick a column. */
       e.preventDefault();
-      anchor = {r: 0, c: th.cellIndex};
-      moveTo(tbody.rows.length - 1, th.cellIndex, true);
+      if (OFFICE) {
+        anchor = {r: tbody.rows.length - 1, c: th.cellIndex};
+        moveTo(0, th.cellIndex, true, true);
+      } else {
+        anchor = {r: 0, c: th.cellIndex};
+        moveTo(tbody.rows.length - 1, th.cellIndex, true);
+      }
       scroll.focus({preventScroll: true});
       return;
     }
     if (th && th.parentNode.parentNode === tbody) {
+      /* Whole row, the same reasoning sideways. */
       e.preventDefault();
       var ri = rowIndexOf(th.parentNode);
-      anchor = {r: ri, c: 1};
-      moveTo(ri, colCount(), true);
+      if (OFFICE) {
+        anchor = {r: ri, c: colCount()};
+        moveTo(ri, 1, true, true);
+      } else {
+        anchor = {r: ri, c: 1};
+        moveTo(ri, colCount(), true);
+      }
       scroll.focus({preventScroll: true});
       return;
     }
@@ -1495,14 +1818,14 @@ _GRID_JS_TEMPLATE = r"""
     }
     var items = [];
     if (rowNo !== null) {
-      items.push({label: 'Zeile darüber einfügen', run: function(){ insertRows(rowNo, 1); }});
-      items.push({label: 'Zeile darunter einfügen', run: function(){ insertRows(rowNo + 1, 1); }});
-      items.push({label: 'Zeile löschen', run: function(){ deleteRows(rowNo, 1); }});
+      items.push({label: 'Insert row above', run: function(){ insertRows(rowNo, 1); }});
+      items.push({label: 'Insert row below', run: function(){ insertRows(rowNo + 1, 1); }});
+      items.push({label: 'Delete row', run: function(){ deleteRows(rowNo, 1); }});
     }
     if (colNo !== null) {
-      items.push({label: 'Spalte links einfügen', run: function(){ insertCols(colNo, 1); }});
-      items.push({label: 'Spalte rechts einfügen', run: function(){ insertCols(colNo + 1, 1); }});
-      items.push({label: 'Spalte löschen', run: function(){ deleteCols(colNo, 1); }});
+      items.push({label: 'Insert column left', run: function(){ insertCols(colNo, 1); }});
+      items.push({label: 'Insert column right', run: function(){ insertCols(colNo + 1, 1); }});
+      items.push({label: 'Delete column', run: function(){ deleteCols(colNo, 1); }});
     }
     if (items.length) openMenu(e.clientX, e.clientY, items);
   }, false);
@@ -1538,8 +1861,13 @@ _GRID_JS_TEMPLATE = r"""
     }
     else if (ctrl && (e.key === 'v' || e.key === 'V')) { handled = false; }
     else if (ctrl && (e.key === 's' || e.key === 'S')) { if (pending) send('save'); }
+    else if (ctrl && (e.key === 'z' || e.key === 'Z')) { e.shiftKey ? redo() : undo(); }
+    else if (ctrl && (e.key === 'y' || e.key === 'Y')) { redo(); }
     else if (ctrl && (e.key === 'a' || e.key === 'A')) {
-      anchor = {r: 0, c: 1}; moveTo(tbody.rows.length - 1, colCount(), true);
+      if (OFFICE) { anchor = {r: tbody.rows.length - 1, c: colCount()};
+                    moveTo(0, 1, true, true); }
+      else { anchor = {r: 0, c: 1};
+             moveTo(tbody.rows.length - 1, colCount(), true); }
     }
     else if (e.key === 'ArrowUp') { moveTo(cur.r - 1, cur.c, e.shiftKey); }
     else if (e.key === 'ArrowDown') { moveTo(cur.r + 1, cur.c, e.shiftKey); }
@@ -1627,6 +1955,8 @@ _GRID_JS_TEMPLATE = r"""
   }
 
   /* ---------- toolbar ---------- */
+  if (undoBtn) undoBtn.addEventListener('click', undo);
+  if (redoBtn) redoBtn.addEventListener('click', redo);
   if (saveBtn) saveBtn.addEventListener('click', function(){ if (pending) send('save'); });
   if (discardBtn) discardBtn.addEventListener('click', function(){ send('discard'); });
   if (filterEl) {
@@ -1658,7 +1988,12 @@ _GRID_JS_TEMPLATE = r"""
 
   /* ---------- init ---------- */
   reflectPending();
-  moveTo(0, 1, false);
+  reflectHistory();
+  /* Seed the cursor without revealing it: the saved scroll position is set
+     right after, and a reveal here would first drag the sheet back to A1.
+     data-cursor is where the user was when something forced a rebuild. */
+  var seed = (wrap.dataset.cursor || '0,1').split(',');
+  moveTo(parseInt(seed[0], 10) || 0, parseInt(seed[1], 10) || 1, false, true);
   var st = parseInt(wrap.dataset.scrolltop || '0', 10) || 0;
   if (st) scroll.scrollTop = st;
   scroll.focus({preventScroll: true});

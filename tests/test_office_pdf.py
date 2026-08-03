@@ -524,3 +524,34 @@ def test_the_new_tools_land_in_the_audit_trail():
     for name in ("merge_pdfs", "split_pdf", "create_pdf"):
         assert name in audit_log._WRITE_TOOLS
         assert name in _DocToolExecutor._AUDITED_TOOLS
+
+
+def test_a_form_without_default_resources_can_still_be_filled(tmp_path):
+    """An AcroForm may legally omit /DR, and some producers do. pypdf reads
+    it while writing a value and calls get_object() on the plain dictionary
+    it substitutes -- so a form that is merely missing an optional entry
+    failed with an AttributeError naming neither the form nor the field."""
+    fitz = pytest.importorskip("fitz")
+
+    doc = fitz.open()
+    page = doc.new_page()
+    widget = fitz.Widget()
+    widget.field_name = "begruendung"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.field_flags = 1 << 12          # several lines
+    widget.rect = fitz.Rect(60, 100, 400, 220)
+    page.add_widget(widget)
+    source = tmp_path / "antrag.pdf"
+    doc.save(str(source))
+    doc.close()
+
+    # The premise: this document really has no /DR.
+    writer = pypdf.PdfWriter(clone_from=str(source))
+    assert "/DR" not in writer._root_object["/AcroForm"]
+
+    target = tmp_path / "gefuellt.pdf"
+    office.fill_pdf_form(source, {"begruendung": "Zeile eins\nZeile zwei"},
+                         output=target)
+    written = {f["name"]: f["value"]
+               for f in office.pdf_form_fields(target)["fields"]}
+    assert written["begruendung"] == "Zeile eins\nZeile zwei"
