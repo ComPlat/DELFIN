@@ -11514,6 +11514,41 @@ def create_tab(ctx):
                                status='Changes discarded')
             return
 
+        if action in ('new_sheet', 'rename_sheet', 'drop_sheet'):
+            # These write the workbook straight away, so an unsaved journal
+            # would be replayed against a file it no longer describes.
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            if view.get('kind') != 'xlsx':
+                _calc_sheet_note('Only a workbook has sheets.')
+                return
+            where = _calc_backup_dir(path)
+            try:
+                if action == 'new_sheet':
+                    backup, target = _sheet.add_sheet(
+                        path, payload.get('name') or '', backup_dir=where)
+                    note = f'Sheet "{target}" added'
+                elif action == 'rename_sheet':
+                    backup, target = _sheet.rename_sheet(
+                        path, sheet_name, payload.get('name') or '',
+                        backup_dir=where)
+                    note = f'Renamed to "{target}"'
+                else:
+                    backup, target = _sheet.drop_sheet(
+                        path, sheet_name, backup_dir=where)
+                    note = f'Sheet "{sheet_name}" deleted'
+            except _sheet.SpreadsheetError as exc:
+                _calc_sheet_note(str(exc), color='#b26a00')
+                return
+            except Exception as exc:  # noqa: BLE001
+                _calc_sheet_note(f'Could not change the sheets: {exc}')
+                return
+            if backup is not None:
+                note += f' · backup: {backup.name}'
+            _calc_render_sheet(path, sheet_name=target, row_offset=0, status=note)
+            return
+
         if action in ('switch_sheet', 'page'):
             # Pending edits address absolute rows of the current window; moving
             # the window while they are unsaved would show them in the wrong
@@ -14386,6 +14421,7 @@ def create_tab(ctx):
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
         'calc_search_result': calc_search_result,
+        'calc_file_info': calc_file_info,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # File operations
