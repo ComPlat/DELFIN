@@ -269,8 +269,15 @@ def create_tab(ctx):
         layout=widgets.Layout(width='96px', height='26px'),
     )
 
-    # Detect whether we are inside the Archive tab (calc_dir == archiv_dir)
+    # Which of the three browsers this is. Both mirrors are the same builder
+    # on a different root, so the root is what tells them apart -- and it is
+    # the only place that decides, so a control cannot be chemistry-only in
+    # one part of this file and general in another.
     _is_archive_tab = ctx.calc_dir.resolve() == ctx.archive_dir.resolve()
+    _is_office_tab = (
+        not _is_archive_tab
+        and ctx.calc_dir.resolve() == Path(ctx.office_dir).resolve()
+    )
     try:
         _remote_archive_enabled = load_remote_archive_enabled()
     except Exception:
@@ -291,6 +298,7 @@ def create_tab(ctx):
             display='none' if _is_archive_tab else 'inline-flex',
         ),
     )
+    calc_move_archive_btn.add_class('calc-move-archive-btn')
     calc_back_to_calculations_btn = widgets.Button(
         description='← Calculations', button_style='info',
         layout=widgets.Layout(
@@ -507,6 +515,7 @@ def create_tab(ctx):
         ),
         disabled=not _remote_archive_enabled,
     )
+    calc_transfer_jobs_btn.add_class('calc-transfer-jobs-btn')
     calc_transfer_jobs_refresh_btn = widgets.Button(
         description='Refresh Jobs',
         layout=widgets.Layout(width='106px', height='26px'),
@@ -1070,6 +1079,7 @@ def create_tab(ctx):
         description='Report', button_style='success',
         layout=widgets.Layout(width='80px', min_width='80px', height='26px'), disabled=True,
     )
+    calc_report_btn.add_class('calc-report-btn')
     calc_download_status = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
@@ -1092,6 +1102,8 @@ def create_tab(ctx):
         description='Visualize', value=False, disabled=True, button_style='warning',
         layout=widgets.Layout(width='110px', min_width='110px', height='26px'),
     )
+
+    calc_view_toggle.add_class('calc-view-toggle')
 
     # Recalc widgets
     calc_recalc_btn = widgets.Button(
@@ -1210,6 +1222,7 @@ def create_tab(ctx):
         value='(Select)',
         layout=widgets.Layout(width='200px', min_width='200px', height='26px'),
     )
+    calc_search_suggest.add_class('calc-search-suggest')
     calc_search_btn = widgets.Button(
         description='🔍',
         layout=widgets.Layout(width='85px', min_width='85px', height='26px'),
@@ -13320,6 +13333,17 @@ def create_tab(ctx):
     calc_css = widgets.HTML(
         '<style>'
         '.calc-content-box { overflow-x:hidden !important; }'
+        # Office holds documents, not jobs. These controls report on
+        # calculations -- a keyword menu of ORCA section headings, a DELFIN
+        # report, a 3D structure, the calculation archive, running SSH
+        # transfers -- and none of them has anything to act on here. Retired
+        # in CSS rather than by a display flag: the flag is set again by the
+        # per-file-type code that enables them.
+        '.calc-office .calc-search-suggest,'
+        ' .calc-office .calc-report-btn,'
+        ' .calc-office .calc-view-toggle,'
+        ' .calc-office .calc-move-archive-btn,'
+        ' .calc-office .calc-transfer-jobs-btn { display:none !important; }'
         '.calc-tab, .calc-tab * { overflow-x:hidden !important; box-sizing:border-box; }'
         '.calc-tab { overflow:hidden !important;'
         ' height:calc(100vh - 145px) !important;'
@@ -13536,7 +13560,10 @@ def create_tab(ctx):
 
     tab_widget = widgets.VBox([
         calc_css,
-        widgets.HTML('<h3>📂 Calculations Browser</h3>'),
+        widgets.HTML(
+            '<h3>📁 Office</h3>' if _is_office_tab
+            else '<h3>📂 Calculations Browser</h3>'
+        ),
         widgets.HBox(
             [calc_left, calc_splitter, calc_right],
             layout=widgets.Layout(
@@ -13551,6 +13578,8 @@ def create_tab(ctx):
     ))
     tab_widget.add_class('calc-tab')
     tab_widget.add_class(calc_scope_id)
+    if _is_office_tab:
+        tab_widget.add_class('calc-office')
     calc_left.add_class('calc-left')
     calc_right.add_class('calc-right')
     calc_nav_controls_row.add_class('calc-nav-controls-row')
