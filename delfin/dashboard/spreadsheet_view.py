@@ -1010,6 +1010,12 @@ def render_grid_html(
         out.append(f'<button class="dsheet-btn dsheet-primary dsheet-save"{dis}>Save</button>')
         out.append(f'<button class="dsheet-btn dsheet-discard"{dis}>Discard</button>')
         out.append('<span class="dsheet-sep"></span>')
+        if office:
+            out.append('<button class="dsheet-btn dsheet-undo" disabled'
+                       ' title="Undo (Ctrl+Z)">&#8630;</button>')
+            out.append('<button class="dsheet-btn dsheet-redo" disabled'
+                       ' title="Redo (Ctrl+Shift+Z)">&#8631;</button>')
+            out.append('<span class="dsheet-sep"></span>')
         out.append('<button class="dsheet-btn" data-act="insert_rows">+ Row</button>')
         out.append('<button class="dsheet-btn" data-act="delete_rows">&minus; Row</button>')
         out.append('<button class="dsheet-btn" data-act="insert_cols">+ Column</button>')
@@ -1135,6 +1141,8 @@ _GRID_JS_TEMPLATE = r"""
 
   var saveBtn = wrap.querySelector('.dsheet-save');
   var discardBtn = wrap.querySelector('.dsheet-discard');
+  var undoBtn = wrap.querySelector('.dsheet-undo');
+  var redoBtn = wrap.querySelector('.dsheet-redo');
   var statusEl = wrap.querySelector('.dsheet-status');
   var addrEl = wrap.querySelector('.dsheet-addr');
   var filterEl = wrap.querySelector('.dsheet-filter');
@@ -1179,6 +1187,63 @@ _GRID_JS_TEMPLATE = r"""
     pending += ops.length;
     reflectPending();
     send('edit', ops);
+  }
+
+  /* ---------- undo / redo ----------
+     An undo is applied as a further change rather than by rewinding the
+     journal: the file may already have been saved, and in a spreadsheet
+     undoing after a save is allowed and marks the file changed again.
+     Each step therefore knows how to do itself and how to take itself
+     back, and both go to Python the ordinary way. */
+  var history = [], future = [], replaying = false;
+  var HISTORY_MAX = 300;
+
+  function remember(step){
+    if (replaying) return;
+    history.push(step);
+    if (history.length > HISTORY_MAX) history.shift();
+    future.length = 0;          /* a new change ends the redo branch */
+    reflectHistory();
+  }
+  function quietly(fn){
+    replaying = true;
+    try { fn(); } finally { replaying = false; }
+  }
+  function undo(){
+    var step = history.pop();
+    if (!step) return;
+    quietly(step.undo);
+    future.push(step);
+    reflectHistory();
+  }
+  function redo(){
+    var step = future.pop();
+    if (!step) return;
+    quietly(step.redo);
+    history.push(step);
+    reflectHistory();
+  }
+  function reflectHistory(){
+    if (undoBtn) undoBtn.disabled = history.length === 0;
+    if (redoBtn) redoBtn.disabled = future.length === 0;
+  }
+  function cellText(td){
+    return td.getAttribute('data-f') || td.textContent;
+  }
+  /* Write cells and keep what was there, so the step can take itself back. */
+  function writeCells(entries){
+    if (!entries.length) return;
+    var before = entries.map(function(e){
+      return {td: e.td, text: cellText(e.td)};
+    });
+    function apply(list){
+      push(list.map(function(e){ return applyText(e.td, e.text); }));
+    }
+    apply(entries);
+    remember({
+      undo: function(){ apply(before); },
+      redo: function(){ apply(entries); }
+    });
   }
 
   /* ---------- geometry ---------- */
@@ -1346,7 +1411,7 @@ _GRID_JS_TEMPLATE = r"""
     if (text === source) {
       td.textContent = disp;
     } else {
-      push([applyText(td, text)]);
+      writeCells([{td: td, text: text}]);
     }
     scroll.focus({preventScroll: true});
   }
@@ -1401,31 +1466,31 @@ _GRID_JS_TEMPLATE = r"""
     var lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     while (lines.length && lines[lines.length - 1] === '') lines.pop();
     if (!lines.length) return;
-    var ops = [], wide = 1;
+    var writes = [], wide = 1;
     for (var i = 0; i < lines.length; i++) {
       var cells = lines[i].split('\t');
       wide = Math.max(wide, cells.length);
       for (var j = 0; j < cells.length; j++) {
         var td = cellAt(cur.r + i, cur.c + j);
-        if (td && td.textContent !== cells[j]) ops.push(applyText(td, cells[j]));
+        if (td && td.textContent !== cells[j]) writes.push({td: td, text: cells[j]});
       }
     }
     var r0 = cur.r, c0 = cur.c;
-    if (ops.length) push(ops);
+    writeCells(writes);
     anchor = {r: r0, c: c0};
     moveTo(Math.min(tbody.rows.length - 1, r0 + lines.length - 1),
            Math.min(colCount(), c0 + wide - 1), true);
   }
   function clearSelection(){
     if (!editable) return;
-    var s = selRange(), ops = [];
+    var s = selRange(), writes = [];
     for (var i = s.r1; i <= s.r2; i++) {
       for (var j = s.c1; j <= s.c2; j++) {
         var td = cellAt(i, j);
-        if (td && td.textContent !== '') ops.push(applyText(td, ''));
+        if (td && td.textContent !== '') writes.push({td: td, text: ''});
       }
     }
-    if (ops.length) push(ops);
+    writeCells(writes);
   }
 
   /* ---------- structural edits (mirror what openpyxl will do) ---------- */
@@ -1461,6 +1526,10 @@ _GRID_JS_TEMPLATE = r"""
     }
     renumberRows();
     push([{op: 'insert_rows', at: at, count: count}]);
+    remember({
+      undo: function(){ deleteRows(at, count); },
+      redo: function(){ insertRows(at, count); }
+    });
     moveTo(idx, cur.c, false);
   }
   function deleteRows(at, count){
@@ -1468,9 +1537,30 @@ _GRID_JS_TEMPLATE = r"""
     var idx = at - 1 - rowOffset;
     if (idx < 0 || idx >= tbody.rows.length) return;
     count = Math.min(count, tbody.rows.length - idx);
-    for (var k = 0; k < count; k++) tbody.deleteRow(idx);
+    var removed = [];
+    for (var k = 0; k < count; k++) {
+      var tr = tbody.rows[idx + k], values = [];
+      for (var j = 1; j < tr.cells.length; j++) values.push(cellText(tr.cells[j]));
+      removed.push(values);
+    }
+    for (var k2 = 0; k2 < count; k2++) tbody.deleteRow(idx);
     renumberRows();
     push([{op: 'delete_rows', at: at, count: count}]);
+    remember({
+      undo: function(){
+        insertRows(at, count);
+        var writes = [];
+        for (var r = 0; r < removed.length; r++) {
+          for (var c = 0; c < removed[r].length; c++) {
+            if (removed[r][c] === '') continue;
+            var td = cellAt(at - 1 - rowOffset + r, c + 1);
+            if (td) writes.push({td: td, text: removed[r][c]});
+          }
+        }
+        writeCells(writes);
+      },
+      redo: function(){ deleteRows(at, count); }
+    });
     moveTo(Math.min(idx, tbody.rows.length - 1), cur.c, false);
   }
   function insertCols(at, count){
@@ -1489,12 +1579,25 @@ _GRID_JS_TEMPLATE = r"""
     relabelCols();
     retotal();
     push([{op: 'insert_cols', at: at, count: count}]);
+    remember({
+      undo: function(){ deleteCols(at, count); },
+      redo: function(){ insertCols(at, count); }
+    });
     moveTo(cur.r, at, false);
   }
   function deleteCols(at, count){
     if (!editable || !structuralAllowed()) return;
     if (at < 1 || at > colCount()) return;
     count = Math.min(count, colCount() - at + 1);
+    var removedCols = [];
+    for (var i0 = 0; i0 < tbody.rows.length; i0++) {
+      var row = [];
+      for (var k0 = 0; k0 < count; k0++) {
+        var cell = tbody.rows[i0].cells[at + k0];
+        row.push(cell ? cellText(cell) : '');
+      }
+      removedCols.push(row);
+    }
     for (var k = 0; k < count; k++) {
       thead.deleteCell(at);
       var cols = colgroup.querySelectorAll('col');
@@ -1504,6 +1607,21 @@ _GRID_JS_TEMPLATE = r"""
     relabelCols();
     retotal();
     push([{op: 'delete_cols', at: at, count: count}]);
+    remember({
+      undo: function(){
+        insertCols(at, count);
+        var writes = [];
+        for (var r = 0; r < removedCols.length; r++) {
+          for (var c = 0; c < removedCols[r].length; c++) {
+            if (removedCols[r][c] === '') continue;
+            var td = cellAt(r, at + c);
+            if (td) writes.push({td: td, text: removedCols[r][c]});
+          }
+        }
+        writeCells(writes);
+      },
+      redo: function(){ deleteCols(at, count); }
+    });
     moveTo(cur.r, Math.min(at, colCount()), false);
   }
 
@@ -1694,6 +1812,8 @@ _GRID_JS_TEMPLATE = r"""
     }
     else if (ctrl && (e.key === 'v' || e.key === 'V')) { handled = false; }
     else if (ctrl && (e.key === 's' || e.key === 'S')) { if (pending) send('save'); }
+    else if (ctrl && (e.key === 'z' || e.key === 'Z')) { e.shiftKey ? redo() : undo(); }
+    else if (ctrl && (e.key === 'y' || e.key === 'Y')) { redo(); }
     else if (ctrl && (e.key === 'a' || e.key === 'A')) {
       if (OFFICE) { anchor = {r: tbody.rows.length - 1, c: colCount()};
                     moveTo(0, 1, true, true); }
@@ -1786,6 +1906,8 @@ _GRID_JS_TEMPLATE = r"""
   }
 
   /* ---------- toolbar ---------- */
+  if (undoBtn) undoBtn.addEventListener('click', undo);
+  if (redoBtn) redoBtn.addEventListener('click', redo);
   if (saveBtn) saveBtn.addEventListener('click', function(){ if (pending) send('save'); });
   if (discardBtn) discardBtn.addEventListener('click', function(){ send('discard'); });
   if (filterEl) {
@@ -1817,6 +1939,7 @@ _GRID_JS_TEMPLATE = r"""
 
   /* ---------- init ---------- */
   reflectPending();
+  reflectHistory();
   /* Seed the cursor without revealing it: the saved scroll position is set
      right after, and a reveal here would first drag the sheet back to A1.
      data-cursor is where the user was when something forced a rebuild. */
