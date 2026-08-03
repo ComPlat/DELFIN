@@ -3006,6 +3006,12 @@ def create_tab(ctx):
     css_widget = widgets.HTML(value=_AGENT_CSS)
 
     # Mode selector
+    # Modes that run ONE agent rather than a role pipeline. Kept in one
+    # place because the same fact drives two independent pieces of UI (the
+    # cycle inspector and the minimal layout); when it lived in both, a new
+    # mode was added to one and forgotten in the other.
+    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office")
+
     _MODE_DESCRIPTIONS = {
         "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
                      "set CONTROL keys, configure ORCA Builder, browse & analyze calculations, "
@@ -6297,8 +6303,12 @@ def create_tab(ctx):
         )
 
     def _update_cycle_inspector():
-        # Hide Cycle Inspector for dashboard/solo — only relevant for pipelines
-        _is_pipeline = mode_dropdown.value not in ("dashboard", "solo")
+        # The inspector reports on a multi-agent ROUTE: the locked goal, the
+        # gate the pipeline waits at, the next role, open risks. A mode that
+        # runs a single agent has none of those, so the panel would show
+        # empty fields that read like missing data rather than like an
+        # inapplicable view.
+        _is_pipeline = mode_dropdown.value not in _SINGLE_AGENT_MODES
         _disp = "block" if _is_pipeline else "none"
         for _w in (cycle_inspector_html, inspector_actions_row, inspector_detail_box):
             _w.layout.display = _disp
@@ -15577,7 +15587,7 @@ def create_tab(ctx):
         _update_cycle_inspector()
 
         # Solo-minimal UI: hide pipeline overhead for solo/dashboard
-        _is_minimal = new_mode in ("solo", "dashboard", "plan", "office")
+        _is_minimal = new_mode in _SINGLE_AGENT_MODES or new_mode == "plan"
         # Hide mode description (saves vertical space)
         mode_desc_html.layout.display = "none" if _is_minimal else "block"
         # Hide pipeline-only buttons (but keep commit/push visible)

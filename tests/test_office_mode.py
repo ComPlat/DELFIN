@@ -214,3 +214,22 @@ def test_the_mode_restore_calls_a_helper_that_exists():
     helper = match.group(1)
     assert f"def {helper}(" in source, (
         f"the restore calls {helper}(), which is not defined in this module")
+
+
+def test_the_single_agent_modes_are_defined_once():
+    """The cycle inspector and the minimal layout are driven by the same
+    fact. When each carried its own list, Office was added to one and
+    forgotten in the other, and the inspector appeared in a mode that has
+    no role route to inspect."""
+    source = _tab_agent_source()
+    assert '_SINGLE_AGENT_MODES = ("dashboard", "solo", "office")' in source
+    # Neither consumer may reintroduce a literal list of its own.
+    assert '_is_pipeline = mode_dropdown.value not in _SINGLE_AGENT_MODES' in source
+    assert '_is_minimal = new_mode in _SINGLE_AGENT_MODES' in source
+
+
+def test_office_is_a_single_agent_mode():
+    """Its route is one role, so there is no pipeline to report on."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    assert len(PromptLoader().load_mode("office")["route"]) == 1
