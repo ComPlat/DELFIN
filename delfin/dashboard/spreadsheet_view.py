@@ -1821,6 +1821,12 @@ GRID_CSS = (
     ' flex:0 0 auto; }'
     '.dsheet-btn { font-size:11px; padding:2px 8px; height:22px; line-height:1;'
     ' border:1px solid #c3c9d0; border-radius:3px; background:#fff; cursor:pointer; color:#333; }'
+    # One box, one baseline, whatever the letter in it is doing.
+    '.dsheet-mark { display:inline-flex; align-items:center;'
+    ' justify-content:center; width:24px; padding:0; font-size:13px; }'
+    '.dsheet-b { font-weight:700; }'
+    '.dsheet-i { font-style:italic; font-family:Georgia,serif; }'
+    '.dsheet-u { text-decoration:underline; text-underline-offset:2px; }'
     '.dsheet-btn:hover:not(:disabled) { background:#e8f0fe; border-color:#7aa7e8; }'
     '.dsheet-btn:disabled { opacity:0.45; cursor:default; }'
     '.dsheet-btn.dsheet-primary { background:#1976d2; border-color:#1565c0; color:#fff; }'
@@ -1963,12 +1969,15 @@ def render_grid_html(
         out.append('<span class="dsheet-sep"></span>')
         if kind == 'xlsx':
             # A csv holds text, not formatting, so these are not offered there.
-            out.append('<button class="dsheet-btn dsheet-b" title="Bold (Ctrl+B)">'
-                       '<b>B</b></button>')
-            out.append('<button class="dsheet-btn dsheet-i" title="Italic (Ctrl+I)">'
-                       '<i>I</i></button>')
-            out.append('<button class="dsheet-btn dsheet-u" title="Underline (Ctrl+U)">'
-                       '<u>U</u></button>')
+            # The letters are plain and the button carries the styling. A
+            # <b>, an <i> and a <u> inside three buttons have three
+            # different line boxes, so the three buttons stopped lining up.
+            out.append('<button class="dsheet-btn dsheet-mark dsheet-b"'
+                       ' title="Bold (Ctrl+B)">B</button>')
+            out.append('<button class="dsheet-btn dsheet-mark dsheet-i"'
+                       ' title="Italic (Ctrl+I)">I</button>')
+            out.append('<button class="dsheet-btn dsheet-mark dsheet-u"'
+                       ' title="Underline (Ctrl+U)">U</button>')
             out.append('<span class="dsheet-fills">')
             for label, colour in FILL_COLOURS:
                 if colour:

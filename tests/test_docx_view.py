@@ -420,7 +420,7 @@ def test_a_text_edit_still_keeps_every_run_as_it_was(letter):
     not, or every bold word in the paragraph would be flattened."""
     read = dv.read_document(letter)
     block = next(b for b in read.blocks if b.address == 'p:1')
-    runs = [{'t': t, 'b': b, 'i': i, 'u': u} for t, b, i, u in block.runs]
+    runs = [{'t': r[0], 'b': r[1], 'i': r[2], 'u': r[3]} for r in block.runs]
     runs[-1]['t'] = ' für Ihre Nachricht.'
 
     dv.save(dv.apply_edits(letter, {'p:1': {'runs': runs}})['document'], letter)
@@ -433,7 +433,7 @@ def test_a_text_edit_still_keeps_every_run_as_it_was(letter):
 def test_changing_the_emphasis_redraws_the_runs(letter):
     read = dv.read_document(letter)
     block = next(b for b in read.blocks if b.address == 'p:1')
-    runs = [{'t': t, 'b': b, 'i': i, 'u': u} for t, b, i, u in block.runs]
+    runs = [{'t': r[0], 'b': r[1], 'i': r[2], 'u': r[3]} for r in block.runs]
     runs[0]['i'] = True
 
     dv.save(dv.apply_edits(letter, {'p:1': {'runs': runs}})['document'], letter)
@@ -493,3 +493,101 @@ def test_the_shortcuts_are_the_ones_people_already_use():
     assert "key === 'b' ? 'bold'" in script
     assert "key === 'i' ? 'italic'" in script
     assert "key === 'u' ? 'underline'" in script
+
+
+# ---------------------------------------------------------------------------
+# Size and alignment
+# ---------------------------------------------------------------------------
+
+def test_a_run_carries_its_size(tmp_path):
+    document = docx.Document()
+    para = document.add_paragraph()
+    para.add_run('klein').font.size = docx.shared.Pt(9)
+    para.add_run(' normal')
+    path = tmp_path / 'groessen.docx'
+    document.save(path)
+
+    block = dv.read_document(path).blocks[0]
+    assert block.runs[0][4] == 9.0
+    assert block.runs[1][4] is None
+
+
+def test_a_size_shows_in_the_view(tmp_path):
+    document = docx.Document()
+    document.add_paragraph().add_run('gross').font.size = docx.shared.Pt(18)
+    path = tmp_path / 'gross.docx'
+    document.save(path)
+    assert 'font-size:18pt' in dv.render_html(dv.read_document(path))
+
+
+def test_a_size_is_written_back(letter):
+    read = dv.read_document(letter)
+    block = next(b for b in read.blocks if b.address == 'p:1')
+    runs = [{'t': r[0], 'b': r[1], 'i': r[2], 'u': r[3], 's': r[4]}
+            for r in block.runs]
+    runs[0]['s'] = 14
+
+    dv.save(dv.apply_edits(letter, {'p:1': {'runs': runs}})['document'], letter)
+    after = docx.Document(str(letter)).paragraphs[1].runs
+    assert after[0].font.size == docx.shared.Pt(14)
+
+
+def test_a_size_change_counts_as_a_formatting_change():
+    """Otherwise it would go through the splice, which writes text only,
+    and the size would be dropped without a word."""
+    before = [('Hallo', False, False, False, None)]
+    assert dv.runs_differ(before, [{'t': 'Hallo', 's': 14}]) is True
+    assert dv.runs_differ(before, [{'t': 'Hallo'}]) is False
+
+
+def test_a_size_that_is_not_one_is_refused():
+    assert dv.check_size('') is None
+    assert dv.check_size(12) == 12.0
+    for bad in ('riesig', 0, 500):
+        with pytest.raises(dv.DocxError):
+            dv.check_size(bad)
+
+
+def test_a_paragraph_can_be_centred(letter):
+    dv.save(dv.apply_edits(letter, {'p:1': {'align': 'center'}})['document'],
+            letter)
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    assert docx.Document(str(letter)).paragraphs[1].alignment == (
+        WD_ALIGN_PARAGRAPH.CENTER)
+    assert dv.read_document(letter).blocks[1].align == 'center'
+
+
+def test_an_alignment_this_view_does_not_set_is_refused():
+    with pytest.raises(dv.DocxError):
+        dv.check_alignment('middle-ish')
+
+
+def test_the_alignment_shows_in_the_view(letter):
+    dv.save(dv.apply_edits(letter, {'p:1': {'align': 'right'}})['document'],
+            letter)
+    assert 'text-align:right' in dv.render_html(dv.read_document(letter))
+
+
+def test_the_controls_are_all_on_the_bar(letter):
+    markup = dv.render_html(dv.read_document(letter), editable=True)
+    assert 'dw-size' in markup
+    assert markup.count('dw-align') == len(dv.ALIGNMENTS)
+    assert 'dw-style' in markup
+
+
+def test_the_size_is_written_in_points_not_in_html_sizes():
+    """execCommand only offers the seven HTML sizes, so the size that is
+    asked for would not be the size that is written."""
+    script = dv.edit_js('calc-scope-1')
+    body = script[script.index('sizeBox.addEventListener'):][:800]
+    assert "fontSize = points + 'pt'" in body
+    assert 'execCommand' not in body
+
+
+def test_the_letters_on_the_buttons_carry_no_markup_of_their_own():
+    """A <b>, an <i> and a <u> inside three buttons have three different
+    line boxes, and the three buttons stopped lining up."""
+    markup = dv.toolbar_html()
+    assert '<b>B</b>' not in markup and '<i>I</i>' not in markup
+    assert '>B</button>' in markup and '>I</button>' in markup

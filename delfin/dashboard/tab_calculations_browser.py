@@ -11286,7 +11286,9 @@ def create_tab(ctx):
                 f'{_html.escape(str(exc))}</span>')
             return
         count = result['written']
-        restyled = any(isinstance(v, dict) and v.get('style')
+        # A style or an alignment changes how the paragraph looks, and only
+        # a re-read shows that; text and emphasis are already on screen.
+        restyled = any(isinstance(v, dict) and (v.get('style') or v.get('align'))
                        for v in edits.values())
         state['docx_pending'] = {}
         state['docx_doc'] = _docx.read_document(path)
@@ -11342,6 +11344,14 @@ def create_tab(ctx):
             change.pop('text', None)
         elif 'text' in message:
             change['text'] = str(message.get('text') or '')
+        if message.get('align'):
+            try:
+                change['align'] = _docx.check_alignment(message.get('align'))
+            except _docx.DocxError as exc:
+                calc_text_status.layout.display = ''
+                calc_text_status.value = (
+                    f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+                return
         if message.get('style'):
             try:
                 change['style'] = _docx.check_style(message.get('style'))
