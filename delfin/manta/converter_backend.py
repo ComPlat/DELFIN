@@ -1336,53 +1336,26 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         # Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-identical.
         _ex = _exempt_from_blocks(_config_block_offsets(config, ligands))
         _gb = _graph_bonds_from_blocks(_config_block_offsets(config, ligands))
-        if _sig_ens:
-            # NEVER-WORSE GUARD: emit the ensemble for a config ONLY IF its
-            # single-frame (clash-minimal) build ALSO passes the self-gate.  This
-            # keeps the ENSEMBLE strictly ADDITIVE to the single-frame path's
-            # accepted-config set: a config that the single-frame path would have
-            # SKIPPED (-> potentially the whole complex falls back to legacy, which
-            # may hold the crystallised structure) must NOT be rescued by the
-            # larger conformer pool, or a refcode that legacy was winning (e.g.
-            # KADZUL: single-frame None -> legacy 0.74Å) would lose its fallback to
-            # a geometrically inferior FF-free frame (2.24Å).  Same self-gate, same
-            # decision; the ensemble only adds conformer DIVERSITY on top.
-            try:
-                single = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
-            except Exception:
-                single = None
-            if single is None:
-                continue
-            ssyms, sP, sdonors = single
-            ssyms, sP = _maybe_relax(ssyms, sP)
-            if not _build_is_clean(ssyms, sP, cn=d.get("cn"), geom=d.get("geometry"),
-                                   donors=sdonors, exempt_pairs=_ex, graph_bonds=_gb):
-                continue                                 # single-frame would skip -> skip
-            try:
-                built = AC.assemble_from_config(d["metal"], d["geometry"], config,
-                                                ligands, n_frames=_n_chel)
-            except Exception:
-                built = None
-            if not built:                                # ensemble failed -> use the single frame
-                results.append((_xyz(ssyms, sP), f"{geom_tag}-chelate-{k+1}"))
-                _append_reembed(results, d["metal"],
-                                _lig_groups_from_config(config, ligands),
-                                ssyms, sP, f"{geom_tag}-chelate-{k+1}",
-                                cn=d.get("cn"), geom=d.get("geometry"), donors=sdonors)
-                continue
-            # re-embed off the canonical single frame (clash-minimal) for this config
-            _append_reembed(results, d["metal"],
-                            _lig_groups_from_config(config, ligands),
-                            ssyms, sP, f"{geom_tag}-chelate-{k+1}",
-                            cn=d.get("cn"), geom=d.get("geometry"), donors=sdonors)
-            for fi, (syms, P, donors) in enumerate(built):
-                syms, P = _maybe_relax(syms, P)
-                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                                       donors=donors, exempt_pairs=_ex, graph_bonds=_gb):   # per-frame self-gate
-                    continue                             # skip a bad frame, keep clean ones
-                lab = f"{geom_tag}-chelate-{k+1}" + (f"-conf{fi+1}" if fi else "")
-                results.append((_xyz(syms, P), lab))
-            continue
+        # THE ENSEMBLE USED TO SHORT-CIRCUIT THE WHOLE PATH BELOW, AND THAT IS WHAT BROKE IT.
+        #
+        # It built its own canonical frame with assemble_from_config and emitted built[0] under
+        # the PLAIN label -- while the single-frame path below reaches its frame through
+        # _build_config_never_worse plus decollapse plus conformer seating.  Two different
+        # builders under one label: switching the ensemble on REPLACED the primary frame rather
+        # than adding to it, and it could even shift which config came first (CEJPIQ:
+        # OC-6-chelate-2 -> OC-6-chelate-3-conf2).  Its own comment said the ensemble "only adds
+        # conformer DIVERSITY on top"; the code did not do that.
+        #
+        # Measured on the 187-system pool: frame0 changed on 49 systems.  Fixing the sigma path
+        # alone (further down this file) brought it to 22 -- and all 22 remaining were chelates,
+        # i.e. exactly this branch.  ccdc_backbone_lost, which takes a MAX over frames and so
+        # CANNOT fall for a truly additive lever, went 2 -> 0 with that first half of the fix.
+        #
+        # So the branch is gone.  The ordinary path below runs untouched, and the ensemble
+        # conformers are appended as SIBLINGS next to the ring-pucker, torsion-well and beta
+        # siblings, which is where every other conformer axis in this file already lives.  The
+        # primary frame is then byte-identical to the flag-off build BY CONSTRUCTION, not by a
+        # check that has to be trusted.
         built = _build_config_never_worse(d, config, ligands, geom_key)
         if built is None:
             _iso_trace("BUILD_NONE", k, geom_tag)
@@ -1481,6 +1454,48 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                             _ok = False                       # cannot prove it is as good -> do not add
                     if _ok:
                         results.append((_bx, f"{_lab}-beta"))
+        # SIGMA-ENSEMBLE CONFORMERS, now as siblings of the accepted frame rather than in
+        # place of it (see the long note where the old short-circuit branch used to be).
+        # Every one clears the same per-frame self-gate as before; the one that reproduces
+        # the primary exactly is dropped instead of being emitted twice.
+        if _sig_ens:
+            try:
+                _sens = AC.assemble_from_config(d["metal"], d["geometry"], config,
+                                                ligands, n_frames=_n_chel)
+            except Exception:
+                _sens = None
+            _pxyz = _xyz(syms, P)
+            for _sfi, _sfr in enumerate(_sens or []):
+                if max_isomers and len(results) >= max_isomers:
+                    break
+                _ss, _sP, _sd = _sfr
+                _ss, _sP = _maybe_relax(_ss, _sP)
+                _sxyz = _xyz(_ss, _sP)
+                if _sxyz == _pxyz:
+                    continue                          # this IS the primary frame
+                if not _build_is_clean(_ss, _sP, cn=d.get("cn"), geom=d.get("geometry"),
+                                       donors=_sd, exempt_pairs=_ex, graph_bonds=_gb):
+                    continue                          # skip a bad frame, keep the clean ones
+                # SAME BAR AS THE PRIMARY.  pyramid_frame_regressed reads the WORST frame's
+                # sp2 excess with no allowance for added frames, and deliberately so -- a
+                # manifold is only complete up to frames that are themselves realistic.  So a
+                # conformer that pyramidalises a donor's sp2 centre, collapses a bond or sits
+                # closer than the primary is not completeness, it is a defect with a label.
+                # These are the checks the ring-pucker siblings already carry.
+                try:
+                    if (AC._collapsed_heavy_bonds_strict(_ss, _sP)
+                            and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                        continue
+                    _dloc = sorted(int(x) for x in (_sd or []))
+                    if (AC._beta_score(_ss, _sP, _dloc)
+                            > AC._beta_score(list(syms), P, _dloc) + 1e-9):
+                        continue
+                    _pmin = _min_nonbonded_heavy(syms, P)
+                    if _pmin is not None and not _interlig_clash_ok(_ss, _sP, _pmin):
+                        continue
+                except Exception:
+                    continue                          # cannot prove equivalence -> do not add
+                results.append((_sxyz, f"{_lab}-conf{_sfi+1}"))
         # Ring-pucker siblings of this accepted frame (default OFF -> byte-identical).
         # Runs HERE, next to the frame it belongs to, because this is where the frame's
         # own atom order is known -- see the function for why the same call from the
@@ -1977,85 +1992,27 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         # #279/#281: genuine short multiple/aromatic bonds (global, length-gated) for the
         # collapse self-gate.  Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-id.
         _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))
-        # ---- ADDITIVE ENSEMBLE (DELFIN_FFFREE_SIGMA_ENSEMBLE_ADDITIVE, default OFF) ----
-        # THE ENSEMBLE WAS NEVER ADDITIVE.  Below, ens[0] is emitted under the PLAIN
-        # base_label -- the very label the single-frame path gives the frame it builds with
-        # assemble_heteroleptic_from_mols (see the fall-through below).  Those are two
-        # different builders, so switching the ensemble on silently REPLACES the primary frame
-        # instead of adding to it.  Measured on the 187-system pool_ffonly A/B (label
-        # sigmaens5): frame0 changed on 49 of 187 systems (26 %), and where ens[0] itself
-        # failed the self-gate the first SURVIVING frame took the primary slot outright
-        # (QAYZUL: OC-6-1 -> OC-6-1-conf8).
+        # THE ENSEMBLE SHORT-CIRCUIT USED TO SIT HERE, AND IT WAS NEVER ADDITIVE.
         #
-        # That is what the gate was reporting.  Of the 16 systems blocking that A/B, 9 had a
-        # changed primary frame -- a REAL regression on an existing frame, nothing an eye
-        # correction may excuse -- and only 7 had an untouched primary.  ccdc_backbone_lost
-        # proves it independently: that fraction takes a MAX over frames (weddell/detectors/
-        # find_conformer_coverage.py:504-519), so a genuinely additive lever CANNOT lower it,
-        # yet it dropped on 2 systems.
+        # It emitted ens[0] under the PLAIN base_label -- the label the single-frame path below
+        # gives the frame it builds with assemble_heteroleptic_from_mols.  Two different
+        # builders under one label, so switching the ensemble on REPLACED the primary frame
+        # instead of adding to it; and where ens[0] failed the self-gate, the first SURVIVING
+        # frame took the primary slot outright (QAYZUL: OC-6-1 -> OC-6-1-conf8, at an unchanged
+        # frame count of one).  Measured on the 187-system pool: frame0 changed on 49 systems.
         #
-        # With the flag on, the canonical single frame is built FIRST and emitted unchanged,
-        # and the ensemble contributes conformer SIBLINGS only.  The never-worse guard is the
-        # chelate path's (converter_backend.py:1339-1360): a coloring whose canonical frame
-        # does not pass the self-gate is NOT rescued by the larger pool -- the ensemble is
-        # skipped for that coloring and control falls through to the ordinary single-frame
-        # path, conformer seating and all, exactly as with the flag off.
-        _use_ens = bool(_cn2_ens or _sigma_ens)
-        _canon = None
-        if _use_ens and os.environ.get("DELFIN_FFFREE_SIGMA_ENSEMBLE_ADDITIVE", "0") == "1":
-            try:
-                _cb = AC.assemble_heteroleptic_from_mols(d["metal"], d["geometry"], vertex_specs)
-            except Exception:
-                _cb = None
-            if _cb is not None:
-                _cs, _cP = _maybe_relax(_cb[0], _cb[1])
-                if _build_is_clean(_cs, _cP, cn=d.get("cn"), geom=d.get("geometry"),
-                                   exempt_pairs=_ex):
-                    _canon = (_cs, _cP)
-            if _canon is None:
-                _use_ens = False        # per-coloring only; the next coloring re-decides
-        if _use_ens:
-            _nf = _n_ens if _cn2_ens else _n_sigma
-            try:
-                ens = AC.assemble_heteroleptic_ensemble(
-                    d["metal"], d["geometry"], vertex_specs, n_frames=_nf)
-            except Exception:
-                ens = None
-            if not ens:
-                if _canon is None:
-                    return _scope_no("ENSEMBLE_EMPTY", "cn=%s k=%d" % (d.get("cn"), k))
-                ens = []                # additive: the canonical frame still stands on its own
-            kept = 0
-            if _canon is not None:      # the primary frame, byte-identical to the off-arm's
-                results.append((_xyz(_canon[0], _canon[1]), base_label))
-                _append_reembed(results, d["metal"],
-                                _lig_groups_from_vertex_specs(vertex_specs),
-                                _canon[0], _canon[1], base_label,
-                                cn=d.get("cn"), geom=d.get("geometry"))
-                kept += 1
-            for fi, (syms, P) in enumerate(ens):
-                syms, P = _maybe_relax(syms, P)
-                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                                       exempt_pairs=_ex):
-                    continue            # skip a bad frame; keep the clean ones
-                if _canon is not None:
-                    if (len(syms) == len(_canon[0])
-                            and np.allclose(np.asarray(P, float),
-                                            np.asarray(_canon[1], float), atol=1e-6)):
-                        continue        # this ensemble frame IS the canonical one
-                    lbl = f"{base_label}-conf{fi+1}"
-                else:
-                    lbl = base_label if fi == 0 else f"{base_label}-conf{fi+1}"
-                results.append((_xyz(syms, P), lbl))
-                if _canon is None and fi == 0:  # re-embed off the canonical (clash-minimal) frame
-                    _append_reembed(results, d["metal"],
-                                    _lig_groups_from_vertex_specs(vertex_specs),
-                                    syms, P, lbl, cn=d.get("cn"), geom=d.get("geometry"))
-                kept += 1
-            if kept == 0:               # whole coloring unbuildable -> legacy (never-worse)
-                return _scope_no("ENSEMBLE_ALL_REJECTED", "cn=%s k=%d n=%d"
-                                 % (d.get("cn"), k, len(ens)))
-            continue
+        # Of the 16 systems blocking that A/B, 9 had a changed primary frame -- a real
+        # regression on an existing frame, nothing an eye correction may excuse -- and only 7
+        # had an untouched primary.  ccdc_backbone_lost proves it independently: that fraction
+        # takes a MAX over frames (weddell/detectors/find_conformer_coverage.py:504-519), so a
+        # genuinely additive lever CANNOT lower it, yet it dropped on 2 systems.
+        #
+        # A first fix kept the branch and rebuilt a canonical frame inside it.  That was the
+        # wrong shape: it left 22 systems still changing, because a canonical frame assembled
+        # here is not the frame the path below reaches through its self-gate and conformer
+        # seating.  So the branch is gone entirely.  The ordinary path runs untouched and the
+        # ensemble is appended as SIBLINGS after it -- the primary is byte-identical to the
+        # flag-off build BY CONSTRUCTION rather than by a check that has to be trusted.
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], d["geometry"], vertex_specs)
         except Exception:
@@ -2095,6 +2052,41 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             syms, P = reseated
         label = base_label
         results.append((_xyz(syms, P), label))
+        # Ensemble conformers as SIBLINGS of the accepted frame (see the note where the old
+        # short-circuit branch used to be).  Same per-frame self-gate as before; the frame that
+        # reproduces the primary exactly is dropped rather than emitted twice.
+        if _cn2_ens or _sigma_ens:
+            try:
+                _ens = AC.assemble_heteroleptic_ensemble(
+                    d["metal"], d["geometry"], vertex_specs,
+                    n_frames=(_n_ens if _cn2_ens else _n_sigma))
+            except Exception:
+                _ens = None
+            _pxyz = _xyz(syms, P)
+            for _efi, _efr in enumerate(_ens or []):
+                if max_isomers and len(results) >= max_isomers:
+                    break
+                _es, _eP = _maybe_relax(_efr[0], _efr[1])
+                _exyz = _xyz(_es, _eP)
+                if _exyz == _pxyz:
+                    continue                # this IS the primary frame
+                if not _build_is_clean(_es, _eP, cn=d.get("cn"), geom=d.get("geometry"),
+                                       exempt_pairs=_ex):
+                    continue                # skip a bad frame; keep the clean ones
+                # Same bar as the primary, for the same reason as in the chelate path above.
+                # No donor indices are available on this branch (the ensemble returns symbols
+                # and coordinates only), so beta cannot be scored here -- collapse and contact
+                # can, and they are checked.
+                try:
+                    if (AC._collapsed_heavy_bonds_strict(_es, _eP)
+                            and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                        continue
+                    _pmin = _min_nonbonded_heavy(syms, P)
+                    if _pmin is not None and not _interlig_clash_ok(_es, _eP, _pmin):
+                        continue
+                except Exception:
+                    continue                # cannot prove equivalence -> do not add
+                results.append((_exyz, f"{base_label}-conf{_efi+1}"))
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of THIS accepted native frame.
         _append_reembed(results, d["metal"], _lg, syms, P, label,
