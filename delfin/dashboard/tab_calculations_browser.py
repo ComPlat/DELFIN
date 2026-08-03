@@ -210,6 +210,7 @@ def create_tab(ctx):
         'docx_edit': {},
         'docx_pending': {},
         'docx_hits': [],
+        'sheet_hits': [],
         'search_kind': 'text',
         # PDF viewer: the panel is created once per tab, 'pdf_active' says
         # whether it currently owns the content frame.
@@ -8118,6 +8119,20 @@ def create_tab(ctx):
                 f'<span style="color:green;">{len(state["search_spans"])} matches</span>{note_html}'
             )
             return
+        if state.get('search_kind') == 'sheet':
+            hits = state.get('sheet_hits') or []
+            index = state['current_match']
+            where = ''
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                where = hit.label
+                if state['sheet_view'].get('kind') == 'xlsx' and hit.sheet:
+                    where = f'{hit.sheet} · {where}'
+            calc_search_result.value = (
+                f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
+                f'<span style="color:#555;">({where})</span>{note_html}'
+            )
+            return
         if state.get('search_kind') == 'docx':
             hits = state.get('docx_hits') or []
             index = state['current_match']
@@ -8157,6 +8172,12 @@ def create_tab(ctx):
                 hit = hits[index]
                 _run_js(_docx.focus_js(
                     calc_scope_id, hit.address, hit.start, hit.end))
+            return
+        if state.get('search_kind') == 'sheet':
+            hits = state.get('sheet_hits') or []
+            index = state['current_match']
+            if 0 <= index < len(hits):
+                _calc_sheet_goto_hit(hits[index])
             return
         if _calc_is_chunk_mode():
             start, end = state['search_spans'][state['current_match']]
@@ -8365,6 +8386,60 @@ def create_tab(ctx):
             return
         calc_scroll_to('bottom')
 
+    def _calc_sheet_search(query):
+        """Find a term anywhere in the workbook, not just in the rows loaded."""
+        view = state['sheet_view']
+        path = Path(view['path'])
+        try:
+            hits, capped = _sheet.search_cells(
+                path, query, delimiter=view.get('delimiter') or None)
+        except Exception as exc:  # noqa: BLE001
+            calc_search_result.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+            calc_update_nav_buttons()
+            return
+        state['sheet_hits'] = hits
+        state['search_truncated'] = capped
+        state['search_spans'] = [(hit.row, hit.col) for hit in hits]
+        if not hits:
+            calc_search_result.value = (
+                '' if not query else '<span style="color:red;">0 matches</span>')
+            calc_update_nav_buttons()
+            return
+        state['current_match'] = 0
+        calc_show_match()
+
+    def _calc_sheet_goto_hit(hit):
+        """Put the cursor on a found cell, loading its window if need be."""
+        view = state['sheet_view']
+        if not view:
+            return
+        path = Path(view['path'])
+        page_rows = int(view.get('page_rows') or _sheet.MAX_ROWS)
+        wanted_offset = _sheet.window_for_row(hit.row, page_rows)
+        needs_sheet = (view.get('kind') == 'xlsx'
+                       and hit.sheet and hit.sheet != view.get('sheet'))
+        needs_window = wanted_offset != int(view.get('row_offset') or 0)
+        if needs_sheet or needs_window:
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            _calc_render_sheet(
+                path,
+                sheet_name=hit.sheet if needs_sheet else view.get('sheet'),
+                row_offset=wanted_offset,
+            )
+            view = state['sheet_view']
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(view["token"])}]');
+            if (!wrap || typeof wrap.__dsheetGoto !== 'function') return;
+            wrap.__dsheetGoto({int(hit.row)}, {int(hit.col)});
+        }})();
+        """)
+
     def _calc_docx_search(query):
         """Find a term in the open Word document, and go to the first hit."""
         document = state.get('docx_doc')
@@ -8400,6 +8475,13 @@ def create_tab(ctx):
         # say where anything is.
         if state.get('search_kind') == 'docx' and state.get('docx_doc'):
             _calc_docx_search(query)
+            return
+
+        # A spreadsheet is addressed in cells, and the grid holds one window
+        # of rows at a time -- searching the flattened window would answer a
+        # narrower question than the one that was asked.
+        if state.get('search_kind') == 'sheet' and state.get('sheet_view'):
+            _calc_sheet_search(query)
             return
 
         if not query or not state['file_content']:
@@ -11282,6 +11364,7 @@ def create_tab(ctx):
             office=_OFFICE_DOC_FEEL,
         )
         # Plain-text fallback for the tab's search box and the Copy button.
+        state['search_kind'] = 'sheet' if _OFFICE_DOC_FEEL else 'text'
         state['file_content'] = _sheet.grid_to_tsv(sheet)
         state['file_is_preview'] = False
         state['file_preview_note'] = ''
@@ -11556,6 +11639,7 @@ def create_tab(ctx):
         state['docx_edit'] = {}
         state['docx_pending'] = {}
         state['docx_hits'] = []
+        state['sheet_hits'] = []
         state['search_kind'] = 'text'
         calc_text_area.value = ''
         _calc_text_sync_controls()
@@ -14249,6 +14333,7 @@ def create_tab(ctx):
         'calc_sort_dropdown': calc_sort_dropdown,
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
+        'calc_search_result': calc_search_result,
         # File operations
         'calc_new_folder_btn': calc_new_folder_btn,
         'calc_new_folder_input': calc_new_folder_input,

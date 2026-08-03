@@ -302,7 +302,7 @@ def _load_workbook(**kwargs):
         from openpyxl import load_workbook
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise SpreadsheetError(
-            'openpyxl ist nicht installiert.\n\nInstallation: pip install openpyxl'
+            'openpyxl is not installed.\n\nInstall it with: pip install openpyxl'
         ) from exc
     return load_workbook(**kwargs)
 
@@ -404,6 +404,88 @@ def read_xlsx(
         truncated_cols=truncated_cols,
     )
     return names, data
+
+
+@dataclass
+class CellHit:
+    """A match, addressed as a cell rather than as a character offset."""
+
+    sheet: str
+    row: int          # 1-based, as the sheet numbers it
+    col: int          # 1-based
+    text: str = ''
+
+    @property
+    def label(self) -> str:
+        # col is 1-based the way the sheet numbers it; col_letter counts
+        # from zero.
+        return f'{col_letter(self.col - 1)}{self.row}'
+
+
+# A search that walks the file rather than the loaded window has to stop
+# somewhere; where it stopped is reported rather than quietly dropped.
+MAX_SEARCH_HITS = 2000
+
+
+def search_cells(path, term: str, *, delimiter: Optional[str] = None,
+                 limit: int = MAX_SEARCH_HITS) -> Tuple[List[CellHit], bool]:
+    """Every cell containing ``term``, across the whole file.
+
+    The grid shows one window of rows at a time, so searching what is on
+    screen would answer a different question than the user asked. Returns
+    the hits and whether the cap stopped it early.
+
+    Reading is streamed: a match on row 90000 must not cost the whole file
+    in memory first.
+    """
+    term = str(term or '')
+    if not term:
+        return [], False
+    needle = term.lower()
+    path = Path(path)
+    hits: List[CellHit] = []
+
+    def take(sheet_name, row, col, value) -> bool:
+        text = '' if value is None else str(value)
+        if needle not in text.lower():
+            return True
+        hits.append(CellHit(sheet=sheet_name, row=row, col=col, text=text))
+        return len(hits) < limit
+
+    if path.suffix.lower() in WORKBOOK_SUFFIXES:
+        book = _load_workbook(
+            filename=str(path), read_only=True, data_only=True)
+        try:
+            for worksheet in book.worksheets:
+                for row_index, row in enumerate(
+                        worksheet.iter_rows(values_only=True), start=1):
+                    for col_index, value in enumerate(row, start=1):
+                        if not take(worksheet.title, row_index, col_index, value):
+                            return hits, True
+        finally:
+            book.close()
+        return hits, False
+
+    text = path.read_text(encoding='utf-8', errors='replace')
+    if delimiter is None:
+        delimiter = sniff_delimiter(text, path.suffix)
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    for row_index, row in enumerate(reader, start=1):
+        for col_index, value in enumerate(row, start=1):
+            if not take(path.name, row_index, col_index, value):
+                return hits, True
+    return hits, False
+
+
+def window_for_row(row: int, page_rows: int) -> int:
+    """The row offset whose window contains ``row`` (1-based).
+
+    Aligned to the paging step the grid already uses, so jumping to a hit
+    lands on the same windows the page buttons produce rather than on a
+    third set of boundaries.
+    """
+    step = max(1, int(page_rows))
+    return max(0, ((max(1, int(row)) - 1) // step) * step)
 
 
 def sniff_delimiter(sample: str, suffix: str = '') -> str:
@@ -834,6 +916,7 @@ GRID_CSS = (
     '.dsheet td.dsheet-num { text-align:right; }'
     '.dsheet td.dsheet-sel { background:#e3f0fd; }'
     '.dsheet td.dsheet-cur { outline:2px solid #1976d2; outline-offset:-2px; position:relative; z-index:1; }'
+    '.dsheet td.dsheet-hit { outline:2px solid #ff9800; outline-offset:-2px; }'
     '.dsheet td.dsheet-dirty { background:#fff6cc; }'
     '.dsheet td.dsheet-dirty.dsheet-sel { background:#f3e9b4; }'
     '.dsheet td[contenteditable="true"] { background:#fff; outline:2px solid #1976d2;'
@@ -1190,6 +1273,33 @@ _GRID_JS_TEMPLATE = r"""
      a fresh table with the cursor on A1, the selection gone and the scroll
      wherever the new markup happened to measure -- which is not what
      pressing save in a spreadsheet does. */
+  /* Go to a cell the kernel found. The row is the sheet's own number, so
+     it is looked up rather than computed: the window on screen starts at
+     an offset, and a filter can hide rows in between. Centred rather than
+     merely revealed -- a hit at the edge of the view reads as "not found"
+     until the eye finds it. */
+  wrap.__dsheetGoto = function(rowNo, colNo){
+    var target = -1;
+    for (var i = 0; i < tbody.rows.length; i++) {
+      if (parseInt(tbody.rows[i].dataset.r, 10) === rowNo) { target = i; break; }
+    }
+    if (target < 0) return false;
+    var col = Math.max(1, Math.min(colCount(), colNo));
+    anchor = {r: target, c: col};
+    moveTo(target, col, false, true);
+    var td = cellAt(target, col);
+    if (td) {
+      scroll.scrollTop = Math.max(
+        0, td.offsetTop - Math.floor(scroll.clientHeight / 2));
+      scroll.scrollLeft = Math.max(
+        0, td.offsetLeft - Math.floor(scroll.clientWidth / 2));
+      Array.prototype.forEach.call(
+        tbody.querySelectorAll('td.dsheet-hit'),
+        function(c){ c.classList.remove('dsheet-hit'); });
+      td.classList.add('dsheet-hit');
+    }
+    return true;
+  };
   wrap.__dsheetSaved = function(message){
     pending = 0;
     Array.prototype.forEach.call(
