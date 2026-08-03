@@ -299,3 +299,49 @@ def test_resume_follows_the_same_rule():
     source = _tab_agent_source()
     block = source.split('if arg in ("resume", "continue"):', 1)[1][:900]
     assert "_LAUNCH_INDEPENDENT_MODES" in block
+
+
+# ---------------------------------------------------------------------------
+# A gated shell has to ask while a human is reachable
+# ---------------------------------------------------------------------------
+
+_NOT_AUTO_ALLOWED = "python3 << 'EOF'\nfrom openpyxl import load_workbook\nEOF"
+
+
+def _bash(mode, with_dialog, tmp_path):
+    from delfin.agent.api_client import _DocToolExecutor, KitToolPermissions
+
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    perms.mode = mode
+    asked = []
+    if with_dialog:
+        perms.confirm_callback = lambda n, a, p: (asked.append(n), True)[1]
+    out = _DocToolExecutor().execute(
+        "bash", {"command": _NOT_AUTO_ALLOWED}, perms)
+    return bool(asked), out.lstrip().startswith('{"error"')
+
+
+def test_accept_edits_asks_instead_of_refusing(tmp_path):
+    """The profile auto-allows file writes and leaves the shell gated, and
+    gated has to mean "ask" while a dialog is wired. It meant "refuse", so
+    an analysis script was turned down with nobody able to allow it, and
+    the model's only remaining move was a command the gate blocks again."""
+    asked, blocked = _bash("acceptEdits", True, tmp_path)
+    assert asked is True and blocked is False
+
+
+def test_ask_all_still_asks(tmp_path):
+    asked, blocked = _bash("default", True, tmp_path)
+    assert asked is True and blocked is False
+
+
+def test_without_a_dialog_the_command_is_still_refused(tmp_path):
+    """Head-less callers have nobody to ask, so the block stays."""
+    asked, blocked = _bash("acceptEdits", False, tmp_path)
+    assert asked is False and blocked is True
+
+
+def test_the_unattended_profile_does_not_ask(tmp_path):
+    """bypassPermissions is the unattended one; the deny-list still holds."""
+    asked, blocked = _bash("bypassPermissions", True, tmp_path)
+    assert asked is False and blocked is False

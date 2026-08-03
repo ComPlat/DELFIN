@@ -7987,14 +7987,26 @@ class _DocToolExecutor:
                 return None
             if perms.matches_bash_auto_allow(cmd):
                 return None
-            # Not auto-allowed. In "Ask All" (default) mode, when a per-action
-            # approval dialog is wired (the dashboard KitConfirmBroker), ask the
-            # user to approve THIS command — one click — instead of dead-ending
-            # into a prose block that makes the agent ask in prose whether it
-            # may ask (bug 20260616-183359). The deny-list + secret scan already
-            # ran above, so only non-dangerous, non-auto-allowed commands reach
-            # the prompt. Head-less callers (no callback) keep the prose block.
-            if mode in ("default", "diff_approval") and perms.confirm_callback is not None:
+            # Not auto-allowed. Whenever a per-action approval dialog is
+            # wired (the dashboard KitConfirmBroker), ask the user to
+            # approve THIS command — one click — instead of dead-ending
+            # into a prose block that makes the agent ask in prose whether
+            # it may ask (bug 20260616-183359).
+            #
+            # acceptEdits belongs in that list, and its absence cost a run
+            # (20260803-143354): the profile auto-allows file writes and
+            # leaves the shell gated, and "gated" has to mean "ask" while a
+            # human is reachable. It meant "refuse", so an analysis script
+            # was turned down with no way for anyone to allow it, and the
+            # model's only remaining move was a command the gate blocks
+            # again. bypassPermissions is deliberately not here: it is the
+            # unattended profile and returned earlier.
+            #
+            # The deny-list + secret scan already ran above, so only
+            # non-dangerous, non-auto-allowed commands reach the prompt.
+            # Head-less callers (no callback) keep the prose block.
+            if (mode in ("default", "diff_approval", "acceptEdits")
+                    and perms.confirm_callback is not None):
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
                 try:
