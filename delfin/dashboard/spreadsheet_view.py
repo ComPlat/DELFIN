@@ -707,53 +707,33 @@ def backup_path_for(path: Path) -> Path:
     return path.with_name(f'{path.stem}.bak{path.suffix}')
 
 
-# How far the numbering counts before giving up looking for a free name.
-MAX_BACKUP_VERSIONS = 999
-
-
-def versioned_backup_path(path: Path, folder: Path) -> Optional[Path]:
-    """The next free ``name.bakN.ext`` in ``folder``.
-
-    Each save keeps its own copy rather than replacing the previous one, so
-    the folder is a history that can be walked back through. Returns None
-    when the numbering is exhausted.
-    """
-    path, folder = Path(path), Path(folder)
-    stem, suffix = path.stem, path.suffix
-    for version in range(1, MAX_BACKUP_VERSIONS + 1):
-        mark = 'bak' if version == 1 else f'bak{version}'
-        candidate = folder / f'{stem}.{mark}{suffix}'
-        if not candidate.exists():
-            return candidate
-    return None
-
-
 def make_backup(path: Path, *, folder: Optional[Path] = None,
                 versioned: bool = False) -> Optional[Path]:
-    """Copy the file aside. Returns the new backup, or None if there is none.
+    """Copy the file aside before it is changed. Returns the copy, or None.
 
-    ``folder`` puts the copy somewhere other than beside the original. One
-    folder of backups is a folder the user can open; a .bak file next to
-    every document is a file list nobody can read.
-
-    ``versioned`` numbers each copy instead of keeping only the first. That
-    is the difference between a safety net for the current edit and a
-    history: without it, the second save of a file finds a backup already
-    there and keeps nothing.
+    Two shapes, because two places look for the copy. The calculations
+    browser keeps one ``name.bak.ext`` beside the file, which is where its
+    users have always found it, and takes it only once. Office keeps a
+    numbered history -- that part is :mod:`delfin.doc_backup`, shared with
+    the agent so both fill one sequence instead of writing two histories of
+    the same file into the same folder.
     """
     path = Path(path)
-    if folder is None:
-        target = backup_path_for(path)
-    else:
+    if versioned:
+        from delfin import doc_backup
+
+        return doc_backup.make_backup(path, folder=folder)
+
+    target = backup_path_for(path)
+    if folder is not None:
         folder = Path(folder)
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError:
-            target = backup_path_for(path)   # unwritable: beside it is better
+            pass          # unwritable: beside the file is better than nowhere
         else:
-            target = (versioned_backup_path(path, folder) if versioned
-                      else folder / backup_path_for(path).name)
-    if target is None or target.exists():
+            target = folder / target.name
+    if target.exists():
         return None
     shutil.copy2(str(path), str(target))
     return target
@@ -774,6 +754,109 @@ def write_text_atomic(path: Path, text: str, *, newline: str = '') -> None:
     try:
         with os.fdopen(tmp_fd, 'w', encoding='utf-8', newline=newline) as fh:
             fh.write(text)
+        _atomic_replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+MAX_SHEET_NAME = 31
+# Characters Excel refuses in a sheet name. Rejected here rather than
+# silently rewritten: a sheet the user cannot find by the name they typed is
+# worse than being told the name will not do.
+_BAD_SHEET_CHARS = set(r'[]:*?/\\')
+
+
+def check_sheet_name(name: str, existing: Sequence[str] = ()) -> str:
+    """Return a usable sheet name, or say why this one is not."""
+    name = str(name or '').strip()
+    if not name:
+        raise SpreadsheetError('A sheet needs a name.')
+    if len(name) > MAX_SHEET_NAME:
+        raise SpreadsheetError(
+            f'A sheet name can be at most {MAX_SHEET_NAME} characters.')
+    bad = sorted(set(name) & _BAD_SHEET_CHARS)
+    if bad:
+        raise SpreadsheetError(
+            'A sheet name cannot contain ' + ' '.join(repr(c) for c in bad) + '.')
+    if name.startswith("'") or name.endswith("'"):
+        raise SpreadsheetError("A sheet name cannot start or end with '.")
+    lowered = {str(e).lower() for e in existing}
+    if name.lower() in lowered:
+        raise SpreadsheetError(f'There is already a sheet called {name!r}.')
+    return name
+
+
+def add_sheet(path: Path, name: str, *, backup: bool = True,
+              backup_dir: Optional[Path] = None) -> Tuple[Optional[Path], str]:
+    """Add an empty sheet to a workbook. Returns (backup, the name used)."""
+    path = Path(path)
+    book = _load_workbook(filename=str(path), keep_vba=path.suffix.lower() == '.xlsm')
+    try:
+        name = check_sheet_name(name, book.sheetnames)
+        book.create_sheet(title=name)
+        made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+                if backup else None)
+        _save_workbook(book, path)
+    finally:
+        book.close()
+    return made, name
+
+
+def rename_sheet(path: Path, old: str, new: str, *, backup: bool = True,
+                 backup_dir: Optional[Path] = None) -> Tuple[Optional[Path], str]:
+    """Rename one sheet of a workbook."""
+    path = Path(path)
+    book = _load_workbook(filename=str(path), keep_vba=path.suffix.lower() == '.xlsm')
+    try:
+        if old not in book.sheetnames:
+            raise SpreadsheetError(f'There is no sheet called {old!r}.')
+        if str(new).strip() == old:
+            return None, old
+        others = [n for n in book.sheetnames if n != old]
+        new = check_sheet_name(new, others)
+        made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+                if backup else None)
+        book[old].title = new
+        _save_workbook(book, path)
+    finally:
+        book.close()
+    return made, new
+
+
+def drop_sheet(path: Path, name: str, *, backup: bool = True,
+               backup_dir: Optional[Path] = None) -> Tuple[Optional[Path], str]:
+    """Remove a sheet. Returns (backup, the sheet to show instead)."""
+    path = Path(path)
+    book = _load_workbook(filename=str(path), keep_vba=path.suffix.lower() == '.xlsm')
+    try:
+        if name not in book.sheetnames:
+            raise SpreadsheetError(f'There is no sheet called {name!r}.')
+        if len(book.sheetnames) <= 1:
+            raise SpreadsheetError(
+                'This is the only sheet in the workbook; a workbook has to '
+                'keep one.')
+        index = book.sheetnames.index(name)
+        made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+                if backup else None)
+        del book[name]
+        remaining = book.sheetnames
+        _save_workbook(book, path)
+    finally:
+        book.close()
+    return made, remaining[min(index, len(remaining) - 1)]
+
+
+def _save_workbook(book: Any, path: Path) -> None:
+    """Write a workbook over itself without risking a half-written file."""
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix='.dsheet-', suffix=path.suffix)
+    os.close(tmp_fd)
+    try:
+        book.save(tmp_name)
         _atomic_replace(tmp_name, path)
     except BaseException:
         try:
@@ -1002,6 +1085,10 @@ GRID_CSS = (
     ' border-bottom:none; border-radius:3px 3px 0 0; background:#fafbfc; cursor:pointer;'
     ' white-space:nowrap; }'
     '.dsheet-tab.dsheet-tab-on { background:#fff; font-weight:600; border-color:#7aa7e8; }'
+    '.dsheet-tab-add, .dsheet-tab-rename, .dsheet-tab-drop { color:#2b5c9b; }'
+    '.dsheet-tab-drop { color:#b3261e; }'
+    '.dsheet-name-input { font-size:11px; padding:2px 6px; border:1px solid #7aa7e8;'
+    ' border-radius:3px; min-width:120px; }'
 
     '.dsheet { border-collapse:separate; border-spacing:0; table-layout:fixed; font-size:12px; }'
     '.dsheet th, .dsheet td { padding:2px 5px; height:21px; vertical-align:middle;'
@@ -1129,14 +1216,27 @@ def render_grid_html(
         out.append(f'<div class="dsheet-lossy">{_html.escape(lossy_note)}</div>')
 
     # --- sheet tabs ---
+    # Shown for a single sheet too, in a workbook: that is where the control
+    # for adding the second one lives, and a strip that appears only once
+    # there is already more than one is a strip nobody finds.
     names = [n for n in sheet_names if n]
-    if len(names) > 1:
+    if names and kind == 'xlsx':
         out.append('<div class="dsheet-tabs">')
         for name in names:
             on = ' dsheet-tab-on' if name == sheet.name else ''
             out.append(
-                f'<span class="dsheet-tab{on}" data-sheet="{_attr(name)}">{_html.escape(name)}</span>'
+                f'<span class="dsheet-tab{on}" data-sheet="{_attr(name)}"'
+                f' title="{_attr(name)}">{_html.escape(name)}</span>'
             )
+        if editable:
+            out.append('<span class="dsheet-tab dsheet-tab-add"'
+                       ' title="New sheet">+</span>')
+            out.append('<span class="dsheet-tab dsheet-tab-rename"'
+                       ' title="Rename this sheet">Rename</span>')
+            if len(names) > 1:
+                # The last sheet cannot go: a workbook has to have one.
+                out.append('<span class="dsheet-tab dsheet-tab-drop"'
+                           ' title="Delete this sheet">&minus;</span>')
         out.append('</div>')
 
     # --- grid ---
@@ -2027,7 +2127,65 @@ _GRID_JS_TEMPLATE = r"""
       else if (act === 'delete_cols') deleteCols(cur.c, 1);
     });
   });
-  Array.prototype.forEach.call(wrap.querySelectorAll('.dsheet-tab'), function(tab){
+  var tabsBar = wrap.querySelector('.dsheet-tabs');
+  if (tabsBar) {
+    var addTab = tabsBar.querySelector('.dsheet-tab-add');
+    var renameTab = tabsBar.querySelector('.dsheet-tab-rename');
+    var dropTab = tabsBar.querySelector('.dsheet-tab-drop');
+
+    /* Asked for in the tab strip rather than in a dialog: the name is being
+       typed where the name will appear. */
+    function askForName(current, action){
+      if (tabsBar.querySelector('.dsheet-name-input')) return;
+      var box = document.createElement('input');
+      box.className = 'dsheet-name-input';
+      box.value = current || '';
+      box.placeholder = 'Sheet name';
+      tabsBar.appendChild(box);
+      box.focus();
+      box.select();
+      var done = false;
+      function finish(ok){
+        if (done) return;
+        done = true;
+        var name = box.value.trim();
+        box.remove();
+        if (ok && name) send(action, [], {name: name});
+      }
+      box.addEventListener('keydown', function(e){
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        e.stopPropagation();
+      });
+      box.addEventListener('blur', function(){ finish(false); });
+    }
+
+    if (addTab) addTab.addEventListener('click', function(){
+      askForName('', 'new_sheet');
+    });
+    if (renameTab) renameTab.addEventListener('click', function(){
+      askForName(wrap.dataset.sheet || '', 'rename_sheet');
+    });
+    if (dropTab) dropTab.addEventListener('click', function(){
+      /* Two clicks, because a sheet is not something to lose to a slip. */
+      if (dropTab.dataset.armed === '1') {
+        dropTab.dataset.armed = '0';
+        dropTab.textContent = '\u2212';
+        send('drop_sheet', []);
+        return;
+      }
+      dropTab.dataset.armed = '1';
+      dropTab.textContent = 'Delete?';
+      setTimeout(function(){
+        if (dropTab.dataset.armed !== '1') return;
+        dropTab.dataset.armed = '0';
+        dropTab.textContent = '\u2212';
+      }, 4000);
+    });
+  }
+
+  Array.prototype.forEach.call(
+      wrap.querySelectorAll('.dsheet-tab[data-sheet]'), function(tab){
     tab.addEventListener('click', function(){
       if (tab.classList.contains('dsheet-tab-on')) return;
       send('switch_sheet', [], {target: tab.getAttribute('data-sheet')});

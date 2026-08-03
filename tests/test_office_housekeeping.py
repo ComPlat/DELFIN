@@ -148,6 +148,23 @@ def test_office_saves_put_the_copy_in_the_backup_folder(tmp_path):
 # The backup folder is a history
 # ---------------------------------------------------------------------------
 
+def test_the_history_is_the_one_the_agent_writes_too(tmp_path):
+    """Two mechanisms writing two histories of the same file into the same
+    folder is worse than one: the user opens the folder they know and sees
+    half the story."""
+    from delfin import doc_backup
+
+    path = tmp_path / 'liste.xlsx'
+    path.write_bytes(b'one')
+    folder = tmp_path / 'Backups'
+    first = sheet.make_backup(path, folder=folder, versioned=True)
+    path.write_bytes(b'two')
+    second = doc_backup.make_backup(path, folder=folder)
+
+    assert [p.name for p in (first, second)] == [
+        'liste.bak.xlsx', 'liste.bak2.xlsx'], 'the two started separate runs'
+
+
 def test_each_save_keeps_its_own_copy(tmp_path):
     """Without numbering, the second save finds a backup already there and
     keeps nothing -- which is a safety net for one edit, not a history."""
@@ -173,7 +190,9 @@ def test_the_calculations_browser_keeps_one_copy_as_before(tmp_path):
 
 
 def test_the_numbering_gives_up_rather_than_looping(tmp_path, monkeypatch):
-    monkeypatch.setattr(sheet, 'MAX_BACKUP_VERSIONS', 2)
+    from delfin import doc_backup
+
+    monkeypatch.setattr(doc_backup, 'MAX_BACKUP_VERSIONS', 2)
     path = tmp_path / 'x.txt'
     folder = tmp_path / 'Backups'
     for _ in range(2):
