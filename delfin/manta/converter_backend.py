@@ -451,6 +451,10 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
                          float(_AC._beta_score(list(base_syms), base_P, _dloc)))
         except Exception:
             _AC, _base_bad = None, None
+        try:
+            _base_min = _min_nonbonded_heavy(base_syms, base_P)
+        except Exception:
+            _base_min = None
         # angle_skip = the METAL alone.  Its angles come from the polyhedron, not from
         # hybridisation: the VSEPR gate sees nh == 4 on a CN4 centre and demands 109.5 deg,
         # so a square-planar d8's two 180 deg trans pairs read as a 70.5 deg error that no
@@ -495,6 +499,19 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
                         continue                    # introduces a collapse the primary lacks
                     if _AC._beta_score(_ps, _pP, _dloc) > _base_bad[1] + 1e-9:
                         continue                    # flatter donors were the point; worse is not
+                except Exception:
+                    pass
+            # ... and the same never-worse test _append_reembed already applies to ITS extra
+            # frames: a sibling must not bring the closest non-bonded heavy contact in tighter
+            # than the primary has it.  Measured (ffpuck3): the beta+collapse filter removed
+            # CAZJEW from the blockers exactly as intended and left ONE system, YAGQIG, failing
+            # on tier2 and quality_agg -- neither beta nor collapse, so a third quantity.  This
+            # is the cheapest one the eye also judges by, and reusing the pattern beats
+            # inventing a fourth.
+            if _base_min is not None:
+                try:
+                    if not _interlig_clash_ok(_ps, _pP, _base_min):
+                        continue
                 except Exception:
                     pass
             results.append((_xyz(_ps, _pP), f"{base_label}-{_plab}"))
