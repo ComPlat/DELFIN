@@ -883,6 +883,7 @@ def render_grid_html(
     col_px: Optional[Sequence[int]] = None,
     lossy_note: str = '',
     scroll_top: int = 0,
+    cursor: Optional[Tuple[int, int]] = None,
 ) -> str:
     """Build the complete grid markup for the tab's content area.
 
@@ -897,6 +898,11 @@ def render_grid_html(
         widths.extend([DEFAULT_COL_WIDTH] * (sheet.n_cols - len(widths)))
     total_px = ROW_HEADER_WIDTH + sum(int(w) for w in widths[:sheet.n_cols])
 
+    # Where to put the user back when the grid has to be rebuilt. Absent on a
+    # first render, where the top-left cell is the right answer.
+    cursor_attr = (
+        f' data-cursor="{int(cursor[0])},{int(cursor[1])}"' if cursor else ''
+    )
     out: List[str] = [f'<style>{GRID_CSS}</style>']
     out.append(
         '<div class="dsheet-root"'
@@ -908,6 +914,7 @@ def render_grid_html(
         f' data-rowoffset="{sheet.row_offset}"'
         f' data-pending="{int(pending)}"'
         f' data-scrolltop="{int(scroll_top)}"'
+        f'{cursor_attr}'
         f' data-editable="{"1" if editable else "0"}">'
     )
 
@@ -1069,7 +1076,10 @@ _GRID_JS_TEMPLATE = r"""
     var payload = {
       action: action, token: TOKEN,
       sheet: wrap.dataset.sheet, kind: wrap.dataset.kind,
-      ops: ops || [], cols: colWidths(), scroll: scroll.scrollTop
+      ops: ops || [], cols: colWidths(), scroll: scroll.scrollTop,
+      /* Where the user was. Anything that has to rebuild the grid puts them
+         back here, instead of at A1 with the selection gone. */
+      cur: [cur.r, cur.c]
     };
     if (extra) { for (var k in extra) { payload[k] = extra[k]; } }
     if (!setField('calc-sheet-payload', JSON.stringify(payload))) return;
@@ -1169,6 +1179,20 @@ _GRID_JS_TEMPLATE = r"""
     statusEl.classList.add('dsheet-warn');
     setTimeout(reflectPending, 4000);
   }
+  /* Saving is not a reason to rebuild the grid. The file is on disk and the
+     cells on screen already show what was written, so all that changes here
+     is the marks, the buttons and the message. Re-rendering would hand back
+     a fresh table with the cursor on A1, the selection gone and the scroll
+     wherever the new markup happened to measure -- which is not what
+     pressing save in a spreadsheet does. */
+  wrap.__dsheetSaved = function(message){
+    pending = 0;
+    Array.prototype.forEach.call(
+      tbody.querySelectorAll('td.dsheet-dirty'),
+      function(td){ td.classList.remove('dsheet-dirty'); });
+    reflectPending();
+    if (statusEl && message) statusEl.textContent = message;
+  };
   function structuralAllowed(){
     if (sortState || filterActive) {
       flash('Erst Sortierung/Filter aufheben – sonst ist die Zielzeile mehrdeutig.');
@@ -1667,8 +1691,10 @@ _GRID_JS_TEMPLATE = r"""
   /* ---------- init ---------- */
   reflectPending();
   /* Seed the cursor without revealing it: the saved scroll position is set
-     right after, and a reveal here would first drag the sheet back to A1. */
-  moveTo(0, 1, false, true);
+     right after, and a reveal here would first drag the sheet back to A1.
+     data-cursor is where the user was when something forced a rebuild. */
+  var seed = (wrap.dataset.cursor || '0,1').split(',');
+  moveTo(parseInt(seed[0], 10) || 0, parseInt(seed[1], 10) || 1, false, true);
   var st = parseInt(wrap.dataset.scrolltop || '0', 10) || 0;
   if (st) scroll.scrollTop = st;
   scroll.focus({preventScroll: true});

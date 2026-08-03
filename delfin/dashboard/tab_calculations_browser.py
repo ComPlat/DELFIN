@@ -10977,7 +10977,26 @@ def create_tab(ctx):
     def _calc_sheet_has_pending(path_str):
         return any(key[0] == path_str and ops for key, ops in state['sheet_pending'].items())
 
-    def _calc_render_sheet(path, *, sheet_name=None, row_offset=None, scroll_top=0, status=''):
+    def _calc_sheet_mark_saved(token, message):
+        """Tell the grid on screen that its edits are on disk.
+
+        Nothing is re-rendered: the grid clears its own dirty marks, disables
+        its buttons and shows the message. Selection, scroll position, active
+        cell and column widths are never touched, which is the whole point --
+        pressing save in a spreadsheet does not move the spreadsheet.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetSaved !== 'function') return;
+            wrap.__dsheetSaved({json.dumps(message)});
+        }})();
+        """)
+
+    def _calc_render_sheet(path, *, sheet_name=None, row_offset=None, scroll_top=0,
+                           cursor=None, status=''):
         """Read one window of a spreadsheet and put the editable grid on screen."""
         path = Path(path)
         path_str = str(path)
@@ -11030,6 +11049,7 @@ def create_tab(ctx):
             col_px=keep_widths,
             lossy_note=lossy,
             scroll_top=scroll_top,
+            cursor=cursor,
         )
         # Plain-text fallback for the tab's search box and the Copy button.
         state['file_content'] = _sheet.grid_to_tsv(sheet)
@@ -11082,6 +11102,14 @@ def create_tab(ctx):
         key = (view['path'], sheet_name)
         action = payload.get('action')
         scroll_top = int(payload.get('scroll') or 0)
+        cursor = payload.get('cur')
+        if isinstance(cursor, list) and len(cursor) == 2:
+            try:
+                cursor = (int(cursor[0]), int(cursor[1]))
+            except (TypeError, ValueError):
+                cursor = None
+        else:
+            cursor = None
         cols = payload.get('cols')
         if isinstance(cols, list) and cols:
             try:
@@ -11118,13 +11146,23 @@ def create_tab(ctx):
             note = f'{len(ops)} Änderung{"" if len(ops) == 1 else "en"} gespeichert'
             if backup is not None:
                 note += f' · Sicherung: {backup.name}'
-            _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top, status=note)
+            # The cells on screen already show what was written, so nothing
+            # about the grid needs rebuilding -- and rebuilding it is what
+            # threw the user back to A1 with the view somewhere else.
+            try:
+                state['selected_file_size'] = int(path.stat().st_size)
+            except OSError:
+                pass
+            _calc_sheet_mark_saved(view['token'], note)
             return
 
         if action == 'discard':
+            # This one does have to rebuild: the values on screen are the
+            # discarded ones and have to come back from the file. Put the
+            # user back where they were standing.
             state['sheet_pending'].pop(key, None)
             _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
-                               status='Änderungen verworfen')
+                               cursor=cursor, status='Änderungen verworfen')
             return
 
         if action in ('switch_sheet', 'page'):
