@@ -270,3 +270,32 @@ def test_office_is_a_single_agent_mode():
     from delfin.agent.prompt_loader import PromptLoader
 
     assert len(PromptLoader().load_mode("office")["route"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Loading a session from anywhere
+# ---------------------------------------------------------------------------
+
+def test_office_and_dashboard_sessions_are_listed_by_mode():
+    """They are not tied to a directory, so their history must not be
+    either. Scoping them by folder made a conversation disappear the
+    moment the dashboard was started somewhere else."""
+    source = _tab_agent_source()
+    assert '_LAUNCH_INDEPENDENT_MODES = ("dashboard", "office")' in source
+    block = source.split("def _refresh_session_dropdown", 1)[1][:1400]
+    assert "mode_dropdown.value in _LAUNCH_INDEPENDENT_MODES" in block
+    assert 's.get("mode") == mode_dropdown.value' in block
+
+
+def test_code_sessions_stay_scoped_to_their_directory():
+    """There the launch directory IS the project, so its history is that
+    project's history."""
+    source = _tab_agent_source()
+    block = source.split("def _refresh_session_dropdown", 1)[1][:1400]
+    assert "workspace=_agent_workspace_path()" in block
+
+
+def test_resume_follows_the_same_rule():
+    source = _tab_agent_source()
+    block = source.split('if arg in ("resume", "continue"):', 1)[1][:900]
+    assert "_LAUNCH_INDEPENDENT_MODES" in block

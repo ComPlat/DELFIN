@@ -3012,6 +3012,12 @@ def create_tab(ctx):
     # mode was added to one and forgotten in the other.
     _SINGLE_AGENT_MODES = ("dashboard", "solo", "office")
 
+    # Modes that are not tied to a directory: their workspace is a fixed
+    # location, so their sessions are reachable from any launch. Kept
+    # beside the set above because both describe the same modes from
+    # different angles and a new mode has to be considered for each.
+    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office")
+
     _MODE_DESCRIPTIONS = {
         "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
                      "set CONTROL keys, configure ORCA Builder, browse & analyze calculations, "
@@ -5168,8 +5174,20 @@ def create_tab(ctx):
         """Rebuild the session dropdown from saved sessions."""
         try:
             from delfin.agent.session_store import list_sessions
-            sessions = list_sessions(limit=30,
-                                     workspace=_agent_workspace_path() or None)
+            if mode_dropdown.value in _LAUNCH_INDEPENDENT_MODES:
+                # These modes do not belong to a directory, so neither do
+                # their sessions: they are listed by MODE and reachable from
+                # any launch. Scoping them by folder made a conversation
+                # disappear the moment the dashboard was started elsewhere,
+                # and a session that cannot be found again is
+                # indistinguishable from one that was never saved.
+                sessions = [s for s in list_sessions(limit=80)
+                            if s.get("mode") == mode_dropdown.value][:30]
+            else:
+                # Code mode is the opposite: the launch directory IS the
+                # project, so its history is that project's history.
+                sessions = list_sessions(
+                    limit=30, workspace=_agent_workspace_path() or None)
         except Exception:
             sessions = []
 
@@ -5634,7 +5652,7 @@ def create_tab(ctx):
             # archive, the DELFIN checkout) are dropped here as well; the
             # lock ignores them anyway, and passing them would only suggest
             # a reach the session does not have.
-            if mode_dropdown.value == "office":
+            if mode_dropdown.value == "office":   # _LAUNCH_INDEPENDENT_MODES
                 _office_p = _abs_dir(getattr(ctx, "office_dir", None))
                 if not _office_p:
                     try:
@@ -7876,9 +7894,20 @@ def create_tab(ctx):
                 return True
             # /session resume — continue this WORKSPACE's last conversation
             if arg in ("resume", "continue"):
-                _ws_now = _agent_workspace_path()
+                # Office and Dashboard are not tied to a directory, so
+                # "the last conversation" is the last one of THAT MODE,
+                # from wherever the dashboard was started. Code resumes
+                # its own directory's history.
+                _launch_free = mode_dropdown.value in _LAUNCH_INDEPENDENT_MODES
+                _ws_now = "" if _launch_free else _agent_workspace_path()
                 try:
-                    latest = _ss.latest_session(_ws_now or None)
+                    if _launch_free:
+                        _recent = [x for x in _ss.list_sessions(limit=80)
+                                   if x.get("mode") == mode_dropdown.value]
+                        latest = (_ss.load_session(_recent[0]["session_id"])
+                                  if _recent else None)
+                    else:
+                        latest = _ss.latest_session(_ws_now or None)
                 except Exception as exc:
                     _append_system_message(f"Resume failed: {exc}")
                     return True
