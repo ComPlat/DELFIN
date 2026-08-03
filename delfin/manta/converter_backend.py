@@ -1440,16 +1440,20 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                         and (not max_isomers or len(results) < max_isomers)
                         and _build_is_clean(_bs, _bP, cn=d.get("cn"), geom=d.get("geometry"),
                                             donors=_bd, exempt_pairs=_ex, graph_bonds=_gb)):
+                    # NO CONTACT TEST HERE, AND THAT IS MEASURED, NOT ASSUMED.  The bar first
+                    # also demanded "no closer contact than the primary" -- but the primary is
+                    # SELECTED as the clash-minimal frame, so that is a bar almost nothing can
+                    # clear.  With it, betastrict measured affected=0 on 187 systems and the
+                    # ensemble siblings measured 0 of 3 on a probe where the same code without
+                    # it measured 3 of 3.  A sibling is judged on ITS OWN properties -- no new
+                    # collapse -- and the clash question stays where it belongs, in the
+                    # self-gate that every frame passes anyway.
                     _ok = True
                     if os.environ.get("DELFIN_FFFREE_BETA_SIBLING_STRICT", "0") == "1":
                         try:
                             if (AC._collapsed_heavy_bonds_strict(_bs, _bP)
                                     and not AC._collapsed_heavy_bonds_strict(syms, P)):
                                 _ok = False                   # a collapse the primary does not have
-                            if _ok:
-                                _pmin = _min_nonbonded_heavy(syms, P)
-                                if _pmin is not None and not _interlig_clash_ok(_bs, _bP, _pmin):
-                                    _ok = False               # closer contact than the primary
                         except Exception:
                             _ok = False                       # cannot prove it is as good -> do not add
                     if _ok:
