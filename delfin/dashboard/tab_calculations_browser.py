@@ -344,6 +344,7 @@ def create_tab(ctx):
         ),
         disabled=not _remote_archive_enabled,
     )
+    calc_ssh_transfer_btn.add_class('calc-ssh-transfer-btn')
     calc_move_archive_yes_btn = widgets.Button(
         description='Yes', button_style='warning',
         layout=widgets.Layout(width='60px', height='26px'),
@@ -13830,6 +13831,7 @@ def create_tab(ctx):
         ' .calc-office .calc-report-btn,'
         ' .calc-office .calc-view-toggle,'
         ' .calc-office .calc-move-archive-btn,'
+        ' .calc-office .calc-ssh-transfer-btn,'
         ' .calc-office .calc-transfer-jobs-btn { display:none !important; }'
         '.calc-tab, .calc-tab * { overflow-x:hidden !important; box-sizing:border-box; }'
         '.calc-tab { overflow:hidden !important;'
