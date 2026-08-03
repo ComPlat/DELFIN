@@ -3958,7 +3958,8 @@ def _global_donor_seat(syms, P, blocks):
 
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
                          n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
-                         planar_bite=None, planar_coplanar=None, prefer_beta=False):
+                         planar_bite=None, planar_coplanar=None, prefer_beta=False,
+                         lp_orient=False):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
@@ -4261,8 +4262,26 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     # _lp_orient_seated_bidentate for why that one angle IS beta, and for the
                     # 995-system measurement behind the law.  Donors, M-D distances, bite and
                     # arm-to-vertex correspondence are all untouched; only the backbone turns.
+                    #
+                    # AS A SEATING THIS IS MEASURED NEGATIVE, AS A SIBLING IT IS OPEN.
+                    # lpseat2 (187 systems, the rotation applied unconditionally): reach 49,
+                    # but cap_LOST 2, valid 28->27, mean +0.181 and ten red terms.  The turned
+                    # backbones do collide, the self-gate drops those colorings, and the whole
+                    # system hands over to legacy.  So the source's own claim at
+                    # _lp_aligned_angle -- "the plane wins, without a steric escape" -- is
+                    # refuted AT THE LIVE SEATING: a bonding argument does not survive contact
+                    # with a co-ligand that is also real.
+                    # A guarded version is no answer either: with the collapse guard the same
+                    # run measured affected=0, i.e. exactly the "changed almost nothing" the
+                    # docstring already recorded once.  Guarded it does nothing, unguarded it
+                    # costs capability.
+                    # Hence ``lp_orient``: the CALLER asks for the lp-oriented frame and
+                    # appends it as a SIBLING, leaving the primary untouched.  Then the plane
+                    # can win in a frame of its own without any config ever being dropped,
+                    # which is the one shape that has ever landed here.
                     if (Q is not None and dent == 2
-                            and os.environ.get("DELFIN_FFFREE_LP_SEAT", "0") == "1"):
+                            and (lp_orient
+                                 or os.environ.get("DELFIN_FFFREE_LP_SEAT", "0") == "1")):
                         _Ql = _lp_orient_seated_bidentate(Q, lg.get("mol"),
                                                           dons_d[0], dons_d[1], lsyms=lsyms)
                         if _Ql is not None:

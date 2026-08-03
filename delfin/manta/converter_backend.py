@@ -1454,6 +1454,49 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                             _ok = False                       # cannot prove it is as good -> do not add
                     if _ok:
                         results.append((_bx, f"{_lab}-beta"))
+        # LONE-PAIR ORIENTATION AS A SIBLING (DELFIN_FFFREE_LP_SIBLING, default OFF).
+        #
+        # Seating two donors onto two vertices leaves exactly ONE rotational freedom -- about
+        # the donor-donor axis, which both donors lie ON, so it moves neither of them.  That
+        # one angle decides whether the metal sits in a conjugated donor's pi plane, i.e. beta,
+        # our largest realism gap (18-19 % of frames against 0.98 % of crystals).  Today it is
+        # decided by whatever the Kabsch SVD returns.
+        #
+        # Setting it in the SEATING was measured and is negative: reach 49 of 187, but
+        # cap_LOST 2, valid 28 -> 27, mean +0.181 -- the turned backbone collides, the config
+        # is dropped and the system hands over to legacy.  Guarding that with a collapse test
+        # made it byte-identical instead (affected 0), which the source had already recorded
+        # once as "why the first version changed almost nothing".
+        #
+        # So it is built the way things land here: an EXTRA frame.  The primary keeps the
+        # orientation it has, a second frame carries the lone-pair-aligned one, and the eye's
+        # crystal floors -- which read the BEST frame over the manifold -- can find it.  A
+        # collision in the sibling costs nothing, because nothing was taken away.
+        if os.environ.get("DELFIN_FFFREE_LP_SIBLING", "0") == "1":
+            try:
+                _lb = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
+                                              lp_orient=True)
+            except Exception:
+                _lb = None
+            if _lb is not None:
+                _ls, _lP, _ld = _lb
+                _ls, _lP = _maybe_relax(_ls, _lP)
+                _lx = _xyz(_ls, _lP)
+                if (_lx != _xyz(syms, P)
+                        and (not max_isomers or len(results) < max_isomers)
+                        and _build_is_clean(_ls, _lP, cn=d.get("cn"), geom=d.get("geometry"),
+                                            donors=_ld, exempt_pairs=_ex, graph_bonds=_gb)):
+                    try:
+                        _dl = sorted(int(x) for x in (_ld or []))
+                        # it only earns its place if it is FLATTER; an equal one adds nothing
+                        _better = (AC._beta_score(_ls, _lP, _dl)
+                                   < AC._beta_score(list(syms), P, _dl) - 1e-9)
+                        _nocoll = not (AC._collapsed_heavy_bonds_strict(_ls, _lP)
+                                       and not AC._collapsed_heavy_bonds_strict(syms, P))
+                    except Exception:
+                        _better = _nocoll = False
+                    if _better and _nocoll:
+                        results.append((_lx, f"{_lab}-lp"))
         # SIGMA-ENSEMBLE CONFORMERS, now as siblings of the accepted frame rather than in
         # place of it (see the long note where the old short-circuit branch used to be).
         # Every one clears the same per-frame self-gate as before; the one that reproduces
