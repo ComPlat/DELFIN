@@ -806,12 +806,19 @@ def search_document(doc, term: str, *,
 
 def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX],
                     *, highlights: Sequence[Sequence[float]] = (),
-                    active: Optional[Sequence[float]] = None) -> bytes:
+                    active: Optional[Sequence[float]] = None,
+                    annots: bool = True) -> bytes:
     """Rasterise one page to PNG bytes, with optional hit highlights.
 
     ``highlights`` and ``active`` are rectangles in PDF points as returned by
     the search; the active one is tinted differently so it stands out among
     the other hits on the same page.
+
+    ``annots=False`` leaves the form fields out of the picture. A filled
+    field is drawn into the page by the renderer, so an editable form shows
+    its old value under the box being typed into -- and clearing a field
+    leaves the previous text sitting there. What the fields look like is
+    the overlay's job; the page is what is behind them.
     """
     fitz = _fitz()
     total = int(getattr(doc, 'page_count', 0) or 0)
@@ -826,7 +833,8 @@ def render_page_png(doc, page_index: int, dpi: int = DPI_STEPS[DEFAULT_DPI_INDEX
     zoom = dpi / 72.0
     try:
         pix = page.get_pixmap(
-            matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csRGB, alpha=False)
+            matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csRGB, alpha=False,
+            annots=bool(annots))
     except Exception as exc:
         raise PdfError(f'Page {index + 1} could not be drawn: {exc}') from exc
 
@@ -1146,12 +1154,15 @@ class PdfPanel:
         has_text, probed = probe_has_text(doc)
         self.status.value = scan_hint_html(has_text, probed, self.total_pages)
         self._sizes = page_sizes(doc)
+        # The fields are found before anything is drawn: the page is
+        # rendered without them when the overlay is going to draw them, and
+        # the placeholders need to know whether to carry an overlay at all.
+        self._load_form()
         self._build_pages()
         self._sync_page_controls()
         self.toolbar.layout.display = 'flex'
         self.widget.layout.display = 'flex'
         self._render()
-        self._load_form()
         self._install_observer()
 
     # -- the page stack ------------------------------------------------------
@@ -1258,6 +1269,8 @@ class PdfPanel:
             self._page_images[index].value = render_page_png(
                 self._doc, index, self.dpi(),
                 highlights=page_hits, active=active,
+                # The overlay draws the fields, so the page must not.
+                annots=not self._fields,
             )
             self._filled.add(index)
         except Exception as exc:
