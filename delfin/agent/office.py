@@ -24,11 +24,26 @@ rediscovered by the model on the spot, and several of them are silent:
   encrypted. The pages missing from it are the ones nobody can name
   afterwards, so every input is opened before the first byte is
   written.
+* An .ods cell repeats: LibreOffice writes one cell with
+  ``number-columns-repeated="1013"`` where a naive reader sees one
+  column, and every value after it lands under the wrong heading.
+* A page with no text layer is a photograph of paper, not an empty
+  page. Saying "no text" reports the file wrongly, and OCR of it is a
+  reading of pixels rather than content of the document — so it is
+  labelled as such and never overwrites a page that has real text.
 
 Each of those is handled once, here, instead of in whatever code the
 model happens to write that turn. The functions are pure in the sense
 that matters for testing: they take paths and values, they touch only
 the file named, and they raise only :class:`OfficeError`.
+
+Where there is no reader, there is a refusal that names the way out
+rather than a parser that copes. A legacy .xls read by an approximate
+BIFF reader, or an HTML export that arrived under an .xls name, gives
+back rows that look exactly like data — and an administrative file read
+wrongly is worse than one not read at all, because nothing downstream
+can tell. Those refusals name what the bytes actually are and the one
+command that converts them.
 
 Writing is deliberately narrow. ``edit_sheet`` changes cells and appends
 rows; it does not restructure workbooks. Rewriting a spreadsheet through
@@ -56,10 +71,28 @@ SPREADSHEET_SUFFIXES = frozenset({".xlsx", ".xlsm", ".xltx", ".xltm"})
 CSV_SUFFIXES = frozenset({".csv", ".tsv"})
 PDF_SUFFIXES = frozenset({".pdf"})
 WORD_SUFFIXES = frozenset({".docx"})
+# OpenDocument. LibreOffice is the office suite of a great many public
+# authorities and universities, so .ods and .odt arrive as ordinary
+# attachments rather than as exotica. Reading only: see
+# _CONVERSION_ROUTES for why writing them is refused instead of faked.
+ODS_SUFFIXES = frozenset({".ods"})
+ODT_SUFFIXES = frozenset({".odt"})
 
 DOCUMENT_SUFFIXES = (
     SPREADSHEET_SUFFIXES | CSV_SUFFIXES | PDF_SUFFIXES | WORD_SUFFIXES
+    | ODS_SUFFIXES | ODT_SUFFIXES
 )
+
+# Formats there is no reader for, mapped to the format a conversion has
+# to produce. Deliberately NOT readers: every one of these has a parser
+# somewhere that will return rows for most files and mangle the rest,
+# and a wrong table out of an administrative file is worse than no
+# table, because nothing about it looks wrong afterwards.
+_CONVERSION_ROUTES: dict[str, tuple[str, str]] = {
+    ".xls": ("legacy Excel workbook (BIFF, Excel 97-2003)", "xlsx"),
+    ".xlt": ("legacy Excel template (BIFF, Excel 97-2003)", "xlsx"),
+    ".doc": ("legacy Word document (Word 97-2003)", "docx"),
+}
 
 # Suffix -> (import name, distribution name). The distribution name is
 # what the user has to install, and it differs from the import name for
@@ -74,6 +107,10 @@ _BACKENDS: dict[str, tuple[str, str]] = {
     # takes existing pages apart and puts them together, but it does not
     # lay out text. Writing a page needs reportlab.
     "pdf_write": ("reportlab", "reportlab"),
+    # OpenDocument (.ods/.odt). The import name is 'odf' and the package
+    # is 'odfpy' — the same trap python-docx sits in, which is why the
+    # distribution name is carried separately.
+    "opendocument": ("odf", "odfpy"),
 }
 
 
@@ -86,7 +123,15 @@ class OfficeError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 def document_kind(path: Any) -> Optional[str]:
-    """``"spreadsheet"`` / ``"csv"`` / ``"pdf"`` / ``"word"``, or None."""
+    """The handling family of *path*, or None if there is no reader.
+
+    ``spreadsheet`` / ``csv`` / ``pdf`` / ``word`` /
+    ``opendocument_sheet`` / ``opendocument_text``. The OpenDocument
+    kinds are separate from ``spreadsheet`` and ``word`` on purpose:
+    they can be read but not written, and letting them share a kind
+    would send an .ods into openpyxl, which fails with a message about
+    a broken ZIP rather than about the format.
+    """
     suffix = Path(str(path)).suffix.lower()
     if suffix in SPREADSHEET_SUFFIXES:
         return "spreadsheet"
@@ -96,6 +141,10 @@ def document_kind(path: Any) -> Optional[str]:
         return "pdf"
     if suffix in WORD_SUFFIXES:
         return "word"
+    if suffix in ODS_SUFFIXES:
+        return "opendocument_sheet"
+    if suffix in ODT_SUFFIXES:
+        return "opendocument_text"
     return None
 
 
@@ -125,7 +174,7 @@ def have_office_support() -> bool:
     """
     return any(
         backend_available(kind)
-        for kind in ("spreadsheet", "pdf", "word")
+        for kind in ("spreadsheet", "pdf", "word", "opendocument")
     )
 
 
@@ -184,6 +233,166 @@ def parse_cell(ref: str) -> tuple[int, int]:
     for ch in letters:
         col = col * 26 + (ord(ch) - ord("A") + 1)
     return int(digits), col
+
+
+# ---------------------------------------------------------------------------
+# What a file really is, and what to do when it is not readable here
+# ---------------------------------------------------------------------------
+#
+# A suffix is a claim, not evidence. Two cases turn up constantly in
+# administrative mail and both end in a wrong table rather than an
+# error: a report exported by a web system arrives as an HTML table
+# named ``.xls``, and a workbook someone "saved as .ods" is an .xlsx
+# underneath. Parsers meet those with a best effort — a row count, some
+# plausible values — so the refusals below name what the bytes actually
+# are instead of what the name says.
+
+_CONTAINER_LABELS: dict[str, str] = {
+    "ole2": "a legacy Microsoft Office document (OLE2/BIFF)",
+    "xlsx": "an .xlsx workbook (Office Open XML)",
+    "docx": "a .docx document (Office Open XML)",
+    "ods": "an OpenDocument spreadsheet",
+    "odt": "an OpenDocument text document",
+    "odf": "an OpenDocument file",
+    "zip": "a ZIP archive",
+    "pdf": "a PDF",
+    "html": "an HTML page or table",
+    "xml": "an XML file",
+    "text": "plain text",
+}
+
+
+def _zip_container_kind(path: Path) -> str:
+    """Which OOXML/OpenDocument flavour a ZIP holds, or ``"zip"``."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            if "mimetype" in names:
+                try:
+                    mime = archive.read("mimetype").decode("ascii", "replace")
+                except Exception:
+                    mime = ""
+                if mime.endswith("spreadsheet"):
+                    return "ods"
+                if mime.endswith("text"):
+                    return "odt"
+                if "opendocument" in mime:
+                    return "odf"
+            if any(n.startswith("xl/") for n in names):
+                return "xlsx"
+            if any(n.startswith("word/") for n in names):
+                return "docx"
+    except Exception:
+        return "zip"
+    return "zip"
+
+
+def container_kind(path: Any) -> str:
+    """What *path* holds, judged by its bytes. ``""`` when undecidable.
+
+    Cheap on purpose: the first few kilobytes decide, because this runs
+    on the refusal path where the alternative is a wrong answer, not on
+    a hot loop.
+    """
+    p = Path(str(path))
+    try:
+        with open(p, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return ""
+    # Four bytes, not the full eight of the OLE2 signature: a file that
+    # was truncated in transit still has to be named for what it was,
+    # rather than falling through to "plain text".
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        return "ole2"
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    if head.startswith(b"PK\x03\x04"):
+        return _zip_container_kind(p)
+    probe = head.lstrip()[:512].lower()
+    if (probe.startswith(b"<!doctype html") or probe.startswith(b"<html")
+            or b"<table" in probe):
+        return "html"
+    if probe.startswith(b"<?xml"):
+        return "xml"
+    if b"\x00" in head:
+        return ""
+    return "text" if head else ""
+
+
+_LIBREOFFICE_HINT = (
+    "libreoffice --headless --convert-to {target} --outdir <directory> "
+    "\"{name}\"")
+
+
+def _mismatch_note(path: Path, expected: tuple[str, ...]) -> str:
+    """A sentence naming the real format when it is not the expected one.
+
+    Empty when the bytes match the suffix or cannot be judged, so a
+    caller can append it unconditionally.
+    """
+    found = container_kind(path)
+    if not found or found in expected:
+        return ""
+    label = _CONTAINER_LABELS.get(found, f"a {found} file")
+    return (
+        f" Note that {path.name} does not hold what its name claims: the "
+        f"bytes are {label}. Exports from web systems are routinely named "
+        "for a format they are not, so convert or rename it to match what "
+        "it really is before reading it.")
+
+
+def _refuse_unreadable_format(path: Path) -> None:
+    """Raise for a format with no reader, naming the conversion route.
+
+    Reached before any parser sees the file. The message has to carry
+    the whole way out, because the caller cannot look the command up:
+    which format to convert to, and one command that does it.
+    """
+    suffix = path.suffix.lower()
+    entry = _CONVERSION_ROUTES.get(suffix)
+    if entry is None:
+        return
+    label, target = entry
+    expected = ("ole2",) if suffix in (".xls", ".xlt", ".doc") else ()
+    raise OfficeError(
+        f"{path.name} is a {label}. There is no reader for it here, and "
+        "nothing guesses at the bytes: a legacy Office file taken apart by "
+        "the wrong parser gives back content that looks right and is not. "
+        f"Convert it to .{target} once and read the result — "
+        + _LIBREOFFICE_HINT.format(target=target, name=path.name)
+        + f" — or open it and use 'Save as' with the .{target} format."
+        + _mismatch_note(path, expected))
+
+
+def _refuse_unwritable_format(path: Path, *, what: str) -> None:
+    """Raise for a format this module reads but cannot write."""
+    suffix = path.suffix.lower()
+    if suffix in _CONVERSION_ROUTES:
+        label, target = _CONVERSION_ROUTES[suffix]
+        raise OfficeError(
+            f"{path.name} is a {label}, which is neither read nor written "
+            f"here. Work in .{target} instead: convert the original once — "
+            + _LIBREOFFICE_HINT.format(target=target, name=path.name)
+            + f" — and produce a .{target} as the result.")
+    kind = document_kind(path)
+    if kind == "opendocument_sheet":
+        raise OfficeError(
+            f"{path.name} is an OpenDocument spreadsheet. It can be read "
+            f"here but not written, so {what} would either fail or produce "
+            "a file that is no longer an .ods. Convert it to .xlsx first — "
+            + _LIBREOFFICE_HINT.format(target="xlsx", name=path.name)
+            + " — change that, and convert back if the .ods is what has to "
+            "be delivered.")
+    if kind == "opendocument_text":
+        raise OfficeError(
+            f"{path.name} is an OpenDocument text document. It can be read "
+            f"here but not written, so {what} is not possible. Convert it "
+            "to .docx first — "
+            + _LIBREOFFICE_HINT.format(target="docx", name=path.name)
+            + " — and work on that.")
+    _refuse_unreadable_format(path)
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +817,18 @@ def _read_csv(
 ) -> dict:
     import io
 
+    # A .csv that is not text at all. Decoding a workbook or a PDF with
+    # latin-1 never fails — every byte maps to some character — so this
+    # would otherwise come back as a one-column table of mojibake that
+    # has a row count and a header and means nothing.
+    found = container_kind(path)
+    if found in ("ole2", "zip", "xlsx", "docx", "ods", "odt", "odf", "pdf"):
+        raise OfficeError(
+            f"{path.name} is named like a text table but holds "
+            f"{_CONTAINER_LABELS.get(found, found)}. Decoding it as text "
+            "would return a table of noise rather than its contents — give "
+            "it the right suffix and read it again, or convert it.")
+
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -699,6 +920,308 @@ def _fragile_features(workbook: Any) -> list[str]:
     return found
 
 
+# ---------------------------------------------------------------------------
+# OpenDocument spreadsheets (.ods)
+# ---------------------------------------------------------------------------
+#
+# Three properties of the format decide whether a reader reports the
+# file or something adjacent to it:
+#
+# * Cells repeat. LibreOffice writes one cell with
+#   ``table:number-columns-repeated="1013"`` rather than a thousand empty
+#   ones, and one row with ``number-rows-repeated="1048571"`` for the
+#   rest of the sheet. A reader that ignores the attribute shifts every
+#   value after a repeated cell into the wrong column.
+# * A cell carries both a stored value and a formatted display text:
+#   ``office:value="1234.5"`` next to ``1.234,50 €``. The stored value is
+#   what the file means; taking the display text would put the whole
+#   decimal-comma problem back into a file that had already settled it.
+# * A merged range leaves ``table:covered-table-cell`` elements behind.
+#   They hold nothing but they occupy their position, so dropping them
+#   moves everything to their right one column left.
+
+MAX_ODS_ROWS = 100_000
+# Nothing sensible has more columns than this; the number exists to stop
+# a repeat count of a million from being materialised.
+_ODS_MAX_COLS = 4096
+
+
+def _ods_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _odf_load(p: Path) -> Any:
+    """Open an OpenDocument file, or say what the file really is."""
+    _require("opendocument")
+    from odf.opendocument import load
+    try:
+        return load(str(p))
+    except Exception as exc:
+        raise OfficeError(
+            f"could not open {p.name} as an OpenDocument file: "
+            f"{type(exc).__name__}: {exc}."
+            + (_mismatch_note(p, ("ods", "odt", "odf")) or
+               " The file may be damaged or incomplete.")
+        ) from exc
+
+
+def _ods_cell_value(cell: Any) -> tuple[Any, bool]:
+    """One cell as ``(value, is_uncached_formula)``.
+
+    Typed values are returned in their own type — a float stays a float,
+    a date comes back as a ``date`` — so the column profiler sees what
+    the file stores rather than how a locale renders it.
+    """
+    import datetime as _dt
+
+    from odf.namespaces import OFFICENS, TABLENS
+    from odf import teletype
+
+    attrs = dict(getattr(cell, "attributes", None) or {})
+    value_type = attrs.get((OFFICENS, "value-type"))
+    formula = attrs.get((TABLENS, "formula"))
+
+    def _text() -> str:
+        try:
+            return teletype.extractText(cell)
+        except Exception:
+            return ""
+
+    if value_type in ("float", "percentage", "currency"):
+        try:
+            return float(attrs.get((OFFICENS, "value"), "")), False
+        except (TypeError, ValueError):
+            return _text(), False
+    if value_type == "date":
+        raw = str(attrs.get((OFFICENS, "date-value"), ""))
+        # A day is returned as a ``date``, not as a midnight ``datetime``:
+        # rendered, the second one carries a 00:00:00 the file never
+        # stated, and the column profiler then reads the whole column as
+        # text rather than as dates.
+        try:
+            return (_dt.date.fromisoformat(raw) if len(raw) == 10
+                    else _dt.datetime.fromisoformat(raw)), False
+        except ValueError:
+            return _text(), False
+    if value_type == "boolean":
+        raw = str(attrs.get((OFFICENS, "boolean-value"), "")).lower()
+        if raw in ("true", "false"):
+            return raw == "true", False
+        return _text(), False
+    if value_type == "string":
+        stored = attrs.get((OFFICENS, "string-value"))
+        return (stored if stored is not None else _text()), False
+    if value_type == "time":
+        # Stored as an ISO 8601 duration (PT10H30M00S), which is not what
+        # anyone wrote in the cell. The display text is.
+        return _text(), False
+
+    text = _text()
+    if formula and not text:
+        # A formula with no stored result. Same case as a workbook
+        # written by a library: the number does not exist in the file
+        # yet, and showing an empty cell would report it as one.
+        cleaned = str(formula)
+        if cleaned.startswith("of:"):
+            cleaned = cleaned[3:]
+        return cleaned, True
+    return text, False
+
+
+def _ods_row_cells(row: Any) -> list:
+    """The cells of one row, repeats expanded and trailing blanks cut."""
+    from odf.namespaces import TABLENS
+
+    cells: list[Any] = []
+    for node in getattr(row, "childNodes", None) or []:
+        qname = getattr(node, "qname", None)
+        if not qname or qname[0] != TABLENS:
+            continue
+        if qname[1] not in ("table-cell", "covered-table-cell"):
+            continue
+        attrs = dict(getattr(node, "attributes", None) or {})
+        try:
+            repeat = int(attrs.get((TABLENS, "number-columns-repeated"), 1))
+        except (TypeError, ValueError):
+            repeat = 1
+        repeat = max(1, min(repeat, _ODS_MAX_COLS - len(cells)))
+        value = (None if qname[1] == "covered-table-cell"
+                 else _ods_cell_value(node)[0])
+        cells.extend([value] * repeat)
+        if len(cells) >= _ODS_MAX_COLS:
+            break
+    while cells and _ods_blank(cells[-1]):
+        cells.pop()
+    return cells
+
+
+def _ods_tables(document: Any) -> list:
+    """Every sheet of an .ods, in document order."""
+    from odf.namespaces import TABLENS
+
+    body = getattr(document, "spreadsheet", None)
+    if body is None:
+        return []
+    return [node for node in (getattr(body, "childNodes", None) or [])
+            if getattr(node, "qname", None) == (TABLENS, "table")]
+
+
+def _ods_sheet_names(document: Any) -> list[str]:
+    from odf.namespaces import TABLENS
+    names = []
+    for index, table in enumerate(_ods_tables(document), start=1):
+        attrs = dict(getattr(table, "attributes", None) or {})
+        names.append(str(attrs.get((TABLENS, "name"), f"Tabelle{index}")))
+    return names
+
+
+def _ods_sheet(
+    p: Path, sheet: Optional[str] = None
+) -> tuple[list[str], str, list, int, int, int]:
+    """``(sheet names, chosen, row entries, rows, columns, hidden rows)``.
+
+    Row entries are ``(cells, repeat)`` pairs — unexpanded, because the
+    repeat count at the end of a sheet routinely runs to a million and
+    materialising it would turn a 4 kB file into a gigabyte of ``None``.
+    """
+    # Load first: it is the call that reports a missing odfpy as
+    # something the reader can act on. Importing the namespaces above it
+    # would raise a bare ImportError out of a document read instead.
+    document = _odf_load(p)
+
+    from odf.namespaces import TABLENS
+
+    mimetype = str(getattr(document, "mimetype", "") or "")
+    if mimetype and not mimetype.endswith(
+            ("spreadsheet", "spreadsheet-template")):
+        raise OfficeError(
+            f"{p.name} is named like a spreadsheet but its OpenDocument "
+            f"type is '{mimetype}'. Reading it as a table would invent a "
+            "structure the file does not have.")
+
+    names = _ods_sheet_names(document)
+    tables = _ods_tables(document)
+    if not tables:
+        raise OfficeError(f"{p.name} holds no sheet")
+    if sheet:
+        if sheet not in names:
+            raise OfficeError(
+                f"no sheet named {sheet!r} — available: "
+                f"{', '.join(names) or '(none)'}")
+        table = tables[names.index(sheet)]
+        chosen = sheet
+    else:
+        table, chosen = tables[0], names[0]
+
+    entries: list[tuple[list, int]] = []
+    concealed: list[bool] = []
+    for node in getattr(table, "childNodes", None) or []:
+        qname = getattr(node, "qname", None)
+        if not qname or qname[0] != TABLENS:
+            continue
+        if qname[1] == "table-header-rows":
+            # A repeated header is wrapped in its own element; its rows
+            # are ordinary rows and belong at the top of the sheet.
+            for inner in getattr(node, "childNodes", None) or []:
+                if getattr(inner, "qname", None) == (TABLENS, "table-row"):
+                    entries.append((_ods_row_cells(inner), 1))
+                    concealed.append(False)
+            continue
+        if qname[1] != "table-row":
+            continue
+        attrs = dict(getattr(node, "attributes", None) or {})
+        try:
+            repeat = max(
+                1, int(attrs.get((TABLENS, "number-rows-repeated"), 1)))
+        except (TypeError, ValueError):
+            repeat = 1
+        entries.append((_ods_row_cells(node), repeat))
+        concealed.append(
+            str(attrs.get((TABLENS, "visibility"), "visible")) != "visible")
+
+    while entries and not entries[-1][0]:
+        entries.pop()
+        concealed.pop()
+    # Counted after the trim: the filler at the end of a sheet can carry
+    # a visibility attribute too, and counting it would report a million
+    # hidden rows for a file that has none.
+    hidden = sum(repeat for (_cells, repeat), flag
+                 in zip(entries, concealed) if flag)
+    total_rows = sum(repeat for _cells, repeat in entries)
+    total_cols = max((len(c) for c, _r in entries), default=0)
+    return names, chosen, entries, total_rows, total_cols, hidden
+
+
+def _ods_window(entries: list, start_row: int, max_rows: int) -> list[list]:
+    """Materialise rows ``[start_row, start_row + max_rows)``, 1-based."""
+    out: list[list] = []
+    position = 1
+    for cells, repeat in entries:
+        if len(out) >= max_rows:
+            break
+        end = position + repeat
+        if end > start_row:
+            first = max(position, start_row)
+            take = min(end, start_row + max_rows) - first
+            out.extend([list(cells) for _ in range(max(0, take))])
+        position = end
+    return out
+
+
+def _read_ods(
+    p: Path, *, max_rows: int, max_cols: int, start_row: int,
+    sheet: Optional[str] = None,
+) -> dict:
+    names, chosen, entries, total_rows, total_cols, hidden = _ods_sheet(
+        p, sheet)
+    window = [row[:max_cols] for row in
+              _ods_window(entries, start_row, max_rows)]
+
+    notes: list[str] = []
+    uncached = sum(
+        1 for row in window for value in row
+        if isinstance(value, str) and value.startswith("=")
+    )
+    if uncached:
+        notes.append(
+            f"{uncached} formula cell(s) carry no stored result and are "
+            "shown as their formula text. Nothing has evaluated this file, "
+            "so those numbers do not exist in it yet — do not report them "
+            "as computed.")
+    if len(names) > 1:
+        notes.append(f"sheets in this workbook: {', '.join(names)}")
+    if total_rows > start_row + len(window) - 1:
+        notes.append(
+            f"showing rows {start_row}-{start_row + len(window) - 1} of "
+            f"{total_rows} — pass start_row to page further")
+    if total_cols > max_cols:
+        notes.append(f"showing {max_cols} of {total_cols} columns")
+    if hidden:
+        notes.append(
+            f"{hidden} row(s) of this sheet are hidden or filtered out. "
+            "They are included in the grid above, so the totals here can "
+            "differ from what the file shows on screen.")
+
+    profiles = profile_table(window, header=(start_row == 1))
+    notes.extend(column_notes(profiles))
+    return {
+        "path": str(p),
+        # The content is a spreadsheet whatever the container is; the
+        # format is carried separately so a caller can tell that writing
+        # is not on the table.
+        "kind": "spreadsheet",
+        "format": "ods",
+        "writable": False,
+        "sheets": names,
+        "sheet": chosen,
+        "rows": total_rows,
+        "columns": total_cols,
+        "grid": render_grid(window, first_row=start_row),
+        "column_profile": profiles,
+        "notes": notes,
+    }
+
+
 def read_sheet(
     path: Any,
     *,
@@ -716,6 +1239,7 @@ def read_sheet(
     printing an empty column would misreport the file.
     """
     p = _resolve(path)
+    _refuse_unreadable_format(p)
     kind = document_kind(p)
     max_rows = max(1, min(int(max_rows), 2000))
     max_cols = max(1, min(int(max_cols), 200))
@@ -724,6 +1248,9 @@ def read_sheet(
     if kind == "csv":
         return _read_csv(
             p, max_rows=max_rows, max_cols=max_cols, start_row=start_row)
+    if kind == "opendocument_sheet":
+        return _read_ods(p, max_rows=max_rows, max_cols=max_cols,
+                         start_row=start_row, sheet=sheet)
     if kind != "spreadsheet":
         raise OfficeError(
             f"{p.name} is not a spreadsheet (suffix {p.suffix!r})")
@@ -859,6 +1386,7 @@ def plan_sheet_edits(
     being asked.
     """
     p = _resolve(path)
+    _refuse_unwritable_format(p, what="editing it here")
     if document_kind(p) != "spreadsheet":
         raise OfficeError(
             f"{p.name} is not a spreadsheet (suffix {p.suffix!r})")
@@ -1003,6 +1531,7 @@ def edit_sheet(
     in the returned notes rather than left for the reader to discover.
     """
     p = _resolve(path)
+    _refuse_unwritable_format(p, what="editing it here")
     if document_kind(p) != "spreadsheet":
         raise OfficeError(
             f"{p.name} is not a spreadsheet (suffix {p.suffix!r})")
@@ -1200,6 +1729,7 @@ def create_sheet(
 ) -> dict:
     """Write *rows* to a new workbook (or CSV, by suffix)."""
     p = _resolve(path, must_exist=False)
+    _refuse_unwritable_format(p, what="writing it")
     if p.exists() and not overwrite:
         raise OfficeError(
             f"{p.name} already exists — pass overwrite=True to replace it, "
@@ -1247,6 +1777,11 @@ def create_sheet(
 def _workbook_sheets(path: Any) -> list[str]:
     """Sheet names of a workbook, or an empty list for anything else."""
     p = Path(str(path))
+    if document_kind(p) == "opendocument_sheet":
+        try:
+            return _ods_sheet_names(_odf_load(p))
+        except Exception:
+            return []
     if document_kind(p) != "spreadsheet":
         return []
     try:
@@ -1263,6 +1798,7 @@ def _workbook_sheets(path: Any) -> list[str]:
 def _table_rows(path: Any, sheet: Optional[str] = None) -> list[list]:
     """Every row of a table file, as lists (no window, no cap on width)."""
     p = _resolve(path)
+    _refuse_unreadable_format(p)
     kind = document_kind(p)
     if kind == "csv":
         raw = p.read_bytes()
@@ -1270,9 +1806,21 @@ def _table_rows(path: Any, sheet: Optional[str] = None) -> list[list]:
         import io
         return list(csv.reader(io.StringIO(text, newline=""),
                                delimiter=sniff_delimiter(text, p.suffix)))
+    if kind == "opendocument_sheet":
+        _names, _chosen, entries, total, _cols, _hidden = _ods_sheet(p, sheet)
+        # Unlike the read path there is no window to bound the work here,
+        # so the cap has to be a refusal: silently comparing the first
+        # 100 000 rows of a longer sheet would report a reconciliation
+        # that never saw the rest of the file.
+        if total > MAX_ODS_ROWS:
+            raise OfficeError(
+                f"{p.name} has {total} rows, above the {MAX_ODS_ROWS} this "
+                "reader will materialise at once. Narrow the file, or "
+                "convert it to .xlsx and work on that.")
+        return _ods_window(entries, 1, total)
     if kind != "spreadsheet":
         raise OfficeError(
-            f"{p.name} is not a table (need .xlsx, .csv or .tsv)")
+            f"{p.name} is not a table (need .xlsx, .ods, .csv or .tsv)")
     openpyxl = _require("spreadsheet")
     try:
         wb = openpyxl.load_workbook(p, data_only=True, read_only=True)
@@ -1640,6 +2188,7 @@ def fill_series(
         raise OfficeError("the table's first row is empty — no column names")
 
     tpl = _resolve(template)
+    _refuse_unwritable_format(tpl, what="filling it as a template")
     kind = document_kind(tpl)
     if kind == "pdf":
         available = {f["name"] for f in pdf_form_fields(tpl)["fields"]}
@@ -1821,6 +2370,21 @@ def _pdf_reader(path: Path) -> Any:
         raise OfficeError(f"could not open PDF: {exc}") from exc
 
 
+def _acroform(reader: Any) -> Optional[Any]:
+    """The document's AcroForm dictionary, resolved, or None."""
+    try:
+        root = reader.trailer["/Root"]
+        acro = root.get("/AcroForm")
+        if acro is None:
+            return None
+        try:
+            return acro.get_object()
+        except Exception:
+            return acro
+    except Exception:
+        return None
+
+
 def _has_xfa(reader: Any) -> bool:
     """True if the document is an XFA form.
 
@@ -1829,18 +2393,397 @@ def _has_xfa(reader: Any) -> bool:
     reports success and changes nothing the user will see, so this has
     to be detected before a fill is claimed to have worked.
     """
+    acro = _acroform(reader)
     try:
-        root = reader.trailer["/Root"]
-        acro = root.get("/AcroForm")
-        if acro is None:
-            return False
-        try:
-            acro = acro.get_object()
-        except Exception:
-            pass
-        return "/XFA" in acro
+        return acro is not None and "/XFA" in acro
     except Exception:
         return False
+
+
+def _is_dynamic_xfa(reader: Any) -> bool:
+    """True for a *dynamic* XFA form, where the AcroForm is only a stub.
+
+    The distinction decides whether a fill is worth attempting at all. A
+    static (hybrid) XFA form carries real AcroForm fields and renders
+    them; a dynamic one is laid out from the XML at open time and the
+    catalogue says so with ``/NeedsRendering``. Writing AcroForm values
+    into a dynamic form produces a file whose data is there and whose
+    every page still shows blank.
+    """
+    try:
+        root = reader.trailer["/Root"]
+        flag = root.get("/NeedsRendering")
+        try:
+            flag = flag.get_object()
+        except Exception:
+            pass
+        # Not ``bool(flag)``: a pypdf BooleanObject is an object, and
+        # every object is truthy, so a /NeedsRendering false would read
+        # as true.
+        return str(getattr(flag, "value", flag)).strip().lower() == "true"
+    except Exception:
+        return False
+
+
+# The XFA packets that hold something a reader can use. ``datasets`` is
+# the filled-in data; ``template`` is the layout, which is far too large
+# to be worth returning and holds no values.
+_XFA_DATA_PACKETS = ("datasets", "xdp:xdp", "xdp")
+
+MAX_XFA_VALUES = 300
+
+
+def _xfa_packets(reader: Any) -> dict[str, bytes]:
+    """The XFA packets of a form, by name. Empty for anything else.
+
+    ``/XFA`` is either one stream holding the whole XDP or a flat array
+    alternating names and streams. Both shapes occur in the wild, and a
+    reader that assumes one of them silently returns nothing for the
+    other.
+    """
+    acro = _acroform(reader)
+    if acro is None:
+        return {}
+    try:
+        xfa = acro.get("/XFA")
+        xfa = xfa.get_object() if hasattr(xfa, "get_object") else xfa
+    except Exception:
+        return {}
+    if xfa is None:
+        return {}
+
+    def _bytes(entry: Any) -> bytes:
+        try:
+            entry = entry.get_object()
+        except Exception:
+            pass
+        for attr in ("get_data", "getData"):
+            reader_fn = getattr(entry, attr, None)
+            if callable(reader_fn):
+                try:
+                    data = reader_fn()
+                    return (data if isinstance(data, bytes)
+                            else str(data).encode())
+                except Exception:
+                    return b""
+        if isinstance(entry, bytes):
+            return entry
+        return str(entry).encode("utf-8", "replace")
+
+    packets: dict[str, bytes] = {}
+    if isinstance(xfa, (list, tuple)):
+        items = list(xfa)
+        # Name/stream pairs; an odd tail is a malformed array and is
+        # filed under its position rather than dropped silently.
+        for index in range(0, len(items), 2):
+            name = str(items[index])
+            body = items[index + 1] if index + 1 < len(items) else None
+            packets[name if body is not None else f"packet{index}"] = _bytes(
+                body if body is not None else items[index])
+    else:
+        packets["xdp"] = _bytes(xfa)
+    return packets
+
+
+def _xfa_values(packets: dict[str, bytes]) -> list[dict]:
+    """Field path -> value out of the XFA ``datasets`` packet.
+
+    This is the only way to see what a dynamic XFA form actually holds:
+    its values never reach the AcroForm dictionaries, so the field
+    listing reports every field as empty while the form is full.
+    """
+    import xml.etree.ElementTree as ET
+
+    candidates = [packets[name] for name in _XFA_DATA_PACKETS
+                  if packets.get(name)]
+    candidates += [body for name, body in packets.items()
+                   if name not in _XFA_DATA_PACKETS and b"datasets" in body]
+    out: list[dict] = []
+    seen: set[str] = set()
+    for body in candidates:
+        try:
+            root = ET.fromstring(body.decode("utf-8", "replace"))
+        except Exception:
+            continue
+        data = root
+        for element in root.iter():
+            if element.tag.rsplit("}", 1)[-1] == "data":
+                data = element
+                break
+
+        def walk(node: Any, path: str) -> None:
+            children = list(node)
+            if not children:
+                text = (node.text or "").strip()
+                if path and text and path not in seen:
+                    seen.add(path)
+                    out.append({"name": path, "value": text})
+                return
+            counts: dict[str, int] = {}
+            for child in children:
+                tag = child.tag.rsplit("}", 1)[-1]
+                counts[tag] = counts.get(tag, 0) + 1
+            used: dict[str, int] = {}
+            for child in children:
+                tag = child.tag.rsplit("}", 1)[-1]
+                if counts[tag] > 1:
+                    used[tag] = used.get(tag, 0) + 1
+                    label = f"{tag}[{used[tag]}]"
+                else:
+                    label = tag
+                walk(child, f"{path}.{label}" if path else label)
+
+        for child in list(data):
+            walk(child, child.tag.rsplit("}", 1)[-1])
+        if out:
+            break
+    return out[:MAX_XFA_VALUES]
+
+
+def pdf_xfa_data(path: Any) -> dict:
+    """The values stored in an XFA form's dataset, so they can be read.
+
+    Reading is all this offers. Writing the dataset back would mean
+    rewriting an XML the form's own script layer validates, and a form
+    that opens with the right numbers in the wrong places is exactly the
+    outcome a refusal is worth more than.
+    """
+    p = _resolve(path)
+    if document_kind(p) != "pdf":
+        raise OfficeError(f"{p.name} is not a PDF")
+    reader = _pdf_reader(p)
+    if not _has_xfa(reader):
+        raise OfficeError(
+            f"{p.name} is not an XFA form — list its fields instead")
+    packets = _xfa_packets(reader)
+    values = _xfa_values(packets)
+    notes: list[str] = []
+    if not values:
+        notes.append(
+            "the XFA packets carry no filled-in dataset: either the form is "
+            "empty or its data sits in a packet this reader does not "
+            "understand (packets present: "
+            + (", ".join(sorted(packets)) or "none") + ")")
+    if len(values) == MAX_XFA_VALUES:
+        notes.append(
+            f"only the first {MAX_XFA_VALUES} values are listed")
+    notes.append(
+        "these values were read from the form's XML dataset, not from "
+        "AcroForm fields. They cannot be written back here.")
+    return {
+        "path": str(p),
+        "packets": sorted(packets),
+        "dynamic": _is_dynamic_xfa(reader),
+        "values": values,
+        "notes": notes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scanned pages
+# ---------------------------------------------------------------------------
+#
+# A PDF whose pages hold no text is not a broken PDF, it is a photograph
+# of paper — the single most common attachment in an administrative
+# in-tray. Two things matter here and neither is the OCR itself:
+#
+# * the diagnosis has to be specific. "OCR is not available" leaves the
+#   reader with no way to change that; naming the component that is
+#   missing and the command that installs it does.
+# * text produced by OCR is a reading of pixels, not content of the
+#   file. It is labelled as such everywhere it appears, and it never
+#   replaces a page that has a real text layer.
+
+OCR_MAX_PAGES = 3
+OCR_DPI = 200
+OCR_LANGUAGES = ("de", "en")
+# Below this the recogniser is guessing at the shape of the glyphs. Such
+# blocks are counted and reported rather than quietly dropped: a missing
+# line is easier to notice than a wrong one.
+OCR_LOW_CONFIDENCE = 0.5
+
+
+def _easyocr_model_dir() -> Path:
+    import os
+    base = (os.environ.get("EASYOCR_MODULE_PATH")
+            or os.environ.get("MODULE_PATH")
+            or str(Path.home() / ".EasyOCR"))
+    return Path(base).expanduser() / "model"
+
+
+def ocr_availability() -> dict:
+    """What OCR would need on this machine. Never raises.
+
+    Returns ``{"available", "engine", "detail", "next_step"}``. The
+    detail names the component that is missing rather than the
+    capability, because "install tesseract-ocr" is actionable and "OCR
+    unavailable" is not.
+    """
+    import importlib
+    import shutil
+
+    detail: list[str] = []
+    renderer = False
+    try:
+        importlib.import_module("fitz")
+        renderer = True
+    except Exception:
+        detail.append(
+            "pymupdf is not installed, so a PDF page cannot be turned into "
+            "an image at all (pip install pymupdf)")
+
+    engine = ""
+    try:
+        importlib.import_module("pytesseract")
+    except Exception:
+        detail.append("pytesseract is not installed")
+    else:
+        if shutil.which("tesseract"):
+            engine = engine or "pytesseract"
+        else:
+            detail.append(
+                "pytesseract is installed but the 'tesseract' program it "
+                "drives is not on PATH — pytesseract is only a wrapper, the "
+                "recognition happens in that binary (Debian/Ubuntu: "
+                "apt-get install tesseract-ocr tesseract-ocr-deu)")
+
+    try:
+        importlib.import_module("easyocr")
+        importlib.import_module("torch")
+    except Exception as exc:
+        detail.append(f"easyocr is not usable ({type(exc).__name__})")
+    else:
+        weights = _easyocr_model_dir()
+        try:
+            present = len(list(weights.glob("*.pth")))
+        except OSError:
+            present = 0
+        if present >= 2:
+            engine = engine or "easyocr"
+        else:
+            detail.append(
+                "easyocr is installed but its recognition models are not in "
+                f"{weights} — the first call would download roughly 100 MB "
+                "without asking, which a document read must not do. Fetch "
+                "them once with network access: python -c \"import easyocr; "
+                "easyocr.Reader(['de','en'])\"")
+
+    available = bool(engine) and renderer
+    if available:
+        next_step = (
+            f"pass ocr=true to read the scanned pages with {engine}; the "
+            "result is a reading of the page image, not text out of the "
+            "file")
+    elif engine and not renderer:
+        next_step = "install pymupdf, then pass ocr=true"
+    else:
+        next_step = (
+            "install one of the two engines above, then pass ocr=true")
+    return {
+        "available": available,
+        "engine": engine if available else "",
+        "renderer": "pymupdf" if renderer else "",
+        "detail": detail,
+        "next_step": next_step,
+    }
+
+
+def _render_page(path: Path, number: int, dpi: int = OCR_DPI) -> bytes:
+    """One PDF page as PNG bytes. Raises OfficeError if it cannot."""
+    try:
+        import fitz
+    except Exception as exc:
+        raise OfficeError(
+            f"rendering a page needs pymupdf, which is not installed ({exc})"
+        ) from exc
+    try:
+        document = fitz.open(str(path))
+    except Exception as exc:
+        raise OfficeError(f"could not open {path.name} for rendering: {exc}"
+                          ) from exc
+    try:
+        return document[number - 1].get_pixmap(dpi=dpi).tobytes("png")
+    except Exception as exc:
+        raise OfficeError(
+            f"page {number} of {path.name} could not be rendered: {exc}"
+        ) from exc
+    finally:
+        try:
+            document.close()
+        except Exception:
+            pass
+
+
+_OCR_READER_CACHE: dict[tuple, Any] = {}
+
+
+def _ocr_image(
+    image: bytes, languages: tuple = OCR_LANGUAGES
+) -> tuple[str, float, int]:
+    """OCR one page image. Returns ``(text, mean confidence, weak blocks)``."""
+    status = ocr_availability()
+    if not status["available"] or status["engine"] != "easyocr":
+        raise OfficeError(
+            "OCR is not available here: "
+            + ("; ".join(status["detail"]) or "no engine could be used")
+            + ". " + status["next_step"])
+    try:
+        import easyocr
+    except Exception as exc:                      # pragma: no cover
+        raise OfficeError(f"easyocr could not be imported: {exc}") from exc
+
+    key = tuple(languages)
+    reader = _OCR_READER_CACHE.get(key)
+    if reader is None:
+        try:
+            # Never on the GPU: this runs inside an interactive tool call
+            # on machines that may be running something else on the card,
+            # and a CUDA allocation failure would surface as an OCR
+            # failure rather than as what it is.
+            reader = easyocr.Reader(list(languages), gpu=False, verbose=False,
+                                    download_enabled=False)
+        except Exception as exc:
+            raise OfficeError(
+                f"the OCR engine could not be started: {exc}") from exc
+        _OCR_READER_CACHE[key] = reader
+    try:
+        found = reader.readtext(image, detail=1)
+    except Exception as exc:
+        raise OfficeError(f"OCR failed on this page: {exc}") from exc
+
+    lines = [str(text) for _box, text, _conf in found]
+    scores = [float(conf) for _box, _text, conf in found]
+    weak = sum(1 for s in scores if s < OCR_LOW_CONFIDENCE)
+    mean = sum(scores) / len(scores) if scores else 0.0
+    return "\n".join(lines), mean, weak
+
+
+def _page_image_count(page: Any) -> int:
+    """How many images a page draws, read from its resources.
+
+    Deliberately not ``page.images``, which decodes every one of them: a
+    300 dpi scan would be unpacked into memory only to be counted.
+    """
+    try:
+        resources = page.get("/Resources")
+        resources = (resources.get_object()
+                     if hasattr(resources, "get_object") else resources)
+        xobjects = resources.get("/XObject") if resources else None
+        xobjects = (xobjects.get_object()
+                    if hasattr(xobjects, "get_object") else xobjects)
+        if not xobjects:
+            return 0
+        count = 0
+        for key in xobjects:
+            try:
+                entry = xobjects[key].get_object()
+            except Exception:
+                continue
+            if str(entry.get("/Subtype", "")) == "/Image":
+                count += 1
+        return count
+    except Exception:
+        return 0
 
 
 def read_pdf(
@@ -1848,11 +2791,19 @@ def read_pdf(
     *,
     pages: Optional[str] = None,
     max_chars: int = MAX_TEXT_CHARS,
+    ocr: bool = False,
 ) -> dict:
     """Extract text from a PDF, page by page.
 
     ``pages`` accepts ``"3"``, ``"2-5"`` or ``"1,4,7"``; omitted means
     the whole document up to *max_chars*.
+
+    ``ocr`` reads the pages that carry no text layer from their page
+    image instead. It is off by default and it never touches a page that
+    has real text: OCR output is a reading of pixels, and replacing text
+    the file actually contains with a guess at it would trade a correct
+    answer for a plausible one. Blocks it recognised are labelled as OCR
+    in the output, with the confidence the engine reported.
     """
     p = _resolve(path)
     if document_kind(p) != "pdf":
@@ -1861,18 +2812,75 @@ def read_pdf(
     total = len(reader.pages)
     wanted = _parse_pages(pages, total)
 
+    extracted: dict[int, str] = {}
+    empty: list[int] = []
+    scanned: list[int] = []
+    for number in wanted:
+        try:
+            page = reader.pages[number - 1]
+            text = page.extract_text() or ""
+        except Exception as exc:
+            text = f"(page {number}: extraction failed: {exc})"
+            page = None
+        extracted[number] = text.strip()
+        if not extracted[number]:
+            empty.append(number)
+            # A page with images and no text is a scan; a page with
+            # neither is a blank sheet. OCR helps with the first and has
+            # nothing to find on the second, and saying which is which
+            # is the difference between a next step and a guess.
+            if page is not None and _page_image_count(page):
+                scanned.append(number)
+
+    notes: list[str] = []
+    ocr_pages: list[dict] = []
+    if ocr and scanned:
+        budget = scanned[:OCR_MAX_PAGES]
+        for number in budget:
+            try:
+                image = _render_page(p, number)
+                text, confidence, weak = _ocr_image(image)
+            except OfficeError as exc:
+                notes.append(f"page {number}: {exc}")
+                break
+            extracted[number] = text
+            ocr_pages.append({"page": number,
+                              "confidence": round(confidence, 3),
+                              "low_confidence_blocks": weak})
+        if ocr_pages:
+            mean = sum(e["confidence"] for e in ocr_pages) / len(ocr_pages)
+            weak_total = sum(e["low_confidence_blocks"] for e in ocr_pages)
+            notes.append(
+                "page(s) " + ", ".join(str(e["page"]) for e in ocr_pages)
+                + f" were read by OCR ({ocr_availability()['engine']}, mean "
+                f"confidence {mean:.2f}). That text is a reading of the page "
+                "image, not content of the file: check every figure, name and "
+                "reference number against the original before acting on it.")
+            if weak_total:
+                notes.append(
+                    f"{weak_total} recognised block(s) scored below "
+                    f"{OCR_LOW_CONFIDENCE} — treat those lines as unread "
+                    "rather than as text.")
+        if len(scanned) > len(budget):
+            notes.append(
+                f"{len(scanned)} page(s) have no text layer and only "
+                f"{OCR_MAX_PAGES} were run through OCR (it takes tens of "
+                "seconds per page). Pass pages to choose which.")
+    elif ocr and not scanned:
+        notes.append(
+            "ocr was requested but no requested page is a scan — every page "
+            "either has a text layer already or holds nothing at all.")
+
     chunks: list[str] = []
     used = 0
     truncated = False
-    empty_pages = 0
+    ocr_numbers = {e["page"]: e for e in ocr_pages}
     for number in wanted:
-        try:
-            text = reader.pages[number - 1].extract_text() or ""
-        except Exception as exc:
-            text = f"(page {number}: extraction failed: {exc})"
-        if not text.strip():
-            empty_pages += 1
-        block = f"--- page {number} ---\n{text.strip()}"
+        entry = ocr_numbers.get(number)
+        label = (f"--- page {number} (OCR, confidence "
+                 f"{entry['confidence']:.2f}) ---" if entry
+                 else f"--- page {number} ---")
+        block = f"{label}\n{extracted[number]}"
         if used + len(block) > max_chars:
             chunks.append(block[: max(0, max_chars - used)])
             truncated = True
@@ -1880,28 +2888,56 @@ def read_pdf(
         chunks.append(block)
         used += len(block)
 
-    notes: list[str] = []
+    still_empty = [n for n in empty if n not in ocr_numbers]
     if truncated:
         notes.append(
             f"output truncated at {max_chars} characters — pass pages to "
             "read a specific range")
-    if empty_pages == len(wanted) and wanted:
-        notes.append(
-            "no extractable text on any requested page. This is most likely "
-            "a scanned document: the pages are images, and reading it needs "
-            "OCR, which is not part of this tool.")
-    elif empty_pages:
-        notes.append(f"{empty_pages} of {len(wanted)} pages held no text")
+    if still_empty:
+        status = ocr_availability()
+        blank = [n for n in still_empty if n not in scanned]
+        if len(still_empty) == len(wanted):
+            head = ("no extractable text on any requested page"
+                    if len(wanted) > 1 else "no extractable text on this page")
+        else:
+            head = f"{len(still_empty)} of {len(wanted)} pages held no text"
+        if [n for n in still_empty if n in scanned]:
+            head += (
+                " — page(s) "
+                + ", ".join(str(n) for n in still_empty if n in scanned)
+                + " draw an image and carry no text layer, which is a scan")
+            if status["available"]:
+                head += ". " + status["next_step"]
+            else:
+                head += (". OCR is not possible on this machine: "
+                         + ("; ".join(status["detail"]) or "no engine found")
+                         + ". " + status["next_step"]
+                         + ", or run the file through OCR elsewhere and read "
+                         "the result.")
+        if blank:
+            head += (
+                " — page(s) " + ", ".join(str(n) for n in blank)
+                + " hold neither text nor an image and are simply empty; OCR "
+                "would find nothing on them")
+        notes.append(head)
     if _has_xfa(reader):
+        dynamic = _is_dynamic_xfa(reader)
+        found = len(_xfa_values(_xfa_packets(reader)))
         notes.append(
-            "this is an XFA form — its field data lives in an XML stream, "
-            "not in the page text")
+            ("this is a dynamic XFA form" if dynamic
+             else "this is an XFA form")
+            + " — its field data lives in an XML stream, not in the page text"
+            + (f". {found} stored value(s) can be read: list the fields "
+               "(fields=true) to see them" if found else
+               ". No stored values were found in its dataset"))
 
     return {
         "path": str(p),
         "kind": "pdf",
         "pages": total,
         "pages_read": wanted,
+        "pages_without_text": still_empty,
+        "ocr_pages": ocr_pages,
         "text": "\n\n".join(chunks),
         "notes": notes,
     }
@@ -2095,21 +3131,52 @@ def pdf_form_fields(path: Any) -> dict:
             + ", ".join(unlabelled[:10])
             + ". Do not infer them from the field order — in a form built "
             "with a designer it often does not follow the visual order.")
-    if not fields:
+    xfa = _has_xfa(reader)
+    dynamic = xfa and _is_dynamic_xfa(reader)
+    xfa_values: list[dict] = []
+    if xfa:
+        try:
+            xfa_values = _xfa_values(_xfa_packets(reader))
+        except Exception:
+            xfa_values = []
+    if not fields and not xfa_values:
         notes.append(
             "this PDF has no form fields. Values cannot be filled in; "
             "producing a completed document means generating a new PDF "
             "or overlaying text.")
-    if _has_xfa(reader):
+    if dynamic:
+        notes.append(
+            "dynamic XFA form (/NeedsRendering): the AcroForm entries above "
+            "are a stub the viewer ignores — it builds the pages from the "
+            "XML instead. Filling them is refused here rather than reported "
+            "as done. To produce a completed form, fill it in a viewer that "
+            "renders XFA, or rebuild it as a flat PDF.")
+    elif xfa:
         notes.append(
             "XFA form: writing AcroForm field values will report success "
             "but will not change what a viewer displays. Confirm the "
             "result before handing this file over.")
+    if xfa_values:
+        # The values a dynamic form holds never reach the AcroForm
+        # dictionaries, so the field listing above shows every one of
+        # them as empty while the form is full. Reading them out of the
+        # dataset is the only way to see what the document says.
+        notes.append(
+            f"{len(xfa_values)} value(s) were read out of the form's XML "
+            "dataset (xfa_values). They are what this form actually holds; "
+            "they cannot be written back here.")
+    elif xfa:
+        notes.append(
+            "no values could be read from the XFA dataset — the form is "
+            "either empty or stores its data in a packet this reader does "
+            "not understand.")
     return {
         "path": str(p),
         "fields": fields,
         "field_count": len(fields),
-        "xfa": _has_xfa(reader),
+        "xfa": xfa,
+        "xfa_dynamic": dynamic,
+        "xfa_values": xfa_values,
         "notes": notes,
     }
 
@@ -2145,6 +3212,18 @@ def fill_pdf_form(
 
     pypdf = _require("pdf")
     reader = _pdf_reader(src)
+    # A dynamic XFA form is refused rather than filled. Its pages are
+    # laid out from the XML at open time, so AcroForm values written
+    # here are read by nothing: the call would report every field
+    # written and the printed form would come out blank.
+    if _has_xfa(reader) and _is_dynamic_xfa(reader):
+        raise OfficeError(
+            f"{src.name} is a dynamic XFA form (/NeedsRendering). Its pages "
+            "are built from an XML layer that ignores the AcroForm fields, "
+            "so filling those would report success and change nothing a "
+            "viewer shows. Nothing was written. Fill it in a viewer that "
+            "renders XFA, or ask for a flat PDF version of the form. Its "
+            "current values can be read here (fields=true).")
     declared = {}
     try:
         declared = reader.get_fields() or {}
@@ -3211,6 +4290,9 @@ def _runs_markup(runs: list[dict]) -> str:
 def read_docx(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
     """Extract paragraphs and tables from a .docx file."""
     p = _resolve(path)
+    _refuse_unreadable_format(p)
+    if document_kind(p) == "opendocument_text":
+        return read_odt(p, max_chars=max_chars)
     if document_kind(p) != "word":
         raise OfficeError(
             f"{p.name} is not a .docx file. The legacy .doc format is not "
@@ -3246,14 +4328,131 @@ def read_docx(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# OpenDocument text (.odt)
+# ---------------------------------------------------------------------------
+
+def _odt_cell_text(cell: Any) -> str:
+    from odf import teletype
+    try:
+        return teletype.extractText(cell).strip()
+    except Exception:
+        return ""
+
+
+def _odt_content(container: Any) -> tuple[list[str], list[list[list]]]:
+    """``(paragraphs, tables)`` of an .odt body, in document order.
+
+    Walks the tree rather than collecting paragraphs by type: in a
+    letter the recipient block sits in a table and the enclosures sit in
+    a list, and a reader that only takes top-level ``text:p`` elements
+    returns a document with the addressee missing — which looks like a
+    complete letter to anyone who did not have the original.
+    """
+    from odf.namespaces import TABLENS, TEXTNS
+    from odf import teletype
+
+    paragraphs: list[str] = []
+    tables: list[list[list]] = []
+
+    def walk(node: Any) -> None:
+        for child in getattr(node, "childNodes", None) or []:
+            qname = getattr(child, "qname", None)
+            if not qname:
+                continue
+            namespace, name = qname
+            if namespace == TEXTNS and name in ("p", "h"):
+                try:
+                    text = teletype.extractText(child).strip()
+                except Exception:
+                    text = ""
+                if text:
+                    paragraphs.append(text)
+            elif namespace == TABLENS and name == "table":
+                def _cells(row: Any) -> list:
+                    return [
+                        _odt_cell_text(cell)
+                        for cell in (getattr(row, "childNodes", None) or [])
+                        if (getattr(cell, "qname", None)
+                            or ("", ""))[0] == TABLENS
+                    ]
+
+                rows = [
+                    _cells(row)
+                    for row in (getattr(child, "childNodes", None) or [])
+                    if getattr(row, "qname", None) == (TABLENS, "table-row")
+                ]
+                if rows:
+                    tables.append(rows)
+            else:
+                walk(child)
+
+    walk(container)
+    return paragraphs, tables
+
+
+def read_odt(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
+    """Extract paragraphs and tables from an OpenDocument text document."""
+    p = _resolve(path)
+    if document_kind(p) != "opendocument_text":
+        raise OfficeError(f"{p.name} is not an .odt file")
+    document = _odf_load(p)
+    mimetype = str(getattr(document, "mimetype", "") or "")
+    if mimetype and not mimetype.endswith(("text", "text-template")):
+        raise OfficeError(
+            f"{p.name} is named like a text document but its OpenDocument "
+            f"type is '{mimetype}'. Read it under the name of what it is.")
+
+    body = getattr(document, "text", None)
+    if body is None:
+        raise OfficeError(f"{p.name} holds no text body")
+    paragraphs, tables = _odt_content(body)
+
+    parts = list(paragraphs)
+    rendered = [f"--- table {n} ---\n" + render_grid(rows)
+                for n, rows in enumerate(tables, start=1)]
+    text = "\n".join(parts)
+    if rendered:
+        text += ("\n\n" if text else "") + "\n\n".join(rendered)
+
+    notes: list[str] = []
+    if len(text) > max_chars:
+        text = text[:max_chars]
+        notes.append(f"output truncated at {max_chars} characters")
+    if not text.strip():
+        notes.append("the document holds no extractable text")
+    notes.append(
+        "read-only: an .odt cannot be written here. To produce a filled "
+        "document, convert the template to .docx and fill that.")
+    return {
+        "path": str(p),
+        "kind": "opendocument_text",
+        "format": "odt",
+        "writable": False,
+        "paragraphs": len(parts),
+        "tables": len(tables),
+        "text": text,
+        "notes": notes,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
 def read_document(path: Any, **kwargs: Any) -> dict:
     """Read any supported document, dispatching on its suffix."""
     p = _resolve(path)
+    _refuse_unreadable_format(p)
     kind = document_kind(p)
-    if kind in ("spreadsheet", "csv"):
+    if kind == "opendocument_text":
+        if kwargs.get("fields"):
+            raise OfficeError(
+                f"{p.name} is an OpenDocument text document; there is no "
+                "template filler for it. Convert it to .docx — "
+                + _LIBREOFFICE_HINT.format(target="docx", name=p.name)
+                + " — and use the .docx as the template.")
+        return read_odt(p)
+    if kind in ("spreadsheet", "csv", "opendocument_sheet"):
         return read_sheet(
             p,
             sheet=kwargs.get("sheet"),
@@ -3264,7 +4463,8 @@ def read_document(path: Any, **kwargs: Any) -> dict:
     if kind == "pdf":
         if kwargs.get("fields"):
             return pdf_form_fields(p)
-        return read_pdf(p, pages=kwargs.get("pages"))
+        return read_pdf(p, pages=kwargs.get("pages"),
+                        ocr=bool(kwargs.get("ocr")))
     if kind == "word":
         # Same switch as for a PDF form: "show me what can be filled in"
         # is one question, whatever the format underneath.
