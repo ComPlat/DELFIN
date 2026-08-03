@@ -670,6 +670,72 @@ def _has_collapsed_heavy_bonds(syms, P, factor=0.70):
     return False
 
 
+def _donor_follow_weights(syms, P, donor_idxs, span):
+    """Per-atom (owner donor, weight) for letting a donor's NEIGHBOURHOOD follow its move.
+
+    THE DEFECT THIS ADDRESSES.  The per-donor radial placement further down sets each donor
+    to its exact ideal M-D radius and moves NOTHING else -- the donor slides by delta while
+    its own bonded neighbour stays put, so the donor-backbone bond is stretched or compressed
+    by the full delta (measured median ~0.18 A).  The code says "the constrained relax then
+    pulls the backbone into consistency", and that relax sits behind LIGANDFF, which is not a
+    champion flag: in the shipped build nothing ever pulls it back.  That is the largest
+    single source of GATE_COLLAPSED_BOND (171 of 215 CHELATE_EMPTY systems die there).
+
+    THE FIX IS A DECAY, NOT A REPAIR.  Instead of ending the displacement abruptly at the
+    donor, let it fall off linearly over the BOND GRAPH: an atom k bonds away moves by
+    (1 - k/span) of its donor's delta.  The donor-neighbour bond then distorts by delta/span
+    instead of delta -- with the default span of 3, a third -- and the distortion keeps
+    shrinking outward instead of piling onto one bond.  No force field, no iteration, no
+    reference: one BFS over a covalent graph read off the geometry.
+
+    EVERY DONOR KEEPS ITS EXACT RADIUS.  Atoms are assigned to their NEAREST donor and a tie
+    moves nothing, so no field ever reaches another donor -- the M-D lengths the placement
+    just fixed, and the bite between them, are untouched by construction.
+    """
+    n = len(syms)
+    dons = [int(d) for d in donor_idxs]
+    dset = set(dons)
+    adj = [[] for _ in range(n)]
+    for i in range(n):
+        if _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if _bd._is_metal(syms[j]):
+                continue
+            if float(np.linalg.norm(P[i] - P[j])) <= 1.30 * _bd._ideal_bond(syms[i], syms[j]):
+                adj[i].append(j)
+                adj[j].append(i)
+    INF = 10 ** 6
+    dist = [INF] * n
+    owner = [-1] * n
+    frontier = []
+    for d in dons:
+        dist[d] = 0
+        owner[d] = d
+        frontier.append(d)
+    k = 0
+    while frontier and k < span:
+        k += 1
+        nxt = []
+        claim = {}
+        for a in frontier:
+            for b in adj[a]:
+                if dist[b] <= k or b in dset:
+                    continue                      # already closer, or a donor: never moved
+                claim.setdefault(b, set()).add(owner[a])
+        for b, owners in claim.items():
+            dist[b] = k
+            owner[b] = next(iter(owners)) if len(owners) == 1 else -1   # tie -> no move
+            nxt.append(b)
+        frontier = nxt
+    out = {}
+    for a in range(n):
+        if a in dset or owner[a] < 0 or dist[a] >= span:
+            continue
+        out[a] = (owner[a], 1.0 - float(dist[a]) / float(span))
+    return out
+
+
 def _collapsed_heavy_bonds_strict(syms, P, factor=0.82):
     """True if any BONDED heavy-heavy non-metal pair sits below ``factor`` × the
     covalent-sum ideal — same logic as ``_has_collapsed_heavy_bonds`` but NOT env-
@@ -1294,6 +1360,17 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
     # geometry the embed already had.  Nothing about heavy-atom placement changes.
     _hfollow = (lsyms is not None
                 and os.environ.get("DELFIN_FFREE_H_FOLLOW", "0") == "1")
+    # LET THE NEIGHBOURHOOD FOLLOW (DELFIN_FFFREE_DONOR_FOLLOW, default OFF -> byte-identical).
+    # The weights are read off the geometry BEFORE any donor moves, so the graph is the one
+    # the embed produced; see _donor_follow_weights for why a decay and not a repair.
+    _dfollow = None
+    if lsyms is not None and os.environ.get("DELFIN_FFFREE_DONOR_FOLLOW", "0") == "1":
+        try:
+            _span = max(2, int(os.environ.get("DELFIN_FFFREE_DONOR_FOLLOW_SPAN", "3")))
+            _dfollow = _donor_follow_weights(lsyms, Q, list(donor_idxs), _span)
+        except Exception:
+            _dfollow = None
+    _ddelta = {}
     for i, di in enumerate(donor_idxs):
         r = float(np.linalg.norm(Q[di]))
         if r > 1e-6:
@@ -1303,7 +1380,13 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
                 _delta = _new - Q[di]
                 for _h in _riders_that_may_move(lsyms, Q, _riders, _delta, di):
                     Q[_h] = Q[_h] + _delta
+            _ddelta[int(di)] = _new - Q[di]
             Q[di] = _new
+    if _dfollow:
+        for _a, (_own, _w) in _dfollow.items():
+            _d = _ddelta.get(int(_own))
+            if _d is not None:
+                Q[_a] = Q[_a] + _w * _d
     # BETA IN THE SETTING -- ON THE PATH THAT ACTUALLY RUNS.
     #
     # The first two attempts hooked this into the `if rigid:` branch above and had ZERO
@@ -1991,13 +2074,16 @@ def _lp_orient_seated_bidentate(Q, mol, d1, d2, lsyms=None):
     Qr = (Q - mid) @ _axis_rot(axis, th).T + mid
     if not np.all(np.isfinite(Qr)):
         return None
-    if lsyms is not None:
-        try:
-            if (_collapsed_heavy_bonds_strict(lsyms, Qr)
-                    and not _collapsed_heavy_bonds_strict(lsyms, Q)):
-                return None
-        except Exception:
-            return None
+    # NO STERIC ESCAPE HERE, AND THAT IS THE POINT.  A first version of this rejected the
+    # derived orientation whenever it brought a backbone atom near the metal, i.e. it fell
+    # back to the old sweep exactly where the sweep and the law disagree -- and measured
+    # affected=0 on 187 systems, changing nothing at all.  The docstring of _lp_aligned_angle
+    # records the same experiment and the same outcome one layer down: "it is why the first
+    # version changed almost nothing".  Twice is enough.  The M-D sigma bond goes THROUGH the
+    # lone pair, so the plane is a BONDING constraint and a clash is not a licence to break
+    # it; a real molecule relieves the clash by turning substituents, opening the bite or
+    # twisting the polyhedron.  If a collision remains it now STAYS VISIBLE for the self-gate
+    # and the clash axis to report, instead of being hidden inside a tilt.
     return Qr
 
 
