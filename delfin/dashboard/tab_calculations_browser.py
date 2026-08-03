@@ -11315,6 +11315,22 @@ def create_tab(ctx):
         state.setdefault('docx_pending', {})[address] = str(message.get('text') or '')
         _calc_docx_sync_controls()
 
+    def _calc_sheet_apply_cells(token, cells):
+        """Write worked-out values into the grid on screen.
+
+        The grid records them as one step, so one undo takes a whole fill
+        back rather than one cell of it.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetApply !== 'function') return;
+            wrap.__dsheetApply({json.dumps(cells)});
+        }})();
+        """)
+
     def _calc_sheet_mark_saved(token, message):
         """Tell the grid on screen that its edits are on disk.
 
@@ -11514,6 +11530,38 @@ def create_tab(ctx):
             _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
                                cursor=cursor if _OFFICE_DOC_FEEL else None,
                                status='Changes discarded')
+            return
+
+        if action == 'fill':
+            block = payload.get('block')
+            at = payload.get('at')
+            if not isinstance(block, list) or not isinstance(at, list):
+                return
+            try:
+                rows = max(0, int(payload.get('rows') or 0))
+                cols = max(0, int(payload.get('cols') or 0))
+                top, left = int(at[0]), int(at[1])
+                filled = _sheet.fill_block(block, rows, cols)
+            except (_sheet.SpreadsheetError, TypeError, ValueError) as exc:
+                _calc_sheet_note(f'Could not fill: {exc}', color='#b26a00')
+                return
+            # fill_block returns what the drag added, not the block itself:
+            # those cells already hold what was dragged.
+            height = len(block)
+            width = len(block[0]) if block else 0
+            ops, cells = [], []
+            for r, row in enumerate(filled):
+                for c, text in enumerate(row):
+                    absolute_row = top + (height + r if rows else r)
+                    column = left + (width + c if cols else c)
+                    ops.append({'op': 'set', 'row': absolute_row,
+                                'col': column, 'text': text})
+                    cells.append([absolute_row, column, text])
+            if not ops:
+                return
+            state['sheet_pending'].setdefault(key, []).extend(
+                _sheet.validate_ops(ops))
+            _calc_sheet_apply_cells(view['token'], cells)
             return
 
         if action in ('new_sheet', 'rename_sheet', 'drop_sheet'):

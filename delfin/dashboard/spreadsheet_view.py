@@ -539,6 +539,171 @@ def encode_delimited(text: str, encoding: str) -> bytes:
         ) from exc
 
 
+# ---------------------------------------------------------------------------
+# Filling by dragging the handle
+# ---------------------------------------------------------------------------
+
+# An A1-style reference, with the two places a $ can lock it.
+_REF_RE = re.compile(r'(\$?)([A-Za-z]{1,3})(\$?)([1-9][0-9]{0,6})')
+# Text ending in digits: "Pos 7" continues as "Pos 8".
+_TRAILING_NUMBER_RE = re.compile(r'^(.*?)(\d+)$')
+_ISO_DATE_RE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})$')
+
+
+def shift_formula(text: str, d_row: int, d_col: int) -> str:
+    """Move a formula's relative references by (d_row, d_col).
+
+    What makes dragging a formula down useful: =B2*C2 has to become
+    =B3*C3, or the copies all read the row they came from. A reference
+    locked with $ stays put, which is the whole reason $ exists.
+
+    Text inside quotes is left alone -- ="A1 bis A9" is a label, not two
+    references.
+    """
+    text = str(text)
+    if not text.startswith('='):
+        return text
+
+    out = []
+    index = 0
+    in_string = False
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            in_string = not in_string
+            out.append(char)
+            index += 1
+            continue
+        if in_string:
+            out.append(char)
+            index += 1
+            continue
+        match = _REF_RE.match(text, index)
+        if match is None:
+            out.append(char)
+            index += 1
+            continue
+        col_lock, col_text, row_lock, row_text = match.groups()
+        column = col_index(col_text.upper()) + 1
+        row = int(row_text)
+        if not col_lock:
+            column += d_col
+        if not row_lock:
+            row += d_row
+        if column < 1 or row < 1:
+            # Off the sheet: Excel writes #REF! and so do we, rather than
+            # silently clamping to A1 and reading the wrong cell.
+            out.append('#REF!')
+        else:
+            out.append(f'{col_lock}{col_letter(column - 1)}{row_lock}{row}')
+        index = match.end()
+    return ''.join(out)
+
+
+def _as_number(text: str) -> Optional[float]:
+    try:
+        return float(str(text).strip().replace(',', '.'))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_number(value: float, like: str) -> str:
+    """Write a continued number the way the ones it continues are written."""
+    text = str(like).strip()
+    decimals = 0
+    if '.' in text or ',' in text:
+        decimals = len(re.split(r'[.,]', text)[-1])
+    formatted = f'{value:.{decimals}f}' if decimals else f'{round(value):d}'
+    return formatted.replace('.', ',') if ',' in text else formatted
+
+
+def _as_date(text: str):
+    match = _ISO_DATE_RE.match(str(text).strip())
+    if match is None:
+        return None
+    try:
+        return _dt.date(*(int(part) for part in match.groups()))
+    except ValueError:
+        return None
+
+
+def fill_series(source: Sequence[str], count: int, *,
+                d_row: int = 0, d_col: int = 0) -> List[str]:
+    """Continue ``source`` for ``count`` more cells.
+
+    The rules are the ones a spreadsheet user expects, and no more:
+
+    * formulas move with the cell, so a column of =B2*C2 keeps pointing at
+      its own row;
+    * two or more numbers set a step and it carries on -- one number on its
+      own is copied, which is what Excel does and what stops a column of
+      identical prices turning into a count;
+    * a single date steps by a day, several set their own step;
+    * text ending in digits counts on ("Pos 7", "Pos 8");
+    * anything else repeats, cycling through the block that was dragged.
+    """
+    source = [('' if v is None else str(v)) for v in source]
+    count = max(0, int(count))
+    if not source or not count:
+        return []
+
+    if all(v.startswith('=') for v in source if v.strip()) and any(
+            v.startswith('=') for v in source):
+        return [
+            shift_formula(source[i % len(source)],
+                          d_row * (i // len(source) + 1),
+                          d_col * (i // len(source) + 1))
+            for i in range(count)
+        ]
+
+    numbers = [_as_number(v) for v in source]
+    if all(n is not None for n in numbers) and len(numbers) >= 2:
+        step = numbers[-1] - numbers[-2]
+        return [_format_number(numbers[-1] + step * (i + 1), source[-1])
+                for i in range(count)]
+
+    dates = [_as_date(v) for v in source]
+    if all(d is not None for d in dates):
+        step = ((dates[-1] - dates[-2]).days if len(dates) >= 2 else 1) or 1
+        return [(dates[-1] + _dt.timedelta(days=step * (i + 1))).isoformat()
+                for i in range(count)]
+
+    if len(source) == 1 and numbers[0] is None:
+        match = _TRAILING_NUMBER_RE.match(source[0])
+        if match is not None:
+            head, digits = match.groups()
+            width = len(digits) if digits.startswith('0') else 0
+            return [f'{head}{str(int(digits) + i + 1).zfill(width)}'
+                    for i in range(count)]
+
+    return [source[i % len(source)] for i in range(count)]
+
+
+def fill_block(source: Sequence[Sequence[str]], rows: int, cols: int
+               ) -> List[List[str]]:
+    """Extend a rectangular block downwards or to the right.
+
+    One direction at a time, the way the handle is dragged. ``rows`` and
+    ``cols`` are how many cells to add beyond the block itself.
+    """
+    grid = [list(row) for row in source]
+    if not grid or not grid[0]:
+        return []
+    rows, cols = max(0, int(rows)), max(0, int(cols))
+    if rows and cols:
+        raise SpreadsheetError('A fill goes down or across, not both at once.')
+
+    if rows:
+        height = len(grid)
+        columns = list(zip(*grid))
+        filled = [fill_series(list(column), rows, d_row=height)
+                  for column in columns]
+        return [list(values) for values in zip(*filled)]
+
+    width = len(grid[0])
+    return [fill_series(row, cols, d_col=width) for row in grid]
+
+
 def sniff_delimiter(sample: str, suffix: str = '') -> str:
     """Pick the field separator for a delimited text file."""
     if str(suffix).lower() in ('.tsv', '.tab'):
@@ -1103,6 +1268,10 @@ GRID_CSS = (
     '.dsheet td.dsheet-sel { background:#e3f0fd; }'
     '.dsheet td.dsheet-cur { outline:2px solid #1976d2; outline-offset:-2px; position:relative; z-index:1; }'
     '.dsheet td.dsheet-hit { outline:2px solid #ff9800; outline-offset:-2px; }'
+    '.dsheet-fill { position:absolute; width:7px; height:7px; background:#1565c0;'
+    ' border:1px solid #fff; cursor:crosshair; z-index:4; display:none; }'
+    '.dsheet td.dsheet-fill-target { background:#e3f0ff;'
+    ' outline:1px dashed #1565c0; outline-offset:-1px; }'
     '.dsheet td.dsheet-dirty { background:#fff6cc; }'
     '.dsheet td.dsheet-dirty.dsheet-sel { background:#f3e9b4; }'
     '.dsheet td[contenteditable="true"] { background:#fff; outline:2px solid #1976d2;'
@@ -1472,6 +1641,118 @@ _GRID_JS_TEMPLATE = r"""
     return s;
   }
 
+  /* ---------- fill handle ---------- */
+  /* The square at the bottom right of the selection. Dragging it is how a
+     spreadsheet copies a cell down a column, and it is the difference
+     between entering a formula once and entering it three hundred times. */
+  var fillHandle = null;
+  if (editable) {
+    fillHandle = document.createElement('div');
+    fillHandle.className = 'dsheet-fill';
+    fillHandle.title = 'Drag to fill down or across';
+    scroll.appendChild(fillHandle);
+  }
+  var filling = null;
+
+  function placeHandle(){
+    if (!fillHandle) return;
+    var s = selRange();
+    var td = cellAt(s.r2, s.c2);
+    if (!td || filling) { if (!filling) fillHandle.style.display = 'none'; return; }
+    fillHandle.style.display = 'block';
+    fillHandle.style.left = (td.offsetLeft + td.offsetWidth - 5) + 'px';
+    fillHandle.style.top = (td.offsetTop + td.offsetHeight - 5) + 'px';
+  }
+
+  function clearFillTargets(){
+    Array.prototype.forEach.call(
+      tbody.querySelectorAll('td.dsheet-fill-target'),
+      function(td){ td.classList.remove('dsheet-fill-target'); });
+  }
+
+  function markFillTargets(){
+    clearFillTargets();
+    if (!filling || (!filling.rows && !filling.cols)) return;
+    var s = filling.from;
+    for (var r = s.r1; r <= s.r2 + filling.rows; r++) {
+      for (var c = s.c1; c <= s.c2 + filling.cols; c++) {
+        if (r <= s.r2 && c <= s.c2) continue;
+        var td = cellAt(r, c);
+        if (td) td.classList.add('dsheet-fill-target');
+      }
+    }
+  }
+
+  if (fillHandle) {
+    fillHandle.addEventListener('mousedown', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      if (editing) commitEdit();
+      filling = {from: selRange(), rows: 0, cols: 0};
+      fillHandle.style.display = 'none';
+    });
+  }
+
+  scroll.addEventListener('mousemove', function(e){
+    if (!filling) return;
+    var td = e.target.closest ? e.target.closest('td') : null;
+    if (!td || td.parentNode.parentNode !== tbody) return;
+    var r = rowIndexOf(td.parentNode), c = td.cellIndex;
+    var s = filling.from;
+    /* One axis at a time, like the handle in a spreadsheet: whichever the
+       pointer has travelled further along. */
+    var down = Math.max(0, r - s.r2), across = Math.max(0, c - s.c2);
+    if (down >= across) { filling.rows = down; filling.cols = 0; }
+    else { filling.rows = 0; filling.cols = across; }
+    markFillTargets();
+  }, false);
+
+  document.addEventListener('mouseup', function(){
+    if (!filling) return;
+    var job = filling;
+    filling = null;
+    clearFillTargets();
+    placeHandle();
+    if (!job.rows && !job.cols) return;
+    var s = job.from;
+    var block = [];
+    for (var r = s.r1; r <= s.r2; r++) {
+      var row = [];
+      for (var c = s.c1; c <= s.c2; c++) {
+        var td = cellAt(r, c);
+        row.push(td ? cellText(td) : '');
+      }
+      block.push(row);
+    }
+    var firstRow = tbody.rows[s.r1];
+    send('fill', [], {
+      block: block,
+      rows: job.rows,
+      cols: job.cols,
+      at: [parseInt(firstRow.dataset.r, 10) || (s.r1 + 1 + rowOffset), s.c1]
+    });
+    /* Extend the selection over what was just filled, as a spreadsheet does. */
+    anchor = {r: s.r1, c: s.c1};
+    moveTo(s.r2 + job.rows, s.c2 + job.cols, true, true);
+  }, false);
+
+  /* Values worked out by the kernel, written in as one step so one undo
+     takes the whole fill back. */
+  wrap.__dsheetApply = function(cells){
+    var writes = [];
+    for (var i = 0; i < cells.length; i++) {
+      var absRow = cells[i][0], col = cells[i][1], text = cells[i][2];
+      var target = -1;
+      for (var j = 0; j < tbody.rows.length; j++) {
+        if (parseInt(tbody.rows[j].dataset.r, 10) === absRow) { target = j; break; }
+      }
+      if (target < 0) continue;
+      var td = cellAt(target, col);
+      if (td) writes.push({td: td, text: text});
+    }
+    writeCells(writes);
+  };
+
   /* ---------- selection ---------- */
   function paint(){
     var r1 = Math.min(anchor.r, cur.r), r2 = Math.max(anchor.r, cur.r);
@@ -1486,6 +1767,7 @@ _GRID_JS_TEMPLATE = r"""
     }
     var tr0 = tbody.rows[cur.r];
     if (tr0 && addrEl) addrEl.textContent = colName(cur.c) + (tr0.dataset.r || '');
+    placeHandle();
   }
   /* keepView: select without scrolling. Picking a whole column or row is a
      selection, not a journey -- the sheet has to stay where the eye left it. */
