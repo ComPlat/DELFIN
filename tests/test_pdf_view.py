@@ -531,7 +531,7 @@ def test_panel_zoom_changes_the_rendered_image(tmp_path):
         small = panel.page_image(0).value
         panel.set_zoom_index(len(pv.DPI_STEPS) - 1)
         assert len(panel.page_image(0).value) != len(small)
-        assert str(pv.DPI_STEPS[-1]) in panel.page_status.value
+        assert panel.dpi() == pv.DPI_STEPS[-1]
     finally:
         panel.close()
 

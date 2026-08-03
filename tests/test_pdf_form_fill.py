@@ -210,3 +210,36 @@ def test_the_one_page_viewer_offers_no_form(form):
         assert made._fields == []
     finally:
         made.close()
+
+
+def make_paper_with_a_link_button(path):
+    """A journal article: no form, but a pushbutton annotation on it."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((60, 60), 'Physical Chemistry Chemical Physics')
+    widget = fitz.Widget()
+    widget.field_name = 'CrossMarkLinkButton'
+    widget.field_type = fitz.PDF_WIDGET_TYPE_BUTTON
+    widget.rect = fitz.Rect(60, 100, 120, 120)
+    page.add_widget(widget)
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_a_pushbutton_is_not_a_form_field(tmp_path):
+    """Listing it turned a paper into a document with a one-field form
+    that could not be saved."""
+    path = make_paper_with_a_link_button(tmp_path / 'paper.pdf')
+    doc = pv.open_document(path)
+    try:
+        assert pv.form_fields(doc) == []
+    finally:
+        doc.close()
+
+
+def test_such_a_document_gets_no_form_panel(panel, tmp_path):
+    panel.open(make_paper_with_a_link_button(tmp_path / 'paper.pdf'))
+    assert panel.form_box.layout.display == 'none'

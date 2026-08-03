@@ -656,10 +656,24 @@ def backup_path_for(path: Path) -> Path:
     return path.with_name(f'{path.stem}.bak{path.suffix}')
 
 
-def make_backup(path: Path) -> Optional[Path]:
-    """Copy the file aside once. Returns the new backup, or None if one exists."""
+def make_backup(path: Path, *, folder: Optional[Path] = None) -> Optional[Path]:
+    """Copy the file aside once. Returns the new backup, or None if one exists.
+
+    ``folder`` puts the copy somewhere other than beside the original. One
+    folder of backups is a folder the user can open; a .bak file next to
+    every document is a file list nobody can read.
+    """
     path = Path(path)
-    target = backup_path_for(path)
+    if folder is None:
+        target = backup_path_for(path)
+    else:
+        folder = Path(folder)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            target = backup_path_for(path)   # unwritable: beside it is better
+        else:
+            target = folder / backup_path_for(path).name
     if target.exists():
         return None
     shutil.copy2(str(path), str(target))
@@ -696,6 +710,7 @@ def apply_ops_xlsx(
     ops: Any,
     *,
     backup: bool = True,
+    backup_dir: Optional[Path] = None,
 ) -> Optional[Path]:
     """Replay an edit journal against a workbook and save it in place.
 
@@ -715,7 +730,7 @@ def apply_ops_xlsx(
     if path.suffix.lower() == '.xlsm':
         kwargs['keep_vba'] = True
     wb = _load_workbook(**kwargs)
-    made = make_backup(path) if backup else None
+    made = make_backup(path, folder=backup_dir) if backup else None
     tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix='.dsheet-', suffix=path.suffix)
     os.close(tmp_fd)
     try:
@@ -760,6 +775,7 @@ def apply_ops_delimited(
     delimiter: str,
     *,
     backup: bool = True,
+    backup_dir: Optional[Path] = None,
 ) -> Optional[Path]:
     """Replay the same edit journal against a csv/tsv file.
 
@@ -771,7 +787,7 @@ def apply_ops_delimited(
     clean = validate_ops(ops)
     if not clean:
         return None
-    made = make_backup(path) if backup else None
+    made = make_backup(path, folder=backup_dir) if backup else None
 
     # newline='' keeps the original line endings visible; read_text would
     # translate them and we would silently rewrite a CRLF file as LF.
@@ -1230,11 +1246,14 @@ _GRID_JS_TEMPLATE = r"""
   function cellText(td){
     return td.getAttribute('data-f') || td.textContent;
   }
-  /* Write cells and keep what was there, so the step can take itself back. */
+  /* Write cells and keep what was there, so the step can take itself back.
+     An entry may carry its own `was`: a cell being edited is contenteditable,
+     so by the time the edit is committed the DOM already holds the new text
+     and reading it back would record the change as its own undo. */
   function writeCells(entries){
     if (!entries.length) return;
     var before = entries.map(function(e){
-      return {td: e.td, text: cellText(e.td)};
+      return {td: e.td, text: e.was === undefined ? cellText(e.td) : e.was};
     });
     function apply(list){
       push(list.map(function(e){ return applyText(e.td, e.text); }));
@@ -1411,7 +1430,7 @@ _GRID_JS_TEMPLATE = r"""
     if (text === source) {
       td.textContent = disp;
     } else {
-      writeCells([{td: td, text: text}]);
+      writeCells([{td: td, text: text, was: source}]);
     }
     scroll.focus({preventScroll: true});
   }

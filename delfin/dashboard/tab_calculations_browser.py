@@ -298,6 +298,15 @@ def create_tab(ctx):
     # One name, read everywhere, so moving a feature across later is this
     # line rather than a hunt through the file.
     _OFFICE_DOC_FEEL = _is_office_tab
+
+    # Saving keeps a copy of the original. Beside every document that is a
+    # file list nobody can read; in one folder it is a folder that can be
+    # opened when something has to come back.
+    OFFICE_BACKUP_DIR = 'Backups'
+
+    def _calc_backup_dir(path):
+        """Where a copy of *path* goes before it is overwritten."""
+        return Path(path).parent / OFFICE_BACKUP_DIR if _OFFICE_DOC_FEEL else None
     try:
         _remote_archive_enabled = load_remote_archive_enabled()
     except Exception:
@@ -1114,9 +1123,15 @@ def create_tab(ctx):
     calc_path_display = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    # The label said "File Content:" above a pane that plainly holds the
+    # file's content. In Office the space goes to the document instead.
     calc_content_label = widgets.HTML(
-        value='<b>📄 File Content:</b>',
-        layout=widgets.Layout(width='100%', overflow_x='hidden', margin='8px 0 0 0'),
+        value='' if _is_office_tab else '<b>📄 File Content:</b>',
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            margin='0' if _is_office_tab else '8px 0 0 0',
+            display='none' if _is_office_tab else 'block',
+        ),
     )
     calc_view_toggle = widgets.ToggleButton(
         description='Visualize', value=False, disabled=True, button_style='warning',
@@ -1590,14 +1605,14 @@ def create_tab(ctx):
         layout=widgets.Layout(width='118px', height='26px', display='none'),
     )
     calc_text_save_btn = widgets.Button(
-        description='Speichern',
+        description='Save',
         button_style='primary',
         disabled=True,
         tooltip='Write the changes to the file',
         layout=widgets.Layout(width='100px', height='26px', display='none'),
     )
     calc_text_cancel_btn = widgets.Button(
-        description='Verwerfen',
+        description='Discard',
         tooltip='Leave editing, discard the changes',
         layout=widgets.Layout(width='130px', height='26px', display='none'),
     )
@@ -5911,7 +5926,8 @@ def create_tab(ctx):
         else:
             _calc_stop_xyz_playback(update_button=True)
             calc_mol_container.layout.display = 'none'
-            calc_content_label.layout.display = 'block'
+            calc_content_label.layout.display = (
+                'none' if _is_office_tab else 'block')
             if state['text_edit'].get('active'):
                 calc_content_toolbar.layout.display = 'flex'
                 calc_content_area.layout.display = 'none'
@@ -7872,6 +7888,10 @@ def create_tab(ctx):
                     unread_set = update_calc_running_transitions(current_running)
                 except Exception:
                     unread_set = set()
+            if _OFFICE_DOC_FEEL:
+                # A dot folder is DELFIN's own bookkeeping, not the user's
+                # filing. It is still on disk and still reachable by path.
+                entries = [e for e in entries if not e.name.startswith('.')]
             for entry in entries:
                 if entry.is_dir():
                     if is_top_level_calc_view:
@@ -11087,7 +11107,8 @@ def create_tab(ctx):
             calc_text_status.layout.display = ''
             return
         try:
-            backup = _sheet.make_backup(path) if path.exists() else None
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path))
+                      if path.exists() else None)
             _sheet.write_text_atomic(path, new_text)
         except Exception as exc:
             calc_text_status.value = (
@@ -11242,7 +11263,8 @@ def create_tab(ctx):
         path = Path(state['docx_path'])
         try:
             result = _docx.apply_edits(path, edits)
-            backup = _sheet.make_backup(path) if path.exists() else None
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path))
+                      if path.exists() else None)
             _docx.save(result['document'], path)
         except _docx.DocxError as exc:
             calc_text_status.layout.display = ''
@@ -11451,10 +11473,13 @@ def create_tab(ctx):
                 _calc_sheet_note('The file is gone.')
                 return
             try:
+                where = _calc_backup_dir(path)
                 if view['kind'] == 'xlsx':
-                    backup = _sheet.apply_ops_xlsx(path, sheet_name, ops)
+                    backup = _sheet.apply_ops_xlsx(path, sheet_name, ops,
+                                                   backup_dir=where)
                 else:
-                    backup = _sheet.apply_ops_delimited(path, ops, view['delimiter'])
+                    backup = _sheet.apply_ops_delimited(path, ops, view['delimiter'],
+                                                        backup_dir=where)
             except Exception as exc:
                 _calc_sheet_note(f'Saving failed: {exc}')
                 return
@@ -11519,6 +11544,7 @@ def create_tab(ctx):
             panel = _pdf.PdfPanel(
                 run_js=_run_js,
                 continuous=_OFFICE_DOC_FEEL,
+                backup_dir_name=OFFICE_BACKUP_DIR if _OFFICE_DOC_FEEL else None,
                 height_px=(None if _OFFICE_DOC_FEEL
                            else max(240, CALC_CONTENT_HEIGHT - 80)),
             )
@@ -12819,6 +12845,28 @@ def create_tab(ctx):
             var node = root.querySelector('.calc-ops-status .widget-html-content') || root.querySelector('.calc-ops-status');
             if (!node) return;
             node.innerHTML = '<span style="color:' + String(color || '#555') + ';">' + String(message || '') + '</span>';
+            /* A status line is about the thing that just happened. Left on
+               screen it reports an upload that finished ten minutes ago, so
+               the next thing the user does takes it away. The stamp is what
+               keeps a stale listener from clearing a newer message. */
+            if (root.__opsStatusClear) {
+                root.removeEventListener('pointerdown', root.__opsStatusClear, true);
+                root.__opsStatusClear = null;
+            }
+            if (!String(message || '')) return;
+            var stamp = (root.__opsStatusStamp = (root.__opsStatusStamp || 0) + 1);
+            root.__opsStatusClear = function(){
+                if (root.__opsStatusStamp !== stamp) return;
+                node.innerHTML = '';
+                root.removeEventListener('pointerdown', root.__opsStatusClear, true);
+                root.__opsStatusClear = null;
+            };
+            /* Not on the click that produced the message. */
+            setTimeout(function(){
+                if (root.__opsStatusClear) {
+                    root.addEventListener('pointerdown', root.__opsStatusClear, true);
+                }
+            }, 0);
         }
         function _encodeContentsPath(path){
             return String(path || '')
@@ -14334,6 +14382,8 @@ def create_tab(ctx):
         'calc_folder_search': calc_folder_search,
         'calc_search_input': calc_search_input,
         'calc_search_result': calc_search_result,
+        'calc_sheet_payload_input': calc_sheet_payload_input,
+        'calc_sheet_action_btn': calc_sheet_action_btn,
         # File operations
         'calc_new_folder_btn': calc_new_folder_btn,
         'calc_new_folder_input': calc_new_folder_input,

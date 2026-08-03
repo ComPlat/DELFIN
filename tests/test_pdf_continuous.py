@@ -228,3 +228,36 @@ def test_choosing_a_fixed_step_stops_following_the_frame(panel, tmp_path):
     assert panel.dpi() == pv.DPI_STEPS[-1]
     _tell(panel, action='width', px=1600)
     assert panel.dpi() == pv.DPI_STEPS[-1]
+
+
+def test_a_page_never_scrolls_on_its_own(panel, tmp_path):
+    """The box is exactly the image. A pixel of rounding would otherwise put
+    a scroll bar on every page beside the one that scrolls the document."""
+    panel.open(make_text_pdf(tmp_path / 'doc.pdf', 3))
+    for box in panel.pages_box.children:
+        assert box.layout.overflow == 'hidden'
+
+
+def test_the_viewer_does_not_report_its_own_resolution(panel, tmp_path):
+    """The page number is in the toolbar; the dpi is not the reader's
+    business."""
+    panel.open(make_text_pdf(tmp_path / 'doc.pdf', 3))
+    assert panel.page_status.value == ''
+    panel.goto_page(2)
+    assert panel.page_status.value == ''
+
+
+def test_an_error_still_gets_through(panel, tmp_path):
+    panel.show_error('PDF could not be opened: broken')
+    assert 'broken' in panel.page_status.value
+
+
+def test_the_page_box_is_exactly_the_page(panel, tmp_path):
+    """A border is drawn inside the box, so the image would no longer fit
+    and every page grew a scroll bar of its own."""
+    panel.open(make_text_pdf(tmp_path / 'doc.pdf', 2))
+    box = panel.pages_box.children[0]
+    image = box.children[0]
+    assert box.layout.height == image.layout.height
+    assert box.layout.width == image.layout.width
+    assert box.layout.border in (None, '')

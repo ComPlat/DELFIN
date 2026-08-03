@@ -275,6 +275,9 @@ class FormField:
     readonly: bool = False
 
 
+# Only what a person can fill in. A pushbutton (a "CrossMark" link on a
+# journal article, say) is a widget too, and listing it turned a paper into a
+# document with a one-field form that could not be saved.
 _WIDGET_KINDS = {2: 'check', 3: 'choice', 4: 'choice', 5: 'radio', 7: 'text'}
 
 
@@ -299,7 +302,9 @@ def form_fields(doc) -> List[FormField]:
             if not name:
                 continue
             kind = _WIDGET_KINDS.get(
-                int(getattr(widget, 'field_type', 0) or 0), 'other')
+                int(getattr(widget, 'field_type', 0) or 0), '')
+            if not kind:
+                continue
             rect = getattr(widget, 'rect', None)
             try:
                 box = (float(rect.x0), float(rect.y0),
@@ -518,7 +523,7 @@ def open_document(path: Path):
     try:
         size = path.stat().st_size
     except OSError as exc:
-        raise PdfError(f'Datei nicht lesbar: {exc}') from exc
+        raise PdfError(f'File cannot be read: {exc}') from exc
     if size > MAX_FILE_BYTES:
         raise PdfError(
             f'PDF is too large to display ({size / (1024 * 1024):.1f} MB).'
@@ -765,7 +770,7 @@ class PdfPanel:
     """
 
     def __init__(self, *, height_px: Optional[int] = None, run_js=None,
-                 continuous: bool = True):
+                 continuous: bool = True, backup_dir_name: Optional[str] = None):
         self._doc = None
         self._path: Optional[Path] = None
         self._page = 0
@@ -775,6 +780,7 @@ class PdfPanel:
         self._hit = -1
         self._syncing = False
         self._run_js = run_js
+        self._backup_dir_name = backup_dir_name
         self._token = f'pdfv-{id(self):x}'
         self._sizes: List[Tuple[float, float]] = []
         self._page_images: Dict[int, widgets.Image] = {}
@@ -1018,7 +1024,12 @@ class PdfPanel:
                     width=f'{width_px}px', height=f'{height_px}px',
                     margin=f'0 0 {PAGE_GAP_PX}px 0',
                     background_color='#f4f4f4',
-                    border='1px solid #e0e0e0',
+                    # No border on the page and no scrolling. A border is
+                    # drawn inside the box, so the image no longer fits and
+                    # every page grew a scroll bar of its own beside the one
+                    # that scrolls the document. The gap between pages is
+                    # what separates them.
+                    overflow='hidden',
                 ),
             )
             box.add_class('pdfv-page')
@@ -1237,7 +1248,10 @@ class PdfPanel:
         target = source.with_name(source.name + '.filling.pdf')
         try:
             office.fill_pdf_form(source, values, output=target)
-            backup = _sheet.make_backup(source)
+            backup = _sheet.make_backup(
+                source,
+                folder=(source.parent / self._backup_dir_name
+                        if self._backup_dir_name else None))
             # The open document holds the file mapped; let go before replacing.
             page, zoom = self._page, self._zoom
             self.close()
@@ -1503,8 +1517,10 @@ class PdfPanel:
         self.page_total.value = f'of {total}'
         self.prev_page_btn.disabled = self._page <= 0
         self.next_page_btn.disabled = self._page >= total - 1
-        self.page_status.value = page_status_html(
-            self._page, total, self.dpi())
+        # No page/dpi line: the page number is in the toolbar and the
+        # rendering resolution is not the reader's business.
+        if self.page_status.value and 'color:#d32f2f' not in self.page_status.value:
+            self.page_status.value = ''
 
     def _sync_hit_controls(self) -> None:
         hits = self._result.n_hits

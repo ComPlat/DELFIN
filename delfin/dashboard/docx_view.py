@@ -408,6 +408,21 @@ def _set_paragraph_text(paragraph, text: str) -> None:
     if current == text:
         return
     start, end_before, end_after = changed_range(current, text)
+    if start == end_before and end_after > start:
+        # A pure insertion is an empty range, and an empty range sits between
+        # two runs rather than inside one: the splice skips every run and
+        # writes nothing. Typing at the end of a paragraph is exactly that
+        # case, so it silently saved the paragraph unchanged.
+        #
+        # Widen it onto one neighbouring character and carry that character
+        # through. The text then lands in the run that character belongs to,
+        # which is also where Word would put it.
+        inserted = text[start:end_after]
+        if start > 0:
+            _splice_runs(runs, start - 1, start, current[start - 1] + inserted)
+        else:
+            _splice_runs(runs, 0, 1, inserted + current[0])
+        return
     _splice_runs(runs, start, end_before, text[start:end_after])
 
 
@@ -567,18 +582,35 @@ _EDIT_JS_TEMPLATE = r"""
       if (btn) btn.click();
     }
 
+    function report(block){
+      if (!block || block.getAttribute('contenteditable') !== 'true') return;
+      if (block.innerText === block.dataset.was) return;
+      block.classList.add('dw-dirty');
+      block.dataset.was = block.innerText;   /* sent; only resend on change */
+      send(block);
+    }
+
     page.addEventListener('focusin', function(e){
       var block = e.target.closest && e.target.closest('.dw-b');
       if (block) block.dataset.was = block.innerText;
     }, true);
 
     page.addEventListener('focusout', function(e){
-      var block = e.target.closest && e.target.closest('.dw-b');
-      if (!block || block.getAttribute('contenteditable') !== 'true') return;
-      if (block.innerText === block.dataset.was) return;
-      block.classList.add('dw-dirty');
-      send(block);
+      report(e.target.closest && e.target.closest('.dw-b'));
     }, true);
+
+    /* Also while typing, once it pauses. Leaving the block is the precise
+       moment, but it is not a reliable one: pressing Save is a click on a
+       button, and whether that moves focus out of the paragraph first is up
+       to the browser. When it does not, the edit was never sent and saving
+       reported nothing to save while the text sat on screen. */
+    var typing = null;
+    page.addEventListener('input', function(e){
+      var block = e.target.closest && e.target.closest('.dw-b');
+      if (!block) return;
+      if (typing) clearTimeout(typing);
+      typing = setTimeout(function(){ typing = null; report(block); }, 350);
+    });
 
     /* Enter would start a new paragraph, and a paragraph this view cannot
        address is a paragraph an edit cannot be written back to. */

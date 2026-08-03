@@ -223,13 +223,22 @@ def test_a_round_trip_keeps_what_it_was_not_asked_to_change(letter):
 # The browser side
 # ---------------------------------------------------------------------------
 
-def test_a_block_is_reported_when_it_is_left_not_per_keystroke():
+def test_a_block_is_reported_when_it_is_left(letter):
     script = dv.edit_js('calc-scope-1')
     assert "addEventListener('focusout'" in script
-    for per_character in ("addEventListener('input'", "addEventListener('keyup'",
-                          "addEventListener('keypress'"):
-        assert per_character not in script, (
-            f'{per_character} would put the kernel behind the typing')
+
+
+def test_it_is_also_reported_while_typing_once_typing_pauses():
+    """Leaving the block is the precise moment but not a reliable one:
+    pressing Save is a click, and whether that moves focus out of the
+    paragraph first is up to the browser. When it did not, the edit was
+    never sent and saving reported nothing to save."""
+    script = dv.edit_js('calc-scope-1')
+    assert "addEventListener('input'" in script
+    assert 'setTimeout' in script.split("addEventListener('input'")[1][:300], (
+        'reporting every keystroke would put the kernel behind the typing')
+    for per_character in ("addEventListener('keyup'", "addEventListener('keypress'"):
+        assert per_character not in script
 
 
 def test_enter_does_not_create_a_paragraph_the_view_cannot_address():
@@ -268,3 +277,56 @@ def test_the_block_text_still_reads_as_the_paragraph(letter):
     rendered = re.search(r'data-a="p:1"[^>]*>(.*?)</div>', markup, re.S).group(1)
     as_text = _html.unescape(re.sub(r'<[^>]+>', '', rendered))
     assert as_text == block.text
+
+
+# ---------------------------------------------------------------------------
+# Insertions: an empty range sits between runs, not inside one
+# ---------------------------------------------------------------------------
+
+def test_appending_at_the_end_of_a_paragraph_is_written(letter):
+    """The commonest edit there is. A pure insertion is an empty range, and
+    an empty range matches no run, so the splice wrote nothing and the save
+    reported success over an unchanged file."""
+    read = dv.read_document(letter)
+    original = next(b for b in read.blocks if b.address == 'p:1').text
+
+    result = dv.apply_edits(letter, {'p:1': original + ' NACHTRAG'})
+    dv.save(result['document'], letter)
+
+    assert docx.Document(str(letter)).paragraphs[1].text == original + ' NACHTRAG'
+
+
+def test_appending_keeps_the_formatting_beside_it(letter):
+    read = dv.read_document(letter)
+    original = next(b for b in read.blocks if b.address == 'p:1').text
+    dv.save(dv.apply_edits(letter, {'p:1': original + ' ANHANG'})['document'], letter)
+
+    runs = [(r.text, r.bold) for r in docx.Document(str(letter)).paragraphs[1].runs
+            if r.text]
+    assert ('vielen Dank', True) in runs, 'the bold run was flattened'
+    assert runs[-1][0].endswith(' ANHANG')
+
+
+def test_inserting_at_the_very_start_is_written(letter):
+    read = dv.read_document(letter)
+    original = next(b for b in read.blocks if b.address == 'p:1').text
+    dv.save(dv.apply_edits(letter, {'p:1': 'VORAB ' + original})['document'], letter)
+    assert docx.Document(str(letter)).paragraphs[1].text == 'VORAB ' + original
+
+
+def test_inserting_on_a_run_boundary_is_written(letter):
+    """Between 'Sehr geehrte Damen, ' and the bold 'vielen Dank'."""
+    read = dv.read_document(letter)
+    original = next(b for b in read.blocks if b.address == 'p:1').text
+    cut = original.index('vielen Dank')
+    changed = original[:cut] + 'X' + original[cut:]
+    dv.save(dv.apply_edits(letter, {'p:1': changed})['document'], letter)
+    assert docx.Document(str(letter)).paragraphs[1].text == changed
+
+
+def test_deleting_from_the_middle_still_works(letter):
+    read = dv.read_document(letter)
+    original = next(b for b in read.blocks if b.address == 'p:1').text
+    changed = original.replace('vielen Dank', '')
+    dv.save(dv.apply_edits(letter, {'p:1': changed})['document'], letter)
+    assert docx.Document(str(letter)).paragraphs[1].text == changed
