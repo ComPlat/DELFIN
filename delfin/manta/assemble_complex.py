@@ -1954,6 +1954,53 @@ def _lone_pair_dir(P, mol, idx):
     return -v / n
 
 
+def _lp_orient_seated_bidentate(Q, mol, d1, d2, lsyms=None):
+    """Set the ONE rotational freedom a SEATED bidentate still has, from the lone pairs.
+
+    WHERE THE TILT ACTUALLY COMES FROM.  The live path seats a chelate with
+    _orient_chelate_to_vertices, a Kabsch fit of the donor directions onto the target vertex
+    directions.  With TWO donors that fit is UNDERDETERMINED: rotating the ligand about the
+    donor-donor axis leaves both donors exactly where they are, so it changes nothing the fit
+    can see, and whatever the SVD happens to return decides it.  That leftover rotation is
+    precisely the one that decides whether the metal lies in a conjugated donor's pi plane --
+    i.e. beta, the largest single realism gap this project has (18-19 % of frames against
+    0.98 % of crystals).  It was being set by a numerical tie-break.
+
+    The law that fixes it already existed and was already measured -- over 995 built systems
+    the tilt tracks co-ligand contact (median 12.1 deg where vdW shells overlap, 0.9 deg where
+    they do not) -- but it sat in _place_chelate_block, which assemble_from_config reaches ONLY
+    as a fallback after the embed has already failed.  Three independent flags in that function
+    (LP_ORIENT, BITE_LAW, BITE_MEASURED) all measured ZERO reach on a 187-system sweep, while
+    flags elsewhere in the same file measured 123 and 7 -- the function is live code on a path
+    the champion does not take.
+
+    SAFE BY CONSTRUCTION for the seating: both donors lie ON the rotation axis, so they do not
+    move at all.  The M-D distances, the bite angle and the arm-to-vertex correspondence are
+    all preserved EXACTLY; only the backbone turns.  Returns None when no lone-pair direction
+    is defined, or when the turn would introduce a collapsed bond the seated frame did not
+    have -- the caller then keeps what it had.
+    """
+    Q = np.asarray(Q, float)
+    axis = Q[d2] - Q[d1]
+    if float(np.linalg.norm(axis)) < 1.0e-9:
+        return None
+    mid = 0.5 * (Q[d1] + Q[d2])
+    th = _lp_aligned_angle(Q, mol, d1, d2, axis, mid)
+    if th is None:
+        return None
+    Qr = (Q - mid) @ _axis_rot(axis, th).T + mid
+    if not np.all(np.isfinite(Qr)):
+        return None
+    if lsyms is not None:
+        try:
+            if (_collapsed_heavy_bonds_strict(lsyms, Qr)
+                    and not _collapsed_heavy_bonds_strict(lsyms, Q)):
+                return None
+        except Exception:
+            return None
+    return Qr
+
+
 def _lp_aligned_angle(Q, mol, d1, d2, axis, mid):
     """The rotation about the donor-donor axis that points BOTH lone pairs at the metal.
 
@@ -4121,6 +4168,19 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         or os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1"))
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
                                                     rigid=_rigid_seat, lsyms=lsyms)
+                    # THE LEFTOVER ROTATION, SET BY THE LONE PAIRS INSTEAD OF BY THE SVD.
+                    # Seating two donors onto two vertices leaves exactly one rotational
+                    # freedom -- about the donor-donor axis -- and the Kabsch fit cannot see
+                    # it, because both donors lie ON that axis and do not move.  See
+                    # _lp_orient_seated_bidentate for why that one angle IS beta, and for the
+                    # 995-system measurement behind the law.  Donors, M-D distances, bite and
+                    # arm-to-vertex correspondence are all untouched; only the backbone turns.
+                    if (Q is not None and dent == 2
+                            and os.environ.get("DELFIN_FFFREE_LP_SEAT", "0") == "1"):
+                        _Ql = _lp_orient_seated_bidentate(Q, lg.get("mol"),
+                                                          dons_d[0], dons_d[1], lsyms=lsyms)
+                        if _Ql is not None:
+                            Q = _Ql
                     # Collapse-rigid-fallback (DELFIN_FFFREE_CHELATE_RIGID_FALLBACK,
                     # default OFF -> byte-id).  The per-donor RADIAL rescale moves each
                     # donor independently onto its exact ideal radius, which on many
