@@ -160,6 +160,53 @@ _PAGES_JS_TEMPLATE = r"""
       window.addEventListener('resize', function(){ setTimeout(measure, 160); });
     }
 
+    /* A form field lives on the page. Typing is reported when the field is
+       left and, for a tick or a choice, as soon as it changes -- those have
+       no "finished typing" moment. */
+    function fieldValue(el){
+      if (el.type === 'checkbox') return el.checked;
+      return el.value;
+    }
+    /* Collected and sent together. Two fields changed in the same tick --
+       tabbing quickly through a form -- would otherwise each write the one
+       bridge field before the first had been read, and one of them would be
+       lost. */
+    var pendingFields = null, fieldTimer = null;
+    function reportField(el){
+      if (!el || !el.dataset || !el.dataset.field || el.disabled) return;
+      el.classList.add('pdfv-changed');
+      pendingFields = pendingFields || {};
+      pendingFields[el.dataset.field] = fieldValue(el);
+      if (fieldTimer) clearTimeout(fieldTimer);
+      fieldTimer = setTimeout(function(){
+        fieldTimer = null;
+        var batch = pendingFields;
+        pendingFields = null;
+        if (batch) send({action: 'fields', values: batch});
+      }, 120);
+    }
+    pages.addEventListener('change', function(e){
+      if (e.target.classList && e.target.classList.contains('pdfv-f')) {
+        reportField(e.target);
+      }
+    }, true);
+    pages.addEventListener('focusout', function(e){
+      if (e.target.classList && e.target.classList.contains('pdfv-f')
+          && e.target.type === 'text') {
+        reportField(e.target);
+      }
+    }, true);
+    /* And while typing, once it pauses: pressing Save is a click, and
+       whether that takes focus out of the field first is up to the browser. */
+    var typing = null;
+    pages.addEventListener('input', function(e){
+      var el = e.target;
+      if (!el.classList || !el.classList.contains('pdfv-f')) return;
+      if (el.type === 'checkbox') return;
+      if (typing) clearTimeout(typing);
+      typing = setTimeout(function(){ typing = null; reportField(el); }, 300);
+    });
+
     /* Scroll to a page, asked for by the kernel when the page number, a
        search hit or the step buttons move. */
     root.__pdfvGoto = function(index){
@@ -340,6 +387,93 @@ def form_fields(doc) -> List[FormField]:
                 readonly=bool(flags & 1),
             ))
     return fields
+
+
+FORM_CSS = (
+    '.pdfv-page { position:relative !important; }'
+    '.pdfv-overlay { position:absolute !important; top:0; left:0;'
+    ' width:100%; height:100%; pointer-events:none; }'
+    '.pdfv-overlay .widget-html-content { width:100%; height:100%; }'
+    # Opaque, not translucent. A filled field is also drawn into the page
+    # image by the renderer, so a see-through box shows the value twice,
+    # half a pixel apart.
+    '.pdfv-f { position:absolute; box-sizing:border-box; pointer-events:auto;'
+    ' font-family:inherit; background:#eaf1fd;'
+    ' border:1px solid #7aa7dd; border-radius:2px;'
+    ' padding:0 3px; margin:0; color:#111; }'
+    '.pdfv-f:hover { background:#dfeaff; }'
+    '.pdfv-f:focus { outline:2px solid #1565c0; outline-offset:0;'
+    ' background:#fff; }'
+    '.pdfv-f[type="checkbox"] { padding:0; cursor:pointer;'
+    ' appearance:none; -webkit-appearance:none; }'
+    '.pdfv-f[type="checkbox"]:checked:after { content:"\\2713";'
+    ' display:block; text-align:center; line-height:1;'
+    ' font-size:inherit; color:#12447a; }'
+    '.pdfv-f.pdfv-changed { background:#fff6cc; border-color:#ef9a00; }'
+    '.pdfv-f[disabled] { background:#f0f0f0; border-style:dashed;'
+    ' cursor:not-allowed; color:#555; }'
+)
+
+
+def field_boxes(fields: Sequence['FormField'], page_index: int, zoom: float,
+                bounds: Optional[Tuple[int, int]] = None
+                ) -> List[Tuple['FormField', Tuple[int, int, int, int]]]:
+    """Where each field of a page sits on the rendered image, in pixels.
+
+    The same mapping the search highlights use, so a field and a hit on the
+    same page agree about where the page is.
+    """
+    out = []
+    for found in fields:
+        if found.page != int(page_index):
+            continue
+        box = rect_to_pixels(found.rect, zoom, bounds=bounds)
+        if box is None:
+            continue
+        out.append((found, box))
+    return out
+
+
+def overlay_html(placed: Sequence[Tuple['FormField', Tuple[int, int, int, int]]],
+                 values: Optional[Dict[str, Any]] = None) -> str:
+    """Real inputs, sized and placed over the page they belong to.
+
+    A form is filled in where it is read. The alternative -- a list of field
+    names beside the page -- asks the reader to hold the mapping between a
+    name and a box in their head, which is the one thing the document
+    already does for them.
+    """
+    values = values or {}
+    if not placed:
+        return ''
+    out: List[str] = []
+    for found, (left, top, right, bottom) in placed:
+        width, height = right - left, bottom - top
+        current = values.get(found.name, found.value)
+        style = (f'left:{left}px; top:{top}px; '
+                 f'width:{width}px; height:{height}px; '
+                 f'font-size:{max(9, min(int(height * 0.62), 22))}px;')
+        changed = ' pdfv-changed' if found.name in values else ''
+        common = (f' class="pdfv-f{changed}" style="{style}"'
+                  f' data-field="{_html.escape(found.name, quote=True)}"'
+                  f' title="{_html.escape(found.name, quote=True)}"'
+                  + (' disabled' if found.readonly else ''))
+        if found.kind == 'check':
+            ticked = ' checked' if str(current) not in ('', 'Off', 'False') else ''
+            out.append(f'<input type="checkbox"{common}{ticked}>')
+        elif found.kind in ('choice', 'radio') and found.options:
+            options = []
+            for option in found.options:
+                selected = ' selected' if str(current) == option else ''
+                options.append(
+                    f'<option value="{_html.escape(option, quote=True)}"{selected}>'
+                    f'{_html.escape(option)}</option>')
+            out.append(f'<select{common}>{"".join(options)}</select>')
+        else:
+            out.append(
+                f'<input type="text"{common} '
+                f'value="{_html.escape(str(current), quote=True)}">')
+    return ''.join(out)
 
 
 def clamp_page(page: Any, total_pages: int) -> int:
@@ -785,10 +919,11 @@ class PdfPanel:
         self._sizes: List[Tuple[float, float]] = []
         self._page_images: Dict[int, widgets.Image] = {}
         self._page_boxes: Dict[int, widgets.Box] = {}
+        self._overlays: Dict[int, widgets.HTML] = {}
+        self._values: Dict[str, Any] = {}
         self._filled: set = set()
         self._frame_px = ASSUMED_FRAME_WIDTH
         self._fields: List[FormField] = []
-        self._controls: Dict[str, Any] = {}
         # A field the user clicked, outlined on the page until they move on.
         self._focus_rect: Optional[Tuple[int, Tuple[float, float, float, float]]] = None
 
@@ -857,21 +992,15 @@ class PdfPanel:
             layout=widgets.Layout(display='none'),
         )
 
+        # The form is filled in on the page; only what acts on the whole
+        # form belongs in the toolbar, and only when there is one.
         self.form_save_btn = widgets.Button(
             description='Save form', button_style='primary',
-            layout=widgets.Layout(width='96px', height='26px'))
+            layout=widgets.Layout(width='100px', height='28px', display='none'))
         self.form_reset_btn = widgets.Button(
             description='Reset',
-            layout=widgets.Layout(width='70px', height='26px'))
+            layout=widgets.Layout(width='70px', height='28px', display='none'))
         self.form_status = widgets.HTML('')
-        self.form_box = widgets.VBox(
-            [],
-            layout=widgets.Layout(
-                display='none', width='300px', min_width='260px',
-                overflow_y='auto', padding='8px',
-                border='1px solid #ddd', margin='0 0 0 8px'),
-        )
-        self.form_box.add_class('pdfv-form')
         self.form_save_btn.on_click(self.save_form)
         self.form_reset_btn.on_click(self.reset_form)
 
@@ -883,6 +1012,7 @@ class PdfPanel:
                 self.search_input, self.search_btn,
                 self.hit_prev_btn, self.hit_next_btn, self.hit_select,
                 self.status,
+                self.form_save_btn, self.form_reset_btn, self.form_status,
             ],
             layout=widgets.Layout(
                 width='100%', margin='4px 0', gap='6px',
@@ -908,16 +1038,14 @@ class PdfPanel:
             [self.pages_box], layout=widgets.Layout(**frame_layout))
         self.frame.add_class('pdfv-frame')
 
-        # The form sits beside the page, not under it: filling a field and
-        # seeing where it lands is one activity.
         body_layout = dict(width='100%', align_items='stretch')
         if not height_px:
             body_layout.update(flex='1 1 0', min_height='0')
-        self.body = widgets.HBox(
-            [self.frame, self.form_box], layout=widgets.Layout(**body_layout))
+        self.body = widgets.HBox([self.frame], layout=widgets.Layout(**body_layout))
 
         self.widget = widgets.VBox(
-            [self.toolbar, self.page_status, self.body, self._bridge],
+            [widgets.HTML(f'<style>{FORM_CSS}</style>'),
+             self.toolbar, self.page_status, self.body, self._bridge],
             layout=widgets.Layout(
                 width='100%', display='none', flex='1 1 0', min_height='0'),
         )
@@ -975,7 +1103,7 @@ class PdfPanel:
         self.toolbar.layout.display = 'flex'
         self.widget.layout.display = 'flex'
         self._render()
-        self._build_form()
+        self._load_form()
         self._install_observer()
 
     # -- the page stack ------------------------------------------------------
@@ -1008,6 +1136,7 @@ class PdfPanel:
         dpi = self.dpi()
         self._page_images = {}
         self._page_boxes = {}
+        self._overlays = {}
         self._filled = set()
         order = []
         for index in self._shown_pages():
@@ -1018,8 +1147,11 @@ class PdfPanel:
                 layout=widgets.Layout(
                     width=f'{width_px}px', height=f'{height_px}px', margin='0'),
             )
+            overlay = widgets.HTML('')
+            overlay.add_class('pdfv-overlay')
+            self._overlays[index] = overlay
             box = widgets.Box(
-                [image],
+                [image, overlay],
                 layout=widgets.Layout(
                     width=f'{width_px}px', height=f'{height_px}px',
                     margin=f'0 0 {PAGE_GAP_PX}px 0',
@@ -1036,6 +1168,7 @@ class PdfPanel:
             self._page_images[index] = image
             self._page_boxes[index] = box
             order.append(box)
+            self._paint_overlay(index)
         self.pages_box.children = tuple(order)
 
     def _resize_pages(self) -> None:
@@ -1051,6 +1184,8 @@ class PdfPanel:
         for index in list(self._filled):
             self._page_images[index].value = b''
         self._filled = set()
+        for index in list(self._overlays):
+            self._paint_overlay(index)
 
     def page_image(self, index: int) -> Optional[widgets.Image]:
         """The widget holding page ``index``, for tests and callers."""
@@ -1107,85 +1242,53 @@ class PdfPanel:
 
     # -- forms ---------------------------------------------------------------
 
-    def _build_form(self) -> None:
-        """A control per fillable field, grouped by page.
-
-        Absent entirely when the document has no fields: an empty panel
-        reads like a feature that is broken rather than one that does not
-        apply to this file.
-        """
-        self._fields = []
-        self._controls = {}
-        self.form_box.children = ()
-        self.form_box.layout.display = 'none'
-        self.form_status.value = ''
-        if self._doc is None or not self._continuous:
+    def _paint_overlay(self, index: int) -> None:
+        """Put the page's fields on the page, at the size it is drawn."""
+        overlay = self._overlays.get(int(index))
+        if overlay is None:
+            return
+        if not self._fields or not self._continuous:
+            overlay.value = ''
             return
         try:
-            self._fields = form_fields(self._doc)
-        except Exception:
-            self._fields = []
-        if not self._fields:
+            width_pt, height_pt = self._sizes[int(index)]
+        except (IndexError, TypeError):
+            overlay.value = ''
             return
+        dpi = effective_dpi(width_pt, height_pt, self.dpi())
+        bounds = page_pixel_size(width_pt, height_pt, self.dpi())
+        placed = field_boxes(self._fields, int(index), dpi / 72.0, bounds)
+        overlay.value = overlay_html(placed, self._values)
 
-        rows: List[Any] = [widgets.HTML(
-            '<b>Form</b> <span style="color:#666;">'
-            f'{len(self._fields)} field{"" if len(self._fields) == 1 else "s"}'
-            '</span>')]
-        current_page = -1
-        for index, field_ in enumerate(self._fields):
-            if field_.page != current_page:
-                current_page = field_.page
-                rows.append(widgets.HTML(
-                    f'<div style="margin:8px 0 2px 0; color:#555;">'
-                    f'Page {current_page + 1}</div>'))
-            rows.append(self._field_row(index, field_))
+    def _load_form(self) -> None:
+        """Find the fields, and show what can be done with them.
 
-        note = self._xfa_note()
-        if note:
-            rows.append(widgets.HTML(
-                f'<div style="color:#b26a00; margin-top:6px;">{_html.escape(note)}</div>'))
-        rows.append(widgets.HBox(
-            [self.form_save_btn, self.form_reset_btn, self.form_status],
-            layout=widgets.Layout(gap='6px', margin='8px 0 0 0',
-                                  align_items='center'),
-        ))
-        self.form_box.children = tuple(rows)
-        self.form_box.layout.display = 'flex'
+        Nothing appears when there are none: a Save button over a document
+        with nothing to fill in is a button that can only disappoint.
+        """
+        self._fields = []
+        self._values = {}
+        self.form_status.value = ''
+        if self._doc is not None and self._continuous:
+            try:
+                self._fields = form_fields(self._doc)
+            except Exception:
+                self._fields = []
+        has_form = bool(self._fields)
+        note = self._xfa_note() if has_form else ''
+        for control in (self.form_save_btn, self.form_reset_btn):
+            control.layout.display = '' if has_form else 'none'
         self.form_save_btn.disabled = bool(note)
-
-    def _field_row(self, index: int, field_: FormField):
-        """One field: a label that goes to it, and a control that fills it."""
-        if field_.kind == 'check':
-            control = widgets.Checkbox(
-                value=bool(field_.value and field_.value != 'Off'),
-                indent=False, description='',
-                layout=widgets.Layout(width='30px'))
-        elif field_.kind in ('choice', 'radio') and field_.options:
-            options = list(field_.options)
-            if field_.value and field_.value not in options:
-                options.insert(0, field_.value)
-            control = widgets.Dropdown(
-                options=options or [''],
-                value=field_.value if field_.value in options else (
-                    options[0] if options else ''),
-                layout=widgets.Layout(width='190px'))
-        else:
-            control = widgets.Text(
-                value=field_.value,
-                layout=widgets.Layout(width='190px'))
-        control.disabled = field_.readonly
-        self._controls[field_.name] = control
-
-        goto = widgets.Button(
-            description=field_.name[:28] or '(unnamed)',
-            tooltip=f'Go to {field_.name}',
-            layout=widgets.Layout(width='210px', height='26px'))
-        goto.on_click(lambda _b, i=index: self.goto_field(i))
-        return widgets.HBox(
-            [goto, control],
-            layout=widgets.Layout(gap='6px', align_items='center',
-                                  margin='1px 0'))
+        if note:
+            self.form_status.value = (
+                f'<span style="color:#b26a00;">{_html.escape(note)}</span>')
+        elif has_form:
+            fillable = sum(1 for f in self._fields if not f.readonly)
+            self.form_status.value = (
+                f'<span style="color:#555;">{fillable} field'
+                f'{"" if fillable == 1 else "s"} to fill in</span>')
+        for index in list(self._overlays):
+            self._paint_overlay(index)
 
     def _xfa_note(self) -> str:
         """Say when writing values would report success and change nothing."""
@@ -1210,16 +1313,23 @@ class PdfPanel:
         self._fill_page(found.page)
 
     def form_values(self) -> Dict[str, Any]:
-        """What the controls hold, as the writer wants them."""
+        """What was typed into the page, as the writer wants it.
+
+        Only the fields that were touched: writing back every field would
+        rewrite ones nobody edited, and for a check box that means deciding
+        on the user's behalf what "untouched" meant.
+        """
+        by_name = {f.name: f for f in self._fields}
         values: Dict[str, Any] = {}
-        for found in self._fields:
-            control = self._controls.get(found.name)
-            if control is None or control.disabled:
+        for name, raw in self._values.items():
+            found = by_name.get(name)
+            if found is None or found.readonly:
                 continue
             if found.kind == 'check':
-                values[found.name] = (found.on_state or 'Yes') if control.value else 'Off'
+                ticked = raw not in (False, '', 'false', 'Off', None)
+                values[name] = (found.on_state or 'Yes') if ticked else 'Off'
             else:
-                values[found.name] = str(control.value)
+                values[name] = str(raw)
         return values
 
     def save_form(self, _button=None) -> None:
@@ -1235,7 +1345,8 @@ class PdfPanel:
             return
         values = self.form_values()
         if not values:
-            self.form_status.value = 'Nothing to write.'
+            self.form_status.value = (
+                '<span style="color:#555;">nothing filled in yet</span>')
             return
         try:
             from delfin.agent import office
@@ -1251,7 +1362,8 @@ class PdfPanel:
             backup = _sheet.make_backup(
                 source,
                 folder=(source.parent / self._backup_dir_name
-                        if self._backup_dir_name else None))
+                        if self._backup_dir_name else None),
+                versioned=bool(self._backup_dir_name))
             # The open document holds the file mapped; let go before replacing.
             page, zoom = self._page, self._zoom
             self.close()
@@ -1275,16 +1387,12 @@ class PdfPanel:
             + '</span>')
 
     def reset_form(self, _button=None) -> None:
-        """Put the controls back to what the file says."""
-        for found in self._fields:
-            control = self._controls.get(found.name)
-            if control is None:
-                continue
-            if found.kind == 'check':
-                control.value = bool(found.value and found.value != 'Off')
-            else:
-                control.value = found.value
-        self.form_status.value = ''
+        """Put the page back to what the file says."""
+        self._values = {}
+        for index in list(self._overlays):
+            self._paint_overlay(index)
+        self.form_status.value = (
+            '<span style="color:#555;">entries cleared</span>')
 
     # -- browser bridge ------------------------------------------------------
 
@@ -1317,6 +1425,19 @@ class PdfPanel:
             if self._zoom == FIT_WIDTH:
                 self._resize_pages()
                 self._render()
+            return
+
+        if action == 'fields':
+            values = message.get('values')
+            if not isinstance(values, dict) or not values:
+                return
+            for name, raw in values.items():
+                if str(name):
+                    self._values[str(name)] = raw
+            filled = len(self.form_values())
+            self.form_status.value = (
+                f'<span style="color:#b26a00;">{filled} field'
+                f'{"" if filled == 1 else "s"} not saved</span>')
             return
 
         if action == 'pages':
@@ -1364,10 +1485,12 @@ class PdfPanel:
         self._sizes = []
         self._filled = set()
         self._fields = []
-        self._controls = {}
+        self._values = {}
+        self._overlays = {}
         self._focus_rect = None
-        self.form_box.children = ()
-        self.form_box.layout.display = 'none'
+        for control in (self.form_save_btn, self.form_reset_btn):
+            control.layout.display = 'none'
+        self.form_status.value = ''
         self._page_images = {}
         self._page_boxes = {}
         self.pages_box.children = ()

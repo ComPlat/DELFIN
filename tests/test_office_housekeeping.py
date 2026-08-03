@@ -142,3 +142,41 @@ def test_office_saves_put_the_copy_in_the_backup_folder(tmp_path):
     assert (root / 'Backups' / 'liste.bak.xlsx').exists()
     assert not (root / 'liste.bak.xlsx').exists()
     assert openpyxl.load_workbook(root / 'liste.xlsx').active['A1'].value == 'changed'
+
+
+# ---------------------------------------------------------------------------
+# The backup folder is a history
+# ---------------------------------------------------------------------------
+
+def test_each_save_keeps_its_own_copy(tmp_path):
+    """Without numbering, the second save finds a backup already there and
+    keeps nothing -- which is a safety net for one edit, not a history."""
+    path = tmp_path / 'liste.xlsx'
+    folder = tmp_path / 'Backups'
+    for text in (b'one', b'two', b'three'):
+        path.write_bytes(text)
+        sheet.make_backup(path, folder=folder, versioned=True)
+
+    assert sorted(p.name for p in folder.iterdir()) == [
+        'liste.bak.xlsx', 'liste.bak2.xlsx', 'liste.bak3.xlsx']
+    assert (folder / 'liste.bak.xlsx').read_bytes() == b'one'
+    assert (folder / 'liste.bak3.xlsx').read_bytes() == b'three'
+
+
+def test_the_calculations_browser_keeps_one_copy_as_before(tmp_path):
+    path = tmp_path / 'run.out'
+    path.write_bytes(b'first')
+    assert sheet.make_backup(path) is not None
+    path.write_bytes(b'second')
+    assert sheet.make_backup(path) is None
+    assert (tmp_path / 'run.bak.out').read_bytes() == b'first'
+
+
+def test_the_numbering_gives_up_rather_than_looping(tmp_path, monkeypatch):
+    monkeypatch.setattr(sheet, 'MAX_BACKUP_VERSIONS', 2)
+    path = tmp_path / 'x.txt'
+    folder = tmp_path / 'Backups'
+    for _ in range(2):
+        path.write_bytes(b'x')
+        assert sheet.make_backup(path, folder=folder, versioned=True) is not None
+    assert sheet.make_backup(path, folder=folder, versioned=True) is None

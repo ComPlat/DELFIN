@@ -14,6 +14,7 @@ those failures.
 from __future__ import annotations
 
 import importlib.util
+import json
 
 import pytest
 
@@ -100,44 +101,77 @@ def test_fields_come_back_in_page_order(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The panel
+# The fields sit on the page
 # ---------------------------------------------------------------------------
 
-def test_the_form_panel_appears_only_when_there_is_a_form(panel, form, tmp_path):
-    panel.open(form)
-    assert panel.form_box.layout.display == 'flex'
+def _tell(panel, **message):
+    message.setdefault('token', panel._token)
+    panel._bridge_input.value = json.dumps(message)
+    panel._bridge_btn.click()
 
+
+def test_the_fields_are_drawn_over_the_page(panel, form):
+    panel.open(form)
+    markup = panel._overlays[0].value
+    assert 'data-field="name0"' in markup
+    assert 'type="checkbox"' in markup
+    assert '<select' in markup
+    assert 'position' not in markup, 'placement belongs in the stylesheet'
+    assert 'left:' in markup and 'top:' in markup
+
+
+def test_a_document_without_fields_draws_no_overlay(panel, tmp_path):
     plain = tmp_path / 'plain.pdf'
     c = _canvas.Canvas(str(plain), pagesize=A4)
     c.drawString(60, 700, 'nothing to fill')
     c.save()
     panel.open(plain)
-    assert panel.form_box.layout.display == 'none', (
-        'an empty form panel reads like a broken feature rather than one '
-        'that does not apply here')
+    assert panel._overlays[0].value == ''
+    assert panel.form_save_btn.layout.display == 'none', (
+        'a Save button over a document with nothing to fill in can only '
+        'disappoint')
 
 
-def test_each_field_gets_the_control_its_type_needs(panel, form):
-    import ipywidgets as widgets
-
+def test_the_save_controls_appear_only_with_a_form(panel, form, tmp_path):
     panel.open(form)
-    assert isinstance(panel._controls['name0'], widgets.Text)
-    assert isinstance(panel._controls['agree0'], widgets.Checkbox)
-    assert isinstance(panel._controls['kind0'], widgets.Dropdown)
+    assert panel.form_save_btn.layout.display == ''
+    assert panel.form_reset_btn.layout.display == ''
+    assert 'field' in panel.form_status.value
 
 
-def test_the_panel_sits_beside_the_page_not_under_it(panel, form):
+def test_a_field_is_placed_where_the_page_puts_it(panel, form):
+    """The same mapping the search highlights use, so a field and a hit on
+    the same page agree about where the page is."""
     panel.open(form)
-    assert panel.frame in panel.body.children
-    assert panel.form_box in panel.body.children
+    doc = pv.open_document(form)
+    try:
+        fields = pv.form_fields(doc)
+    finally:
+        doc.close()
+    zoom = pv.effective_dpi(*panel._sizes[0], panel.dpi()) / 72.0
+    placed = pv.field_boxes(fields, 0, zoom)
+    assert placed
+    for found, (left, top, right, bottom) in placed:
+        assert right > left and bottom > top
+        assert f'left:{left}px' in panel._overlays[0].value
 
 
-def test_clicking_a_field_goes_to_its_page_and_marks_it(panel, tmp_path):
-    panel.open(make_form_pdf(tmp_path / 'multi.pdf', pages=3))
-    index = next(i for i, f in enumerate(panel._fields) if f.page == 2)
-    panel.goto_field(index)
-    assert panel.page == 2
-    assert panel._focus_rect[0] == 2
+def test_the_fields_move_when_the_page_is_re_fitted(panel, form):
+    panel.open(form)
+    narrow = panel._overlays[0].value
+    _tell(panel, action='width', px=1500)
+    assert panel._overlays[0].value != narrow, (
+        'the page was re-drawn at another size and the fields stayed put')
+
+
+def test_a_read_only_field_is_shown_but_not_editable(panel, form):
+    panel.open(form)
+    panel._fields[0].readonly = True
+    panel._paint_overlay(0)
+    markup = panel._overlays[0].value
+    assert 'disabled' in markup
+    _tell(panel, action='fields', values={panel._fields[0].name: 'x'})
+    assert panel._fields[0].name not in panel.form_values()
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +182,9 @@ def test_filling_and_saving_writes_the_values_and_keeps_a_copy(panel, form):
     from delfin.agent import office
 
     panel.open(form)
-    panel._controls['name0'].value = 'Maxime Muster'
-    panel._controls['agree0'].value = True
-    panel._controls['kind0'].value = 'Two'
+    _tell(panel, action='fields', values={'name0': 'Maxime Muster'})
+    _tell(panel, action='fields', values={'agree0': True})
+    _tell(panel, action='fields', values={'kind0': 'Two'})
     panel.save_form()
 
     assert 'saved' in panel.form_status.value
@@ -159,24 +193,39 @@ def test_filling_and_saving_writes_the_values_and_keeps_a_copy(panel, form):
     assert written['name0'] == 'Maxime Muster'
     assert written['kind0'] == 'Two'
     assert written['agree0'] not in ('', 'Off')
+    assert list(form.parent.glob('antrag*.bak*')), 'no copy of the original'
 
-    backups = list(form.parent.glob('antrag*.bak*'))
-    assert backups, 'the original was replaced without keeping a copy'
+
+def test_only_the_fields_that_were_touched_are_written(panel, form):
+    """Writing back every field would rewrite ones nobody edited, and for a
+    tick box that means deciding on the user's behalf what untouched meant."""
+    panel.open(form)
+    _tell(panel, action='fields', values={'name0': 'A'})
+    assert set(panel.form_values()) == {'name0'}
+
+
+def test_saving_nothing_says_so_rather_than_writing(panel, form):
+    before = form.read_bytes()
+    panel.open(form)
+    panel.save_form()
+    assert 'nothing filled in' in panel.form_status.value
+    assert form.read_bytes() == before
 
 
 def test_the_document_stays_usable_after_saving(panel, form):
     panel.open(form)
-    panel._controls['name0'].value = 'A'
+    _tell(panel, action='fields', values={'name0': 'A'})
     panel.save_form()
     assert panel.total_pages == 1
     assert panel.page_image(0) is not None
+    assert 'data-field="name0"' in panel._overlays[0].value
 
 
 def test_no_half_written_file_is_left_behind_on_failure(panel, form, monkeypatch):
     from delfin.agent import office
 
     panel.open(form)
-    panel._controls['name0'].value = 'X'
+    _tell(panel, action='fields', values={'name0': 'X'})
     monkeypatch.setattr(
         office, 'fill_pdf_form',
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError('nope')))
@@ -187,18 +236,13 @@ def test_no_half_written_file_is_left_behind_on_failure(panel, form, monkeypatch
     assert form.exists()
 
 
-def test_reset_puts_the_controls_back(panel, form):
+def test_reset_clears_what_was_typed(panel, form):
     panel.open(form)
-    panel._controls['name0'].value = 'typed something'
+    _tell(panel, action='fields', values={'name0': 'typed something'})
+    assert panel.form_values()
     panel.reset_form()
-    assert panel._controls['name0'].value == ''
-
-
-def test_a_read_only_field_is_neither_editable_nor_written(panel, form):
-    panel.open(form)
-    panel._fields[0].readonly = True
-    panel._controls[panel._fields[0].name].disabled = True
-    assert panel._fields[0].name not in panel.form_values()
+    assert panel.form_values() == {}
+    assert 'typed something' not in panel._overlays[0].value
 
 
 def test_the_one_page_viewer_offers_no_form(form):
@@ -206,8 +250,8 @@ def test_the_one_page_viewer_offers_no_form(form):
     made = pv.PdfPanel(height_px=600, continuous=False)
     try:
         made.open(form)
-        assert made.form_box.layout.display == 'none'
         assert made._fields == []
+        assert made.form_save_btn.layout.display == 'none'
     finally:
         made.close()
 
@@ -242,4 +286,36 @@ def test_a_pushbutton_is_not_a_form_field(tmp_path):
 
 def test_such_a_document_gets_no_form_panel(panel, tmp_path):
     panel.open(make_paper_with_a_link_button(tmp_path / 'paper.pdf'))
-    assert panel.form_box.layout.display == 'none'
+    assert panel._overlays[0].value == ''
+    assert panel.form_save_btn.layout.display == 'none'
+
+
+def test_several_fields_changed_at_once_all_arrive(panel, form):
+    """Tabbing quickly through a form changes two fields in the same tick.
+    Sent one at a time, each would write the single bridge field before the
+    first had been read, and one of them would be lost."""
+    panel.open(form)
+    _tell(panel, action='fields',
+          values={'name0': 'A', 'agree0': True, 'kind0': 'Two'})
+    assert set(panel.form_values()) == {'name0', 'agree0', 'kind0'}
+
+
+def test_the_browser_collects_them_before_sending():
+    script = pv._pages_js('pdfv-1')
+    assert 'pendingFields' in script
+    assert "action: 'fields'" in script
+    assert "action: 'field'," not in script, 'one message per field is the bug'
+
+
+def test_a_junk_batch_is_ignored(panel, form):
+    panel.open(form)
+    _tell(panel, action='fields', values='not a dict')
+    _tell(panel, action='fields', values={})
+    assert panel.form_values() == {}
+
+
+def test_a_field_covers_what_the_renderer_drew_underneath():
+    """A filled field is drawn into the page image too, so a see-through box
+    shows the value twice, half a pixel apart."""
+    assert 'rgba' not in pv.FORM_CSS, 'a translucent field lets the page show through'
+    assert 'background:#eaf1fd' in pv.FORM_CSS

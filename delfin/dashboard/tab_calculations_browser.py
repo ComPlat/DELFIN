@@ -11107,7 +11107,8 @@ def create_tab(ctx):
             calc_text_status.layout.display = ''
             return
         try:
-            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path))
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path),
+                                         versioned=_OFFICE_DOC_FEEL)
                       if path.exists() else None)
             _sheet.write_text_atomic(path, new_text)
         except Exception as exc:
@@ -11263,7 +11264,8 @@ def create_tab(ctx):
         path = Path(state['docx_path'])
         try:
             result = _docx.apply_edits(path, edits)
-            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path))
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path),
+                                         versioned=_OFFICE_DOC_FEEL)
                       if path.exists() else None)
             _docx.save(result['document'], path)
         except _docx.DocxError as exc:

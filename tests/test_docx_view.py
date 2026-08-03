@@ -330,3 +330,30 @@ def test_deleting_from_the_middle_still_works(letter):
     changed = original.replace('vielen Dank', '')
     dv.save(dv.apply_edits(letter, {'p:1': changed})['document'], letter)
     assert docx.Document(str(letter)).paragraphs[1].text == changed
+
+
+def test_typing_into_a_paragraph_whose_runs_are_empty(tmp_path):
+    """Word leaves empty runs behind routinely -- a deleted line, a stray
+    formatting mark. There is no character to splice against, and the
+    insertion path reached for one: "Saving failed: string index out of
+    range" on an ordinary blank line."""
+    document = docx.Document()
+    para = document.add_paragraph('')
+    para.add_run('')          # a run that holds nothing
+    para.add_run('')
+    path = tmp_path / 'leer.docx'
+    document.save(path)
+
+    result = dv.apply_edits(path, {'p:0': 'jetzt steht hier etwas'})
+    dv.save(result['document'], path)
+    assert docx.Document(str(path)).paragraphs[0].text == 'jetzt steht hier etwas'
+
+
+def test_clearing_a_paragraph_completely(tmp_path):
+    document = docx.Document()
+    document.add_paragraph('weg damit')
+    path = tmp_path / 'weg.docx'
+    document.save(path)
+
+    dv.save(dv.apply_edits(path, {'p:0': ''})['document'], path)
+    assert docx.Document(str(path)).paragraphs[0].text == ''

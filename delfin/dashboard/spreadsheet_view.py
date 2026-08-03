@@ -656,12 +656,39 @@ def backup_path_for(path: Path) -> Path:
     return path.with_name(f'{path.stem}.bak{path.suffix}')
 
 
-def make_backup(path: Path, *, folder: Optional[Path] = None) -> Optional[Path]:
-    """Copy the file aside once. Returns the new backup, or None if one exists.
+# How far the numbering counts before giving up looking for a free name.
+MAX_BACKUP_VERSIONS = 999
+
+
+def versioned_backup_path(path: Path, folder: Path) -> Optional[Path]:
+    """The next free ``name.bakN.ext`` in ``folder``.
+
+    Each save keeps its own copy rather than replacing the previous one, so
+    the folder is a history that can be walked back through. Returns None
+    when the numbering is exhausted.
+    """
+    path, folder = Path(path), Path(folder)
+    stem, suffix = path.stem, path.suffix
+    for version in range(1, MAX_BACKUP_VERSIONS + 1):
+        mark = 'bak' if version == 1 else f'bak{version}'
+        candidate = folder / f'{stem}.{mark}{suffix}'
+        if not candidate.exists():
+            return candidate
+    return None
+
+
+def make_backup(path: Path, *, folder: Optional[Path] = None,
+                versioned: bool = False) -> Optional[Path]:
+    """Copy the file aside. Returns the new backup, or None if there is none.
 
     ``folder`` puts the copy somewhere other than beside the original. One
     folder of backups is a folder the user can open; a .bak file next to
     every document is a file list nobody can read.
+
+    ``versioned`` numbers each copy instead of keeping only the first. That
+    is the difference between a safety net for the current edit and a
+    history: without it, the second save of a file finds a backup already
+    there and keeps nothing.
     """
     path = Path(path)
     if folder is None:
@@ -673,8 +700,9 @@ def make_backup(path: Path, *, folder: Optional[Path] = None) -> Optional[Path]:
         except OSError:
             target = backup_path_for(path)   # unwritable: beside it is better
         else:
-            target = folder / backup_path_for(path).name
-    if target.exists():
+            target = (versioned_backup_path(path, folder) if versioned
+                      else folder / backup_path_for(path).name)
+    if target is None or target.exists():
         return None
     shutil.copy2(str(path), str(target))
     return target
@@ -730,7 +758,8 @@ def apply_ops_xlsx(
     if path.suffix.lower() == '.xlsm':
         kwargs['keep_vba'] = True
     wb = _load_workbook(**kwargs)
-    made = make_backup(path, folder=backup_dir) if backup else None
+    made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+            if backup else None)
     tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix='.dsheet-', suffix=path.suffix)
     os.close(tmp_fd)
     try:
@@ -787,7 +816,8 @@ def apply_ops_delimited(
     clean = validate_ops(ops)
     if not clean:
         return None
-    made = make_backup(path, folder=backup_dir) if backup else None
+    made = (make_backup(path, folder=backup_dir, versioned=bool(backup_dir))
+            if backup else None)
 
     # newline='' keeps the original line endings visible; read_text would
     # translate them and we would silently rewrite a CRLF file as LF.

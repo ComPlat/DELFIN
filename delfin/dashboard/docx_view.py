@@ -407,6 +407,14 @@ def _set_paragraph_text(paragraph, text: str) -> None:
     current = ''.join(run.text for run in runs)
     if current == text:
         return
+    if not current:
+        # Runs that are all empty: there is no character to splice against,
+        # and the insertion branch below would reach for current[0]. Word
+        # leaves such runs behind routinely -- a deleted line, a stray
+        # formatting mark -- so this is the ordinary case of typing into a
+        # blank paragraph, not a broken document.
+        runs[0].text = text
+        return
     start, end_before, end_after = changed_range(current, text)
     if start == end_before and end_after > start:
         # A pure insertion is an empty range, and an empty range sits between
