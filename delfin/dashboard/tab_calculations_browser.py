@@ -3489,8 +3489,39 @@ def create_tab(ctx):
         _calc_preselect_save_state()
         _calc_preselect_render_current()
 
+    # Calculations, Archive and Office are three instances of this same
+    # builder, so they render the same markup into one page. A lookup by
+    # document -- getElementById, or document.querySelector on a class this
+    # tab owns -- therefore answers with whichever instance was built first.
+    # That is why Top/End, the search and the chunk loader appeared dead in
+    # Office: they were scrolling the Calculations tab.
+    #
+    # Rewriting the scripts here rather than at each call site, because there
+    # are around thirty lookups and sixty state reads, and one that gets
+    # missed is a bug that shows up as "nothing happens" in one tab only.
+    _SCOPED_ID_RE = re.compile(r"document\.getElementById\('(calc-[a-z0-9-]+)'\)")
+    _SCOPED_SEL_RE = re.compile(r"document\.querySelector(All)?\('\.(calc-(?!scope-)[^']*)'\)")
+
+    def _scope_js(script):
+        """Point a script at this tab's DOM and its own chunk state."""
+        scope = json.dumps(calc_scope_id)
+        script = _SCOPED_ID_RE.sub(
+            lambda m: f'window.__delfinCalcQ({scope}, {json.dumps(m.group(1))})',
+            script,
+        )
+        script = _SCOPED_SEL_RE.sub(
+            lambda m: 'window.__delfinCalcQ'
+                      + ('A' if m.group(1) else '')
+                      + f'({scope}, {json.dumps(m.group(2))})',
+            script,
+        )
+        # The chunk loader keeps its bookkeeping on window. Shared between two
+        # open browsers, one tab's scroll would cancel the other's pending load.
+        return script.replace(
+            'window.__calcChunk', f'window.__delfinCalcS({scope}).__calcChunk')
+
     def _run_js(script):
-        ctx.run_js(script)
+        ctx.run_js(_scope_js(script))
 
     def _calc_build_png_filename():
         selected_path = _calc_get_selected_path()
@@ -5691,7 +5722,7 @@ def create_tab(ctx):
             const end = Math.min(e, text.length);
             el.innerHTML =
                 esc(text.slice(0, s))
-                + '<mark class="calc-match current" id="calc-current-match">'
+                + '<mark class="calc-match current calc-current-match">'
                 + esc(text.slice(s, end))
                 + '</mark>'
                 + esc(text.slice(end));
@@ -5781,7 +5812,7 @@ def create_tab(ctx):
 
             const mark = document.createElement('mark');
             mark.className = 'calc-match current';
-            mark.id = 'calc-current-match';
+            mark.className = 'calc-match current calc-current-match';
             try {
                 range.surroundContents(mark);
             } catch (_err) {
@@ -5922,19 +5953,19 @@ def create_tab(ctx):
             virtual_h = max(12000, min(180000, int(total_size / 96)))
             top_px = int((chunk_start / total_size) * virtual_h)
             bottom_px = int((max(0, total_size - chunk_end) / total_size) * virtual_h)
-            top_spacer_html = f"<div id='calc-chunk-top-spacer' style='height:{top_px}px;'></div>"
-            bottom_spacer_html = f"<div id='calc-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
+            top_spacer_html = f"<div class='calc-chunk-top-spacer' style='height:{top_px}px;'></div>"
+            bottom_spacer_html = f"<div class='calc-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
             text_opacity = '0'
         calc_content_area.value = (
             "<style>"
             ".calc-match { background: #fff59d; padding: 0 2px; }"
             ".calc-match.current { background: #ffcc80; }"
             "</style>"
-            "<div id='calc-content-box' style='height:100%;"
+            "<div class='calc-content-box' style='height:100%;"
             " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd; padding:6px;"
             " background:#fafafa; width:100%; box-sizing:border-box;'>"
             f"{top_spacer_html}"
-            "<div id='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
+            "<div class='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
             f" word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3; opacity:{text_opacity};'>"
             f"{_html.escape(text)}"
             "</div>"
@@ -11702,7 +11733,7 @@ def create_tab(ctx):
                     f' ({size_str}{img_info})'
                 )
                 calc_content_area.value = (
-                    "<div id='calc-content-box' style='height:100%; overflow-y:auto;"
+                    "<div class='calc-content-box' style='height:100%; overflow-y:auto;"
                     " overflow-x:hidden; border:1px solid #ddd; background:#fafafa;"
                     " width:100%; box-sizing:border-box;'>" + styled_html + "</div>"
                 )
@@ -13288,7 +13319,7 @@ def create_tab(ctx):
 
     calc_css = widgets.HTML(
         '<style>'
-        '#calc-content-box { overflow-x:hidden !important; }'
+        '.calc-content-box { overflow-x:hidden !important; }'
         '.calc-tab, .calc-tab * { overflow-x:hidden !important; box-sizing:border-box; }'
         '.calc-tab { overflow:hidden !important;'
         ' height:calc(100vh - 145px) !important;'
@@ -13534,8 +13565,28 @@ def create_tab(ctx):
     # Stored as a plain string; the CALLER (create_dashboard in __init__.py)
     # runs ALL tab init scripts in one ctx.run_js() call so that no tab's
     # clear_output() wipes another tab's init JS.
+    # Resolvers the tab's scripts are rewritten to use (see _scope_js). Defined
+    # once for the page and keyed by scope, so each browser instance reaches
+    # only its own DOM and only its own chunk-loader state.
+    _scope_resolvers_js = """
+    window.__delfinCalcQ = window.__delfinCalcQ || function(scope, sel) {
+        var root = document.querySelector('.' + scope);
+        return root ? root.querySelector('.' + sel) : null;
+    };
+    window.__delfinCalcQA = window.__delfinCalcQA || function(scope, sel) {
+        var root = document.querySelector('.' + scope);
+        return root ? root.querySelectorAll('.' + sel) : [];
+    };
+    window.__delfinCalcS = window.__delfinCalcS || function(scope) {
+        var all = (window.__delfinCalcStates = window.__delfinCalcStates || {});
+        return (all[scope] = all[scope] || {});
+    };
+    """
+
     _init_js = (
-        _explorer_interactions_js
+        _scope_resolvers_js
+        + "\n"
+        + _explorer_interactions_js
         + "\n"
         + f"""
     (function() {{
@@ -13549,9 +13600,11 @@ def create_tab(ctx):
                     }}, 100);
                     return;
                 }}
-                // Fallback to old global behavior if scoped root is unavailable.
-                root = document.querySelector('.calc-tab');
-                if (!root) return;
+                // No fallback to the first .calc-tab on the page: with three
+                // browsers open that is somebody else's tab, and binding this
+                // tab's splitter and upload target to it is worse than not
+                // binding at all.
+                return;
             }}
             window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
             window.__delfinCalcUploadStagingRoots[scopeKey] = {json.dumps(CALC_BROWSER_UPLOAD_STAGING_SCOPE_REL)};
@@ -13787,11 +13840,12 @@ def create_tab(ctx):
     if _remote_archive_enabled:
         _calc_update_transfer_jobs_visibility()
 
+    ctx.add_init_js(_init_js)
+
     return tab_widget, {
         'calc_list_directory': calc_list_directory,
         'calc_set_root': calc_set_root,
         'calc_set_primary_root': calc_set_primary_root,
-        'init_js': _init_js,
         # --- Agent-accessible widgets ---
         # Navigation
         'calc_path_input': calc_path_input,

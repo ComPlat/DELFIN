@@ -260,8 +260,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab_off, refs_off = tab_office.create_tab(ctx)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     ctx.remote_archive_refs = refs7
-    tab_lit, _refs_lit = tab_literature.create_tab(ctx)
-    tab_ag, refs_ag = tab_agent.create_tab(ctx)
+    tab_lit, _ = tab_literature.create_tab(ctx)
+    tab_ag, _ = tab_agent.create_tab(ctx)
     tab_ag_act = tab_agent_activity.create_tab(ctx)
     # Tools & Platform tab (defensive: never let it break dashboard startup)
     try:
@@ -460,24 +460,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             spec['widget'] = tab8
             break
 
-    # Run both calc-browser init scripts in ONE ctx.run_js() call.
-    # If called separately, the second call's clear_output() would wipe the
-    # first tab's splitter-init JS before the browser ever executes it.
-    _calc_init = (
-        RIGHT_MOUSE_TRANSLATE_PATCH_JS
-        + '\n'
-        + refs4.get('init_js', '')
-        + '\n'
-        + refs5.get('init_js', '')
-        + '\n'
-        + refs6.get('init_js', '')
-        + '\n'
-        + refs7.get('init_js', '')
-        + '\n'
-        + refs_ag.get('init_js', '')
-        + '\n'
-        + _refs_lit.get('init_js', '')
-    )
+    # Every tab's startup script goes out in ONE ctx.run_js() call: run_js
+    # clears its output first, so a second call would wipe the first tab's
+    # script before the browser ever executed it.
+    #
+    # The scripts are collected from ctx (each tab registered its own via
+    # ctx.add_init_js) rather than listed here. When they were listed here,
+    # the Office tab was added without being added to the list, and its
+    # splitter, upload target and viewer resize silently never bound.
+    _calc_init = '\n'.join([RIGHT_MOUSE_TRANSLATE_PATCH_JS, *ctx.init_js_parts])
     if _calc_init.strip():
         ctx.run_js(_calc_init)
 

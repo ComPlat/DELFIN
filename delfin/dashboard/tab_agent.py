@@ -16280,7 +16280,9 @@ def create_tab(ctx):
     except Exception:
         pass
 
-    return tab_widget, {"init_js": _enter_key_init_js}
+    ctx.add_init_js(_enter_key_init_js)
+
+    return tab_widget, {}
 
 
 # ---------------------------------------------------------------------------
