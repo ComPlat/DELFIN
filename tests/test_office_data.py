@@ -419,3 +419,53 @@ def test_differently_named_value_columns_are_not_silently_skipped(ws):
         office.compare_tables(left, right, key="Beleg",
                               right_key="Belegnummer")
     assert "share no comparable column" in str(exc.value)
+
+
+def test_the_sheet_a_comparison_actually_used_is_named(ws):
+    """A workbook with one sheet per month compared against a whole year
+    reports hundreds of one-sided rows — a result that reads like a
+    catastrophe when the only thing wrong is which sheet was taken."""
+    left = ws / "jahr.xlsx"
+    wb = openpyxl.Workbook()
+    first = wb.active
+    first.title = "2026-02"
+    first.append(["Beleg", "Betrag"])
+    first.append(["R-001", "10"])
+    second = wb.create_sheet("2026-03")
+    second.append(["Beleg", "Betrag"])
+    second.append(["R-002", "20"])
+    wb.save(left)
+    wb.close()
+
+    right = ws / "lieferant.csv"
+    right.write_text("Beleg,Betrag\nR-001,10\nR-002,20\n", encoding="utf-8")
+
+    notes = " ".join(office.compare_tables(left, right, key="Beleg")["notes"])
+    assert "2026-02" in notes and "2026-03" in notes
+    assert "ACTIVE sheet" in notes
+
+
+def test_a_gross_size_asymmetry_is_called_what_it_usually_is(ws):
+    """Hundreds of one-sided rows are far more often the wrong period or
+    filter than that many genuinely missing records."""
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("Beleg,Betrag\nR-001,10\n", encoding="utf-8")
+    right.write_text(
+        "Beleg,Betrag\n" + "".join(f"R-{i:03d},{i}\n" for i in range(1, 60)),
+        encoding="utf-8")
+    notes = " ".join(office.compare_tables(left, right, key="Beleg")["notes"])
+    assert "scope mismatch" in notes
+
+
+def test_a_single_sheet_workbook_needs_no_scope_warning(ws):
+    left = ws / "eins.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.append(["Beleg", "Betrag"])
+    wb.active.append(["R-001", "10"])
+    wb.save(left)
+    wb.close()
+    right = ws / "r.csv"
+    right.write_text("Beleg,Betrag\nR-001,10\n", encoding="utf-8")
+    notes = " ".join(office.compare_tables(left, right, key="Beleg")["notes"])
+    assert "ACTIVE sheet" not in notes

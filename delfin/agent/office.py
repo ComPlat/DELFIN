@@ -1198,6 +1198,22 @@ def create_sheet(
 # Reconciling two tables
 # ---------------------------------------------------------------------------
 
+def _workbook_sheets(path: Any) -> list[str]:
+    """Sheet names of a workbook, or an empty list for anything else."""
+    p = Path(str(path))
+    if document_kind(p) != "spreadsheet":
+        return []
+    try:
+        openpyxl = _require("spreadsheet")
+        wb = openpyxl.load_workbook(p, read_only=True)
+        try:
+            return list(wb.sheetnames)
+        finally:
+            wb.close()
+    except Exception:
+        return []
+
+
 def _table_rows(path: Any, sheet: Optional[str] = None) -> list[list]:
     """Every row of a table file, as lists (no window, no cap on width)."""
     p = _resolve(path)
@@ -1427,6 +1443,22 @@ def compare_tables(
     only_right = sorted(set(comparable_right) - set(comparable_left))
 
     notes: list[str] = []
+
+    # Scope, before anything else. A workbook with one sheet per month
+    # compared against a whole year reports hundreds of one-sided rows —
+    # a result that reads like a catastrophe when the only thing wrong is
+    # which sheet was taken. The active sheet is a silent default, so it
+    # has to be said out loud.
+    for side, source, chosen in (("left", left, left_sheet),
+                                 ("right", right, right_sheet)):
+        names = _workbook_sheets(source)
+        if len(names) > 1 and not chosen:
+            notes.append(
+                f"the {side} workbook has {len(names)} sheets and none was "
+                f"named, so its ACTIVE sheet was used: {names[0]!r} of "
+                f"{', '.join(names)}. Check this is the intended scope."
+            )
+
     for column in wanted:
         for side, profile in (("left", left_profiles[column]),
                               ("right", right_profiles[column])):
@@ -1450,6 +1482,21 @@ def compare_tables(
         notes.append(
             f"{len(left_blank) + len(right_blank)} row(s) have an empty key "
             "and could not be matched.")
+
+    # A gross size asymmetry is far more often the wrong scope than a real
+    # gap of that size. Say which reading is the likelier one rather than
+    # letting a count of hundreds stand as a finding.
+    matched = len(equal) + len(differing)
+    for side, rows, one_sided in (("left", len(left_rows) - 1, only_left),
+                                  ("right", len(right_rows) - 1, only_right)):
+        if rows and len(one_sided) > max(10, matched):
+            notes.append(
+                f"{len(one_sided)} of {rows} rows exist only on the {side} "
+                "side, against " + str(matched) + " matched. A difference of "
+                "that size is usually a scope mismatch — a different period, "
+                "sheet or filter — rather than that many missing records. "
+                "Confirm both tables cover the same range before reporting "
+                "this.")
 
     # Every input row must be accounted for. If this ever fails, the
     # report is wrong in a way the caller could not see.
