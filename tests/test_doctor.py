@@ -430,7 +430,8 @@ def test_document_backends_report_one_row_each():
     import delfin.agent.doctor as doc
     rows = doc._check_document_backends({})
     assert [r["check"] for r in rows] == [
-        "documents: spreadsheets", "documents: PDF", "documents: Word"]
+        "documents: spreadsheets", "documents: PDF", "documents: Word",
+        "documents: PDF writing"]
     assert all(r["status"] in ("PASS", "WARN") for r in rows)
 
 

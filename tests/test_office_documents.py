@@ -1160,3 +1160,62 @@ def test_a_table_cell_holds_its_text_in_the_first_run(ws):
     assert cell.text == "Abweichung" and cell.bold is True
     assert str(cell.font.color.rgb) == "C00000"
     assert table.cell(1, 0).text == "R-002"
+
+
+# ---------------------------------------------------------------------------
+# One missing package must not take the whole family down, or hide inside it
+# ---------------------------------------------------------------------------
+
+def test_only_the_tool_whose_package_is_missing_disappears():
+    """Field case: reportlab is a separate dependency, but the surface had
+    one flag for every document tool. create_pdf was advertised on an
+    installation without it, called, and answered with an install hint —
+    which the model could only act on by trying pip, and the shell gate
+    blocked that, correctly."""
+    from delfin.agent.api_client import ToolSurfaceContext, tool_unavailable_reason
+
+    without_reportlab = ToolSurfaceContext(
+        office_backends=frozenset({"spreadsheet", "pdf", "word", "csv"}))
+    assert "reportlab" in tool_unavailable_reason("create_pdf", without_reportlab)
+    for still_there in ("read_document", "edit_sheet", "merge_pdfs",
+                        "split_pdf", "create_docx", "compare_tables"):
+        assert tool_unavailable_reason(still_there, without_reportlab) is None
+
+
+def test_each_tool_is_gated_on_the_package_it_uses():
+    from delfin.agent.api_client import ToolSurfaceContext, tool_unavailable_reason
+
+    cases = [
+        ("spreadsheet", ["edit_sheet", "compare_tables"]),
+        ("pdf", ["fill_pdf_form", "merge_pdfs", "split_pdf"]),
+        ("word", ["fill_docx_template", "create_docx"]),
+    ]
+    every = {"spreadsheet", "pdf", "word", "csv", "pdf_write"}
+    for missing, affected in cases:
+        ctx = ToolSurfaceContext(office_backends=frozenset(every - {missing}))
+        for tool in affected:
+            assert tool_unavailable_reason(tool, ctx) is not None, tool
+
+
+def test_a_tool_that_accepts_several_backends_survives_one_of_them():
+    """read_document reads three formats; losing one is not losing it."""
+    from delfin.agent.api_client import ToolSurfaceContext, tool_unavailable_reason
+
+    ctx = ToolSurfaceContext(office_backends=frozenset({"spreadsheet", "csv"}))
+    assert tool_unavailable_reason("read_document", ctx) is None
+    assert tool_unavailable_reason("fill_series", ctx) is not None
+
+
+def test_the_message_names_the_package_to_install():
+    from delfin.agent.api_client import ToolSurfaceContext, tool_unavailable_reason
+
+    ctx = ToolSurfaceContext(office_backends=frozenset({"spreadsheet"}))
+    assert "python-docx" in tool_unavailable_reason("create_docx", ctx)
+
+
+def test_the_coarse_flag_still_works_for_callers_without_detail():
+    from delfin.agent.api_client import ToolSurfaceContext, tool_unavailable_reason
+
+    ctx = ToolSurfaceContext(has_office_libs=False)
+    assert tool_unavailable_reason("create_pdf", ctx) is not None
+    assert tool_unavailable_reason("read_document", ctx) is not None

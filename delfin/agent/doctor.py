@@ -336,6 +336,9 @@ def _check_document_backends(ctx: dict) -> list[dict]:
          "read_document / edit_sheet on .xlsx"),
         ("PDF", "pypdf", "pypdf", "read_document / fill_pdf_form"),
         ("Word", "docx", "python-docx", "read_document on .docx"),
+        # A separate dependency from pypdf: taking PDF pages apart is not
+        # the same library as laying text out on one.
+        ("PDF writing", "reportlab", "reportlab", "create_pdf"),
     ):
         label = f"documents: {kind}"
         try:

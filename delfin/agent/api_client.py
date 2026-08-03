@@ -3948,7 +3948,47 @@ _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
 })
 
+# Which library each document tool actually needs. One flag for the whole
+# family was too coarse: reportlab is a separate dependency from the rest,
+# so on an installation that has openpyxl but not reportlab, create_pdf was
+# still advertised, still called, and answered with an install hint the
+# model could only respond to by trying `pip install` — which the shell
+# gate then blocked, correctly. Observed in the field 20260803-143354.
+# A tool listing several backends needs ANY of them.
+_OFFICE_TOOL_BACKENDS: dict[str, tuple[str, ...]] = {
+    "read_document": ("spreadsheet", "pdf", "word"),
+    "compare_tables": ("spreadsheet",),
+    "edit_sheet": ("spreadsheet",),
+    "fill_pdf_form": ("pdf",),
+    "merge_pdfs": ("pdf",),
+    "split_pdf": ("pdf",),
+    "create_pdf": ("pdf_write",),
+    "fill_docx_template": ("word",),
+    "create_docx": ("word",),
+    "fill_series": ("pdf", "word"),
+}
+
 _OFFICE_BACKENDS_CACHE: Optional[bool] = None
+
+
+def _office_package_names(backends) -> list[str]:
+    """The pip names behind backend keys, for a message someone can act on."""
+    try:
+        from . import office as _office
+        return [_office._BACKENDS[b][1] or _office._BACKENDS[b][0]
+                for b in backends if b in _office._BACKENDS]
+    except Exception:
+        return list(backends)
+
+
+def _office_backend_set() -> Optional[frozenset]:
+    """The document backends importable here, or None if that cannot be told."""
+    try:
+        from . import office as _office
+        return frozenset(k for k, ok in _office.available_backends().items()
+                         if ok)
+    except Exception:
+        return None
 
 
 def _office_backends_available() -> bool:
@@ -4036,6 +4076,11 @@ class ToolSurfaceContext:
     has_doc_index: bool = True
     has_calc_index: bool = True
     has_office_libs: bool = True
+    # Which document backends are importable. None means "not measured" and
+    # falls back to has_office_libs, so callers that predate this keep
+    # working; a set is the precise answer and is what the live surface
+    # passes in.
+    office_backends: Optional[frozenset] = None
 
 
 def tool_unavailable_reason(
@@ -4078,8 +4123,16 @@ def tool_unavailable_reason(
         return "doc index not available"
     if base in _CALC_INDEX_TOOL_NAMES and not ctx.has_calc_index:
         return "calc index not available"
-    if base in _OFFICE_TOOL_NAMES and not ctx.has_office_libs:
-        return "document backend not installed"
+    if base in _OFFICE_TOOL_NAMES:
+        needed = _OFFICE_TOOL_BACKENDS.get(base, ())
+        available = ctx.office_backends
+        if available is None:
+            # No per-backend detail: fall back to the coarse flag.
+            if not ctx.has_office_libs:
+                return "document backend not installed"
+        elif needed and not any(b in available for b in needed):
+            missing = ", ".join(_office_package_names(needed))
+            return f"needs a package that is not installed ({missing})"
     return None
 
 
@@ -11215,6 +11268,7 @@ class OpenAIClient(_BaseClient):
             has_doc_index=bool(has_doc_tools),
             has_calc_index=bool(has_calc_tools),
             has_office_libs=_office_backends_available(),
+            office_backends=_office_backend_set(),
         )
         advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
 
