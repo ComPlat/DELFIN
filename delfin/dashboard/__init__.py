@@ -108,7 +108,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     else:
         default_calc_dir = home / 'calc'
     default_archive_dir = default_calc_dir.parent / 'archive'
-    default_office_dir = default_calc_dir.parent / 'office'
+    # Deliberately NOT derived from the launch directory like calc and
+    # archive: those belong to a project checkout, office documents do not.
+    # The agent keys its memory and its saved sessions by this folder, so a
+    # launch-dependent default would split both in two the moment the
+    # dashboard is started somewhere else — which reads as lost memory
+    # rather than as a second folder. An explicit Office path in the
+    # settings still wins.
+    default_office_dir = home / 'office'
 
     if calc_dir is None:
         calc_dir = configured_paths.get('calculations_dir') or default_calc_dir

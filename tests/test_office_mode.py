@@ -177,21 +177,58 @@ def test_mode_round_trips_through_user_settings(tmp_path, monkeypatch):
 # The mode is pointed at the Office folder, which is what the lock encloses
 # ---------------------------------------------------------------------------
 
+def _office_block() -> str:
+    return _tab_agent_source().split(
+        'if mode_dropdown.value == "office":', 1)[1][:1400]
+
+
 def test_office_sessions_are_pointed_at_the_office_folder():
     """The permission workspace comes from repo_dir (create_client passes it
     as cwd), so that is the line that decides which folder is enclosed."""
-    source = _tab_agent_source()
-    block = source.split('if mode_dropdown.value == "office":', 1)[1][:900]
+    block = _office_block()
     assert "ctx.office_dir" in block
     assert "repo_dir = _office_p" in block
 
 
 def test_office_sessions_drop_the_other_reachable_roots():
-    source = _tab_agent_source()
-    block = source.split('if mode_dropdown.value == "office":', 1)[1][:900]
+    block = _office_block()
     for cleared in ("_extra_dirs = []", "_read_only_dirs = []",
                     "_confirm_write_dirs = []"):
         assert cleared in block
+
+
+def test_office_and_dashboard_do_not_follow_the_launch_directory():
+    """Both key their memory and their saved sessions by their workspace.
+    A launch-dependent one would split both in two the moment the
+    dashboard is started somewhere else. Code mode is the opposite case:
+    the launch directory IS the project, and it stays that way."""
+    import delfin.dashboard as dash
+
+    source = inspect.getsource(dash)
+    assert "default_office_dir = home / 'office'" in source
+    tab = _tab_agent_source()
+    dash_block = tab.split('if mode_dropdown.value == "dashboard":', 1)[1][:700]
+    assert "repo_dir = _dash_ws" in dash_block
+
+
+def test_code_mode_still_works_where_it_was_started():
+    """The launch directory is the project there, so every override of the
+    agent workspace must sit behind a mode check. An unconditional one
+    would move Code mode out of the directory it was started in."""
+    import re
+
+    tab = _tab_agent_source()
+    known = {
+        "_agent_workspace_from_launch",   # the launch resolution itself
+        "str(_fb)",                       # home-launch fallback
+        "_office_p",                      # Office
+        "_dash_ws",                       # Dashboard
+    }
+    found = re.findall(r"^\s*repo_dir = (.+)$", tab, re.MULTILINE)
+    assert found, "the agent workspace is no longer assigned"
+    for assignment in found:
+        assert any(k in assignment for k in known), (
+            f"unexpected agent-workspace override: {assignment.strip()}")
 
 
 def test_the_office_role_is_stamped_before_the_first_turn():

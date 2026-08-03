@@ -5643,9 +5643,10 @@ def create_tab(ctx):
                     except Exception:
                         _office_p = None
                 if _office_p:
-                    # repo_dir is what becomes the permission workspace
-                    # (create_client passes it as cwd), so this is the line
-                    # that decides which folder the lock encloses.
+                    # Memory and saved sessions are keyed by this folder, so
+                    # naming it means a later session can be found again.
+                    _append_system_message(
+                        f"📁 Office-Modus arbeitet in `{_office_p}`")
                     repo_dir = _office_p
                     _ws_dir = _office_p
                     _extra_dirs = []
@@ -5653,6 +5654,15 @@ def create_tab(ctx):
                     _confirm_write_dirs = []
 
             if mode_dropdown.value == "dashboard":
+                # Like Office, this mode is not about a project checkout —
+                # it drives the UI and answers questions. Binding it to the
+                # launch directory would key its saved sessions to wherever
+                # the dashboard happened to be started, so the same
+                # conversation could not be found again from elsewhere. Its
+                # own scratch folder is a fixed location.
+                _dash_ws = _abs_dir(getattr(ctx, "agent_dir", None))
+                if _dash_ws:
+                    repo_dir = _dash_ws
                 _cli_tools = [
                     "Read", "Grep", "Glob",      # read code + data
                     "Write", "Bash",              # agent_workspace only
