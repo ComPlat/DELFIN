@@ -65,6 +65,11 @@ class Block:
     level: int = 0            # heading level, 0 for body text
     listed: bool = False
     table: Optional[Tuple[int, int, int]] = None   # table, row, cell
+    # (text, bold, italic, underline) per run. What makes the view look like
+    # the document rather than like a text dump of it; an edit still works on
+    # the paragraph's plain text, and the splice on write puts the changed
+    # span back into the run it belongs to.
+    runs: List[Tuple[str, bool, bool, bool]] = field(default_factory=list)
 
     @property
     def in_table(self) -> bool:
@@ -100,6 +105,17 @@ def _docx():
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
+
+def _runs_of(paragraph) -> List[Tuple[str, bool, bool, bool]]:
+    """The paragraph's runs with the emphasis each one carries."""
+    out: List[Tuple[str, bool, bool, bool]] = []
+    for run in getattr(paragraph, 'runs', []) or []:
+        text = run.text or ''
+        if not text:
+            continue
+        out.append((text, bool(run.bold), bool(run.italic), bool(run.underline)))
+    return out
+
 
 def _style_of(paragraph) -> Tuple[int, bool]:
     """Heading level and whether the paragraph is a list item."""
@@ -159,11 +175,13 @@ def read_document(path) -> DocxDocument:
     for index, para in enumerate(document.paragraphs):
         level, listed = _style_of(para)
         blocks.append(Block(address=f'p:{index}', text=para.text,
-                            level=level, listed=listed))
+                            level=level, listed=listed,
+                            runs=_runs_of(para)))
     for address, para, where in _cell_paragraphs(document):
         level, listed = _style_of(para)
         blocks.append(Block(address=address, text=para.text,
-                            level=level, listed=listed, table=where))
+                            level=level, listed=listed, table=where,
+                            runs=_runs_of(para)))
 
     if len(blocks) > MAX_BLOCKS:
         result.notes.append(
@@ -217,8 +235,33 @@ def is_editable(document: DocxDocument) -> bool:
 # Rendering
 # ---------------------------------------------------------------------------
 
+def _run_html(runs, fallback: str) -> str:
+    """The paragraph's text, with the emphasis it carries.
+
+    Wrapped in spans rather than <b>/<i>, so that what the block's
+    innerText reports back is exactly the paragraph text -- the addresses
+    and the offsets an edit and a search jump use are both counted in that
+    text.
+    """
+    if not runs:
+        return _html.escape(fallback) or '&nbsp;'
+    out = []
+    for text, bold, italic, underline in runs:
+        styles = []
+        if bold:
+            styles.append('font-weight:600')
+        if italic:
+            styles.append('font-style:italic')
+        if underline:
+            styles.append('text-decoration:underline')
+        escaped = _html.escape(text)
+        out.append(f'<span style="{";".join(styles)}">{escaped}</span>'
+                   if styles else escaped)
+    return ''.join(out) or '&nbsp;'
+
+
 def _block_html(block: Block, editable: bool) -> str:
-    text = _html.escape(block.text) or '&nbsp;'
+    text = _run_html(block.runs, block.text)
     classes = ['dw-b']
     if block.level:
         classes.append(f'dw-h{block.level}')

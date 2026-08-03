@@ -242,3 +242,29 @@ def test_marking_saved_clears_the_marks_without_rebuilding():
     script = dv.mark_saved_js('calc-scope-1')
     assert 'dw-dirty' in script
     assert 'innerHTML' not in script
+
+
+def test_bold_and_italic_survive_into_the_view(letter):
+    """A Word view that drops the emphasis is a text dump with headings."""
+    read = dv.read_document(letter)
+    html = dv.render_html(read, editable=True)
+    assert 'font-weight:600' in html
+    block = [b for b in read.blocks if b.address == 'p:1'][0]
+    assert [r[0] for r in block.runs] == [
+        'Sehr geehrte Damen, ', 'vielen Dank', ' für Ihre Anfrage.']
+    assert block.runs[1][1] is True
+
+
+def test_the_block_text_still_reads_as_the_paragraph(letter):
+    """The spans must not change what innerText reports: the address an edit
+    is written back to and the offsets a search jump counts are both taken
+    from that text."""
+    import html as _html
+    import re
+
+    read = dv.read_document(letter)
+    markup = dv.render_html(read, editable=True)
+    block = next(b for b in read.blocks if b.address == 'p:1')
+    rendered = re.search(r'data-a="p:1"[^>]*>(.*?)</div>', markup, re.S).group(1)
+    as_text = _html.unescape(re.sub(r'<[^>]+>', '', rendered))
+    assert as_text == block.text
