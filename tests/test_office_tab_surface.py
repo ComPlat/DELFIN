@@ -30,6 +30,7 @@ _CHEMISTRY_CONTROLS = (
     'calc-report-btn',          # DELFIN report
     'calc-view-toggle',         # 3D structure
     'calc-move-archive-btn',    # into the calculation archive
+    'calc-ssh-transfer-btn',    # send to the compute cluster
     'calc-transfer-jobs-btn',   # running SSH transfers
 )
 
