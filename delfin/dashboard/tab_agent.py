@@ -5643,10 +5643,21 @@ def create_tab(ctx):
                     except Exception:
                         _office_p = None
                 if _office_p:
+                    # A working folder for scripts and intermediate files.
+                    # Created here rather than left to the agent so it is
+                    # always the same place: the recurring monthly job wants
+                    # last month's script, and a folder that only exists
+                    # after someone thought to make it is not findable.
+                    try:
+                        (Path(_office_p) / "office_analysis").mkdir(
+                            parents=True, exist_ok=True)
+                    except Exception:
+                        pass
                     # Memory and saved sessions are keyed by this folder, so
                     # naming it means a later session can be found again.
                     _append_system_message(
-                        f"📁 Office-Modus arbeitet in `{_office_p}`")
+                        f"📁 Office-Modus arbeitet in `{_office_p}` "
+                        "(Skripte und Zwischendateien: `office_analysis/`)")
                     repo_dir = _office_p
                     _ws_dir = _office_p
                     _extra_dirs = []

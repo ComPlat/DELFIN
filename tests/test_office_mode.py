@@ -179,7 +179,7 @@ def test_mode_round_trips_through_user_settings(tmp_path, monkeypatch):
 
 def _office_block() -> str:
     return _tab_agent_source().split(
-        'if mode_dropdown.value == "office":', 1)[1][:1400]
+        'if mode_dropdown.value == "office":', 1)[1][:2200]
 
 
 def test_office_sessions_are_pointed_at_the_office_folder():

@@ -469,3 +469,55 @@ def test_a_single_sheet_workbook_needs_no_scope_warning(ws):
     right.write_text("Beleg,Betrag\nR-001,10\n", encoding="utf-8")
     notes = " ".join(office.compare_tables(left, right, key="Beleg")["notes"])
     assert "ACTIVE sheet" not in notes
+
+
+# ---------------------------------------------------------------------------
+# A JSON string where the schema asked for an object
+# ---------------------------------------------------------------------------
+
+def test_a_json_string_argument_is_parsed_not_iterated(ws, pair):
+    """Field case: the model sent columns as a JSON *string*. Passed
+    through, a string iterates character by character, so the first
+    column name became '{' and the error named a column nobody wrote.
+    Three attempts produced the same nonsense and the loop guard ended
+    the turn."""
+    import json as _json
+
+    left, right = pair
+    out = _DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right), "key": "Beleg",
+        "columns": _json.dumps({"Betrag": "Betrag"}),
+    }, _perms(ws))
+    assert "no column '{'" not in out
+    assert "Betrag" in out
+
+
+def test_a_json_list_string_is_parsed_too(ws, pair):
+    import json as _json
+
+    left, right = pair
+    out = _DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right), "key": "Beleg",
+        "columns": _json.dumps(["Betrag"]),
+    }, _perms(ws))
+    assert "no column" not in out
+
+
+def test_a_bare_column_name_is_one_column_not_its_letters(ws, pair):
+    left, right = pair
+    out = _DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right), "key": "Beleg",
+        "columns": "Betrag",
+    }, _perms(ws))
+    assert "no column 'B'" not in out
+
+
+def test_the_coercion_leaves_real_objects_alone():
+    from delfin.agent.api_client import _as_structured
+
+    assert _as_structured({"a": "b"}, dict) == {"a": "b"}
+    assert _as_structured(["a"], list) == ["a"]
+    assert _as_structured(None, dict) is None
+    # Not JSON and not a container: handed on unchanged, so the tool's own
+    # error message describes what was really sent.
+    assert _as_structured("kein json", dict) == "kein json"

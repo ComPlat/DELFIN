@@ -5041,6 +5041,36 @@ def _binary_read_hint(path: Path) -> Optional[str]:
     return None
 
 
+def _as_structured(value: Any, expect: type) -> Any:
+    """Coerce a tool argument that should be an object or a list.
+
+    Models routinely send a JSON *string* where the schema asks for an
+    object — ``"columns": "{\"Betrag\": \"Rechnungsbetrag\"}"``. Passed
+    through, a string iterates CHARACTER by character, so the first
+    column name becomes ``{`` and the error names a column nobody wrote.
+    Observed in the field: three attempts, three identical nonsense
+    errors, then the loop guard aborted the turn.
+
+    A lone string that is not JSON is treated as a single entry, which is
+    what someone writing ``columns="Betrag"`` means.
+    """
+    if value is None or isinstance(value, expect):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("{", "[")):
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                return value
+            return parsed if isinstance(parsed, expect) else value
+        wants_list = expect is list or (
+            isinstance(expect, tuple) and list in expect)
+        if wants_list and text:
+            return [text]
+    return value
+
+
 def _as_int(value, default: int) -> int:
     """Coerce a tool-call argument to int, tolerating weak-model quirks.
 
@@ -6381,7 +6411,7 @@ class _DocToolExecutor:
                     return json.dumps({"error": denied})
 
         from . import office as _office
-        columns = arguments.get("columns")
+        columns = _as_structured(arguments.get("columns"), (dict, list))
         try:
             result = _office.compare_tables(
                 left, right, key=key,
@@ -6448,8 +6478,8 @@ class _DocToolExecutor:
             return json.dumps({"error": err})
 
         from . import office as _office
-        edits = arguments.get("edits") or []
-        append_rows = arguments.get("append_rows") or []
+        edits = _as_structured(arguments.get("edits"), list) or []
+        append_rows = _as_structured(arguments.get("append_rows"), list) or []
         creating = bool(arguments.get("create"))
 
         if creating:
@@ -6466,8 +6496,9 @@ class _DocToolExecutor:
                 return json.dumps({"error": (
                     f"'{self._display_path(full, perms)}' does not exist — "
                     "pass create=true with append_rows to write a new file")})
-            if not any((edits, append_rows, arguments.get("updates"),
-                        arguments.get("append_records"))):
+            if not any((edits, append_rows,
+                        _as_structured(arguments.get("updates"), list),
+                        _as_structured(arguments.get("append_records"), list))):
                 return json.dumps({"error": (
                     "nothing to do: pass edits/append_rows (by cell) or "
                     "updates/append_records (by key and column name)")})
@@ -6544,8 +6575,9 @@ class _DocToolExecutor:
                 result = _office.edit_sheet(
                     full, edits=edits, append_rows=append_rows,
                     key_column=arguments.get("key_column"),
-                    updates=arguments.get("updates"),
-                    append_records=arguments.get("append_records"),
+                    updates=_as_structured(arguments.get("updates"), list),
+                    append_records=_as_structured(
+                        arguments.get("append_records"), list),
                     sheet=arguments.get("sheet"))
                 parts = [
                     (f"{c['key']}/{c['column']} ({c['cell']}): "
@@ -6598,7 +6630,7 @@ class _DocToolExecutor:
             if denied is not None:
                 return json.dumps({"error": denied})
 
-        values = arguments.get("values")
+        values = _as_structured(arguments.get("values"), dict)
         if not isinstance(values, dict) or not values:
             return json.dumps({"error": (
                 "values must be an object of field name -> value; list the "
@@ -6676,7 +6708,7 @@ class _DocToolExecutor:
             return json.dumps({"error": gate_err})
 
         from . import office as _office
-        mapping = arguments.get("mapping")
+        mapping = _as_structured(arguments.get("mapping"), dict)
         if mapping is not None and not isinstance(mapping, dict):
             return json.dumps({"error": (
                 "mapping must be an object of field -> column")})
@@ -6742,7 +6774,7 @@ class _DocToolExecutor:
         if denied is not None:
             return json.dumps({"error": denied})
 
-        values = arguments.get("values")
+        values = _as_structured(arguments.get("values"), dict)
         if not isinstance(values, dict) or not values:
             return json.dumps({"error": (
                 "values must be an object of placeholder -> value; list the "
@@ -6805,7 +6837,7 @@ class _DocToolExecutor:
         target, err = self._office_target(arguments, perms)
         if err is not None:
             return json.dumps({"error": err})
-        blocks = arguments.get("blocks")
+        blocks = _as_structured(arguments.get("blocks"), list)
         if not isinstance(blocks, list) or not blocks:
             return json.dumps({"error": (
                 "blocks must be a non-empty list of content blocks: "
