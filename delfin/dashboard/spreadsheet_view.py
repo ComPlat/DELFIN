@@ -330,6 +330,30 @@ def _read_window(ws, start0: int, count: int, max_cols: int) -> List[List[str]]:
     return rows
 
 
+def apply_results(sheet: SheetData, results: 'FormulaResults') -> None:
+    """Show what the formulas work out to, in the cells that hold them.
+
+    A workbook that Excel has opened carries its own cached results and
+    those are already on screen; one written here has none, and the cell
+    would otherwise show =A1*2 where a spreadsheet shows 6. What the cell
+    holds is unchanged -- the formula is still there, and pressing F2 or
+    double-clicking still shows it, exactly as in Excel.
+    """
+    if not results or not sheet.formulas:
+        return
+    for r_idx, row in enumerate(sheet.formulas):
+        for c_idx, formula in enumerate(row):
+            if not formula:
+                continue
+            value = results.get(sheet.name,
+                                sheet.row_offset + r_idx + 1, c_idx + 1)
+            if value is None:
+                continue
+            shown = format_result(value)
+            if r_idx < len(sheet.values) and c_idx < len(sheet.values[r_idx]):
+                sheet.values[r_idx][c_idx] = shown
+
+
 def read_xlsx(
     path: Path,
     sheet: Optional[str] = None,
@@ -537,6 +561,143 @@ def encode_delimited(text: str, encoding: str) -> bytes:
             f'This file is {encoding}, and {bad!r} cannot be written in it. '
             'Save the file as UTF-8 once, then this character can be used.'
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# What a formula works out to
+# ---------------------------------------------------------------------------
+
+# Evaluating a workbook builds a graph of every cell in it, which costs
+# seconds on a large one. Bounded so that opening a file never turns into a
+# wait, and the bound is reported rather than passed off as "no result".
+MAX_FORMULA_CELLS = 3000
+MAX_FORMULA_BYTES = 8 * 1024 * 1024
+
+_CELL_KEY_RE = re.compile(r"^'\[[^\]]*\](?P<sheet>[^']*)'!(?P<col>[A-Z]{1,3})(?P<row>\d+)$")
+
+
+class FormulaResults:
+    """What a workbook's formulas work out to, per sheet and cell.
+
+    ``note`` says why a value is missing when one is: the engine is not
+    installed, the workbook was too large to evaluate, or that particular
+    formula is beyond it. A cell with no result keeps showing its formula,
+    which is honest -- a wrong number would not be.
+    """
+
+    def __init__(self, values: Optional[Dict[str, Dict[Tuple[int, int], Any]]] = None,
+                 note: str = ''):
+        self.values = values or {}
+        self.note = note
+
+    def get(self, sheet: str, row: int, col: int) -> Any:
+        return self.values.get(str(sheet).upper(), {}).get((int(row), int(col)))
+
+    def __bool__(self) -> bool:
+        return bool(self.values)
+
+
+def count_formulas(path: Path) -> int:
+    """How many formula cells a workbook holds, without evaluating any."""
+    book = _load_workbook(filename=str(path), read_only=True, data_only=False)
+    try:
+        total = 0
+        for worksheet in book.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value.startswith('='):
+                        total += 1
+                        if total > MAX_FORMULA_CELLS:
+                            return total
+        return total
+    finally:
+        book.close()
+
+
+def evaluate_workbook(path: Path) -> FormulaResults:
+    """Work out every formula in a workbook.
+
+    Runs on the file, so it shows what the file says -- unsaved edits are
+    not in it yet, which is why the caller re-runs this after a save.
+    """
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return FormulaResults(note=f'could not read the file: {exc}')
+    if size > MAX_FORMULA_BYTES:
+        return FormulaResults(
+            note=f'workbook is {size / (1024 * 1024):.0f} MB; formulas are '
+                 'shown as written rather than worked out')
+    try:
+        import formulas
+    except ImportError:
+        return FormulaResults(
+            note='formula results need the "formulas" package '
+                 '(pip install formulas)')
+
+    try:
+        if count_formulas(path) > MAX_FORMULA_CELLS:
+            return FormulaResults(
+                note=f'more than {MAX_FORMULA_CELLS} formulas; they are shown '
+                     'as written rather than worked out')
+    except Exception:
+        pass
+
+    try:
+        # The engine draws a progress bar. In a notebook that is not a
+        # terminal it lands in the dashboard's own output, under the grid.
+        import contextlib
+        import io
+
+        sink = io.StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            model = formulas.ExcelModel().loads(str(path)).finish()
+            solution = model.calculate()
+    except Exception as exc:  # noqa: BLE001 - the engine raises many kinds
+        return FormulaResults(note=f'could not work out the formulas: {exc}')
+
+    values: Dict[str, Dict[Tuple[int, int], Any]] = {}
+    for key, value in (solution or {}).items():
+        match = _CELL_KEY_RE.match(str(key))
+        if match is None:
+            continue          # ranges and named things, not single cells
+        cell = _single_value(value)
+        if cell is None:
+            continue
+        sheet = match.group('sheet').upper()
+        row = int(match.group('row'))
+        col = col_index(match.group('col')) + 1
+        values.setdefault(sheet, {})[(row, col)] = cell
+    return FormulaResults(values)
+
+
+def _single_value(value: Any) -> Any:
+    """Unwrap the engine's 1x1 matrix. Anything else is not a cell value."""
+    try:
+        array = getattr(value, 'value', value)
+        while hasattr(array, '__len__') and not isinstance(array, (str, bytes)):
+            if len(array) != 1:
+                return None
+            array = array[0]
+        return array
+    except Exception:
+        return None
+
+
+def format_result(value: Any) -> str:
+    """Write a worked-out value the way a spreadsheet shows it."""
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return 'TRUE' if value else 'FALSE'
+    if isinstance(value, float):
+        if value != value or value in (float('inf'), float('-inf')):
+            return '#NUM!'
+        if float(value).is_integer():
+            return str(int(value))
+        return f'{value:.10g}'
+    return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -1735,6 +1896,21 @@ _GRID_JS_TEMPLATE = r"""
     anchor = {r: s.r1, c: s.c1};
     moveTo(s.r2 + job.rows, s.c2 + job.cols, true, true);
   }, false);
+
+  /* Worked-out results. Not an edit: the cell keeps its formula, is not
+     marked changed, and undo has nothing to take back -- the user did not
+     type these. */
+  wrap.__dsheetShow = function(cells){
+    for (var i = 0; i < cells.length; i++) {
+      var absRow = cells[i][0], col = cells[i][1], text = cells[i][2];
+      for (var j = 0; j < tbody.rows.length; j++) {
+        if (parseInt(tbody.rows[j].dataset.r, 10) !== absRow) continue;
+        var td = cellAt(j, col);
+        if (td && td.getAttribute('data-f')) td.textContent = text;
+        break;
+      }
+    }
+  };
 
   /* Values worked out by the kernel, written in as one step so one undo
      takes the whole fill back. */

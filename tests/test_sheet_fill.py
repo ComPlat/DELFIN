@@ -241,3 +241,50 @@ def test_junk_from_the_browser_is_ignored(office):
     _send(refs, 'fill', block=[['1']], rows='many', cols=0, at=[1, 1])
     _send(refs, 'fill', block=[['1']], rows=2, cols=2, at=[1, 1])
     assert not refs['xyz_batch_state']['sheet_pending']
+
+
+# ---------------------------------------------------------------------------
+# Results on screen, formula in the cell
+# ---------------------------------------------------------------------------
+
+def test_the_grid_shows_a_result_without_calling_it_an_edit():
+    """A worked-out value is not something the user typed: the cell keeps
+    its formula, is not marked changed, and undo has nothing to take back."""
+    script = sheet.grid_js('calc-scope-1', 'tok')
+    body = script[script.index('wrap.__dsheetShow'):][:500]
+    assert "getAttribute('data-f')" in body, 'only a formula cell shows a result'
+    assert 'writeCells' not in body
+    assert 'dsheet-dirty' not in body
+
+
+def test_entering_a_cell_shows_the_formula_the_way_excel_does():
+    """Double-click or F2. This is the behaviour people already have, and
+    changing it would be the one thing worth avoiding."""
+    script = sheet.grid_js('calc-scope-1', 'tok')
+    assert "e.key === 'F2'" in script
+    seed = script[script.index('function beginEdit'):][:400]
+    assert "getAttribute('data-f')" in seed
+    assert 'formula || disp' in seed
+
+
+def test_results_are_worked_out_again_after_a_save(office):
+    """The file changed, so its formulas come to something else now."""
+    path, refs, scripts = office
+    _send(refs, 'edit', ops=[{'op': 'set', 'row': 1, 'col': 1, 'text': '10'}])
+    scripts.clear()
+    _send(refs, 'save')
+
+    sent = '\n'.join(scripts)
+    assert '__dsheetSaved' in sent
+    if pytest.importorskip('formulas', reason='needs the engine'):
+        assert '__dsheetShow' in sent, 'the results on screen are now stale'
+
+
+def test_the_results_are_worked_out_once_per_version_of_the_file(office):
+    """Evaluating builds a graph of every cell, so doing it on each paging
+    step would make moving through a workbook feel like waiting for one."""
+    path, refs, _scripts = office
+    state = refs['xyz_batch_state']
+    first = state.get('formula_results')
+    _send(refs, 'page', dir='next')
+    assert state.get('formula_results') is first

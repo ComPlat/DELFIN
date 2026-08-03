@@ -199,6 +199,9 @@ def create_tab(ctx):
         'sheet_view': {},
         'sheet_pending': {},
         'sheet_render': 0,
+        # Worked-out formula values, kept against the file's timestamp.
+        'formula_results': None,
+        'formula_note': '',
         # Plain-text editing: 'text_edit' is the file on screen, 'text_pending'
         # keeps unsaved buffers per path across file switches.
         'text_edit': {},
@@ -11315,6 +11318,61 @@ def create_tab(ctx):
         state.setdefault('docx_pending', {})[address] = str(message.get('text') or '')
         _calc_docx_sync_controls()
 
+    def _calc_formula_results(path):
+        """What this workbook's formulas work out to, worked out once.
+
+        Kept against the file's modification time: evaluating builds a graph
+        of every cell, so doing it on each paging step would make moving
+        through a workbook feel like waiting for one.
+        """
+        path = Path(path)
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return _sheet.FormulaResults()
+        cached = state.get('formula_results')
+        if cached and cached[0] == (str(path), stamp):
+            return cached[1]
+        results = _sheet.evaluate_workbook(path)
+        state['formula_results'] = ((str(path), stamp), results)
+        if results.note:
+            state['formula_note'] = results.note
+        else:
+            state['formula_note'] = ''
+        return results
+
+    def _calc_sheet_push_results(path, view):
+        """Show what the formulas work out to after the file was written."""
+        results = _calc_formula_results(path)
+        if not results:
+            return
+        window = state.get('sheet_view') or view
+        first = int(window.get('row_offset') or 0) + 1
+        last = first + int(window.get('page_rows') or 0) - 1
+        cells = []
+        for (row, col), value in results.values.get(
+                str(window.get('sheet') or '').upper(), {}).items():
+            if first <= row <= last:
+                cells.append([row, col, _sheet.format_result(value)])
+        if cells:
+            _calc_sheet_show_cells(view['token'], cells)
+
+    def _calc_sheet_show_cells(token, cells):
+        """Put worked-out values on screen without calling them edits.
+
+        A result is not something the user typed: it must not mark the cell
+        changed, and undo must not offer to take it back.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetShow !== 'function') return;
+            wrap.__dsheetShow({json.dumps(cells)});
+        }})();
+        """)
+
     def _calc_sheet_apply_cells(token, cells):
         """Write worked-out values into the grid on screen.
 
@@ -11366,6 +11424,7 @@ def create_tab(ctx):
             names, sheet = _sheet.read_xlsx(path, sheet_name, row_offset=row_offset)
             delimiter = ''
             lossy = _sheet.describe_lossy_features(_sheet.inspect_workbook_features(path))
+            _sheet.apply_results(sheet, _calc_formula_results(path))
         else:
             sheet, delimiter = _sheet.read_delimited(path, row_offset=row_offset)
             names = []
@@ -11419,9 +11478,12 @@ def create_tab(ctx):
         detail = _calc_sheet_size_str(path.stat().st_size)
         if is_workbook and sheet.name:
             detail += f', sheet "{_html.escape(sheet.name)}"'
+        note_text = state.get('formula_note') or ''
         calc_file_info.value = (
             f'<b><span style="word-break:break-all;">{label}</span></b> ({detail})'
             + (f' <span style="color:#2e7d32;">{_html.escape(status)}</span>' if status else '')
+            + (f' <span style="color:#8a6d00;">{_html.escape(note_text)}</span>'
+               if note_text else '')
         )
         calc_copy_btn.disabled = False
         calc_copy_path_btn.disabled = False
@@ -11520,6 +11582,10 @@ def create_tab(ctx):
             except OSError:
                 pass
             _calc_sheet_mark_saved(view['token'], note)
+            # The file has changed, so its formulas work out to something
+            # else now. Only the results are pushed in -- the grid is not
+            # rebuilt, so the cursor and the scroll stay where they are.
+            _calc_sheet_push_results(path, view)
             return
 
         if action == 'discard':

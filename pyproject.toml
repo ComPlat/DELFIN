@@ -115,6 +115,11 @@ office = [
     # pypdf takes PDF pages apart and puts them together but cannot lay
     # out a page, so producing a document needs a second library.
     "reportlab>=4.0",
+    # Works out what a formula comes to. openpyxl stores formulas and never
+    # evaluates them, so without this a cell shows =SUM(A1:A10) where a
+    # spreadsheet shows the sum. Optional at runtime: missing, the grid
+    # shows the formula and says why.
+    "formulas>=1.2",
 ]
 dev = [
     "pytest>=6.0",
