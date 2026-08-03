@@ -434,3 +434,128 @@ def test_apply_ops_xlsx_empty_journal_is_a_noop(tmp_path):
     _make_workbook(path, [['a']])
     assert sv.apply_ops_xlsx(path, 'Tabelle1', []) is None
     assert not sv.backup_path_for(path).exists()
+
+
+# ---------------------------------------------------------------------------
+# Text encoding: a German CSV is not utf-8
+# ---------------------------------------------------------------------------
+
+def test_a_cp1252_csv_reads_with_its_umlauts(tmp_path):
+    """A CSV exported by a spreadsheet program on a German-language Windows
+    system is cp1252. Read as utf-8 with errors="replace" it does not fail;
+    it turns 'Grünwald' into 'Gr�nwald', and every name and street in
+    a German data set carries one of those bytes."""
+    path = tmp_path / 'kunden.csv'
+    path.write_bytes(
+        'Firma;Ort\nElektro Grünwald;Köln\nMüller & Söhne;Straße 5\n'
+        .encode('cp1252'))
+
+    sheet, _delimiter = sv.read_delimited(path)
+    assert [row[:2] for row in sheet.values[:3]] == [
+        ['Firma', 'Ort'],
+        ['Elektro Grünwald', 'Köln'],
+        ['Müller & Söhne', 'Straße 5'],
+    ]
+
+
+def test_a_utf8_csv_still_reads_as_utf8(tmp_path):
+    """cp1252 maps every byte, so a detector that reaches it too eagerly
+    would turn 'Grünwald' into 'GrÃ¼nwald' instead."""
+    path = tmp_path / 'kunden.csv'
+    path.write_text('Firma\nElektro Grünwald\n', encoding='utf-8')
+    sheet, _delimiter = sv.read_delimited(path)
+    assert sheet.values[1][0] == 'Elektro Grünwald'
+
+
+def test_a_utf8_bom_is_not_shown_as_text(tmp_path):
+    path = tmp_path / 'kunden.csv'
+    path.write_text('Firma\nGrünwald\n', encoding='utf-8-sig')
+    sheet, _delimiter = sv.read_delimited(path)
+    assert sheet.values[0][0] == 'Firma'
+
+
+def test_saving_keeps_the_file_in_the_encoding_it_had(tmp_path):
+    """Writing utf-8 over a cp1252 file changes every umlaut in it,
+    including on the rows the edit never touched."""
+    path = tmp_path / 'kunden.csv'
+    path.write_bytes(
+        'Firma;Ort\r\nElektro Grünwald;Köln\r\nMüller;Straße 5\r\n'
+        .encode('cp1252'))
+
+    sv.apply_ops_delimited(
+        path, [{'op': 'set', 'row': 2, 'col': 1, 'text': 'Elektro Grünwald GmbH'}],
+        ';', backup=False)
+
+    raw = path.read_bytes()
+    assert b'\xef\xbf\xbd' not in raw, 'the umlauts were replaced in the file'
+    assert raw.decode('cp1252').splitlines() == [
+        'Firma;Ort', 'Elektro Grünwald GmbH;Köln', 'Müller;Straße 5']
+    assert b'\r\n' in raw, 'the line endings changed too'
+
+
+def test_an_untouched_row_of_a_cp1252_file_is_byte_identical(tmp_path):
+    path = tmp_path / 'kunden.csv'
+    path.write_bytes('a;b\nMüller;"x;y"\nSöhne;z\n'.encode('cp1252'))
+    before = path.read_bytes().splitlines()[1]
+
+    sv.apply_ops_delimited(
+        path, [{'op': 'set', 'row': 3, 'col': 1, 'text': 'Andere'}], ';',
+        backup=False)
+
+    assert path.read_bytes().splitlines()[1] == before
+
+
+def test_a_character_the_file_cannot_hold_is_refused_with_a_reason(tmp_path):
+    """Losing the character, or silently rewriting the whole file in
+    another encoding, are both worse than saying so."""
+    path = tmp_path / 'kunden.csv'
+    path.write_bytes('a\nMüller\n'.encode('cp1252'))
+    before = path.read_bytes()
+
+    with pytest.raises(sv.SpreadsheetError) as excinfo:
+        sv.apply_ops_delimited(
+            path, [{'op': 'set', 'row': 2, 'col': 1, 'text': 'Preis 5 ₹'}],
+            ';', backup=False)
+
+    assert 'cp1252' in str(excinfo.value)
+    assert 'UTF-8' in str(excinfo.value)
+    assert path.read_bytes() == before, 'the file was changed anyway'
+
+
+def test_the_cell_search_reads_the_same_bytes_the_grid_does(tmp_path):
+    path = tmp_path / 'kunden.csv'
+    path.write_bytes('Firma\nElektro Grünwald\n'.encode('cp1252'))
+    hits, _capped = sv.search_cells(path, 'grünwald')
+    assert len(hits) == 1
+    assert hits[0].text == 'Elektro Grünwald'
+
+
+def test_xlsx_umlauts_were_never_the_problem(tmp_path):
+    """A workbook stores its text as utf-8 XML; openpyxl reads it. Pinned
+    so a future encoding change cannot quietly break the format that
+    works."""
+    workbook = openpyxl.Workbook()
+    workbook.active['A1'] = 'Elektro Grünwald'
+    workbook.active['B1'] = 'Straße'
+    path = tmp_path / 'kunden.xlsx'
+    workbook.save(path)
+
+    _names, sheet = sv.read_xlsx(path, None)
+    assert sheet.values[0][:2] == ['Elektro Grünwald', 'Straße']
+
+
+def test_a_file_with_a_bom_keeps_it_and_one_without_does_not_gain_one(tmp_path):
+    """utf-8-sig decodes a plain utf-8 file happily, but encoding with it
+    writes a byte-order mark -- so a detector that reports it either way
+    puts one at the top of every file that is saved."""
+    plain = tmp_path / 'plain.csv'
+    plain.write_text('a;b\nx;y\n', encoding='utf-8')
+    marked = tmp_path / 'marked.csv'
+    marked.write_text('a;b\nx;y\n', encoding='utf-8-sig')
+
+    edit = [{'op': 'set', 'row': 2, 'col': 1, 'text': 'z'}]
+    sv.apply_ops_delimited(plain, edit, ';', backup=False)
+    sv.apply_ops_delimited(marked, list(edit), ';', backup=False)
+
+    assert not plain.read_bytes().startswith(b'\xef\xbb\xbf')
+    assert marked.read_bytes().startswith(b'\xef\xbb\xbf')
