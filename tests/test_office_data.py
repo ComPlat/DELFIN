@@ -370,3 +370,52 @@ def test_comparing_something_that_is_not_a_table_is_refused(ws, pair):
         "left": str(left), "right": str(doc), "key": "Beleg",
     }, _perms(ws)))
     assert "not a table" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Two systems, two vocabularies
+# ---------------------------------------------------------------------------
+
+def test_the_key_may_be_named_differently_on_each_side(ws):
+    """Requiring one name would push the caller into renaming a column
+    first — writing to a file just to be able to read it."""
+    left = ws / "buchungen.csv"
+    right = ws / "rechnungen.csv"
+    left.write_text("Beleg,Betrag\nR-001,10\nR-002,20\n", encoding="utf-8")
+    right.write_text("Belegnummer,Betrag\nR-001,10\nR-002,20\n",
+                     encoding="utf-8")
+    result = office.compare_tables(left, right, key="Beleg",
+                                   right_key="Belegnummer")
+    assert result["equal_count"] == 2
+    assert result["right_key"] == "Belegnummer"
+
+
+def test_value_columns_may_be_paired_by_name(ws):
+    """Two exports of the same facts routinely disagree on every column
+    name. Without pairs those columns drop out of the comparison, which
+    reports agreement over something it never checked."""
+    left = ws / "buchungen.csv"
+    right = ws / "rechnungen.csv"
+    left.write_text("Beleg,Betrag\nR-001,289.90\n", encoding="utf-8")
+    right.write_text("Belegnummer,Rechnungsbetrag\nR-001,298.90\n",
+                     encoding="utf-8")
+    result = office.compare_tables(
+        left, right, key="Beleg", right_key="Belegnummer",
+        columns={"Betrag": "Rechnungsbetrag"})
+    assert result["differing_count"] == 1
+    assert result["differing"][0]["differences"][0]["column"] == "Betrag"
+    assert "Betrag / Rechnungsbetrag" in result["compared_columns"]
+
+
+def test_differently_named_value_columns_are_not_silently_skipped(ws):
+    """The default shared-column rule cannot see them, so a comparison
+    that finds nothing must not read as 'everything agrees'."""
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("Beleg,Betrag\nR-001,10\n", encoding="utf-8")
+    right.write_text("Belegnummer,Rechnungsbetrag\nR-001,99\n",
+                     encoding="utf-8")
+    with pytest.raises(office.OfficeError) as exc:
+        office.compare_tables(left, right, key="Beleg",
+                              right_key="Belegnummer")
+    assert "share no comparable column" in str(exc.value)

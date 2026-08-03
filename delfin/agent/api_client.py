@@ -2464,12 +2464,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "right": {"type": "string"},
                     "key": {
                         "type": "string",
-                        "description": "Column name present in both.",
+                        "description": "Key column in the left table.",
+                    },
+                    "right_key": {
+                        "type": "string",
+                        "description": "Only if it is named differently there.",
                     },
                     "columns": {
-                        "type": "array",
-                        "description": "Default: all shared columns.",
-                        "items": {"type": "string"},
+                        "description": (
+                            "Default: all shared columns. A list, or "
+                            "{left: right} when the names differ."
+                        ),
                     },
                     "left_sheet": {"type": "string"},
                     "right_sheet": {"type": "string"},
@@ -6380,7 +6385,8 @@ class _DocToolExecutor:
         try:
             result = _office.compare_tables(
                 left, right, key=key,
-                columns=[str(c) for c in columns] if columns else None,
+                right_key=arguments.get("right_key"),
+                columns=columns or None,
                 left_sheet=arguments.get("left_sheet"),
                 right_sheet=arguments.get("right_sheet"))
         except _office.OfficeError as exc:
@@ -6392,7 +6398,9 @@ class _DocToolExecutor:
         lines = [
             f"{self._display_path(left, perms)} ({result['left_rows']} rows) "
             f"vs {self._display_path(right, perms)} "
-            f"({result['right_rows']} rows), matched on '{key}'",
+            f"({result['right_rows']} rows), matched on '{key}'"
+            + (f" / '{result['right_key']}'"
+               if result['right_key'].lower() != key.lower() else ""),
             f"compared columns: {', '.join(result['compared_columns'])}",
             "",
             f"equal:          {result['equal_count']}",

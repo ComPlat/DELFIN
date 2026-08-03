@@ -1268,6 +1268,7 @@ def compare_tables(
     right: Any,
     *,
     key: str,
+    right_key: Optional[str] = None,
     columns: Optional[list[str]] = None,
     left_sheet: Optional[str] = None,
     right_sheet: Optional[str] = None,
@@ -1293,10 +1294,24 @@ def compare_tables(
             "both tables need a header row and at least one data row")
 
     left_header, right_header = left_rows[0], right_rows[0]
-    left_key = _header_index(left_header, key, "left")
-    right_key = _header_index(right_header, key, "right")
+    # The two tables come from two systems, so the key is routinely spelled
+    # differently on each side — "Beleg" against "Belegnummer". Requiring
+    # one name would push the caller into renaming a column first, which
+    # means writing to a file just to be able to read it.
+    right_key_name = str(right_key).strip() if right_key else key
+    left_key_index = _header_index(left_header, key, "left")
+    right_key_index = _header_index(right_header, right_key_name, "right")
 
-    if columns:
+    # ``columns`` may be a list (same name on both sides) or a mapping
+    # {left: right}. Two exports of the same facts routinely disagree on
+    # every column name — "Betrag" against "Rechnungsbetrag" — and without
+    # pairs those columns simply drop out of the comparison, which reports
+    # agreement it never checked.
+    pairs: dict[str, str] = {}
+    if isinstance(columns, dict):
+        pairs = {str(k): str(v) for k, v in columns.items()}
+        wanted = list(pairs)
+    elif columns:
         wanted = [str(c) for c in columns]
     else:
         # Default: every column both tables share, key excluded.
@@ -1305,7 +1320,8 @@ def compare_tables(
             str(h) for h in left_header
             if str(h or "").strip()
             and str(h or "").strip().lower() in right_names
-            and str(h or "").strip().lower() != str(key).strip().lower()
+            and str(h or "").strip().lower() not in (
+                str(key).strip().lower(), right_key_name.strip().lower())
         ]
     if not wanted:
         raise OfficeError(
@@ -1313,7 +1329,10 @@ def compare_tables(
             "name the columns explicitly")
 
     left_idx = {c: _header_index(left_header, c, "left") for c in wanted}
-    right_idx = {c: _header_index(right_header, c, "right") for c in wanted}
+    right_idx = {
+        c: _header_index(right_header, pairs.get(c, c), "right")
+        for c in wanted
+    }
 
     # Each side is profiled on its own. The two tables routinely come from
     # different systems and are written under different conventions —
@@ -1328,7 +1347,7 @@ def compare_tables(
     }
     right_profiles = {
         c: profile_column([r[i] if i < len(r) else ""
-                           for r in right_rows[1:]], name=c)
+                           for r in right_rows[1:]], name=pairs.get(c, c))
         for c, i in right_idx.items()
     }
 
@@ -1348,8 +1367,8 @@ def compare_tables(
         ]
         return by_key, duplicates, blank
 
-    left_by_key, left_dupes, left_blank = _index(left_rows, left_key)
-    right_by_key, right_dupes, right_blank = _index(right_rows, right_key)
+    left_by_key, left_dupes, left_blank = _index(left_rows, left_key_index)
+    right_by_key, right_dupes, right_blank = _index(right_rows, right_key_index)
 
     not_comparable: list[dict] = []
     for line in left_blank:
@@ -1446,7 +1465,9 @@ def compare_tables(
         "left": str(_resolve(left)),
         "right": str(_resolve(right)),
         "key": key,
-        "compared_columns": wanted,
+        "right_key": right_key_name,
+        "compared_columns": [
+            c if pairs.get(c, c) == c else f"{c} / {pairs[c]}" for c in wanted],
         "left_rows": len(left_rows) - 1,
         "right_rows": len(right_rows) - 1,
         "equal": equal[:max_report],
