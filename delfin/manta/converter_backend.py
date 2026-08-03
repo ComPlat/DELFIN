@@ -1951,7 +1951,44 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         # #279/#281: genuine short multiple/aromatic bonds (global, length-gated) for the
         # collapse self-gate.  Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-id.
         _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))
-        if _cn2_ens or _sigma_ens:
+        # ---- ADDITIVE ENSEMBLE (DELFIN_FFFREE_SIGMA_ENSEMBLE_ADDITIVE, default OFF) ----
+        # THE ENSEMBLE WAS NEVER ADDITIVE.  Below, ens[0] is emitted under the PLAIN
+        # base_label -- the very label the single-frame path gives the frame it builds with
+        # assemble_heteroleptic_from_mols (see the fall-through below).  Those are two
+        # different builders, so switching the ensemble on silently REPLACES the primary frame
+        # instead of adding to it.  Measured on the 187-system pool_ffonly A/B (label
+        # sigmaens5): frame0 changed on 49 of 187 systems (26 %), and where ens[0] itself
+        # failed the self-gate the first SURVIVING frame took the primary slot outright
+        # (QAYZUL: OC-6-1 -> OC-6-1-conf8).
+        #
+        # That is what the gate was reporting.  Of the 16 systems blocking that A/B, 9 had a
+        # changed primary frame -- a REAL regression on an existing frame, nothing an eye
+        # correction may excuse -- and only 7 had an untouched primary.  ccdc_backbone_lost
+        # proves it independently: that fraction takes a MAX over frames (weddell/detectors/
+        # find_conformer_coverage.py:504-519), so a genuinely additive lever CANNOT lower it,
+        # yet it dropped on 2 systems.
+        #
+        # With the flag on, the canonical single frame is built FIRST and emitted unchanged,
+        # and the ensemble contributes conformer SIBLINGS only.  The never-worse guard is the
+        # chelate path's (converter_backend.py:1339-1360): a coloring whose canonical frame
+        # does not pass the self-gate is NOT rescued by the larger pool -- the ensemble is
+        # skipped for that coloring and control falls through to the ordinary single-frame
+        # path, conformer seating and all, exactly as with the flag off.
+        _use_ens = bool(_cn2_ens or _sigma_ens)
+        _canon = None
+        if _use_ens and os.environ.get("DELFIN_FFFREE_SIGMA_ENSEMBLE_ADDITIVE", "0") == "1":
+            try:
+                _cb = AC.assemble_heteroleptic_from_mols(d["metal"], d["geometry"], vertex_specs)
+            except Exception:
+                _cb = None
+            if _cb is not None:
+                _cs, _cP = _maybe_relax(_cb[0], _cb[1])
+                if _build_is_clean(_cs, _cP, cn=d.get("cn"), geom=d.get("geometry"),
+                                   exempt_pairs=_ex):
+                    _canon = (_cs, _cP)
+            if _canon is None:
+                _use_ens = False        # per-coloring only; the next coloring re-decides
+        if _use_ens:
             _nf = _n_ens if _cn2_ens else _n_sigma
             try:
                 ens = AC.assemble_heteroleptic_ensemble(
@@ -1959,16 +1996,32 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             except Exception:
                 ens = None
             if not ens:
-                return _scope_no("ENSEMBLE_EMPTY", "cn=%s k=%d" % (d.get("cn"), k))
+                if _canon is None:
+                    return _scope_no("ENSEMBLE_EMPTY", "cn=%s k=%d" % (d.get("cn"), k))
+                ens = []                # additive: the canonical frame still stands on its own
             kept = 0
+            if _canon is not None:      # the primary frame, byte-identical to the off-arm's
+                results.append((_xyz(_canon[0], _canon[1]), base_label))
+                _append_reembed(results, d["metal"],
+                                _lig_groups_from_vertex_specs(vertex_specs),
+                                _canon[0], _canon[1], base_label,
+                                cn=d.get("cn"), geom=d.get("geometry"))
+                kept += 1
             for fi, (syms, P) in enumerate(ens):
                 syms, P = _maybe_relax(syms, P)
                 if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                        exempt_pairs=_ex):
                     continue            # skip a bad frame; keep the clean ones
-                lbl = base_label if fi == 0 else f"{base_label}-conf{fi+1}"
+                if _canon is not None:
+                    if (len(syms) == len(_canon[0])
+                            and np.allclose(np.asarray(P, float),
+                                            np.asarray(_canon[1], float), atol=1e-6)):
+                        continue        # this ensemble frame IS the canonical one
+                    lbl = f"{base_label}-conf{fi+1}"
+                else:
+                    lbl = base_label if fi == 0 else f"{base_label}-conf{fi+1}"
                 results.append((_xyz(syms, P), lbl))
-                if fi == 0:             # re-embed off the canonical (clash-minimal) frame
+                if _canon is None and fi == 0:  # re-embed off the canonical (clash-minimal) frame
                     _append_reembed(results, d["metal"],
                                     _lig_groups_from_vertex_specs(vertex_specs),
                                     syms, P, lbl, cn=d.get("cn"), geom=d.get("geometry"))
