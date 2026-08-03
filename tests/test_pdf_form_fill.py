@@ -319,3 +319,109 @@ def test_a_field_covers_what_the_renderer_drew_underneath():
     shows the value twice, half a pixel apart."""
     assert 'rgba' not in pv.FORM_CSS, 'a translucent field lets the page show through'
     assert 'background:#eaf1fd' in pv.FORM_CSS
+
+
+# ---------------------------------------------------------------------------
+# Fields that hold more than one line
+# ---------------------------------------------------------------------------
+
+def make_multiline_pdf(path):
+    """A form with a one-line field and a box several lines tall."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((60, 60), 'Antrag')
+
+    single = fitz.Widget()
+    single.field_name = 'name'
+    single.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    single.rect = fitz.Rect(60, 90, 300, 110)
+    page.add_widget(single)
+
+    wide = fitz.Widget()
+    wide.field_name = 'begruendung'
+    wide.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    wide.field_flags = pv.TEXT_MULTILINE_FLAG
+    wide.rect = fitz.Rect(60, 130, 400, 260)
+    page.add_widget(wide)
+
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_a_multiline_field_is_recognised(tmp_path):
+    doc = pv.open_document(make_multiline_pdf(tmp_path / 'lang.pdf'))
+    try:
+        by_name = {f.name: f for f in pv.form_fields(doc)}
+    finally:
+        doc.close()
+    assert by_name['begruendung'].multiline is True
+    assert by_name['name'].multiline is False
+
+
+def test_a_tall_box_counts_even_without_the_flag(tmp_path):
+    """Plenty of forms are built by hand and never set the flag, and a
+    two-centimetre box that scrolls one line sideways is unusable."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    tall = fitz.Widget()
+    tall.field_name = 'freitext'
+    tall.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    tall.rect = fitz.Rect(60, 100, 400, 200)     # 100 pt tall, no flag
+    page.add_widget(tall)
+    path = tmp_path / 'hoch.pdf'
+    doc.save(str(path))
+    doc.close()
+
+    opened = pv.open_document(path)
+    try:
+        assert pv.form_fields(opened)[0].multiline is True
+    finally:
+        opened.close()
+
+
+def test_a_multiline_field_is_drawn_as_a_wrapping_box(panel, tmp_path):
+    panel.open(make_multiline_pdf(tmp_path / 'lang.pdf'))
+    markup = panel._overlays[0].value
+    assert '<textarea' in markup
+    assert 'data-field="begruendung"' in markup
+    # And the one-line field stays one line.
+    assert 'data-field="name"' in markup
+    assert markup.count('<textarea') == 1
+
+
+def test_the_wrapping_box_wraps_rather_than_scrolling_sideways():
+    assert 'white-space:pre-wrap' in pv.FORM_CSS
+    assert 'textarea.pdfv-f' in pv.FORM_CSS
+
+
+def test_a_multiline_field_is_not_given_letters_as_tall_as_its_box():
+    """Sizing text to the height of the box is right for one line and
+    absurd for a paragraph."""
+    tall = pv.FormField(name='x', kind='text', multiline=True)
+    one_line = pv.FormField(name='y', kind='text')
+    assert pv.field_font_px(tall, 200, 1.0) < pv.field_font_px(one_line, 30, 1.0) * 2
+    assert pv.field_font_px(tall, 200, 1.0) <= 14
+
+
+def test_the_form_s_own_font_size_wins(tmp_path):
+    """It is what the printed document will use."""
+    stated = pv.FormField(name='x', kind='text', font_size=9.0)
+    assert pv.field_font_px(stated, 40, 1.0) == 9
+    assert pv.field_font_px(stated, 40, 2.0) == 18
+
+
+def test_typing_into_a_wrapping_box_is_reported(panel, tmp_path):
+    panel.open(make_multiline_pdf(tmp_path / 'lang.pdf'))
+    _tell(panel, action='fields', values={'begruendung': 'Zeile eins\nZeile zwei'})
+    assert panel.form_values()['begruendung'] == 'Zeile eins\nZeile zwei'
+
+
+def test_the_browser_reports_a_text_area_the_same_way():
+    script = pv._pages_js('pdfv-1')
+    assert "el.tagName === 'TEXTAREA'" in script, (
+        "a text area's type is not 'text', so it would never be reported")

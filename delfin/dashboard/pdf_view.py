@@ -191,9 +191,10 @@ _PAGES_JS_TEMPLATE = r"""
       }
     }, true);
     pages.addEventListener('focusout', function(e){
-      if (e.target.classList && e.target.classList.contains('pdfv-f')
-          && e.target.type === 'text') {
-        reportField(e.target);
+      var el = e.target;
+      if (el.classList && el.classList.contains('pdfv-f')
+          && (el.type === 'text' || el.tagName === 'TEXTAREA')) {
+        reportField(el);
       }
     }, true);
     /* And while typing, once it pauses: pressing Save is a click, and
@@ -320,12 +321,22 @@ class FormField:
     page: int = 0
     rect: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     readonly: bool = False
+    multiline: bool = False
+    font_size: float = 0.0        # in points; 0 means the form says "auto"
 
 
 # Only what a person can fill in. A pushbutton (a "CrossMark" link on a
 # journal article, say) is a widget too, and listing it turned a paper into a
 # document with a one-field form that could not be saved.
 _WIDGET_KINDS = {2: 'check', 3: 'choice', 4: 'choice', 5: 'radio', 7: 'text'}
+
+# Bit 13 of a text field's flags. A form that sets it wants several lines.
+TEXT_MULTILINE_FLAG = 1 << 12
+# A box tall enough for this many lines is treated as several lines even when
+# the flag is missing -- plenty of forms are built by hand and never set it,
+# and a two-centimetre box that scrolls one line sideways is unusable.
+MULTILINE_HEIGHT_LINES = 2.2
+DEFAULT_FIELD_FONT_PT = 11.0
 
 
 def form_fields(doc) -> List[FormField]:
@@ -379,12 +390,24 @@ def form_fields(doc) -> List[FormField]:
                 except Exception:
                     on_state = ''
             flags = int(getattr(widget, 'field_flags', 0) or 0)
+            try:
+                font_size = float(getattr(widget, 'text_fontsize', 0) or 0)
+            except (TypeError, ValueError):
+                font_size = 0.0
+            height_pt = max(0.0, box[3] - box[1])
+            line_pt = font_size or DEFAULT_FIELD_FONT_PT
+            multiline = kind == 'text' and (
+                bool(flags & TEXT_MULTILINE_FLAG)
+                or height_pt >= line_pt * MULTILINE_HEIGHT_LINES
+            )
             fields.append(FormField(
                 name=name, kind=kind,
                 value=str(getattr(widget, 'field_value', '') or ''),
                 options=options, on_state=on_state,
                 page=index, rect=box,
                 readonly=bool(flags & 1),
+                multiline=multiline,
+                font_size=font_size,
             ))
     return fields
 
@@ -409,6 +432,8 @@ FORM_CSS = (
     '.pdfv-f[type="checkbox"]:checked:after { content:"\\2713";'
     ' display:block; text-align:center; line-height:1;'
     ' font-size:inherit; color:#12447a; }'
+    'textarea.pdfv-f { white-space:pre-wrap; overflow:auto; resize:none;'
+    ' line-height:1.25; padding:2px 3px; }'
     '.pdfv-f.pdfv-changed { background:#fff6cc; border-color:#ef9a00; }'
     '.pdfv-f[disabled] { background:#f0f0f0; border-style:dashed;'
     ' cursor:not-allowed; color:#555; }'
@@ -434,8 +459,24 @@ def field_boxes(fields: Sequence['FormField'], page_index: int, zoom: float,
     return out
 
 
+def field_font_px(found: 'FormField', height_px: int, zoom: float) -> int:
+    """How big the text in a field should be drawn.
+
+    The form's own size when it states one -- that is what the printed
+    document will use. "Auto" is what most forms say, and then a single
+    line is sized to its box while a multi-line box is not: filling one
+    would give it letters as tall as the paragraph it has to hold.
+    """
+    if found.font_size:
+        return max(7, int(round(found.font_size * zoom)))
+    if found.multiline:
+        return max(9, int(round(DEFAULT_FIELD_FONT_PT * zoom)))
+    return max(9, min(int(height_px * 0.62), 22))
+
+
 def overlay_html(placed: Sequence[Tuple['FormField', Tuple[int, int, int, int]]],
-                 values: Optional[Dict[str, Any]] = None) -> str:
+                 values: Optional[Dict[str, Any]] = None,
+                 zoom: float = 1.0) -> str:
     """Real inputs, sized and placed over the page they belong to.
 
     A form is filled in where it is read. The alternative -- a list of field
@@ -452,13 +493,20 @@ def overlay_html(placed: Sequence[Tuple['FormField', Tuple[int, int, int, int]]]
         current = values.get(found.name, found.value)
         style = (f'left:{left}px; top:{top}px; '
                  f'width:{width}px; height:{height}px; '
-                 f'font-size:{max(9, min(int(height * 0.62), 22))}px;')
+                 f'font-size:{field_font_px(found, height, zoom)}px;')
         changed = ' pdfv-changed' if found.name in values else ''
-        common = (f' class="pdfv-f{changed}" style="{style}"'
+        multiline = ' pdfv-multi' if found.multiline else ''
+        common = (f' class="pdfv-f{multiline}{changed}" style="{style}"'
                   f' data-field="{_html.escape(found.name, quote=True)}"'
                   f' title="{_html.escape(found.name, quote=True)}"'
                   + (' disabled' if found.readonly else ''))
-        if found.kind == 'check':
+        if found.kind == 'text' and found.multiline:
+            # A box several lines tall holds a paragraph. On one line the
+            # text scrolls sideways out of sight while the room for it is
+            # right there.
+            out.append(f'<textarea{common} wrap="soft">'
+                       f'{_html.escape(str(current))}</textarea>')
+        elif found.kind == 'check':
             ticked = ' checked' if str(current) not in ('', 'Off', 'False') else ''
             out.append(f'<input type="checkbox"{common}{ticked}>')
         elif found.kind in ('choice', 'radio') and found.options:
@@ -1257,8 +1305,9 @@ class PdfPanel:
             return
         dpi = effective_dpi(width_pt, height_pt, self.dpi())
         bounds = page_pixel_size(width_pt, height_pt, self.dpi())
-        placed = field_boxes(self._fields, int(index), dpi / 72.0, bounds)
-        overlay.value = overlay_html(placed, self._values)
+        zoom = dpi / 72.0
+        placed = field_boxes(self._fields, int(index), zoom, bounds)
+        overlay.value = overlay_html(placed, self._values, zoom)
 
     def _load_form(self) -> None:
         """Find the fields, and show what can be done with them.
