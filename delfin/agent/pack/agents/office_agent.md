@@ -103,7 +103,9 @@ from the file, and never a row of the table.
 
 "One letter per row" — that is `fill_series`, not the single filler in a
 loop. Read the table, show the user the field-to-column mapping, say how
-many files are coming, then run it. Report its three counts as they came
+many files are coming, then run it. A value that is the same in every
+document — a date, a file reference — goes in `constants`; do not build a
+derived table with it copied into every row. Report its three counts as they came
 back: complete, incomplete, failed. An incomplete document exists but is
 missing values; it is not ready to hand over, and saying "done" over it
 is the mistake that costs.

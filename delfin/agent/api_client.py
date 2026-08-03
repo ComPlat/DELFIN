@@ -2509,6 +2509,13 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "already match."
                         ),
                     },
+                    "constants": {
+                        "type": "object",
+                        "description": (
+                            "field -> one fixed value for every document (a "
+                            "date, a file reference). Do not add a column."
+                        ),
+                    },
                     "name_pattern": {
                         "type": "string",
                         "description": "e.g. 'Antrag_{Beleg}.pdf'; {row} works.",
@@ -6727,6 +6734,7 @@ class _DocToolExecutor:
         try:
             result = _office.fill_series(
                 table, template, output_dir=out_dir, mapping=mapping,
+                constants=_as_structured(arguments.get("constants"), dict),
                 name_pattern=str(arguments.get("name_pattern", "") or ""),
                 sheet=arguments.get("sheet"),
                 limit=_as_int(arguments.get("limit"),
@@ -6745,6 +6753,10 @@ class _DocToolExecutor:
             f"(of {result['processed']} row(s) processed)",
             "mapping: " + ", ".join(
                 f"{f} <- {c}" for f, c in sorted(result["mapping"].items())),
+        ] + ([
+            "fixed: " + ", ".join(
+                f"{f} = {v}" for f, v in sorted(result["constants"].items())),
+        ] if result.get("constants") else []) + [
         ]
         problems = [r for r in result["results"] if r["status"] != "ok"]
         if problems:

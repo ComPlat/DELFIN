@@ -1570,6 +1570,7 @@ def fill_series(
     *,
     output_dir: Any,
     mapping: Optional[dict] = None,
+    constants: Optional[dict] = None,
     name_pattern: str = "",
     sheet: Optional[str] = None,
     limit: int = MAX_SERIES_ROWS,
@@ -1626,7 +1627,8 @@ def fill_series(
         lowered = {h.lower(): h for h in header if h}
         resolved_map = {
             field: lowered[field.lower()]
-            for field in available if field.lower() in lowered
+            for field in available
+            if field.lower() in lowered and field not in (constants or {})
         }
         if not resolved_map:
             raise OfficeError(
@@ -1635,7 +1637,19 @@ def fill_series(
                 f"Columns: {', '.join(h for h in header if h)}. "
                 "Pass mapping={field: column}.")
 
-    unknown_fields = sorted(f for f in resolved_map if f not in available)
+    # Fixed values: the same entry in every document — a file reference, a
+    # date, a department. Without them a caller has to build a derived
+    # table with the value copied into all 400 rows, which is what was
+    # observed in the field: two constants cost a whole intermediate file.
+    fixed = {str(k): v for k, v in (constants or {}).items()}
+    both = sorted(set(fixed) & set(resolved_map))
+    if both:
+        raise OfficeError(
+            f"field(s) {', '.join(both)} are given both a column and a fixed "
+            "value — one of the two has to go")
+
+    unknown_fields = sorted(
+        f for f in list(resolved_map) + list(fixed) if f not in available)
     if unknown_fields:
         raise OfficeError(
             f"the template has no field(s) {', '.join(unknown_fields)}. "
@@ -1645,7 +1659,9 @@ def fill_series(
     if unknown_columns:
         raise OfficeError(
             f"the table has no column(s) {', '.join(unknown_columns)}. "
-            f"It has: {', '.join(h for h in header if h)}")
+            f"It has: {', '.join(h for h in header if h)}. If a value is the "
+            "same for every row, pass it in constants instead of adding a "
+            "column for it.")
 
     out_dir = _resolve(output_dir, must_exist=False)
     if out_dir.exists() and not out_dir.is_dir():
@@ -1667,6 +1683,7 @@ def fill_series(
         }
         values = {field: record.get(column, "")
                   for field, column in resolved_map.items()}
+        values.update(fixed)
         empty = sorted(f for f, v in values.items()
                        if str(v or "").strip() == "")
 
@@ -1744,6 +1761,7 @@ def fill_series(
         "template": str(tpl),
         "output_dir": str(out_dir),
         "mapping": resolved_map,
+        "constants": fixed,
         "rows": len(data_rows),
         "processed": len(results),
         "counts": counts,

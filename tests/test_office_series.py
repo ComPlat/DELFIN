@@ -362,3 +362,78 @@ def test_the_tool_still_needs_a_prior_read_for_record_updates(ws, book):
         "updates": [{"key": "R-001", "set": {"Name": "x"}}],
     }, perms))
     assert "without reading it first" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Values that are the same in every document
+# ---------------------------------------------------------------------------
+
+def test_a_fixed_value_reaches_every_document(ws, form, people):
+    """Field case: supplying two constants cost a whole derived table with
+    the value copied into all 40 rows, because the only way in was a
+    column."""
+    result = office.fill_series(
+        people, form, output_dir=ws / "out",
+        mapping={"Name": "Name", "Kostenstelle": "Kostenstelle"},
+        constants={"Betrag": "0,00"},
+        name_pattern="A_{Name}.pdf")
+    assert result["counts"] == {"ok": 2, "incomplete": 0, "failed": 0}
+    assert result["constants"] == {"Betrag": "0,00"}
+    values = {f["name"]: f["value"]
+              for f in office.pdf_form_fields(ws / "out" / "A_Müller.pdf")["fields"]}
+    assert values["Betrag"] == "0,00"
+    assert values["Name"] == "Müller"
+
+
+def test_a_constant_fills_a_placeholder_no_column_covers(ws):
+    docx = pytest.importorskip("docx")
+    doc = docx.Document()
+    doc.add_paragraph("Sehr geehrte(r) {{Name}},")
+    doc.add_paragraph("Az. {{Zeichen}} vom {{Datum}}")
+    template = ws / "brief.docx"
+    doc.save(template)
+    table = ws / "leute.csv"
+    table.write_text("Name\nMüller\nÖzdemir\n", encoding="utf-8")
+
+    result = office.fill_series(
+        table, template, output_dir=ws / "briefe",
+        constants={"Zeichen": "BES-2026-08", "Datum": "03.08.2026"},
+        name_pattern="B_{Name}.docx")
+    assert result["counts"]["ok"] == 2
+    text = "\n".join(p.text for p in
+                     docx.Document(str(ws / "briefe" / "B_Müller.docx")).paragraphs)
+    assert "BES-2026-08" in text and "03.08.2026" in text
+    assert "{{" not in text
+
+
+def test_a_field_cannot_be_both_mapped_and_fixed(ws, form, people):
+    with pytest.raises(office.OfficeError) as exc:
+        office.fill_series(people, form, output_dir=ws / "out",
+                           mapping={"Name": "Name"},
+                           constants={"Name": "immer gleich"})
+    assert "both a column and a fixed value" in str(exc.value)
+
+
+def test_a_constant_for_a_field_the_template_lacks_is_refused(ws, form, people):
+    with pytest.raises(office.OfficeError) as exc:
+        office.fill_series(people, form, output_dir=ws / "out",
+                           constants={"gibtsnicht": "x"})
+    assert "gibtsnicht" in str(exc.value)
+
+
+def test_a_missing_column_points_at_constants(ws, form, people):
+    """The recovery the model had to invent should be in the error."""
+    with pytest.raises(office.OfficeError) as exc:
+        office.fill_series(people, form, output_dir=ws / "out",
+                           mapping={"Name": "_heute"})
+    assert "constants" in str(exc.value)
+
+
+def test_the_tool_reports_the_fixed_values_it_used(ws, form, people):
+    out = _DocToolExecutor()._dispatch("fill_series", {
+        "table": str(people), "template": str(form),
+        "output_dir": str(ws / "out"),
+        "mapping": {"Name": "Name"},
+        "constants": '{"Betrag": "0,00"}',
+    }, _perms(ws))
+    assert "fixed: Betrag = 0,00" in out
