@@ -1396,26 +1396,52 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
         # the decay to exactly those frames cannot cost a capability by construction -- the
         # same argument that every lever which landed here rests on.  Where the placement was
         # clean, this is byte-identical.
+        # KEEP IT ONLY WHERE THE GRADED BOND AXIS STRICTLY IMPROVES.
+        #
+        # A first attempt gated on "the frame already collapsed" and was wrong TWICE, both
+        # measured on 187 systems:
+        #   * Reach fell from 92 to 3.  The displacement is about 0.18 A on a C-N bond of
+        #     1.47 A, i.e. 0.88 x ideal -- ABOVE the 0.82 collapse threshold, so the gate
+        #     almost never fired.  The decay PREVENTS a collapse; it does not repair one.
+        #   * On those 3 it still did damage (isomers_lost 2, ccdc_arrangement_lost 2), so
+        #     "a collapsed frame has nothing to lose" is false at FRAME level -- that argument
+        #     holds for a system with broken_frac 1.0, not for one frame among many, which can
+        #     still be the only carrier of an isomer.
+        #
+        # The graded quantity is the one the eye reads (org_bond), so that is what decides:
+        # keep the decayed frame only if the WORST relative bond deviation strictly drops.
+        # Where it does not, the frame is left exactly as it was -- never-worse on the axis
+        # this lever exists to improve, by construction rather than by hope.
         _always = os.environ.get("DELFIN_FFFREE_DONOR_FOLLOW_ALWAYS", "0") == "1"
-        _apply = True
-        if not _always:
-            try:
-                _apply = bool(_collapsed_heavy_bonds_strict(lsyms, Q))
-            except Exception:
-                _apply = False
-        if _apply:
-            _Qf = np.array(Q, float)
-            for _a, (_own, _w) in _dfollow.items():
-                _d = _ddelta.get(int(_own))
-                if _d is not None:
-                    _Qf[_a] = _Qf[_a] + _w * _d
-            # and it has to actually HELP: a decay that leaves the collapse in place, or
-            # trades it for another one, is not worth changing a frame for.
-            try:
-                if _always or not _collapsed_heavy_bonds_strict(lsyms, _Qf):
-                    Q = _Qf
-            except Exception:
-                pass
+
+        def _worst_bond_dev(_s, _P):
+            _P = np.asarray(_P, float)
+            _w = 0.0
+            for _i in range(len(_s)):
+                if _s[_i] == "H" or _bd._is_metal(_s[_i]):
+                    continue
+                for _j in range(_i + 1, len(_s)):
+                    if _s[_j] == "H" or _bd._is_metal(_s[_j]):
+                        continue
+                    _id = _bd._ideal_bond(_s[_i], _s[_j])
+                    _dd = float(np.linalg.norm(_P[_i] - _P[_j]))
+                    if _id <= 0 or _dd > 1.30 * _id:
+                        continue
+                    _dv = abs(_dd - _id) / _id
+                    if _dv > _w:
+                        _w = _dv
+            return _w
+
+        _Qf = np.array(Q, float)
+        for _a, (_own, _w) in _dfollow.items():
+            _d = _ddelta.get(int(_own))
+            if _d is not None:
+                _Qf[_a] = _Qf[_a] + _w * _d
+        try:
+            if _always or _worst_bond_dev(lsyms, _Qf) < _worst_bond_dev(lsyms, Q) - 1e-9:
+                Q = _Qf
+        except Exception:
+            pass
     # BETA IN THE SETTING -- ON THE PATH THAT ACTUALLY RUNS.
     #
     # The first two attempts hooked this into the `if rigid:` branch above and had ZERO
