@@ -3825,7 +3825,7 @@ def _global_donor_seat(syms, P, blocks):
 
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
                          n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
-                         planar_bite=None, planar_coplanar=None):
+                         planar_bite=None, planar_coplanar=None, prefer_beta=False):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
@@ -4034,7 +4034,21 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         #
         # beta decides ONLY among conformers of EQUAL clash.  It cannot displace the criterion
         # that decides today, so it cannot introduce a clash regression at all.
-        _bsel = os.environ.get("DELFIN_FFFREE_BETA_AWARE_SELECT", "0") == "1"
+        # ``prefer_beta`` lets a CALLER ask for the beta-optimal pick without touching the
+        # environment.  THE POINT IS THAT IT IS ADDITIVE: the caller builds the frame twice
+        # and appends the second as a SIBLING, so the primary is untouched by construction.
+        #
+        # That shape is not a preference, it is what the record says works.  Every flag that
+        # LANDED in this project adds something -- D8_SQ_ADD "a PURELY ADDITIVE sibling ...
+        # the PRIMARY frame is untouched", CN6_OH_ADD "adds the OC-6 isomer as a PURELY
+        # ADDITIVE sibling", STEREOCENTER_ENUM "additively builds every buildable fold",
+        # CN4_BOTH "native-additive".  Everything measured on 2026-08-02 that CHOSE instead
+        # of ADDING died: beta-as-replacement cost 3-4 capabilities, collapse-as-replacement
+        # died on all three pools, and five reach levers that replaced legacy's frame lost
+        # 78/52/52/15/3.  The one lever still alive that night -- the ring pucker -- is the
+        # only one that appends and leaves the primary byte-identical.
+        _bsel = bool(prefer_beta) or os.environ.get(
+            "DELFIN_FFFREE_BETA_AWARE_SELECT", "0") == "1"
         best_Q, best_clash = None, 1e18
         best_coll = True                            # a collapsed pick loses to a clean one
         best_beta = float("inf")                    # ... and among equals, the flatter donor

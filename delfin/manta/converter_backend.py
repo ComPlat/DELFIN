@@ -1236,6 +1236,31 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"
         results.append((_xyz(syms, P), _lab))
+        # BETA AS A SIBLING, NOT AS A REPLACEMENT (DELFIN_FFFREE_BETA_SIBLING, default OFF).
+        #
+        # Measured 2026-08-02: choosing the flat-beta conformer INSTEAD of the clash-minimal
+        # one lowers pyramidal_sp2 from 19.05 % to 12.70 % (and 37.07 -> 12.77 on the worst
+        # systems) -- but costs 3 to 4 capabilities, because the frame it replaces was better
+        # somewhere else.  Every flag that ever LANDED here adds instead of replacing, and
+        # every one measured that night which replaced, died.  So: build the beta-optimal
+        # frame as well and append it, leaving the primary byte-identical.  The eye's crystal
+        # floors read the BEST frame over the manifold, so a second, flatter frame can only
+        # help them -- and it cannot take anything away, because nothing was removed.
+        if os.environ.get("DELFIN_FFFREE_BETA_SIBLING", "0") == "1":
+            try:
+                _bb = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
+                                              prefer_beta=True)
+            except Exception:
+                _bb = None
+            if _bb is not None:
+                _bs, _bP, _bd = _bb
+                _bs, _bP = _maybe_relax(_bs, _bP)
+                _bx = _xyz(_bs, _bP)
+                if (_bx != _xyz(syms, P)                      # a DIFFERENT frame, or nothing
+                        and (not max_isomers or len(results) < max_isomers)
+                        and _build_is_clean(_bs, _bP, cn=d.get("cn"), geom=d.get("geometry"),
+                                            donors=_bd, exempt_pairs=_ex, graph_bonds=_gb)):
+                    results.append((_bx, f"{_lab}-beta"))
         # Ring-pucker siblings of this accepted frame (default OFF -> byte-identical).
         # Runs HERE, next to the frame it belongs to, because this is where the frame's
         # own atom order is known -- see the function for why the same call from the
