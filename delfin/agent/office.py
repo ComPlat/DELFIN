@@ -567,6 +567,42 @@ def decode_text(raw: bytes) -> tuple[str, str]:
     return raw.decode("utf-8", errors="replace"), "utf-8 (with damage)"
 
 
+def sniff_delimiter(text: str, suffix: str = "") -> str:
+    """Pick the separator that actually splits this file into columns.
+
+    Counting occurrences is the obvious approach and the wrong one for
+    German data: a decimal comma appears in every amount, so a
+    semicolon-separated file looks comma-separated and collapses into one
+    column. What distinguishes the real separator is that it produces the
+    SAME number of fields in every row — the others land in the middle of
+    values and vary from line to line.
+    """
+    if suffix.lower() == ".tsv":
+        return "\t"
+    import csv as _csv
+    import io as _io
+
+    sample = [ln for ln in text.splitlines()[:60] if ln.strip()][:40]
+    if not sample:
+        return ","
+    best, best_score = ",", (-1.0, 0)
+    for candidate in (";", ",", "\t", "|"):
+        try:
+            rows = list(_csv.reader(_io.StringIO("\n".join(sample)),
+                                    delimiter=candidate))
+        except _csv.Error:
+            continue
+        widths = [len(r) for r in rows if r]
+        if not widths or max(widths) < 2:
+            continue
+        common = max(set(widths), key=widths.count)
+        consistency = widths.count(common) / len(widths)
+        score = (consistency, common)
+        if score > best_score:
+            best, best_score = candidate, score
+    return best
+
+
 def _read_csv(
     path: Path, *, max_rows: int, max_cols: int, start_row: int
 ) -> dict:
@@ -578,13 +614,7 @@ def _read_csv(
         raise OfficeError(f"could not read {path.name}: {exc}") from exc
     text, encoding = decode_text(raw)
 
-    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
-    if path.suffix.lower() != ".tsv":
-        try:
-            delimiter = csv.Sniffer().sniff(
-                text[:8192], delimiters=",;\t|").delimiter
-        except csv.Error:
-            delimiter = ","
+    delimiter = sniff_delimiter(text, path.suffix)
     all_rows = list(csv.reader(io.StringIO(text, newline=""),
                               delimiter=delimiter))
 
@@ -606,6 +636,22 @@ def _read_csv(
             f"— pass start_row to page further")
     if total_cols > max_cols:
         notes.append(f"showing {max_cols} of {total_cols} columns")
+    # Rows that do not have the header's width. An unquoted separator
+    # inside a value — "Digitalwaage 0,1 mg" in a comma-separated file —
+    # shifts every field after it by one, so a personnel number column
+    # quietly starts holding amounts. Nothing about the resulting table
+    # looks wrong, which is why it has to be said.
+    width = len(all_rows[0]) if all_rows else 0
+    ragged = [i for i, r in enumerate(all_rows[1:], start=2)
+              if len(r) != width and any(str(c).strip() for c in r)]
+    if ragged and width:
+        shown = ", ".join(str(i) for i in ragged[:8])
+        notes.append(
+            f"{len(ragged)} row(s) do not have the header's {width} column(s) "
+            f"— rows {shown}{' …' if len(ragged) > 8 else ''}. A separator "
+            "inside an unquoted value shifts every field after it, so the "
+            "columns of those rows do not mean what their header says.")
+
     profiles = profile_table(all_rows[:2000])
     notes.extend(column_notes(profiles))
     return {
@@ -1221,16 +1267,9 @@ def _table_rows(path: Any, sheet: Optional[str] = None) -> list[list]:
     if kind == "csv":
         raw = p.read_bytes()
         text, _enc = decode_text(raw)
-        delimiter = "\t" if p.suffix.lower() == ".tsv" else ","
-        if p.suffix.lower() != ".tsv":
-            try:
-                delimiter = csv.Sniffer().sniff(
-                    text[:8192], delimiters=",;\t|").delimiter
-            except csv.Error:
-                delimiter = ","
         import io
         return list(csv.reader(io.StringIO(text, newline=""),
-                               delimiter=delimiter))
+                               delimiter=sniff_delimiter(text, p.suffix)))
     if kind != "spreadsheet":
         raise OfficeError(
             f"{p.name} is not a table (need .xlsx, .csv or .tsv)")

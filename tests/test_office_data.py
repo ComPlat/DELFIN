@@ -521,3 +521,76 @@ def test_the_coercion_leaves_real_objects_alone():
     # Not JSON and not a container: handed on unchanged, so the tool's own
     # error message describes what was really sent.
     assert _as_structured("kein json", dict) == "kein json"
+
+
+# ---------------------------------------------------------------------------
+# What a German export does to delimiter detection
+# ---------------------------------------------------------------------------
+
+def test_a_decimal_comma_does_not_win_over_the_real_separator(ws):
+    """Counting occurrences picks the comma: it appears in every amount.
+    The separator is the one that gives every row the same field count."""
+    p = ws / "export.csv"
+    p.write_bytes(
+        ("Kostenstelle;Bezeichnung;Budget\n"
+         "4711;Institut für Chemie;125.000,00\n"
+         "4712;Beschaffung;48.500,00\n"
+         "4713;Technischer Dienst;76.200,00\n").encode("cp1252"))
+    result = office.read_sheet(p)
+    assert result["columns"] == 3
+    assert "Institut für Chemie" in result["grid"]
+
+
+def test_the_delimiter_choice_survives_commas_inside_values(ws):
+    p = ws / "komma.csv"
+    p.write_text(
+        "Nr;Text;Wert\n1;eins, zwei und drei;10,50\n2;vier, fünf;20,00\n",
+        encoding="utf-8")
+    result = office.read_sheet(p)
+    assert result["columns"] == 3
+    assert "eins, zwei und drei" in result["grid"]
+
+
+def test_tab_files_stay_tab_separated(ws):
+    p = ws / "t.tsv"
+    p.write_text("A\tB\n1\t2\n", encoding="utf-8")
+    assert office.read_sheet(p)["columns"] == 2
+
+
+def test_the_sniffer_is_callable_on_its_own():
+    assert office.sniff_delimiter("a;b;c\n1;2;3\n") == ";"
+    assert office.sniff_delimiter("a,b,c\n1,2,3\n") == ","
+    assert office.sniff_delimiter("a\tb\n1\t2\n", ".tsv") == "\t"
+
+
+# ---------------------------------------------------------------------------
+# Rows that do not fit their header
+# ---------------------------------------------------------------------------
+
+def test_a_shifted_row_is_reported(ws):
+    """An unquoted separator inside a value moves every field after it by
+    one, so a personnel-number column quietly starts holding amounts.
+    Nothing about the resulting table looks wrong."""
+    p = ws / "schief.csv"
+    p.write_text(
+        "Name,Vorhaben,Betrag,Personalnummer\n"
+        "Meier,Waage,100,80001\n"
+        "Schmidt,Digitalwaage 0,1 mg,240,80002\n",
+        encoding="utf-8")
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "do not have the header's 4 column(s)" in notes
+    assert "rows 3" in notes
+
+
+def test_a_clean_table_is_not_accused(ws):
+    p = ws / "sauber.csv"
+    p.write_text("A,B\n1,2\n3,4\n", encoding="utf-8")
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "do not have the header" not in notes
+
+
+def test_trailing_blank_lines_are_not_counted_as_shifted(ws):
+    p = ws / "leerzeile.csv"
+    p.write_text("A,B\n1,2\n\n\n", encoding="utf-8")
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "do not have the header" not in notes
