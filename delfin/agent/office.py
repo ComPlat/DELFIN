@@ -464,7 +464,16 @@ def render_grid(
 # column, and where the column stays ambiguous, say so instead of
 # picking the reading that happens to look plausible.
 
-_NUM_CLEAN_RE = re.compile(r"[^0-9,.\-+]")
+# Noise a number may legitimately carry: whitespace (including the
+# non-breaking and narrow kinds a spreadsheet emits), currency symbols and
+# a currency code beside it. Nothing else — and that is the point. The
+# earlier rule stripped every character that was not a digit or separator,
+# which turned the document reference "R-001" into "-001" and read it as
+# the number -1. A whole column of references profiled as numeric, and in
+# a reconciliation "R-001" and "X-001" both became -1 and compared EQUAL:
+# two different records reported as agreeing.
+_CURRENCY_CODE_RE = re.compile(r"(?i)\b(?:eur|usd|chf|gbp|sfr)\b")
+_NUM_NOISE_RE = re.compile(r"[\s\u00a0\u202f\u2009€$£¥']")
 # Any run of digits, optionally broken by separators. Deliberately NOT
 # "1-3 digits then groups": that shape is right for 1.234,50 and wrong
 # for 1234.50, and rejecting the ungrouped form makes a plain numeric
@@ -472,6 +481,19 @@ _NUM_CLEAN_RE = re.compile(r"[^0-9,.\-+]")
 # value.
 _NUMERIC_SHAPE_RE = re.compile(r"^[-+]?[0-9]+(?:[.,][0-9]+)*$")
 _DATE_SEP_RE = re.compile(r"^\s*(\d{1,4})([./-])(\d{1,2})\2(\d{1,4})\s*$")
+
+
+def _numeric_body(value: Any) -> Optional[str]:
+    """The digits-and-separators core of a value, or None if it is not one.
+
+    Returning None for anything carrying a letter is what keeps a column
+    of document references out of the number machinery.
+    """
+    text = _CURRENCY_CODE_RE.sub("", str(value if value is not None else ""))
+    text = _NUM_NOISE_RE.sub("", text).strip()
+    if not text or not _NUMERIC_SHAPE_RE.match(text):
+        return None
+    return text
 
 DECIMAL_COMMA = "decimal_comma"     # 1.234,50 — German / most of Europe
 DECIMAL_POINT = "decimal_point"     # 1,234.50 — English
@@ -485,8 +507,8 @@ ISO_DATE = "iso"                    # 2026-07-31
 
 def _number_evidence(text: str) -> Optional[str]:
     """What one value proves about its column's convention, if anything."""
-    body = _NUM_CLEAN_RE.sub("", str(text or "")).strip()
-    if not body or not _NUMERIC_SHAPE_RE.match(body):
+    body = _numeric_body(text)
+    if body is None:
         return None
     dots, commas = body.count("."), body.count(",")
 
@@ -536,8 +558,7 @@ def detect_number_convention(values: list) -> tuple[str, str]:
 
     undecided = [
         v for v in values
-        if _number_evidence(v) is None
-        and _NUMERIC_SHAPE_RE.match(_NUM_CLEAN_RE.sub("", str(v or "")).strip())
+        if _number_evidence(v) is None and _numeric_body(v) is not None
     ]
     if undecided:
         return AMBIGUOUS, (
@@ -552,8 +573,8 @@ def parse_number(text: Any, convention: str = PLAIN_NUMBER) -> Optional[float]:
         return None
     if isinstance(text, (int, float)):
         return float(text)
-    body = _NUM_CLEAN_RE.sub("", str(text or "")).strip()
-    if not body or not _NUMERIC_SHAPE_RE.match(body):
+    body = _numeric_body(text)
+    if body is None:
         return None
     if convention == DECIMAL_COMMA:
         body = body.replace(".", "").replace(",", ".")
@@ -667,8 +688,8 @@ def profile_column(values: list, *, name: str = "") -> dict:
     date_shaped = sum(1 for v in filled if _date_parts(v) is not None)
     numeric_shaped = sum(
         1 for v in filled
-        if isinstance(v, (int, float)) and not isinstance(v, bool)
-        or _NUMERIC_SHAPE_RE.match(_NUM_CLEAN_RE.sub("", str(v or "")).strip() or "x")
+        if (isinstance(v, (int, float)) and not isinstance(v, bool))
+        or _numeric_body(v) is not None
     )
 
     if date_shaped >= max(1, int(0.8 * len(filled))):

@@ -594,3 +594,56 @@ def test_trailing_blank_lines_are_not_counted_as_shifted(ws):
     p.write_text("A,B\n1,2\n\n\n", encoding="utf-8")
     notes = " ".join(office.read_sheet(p)["notes"])
     assert "do not have the header" not in notes
+
+
+# ---------------------------------------------------------------------------
+# A document reference is not a number
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value", [
+    "R-001", "X-001", "INV-20000", "A1", "BES-2026-08", "4711-B",
+])
+def test_a_reference_is_not_read_as_a_number(value):
+    """The cleanup stripped every character that was not a digit or a
+    separator, so "R-001" became "-001" and read as -1."""
+    assert office.parse_number(value, office.DECIMAL_COMMA) is None
+    assert office._numeric_body(value) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("1.234,50 EUR", 1234.5),
+    ("€ 89,90", 89.9),
+    ("1 234,50", 1234.5),          # thin space from a spreadsheet
+    (" 1.234,50 ", 1234.5),
+    ("-5,5", -5.5),
+    ("4711", 4711.0),
+])
+def test_the_noise_a_number_may_carry_still_parses(value, expected):
+    assert office.parse_number(value, office.DECIMAL_COMMA) == pytest.approx(
+        expected)
+
+
+def test_a_percentage_is_not_silently_turned_into_a_count():
+    """Stripping the sign would change what the value means."""
+    assert office.parse_number("12%", office.DECIMAL_COMMA) is None
+
+
+def test_a_reference_column_profiles_as_text(ws):
+    assert office.profile_column(["R-001", "R-002", "R-003"],
+                                 name="Beleg")["kind"] == "text"
+    assert office.profile_column(["1.234,50", "89,90"],
+                                 name="Betrag")["kind"] == "number"
+
+
+def test_two_different_references_no_longer_compare_equal(ws):
+    """The worst shape this bug had: both sides normalised to -1, so a
+    reconciliation reported two different records as agreeing."""
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("Vorgang,Referenz\nA,R-001\nB,R-002\n", encoding="utf-8")
+    right.write_text("Vorgang,Referenz\nA,X-001\nB,R-002\n", encoding="utf-8")
+    result = office.compare_tables(left, right, key="Vorgang")
+    assert result["equal"] == ["B"]
+    assert [d["key"] for d in result["differing"]] == ["A"]
+    difference = result["differing"][0]["differences"][0]
+    assert difference["left"] == "R-001" and difference["right"] == "X-001"
