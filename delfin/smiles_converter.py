@@ -18930,11 +18930,59 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
                         continue
                 except Exception:
                     pass
+            # DAS METALL IST EIN sigma-PARTNER (DELFIN_FFFREE_DONOR_SIGMA_COUNT, Standard AUS).
+            #
+            # heavy_nbrs wirft das Metall ausdruecklich weg.  Ein Donor mit DREI schweren
+            # Nachbarn PLUS Metall hat damit real VIER sigma-Partner -- er ist tetraedrisch --
+            # und wird hier trotzdem auf die Ebene seiner drei Nachbarn projiziert, also
+            # flachgedrueckt.  Das ist die dokumentierte Wurzel in ihrer sichtbarsten Form:
+            # Hybridisierung faellt auf einem METALLFREIEN Graphen, und der Donor zaehlt einen
+            # Partner zu wenig.
+            #
+            # Der Schutz darueber greift nur, wenn RDKit den Donor SP3 nennt -- und genau das
+            # tut es nicht, wenn das Metall vor der Typisierung entfernt wurde: mit drei
+            # Nachbarn liest sich das Atom als SP2, und dann ist Flachdruecken per Definition
+            # richtig.  Deshalb hier nicht die Hybridisierungs-MEINUNG, sondern die
+            # sigma-Partner ZAEHLEN, das Metall mitgezaehlt und die H mit.
+            #
+            # Der User sah es an VURMIE: "es ist sp2 trigonal planar muss aber sp3 ran
+            # koordinieren".  Gemessen wird es ab jetzt von find_donor_hybridisation.
+            _n_metal_nb = 0
+            _n_h_nb = 0
+            for _nb in atom.GetNeighbors():
+                if _nb.GetSymbol() in _METAL_SET:
+                    _n_metal_nb += 1
+                elif _nb.GetAtomicNum() == 1:
+                    _n_h_nb += 1
             heavy_nbrs = [
                 n.GetIdx()
                 for n in atom.GetNeighbors()
                 if n.GetAtomicNum() > 1 and n.GetSymbol() not in _METAL_SET
             ]
+            # DREI PARTNER AB PERIODE 3 SIND PYRAMIDAL -- das war der Fehler der ersten Fassung.
+            #
+            # Sie schuetzte nur den Fall "vier sigma-Partner -> tetraedrisch" und mass affected=0.
+            # Die neue Achse find_donor_hybridisation hat dann gesagt, wo es wirklich passiert,
+            # statt dass ich es rate -- 14 von 24 auffaelligen Systemen sind pyramidal_flattened,
+            # und die Elemente sprechen fuer sich:
+            #     NEYCUP Ti-Se(3sig) 37,42   QADFAC Pd-Se(3sig) 37,42   QADFEG Pt-Se(3sig) 37,42
+            #     HIXBIA Pt-Te(3sig) 22,16   HIXBOG Pd-Te(3sig) 22,16
+            # Dreimal bzw. zweimal EXAKT dieselbe Abweichung ueber verschiedene Metalle -- eine
+            # Konstruktionsregel, kein Rauschen.  Se und Te haben mit zwei schweren Nachbarn plus
+            # Metall genau DREI Partner und fielen damit durch das >=4-Raster.
+            #
+            # Die dokumentierte Regel, jetzt vollstaendig abgebildet:
+            #     >= 4 Partner (Metall mitgezaehlt)      -> tetraedrisch, nicht flach
+            #     == 3 Partner, Periode 2 (B,C,N,O,F)    -> planar, Metall IN der Ebene: flach OK
+            #     == 3 Partner, Periode 3+ (P,S,Se,As..) -> PYRAMIDAL, nicht flach
+            # Bestaetigt durch die Kristalle (58770 Stueck): S|3 hat p50 97,77 Grad -- deutlich
+            # unter den 120 Grad einer Ebene -- waehrend N|3 bei 119,94 liegt.
+            _sig_tot = len(heavy_nbrs) + _n_metal_nb + _n_h_nb
+            _period3 = atom.GetSymbol() not in ("B", "C", "N", "O", "F", "H")
+            if (_n_metal_nb
+                    and os.environ.get("DELFIN_FFFREE_DONOR_SIGMA_COUNT", "0") == "1"
+                    and (_sig_tot >= 4 or (_sig_tot == 3 and _period3))):
+                continue          # tetraedrisch oder pyramidal -- in beiden Faellen NICHT flach
             if len(heavy_nbrs) != 3:
                 continue
             idx = atom.GetIdx()
