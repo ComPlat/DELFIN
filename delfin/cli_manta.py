@@ -154,6 +154,28 @@ _CHAMPION_FLAGS = (
                           # True).  Only "loss" = BETXAB build-TIMEOUT (aggregate timeouts flat 892 vs 895 = load
                           # jitter, not a slowdown).  Env DELFIN_FFFREE_ISOLATED_SEAT; impl
                           # delfin/manta/_isolated_reseat.py, dispatched at smiles_converter.py final-pass.
+    "RING_PUCKER",        # #24: ADDITIVE ring-conformer completeness.  For 655 of 1000 systems the ligands are
+                          # torsionally RIGID, so the ring pucker IS their conformer space -- and it was never
+                          # enumerated.  Adds the Cremer-Pople pucker siblings NEXT TO the seated frame; the
+                          # primary is untouched, so a system that was already good keeps its good frame and one
+                          # that was missing the crystal's pucker GAINS it.  landed 2026-08-03.
+                          # REACH proven on the FULL pool (ffpuck1k, pool_full_1000): byte-partition affected=7
+                          # + byte-identical=991 -- the flag touches exactly seven systems in the whole
+                          # 1000-pool and NOTHING else, so the 991 are never-worse BY CONSTRUCTION.
+                          # QUALITY on those same seven, eye-measured WITH the roundtrip axis and the CORRECTED
+                          # manifold anchor (DELFIN_EYE_BV_MANIFOLD_MIN), THREE independent runs
+                          # (ffpuck2rt/ffpuck3rt/ffpuck5rt) with identical numbers each time:
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   valid 4->5, cap_LOST=0, cap_gained=1, n_improved=6, n_worse=0, mean_delta -2.584
+                          #   ALL THIRTY regression terms exactly 0 (capability/build/realism/roundtrip/poly/
+                          #   ccdc_*/broken/hard_frames/sp2_donor_oop/pyramid_frame/root_defects/tier2/...).
+                          # The earlier ffpuck1k FALSE came from ONE term -- tier2_regressed on YAGQIG via
+                          # ml_len_bv_sev -- and that run PREDATES the manifold-anchor fix, so the axis was read
+                          # on the min-RMSD frame; with the fix the same system reports tier2=0.
+                          # puck1krt3 was NOT a verdict at all: 501 of 1000 systems lost to the per-system clock
+                          # on an overbooked machine, build_lost_hard empty.
+                          # Env DELFIN_FFFREE_RING_PUCKER; impl delfin/manta/converter_backend.py:427.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
