@@ -1383,10 +1383,39 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
             _ddelta[int(di)] = _new - Q[di]
             Q[di] = _new
     if _dfollow:
-        for _a, (_own, _w) in _dfollow.items():
-            _d = _ddelta.get(int(_own))
-            if _d is not None:
-                Q[_a] = Q[_a] + _w * _d
+        # ONLY WHERE THE PLACEMENT ACTUALLY BROKE SOMETHING (default; the global form is
+        # DELFIN_FFFREE_DONOR_FOLLOW_ALWAYS=1).
+        #
+        # Measured on 187 systems, applied to EVERY seating: reach 92, capability +13 and
+        # valid 56 -> 66 -- the largest capability gain of the day -- but cap_LOST 3 and
+        # sixteen red terms (pyramid_frame_regressed 23, smiles_ccdc_regressed 13,
+        # isomers_lost 7).  The root is right and the scope was wrong: it also moved the
+        # backbones of frames that were already clean, and those had everything to lose.
+        #
+        # A frame that already carries a collapsed bond has nothing to lose, so restricting
+        # the decay to exactly those frames cannot cost a capability by construction -- the
+        # same argument that every lever which landed here rests on.  Where the placement was
+        # clean, this is byte-identical.
+        _always = os.environ.get("DELFIN_FFFREE_DONOR_FOLLOW_ALWAYS", "0") == "1"
+        _apply = True
+        if not _always:
+            try:
+                _apply = bool(_collapsed_heavy_bonds_strict(lsyms, Q))
+            except Exception:
+                _apply = False
+        if _apply:
+            _Qf = np.array(Q, float)
+            for _a, (_own, _w) in _dfollow.items():
+                _d = _ddelta.get(int(_own))
+                if _d is not None:
+                    _Qf[_a] = _Qf[_a] + _w * _d
+            # and it has to actually HELP: a decay that leaves the collapse in place, or
+            # trades it for another one, is not worth changing a frame for.
+            try:
+                if _always or not _collapsed_heavy_bonds_strict(lsyms, _Qf):
+                    Q = _Qf
+            except Exception:
+                pass
     # BETA IN THE SETTING -- ON THE PATH THAT ACTUALLY RUNS.
     #
     # The first two attempts hooked this into the `if rigid:` branch above and had ZERO
