@@ -1104,6 +1104,14 @@ def create_tab(ctx):
     )
 
     calc_view_toggle.add_class('calc-view-toggle')
+    # Sits in the header row rather than in the content toolbar, so it is
+    # there for a text file, a spreadsheet, a Word document, a PDF and the
+    # 3D view alike -- several of those hide the content toolbar entirely.
+    calc_fullscreen_btn = widgets.ToggleButton(
+        value=False, description='⛶', tooltip='Vollbild (Esc beendet)',
+        layout=widgets.Layout(width='44px', min_width='44px', height='26px'),
+    )
+    calc_fullscreen_btn.add_class('calc-fullscreen-btn')
 
     # Recalc widgets
     calc_recalc_btn = widgets.Button(
@@ -12062,6 +12070,32 @@ def create_tab(ctx):
     # -- wiring -------------------------------------------------------------
     calc_back_btn.on_click(calc_on_back)
     calc_home_btn.on_click(calc_on_home)
+    def _calc_on_fullscreen(change):
+        """Give the tab the whole window, or hand it back.
+
+        Python owns the state so the button always reflects it; Escape
+        reaches here as a click on that same button.
+        """
+        on = bool(change.get('new'))
+        calc_fullscreen_btn.description = '⤫' if on else '⛶'
+        calc_fullscreen_btn.tooltip = (
+            'Vollbild beenden (Esc)' if on else 'Vollbild (Esc beendet)')
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) return;
+            root.classList.toggle('calc-zen', {json.dumps(on)});
+            /* The 3D viewer sizes itself in pixels from the free space it
+               measured, so it has to measure again once the tab has resized. */
+            setTimeout(function() {{
+                var fn = window["{calc_resize_mol_fn}"];
+                if (typeof fn === 'function') fn();
+                window.dispatchEvent(new Event('resize'));
+            }}, 60);
+        }})();
+        """)
+
+    calc_fullscreen_btn.observe(_calc_on_fullscreen, names='value')
     calc_refresh_btn.on_click(calc_on_refresh)
     calc_path_input.observe(calc_on_path_change, names='value')
     calc_top_btn.on_click(calc_go_top)
@@ -13371,6 +13405,16 @@ def create_tab(ctx):
     calc_css = widgets.HTML(
         '<style>'
         '.calc-content-box { overflow-x:hidden !important; }'
+        # Fullscreen. The tab lifts out of the page instead of moving its
+        # children into an overlay: everything inside already sizes itself
+        # from the tab's height, so giving the tab the viewport is the whole
+        # change, and no widget is reparented and re-rendered to get there.
+        '.calc-tab.calc-zen { position:fixed !important; top:0; left:0;'
+        ' right:0; bottom:0; width:100vw !important; height:100vh !important;'
+        ' max-height:100vh !important; max-width:100vw !important;'
+        ' z-index:9990 !important; background:#fff !important;'
+        ' margin:0 !important; padding:10px !important; }'
+        '.calc-tab.calc-zen > h3 { display:none !important; }'
         # Office holds documents, not jobs. These controls report on
         # calculations -- a keyword menu of ORCA section headings, a DELFIN
         # report, a 3D structure, the calculation archive, running SSH
@@ -13545,6 +13589,7 @@ def create_tab(ctx):
                     calc_download_btn,
                     calc_report_btn,
                     calc_view_toggle,
+                    calc_fullscreen_btn,
                 ],
                 layout=widgets.Layout(
                     gap='10px',
@@ -13875,6 +13920,20 @@ def create_tab(ctx):
                     if (window["{calc_resize_pre_fn}"]) window["{calc_resize_pre_fn}"]();
                 }}, 220);
             }}).observe(root, {{attributes: true, subtree: true, attributeFilter: ['style']}});
+        }}
+
+        /* Escape leaves fullscreen by pressing the same button, so the
+           button and the tab can never disagree about the state. */
+        if (root && root.dataset.zenEscBound !== '1') {{
+            root.dataset.zenEscBound = '1';
+            document.addEventListener('keydown', function(e) {{
+                if (e.key !== 'Escape') return;
+                if (!root.classList.contains('calc-zen')) return;
+                var holder = root.querySelector('.calc-fullscreen-btn');
+                var btn = holder && (holder.tagName === 'BUTTON'
+                    ? holder : holder.querySelector('button'));
+                if (btn) {{ e.preventDefault(); btn.click(); }}
+            }}, true);
         }}
         }}
         initCalcScopeBind(0);
