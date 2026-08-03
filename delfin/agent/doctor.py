@@ -339,6 +339,10 @@ def _check_document_backends(ctx: dict) -> list[dict]:
         # A separate dependency from pypdf: taking PDF pages apart is not
         # the same library as laying text out on one.
         ("PDF writing", "reportlab", "reportlab", "create_pdf"),
+        # LibreOffice formats. Reading only, which is why the capability
+        # names reading: writing ODF is refused rather than approximated.
+        ("OpenDocument", "odf", "odfpy",
+         "read_document / compare_tables on .ods and .odt"),
     ):
         label = f"documents: {kind}"
         try:
@@ -352,6 +356,33 @@ def _check_document_backends(ctx: dict) -> list[dict]:
             ))
         else:
             out.append(_row(label, PASS, f"{dist} available"))
+
+    # OCR gets its own row because its failure mode is not a missing
+    # import: pytesseract installs cleanly and then fails at the first
+    # call because the program it drives is not on the machine. The row
+    # names the component that is actually missing.
+    try:
+        from .office import ocr_availability
+        status = ocr_availability()
+    except Exception as exc:  # noqa: BLE001 — a probe may not crash the report
+        out.append(_row(
+            "documents: OCR", WARN,
+            f"could not be determined ({type(exc).__name__})",
+            "check the office module",
+        ))
+        return out
+    if status["available"]:
+        out.append(_row(
+            "documents: OCR", PASS,
+            f"{status['engine']} available — read_document(ocr=true) can "
+            "read scanned pages"))
+    else:
+        out.append(_row(
+            "documents: OCR", WARN,
+            ("; ".join(status["detail"]) or "no OCR engine found")
+            + " — scanned PDFs can be detected but not read",
+            status["next_step"],
+        ))
     return out
 
 

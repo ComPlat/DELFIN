@@ -431,7 +431,8 @@ def test_document_backends_report_one_row_each():
     rows = doc._check_document_backends({})
     assert [r["check"] for r in rows] == [
         "documents: spreadsheets", "documents: PDF", "documents: Word",
-        "documents: PDF writing"]
+        "documents: PDF writing", "documents: OpenDocument",
+        "documents: OCR"]
     assert all(r["status"] in ("PASS", "WARN") for r in rows)
 
 

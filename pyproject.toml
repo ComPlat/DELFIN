@@ -120,6 +120,11 @@ office = [
     # spreadsheet shows the sum. Optional at runtime: missing, the grid
     # shows the formula and says why.
     "formulas>=1.2",
+    # OpenDocument (.ods/.odt). LibreOffice is what a great many public
+    # authorities and universities run, so these arrive as ordinary
+    # attachments; without a reader they stop a document task dead.
+    # Reading only — writing ODF is refused rather than approximated.
+    "odfpy>=1.4",
 ]
 dev = [
     "pytest>=6.0",

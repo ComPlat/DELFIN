@@ -2325,10 +2325,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "read_document",
             "description": (
-                "Read a spreadsheet (.xlsx/.csv), PDF or .docx — read_file "
-                "cannot, these are containers. Sheets come back as a grid "
-                "with column letters and row numbers to cite in edit_sheet. "
-                "fields=true lists a PDF form's fields instead of its text."
+                "Read a spreadsheet (.xlsx/.ods/.csv), PDF, .docx or .odt — "
+                "read_file cannot, these are containers. Sheets come back as "
+                "a grid with column letters and row numbers to cite in "
+                "edit_sheet. fields=true lists a PDF form's fields instead "
+                "of its text."
             ),
             "parameters": {
                 "type": "object",
@@ -2349,6 +2350,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "description": "PDF: '3', '2-5' or '1,4,7'.",
                     },
                     "fields": {"type": "boolean"},
+                    "ocr": {
+                        "type": "boolean",
+                        "description": "Scanned PDF pages only.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -3956,8 +3961,8 @@ _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
 # gate then blocked, correctly. Observed in the field 20260803-143354.
 # A tool listing several backends needs ANY of them.
 _OFFICE_TOOL_BACKENDS: dict[str, tuple[str, ...]] = {
-    "read_document": ("spreadsheet", "pdf", "word"),
-    "compare_tables": ("spreadsheet",),
+    "read_document": ("spreadsheet", "pdf", "word", "opendocument"),
+    "compare_tables": ("spreadsheet", "opendocument"),
     "edit_sheet": ("spreadsheet",),
     "fill_pdf_form": ("pdf",),
     "merge_pdfs": ("pdf",),
@@ -5036,11 +5041,15 @@ _UNREADABLE_SUFFIXES: dict[str, str] = {
     ".xlsx": "spreadsheet", ".xlsm": "spreadsheet",
     ".xltx": "spreadsheet", ".xltm": "spreadsheet",
     ".pdf": "PDF", ".docx": "Word document",
+    # OpenDocument: containers like the rest, and read_document reads
+    # them. They sat with the convert-first formats until there was a
+    # reader, and leaving them there would send the model off to convert
+    # a file it can simply open.
+    ".ods": "OpenDocument spreadsheet", ".odt": "OpenDocument text document",
 }
 _CONVERT_FIRST_SUFFIXES: dict[str, str] = {
     ".xls": "legacy Excel workbook", ".doc": "legacy Word document",
     ".ppt": "legacy PowerPoint file", ".pptx": "PowerPoint file",
-    ".ods": "OpenDocument spreadsheet", ".odt": "OpenDocument text",
     ".odp": "OpenDocument presentation", ".rtf": "rich-text document",
     ".zip": "ZIP archive", ".tar": "tar archive", ".gz": "gzip archive",
     ".7z": "7z archive", ".rar": "RAR archive",
@@ -6391,6 +6400,7 @@ class _DocToolExecutor:
                 start_row=_as_int(arguments.get("start_row"), 1),
                 pages=arguments.get("pages"),
                 fields=bool(arguments.get("fields")),
+                ocr=bool(arguments.get("ocr")),
             )
         except _office.OfficeError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -6416,6 +6426,18 @@ class _DocToolExecutor:
                 if f.get("states"):
                     row += f"  states: {', '.join(f['states'])}"
                 lines.append(row)
+            # An XFA form keeps its data in an XML stream, so every
+            # AcroForm entry above reads as empty while the form is
+            # full. These are the values the document actually holds.
+            xfa_values = result.get("xfa_values") or []
+            if xfa_values:
+                lines.append("")
+                lines.append("  XFA dataset (read-only):")
+                for entry in xfa_values[:60]:
+                    lines.append(f"    {entry['name']} = {entry['value']}")
+                if len(xfa_values) > 60:
+                    lines.append(
+                        f"    … {len(xfa_values) - 60} more value(s)")
         elif "placeholders" in result:
             found = result["placeholders"]
             lines.append(
