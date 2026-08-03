@@ -517,6 +517,200 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
             results.append((_xyz(_ps, _pP), f"{base_label}-{_plab}"))
         except Exception:
             continue
+
+
+# ---------------------------------------------------------------------------
+# THE COUNTABLE CONFORMER AXIS
+# ---------------------------------------------------------------------------
+# For ISOMERS this project has Polya: a theory set, hence a denominator, hence
+# completeness as a CHECKABLE quantity.  For CONFORMERS it has nothing of the kind -- the
+# builder embeds, keeps one, and nobody can say how many it should have had.  Measured
+# consequence: the FF-free chelate path emits 2.23 frames per system with ZERO conformer
+# suffixes, against 30.6 on everything else, and ccdc_pucker_realized is false for a
+# quarter of the census.
+#
+# THE LAW THAT MAKES IT COUNTABLE.  A molecule's geometry is fixed by 1-2 (bonds,
+# chemistry), 1-3 (angles, hybridisation) and 1-4 (torsions) -- and the torsions are the
+# ONLY free part, and they are DISCRETE.  Their minima follow from the LOCAL environment
+# of the bond, not from a uniform raster:
+#
+#     sp3-sp3              3    gauche+, anti, gauche-      (syn ~0 is a MAXIMUM)
+#     sp3-sp2              2    the two eclipsing minima at the sp2 centre
+#     sp2-sp2 conjugated   2    s-cis, s-trans
+#     ring bond            0    NO degree of freedom -- ring closure, not torsion
+#     terminal/symmetric   1    a methyl turns but changes nothing distinguishable
+#
+# Choosing a well therefore COMPLETES the specification: after it, nothing is left
+# underdetermined.  A conformer stops being something one SAMPLES and becomes something one
+# INDEXES -- and the index set is countable.  That is the whole point.
+#
+# WHY IT IS TRACTABLE, measured over 1000 systems (conformer_theory.py): 655 are torsionally
+# RIGID (n_theory == 1) -- for two thirds of the space the ring pucker IS the entire
+# conformer manifold, which is why that lever came first.  Of the rest the median is 1 and
+# p90 is 36; only 20 systems explode, and for those the standing rule is to rank by ENERGY,
+# never by RMSD.
+#
+# WHY IT IS BUILT AS SIBLINGS.  Every flag that ever landed in this project ADDS
+# (D8_SQ_ADD "a PURELY ADDITIVE sibling ... the PRIMARY frame is untouched", CN6_OH_ADD,
+# STEREOCENTER_ENUM, CN4_BOTH); everything measured on 2026-08-02 that CHOSE instead of
+# added, died -- 17 A/Bs.  The reason turned out to be measurable: cap_LOST can only be paid
+# by a system we ALREADY build perfectly (a system with broken_frac 1.0 has no capability to
+# lose), so the recurring losers are the CLEANEST systems we have -- manifold_clean 44 % vs
+# 19 % over 953 systems.  The only safe change to a perfect system is one that does not
+# touch it.
+
+_WELL_SP3_SP3 = (60.0, 180.0, 300.0)     # gauche+, anti, gauche-
+_WELL_CONJ = (0.0, 180.0)                # s-cis / s-trans, and the sp2 eclipsing pair
+_WELL_MAX_SIBLINGS = 12                  # bounded: the product is exponential by nature
+
+
+def _sp2_like(atom) -> bool:
+    """sp2 for the purpose of torsional wells: aromatic, or carrying a multiple bond."""
+    try:
+        if atom.GetIsAromatic():
+            return True
+        for b in atom.GetBonds():
+            if b.GetBondTypeAsDouble() > 1.4:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _torsion_wells(mol, i, j):
+    """The absolute dihedral minima of the i-j bond, from its LOCAL environment."""
+    try:
+        a, b = mol.GetAtomWithIdx(int(i)), mol.GetAtomWithIdx(int(j))
+    except Exception:
+        return ()
+    s1, s2 = _sp2_like(a), _sp2_like(b)
+    if s1 and s2:
+        return _WELL_CONJ                 # conjugated: s-cis / s-trans
+    if s1 or s2:
+        return _WELL_CONJ                 # sp3-sp2: the two eclipsing minima at the sp2
+    return _WELL_SP3_SP3                  # sp3-sp3
+
+
+def _distal_side(mol, i, j):
+    """Atom indices on j's side of the i-j bond (the half a rotation moves)."""
+    seen, stack = {int(j)}, [int(j)]
+    while stack:
+        cur = stack.pop()
+        for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+            k = nb.GetIdx()
+            if k == int(i) or k in seen:
+                continue
+            seen.add(k)
+            stack.append(k)
+    return seen
+
+
+def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, base_label,
+                                cn=None, geom=None, donors=None, exempt_pairs=None,
+                                graph_bonds=None, max_isomers=0):
+    """Append one SIBLING per distinct torsional well vector of the accepted frame.
+
+    THE ONE PLACE DELFIN_FFFREE_TORSION_WELLS IS READ (default OFF -> byte-identical).
+
+    Only bonds whose MOVING half contains no frozen atom are turned -- the metal and every
+    donor stay exactly put, so the coordination sphere is carried through untouched and only
+    pendant backbone turns.  That is deliberately the same restriction torsion_relax applies,
+    and it is why a rigid chelate contributes nothing here while a large flexible ligand --
+    the 464-system LIGAND_TOO_LARGE class -- contributes most.
+
+    Every sibling must clear the SAME bar as the frame it hangs off: the self-gate, no new
+    collapsed bond, no worse beta, and no tighter closest contact.  Nothing that already
+    exists is altered or dropped."""
+    if os.environ.get("DELFIN_FFFREE_TORSION_WELLS", "0") != "1" or not lig_groups:
+        return
+    try:
+        from delfin.manta import assemble_complex as _AC
+        from rdkit import Chem as _Chem
+        from rdkit.Chem import rdMolTransforms as _RT
+        import numpy as _np
+        import itertools as _it
+    except Exception:
+        return
+    m = _config_template_mol(metal, lig_groups, base_syms)
+    if m is None:
+        return
+    frozen = {0} | {int(x) for x in (donors or [])}
+    _dloc = sorted(int(x) for x in (donors or []))
+    try:
+        base_bad = (bool(_AC._collapsed_heavy_bonds_strict(list(base_syms), base_P)),
+                    float(_AC._beta_score(list(base_syms), base_P, _dloc)))
+        base_min = _min_nonbonded_heavy(base_syms, base_P)
+    except Exception:
+        return
+    # rotatable bonds whose moving half is free of metal AND donors
+    dofs = []
+    try:
+        for b in m.GetBonds():
+            if b.GetBondType() != _Chem.BondType.SINGLE or b.IsInRing():
+                continue
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if m.GetAtomWithIdx(i).GetAtomicNum() == 1 or m.GetAtomWithIdx(j).GetAtomicNum() == 1:
+                continue
+            h1 = sum(1 for n in m.GetAtomWithIdx(i).GetNeighbors() if n.GetAtomicNum() > 1)
+            h2 = sum(1 for n in m.GetAtomWithIdx(j).GetNeighbors() if n.GetAtomicNum() > 1)
+            if h1 < 2 or h2 < 2:
+                continue                      # terminal spin: nothing distinguishable turns
+            for (a, c) in ((i, j), (j, i)):
+                if _distal_side(m, a, c) & frozen:
+                    continue                  # would move the metal or a donor
+                r1 = next((n.GetIdx() for n in m.GetAtomWithIdx(a).GetNeighbors()
+                           if n.GetIdx() != c and n.GetAtomicNum() > 1), None)
+                r2 = next((n.GetIdx() for n in m.GetAtomWithIdx(c).GetNeighbors()
+                           if n.GetIdx() != a and n.GetAtomicNum() > 1), None)
+                if r1 is None or r2 is None:
+                    continue
+                w = _torsion_wells(m, a, c)
+                if len(w) > 1:
+                    dofs.append((r1, a, c, r2, w))
+                break
+    except Exception:
+        return
+    if not dofs:
+        return _scope_no("WELLS_NO_DOF", "nrot=0")
+    dofs = dofs[:4]                           # bound the product; 3^4 = 81 before dedup
+    try:
+        conf0 = _Chem.Conformer(m.GetNumAtoms())
+        for i in range(m.GetNumAtoms()):
+            conf0.SetAtomPosition(i, [float(base_P[i][0]), float(base_P[i][1]),
+                                      float(base_P[i][2])])
+        m.RemoveAllConformers()
+        m.AddConformer(conf0, assignId=True)
+    except Exception:
+        return
+    n_added = 0
+    for combo in _it.product(*[d[4] for d in dofs]):
+        if n_added >= _WELL_MAX_SIBLINGS:
+            break
+        if max_isomers and len(results) >= max_isomers:
+            break
+        try:
+            w = _Chem.Mol(m)
+            c = w.GetConformer()
+            for (r1, a, b2, r2, _wl), ang in zip(dofs, combo):
+                _RT.SetDihedralDeg(c, int(r1), int(a), int(b2), int(r2), float(ang))
+            _pP = _np.array(c.GetPositions(), float)
+            _ps = list(base_syms)
+            if _np.allclose(_pP, _np.asarray(base_P, float), atol=1e-6):
+                continue                      # the base frame already sits in this well
+            _ps, _pP = _maybe_relax(_ps, _pP)
+            if not _build_is_clean(_ps, _pP, cn=cn, geom=geom, donors=donors,
+                                   exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+                continue
+            if _AC._collapsed_heavy_bonds_strict(_ps, _pP) and not base_bad[0]:
+                continue
+            if _AC._beta_score(_ps, _pP, _dloc) > base_bad[1] + 1e-9:
+                continue
+            if base_min is not None and not _interlig_clash_ok(_ps, _pP, base_min):
+                continue
+            results.append((_xyz(_ps, _pP), "%s-well%d" % (base_label, n_added + 1)))
+            n_added += 1
+        except Exception:
+            continue
 def _interlig_vdw_gate_enabled() -> bool:
     """vdW-level inter-ligand clash filter for the ADDITIONAL conformer frames
     (backbone re-embed / conformer re-seating).  Active by default whenever those
@@ -1269,6 +1463,14 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                                    cn=d.get("cn"), geom=d.get("geometry"),
                                    donors=donors, exempt_pairs=_ex, graph_bonds=_gb,
                                    max_isomers=max_isomers)
+        # ... and the TORSIONAL half of the same axis.  The ring pucker covers the 655 of
+        # 1000 systems that are torsionally rigid; this covers the rest.  Together they are
+        # the countable conformer space: pucker basins x torsional wells, both enumerated,
+        # both emitted as siblings, the primary untouched.
+        _append_ffree_torsion_wells(results, d["metal"], _clg, syms, P, _lab,
+                                    cn=d.get("cn"), geom=d.get("geometry"),
+                                    donors=donors, exempt_pairs=_ex, graph_bonds=_gb,
+                                    max_isomers=max_isomers)
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of this accepted chelate frame.
         _append_reembed(results, d["metal"], _clg,
