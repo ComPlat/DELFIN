@@ -6352,6 +6352,11 @@ class _DocToolExecutor:
             lines.append("")
             for f in result["fields"]:
                 row = f"  {f['name']}  [{f['type']}]"
+                # The printed label, where one could be located. In many
+                # real forms the field NAME carries nothing (text1, text2)
+                # and this is the only thing that identifies the field.
+                if f.get("label"):
+                    row += f"  “{f['label']}”"
                 if f.get("value"):
                     row += f"  = {f['value']}"
                 if f.get("states"):
@@ -6563,11 +6568,21 @@ class _DocToolExecutor:
                 return approved
 
         pre_bytes: Optional[bytes] = None
+        backup: Optional[Path] = None
         if full.exists():
             try:
                 pre_bytes = full.read_bytes()
             except OSError:
                 pre_bytes = None
+            # A copy in the folder the user already opens, under the same
+            # names the file browser writes. The undo journal covers this
+            # session; a numbered copy beside the document is the version
+            # history that survives it.
+            try:
+                from delfin import doc_backup as _bk
+                backup = _bk.make_backup(full)
+            except Exception:
+                backup = None
 
         try:
             if creating:
@@ -6617,6 +6632,17 @@ class _DocToolExecutor:
         if not creating:
             # Read back from the saved file rather than reporting the intent.
             out["verified"] = bool(result.get("verified", True))
+            if backup is not None:
+                out["backup"] = self._display_path(backup, perms)
+            elif pre_bytes is not None:
+                # Say it. "Changed with a copy kept" and "changed without
+                # one" are different things to tell someone about their
+                # records, and only one of them is recoverable outside
+                # this session.
+                notes.append(
+                    "no backup copy could be written for this file — the "
+                    "change is undoable in this session but leaves no copy "
+                    "in the folder.")
         if notes:
             out["notes"] = notes
         return json.dumps(out, ensure_ascii=False)

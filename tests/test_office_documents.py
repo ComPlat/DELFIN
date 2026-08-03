@@ -1032,3 +1032,92 @@ def test_a_german_csv_round_trips_through_read_and_write(ws):
     out = ws / "out.csv"
     office.create_sheet(out, rows)
     assert "Straße" in office.read_sheet(out)["grid"]
+
+
+# ---------------------------------------------------------------------------
+# Fields whose names say nothing
+# ---------------------------------------------------------------------------
+
+def _anonymous_form(path, reversed_order=False):
+    """A form whose field names carry no meaning, as designers produce."""
+    from reportlab.lib.colors import black, white
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    width, height = A4
+    c = canvas.Canvas(str(path), pagesize=A4)
+    labels = ["Antragsteller", "Kostenstelle", "Vorhaben", "Betrag (EUR)"]
+    for index, label in enumerate(labels):
+        c.setFont("Helvetica", 10)
+        c.drawString(55, height - 130 - 34 * index + 4, label + ":")
+    form = c.acroForm
+    for index in range(len(labels)):
+        # reversed: field 1 sits on the LAST line, so a caller trusting the
+        # field order would put every value one field off.
+        position = (len(labels) - 1 - index) if reversed_order else index
+        form.textfield(name=f"text{index + 1}", x=175,
+                       y=height - 130 - 34 * position, width=330, height=19,
+                       borderColor=black, fillColor=white, forceBorder=True)
+    c.setFont("Helvetica", 10)
+    c.drawString(55, height - 300, "Begründung:")
+    form.textfield(name="text9", x=55, y=height - 345, width=450, height=38,
+                   borderColor=black, fillColor=white, forceBorder=True)
+    c.save()
+    return path
+
+
+def test_a_field_is_paired_with_the_label_printed_beside_it(ws):
+    pytest.importorskip("fitz")
+    form = _anonymous_form(ws / "anonym.pdf")
+    by_name = {f["name"]: f for f in office.pdf_form_fields(form)["fields"]}
+    assert by_name["text1"]["label"] == "Antragsteller"
+    assert by_name["text2"]["label"] == "Kostenstelle"
+    assert by_name["text4"]["label"] == "Betrag (EUR)"
+    assert by_name["text1"]["label_source"] == "left"
+
+
+def test_the_pairing_follows_the_page_not_the_field_order(ws):
+    """A form built with a designer often numbers its fields in an order
+    that has nothing to do with the layout. Trusting the order would put
+    every value in the wrong field, and the result looks correct."""
+    pytest.importorskip("fitz")
+    form = _anonymous_form(ws / "verdreht.pdf", reversed_order=True)
+    by_name = {f["name"]: f for f in office.pdf_form_fields(form)["fields"]}
+    assert by_name["text1"]["label"] == "Betrag (EUR)"
+    assert by_name["text4"]["label"] == "Antragsteller"
+
+
+def test_a_label_above_the_box_is_found_too(ws):
+    pytest.importorskip("fitz")
+    form = _anonymous_form(ws / "gestapelt.pdf")
+    by_name = {f["name"]: f for f in office.pdf_form_fields(form)["fields"]}
+    assert by_name["text9"]["label"] == "Begründung"
+    assert by_name["text9"]["label_source"] == "above"
+
+
+def test_fields_without_a_findable_label_are_named_as_such(ws):
+    """Silence would leave the model to infer them from the order, which
+    is the mistake this whole pairing exists to prevent."""
+    pytest.importorskip("fitz")
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    from reportlab.lib.colors import black, white
+
+    path = ws / "nackt.pdf"
+    c = canvas.Canvas(str(path), pagesize=A4)
+    c.acroForm.textfield(name="text1", x=200, y=400, width=200, height=19,
+                         borderColor=black, fillColor=white, forceBorder=True)
+    c.save()
+    result = office.pdf_form_fields(path)
+    assert not result["fields"][0].get("label")
+    assert any("not infer them from the field order" in n
+               for n in result["notes"])
+
+
+def test_the_label_reaches_the_model(ws):
+    pytest.importorskip("fitz")
+    form = _anonymous_form(ws / "anonym.pdf")
+    out = _DocToolExecutor()._dispatch(
+        "read_document", {"path": str(form), "fields": True}, _perms(ws))
+    assert "Antragsteller" in out and "text1" in out

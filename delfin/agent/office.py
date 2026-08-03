@@ -1910,6 +1910,108 @@ _FIELD_TYPES = {
 }
 
 
+def _field_labels(path: Path) -> dict:
+    """Pair each form field with the text printed next to it.
+
+    A field name carries no meaning in many real forms — ``text1``,
+    ``text2``, ``Kontrollkästchen3``. What identifies the field is the
+    label printed beside it, and the two are connected only by their
+    position on the page. Without that link a caller can do nothing but
+    assume the field order matches the visual order, which in a form
+    built with a designer it frequently does not: a value in the wrong
+    field looks perfectly correct afterwards.
+
+    Order of evidence: the field's own tooltip (``/TU``) when the form
+    author set one, otherwise the nearest text to the LEFT on the same
+    line, otherwise the text directly ABOVE. Returns
+    ``{field: {"label", "source", "page"}}`` and never raises — a form
+    whose geometry cannot be read simply yields no labels.
+    """
+    out: dict[str, dict] = {}
+    try:
+        import fitz
+    except Exception:
+        return out
+    try:
+        doc = fitz.open(str(path))
+    except Exception:
+        return out
+    try:
+        for number, page in enumerate(doc, start=1):
+            try:
+                widgets = list(page.widgets() or [])
+            except Exception:
+                continue
+            if not widgets:
+                continue
+            try:
+                words = page.get_text("words")     # x0, y0, x1, y1, word, ...
+            except Exception:
+                words = []
+            for widget in widgets:
+                name = str(getattr(widget, "field_name", "") or "")
+                if not name or name in out:
+                    continue
+                tooltip = str(getattr(widget, "field_label", "") or "").strip()
+                if tooltip:
+                    out[name] = {"label": tooltip, "source": "tooltip",
+                                 "page": number}
+                    continue
+                found = _nearest_label(widget.rect, words)
+                if found:
+                    out[name] = {"label": found[0], "source": found[1],
+                                 "page": number}
+    except Exception:
+        return out
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+    return out
+
+
+def _nearest_label(rect: Any, words: list) -> Optional[tuple]:
+    """The printed text that identifies a widget, plus where it sat.
+
+    Left first: forms put the label on the same line, before the box.
+    Above second, for stacked layouts. Both windows are deliberately
+    narrow — a label further away than this is more likely to belong to
+    a neighbouring field, and a wrong label is worse than none.
+    """
+    mid_y = (rect.y0 + rect.y1) / 2
+    height = max(rect.y1 - rect.y0, 1.0)
+
+    same_line = [
+        w for w in words
+        if w[2] <= rect.x0 + 2                      # ends left of the box
+        and w[1] <= mid_y <= w[3] + height * 0.4    # vertically on the line
+        and rect.x0 - w[2] < 320                    # not across the page
+    ]
+    if same_line:
+        same_line.sort(key=lambda w: w[0])
+        gap_limit = max(w[2] for w in same_line) - 260
+        text = " ".join(w[4] for w in same_line if w[2] >= gap_limit)
+        cleaned = text.strip(" :._-\t")
+        if cleaned:
+            return cleaned, "left"
+
+    above = [
+        w for w in words
+        if w[3] <= rect.y0 + 2                      # ends above the box
+        and rect.y0 - w[3] < height * 2.2           # directly above
+        and w[2] > rect.x0 - 40 and w[0] < rect.x1  # horizontally overlapping
+    ]
+    if above:
+        top = max(w[3] for w in above)
+        text = " ".join(w[4] for w in sorted(above, key=lambda w: w[0])
+                        if w[3] >= top - 2)
+        cleaned = text.strip(" :._-\t")
+        if cleaned:
+            return cleaned, "above"
+    return None
+
+
 def pdf_form_fields(path: Any) -> dict:
     """List a PDF form's fields with their type, value and allowed states.
 
@@ -1927,6 +2029,7 @@ def pdf_form_fields(path: Any) -> dict:
     except Exception as exc:
         raise OfficeError(f"could not read form fields: {exc}") from exc
 
+    labels = _field_labels(p)
     fields = []
     for name, spec in raw.items():
         entry: dict[str, Any] = {
@@ -1935,12 +2038,24 @@ def pdf_form_fields(path: Any) -> dict:
                 spec.get("/FT", "") or "unknown")),
             "value": _fmt(spec.get("/V")),
         }
+        found = labels.get(str(name))
+        if found:
+            entry["label"] = found["label"]
+            entry["label_source"] = found["source"]
+            entry["page"] = found["page"]
         states = spec.get("/_States_")
         if states:
             entry["states"] = [str(s) for s in states]
         fields.append(entry)
 
     notes: list[str] = []
+    unlabelled = [f["name"] for f in fields if not f.get("label")]
+    if fields and unlabelled:
+        notes.append(
+            "no printed label could be located for: "
+            + ", ".join(unlabelled[:10])
+            + ". Do not infer them from the field order — in a form built "
+            "with a designer it often does not follow the visual order.")
     if not fields:
         notes.append(
             "this PDF has no form fields. Values cannot be filled in; "
