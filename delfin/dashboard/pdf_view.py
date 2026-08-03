@@ -23,6 +23,7 @@ and (except for the few functions that take a page) without PyMuPDF.
 from __future__ import annotations
 
 import html as _html
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,22 @@ DPI_STEPS = (100, 150, 200, 300)
 DEFAULT_DPI_INDEX = 0
 ZOOM_LABELS = ('100 %', '150 %', '200 %', '300 %')
 
+# Fit-to-width is the default: a document is read at the width it has room
+# for, and that width changes when the splitter moves, the window resizes or
+# the tab goes fullscreen. Kept out of DPI_STEPS because it is not a step --
+# it is a rule for computing one.
+FIT_WIDTH = -1
+FIT_WIDTH_LABEL = 'Seitenbreite'
+FIT_WIDTH_MAX_DPI = 300
+# Until the browser reports the real width. An A4 page at 100 dpi is ~830 px,
+# which is what the pane used to be sized for.
+ASSUMED_FRAME_WIDTH = 860
+
+# Pages are stacked in one scroll container. Each page keeps its own widget,
+# and only the ones near the viewport hold pixels.
+PAGE_GAP_PX = 12
+RENDER_WINDOW = 2
+
 # A page image crosses the comm channel as PNG on every navigation step, and an
 # oversized sheet (posters, plans) at 300 dpi would be tens of megapixels. The
 # effective DPI is lowered for those pages instead of refusing to draw them.
@@ -65,6 +82,125 @@ ACTIVE_HIGHLIGHT_COLOR = (255, 109, 0)  # the hit the user is standing on
 HIGHLIGHT_ALPHA = 0.42
 
 IDENTITY_MATRIX = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+_PAGES_JS_TEMPLATE = r"""
+(function(){
+  var TOKEN = __TOKEN__;
+  var tries = 0;
+
+  function boot(){
+    var root = document.querySelector('.' + TOKEN);
+    var frame = root && root.querySelector('.pdfv-frame');
+    var pages = root && root.querySelector('.pdfv-pages');
+    if (!root || !frame || !pages || !pages.children.length) {
+      if (++tries < 60) setTimeout(boot, 50);
+      return;
+    }
+    if (root.dataset.bound === TOKEN) { report(); measure(); return; }
+    root.dataset.bound = TOKEN;
+    install(root, frame, pages);
+  }
+
+  function install(root, frame, pages){
+    function send(payload){
+      payload.token = TOKEN;
+      var field = root.querySelector('.pdfv-bridge-input input');
+      if (!field) return;
+      var desc = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value');
+      if (desc && desc.set) desc.set.call(field, JSON.stringify(payload));
+      else field.value = JSON.stringify(payload);
+      field.dispatchEvent(new Event('input', {bubbles: true}));
+      field.dispatchEvent(new Event('change', {bubbles: true}));
+      var holder = root.querySelector('.pdfv-bridge-action');
+      var btn = holder && (holder.tagName === 'BUTTON'
+        ? holder : holder.querySelector('button'));
+      if (btn) btn.click();
+    }
+
+    /* Which pages are on screen. Reported as one message after scrolling
+       settles: asking per page would send a burst the kernel answers one
+       render at a time, and the user would watch it catch up. */
+    var pending = null;
+    function report(){
+      if (pending) clearTimeout(pending);
+      pending = setTimeout(function(){
+        pending = null;
+        var top = frame.scrollTop, bottom = top + frame.clientHeight;
+        var want = [];
+        var kids = pages.children;
+        for (var i = 0; i < kids.length; i++) {
+          var el = kids[i];
+          var elTop = el.offsetTop, elBottom = elTop + el.offsetHeight;
+          if (elBottom > top - 40 && elTop < bottom + 40) want.push(i);
+        }
+        if (want.length) send({action: 'pages', want: want});
+      }, 90);
+    }
+    root.__pdfvReport = report;
+
+    var lastWidth = 0;
+    function measure(){
+      var width = Math.round(frame.clientWidth);
+      if (!width || Math.abs(width - lastWidth) < 8) return;
+      lastWidth = width;
+      send({action: 'width', px: width});
+    }
+    root.__pdfvMeasure = measure;
+
+    frame.addEventListener('scroll', report, {passive: true});
+    if (window.ResizeObserver) {
+      var timer = null;
+      new ResizeObserver(function(){
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(measure, 160);
+      }).observe(frame);
+    } else {
+      window.addEventListener('resize', function(){ setTimeout(measure, 160); });
+    }
+
+    /* Scroll to a page, asked for by the kernel when the page number, a
+       search hit or the step buttons move. */
+    root.__pdfvGoto = function(index){
+      var el = pages.children[index];
+      if (!el) return;
+      frame.scrollTop = Math.max(0, el.offsetTop - 6);
+      report();
+    };
+
+    measure();
+    report();
+  }
+
+  function report(){
+    var root = document.querySelector('.' + TOKEN);
+    if (root && root.__pdfvReport) root.__pdfvReport();
+  }
+  function measure(){
+    var root = document.querySelector('.' + TOKEN);
+    if (root && root.__pdfvMeasure) root.__pdfvMeasure();
+  }
+
+  boot();
+})();
+"""
+
+
+def _pages_js(token: str) -> str:
+    """Browser side of the page stack: report what is visible, measure width.
+
+    Must go through the dashboard's JS channel: ipywidgets sets HTML content
+    with ``innerHTML``, which never runs an inline script.
+    """
+    return _PAGES_JS_TEMPLATE.replace('__TOKEN__', json.dumps(str(token)))
+
+
+def _goto_js(token: str, index: int) -> str:
+    return (
+        f"(function(){{var r=document.querySelector('.{token}');"
+        f"if(r&&r.__pdfvGoto)r.__pdfvGoto({int(index)});}})();"
+    )
 
 
 class PdfError(RuntimeError):
@@ -151,6 +287,45 @@ def clamp_dpi_index(index: Any) -> int:
 
 def dpi_for_index(index: Any) -> int:
     return DPI_STEPS[clamp_dpi_index(index)]
+
+
+def fit_width_dpi(width_pt: float, frame_px: float) -> int:
+    """DPI at which a page of ``width_pt`` fills ``frame_px`` across.
+
+    Bounded at both ends: below :data:`MIN_RENDER_DPI` the page is unreadable
+    anyway, and above :data:`FIT_WIDTH_MAX_DPI` a wide pane would ask for a
+    rasterisation nobody can see the benefit of but everybody waits for.
+    """
+    width_pt = max(1.0, float(width_pt))
+    frame_px = max(1.0, float(frame_px))
+    dpi = int(frame_px * 72.0 / width_pt)
+    return max(MIN_RENDER_DPI, min(FIT_WIDTH_MAX_DPI, dpi))
+
+
+def page_sizes(doc) -> List[Tuple[float, float]]:
+    """Width and height in points for every page, without rendering any.
+
+    This is what lets the scroll bar be right from the first moment: the
+    placeholders are the size the pages will be.
+    """
+    sizes: List[Tuple[float, float]] = []
+    for index in range(int(getattr(doc, 'page_count', 0) or 0)):
+        try:
+            rect = doc.load_page(index).rect
+            sizes.append((float(rect.width), float(rect.height)))
+        except Exception:
+            # One unreadable page must not cost the whole document its
+            # scroll bar; A4 is a better guess than nothing.
+            sizes.append((595.0, 842.0))
+    return sizes
+
+
+def page_pixel_size(width_pt: float, height_pt: float, dpi: int
+                    ) -> Tuple[int, int]:
+    """On-screen size of a page at ``dpi``, after the pixel budget applies."""
+    dpi = effective_dpi(width_pt, height_pt, dpi)
+    scale = dpi / 72.0
+    return max(1, int(width_pt * scale)), max(1, int(height_pt * scale))
 
 
 def effective_dpi(width_pt: float, height_pt: float, dpi: int,
@@ -514,14 +689,21 @@ class PdfPanel:
     file mapped, and the last rendered PNG is worth freeing too.
     """
 
-    def __init__(self, *, height_px: int = 700):
+    def __init__(self, *, height_px: Optional[int] = None, run_js=None):
         self._doc = None
         self._path: Optional[Path] = None
         self._page = 0
-        self._dpi_index = DEFAULT_DPI_INDEX
+        self._zoom = FIT_WIDTH
         self._result = SearchResult()
         self._hit = -1
         self._syncing = False
+        self._run_js = run_js
+        self._token = f'pdfv-{id(self):x}'
+        self._sizes: List[Tuple[float, float]] = []
+        self._page_images: List[widgets.Image] = []
+        self._page_boxes: List[widgets.Box] = []
+        self._filled: set = set()
+        self._frame_px = ASSUMED_FRAME_WIDTH
 
         def _step_button(symbol, tooltip, disabled=False):
             return widgets.Button(
@@ -537,9 +719,10 @@ class PdfPanel:
         )
         self.page_total = widgets.HTML('von 1')
         self.zoom_dd = widgets.Dropdown(
-            options=[(label, i) for i, label in enumerate(ZOOM_LABELS)],
-            value=DEFAULT_DPI_INDEX,
-            layout=widgets.Layout(width='92px'),
+            options=([(FIT_WIDTH_LABEL, FIT_WIDTH)]
+                     + [(label, i) for i, label in enumerate(ZOOM_LABELS)]),
+            value=FIT_WIDTH,
+            layout=widgets.Layout(width='124px'),
         )
         # Searching a long document is not free, so the term is taken on Enter
         # or on leaving the field -- never on every keystroke.
@@ -560,11 +743,27 @@ class PdfPanel:
         )
         self.status = widgets.HTML('')
         self.page_status = widgets.HTML('')
-        # No max-width: the image has to keep its rendered pixel size, or the
-        # zoom steps would be scaled away again by the browser.
-        self.image = widgets.Image(
-            format='png',
-            layout=widgets.Layout(margin='0'),
+
+        # The pages, stacked. Built when a document is opened.
+        self.pages_box = widgets.VBox(
+            [],
+            layout=widgets.Layout(width='100%', margin='0'),
+        )
+        self.pages_box.add_class('pdfv-pages')
+
+        # Browser -> kernel. The browser reports which pages came into view
+        # and how wide the frame is; the kernel answers by setting widget
+        # values, which is a normal traitlet sync rather than another script.
+        self._bridge_input = widgets.Text(
+            value='', layout=widgets.Layout(width='1px', height='1px'))
+        self._bridge_input.add_class('pdfv-bridge-input')
+        self._bridge_btn = widgets.Button(
+            description='', layout=widgets.Layout(width='1px', height='1px'))
+        self._bridge_btn.add_class('pdfv-bridge-action')
+        self._bridge_btn.on_click(self._on_bridge)
+        self._bridge = widgets.Box(
+            [self._bridge_input, self._bridge_btn],
+            layout=widgets.Layout(display='none'),
         )
 
         self.toolbar = widgets.HBox(
@@ -583,18 +782,30 @@ class PdfPanel:
         )
         # A zoomed page is meant to overflow and scroll; centring it would put
         # the top-left corner out of reach as soon as it does.
+        #
+        # Height comes from flex, not from a pixel count: every other view in
+        # the browser fills the pane down to the bottom, and a PDF frame with
+        # a fixed height stopped short of it and stayed short in fullscreen.
+        frame_layout = dict(
+            width='100%', overflow='auto', border='1px solid #ddd',
+            padding='6px', justify_content='flex-start',
+            align_items='flex-start',
+        )
+        if height_px:
+            frame_layout['height'] = f'{int(height_px)}px'
+        else:
+            frame_layout.update(flex='1 1 0', min_height='0')
         self.frame = widgets.Box(
-            [self.image],
-            layout=widgets.Layout(
-                width='100%', height=f'{int(height_px)}px',
-                overflow='auto', border='1px solid #ddd', padding='6px',
-                justify_content='flex-start', align_items='flex-start',
-            ),
-        )
+            [self.pages_box], layout=widgets.Layout(**frame_layout))
+        self.frame.add_class('pdfv-frame')
+
         self.widget = widgets.VBox(
-            [self.toolbar, self.page_status, self.frame],
-            layout=widgets.Layout(width='100%', display='none'),
+            [self.toolbar, self.page_status, self.frame, self._bridge],
+            layout=widgets.Layout(
+                width='100%', display='none', flex='1 1 0', min_height='0'),
         )
+        self.widget.add_class('pdfv-root')
+        self.widget.add_class(self._token)
 
         self.prev_page_btn.on_click(lambda _b: self.step_page(-1))
         self.next_page_btn.on_click(lambda _b: self.step_page(1))
@@ -625,7 +836,7 @@ class PdfPanel:
         return self._result
 
     def open(self, path) -> None:
-        """Show the first page of ``path``; raises :class:`PdfError` on failure."""
+        """Show ``path``; raises :class:`PdfError` on failure."""
         self.close()
         doc = open_document(Path(path))
         self._doc = doc
@@ -641,10 +852,177 @@ class PdfPanel:
         self._sync_hit_controls()
         has_text, probed = probe_has_text(doc)
         self.status.value = scan_hint_html(has_text, probed, self.total_pages)
+        self._sizes = page_sizes(doc)
+        self._build_pages()
         self._sync_page_controls()
         self.toolbar.layout.display = 'flex'
         self.widget.layout.display = 'flex'
         self._render()
+        self._install_observer()
+
+    # -- the page stack ------------------------------------------------------
+
+    def dpi(self) -> int:
+        """The DPI pages are drawn at right now."""
+        if self._zoom == FIT_WIDTH:
+            widest = max((w for w, _h in self._sizes), default=595.0)
+            # The frame's own padding and the scroll bar are not page.
+            return fit_width_dpi(widest, max(120, self._frame_px - 28))
+        return dpi_for_index(self._zoom)
+
+    def _build_pages(self) -> None:
+        """One placeholder per page, at the size that page will be.
+
+        The scroll bar is then right before anything has been rasterised,
+        which is what makes scrolling through a long document feel like a
+        document rather than like a queue of requests.
+        """
+        dpi = self.dpi()
+        self._page_images = []
+        self._page_boxes = []
+        self._filled = set()
+        for index, (width_pt, height_pt) in enumerate(self._sizes):
+            width_px, height_px = page_pixel_size(width_pt, height_pt, dpi)
+            image = widgets.Image(
+                format='png',
+                layout=widgets.Layout(
+                    width=f'{width_px}px', height=f'{height_px}px', margin='0'),
+            )
+            box = widgets.Box(
+                [image],
+                layout=widgets.Layout(
+                    width=f'{width_px}px', height=f'{height_px}px',
+                    margin=f'0 0 {PAGE_GAP_PX}px 0',
+                    background_color='#f4f4f4',
+                    border='1px solid #e0e0e0',
+                ),
+            )
+            box.add_class('pdfv-page')
+            self._page_images.append(image)
+            self._page_boxes.append(box)
+        self.pages_box.children = tuple(self._page_boxes)
+
+    def _resize_pages(self) -> None:
+        """Re-size the placeholders after a zoom or a frame-width change."""
+        dpi = self.dpi()
+        for index, (width_pt, height_pt) in enumerate(self._sizes):
+            if index >= len(self._page_boxes):
+                break
+            width_px, height_px = page_pixel_size(width_pt, height_pt, dpi)
+            for node in (self._page_boxes[index], self._page_images[index]):
+                node.layout.width = f'{width_px}px'
+                node.layout.height = f'{height_px}px'
+        # Every rendered page is now the wrong size; drop and redraw.
+        for index in list(self._filled):
+            self._page_images[index].value = b''
+        self._filled = set()
+
+    def page_image(self, index: int) -> Optional[widgets.Image]:
+        """The widget holding page ``index``, for tests and callers."""
+        if 0 <= int(index) < len(self._page_images):
+            return self._page_images[int(index)]
+        return None
+
+    def _fill_page(self, index: int) -> None:
+        if self._doc is None or not (0 <= index < len(self._page_images)):
+            return
+        page_hits = [h.rect for h in self._result.hits if h.page == index]
+        active = None
+        if 0 <= self._hit < self._result.n_hits:
+            current = self._result.hits[self._hit]
+            if current.page == index:
+                active = current.rect
+                page_hits = [r for r in page_hits if r != active]
+        try:
+            self._page_images[index].value = render_page_png(
+                self._doc, index, self.dpi(),
+                highlights=page_hits, active=active,
+            )
+            self._filled.add(index)
+        except Exception as exc:
+            # A page that cannot be drawn is one damaged page, not a broken
+            # viewer -- the rest of the document stays reachable.
+            self._page_images[index].value = b''
+            self._filled.discard(index)
+            self.page_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>'
+            )
+
+    def _free_outside(self, keep) -> None:
+        """Let go of pages nobody is looking at.
+
+        A rendered page is a PNG in the kernel and a copy in the browser; a
+        few hundred of them is how a viewer turns into a memory leak.
+        """
+        keep = set(keep)
+        for index in list(self._filled):
+            if index not in keep:
+                self._page_images[index].value = b''
+                self._filled.discard(index)
+
+    def _visible_window(self, centre: int) -> List[int]:
+        first = max(0, centre - RENDER_WINDOW)
+        last = min(len(self._page_images) - 1, centre + RENDER_WINDOW)
+        return list(range(first, last + 1))
+
+    # -- browser bridge ------------------------------------------------------
+
+    def _emit(self, script: str) -> None:
+        if callable(self._run_js) and script.strip():
+            self._run_js(script)
+
+    def _on_bridge(self, _button=None) -> None:
+        """One message from the page stack in the browser."""
+        raw = self._bridge_input.value or ''
+        self._bridge_input.value = ''
+        if not raw or self._doc is None:
+            return
+        try:
+            message = json.loads(raw)
+        except Exception:
+            return
+        if message.get('token') != self._token:
+            return  # from a document that is no longer on screen
+
+        action = message.get('action')
+        if action == 'width':
+            try:
+                width = int(message.get('px') or 0)
+            except (TypeError, ValueError):
+                return
+            if width <= 0 or abs(width - self._frame_px) < 24:
+                return  # not a change worth re-rasterising the document for
+            self._frame_px = width
+            if self._zoom == FIT_WIDTH:
+                self._resize_pages()
+                self._render()
+            return
+
+        if action == 'pages':
+            wanted = message.get('want') or []
+            try:
+                wanted = [int(p) for p in wanted]
+            except (TypeError, ValueError):
+                return
+            wanted = [p for p in wanted if 0 <= p < len(self._page_images)]
+            if not wanted:
+                return
+            # Which page the user is on follows what they are looking at, so
+            # the page number in the toolbar keeps up while they scroll.
+            self._page = clamp_page(wanted[0], self.total_pages)
+            self._sync_page_controls()
+            keep = set()
+            for page in wanted:
+                keep.update(self._visible_window(page))
+            self._free_outside(keep)
+            for page in wanted:
+                if page not in self._filled:
+                    self._fill_page(page)
+            return
+
+    def _install_observer(self) -> None:
+        """Ask the browser to report what is on screen, and how wide it is."""
+        self._emit(_pages_js(self._token))
 
     def close(self) -> None:
         """Drop the document and the rendered page."""
@@ -657,7 +1035,11 @@ class PdfPanel:
         self._path = None
         self._result = SearchResult()
         self._hit = -1
-        self.image.value = b''
+        self._sizes = []
+        self._filled = set()
+        self._page_images = []
+        self._page_boxes = []
+        self.pages_box.children = ()
         self.status.value = ''
         self.page_status.value = ''
         self.widget.layout.display = 'none'
@@ -690,14 +1072,30 @@ class PdfPanel:
             self._sync_hit_controls()
         self._sync_page_controls()
         self._render()
+        # The pages are all on screen already, so going to one means
+        # scrolling to it rather than replacing what is shown.
+        self._emit(_goto_js(self._token, target))
 
     def step_page(self, delta: int) -> None:
         self.goto_page(self._page + int(delta))
 
-    def set_zoom_index(self, index: int) -> None:
-        self._dpi_index = clamp_dpi_index(index)
+    def set_zoom(self, value: Any) -> None:
+        """Fit to width, or one of the fixed steps."""
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = FIT_WIDTH
+        self._zoom = FIT_WIDTH if value == FIT_WIDTH else clamp_dpi_index(value)
         self._sync_page_controls()
+        if self._doc is None:
+            return
+        self._resize_pages()
         self._render()
+        self._emit(_goto_js(self._token, self._page))
+
+    def set_zoom_index(self, index: int) -> None:
+        """Kept for callers that only know the fixed steps."""
+        self.set_zoom(clamp_dpi_index(index))
 
     # -- search --------------------------------------------------------------
 
@@ -757,27 +1155,17 @@ class PdfPanel:
     # -- rendering -----------------------------------------------------------
 
     def _render(self) -> None:
+        """Draw the pages around the current one.
+
+        The browser refines this as soon as it reports what is actually on
+        screen; this is what makes the first paint show something.
+        """
         if self._doc is None:
             return
-        page_hits = [hit.rect for hit in self._result.hits if hit.page == self._page]
-        active = None
-        if 0 <= self._hit < self._result.n_hits:
-            current = self._result.hits[self._hit]
-            if current.page == self._page:
-                active = current.rect
-                page_hits = [r for r in page_hits if r != active]
-        try:
-            self.image.value = render_page_png(
-                self._doc, self._page, dpi_for_index(self._dpi_index),
-                highlights=page_hits, active=active,
-            )
-        except Exception as exc:
-            # A page that cannot be drawn is one damaged page, not a broken
-            # viewer -- the rest of the document stays reachable.
-            self.image.value = b''
-            self.page_status.value = (
-                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>'
-            )
+        window = self._visible_window(self._page)
+        self._free_outside(window)
+        for index in window:
+            self._fill_page(index)
 
     # -- widget sync ---------------------------------------------------------
 
@@ -793,7 +1181,7 @@ class PdfPanel:
         self.prev_page_btn.disabled = self._page <= 0
         self.next_page_btn.disabled = self._page >= total - 1
         self.page_status.value = page_status_html(
-            self._page, total, dpi_for_index(self._dpi_index))
+            self._page, total, self.dpi())
 
     def _sync_hit_controls(self) -> None:
         hits = self._result.n_hits
@@ -825,7 +1213,7 @@ class PdfPanel:
     def _on_zoom(self, change) -> None:
         if self._syncing:
             return
-        self.set_zoom_index(change.get('new'))
+        self.set_zoom(change.get('new'))
 
     def _on_hit_select(self, change) -> None:
         if self._syncing or self._doc is None:

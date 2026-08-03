@@ -11199,8 +11199,10 @@ def create_tab(ctx):
         """The tab's PDF panel, built on first use."""
         panel = state.get('pdf_panel')
         if panel is None:
-            # Leave room for the panel's own toolbar inside the content frame.
-            panel = _pdf.PdfPanel(height_px=max(240, CALC_CONTENT_HEIGHT - 80))
+            # No fixed height: the frame takes the space the pane has, the
+            # same way the text view and the grid do, so it reaches the
+            # bottom and follows the tab into fullscreen.
+            panel = _pdf.PdfPanel(run_js=_run_js)
             state['pdf_panel'] = panel
             calc_pdf_container.children = [panel.widget]
         return panel

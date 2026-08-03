@@ -448,7 +448,7 @@ def test_panel_opens_on_the_first_page(tmp_path):
         assert panel.page_total.value == 'von 5'
         assert panel.prev_page_btn.disabled
         assert not panel.next_page_btn.disabled
-        assert bytes(panel.image.value).startswith(b'\x89PNG')
+        assert bytes(panel.page_image(0).value).startswith(b'\x89PNG')
     finally:
         panel.close()
 
@@ -489,7 +489,11 @@ def test_panel_jumps_to_the_page_of_a_hit(tmp_path):
         panel.close()
 
 
-def test_panel_renders_only_the_current_page(tmp_path, monkeypatch):
+def test_panel_renders_only_around_where_the_reader_is(tmp_path, monkeypatch):
+    """The pages scroll continuously, so every page has a widget -- but only
+    the ones near the viewport hold pixels. A forty-page document must not
+    cost forty rasterisations to open, and the pages left behind have to be
+    let go of again, or the viewer is a memory leak with a scroll bar."""
     rendered = []
     real_render = pv.render_page_png
 
@@ -499,14 +503,22 @@ def test_panel_renders_only_the_current_page(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pv, 'render_page_png', _spy)
     panel = pv.PdfPanel()
+    window = 2 * pv.RENDER_WINDOW + 1
     try:
         panel.open(make_text_pdf(tmp_path / 'doc.pdf', 40))
-        assert rendered == [0]
+        assert len(panel.pages_box.children) == 40, 'the scroll bar needs them all'
+        assert rendered == [0, 1, 2], 'opening rasterised more than the first screen'
+
+        rendered.clear()
         panel.run_search('Rechnung')
-        # A search over 40 pages still rasterises exactly one page.
-        assert rendered == [0, 0]
-        panel.step_page(1)
-        assert rendered == [0, 0, 1]
+        # A search over 40 pages redraws the window, not the document.
+        assert len(rendered) <= window
+
+        rendered.clear()
+        panel.goto_page(20)
+        assert set(rendered) == {18, 19, 20, 21, 22}
+        # Page 0 was left far behind and must not still be holding a PNG.
+        assert panel.page_image(0).value == b''
     finally:
         panel.close()
 
@@ -515,9 +527,10 @@ def test_panel_zoom_changes_the_rendered_image(tmp_path):
     panel = pv.PdfPanel()
     try:
         panel.open(make_text_pdf(tmp_path / 'doc.pdf', 1))
-        small = panel.image.value
+        panel.set_zoom_index(0)
+        small = panel.page_image(0).value
         panel.set_zoom_index(len(pv.DPI_STEPS) - 1)
-        assert len(panel.image.value) != len(small)
+        assert len(panel.page_image(0).value) != len(small)
         assert str(pv.DPI_STEPS[-1]) in panel.page_status.value
     finally:
         panel.close()
@@ -541,7 +554,8 @@ def test_panel_close_releases_the_document(tmp_path):
     panel.close()
     assert panel.path is None
     assert panel.total_pages == 0
-    assert panel.image.value == b''
+    assert panel.page_image(0) is None
+    assert panel.pages_box.children == ()
     assert panel.widget.layout.display == 'none'
     # Navigation after closing must not raise.
     panel.step_page(1)
@@ -555,7 +569,7 @@ def test_panel_show_error_replaces_the_page(tmp_path):
     assert panel.widget.layout.display == 'flex'
     assert panel.toolbar.layout.display == 'none'
     assert 'kaputt' in panel.page_status.value
-    assert panel.image.value == b''
+    assert panel.pages_box.children == ()
 
 
 def test_panel_hit_stepping_after_manual_paging_enters_the_list_cleanly(tmp_path):
@@ -608,7 +622,7 @@ def test_browser_opens_a_pdf_in_the_page_viewer(browser_tab):
     panel = state['pdf_panel']
     assert state['pdf_active'] is True
     assert panel.total_pages == 3
-    assert bytes(panel.image.value).startswith(b'\x89PNG')
+    assert bytes(panel.page_image(0).value).startswith(b'\x89PNG')
 
 
 def test_browser_releases_the_pdf_when_another_file_is_selected(browser_tab):
@@ -638,4 +652,4 @@ def test_browser_shows_a_message_for_a_damaged_pdf(browser_tab):
     _select(refs, 'kaputt.pdf')
     panel = refs['xyz_batch_state']['pdf_panel']
     assert 'konnte nicht ge' in panel.page_status.value
-    assert panel.image.value == b''
+    assert panel.pages_box.children == ()
