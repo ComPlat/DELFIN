@@ -5278,6 +5278,9 @@ def create_tab(ctx):
                 pending_plan_body=state.get("_pending_plan_body", ""),
                 todo_payload=state.get("current_todos") or [],
                 workspace=_agent_workspace_path(),
+                project_dir=estate.get("project_dir", ""),
+                last_input_tokens=estate.get("last_input_tokens", 0),
+                compaction_summaries=estate.get("compaction_summaries", {}),
             )
             state["active_session_id"] = engine.session_id
             # Episodic memory: one compact per-session record so a later
@@ -5349,6 +5352,13 @@ def create_tab(ctx):
             "token_usage": data.get("token_usage", {"input": 0, "output": 0}),
             "cost_usd": data.get("cost_usd", 0.0),
             "session_id": session_id,
+            # restore_state reads both, and both were being dropped on the
+            # way out: the directory pin, and the estimator's floor that
+            # keeps the context bar honest before the first turn of the
+            # resumed session re-establishes it.
+            "project_dir": data.get("project_dir", ""),
+            "last_input_tokens": data.get("last_input_tokens", 0),
+            "compaction_summaries": data.get("compaction_summaries", {}),
         })
 
         # Restore chat UI
