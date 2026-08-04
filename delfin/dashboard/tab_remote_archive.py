@@ -1447,6 +1447,7 @@ def create_tab(ctx):
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
         style_js = profile['style_js']
+        viewer_config_js = profile['viewer_config_js']
         volumetric_js = ""
         if volumetric:
             volumetric_js = (
@@ -1544,7 +1545,7 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._remoteMolViewStateByScope[viewScope] || null;
-                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             var molData = {data_json};
                             viewer.addModel(molData, "{fmt}");
@@ -1628,6 +1629,7 @@ def create_tab(ctx):
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
         style_js = profile['style_js']
+        viewer_config_js = profile['viewer_config_js']
         with viewer_output:
             clear_output()
             display(
@@ -1719,7 +1721,7 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._remoteMolViewStateByScope[viewScope] || null;
-                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
                             viewer.setStyle({{}}, {style_js});

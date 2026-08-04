@@ -80,6 +80,12 @@ DEFAULT_SETTINGS = {
         "viewer": {
             "enabled": True,
             "quality": "high",
+            "representation": "ball_and_stick",
+            "atom_scale": 0.28,
+            "bond_radius": 0.11,
+            "multiple_bonds": True,
+            "depth_fog": True,
+            "ambient_occlusion": False,
         },
     },
     "docs": {
@@ -296,8 +302,8 @@ def normalize_positive_float_setting(value, label, default, minimum=1.0):
     return float(normalized)
 
 
-def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
-    """Validate a float setting that must lie within a closed [min, max] range."""
+def normalize_bounded_float_setting(value, label, default, *, minimum, maximum):
+    """Validate a float setting that must lie within a closed range."""
     if value in ("", None):
         return float(default)
     try:
@@ -307,6 +313,17 @@ def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.
     if normalized < minimum or normalized > maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return float(normalized)
+
+
+def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
+    """Validate a float setting that must lie within a closed [min, max] range."""
+    return normalize_bounded_float_setting(
+        value,
+        label,
+        default,
+        minimum=minimum,
+        maximum=maximum,
+    )
 
 
 def normalize_bool_setting(value, default=False):
@@ -587,16 +604,63 @@ def _normalized_settings_dict(payload):
     if not isinstance(viewer, dict):
         raise ValueError("Settings key 'ui.viewer' must be a JSON object.")
     default_viewer = default_ui.get("viewer", {}) or {}
+    quality = normalize_choice_setting(
+        viewer.get("quality", default_viewer.get("quality", "high")),
+        "3D viewer quality",
+        {"low", "medium", "high"},
+        default_viewer.get("quality", "high"),
+    )
+    # Before representation was configurable, the quality dropdown also
+    # selected line/stick/ball-and-stick. Preserve that visual choice when an
+    # existing settings file is migrated to the independent controls.
+    legacy_representation = {
+        "low": "line",
+        "medium": "stick",
+        "high": "ball_and_stick",
+    }[quality]
     normalized_ui["viewer"] = {
         "enabled": normalize_bool_setting(
             viewer.get("enabled", default_viewer.get("enabled", True)),
             default_viewer.get("enabled", True),
         ),
-        "quality": normalize_choice_setting(
-            viewer.get("quality", default_viewer.get("quality", "high")),
-            "3D viewer quality",
-            {"low", "medium", "high"},
-            default_viewer.get("quality", "high"),
+        "quality": quality,
+        "representation": normalize_choice_setting(
+            viewer.get("representation", legacy_representation),
+            "3D viewer representation",
+            {"line", "stick", "ball_and_stick", "sphere"},
+            default_viewer.get("representation", "ball_and_stick"),
+        ),
+        "atom_scale": normalize_bounded_float_setting(
+            viewer.get("atom_scale", default_viewer.get("atom_scale", 0.28)),
+            "3D viewer atom scale",
+            default_viewer.get("atom_scale", 0.28),
+            minimum=0.05,
+            maximum=1.50,
+        ),
+        "bond_radius": normalize_bounded_float_setting(
+            viewer.get("bond_radius", default_viewer.get("bond_radius", 0.11)),
+            "3D viewer bond radius",
+            default_viewer.get("bond_radius", 0.11),
+            minimum=0.02,
+            maximum=0.50,
+        ),
+        "multiple_bonds": normalize_bool_setting(
+            viewer.get(
+                "multiple_bonds",
+                default_viewer.get("multiple_bonds", True),
+            ),
+            default_viewer.get("multiple_bonds", True),
+        ),
+        "depth_fog": normalize_bool_setting(
+            viewer.get("depth_fog", default_viewer.get("depth_fog", True)),
+            default_viewer.get("depth_fog", True),
+        ),
+        "ambient_occlusion": normalize_bool_setting(
+            viewer.get(
+                "ambient_occlusion",
+                default_viewer.get("ambient_occlusion", False),
+            ),
+            default_viewer.get("ambient_occlusion", False),
         ),
     }
     normalized["ui"] = normalized_ui
@@ -727,7 +791,7 @@ def save_remote_archive_enabled(enabled, settings_path=None):
 
 
 def load_viewer_settings(settings_path=None):
-    """Return the ``ui.viewer`` dict ({enabled: bool, quality: str})."""
+    """Return the normalized global 3D-viewer settings."""
     default_viewer = DEFAULT_SETTINGS["ui"]["viewer"]
     try:
         settings = load_settings(settings_path)
@@ -737,10 +801,34 @@ def load_viewer_settings(settings_path=None):
     return {
         "enabled": bool(viewer.get("enabled", default_viewer["enabled"])),
         "quality": str(viewer.get("quality", default_viewer["quality"])),
+        "representation": str(
+            viewer.get("representation", default_viewer["representation"])
+        ),
+        "atom_scale": float(viewer.get("atom_scale", default_viewer["atom_scale"])),
+        "bond_radius": float(viewer.get("bond_radius", default_viewer["bond_radius"])),
+        "multiple_bonds": bool(
+            viewer.get("multiple_bonds", default_viewer["multiple_bonds"])
+        ),
+        "depth_fog": bool(viewer.get("depth_fog", default_viewer["depth_fog"])),
+        "ambient_occlusion": bool(
+            viewer.get("ambient_occlusion", default_viewer["ambient_occlusion"])
+        ),
     }
 
 
-def save_viewer_settings(enabled, quality, settings_path=None):
+def save_viewer_settings(
+    enabled,
+    quality,
+    settings_path=None,
+    *,
+    representation=None,
+    atom_scale=None,
+    bond_radius=None,
+    multiple_bonds=None,
+    depth_fog=None,
+    ambient_occlusion=None,
+):
+    """Persist global viewer settings while keeping the legacy call valid."""
     path = get_settings_path(settings_path)
     settings = load_settings(path)
     ui = settings.get("ui", {}) or {}
@@ -749,10 +837,42 @@ def save_viewer_settings(enabled, quality, settings_path=None):
     viewer["quality"] = normalize_choice_setting(
         quality, "3D viewer quality", {"low", "medium", "high"}, "high"
     )
+    if representation is not None:
+        viewer["representation"] = normalize_choice_setting(
+            representation,
+            "3D viewer representation",
+            {"line", "stick", "ball_and_stick", "sphere"},
+            DEFAULT_SETTINGS["ui"]["viewer"]["representation"],
+        )
+    if atom_scale is not None:
+        viewer["atom_scale"] = normalize_bounded_float_setting(
+            atom_scale,
+            "3D viewer atom scale",
+            DEFAULT_SETTINGS["ui"]["viewer"]["atom_scale"],
+            minimum=0.05,
+            maximum=1.50,
+        )
+    if bond_radius is not None:
+        viewer["bond_radius"] = normalize_bounded_float_setting(
+            bond_radius,
+            "3D viewer bond radius",
+            DEFAULT_SETTINGS["ui"]["viewer"]["bond_radius"],
+            minimum=0.02,
+            maximum=0.50,
+        )
+    if multiple_bonds is not None:
+        viewer["multiple_bonds"] = normalize_bool_setting(multiple_bonds, True)
+    if depth_fog is not None:
+        viewer["depth_fog"] = normalize_bool_setting(depth_fog, True)
+    if ambient_occlusion is not None:
+        viewer["ambient_occlusion"] = normalize_bool_setting(
+            ambient_occlusion,
+            False,
+        )
     ui["viewer"] = viewer
     settings["ui"] = ui
     save_settings(settings, path)
-    return {"enabled": viewer["enabled"], "quality": viewer["quality"]}
+    return load_viewer_settings(path)
 
 
 READ_MARKERS_DIR_NAME = ".delfin_meta"
@@ -913,5 +1033,3 @@ def delete_orca_template(name, path=None):
             get_orca_templates_path(path),
             {"kind": ORCA_TEMPLATES_KIND, "version": 1, "templates": templates},
         )
-
-

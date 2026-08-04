@@ -39,6 +39,7 @@ from .molecule_viewer import (
     parse_xyz_frames,
     get_viewer_profile,
     measurement_bootstrap_js,
+    molecule_view_style_js,
     patch_viewer_mouse_controls_js,
     render_fukui_panel,
     structure_viewer_fullscreen_bootstrap_js,
@@ -3143,6 +3144,7 @@ def create_tab(ctx):
             viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
             mol_json = json.dumps(mol_block)
             style_js = profile['style_js']
+            viewer_config_js = profile['viewer_config_js']
             display(HTML(f"""
                 <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
                 <script>
@@ -3168,7 +3170,7 @@ def create_tab(ctx):
                             el.style.width = side + 'px';
                             el.style.height = side + 'px';
                         }}
-                        var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                        var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                         {VIEWER_MOUSE_PATCH_JS}
                         var molData = {mol_json};
                         viewer.addModel(molData, "mol");
@@ -3856,6 +3858,7 @@ def create_tab(ctx):
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
         style_js = profile['style_js']
+        viewer_config_js = profile['viewer_config_js']
 
         volumetric_js = ""
         if fmt == 'cube':
@@ -3957,7 +3960,7 @@ def create_tab(ctx):
                     }} catch (_e) {{}}
                 }}
                 var savedView = window._calcMolViewStateByScope[viewScope] || null;
-                var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var molData = {data_json};
                 viewer.addModel(molData, "{fmt}");
@@ -6852,6 +6855,12 @@ def create_tab(ctx):
 
     def _render_3dmol_dual_xyz(reference_xyz, target_xyz):
         import json
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            with calc_mol_viewer:
+                clear_output(wait=True)
+                display(HTML(viewer_disabled_html()))
+            return
         _mol3d_counter[0] += 1
         viewer_id = f'mol3d_rmsd_{_mol3d_counter[0]}'
         wrapper_id = f'calc_mol_wrap_{_mol3d_counter[0]}'
@@ -6859,6 +6868,9 @@ def create_tab(ctx):
         target_json = json.dumps(target_xyz)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
+        viewer_config_js = profile['viewer_config_js']
+        target_style_js = molecule_view_style_js(profile['style'], color='#1f5fff')
+        reference_style_js = molecule_view_style_js(profile['style'], color='#d32f2f')
 
         html = f"""
         <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
@@ -6949,20 +6961,14 @@ def create_tab(ctx):
                     }} catch (_e) {{}}
                 }}
                 var savedView = window._calcMolViewStateByScope[viewScope] || null;
-                var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var targetData = {target_json};
                 var refData = {ref_json};
                 viewer.addModel(targetData, "xyz");
-                viewer.setStyle({{model:0}}, {{
-                    stick: {{radius: 0.20, color: "#1f5fff"}},
-                    sphere: {{scale: 0.24, color: "#1f5fff"}}
-                }});
+                viewer.setStyle({{model:0}}, {target_style_js});
                 viewer.addModel(refData, "xyz");
-                viewer.setStyle({{model:1}}, {{
-                    stick: {{radius: 0.20, color: "#d32f2f"}},
-                    sphere: {{scale: 0.24, color: "#d32f2f"}}
-                }});
+                viewer.setStyle({{model:1}}, {reference_style_js});
                 if (savedView && typeof viewer.setView === 'function') {{
                     try {{
                         viewer.setView(savedView);
@@ -7006,6 +7012,12 @@ def create_tab(ctx):
             output_widget = calc_rmsd_preview
         if not viewer_height:
             viewer_height = CALC_RMSD_PANEL_HEIGHT
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            with output_widget:
+                clear_output(wait=True)
+                display(HTML(viewer_disabled_html()))
+            return
         in_main_mol_viewer = output_widget is calc_mol_viewer
         _mol3d_counter[0] += 1
         if in_main_mol_viewer:
@@ -7024,6 +7036,9 @@ def create_tab(ctx):
             )
         target_json = json.dumps(target_xyz)
         ref_json = json.dumps(reference_xyz)
+        viewer_config_js = profile['viewer_config_js']
+        target_style_js = molecule_view_style_js(profile['style'], color='#1f5fff')
+        reference_style_js = molecule_view_style_js(profile['style'], color='#d32f2f')
         calc_scope_selector = _html.escape(calc_scope_id, quote=True)
         if in_main_mol_viewer:
             post_render_js = (
@@ -7055,20 +7070,14 @@ def create_tab(ctx):
                     if (tries < 80) setTimeout(initViewer, 50);
                     return;
                 }}
-                var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var targetData = {target_json};
                 var refData = {ref_json};
                 viewer.addModel(targetData, "xyz");
-                viewer.setStyle({{model:0}}, {{
-                    stick: {{radius: 0.20, color: "#1f5fff"}},
-                    sphere: {{scale: 0.24, color: "#1f5fff"}}
-                }});
+                viewer.setStyle({{model:0}}, {target_style_js});
                 viewer.addModel(refData, "xyz");
-                viewer.setStyle({{model:1}}, {{
-                    stick: {{radius: 0.20, color: "#d32f2f"}},
-                    sphere: {{scale: 0.24, color: "#d32f2f"}}
-                }});
+                viewer.setStyle({{model:1}}, {reference_style_js});
                 viewer.zoomTo();
                 viewer.center();
                 viewer.zoom({CALC_MOL_ZOOM});
@@ -7138,6 +7147,7 @@ def create_tab(ctx):
                 viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
                 wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
                 traj_style_js = profile['style_js']
+                viewer_config_js = profile['viewer_config_js']
                 view_scope_json = json.dumps(
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )
@@ -7234,7 +7244,7 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._calcMolViewStateByScope[viewScope] || null;
-                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                             {VIEWER_MOUSE_PATCH_JS}
                             var xyz = `{full_xyz}`;
                             viewer.addModelsAsFrames(xyz, "xyz");

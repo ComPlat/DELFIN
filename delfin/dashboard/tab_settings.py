@@ -248,13 +248,65 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         layout=widgets.Layout(width='220px', height='28px'),
     )
     viewer_quality_dropdown = widgets.Dropdown(
-        options=[('Niedrig (für langsame PCs)', 'low'),
-                 ('Mittel', 'medium'),
-                 ('Hoch (Standard)', 'high')],
+        options=[('Niedrig (schnell)', 'low'),
+                 ('Mittel (Kantenglättung)', 'medium'),
+                 ('Hoch (höchste Detailstufe)', 'high')],
         value='high',
         description='Qualität:',
         style={'description_width': '70px'},
-        layout=widgets.Layout(width='320px', height='28px'),
+        layout=widgets.Layout(width='350px', height='28px'),
+    )
+    viewer_representation_dropdown = widgets.Dropdown(
+        options=[
+            ('Kugel–Stab-Modell', 'ball_and_stick'),
+            ('Stabmodell', 'stick'),
+            ('Kugelmodell', 'sphere'),
+            ('Drahtmodell', 'line'),
+        ],
+        value='ball_and_stick',
+        description='Modell:',
+        style={'description_width': '70px'},
+        layout=widgets.Layout(width='350px', height='28px'),
+    )
+    viewer_atom_scale_slider = widgets.FloatSlider(
+        value=0.28,
+        min=0.05,
+        max=1.50,
+        step=0.01,
+        readout_format='.2f',
+        description='Kugelgröße (× vdW)',
+        style={'description_width': '145px'},
+        continuous_update=False,
+        layout=widgets.Layout(width='480px', height='28px'),
+    )
+    viewer_bond_radius_slider = widgets.FloatSlider(
+        value=0.11,
+        min=0.02,
+        max=0.50,
+        step=0.01,
+        readout_format='.2f',
+        description='Bindungsradius (Å)',
+        style={'description_width': '145px'},
+        continuous_update=False,
+        layout=widgets.Layout(width='480px', height='28px'),
+    )
+    viewer_multiple_bonds_toggle = widgets.Checkbox(
+        value=True,
+        description='Mehrfachbindungen anzeigen (nur MOL/SDF mit Bindungsordnung)',
+        indent=False,
+        layout=widgets.Layout(width='520px', height='28px'),
+    )
+    viewer_depth_fog_toggle = widgets.Checkbox(
+        value=True,
+        description='Atome im Hintergrund blasser darstellen (Tiefennebel)',
+        indent=False,
+        layout=widgets.Layout(width='440px', height='28px'),
+    )
+    viewer_ambient_occlusion_toggle = widgets.Checkbox(
+        value=False,
+        description='Zusätzliche Tiefenschattierung (Ambient Occlusion)',
+        indent=False,
+        layout=widgets.Layout(width='440px', height='28px'),
     )
     slurm_mem_headroom_input = widgets.FloatSlider(
         value=0.90,
@@ -1319,15 +1371,59 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         quality = str(viewer.get('quality', 'high'))
         if quality not in {'low', 'medium', 'high'}:
             quality = 'high'
+        representation = str(viewer.get('representation', 'ball_and_stick'))
+        if representation not in {'line', 'stick', 'ball_and_stick', 'sphere'}:
+            representation = 'ball_and_stick'
+        try:
+            atom_scale = float(viewer.get('atom_scale', 0.28))
+        except (TypeError, ValueError):
+            atom_scale = 0.28
+        try:
+            bond_radius = float(viewer.get('bond_radius', 0.11))
+        except (TypeError, ValueError):
+            bond_radius = 0.11
         viewer_enabled_toggle.value = enabled
         viewer_quality_dropdown.value = quality
+        viewer_representation_dropdown.value = representation
+        viewer_atom_scale_slider.value = max(0.05, min(1.50, atom_scale))
+        viewer_bond_radius_slider.value = max(0.02, min(0.50, bond_radius))
+        viewer_multiple_bonds_toggle.value = bool(viewer.get('multiple_bonds', True))
+        viewer_depth_fog_toggle.value = bool(viewer.get('depth_fog', True))
+        viewer_ambient_occlusion_toggle.value = bool(
+            viewer.get('ambient_occlusion', False)
+        )
+        _sync_viewer_control_state()
+
+    def _sync_viewer_control_state():
+        enabled = bool(viewer_enabled_toggle.value)
+        representation = str(viewer_representation_dropdown.value)
         viewer_quality_dropdown.disabled = not enabled
+        viewer_representation_dropdown.disabled = not enabled
+        viewer_atom_scale_slider.disabled = (
+            not enabled or representation not in {'ball_and_stick', 'sphere'}
+        )
+        viewer_bond_radius_slider.disabled = (
+            not enabled or representation == 'sphere'
+        )
+        viewer_multiple_bonds_toggle.disabled = (
+            not enabled or representation == 'sphere'
+        )
+        viewer_depth_fog_toggle.disabled = not enabled
+        viewer_ambient_occlusion_toggle.disabled = not enabled
 
     def _on_viewer_enabled_change(change):
         if change.get('name') == 'value':
-            viewer_quality_dropdown.disabled = not bool(change.get('new'))
+            _sync_viewer_control_state()
+
+    def _on_viewer_representation_change(change):
+        if change.get('name') == 'value':
+            _sync_viewer_control_state()
 
     viewer_enabled_toggle.observe(_on_viewer_enabled_change, names='value')
+    viewer_representation_dropdown.observe(
+        _on_viewer_representation_change,
+        names='value',
+    )
 
     def _set_scheduling_widgets(settings_payload):
         scheduling = ((settings_payload or {}).get('scheduling') or {})
@@ -3038,6 +3134,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             settings_payload['ui']['viewer'] = {
                 'enabled': bool(viewer_enabled_toggle.value),
                 'quality': str(viewer_quality_dropdown.value),
+                'representation': str(viewer_representation_dropdown.value),
+                'atom_scale': float(viewer_atom_scale_slider.value),
+                'bond_radius': float(viewer_bond_radius_slider.value),
+                'multiple_bonds': bool(viewer_multiple_bonds_toggle.value),
+                'depth_fog': bool(viewer_depth_fog_toggle.value),
+                'ambient_occlusion': bool(viewer_ambient_occlusion_toggle.value),
             }
             settings_payload = save_settings(settings_payload, settings_path)
             _apply_workspace_paths(effective_calc_dir, effective_archive_dir)
@@ -3115,6 +3217,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         path_hidden, path_visible, port_input,
         remote_archive_toggle,
         viewer_enabled_toggle, viewer_quality_dropdown,
+        viewer_representation_dropdown, viewer_atom_scale_slider,
+        viewer_bond_radius_slider, viewer_multiple_bonds_toggle,
+        viewer_depth_fog_toggle,
+        viewer_ambient_occlusion_toggle,
         # Agent blocks — without these the GLOBAL Save Settings button
         # stays disabled when only these change ("settings disappeared").
         bug_archive_input,
@@ -3344,12 +3450,36 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         [
             widgets.HTML(
                 '<div style="color:#455a64;">'
-                'Globale Einstellungen für den 3D-Molekülviewer (py3Dmol). '
-                'Auf langsamen PCs Qualität reduzieren oder Viewer ganz deaktivieren. '
-                'Wirkt auf alle Tabs mit 3D-Vorschau.'
+                'Globale Darstellung für alle 3D-Molekülviewer (py3Dmol). '
+                'Modelltyp und Renderqualität sind unabhängig wählbar; Größen '
+                'gelten auch für Trajektorien und Vergleichsansichten. Änderungen '
+                'werden mit <b>Save Settings</b> auf die aktuelle Sitzung angewendet.'
                 '</div>'
             ),
             widgets.HBox([viewer_enabled_toggle, viewer_quality_dropdown], layout=_row_layout),
+            widgets.HBox([viewer_representation_dropdown], layout=_row_layout),
+            viewer_atom_scale_slider,
+            viewer_bond_radius_slider,
+            viewer_multiple_bonds_toggle,
+            viewer_depth_fog_toggle,
+            viewer_ambient_occlusion_toggle,
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin-top:2px;">'
+                '<b>Kugelgröße:</b> Faktor der van-der-Waals-Radien; '
+                '<code>0.28</code> = klassisches Kugel–Stab-Modell, '
+                '<code>1.00</code> = Kalottenmodell. '
+                '<b>Bindungsradius:</b> Zylinderradius in Å; beim Drahtmodell '
+                'ist die Linienbreite browserabhängig. Niedrige Qualität deaktiviert '
+                'Kantenglättung; Tiefenschattierung ist separat schaltbar. '
+                '<b>Mehrfachbindungen:</b> XYZ-/ORCA-Koordinaten enthalten keine '
+                'Bindungsordnung und erscheinen daher immer einfach; die Option '
+                'wirkt nur auf MOL/SDF und andere Formate mit Bindungsordnungen. '
+                '<b>Tiefennebel:</b> mischt weiter hinten liegende Atome in die '
+                'weiße Hintergrundfarbe und stellt damit den bisherigen Blasseffekt her. '
+                '<b>Ambient Occlusion:</b> verstärkt Kontakt- und Hohlraumschatten; '
+                'standardmäßig aus, damit der klassische Viewer-Look erhalten bleibt.'
+                '</div>'
+            ),
         ],
         layout=_section_layout,
     )
@@ -4124,7 +4254,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     main_accordion.set_title(6, 'DELFIN Agent')
     main_accordion.set_title(7, 'Developer')
     main_accordion.set_title(8, 'SSH Transfer & Remote Archive')
-    main_accordion.selected_index = 0  # Workspace open by default
+    main_accordion.selected_index = None  # all settings sections collapsed by default
 
     tab = widgets.VBox(
         [

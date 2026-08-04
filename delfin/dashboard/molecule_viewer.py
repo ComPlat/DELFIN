@@ -1,26 +1,85 @@
 """3D molecule visualisation helpers using py3Dmol."""
 
+import json
+
 import py3Dmol
 from IPython.display import HTML, clear_output, display
 
-DEFAULT_3DMOL_STYLE = {
-    'stick': {
-        'colorscheme': 'Jmol',
-        'radius': 0.11,
-        'singleBonds': False,
-        'doubleBondScaling': 0.65,
-        'tripleBondScaling': 0.65,
-    },
-    'sphere': {'colorscheme': 'Jmol', 'scale': 0.28},
-}
-DEFAULT_3DMOL_STYLE_JS = (
-    '{'
-    'stick:{colorscheme:"Jmol",radius:0.11,singleBonds:false,doubleBondScaling:0.65,tripleBondScaling:0.65},'
-    'sphere:{colorscheme:"Jmol",scale:0.28}'
-    '}'
-)
 DEFAULT_3DMOL_BACKGROUND = 'white'
 DEFAULT_3DMOL_ZOOM = 0.90
+DEFAULT_3DMOL_REPRESENTATION = 'ball_and_stick'
+DEFAULT_3DMOL_ATOM_SCALE = 0.28
+DEFAULT_3DMOL_BOND_RADIUS = 0.11
+DEFAULT_3DMOL_MULTIPLE_BONDS = True
+DEFAULT_3DMOL_DEPTH_FOG = True
+DEFAULT_3DMOL_AMBIENT_OCCLUSION = False
+
+VIEWER_REPRESENTATIONS = {
+    'line',
+    'stick',
+    'ball_and_stick',
+    'sphere',
+}
+
+
+def build_molecule_view_style(
+    representation=DEFAULT_3DMOL_REPRESENTATION,
+    atom_scale=DEFAULT_3DMOL_ATOM_SCALE,
+    bond_radius=DEFAULT_3DMOL_BOND_RADIUS,
+    multiple_bonds=DEFAULT_3DMOL_MULTIPLE_BONDS,
+    *,
+    color=None,
+):
+    """Build one 3Dmol atom style from the global display controls.
+
+    ``atom_scale`` scales van-der-Waals radii (1.0 is a space-filling model),
+    while ``bond_radius`` is the cylinder radius in Angstrom. A fixed ``color``
+    is used by overlay viewers; otherwise the standard Jmol element palette is
+    retained.
+    """
+    representation = str(representation or '').strip().lower()
+    if representation not in VIEWER_REPRESENTATIONS:
+        representation = DEFAULT_3DMOL_REPRESENTATION
+    atom_scale = max(0.05, min(1.50, float(atom_scale)))
+    bond_radius = max(0.02, min(0.50, float(bond_radius)))
+    color_spec = {'color': str(color)} if color else {'colorscheme': 'Jmol'}
+
+    line = dict(color_spec)
+    # Browser/WebGL support for wide native lines varies, but passing the
+    # 3Dmol linewidth still honors the thickness control where supported.
+    line['linewidth'] = round(max(1.0, bond_radius / DEFAULT_3DMOL_BOND_RADIUS), 3)
+    stick = {
+        **color_spec,
+        'radius': bond_radius,
+        'singleBonds': not bool(multiple_bonds),
+        'doubleBondScaling': 0.65,
+        'tripleBondScaling': 0.65,
+    }
+    sphere = {**color_spec, 'scale': atom_scale}
+
+    if representation == 'line':
+        return {'line': line}
+    if representation == 'stick':
+        return {'stick': stick}
+    if representation == 'sphere':
+        return {'sphere': sphere}
+    return {'stick': stick, 'sphere': sphere}
+
+
+def molecule_view_style_js(style, *, color=None):
+    """Serialize a style for inline JavaScript, optionally recoloring it."""
+    rendered = {}
+    for name, options in dict(style or {}).items():
+        rendered_options = dict(options or {})
+        if color:
+            rendered_options.pop('colorscheme', None)
+            rendered_options['color'] = str(color)
+        rendered[name] = rendered_options
+    return json.dumps(rendered, separators=(',', ':'))
+
+
+DEFAULT_3DMOL_STYLE = build_molecule_view_style()
+DEFAULT_3DMOL_STYLE_JS = molecule_view_style_js(DEFAULT_3DMOL_STYLE)
 
 _VIEWER_FIXED_WIDTH = 560
 _VIEWER_FIXED_HEIGHT = 420
@@ -34,18 +93,51 @@ VIEWER_CONTAINER_DYNAMIC_SCALE = 0.9725
 
 VIEWER_QUALITY_PROFILES = {
     'low': {
-        'style': {'line': {'colorscheme': 'Jmol'}},
-        'style_js': '{line:{colorscheme:"Jmol"}}',
+        'viewer_config': {
+            'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
+            'antialias': False,
+            'cartoonQuality': 5,
+        },
     },
     'medium': {
-        'style': {'stick': {'colorscheme': 'Jmol', 'radius': 0.10}},
-        'style_js': '{stick:{colorscheme:"Jmol",radius:0.10}}',
+        'viewer_config': {
+            'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
+            'antialias': True,
+            'cartoonQuality': 10,
+        },
     },
     'high': {
-        'style': DEFAULT_3DMOL_STYLE,
-        'style_js': DEFAULT_3DMOL_STYLE_JS,
+        'viewer_config': {
+            'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
+            'antialias': True,
+            'cartoonQuality': 20,
+        },
     },
 }
+
+
+def build_viewer_config(
+    quality='high',
+    depth_fog=DEFAULT_3DMOL_DEPTH_FOG,
+    ambient_occlusion=DEFAULT_3DMOL_AMBIENT_OCCLUSION,
+):
+    """Build the GLViewer renderer config from independent visual controls."""
+    quality = str(quality or '').strip().lower()
+    if quality not in VIEWER_QUALITY_PROFILES:
+        quality = 'high'
+    config = dict(VIEWER_QUALITY_PROFILES[quality]['viewer_config'])
+    # 3Dmol's fog is the depth cue that blends distant atoms into the
+    # background. State it explicitly instead of relying on a library default.
+    config['disableFog'] = not bool(depth_fog)
+    if ambient_occlusion:
+        config.update({
+            'style': 'ambientOcclusion',
+            'strength': 0.65,
+            'radius': 4.0,
+        })
+    return config
+
+
 _VIEWER_DISABLED_PLACEHOLDER_HTML = (
     "<div style=\"width:100%;max-width:560px;padding:18px 24px;"
     "border:1px dashed #b0b6bf;background:#f6f7f9;color:#4a525c;"
@@ -56,28 +148,79 @@ _VIEWER_DISABLED_PLACEHOLDER_HTML = (
 
 
 def get_viewer_profile():
-    """Return the active viewer profile {enabled, quality, width, height, zoom, style, style_js}.
+    """Return the complete active global viewer profile.
 
-    Window size and zoom are constant across quality levels; the lever is the
-    representation style: HIGH = stick+sphere (default), MEDIUM = stick only,
-    LOW = line representation. Falls back to high if user-settings cannot be
-    loaded (e.g. tests without the full DELFIN env).
+    Representation, atom size, bond thickness, depth fog and ambient occlusion
+    are independent controls. Quality controls antialiasing and supported
+    geometry detail. Falls back to the historical ball-and-stick/fog defaults
+    if the user settings cannot be loaded.
     """
     try:
         from delfin.user_settings import load_viewer_settings
         viewer = load_viewer_settings()
     except Exception:
-        viewer = {'enabled': True, 'quality': 'high'}
+        viewer = {
+            'enabled': True,
+            'quality': 'high',
+            'representation': DEFAULT_3DMOL_REPRESENTATION,
+            'atom_scale': DEFAULT_3DMOL_ATOM_SCALE,
+            'bond_radius': DEFAULT_3DMOL_BOND_RADIUS,
+            'multiple_bonds': DEFAULT_3DMOL_MULTIPLE_BONDS,
+            'depth_fog': DEFAULT_3DMOL_DEPTH_FOG,
+            'ambient_occlusion': DEFAULT_3DMOL_AMBIENT_OCCLUSION,
+        }
     quality = viewer.get('quality', 'high')
-    preset = VIEWER_QUALITY_PROFILES.get(quality, VIEWER_QUALITY_PROFILES['high'])
+    if quality not in VIEWER_QUALITY_PROFILES:
+        quality = 'high'
+    representation = str(
+        viewer.get('representation', DEFAULT_3DMOL_REPRESENTATION)
+    )
+    if representation not in VIEWER_REPRESENTATIONS:
+        representation = DEFAULT_3DMOL_REPRESENTATION
+    try:
+        atom_scale = float(viewer.get('atom_scale', DEFAULT_3DMOL_ATOM_SCALE))
+    except (TypeError, ValueError):
+        atom_scale = DEFAULT_3DMOL_ATOM_SCALE
+    try:
+        bond_radius = float(viewer.get('bond_radius', DEFAULT_3DMOL_BOND_RADIUS))
+    except (TypeError, ValueError):
+        bond_radius = DEFAULT_3DMOL_BOND_RADIUS
+    atom_scale = max(0.05, min(1.50, atom_scale))
+    bond_radius = max(0.02, min(0.50, bond_radius))
+    multiple_bonds = bool(
+        viewer.get('multiple_bonds', DEFAULT_3DMOL_MULTIPLE_BONDS)
+    )
+    depth_fog = bool(viewer.get('depth_fog', DEFAULT_3DMOL_DEPTH_FOG))
+    ambient_occlusion = bool(
+        viewer.get('ambient_occlusion', DEFAULT_3DMOL_AMBIENT_OCCLUSION)
+    )
+    style = build_molecule_view_style(
+        representation,
+        atom_scale,
+        bond_radius,
+        multiple_bonds,
+    )
+    viewer_config = build_viewer_config(
+        quality,
+        depth_fog,
+        ambient_occlusion,
+    )
     return {
         'enabled': bool(viewer.get('enabled', True)),
         'quality': quality,
+        'representation': representation,
+        'atom_scale': atom_scale,
+        'bond_radius': bond_radius,
+        'multiple_bonds': multiple_bonds,
+        'depth_fog': depth_fog,
+        'ambient_occlusion': ambient_occlusion,
         'width': _VIEWER_FIXED_WIDTH,
         'height': _VIEWER_FIXED_HEIGHT,
         'zoom': _VIEWER_FIXED_ZOOM,
-        'style': preset['style'],
-        'style_js': preset['style_js'],
+        'style': style,
+        'style_js': molecule_view_style_js(style),
+        'viewer_config': viewer_config,
+        'viewer_config_js': json.dumps(viewer_config, separators=(',', ':')),
     }
 
 
@@ -2003,17 +2146,43 @@ def structure_viewer_fullscreen_bootstrap_js():
 def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
     """Apply a shared ChemDarwin/MSILES-like style to a py3Dmol viewer.
 
-    When ``style`` is None the function pulls the active style from the
-    global viewer-quality setting (LOW/MEDIUM/HIGH). Passing an explicit
-    ``style`` dict overrides the global setting. Window zoom always
-    honors the caller's ``zoom`` argument (defaults to DEFAULT_3DMOL_ZOOM).
+    When ``style`` is None the function pulls the active representation and
+    dimensions from the global viewer settings. Passing an explicit ``style``
+    dict overrides only the molecule style; render-quality configuration still
+    applies. Window zoom always honors the caller's ``zoom`` argument.
     """
+    try:
+        profile = get_viewer_profile()
+    except Exception:
+        profile = {
+            'style': DEFAULT_3DMOL_STYLE,
+            'viewer_config': {
+                'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
+                'antialias': True,
+                'disableFog': False,
+            },
+            'viewer_config_js': json.dumps(
+                {
+                    'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
+                    'antialias': True,
+                    'disableFog': False,
+                },
+                separators=(',', ':'),
+            ),
+        }
     if style is None:
-        try:
-            style = get_viewer_profile()['style']
-        except Exception:
-            style = DEFAULT_3DMOL_STYLE
+        style = profile['style']
     if hasattr(view, 'startjs'):
+        # py3Dmol does not expose GLViewer's constructor config directly. The
+        # view is not created until ``show()``, so replacing its stock config
+        # here safely applies antialiasing/depth-shading to these viewers too.
+        default_config_js = '{backgroundColor:"white"}'
+        if default_config_js in view.startjs:
+            view.startjs = view.startjs.replace(
+                default_config_js,
+                profile['viewer_config_js'],
+                1,
+            )
         marker = (
             'window.__delfinEnableRightDragTranslate('
             'viewer_UNIQUEID,document.getElementById("3dmolviewer_UNIQUEID"));'
@@ -2047,7 +2216,9 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
                 + '\n'
             )
     view.setStyle({}, style)
-    view.setBackgroundColor(DEFAULT_3DMOL_BACKGROUND)
+    view.setBackgroundColor(
+        profile['viewer_config'].get('backgroundColor', DEFAULT_3DMOL_BACKGROUND)
+    )
     view.zoomTo()
     view.center()
     if zoom is not None:
@@ -2307,6 +2478,7 @@ def build_fukui_viewer_html(
     label_js = fukui_atom_labels_js(xyz_text, labels) if labels else ''
     cube_js = fukui_cube_isosurface_js(cube_text, isoval=isoval, signed=cube_signed) if cube_text else ''
     style_js = profile['style_js']
+    viewer_config_js = profile['viewer_config_js']
     # Reuse the same right-drag-translate patch every other DELFIN viewer
     # installs (orca-builder, calc-browser, remote-archive) so the mouse
     # behaviour stays uniform across the dashboard.
@@ -2351,7 +2523,7 @@ def build_fukui_viewer_html(
     ensureLoaded(function() {{
         var el = document.getElementById('{viewer_id}');
         if (!el) return;
-        var viewer = $3Dmol.createViewer(el, {{ backgroundColor: 'white' }});
+        var viewer = $3Dmol.createViewer(el, {viewer_config_js});
         viewer.addModel({xyz_json}, 'xyz');
         viewer.setStyle({{}}, {style_js});
         {label_js}

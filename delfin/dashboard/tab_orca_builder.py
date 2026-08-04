@@ -26,6 +26,7 @@ from .molecule_viewer import (
     strip_xyz_header,
     DEFAULT_3DMOL_ZOOM,
     get_viewer_profile, viewer_disabled_html,
+    molecule_view_style_js,
     patch_viewer_mouse_controls_js,
     structure_viewer_fullscreen_bootstrap_js,
     structure_viewer_fullscreen_css,
@@ -729,7 +730,7 @@ def create_tab(ctx):
         '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
         '    }\n'
         '    var saved=window._orcaBuildViewState;\n'
-        '    var viewer=$3Dmol.createViewer(el,{backgroundColor:"white"});\n'
+        '    var viewer=$3Dmol.createViewer(el,__VIEWER_CONFIG__);\n'
         '    __MOUSE__\n'
         '    viewer.addModel(__XYZ__,"xyz");\n'
         '    viewer.setStyle({},__STYLE__);\n'
@@ -893,16 +894,22 @@ def create_tab(ctx):
             .replace('__MOUSE__', mouse_js)
             .replace('__XYZ__', json.dumps(xyz_data))
             .replace('__STYLE__', profile['style_js'])
+            .replace('__VIEWER_CONFIG__', profile['viewer_config_js'])
             .replace('__LABELS__', label_js)
             .replace('__ZOOM__', zoom)
         )
         return html
 
     def _overlay_viewer_html(reference_xyz, target_xyz, reset_view=False):
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            return viewer_disabled_html()
         div_id = 'orca-overlay-' + uuid.uuid4().hex[:10]
         mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
         zoom = str(DEFAULT_3DMOL_ZOOM if DEFAULT_3DMOL_ZOOM is not None else 0.9)
         reset_js = 'window._orcaBuildViewState=null;' if reset_view else ''
+        target_style_js = molecule_view_style_js(profile['style'], color='#1f5fff')
+        reference_style_js = molecule_view_style_js(profile['style'], color='#d32f2f')
         return (
             '<div id="' + div_id + '" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
             '<script>\n'
@@ -925,12 +932,12 @@ def create_tab(ctx):
             '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
             '    }\n'
             '    var saved=window._orcaBuildViewState;\n'
-            '    var viewer=$3Dmol.createViewer(el,{backgroundColor:"white"});\n'
+            f'    var viewer=$3Dmol.createViewer(el,{profile["viewer_config_js"]});\n'
             f'    {mouse_js}\n'
             f'    viewer.addModel({json.dumps(target_xyz)},"xyz");\n'
-            '    viewer.setStyle({model:0},{stick:{radius:0.18,color:"#1f5fff"},sphere:{scale:0.24,color:"#1f5fff"}});\n'
+            f'    viewer.setStyle({{model:0}},{target_style_js});\n'
             f'    viewer.addModel({json.dumps(reference_xyz)},"xyz");\n'
-            '    viewer.setStyle({model:1},{stick:{radius:0.18,color:"#d32f2f"},sphere:{scale:0.24,color:"#d32f2f"}});\n'
+            f'    viewer.setStyle({{model:1}},{reference_style_js});\n'
             '    if(saved&&typeof viewer.setView==="function"){\n'
             '      try{viewer.setView(saved);}catch(_e){viewer.zoomTo();viewer.center();viewer.zoom(' + zoom + ');}\n'
             '    }else{\n'

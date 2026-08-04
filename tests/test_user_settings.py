@@ -15,9 +15,11 @@ load_settings = _MODULE.load_settings
 load_remote_archive_enabled = _MODULE.load_remote_archive_enabled
 load_runtime_settings = _MODULE.load_runtime_settings
 load_transfer_settings = _MODULE.load_transfer_settings
+load_viewer_settings = _MODULE.load_viewer_settings
 normalize_local_directory_setting = _MODULE.normalize_local_directory_setting
 save_remote_archive_enabled = _MODULE.save_remote_archive_enabled
 save_transfer_settings = _MODULE.save_transfer_settings
+save_viewer_settings = _MODULE.save_viewer_settings
 get_orca_templates_path = _MODULE.get_orca_templates_path
 load_orca_templates = _MODULE.load_orca_templates
 save_orca_template = _MODULE.save_orca_template
@@ -249,6 +251,64 @@ def test_load_settings_normalizes_ui_tabs_payload(tmp_path):
 
     assert loaded["ui"]["tabs"]["order"] == ["submit", "archive"]
     assert loaded["ui"]["tabs"]["hidden"] == ["archive"]
+
+
+def test_viewer_settings_default_to_ball_and_stick_controls(tmp_path):
+    viewer = load_viewer_settings(tmp_path / "settings.json")
+
+    assert viewer == {
+        "enabled": True,
+        "quality": "high",
+        "representation": "ball_and_stick",
+        "atom_scale": 0.28,
+        "bond_radius": 0.11,
+        "multiple_bonds": True,
+        "depth_fog": True,
+        "ambient_occlusion": False,
+    }
+
+
+def test_viewer_settings_migrate_legacy_quality_representation(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"ui": {"viewer": {"enabled": True, "quality": "medium"}}}),
+        encoding="utf-8",
+    )
+
+    viewer = load_viewer_settings(settings_path)
+
+    assert viewer["quality"] == "medium"
+    assert viewer["representation"] == "stick"
+    assert viewer["atom_scale"] == 0.28
+    assert viewer["bond_radius"] == 0.11
+    assert viewer["multiple_bonds"] is True
+    assert viewer["depth_fog"] is True
+    assert viewer["ambient_occlusion"] is False
+
+
+def test_viewer_settings_extended_roundtrip(tmp_path):
+    settings_path = tmp_path / "settings.json"
+
+    saved = save_viewer_settings(
+        True,
+        "low",
+        settings_path,
+        representation="sphere",
+        atom_scale=1.0,
+        bond_radius=0.22,
+        multiple_bonds=False,
+        depth_fog=False,
+        ambient_occlusion=True,
+    )
+
+    assert saved == load_viewer_settings(settings_path)
+    assert saved["quality"] == "low"
+    assert saved["representation"] == "sphere"
+    assert saved["atom_scale"] == 1.0
+    assert saved["bond_radius"] == 0.22
+    assert saved["multiple_bonds"] is False
+    assert saved["depth_fog"] is False
+    assert saved["ambient_occlusion"] is True
 
 
 def test_agent_extras_default_on_and_roundtrip(tmp_path):
