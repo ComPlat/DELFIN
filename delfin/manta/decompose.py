@@ -954,7 +954,38 @@ def decompose(smiles: str) -> Optional[Dict]:
     # historic cap (their backbone needs ring/metallacycle work the declash does not
     # do); denticity>3 / kappa4 already bailed above (class-C, separate).
     _jd = os.environ.get("DELFIN_FFFREE_JOINT_DECLASH", "0") == "1"
-    _mono_cap = int(os.environ.get("DELFIN_FFFREE_MONO_HEAVY_CAP", "12")) if _jd else 8
+    #
+    # MONO-REACH (DELFIN_FFFREE_MONO_REACH_18, default OFF -> byte-identical, 2026-08-04):
+    # the monodentate ceiling is a THRESHOLD, and it has never been calibrated.  It was 8,
+    # then 12 (joint-declash), and CONFORMER_SEATING raises EVERY arm to 24 in one jump --
+    # measured 2026-08-02 as strongly net-negative (seatingAB, pool_toolarge n=240:
+    # valid 175->118, capability_lost 78, gained 21).  Nobody ever measured what lies
+    # BETWEEN 12 and 24.
+    #
+    # The forensic bisect of 2026-08-04 found the cost of leaving it at 12: commit
+    # f8141ce3 (2026-07-04) dropped CONFORMER_SEATING and with it the cap-24, so every
+    # complex whose monodentate arm exceeds the ceiling falls to LEGACY -- 6.9 % clean
+    # manifolds against 57.2 % for the FF-free path.  POCVIO (Hg, 2 Cl + 3 pyridyl-
+    # nitroxides, 17 heavy/arm, dent 1) went from 60 frames / topology correct / 26.7 %
+    # hard to 55 frames / topology WRONG / 100 % hard, and stayed there for five weeks.
+    #
+    # Cap sweep on POCVIO against the current champion (2026-08-04, one build per value):
+    #     cap 14  topo 0/1  hard 100 %  55 frames
+    #     cap 16  topo 0/1  hard 100 %  55 frames
+    #     cap 18  topo 1/1  hard   0 %  21 frames   <- threshold, = the ligand's 17 heavy
+    #     cap 20  topo 1/1  hard   0 %  21 frames   identical
+    #     cap 24  topo 1/1  hard   0 %  21 frames   identical
+    # Against the eye, cap 18 is BETTER than the best stand we ever had: manifold_clean
+    # true (was false), worst_gate 0.027 (was 24.999), isomer coverage unchanged.
+    #
+    # So: raise the MONODENTATE ceiling to 18 only -- the smallest value that recovers the
+    # class -- instead of the 24 that costs 78 capabilities.  MONODENTATE arms only;
+    # chelate arms and the denticity>3 bail are untouched.  The self-gate (_build_is_clean)
+    # still vetoes any unclean result, so this can only ADD reach, never degrade a build
+    # that already succeeds.  Its own flag, so an A/B can actually partition on it.
+    _mono_reach = os.environ.get("DELFIN_FFFREE_MONO_REACH_18", "0") == "1"
+    _mono_default = "18" if _mono_reach else "12"
+    _mono_cap = int(os.environ.get("DELFIN_FFFREE_MONO_HEAVY_CAP", _mono_default)) if _jd else 8
     # CHELATE-BACKBONE gate-lift (DELFIN_FFFREE_CHELATE_BACKBONE, default OFF -> byte-id):
     # PHASE 0 of the polydentate project (K4_MACROCYCLE_DESIGN_2026_06_17.md §10).
     # Large kappa<=3 chelates with an extended/strained backbone (e.g. BIQCOV: Ta,
