@@ -9,7 +9,6 @@ Usage::
 import base64
 import contextlib
 import fcntl
-import getpass
 import importlib
 import importlib.resources
 import html
@@ -38,6 +37,7 @@ from delfin.runtime_setup import (
     resolve_orca_base,
     resolve_submit_templates_dir,
 )
+from delfin.quota import home_usage
 from delfin.user_settings import load_remote_archive_enabled, load_settings
 
 
@@ -1299,62 +1299,29 @@ def _build_home_usage_widget(home_dir, warn_threshold_gb=400):
             f'{html.escape(message)}</span>'
         )
 
-    def _measure_bytes():
-        """Read HOME usage from the Lustre quota accounting.
-
-        Never walk the directory tree (``du``): on a shared parallel file system
-        that hammers the metadata servers and the login node, and cluster
-        operations will block the account for it. ``lfs quota`` answers from
-        accounting data in a single call.
-        """
-        try:
-            result = subprocess.run(
-                ['lfs', 'quota', '-q', '-u', getpass.getuser(), str(home_dir)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                check=False,
-                timeout=30,
-            )
-        except Exception as exc:
-            raise RuntimeError('lfs quota failed') from exc
-        if result.returncode != 0 or not result.stdout.strip():
-            raise RuntimeError('lfs quota failed')
-
-        # -q output: "<mountpoint> <kbytes> <bquota> <blimit> <bgrace> <files> ..."
-        # The mountpoint may be wrapped onto its own line, and values that are
-        # over quota carry a trailing '*'.
-        tokens = result.stdout.split()
-        numbers = []
-        for token in tokens:
-            token = token.rstrip('*')
-            if token.isdigit():
-                numbers.append(int(token))
-            elif numbers:
-                break
-        if not numbers:
-            raise RuntimeError('lfs quota: no usage reported')
-        used_bytes = numbers[0] * 1024
-        soft_limit_bytes = numbers[1] * 1024 if len(numbers) > 1 and numbers[1] else None
-        return used_bytes, soft_limit_bytes
-
     def _refresh():
+        # Usage comes from quota accounting, never from a directory walk: on a
+        # shared cluster file system ``du`` costs one metadata RPC per file and
+        # degrades the machine for everyone. See delfin/quota.py.
         try:
-            used_bytes, soft_limit_bytes = _measure_bytes()
-            used_gb = used_bytes / (1024 ** 3)
-            if soft_limit_bytes:
-                limit_gb = soft_limit_bytes / (1024 ** 3)
-                percent = 100.0 * used_bytes / soft_limit_bytes
-                over = percent >= 85.0 or used_gb >= float(warn_threshold_gb)
-                _set_label(
-                    f'HOME: {used_gb:.1f} / {limit_gb:.0f} GB ({percent:.0f}%)',
-                    color='#b71c1c' if over else '#455a64',
-                )
-            else:
-                color = '#b71c1c' if used_gb >= float(warn_threshold_gb) else '#455a64'
-                _set_label(f'HOME: {used_gb:.1f} GB', color=color)
+            usage = home_usage(home_dir)
         except Exception:
+            usage = None
+        if usage is None:
             _set_label('HOME: n/a', color='#757575')
+            return
+        used_gb = usage.used_bytes / (1024 ** 3)
+        if usage.soft_limit_bytes:
+            limit_gb = usage.soft_limit_bytes / (1024 ** 3)
+            percent = 100.0 * usage.used_bytes / usage.soft_limit_bytes
+            over = percent >= 85.0 or used_gb >= float(warn_threshold_gb)
+            _set_label(
+                f'HOME: {used_gb:.1f} / {limit_gb:.0f} GB ({percent:.0f}%)',
+                color='#b71c1c' if over else '#455a64',
+            )
+        else:
+            color = '#b71c1c' if used_gb >= float(warn_threshold_gb) else '#455a64'
+            _set_label(f'HOME: {used_gb:.1f} GB', color=color)
 
     threading.Thread(target=_refresh, daemon=True).start()
     return label

@@ -105,6 +105,66 @@ _DENY_SUBSTRINGS = (
 )
 
 
+# Commands that recurse through a directory tree. Harmless on a job folder,
+# but rooted at a whole file system they cost one metadata RPC per file --
+# hundreds of thousands of them on a populated HOME -- which degrades a shared
+# machine for every user on it. A site's operations team will read that as
+# abuse and block the account, which is what prompted this guard.
+#
+# The rule derives its roots at runtime from the current user's HOME and the
+# machine's mount table, so it holds for any user on any cluster without
+# knowing site-specific paths.
+_TREE_WALK_COMMANDS = frozenset({"du", "ncdu", "find"})
+
+
+def _is_tree_walk_root(resolved: Path) -> bool:
+    """True if a recursive walk rooted here would sweep a whole file system.
+
+    Two universal signals, no hardcoded site paths:
+      * the path is the user's HOME or an ancestor of it, and
+      * the path is a mount point (``/scratch``, ``/work``, project file
+        systems, ``/`` itself) -- a job directory never is.
+    """
+    if str(resolved) == os.sep:
+        return True
+    try:
+        home = Path.home().resolve()
+        if resolved == home or resolved in home.parents:
+            return True
+    except Exception:
+        pass
+    try:
+        return os.path.ismount(str(resolved))
+    except OSError:
+        return False
+
+
+def _check_tree_walk(toks: list[str]) -> tuple[bool, str]:
+    """Deny recursive walks rooted at a whole file system; subdirs are fine."""
+    base = os.path.basename(toks[0])
+    if base not in _TREE_WALK_COMMANDS:
+        return True, "ok"
+
+    targets = [t for t in toks[1:] if not t.startswith("-")]
+    if not targets:
+        # No path given: the walk is rooted at the working directory.
+        targets = ["."]
+
+    for target in targets:
+        try:
+            resolved = Path(os.path.expanduser(target)).resolve()
+        except Exception:
+            continue
+        if _is_tree_walk_root(resolved):
+            return False, (
+                f"{base} would walk all of {str(resolved)!r}; on a shared file "
+                f"system that overloads the metadata servers. For disk usage "
+                f"use delfin.quota.home_usage(); otherwise point {base} at a "
+                f"specific subdirectory."
+            )
+    return True, "ok"
+
+
 @dataclass
 class AllowResult:
     allowed: bool
@@ -167,7 +227,7 @@ def _check_segment(seg: str) -> tuple[bool, str]:
         head = toks[0]
     base = os.path.basename(head)
     if base in _ALLOW_FIRST_TOKEN:
-        return True, "ok"
+        return _check_tree_walk(toks)
     if base in _ALLOW_SUBCOMMAND:
         if len(toks) >= 2 and toks[1] in _ALLOW_SUBCOMMAND[base]:
             return True, "ok"
