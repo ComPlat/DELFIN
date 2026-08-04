@@ -27,6 +27,8 @@ from .molecule_viewer import (
     DEFAULT_3DMOL_ZOOM,
     get_viewer_profile, viewer_disabled_html,
     patch_viewer_mouse_controls_js,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
 )
 from .input_processing import (
     parse_inp_resources, sanitize_orca_input, clean_input_data,
@@ -209,6 +211,9 @@ def create_tab(ctx):
         overflow='hidden', box_sizing='border-box', padding='0', margin='0',
     ))
     orca_mol_output.add_class('orca-mol-output')
+    orca_mol_output.add_class('delfin-structure-fs-member')
+    orca_mol_output.add_class('delfin-structure-fs-viewer')
+    orca_scope_id = f'orca-scope-{abs(id(orca_mol_output))}'
 
     orca_mol_prev_btn = widgets.Button(
         description='◀', tooltip='Previous molecule',
@@ -223,10 +228,24 @@ def create_tab(ctx):
         value=True, description='#', tooltip='Show / hide atom numbers',
         layout=widgets.Layout(width='40px', height='28px'),
     )
+    orca_mol_fullscreen_btn = widgets.Button(
+        description='', icon='expand', tooltip='Toggle fullscreen (Esc to exit)',
+        layout=widgets.Layout(width='40px', height='28px'),
+    )
+    orca_mol_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
+    orca_mol_fullscreen_btn.add_class('orca-structure-fullscreen-btn')
     orca_mol_nav_row = widgets.HBox(
-        [orca_mol_prev_btn, orca_mol_nav_label, orca_mol_next_btn, orca_mol_labels_btn],
+        [
+            orca_mol_prev_btn,
+            orca_mol_nav_label,
+            orca_mol_next_btn,
+            orca_mol_labels_btn,
+            orca_mol_fullscreen_btn,
+        ],
         layout=widgets.Layout(display='none', align_items='center', gap='6px'),
     )
+    orca_mol_nav_row.add_class('delfin-structure-fs-member')
+    orca_mol_nav_row.add_class('delfin-structure-fs-toolbar')
     # -- state ----------------------------------------------------------
     state = {
         'extra_files': {},
@@ -1750,12 +1769,23 @@ def create_tab(ctx):
         box_sizing='border-box', overflow_x='hidden',
     ))
 
+    orca_mol_header = widgets.HTML(
+        '<b>Molecule Preview:</b>',
+        layout=widgets.Layout(margin='10px 0 0 0'),
+    )
+    orca_mol_header.add_class('delfin-structure-fs-member')
+    orca_mol_header.add_class('delfin-structure-fs-header')
+    orca_mol_module = widgets.VBox(
+        [orca_mol_header, orca_mol_nav_row, orca_mol_output],
+        layout=widgets.Layout(width='100%', min_width='0', gap='6px'),
+    )
+    orca_mol_module.add_class('delfin-structure-fs-module')
+    orca_mol_module.add_class('orca-structure-fs-module')
+
     orca_right = widgets.VBox([
         widgets.HTML('<b>ORCA Input Preview (editable):</b>'),
         orca_preview,
-        widgets.HTML('<b>Molecule Preview:</b>', layout=widgets.Layout(margin='10px 0 0 0')),
-        orca_mol_nav_row,
-        orca_mol_output,
+        orca_mol_module,
     ], layout=widgets.Layout(
         flex='1 1 0', min_width='0', padding='8px', gap='6px',
         box_sizing='border-box', overflow_x='hidden',
@@ -1813,6 +1843,9 @@ def create_tab(ctx):
             display: block !important;
             margin: 0 !important;
         }
+        """
+        + structure_viewer_fullscreen_css()
+        + """
         </style>
         """
     )
@@ -1831,6 +1864,7 @@ def create_tab(ctx):
         orca_css,
         split,
     ], layout=widgets.Layout(width='100%', padding='8px', box_sizing='border-box'))
+    tab_widget.add_class(orca_scope_id)
 
     # -- Drag-and-drop / click JS for the ORCA drop zone --------------------
     _orca_drop_js = r"""
@@ -1978,6 +2012,7 @@ def create_tab(ctx):
         'orca_save_btn': orca_save_btn,
         'orca_mol_prev_btn': orca_mol_prev_btn,
         'orca_mol_next_btn': orca_mol_next_btn,
+        'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
         'update_orca_preview': update_orca_preview,
-        'init_js': _orca_drop_js,
+        'init_js': structure_viewer_fullscreen_bootstrap_js() + '\n' + _orca_drop_js,
     }

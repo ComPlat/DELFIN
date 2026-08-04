@@ -64,6 +64,8 @@ from .molecule_viewer import (
     parse_xyz_frames,
     patch_viewer_mouse_controls_js,
     render_fukui_panel,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
     viewer_disabled_html,
 )
 
@@ -537,12 +539,24 @@ def create_tab(ctx):
         tooltip="Download a high-resolution PNG from the current 3D view",
     )
     viewer_png_btn.add_class("remote-png-btn")
+    viewer_fullscreen_btn = widgets.Button(
+        description="",
+        icon="expand",
+        layout=widgets.Layout(width="40px", min_width="40px", height="30px"),
+        tooltip="Toggle fullscreen (Esc to exit)",
+    )
+    viewer_fullscreen_btn.add_class("delfin-structure-fullscreen-btn")
+    viewer_fullscreen_btn.add_class("remote-structure-fullscreen-btn")
     viewer_label = widgets.HTML(
         "<div style='height:26px; line-height:26px; margin:0;'>"
         "<b>🔬 Molecule Preview:</b></div>"
     )
+    viewer_header_buttons = widgets.HBox(
+        [viewer_png_btn, viewer_fullscreen_btn],
+        layout=widgets.Layout(gap="6px", align_items="center", flex="0 0 auto"),
+    )
     viewer_header = widgets.HBox(
-        [viewer_label, viewer_png_btn],
+        [viewer_label, viewer_header_buttons],
         layout=widgets.Layout(
             width="100%",
             align_items="flex-start",
@@ -550,6 +564,8 @@ def create_tab(ctx):
             margin="0 0 8px 0",
         ),
     )
+    viewer_header.add_class("delfin-structure-fs-member")
+    viewer_header.add_class("delfin-structure-fs-header")
     frame_label_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
     frame_input = widgets.BoundedIntText(
         value=1,
@@ -618,6 +634,7 @@ def create_tab(ctx):
         )
     )
     viewer_output.add_class("remote-mol-viewer")
+    viewer_output.add_class("delfin-structure-fs-viewer")
     preview_html = widgets.HTML(
         value="",
         layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", overflow_x="hidden"),
@@ -4798,6 +4815,7 @@ def create_tab(ctx):
         layout=widgets.Layout(flex="0 0 auto", min_width="0", width="auto"),
     )
     viewer_wrap.add_class("remote-mol-view-wrap")
+    viewer_wrap.add_class("delfin-structure-fs-view-wrap")
     xyz_tray_controls = widgets.VBox(
         [frame_label_html, xyz_controls, xyz_playback_row, xyz_measure_row],
         layout=widgets.Layout(
@@ -4811,6 +4829,7 @@ def create_tab(ctx):
         ),
     )
     xyz_tray_controls.add_class("remote-xyz-tray-controls")
+    xyz_tray_controls.add_class("delfin-structure-fs-controls")
     viewer_row = widgets.HBox(
         [viewer_wrap, xyz_tray_controls],
         layout=widgets.Layout(
@@ -4822,6 +4841,8 @@ def create_tab(ctx):
         ),
     )
     viewer_row.add_class("remote-mol-view-row")
+    viewer_row.add_class("delfin-structure-fs-member")
+    viewer_row.add_class("delfin-structure-fs-view-row")
     remote_fukui_panel_container = widgets.VBox(
         [],
         layout=widgets.Layout(display="none", margin="8px 0 0 0", width="100%"),
@@ -4830,6 +4851,8 @@ def create_tab(ctx):
         [viewer_header, viewer_row, remote_fukui_panel_container],
         layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),
     )
+    viewer_container.add_class("delfin-structure-fs-module")
+    viewer_container.add_class("remote-structure-fs-module")
     top_toolbar = widgets.HBox(
         [
             file_info_html,
@@ -4973,7 +4996,8 @@ def create_tab(ctx):
         f".{scope_id} .remote-xyz-tray-controls {{ width:360px !important; min-width:340px !important; max-width:420px !important; }}"
         f".{scope_id} .remote-search-input, .{scope_id} .remote-search-input .widget-input {{ min-width:0 !important; max-width:100% !important; width:100% !important; min-height:26px !important; overflow:visible !important; }}"
         f" .{scope_id} .remote-search-input input {{ min-width:0 !important; max-width:100% !important; width:100% !important; height:26px !important; line-height:26px !important; padding-top:0 !important; padding-bottom:0 !important; box-sizing:border-box !important; }}"
-        "</style>"
+        + structure_viewer_fullscreen_css()
+        + "</style>"
     )
 
     tab_widget = widgets.VBox(
@@ -5071,7 +5095,7 @@ def create_tab(ctx):
     _update_buttons()
     _update_transfer_jobs_visibility()
 
-    init_js = f"""
+    init_js = structure_viewer_fullscreen_bootstrap_js() + "\n" + f"""
     (function() {{
         function resizeRemoteArchiveViewer(scopeRoot) {{
             if (!scopeRoot || scopeRoot.offsetParent === null) return;
@@ -5326,6 +5350,7 @@ def create_tab(ctx):
         # Visualization
         "view_toggle": view_toggle,
         "viewer_png_btn": viewer_png_btn,
+        "viewer_fullscreen_btn": viewer_fullscreen_btn,
         # Extract Table
         "table_btn": table_btn,
         "table_file_input": table_file_input,

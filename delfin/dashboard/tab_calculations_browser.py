@@ -41,6 +41,8 @@ from .molecule_viewer import (
     measurement_bootstrap_js,
     patch_viewer_mouse_controls_js,
     render_fukui_panel,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
     viewer_disabled_html,
 )
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
@@ -750,12 +752,23 @@ def create_tab(ctx):
         tooltip='Download a high-resolution PNG from the current 3D view',
     )
     calc_view_png_btn.add_class('calc-png-btn')
+    calc_view_fullscreen_btn = widgets.Button(
+        description='', icon='expand',
+        layout=widgets.Layout(width='40px', min_width='40px', height='30px'),
+        tooltip='Toggle fullscreen (Esc to exit)',
+    )
+    calc_view_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
+    calc_view_fullscreen_btn.add_class('calc-structure-fullscreen-btn')
     calc_mol_label = widgets.HTML(
         "<div style='height:26px; line-height:26px; margin:0;'>"
         "<b>🔬 Molecule Preview:</b></div>"
     )
+    calc_mol_header_buttons = widgets.HBox(
+        [calc_view_png_btn, calc_view_fullscreen_btn],
+        layout=widgets.Layout(gap='6px', align_items='center', flex='0 0 auto'),
+    )
     calc_mol_header = widgets.HBox(
-        [calc_mol_label, calc_view_png_btn],
+        [calc_mol_label, calc_mol_header_buttons],
         layout=widgets.Layout(
             width='100%',
             align_items='flex-start',
@@ -763,6 +776,8 @@ def create_tab(ctx):
             margin='0 0 8px 0',
         ),
     )
+    calc_mol_header.add_class('delfin-structure-fs-member')
+    calc_mol_header.add_class('delfin-structure-fs-header')
     calc_mol_viewer = widgets.Output(
         layout=widgets.Layout(
             width='100%',
@@ -771,6 +786,7 @@ def create_tab(ctx):
         ),
     )
     calc_mol_viewer.add_class('calc-mol-viewer')
+    calc_mol_viewer.add_class('delfin-structure-fs-viewer')
 
     # XYZ trajectory controls
     calc_xyz_frame_label = widgets.HTML(
@@ -1489,8 +1505,12 @@ def create_tab(ctx):
         ),
     )
     calc_mol_view_row.add_class('calc-mol-view-row')
+    calc_mol_view_row.add_class('delfin-structure-fs-member')
+    calc_mol_view_row.add_class('delfin-structure-fs-view-row')
     calc_mol_view_wrap.add_class('calc-mol-view-wrap')
+    calc_mol_view_wrap.add_class('delfin-structure-fs-view-wrap')
     calc_xyz_tray_controls.add_class('calc-xyz-tray-controls')
+    calc_xyz_tray_controls.add_class('delfin-structure-fs-controls')
     calc_fukui_panel_container = widgets.VBox(
         [],
         layout=widgets.Layout(display='none', margin='8px 0 0 0', width='100%'),
@@ -1504,6 +1524,8 @@ def create_tab(ctx):
         ],
         layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='stretch'),
     )
+    calc_mol_container.add_class('delfin-structure-fs-module')
+    calc_mol_container.add_class('calc-structure-fs-module')
 
     calc_content_toolbar = widgets.HBox([
         calc_top_btn, calc_bottom_btn,
@@ -12899,7 +12921,8 @@ def create_tab(ctx):
         '.calc-preselect-viz img { width:100% !important; height:100% !important; object-fit:contain !important; }'
         '.calc-preselect-viz [id^="3dmolviewer"], .calc-preselect-viz canvas {'
         ' width:100% !important; height:100% !important; }'
-        '</style>'
+        + structure_viewer_fullscreen_css()
+        + '</style>'
     )
 
     calc_right_children = [
@@ -12995,6 +13018,8 @@ def create_tab(ctx):
     # clear_output() wipes another tab's init JS.
     _init_js = (
         _explorer_interactions_js
+        + "\n"
+        + structure_viewer_fullscreen_bootstrap_js()
         + "\n"
         + f"""
     (function() {{
@@ -13272,6 +13297,7 @@ def create_tab(ctx):
         # Visualization & report
         'calc_view_toggle': calc_view_toggle,
         'calc_view_png_btn': calc_view_png_btn,
+        'calc_view_fullscreen_btn': calc_view_fullscreen_btn,
         'calc_xyz_png_btn': calc_xyz_png_btn,
         'calc_report_btn': calc_report_btn,
         # Extract Table

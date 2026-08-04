@@ -1662,6 +1662,344 @@ def submit_manip_bootstrap_js():
     return SUBMIT_MANIP_BOOTSTRAP_JS
 
 
+# Shared fullscreen support for the ORCA Builder, Calculations Browser, and
+# Remote Archive molecule viewers.  The normal widget layout is deliberately
+# left untouched: only the marked viewer/header/control members are moved into
+# a body-level overlay, then restored to their exact original DOM positions.
+STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
+body.delfin-structure-fs-open {
+    overflow: hidden !important;
+}
+.delfin-structure-fs-overlay,
+.delfin-structure-fs-overlay * {
+    box-sizing: border-box !important;
+}
+.delfin-structure-fs-overlay {
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 2147483000 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    padding: 8px !important;
+    margin: 0 !important;
+    gap: 6px !important;
+    overflow: hidden !important;
+    background: #fff !important;
+}
+.delfin-structure-fs-overlay > .delfin-structure-fs-header,
+.delfin-structure-fs-overlay > .delfin-structure-fs-toolbar {
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+}
+.delfin-structure-fs-overlay > .delfin-structure-fs-view-row {
+    display: flex !important;
+    flex: 1 1 0 !important;
+    flex-flow: row nowrap !important;
+    align-items: stretch !important;
+    width: 100% !important;
+    height: auto !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+}
+.delfin-structure-fs-overlay > .delfin-structure-fs-viewer,
+.delfin-structure-fs-overlay .delfin-structure-fs-view-wrap,
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer {
+    flex: 1 1 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+}
+.delfin-structure-fs-overlay .delfin-structure-fs-controls {
+    flex: 0 0 clamp(300px, 28vw, 420px) !important;
+    align-self: stretch !important;
+    width: clamp(300px, 28vw, 420px) !important;
+    min-width: 300px !important;
+    max-width: 420px !important;
+    max-height: 100% !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .output_area,
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .output_subarea,
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .output_wrapper,
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .jp-OutputArea,
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .jp-OutputArea-child,
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .jp-OutputArea-output {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+}
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .calc-mol-stage-wrapper,
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer .remote-mol-stage-wrapper {
+    display: block !important;
+    position: relative !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer [id^="orca-mol-"],
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer [id^="orca-overlay-"],
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer [id^="mol3d_"],
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer [id^="calc_trj"],
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer [id^="remote_mol3d_"],
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer [id^="remote_trj_viewer_"],
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer [id^="3dmolviewer_"] {
+    display: block !important;
+    position: relative !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer canvas {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+}
+@media (max-width: 800px) {
+    .delfin-structure-fs-overlay > .delfin-structure-fs-view-row {
+        flex-direction: column !important;
+    }
+    .delfin-structure-fs-overlay .delfin-structure-fs-controls {
+        flex: 0 0 auto !important;
+        align-self: stretch !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        max-height: 34vh !important;
+    }
+}
+"""
+
+
+STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS = r"""
+(function() {
+    if (window.__delfinStructureViewerFullscreenBound) return;
+    window.__delfinStructureViewerFullscreenBound = true;
+    window._delfinStructureFullscreen = window._delfinStructureFullscreen || null;
+
+    function classWithPrefix(el, prefix) {
+        while (el && el.classList) {
+            for (var i = 0; i < el.classList.length; i++) {
+                var cls = el.classList[i];
+                if (cls.indexOf(prefix) === 0) return cls;
+            }
+            el = el.parentElement;
+        }
+        return null;
+    }
+
+    function moduleType(module) {
+        if (module.classList.contains('orca-structure-fs-module')) return 'orca';
+        if (module.classList.contains('calc-structure-fs-module')) return 'calc';
+        if (module.classList.contains('remote-structure-fs-module')) return 'remote';
+        return '';
+    }
+
+    function scopeFor(module, type) {
+        if (type === 'orca') return classWithPrefix(module, 'orca-scope-');
+        if (type === 'calc') return classWithPrefix(module, 'calc-scope-');
+        if (type === 'remote') return classWithPrefix(module, 'remote-archive-scope-');
+        return null;
+    }
+
+    function viewerFor(type, scopeKey) {
+        if (type === 'orca') return window._orcaBuildViewer || null;
+        if (type === 'calc') {
+            return ((window._calcMolViewerByScope || {})[scopeKey]
+                || (window._calcTrajViewerByScope || {})[scopeKey]
+                || null);
+        }
+        if (type === 'remote') {
+            return ((window._remoteMolViewerByScope || {})[scopeKey]
+                || (window._remoteTrajViewerByScope || {})[scopeKey]
+                || null);
+        }
+        return null;
+    }
+
+    function viewerView(viewer) {
+        if (!viewer || typeof viewer.getView !== 'function') return null;
+        try {
+            var view = viewer.getView();
+            return view && typeof view.slice === 'function' ? view.slice() : view;
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    function resizeViewer(entry) {
+        if (!entry) return;
+        [0, 80, 260].forEach(function(delay) {
+            setTimeout(function() {
+                var viewer = viewerFor(entry.type, entry.scopeKey);
+                if (!viewer) return;
+                try {
+                    if (typeof viewer.resize === 'function') viewer.resize();
+                    if (entry.view && typeof viewer.setView === 'function') {
+                        viewer.setView(entry.view);
+                    }
+                    if (typeof viewer.render === 'function') viewer.render();
+                } catch (_e) {}
+            }, delay);
+        });
+    }
+
+    function setButtonState(btn, active) {
+        if (!btn) return;
+        var icon = btn.querySelector('i.fa, i');
+        if (icon) {
+            icon.classList.remove('fa-expand');
+            icon.classList.remove('fa-compress');
+            icon.classList.add(active ? 'fa-compress' : 'fa-expand');
+        }
+        btn.setAttribute(
+            'title',
+            active ? 'Exit fullscreen (Esc)' : 'Toggle fullscreen (Esc to exit)'
+        );
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+
+    function exitFullscreen() {
+        var entry = window._delfinStructureFullscreen;
+        if (!entry) return;
+        // Preserve the camera as it currently appears in fullscreen, including
+        // any rotation, pan, or zoom the user applied while inspecting it.
+        var currentView = viewerView(viewerFor(entry.type, entry.scopeKey));
+        if (currentView) entry.view = currentView;
+        for (var i = entry.restore.length - 1; i >= 0; i--) {
+            var item = entry.restore[i];
+            try {
+                if (item.next && item.next.parentNode === item.parent) {
+                    item.parent.insertBefore(item.el, item.next);
+                } else {
+                    item.parent.appendChild(item.el);
+                }
+            } catch (_e) {}
+        }
+        try {
+            if (entry.overlay.parentNode) entry.overlay.parentNode.removeChild(entry.overlay);
+        } catch (_e2) {}
+        setButtonState(entry.btn, false);
+        if (!entry.bodyHadOpenClass) {
+            document.body.classList.remove('delfin-structure-fs-open');
+        }
+        window._delfinStructureFullscreen = null;
+        resizeViewer(entry);
+        [60, 280].forEach(function(delay) {
+            setTimeout(function() {
+                try { window.dispatchEvent(new Event('resize')); } catch (_e) {}
+            }, delay);
+        });
+    }
+
+    function enterFullscreen(btn) {
+        var module = btn.closest('.delfin-structure-fs-module');
+        if (!module) return;
+        if (window._delfinStructureFullscreen) exitFullscreen();
+        var type = moduleType(module);
+        if (!type) return;
+        var scopeKey = scopeFor(module, type);
+        var candidates = module.querySelectorAll('.delfin-structure-fs-member');
+        var members = [];
+        for (var i = 0; i < candidates.length; i++) {
+            var candidate = candidates[i];
+            if (candidate.closest('.delfin-structure-fs-module') === module) {
+                members.push(candidate);
+            }
+        }
+        if (!members.length) return;
+        var overlay = document.createElement('div');
+        overlay.className = 'delfin-structure-fs-overlay delfin-structure-fs-' + type;
+        if (scopeKey) overlay.classList.add(scopeKey);
+        var restore = members.map(function(el) {
+            return {el: el, parent: el.parentNode, next: el.nextSibling};
+        });
+        var entry = {
+            btn: btn,
+            module: module,
+            overlay: overlay,
+            restore: restore,
+            type: type,
+            scopeKey: scopeKey,
+            view: viewerView(viewerFor(type, scopeKey)),
+            bodyHadOpenClass: document.body.classList.contains('delfin-structure-fs-open')
+        };
+        members.forEach(function(el) { overlay.appendChild(el); });
+        document.body.appendChild(overlay);
+        document.body.classList.add('delfin-structure-fs-open');
+        window._delfinStructureFullscreen = entry;
+        setButtonState(btn, true);
+        resizeViewer(entry);
+        try { btn.focus(); } catch (_e) {}
+    }
+
+    document.addEventListener('click', function(e) {
+        var target = e.target;
+        if (!target || !target.closest) return;
+        var btn = target.closest('.delfin-structure-fullscreen-btn');
+        if (!btn) return;
+        e.preventDefault();
+        var entry = window._delfinStructureFullscreen;
+        if (entry && entry.btn === btn) exitFullscreen();
+        else enterFullscreen(btn);
+    }, true);
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape' || !window._delfinStructureFullscreen) return;
+        e.preventDefault();
+        exitFullscreen();
+    }, true);
+})();
+"""
+
+
+def structure_viewer_fullscreen_css():
+    """Return shared CSS for body-level 3D-viewer fullscreen overlays."""
+    return STRUCTURE_VIEWER_FULLSCREEN_CSS
+
+
+def structure_viewer_fullscreen_bootstrap_js():
+    """Return one-time JS for ORCA/calc/remote fullscreen viewer buttons."""
+    return STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS
+
+
 def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
     """Apply a shared ChemDarwin/MSILES-like style to a py3Dmol viewer.
 
