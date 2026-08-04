@@ -826,11 +826,11 @@ def create_tab(ctx):
             except ValueError:
                 continue
             pushes.append(
-                # fontSize 22, no background; alignment centred; inFront:true.
-                # Occlusion + zoom-proportional sizing are done per frame in
-                # _LABEL_DEPTH_PATCH_JS.
+                # fontSize 12 (small start size), no background; alignment
+                # centred; inFront:true.  Occlusion + zoom-proportional sizing
+                # are done per frame in _LABEL_DEPTH_PATCH_JS.
                 '%s.__delfinLbls.push({c:[%.6f,%.6f,%.6f],l:%s.addLabel("%d",'
-                '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:22,fontColor:"black",'
+                '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:12,fontColor:"black",'
                 'alignment:__delfinAL,showBackground:false,inFront:true})});'
                 % (var, x, y, z, var, i, x, y, z)
             )
