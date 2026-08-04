@@ -30682,6 +30682,28 @@ def _clean_gate_filter(isomers):
         #   guessed reference with the one the eye's own metric_inter_ligand_clash was calibrated
         #   on ("real crystals have inter-ligand contacts >= 0.85 x vdW sum"; 0.65 is the
         #   conservative firing point where the COD false-positive rate goes to zero).
+        # h_point_on: the DIRECTIONAL H-clash -- an H that is correctly bonded to its parent but
+        #   POINTS INTO a nearby non-bonded heavy atom.  Default OFF -> byte-identical.
+        #
+        #   WHY A SECOND H CRITERION.  The gate already has one (`vdw_f`), and it is dead for the
+        #   same reason the clash branch was: it compares against the COVALENT sum.  For H-H that
+        #   is 0.55 x 0.62 = 0.34 A -- two hydrogens never come that close, so `vdw_h` fired 0
+        #   times in the 2026-08-04 tally while the eye reports xh_hh_clash on 5.27 % of frames
+        #   (crystals: 0.00 %).
+        #   The eye's find_h_clash does not use a distance ratio at all; it asks a DIRECTIONAL
+        #   question, which is what actually distinguishes a real contact from a broken one:
+        #       H bonded to its parent (0.85-1.20 A)
+        #       AND a non-bonded heavy atom within 2.50 A of that H
+        #       AND the parent->H direction within 30 deg of parent->heavy
+        #   i.e. the H is aimed at the neighbour.  Cause per that detector: VSEPR-snap places H at
+        #   ideal polar angles but never picks the rotational phase, so a methyl umbrella can
+        #   point straight into its neighbour.  Pure geometry, three constants, no CCDC table --
+        #   portable into DELFIN license-clean.
+        h_point_on = (os.environ.get("DELFIN_FFFREE_CLEAN_GATE_H_POINT", "0") == "1")
+        h_par_min = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_H_PARENT_MIN", "0.85"))
+        h_par_max = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_H_PARENT_MAX", "1.20"))
+        h_other_max = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_H_OTHER_MAX", "2.50"))
+        h_angle_max = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_H_ANGLE", "30.0"))
         clash_vdw_on = (os.environ.get(
             "DELFIN_FFFREE_CLEAN_GATE_CLASH_VDW", "0") == "1")
         clash_vdw_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_CLASH_VDW_F", "0.65"))
@@ -30750,7 +30772,7 @@ def _clean_gate_filter(isomers):
         # Pure instrumentation -- no frame is kept or dropped differently, output is
         # byte-identical; the tally only reaches stderr under DELFIN_TRACE_CLEAN_GATE=1.
         _gate_tally = {"invalid": 0, "collapse": 0, "vdw_h": 0, "clash": 0, "clash_vdw": 0,
-                       "bare_metal": 0, "md_collapse": 0, "rescued_last_of_kind": 0}
+                       "bare_metal": 0, "md_collapse": 0, "h_point": 0, "rescued_last_of_kind": 0}
 
         # ---- PER-FRAME absolute certainly-bad test ------------------------
         def _certainly_bad(f):
@@ -30828,6 +30850,36 @@ def _clean_gate_filter(isomers):
                         if (clash_vdw_on and comp[i] != comp[j]
                                 and d < clash_vdw_f * (_vdw_r(si) + _vdw_r(sj))):
                             _gate_tally["clash_vdw"] += 1
+                            return True
+            # 3b. DIRECTIONAL H-clash (ported from the eye's find_h_clash; only when explicitly on).
+            if h_point_on:
+                for hi_ in range(n_atoms):
+                    if syms[hi_] != "H":
+                        continue
+                    par = -1
+                    dpar = 1e9
+                    for p in range(n_atoms):
+                        if p == hi_ or syms[p] == "H" or p in metal_set:
+                            continue
+                        dp = math.sqrt(_d2(f, hi_, p))
+                        if dp < dpar:
+                            dpar, par = dp, p
+                    if par < 0 or not (h_par_min <= dpar <= h_par_max):
+                        continue                       # not a cleanly bonded H -> other tests own it
+                    for q in range(n_atoms):
+                        if q in (hi_, par) or syms[q] == "H" or q in metal_set:
+                            continue
+                        dq = math.sqrt(_d2(f, hi_, q))
+                        if dq > h_other_max:
+                            continue
+                        # angle at the PARENT between parent->H and parent->q
+                        dpq = math.sqrt(_d2(f, par, q))
+                        if dpq < 1e-6:
+                            continue
+                        cosang = (dpar * dpar + dpq * dpq - dq * dq) / (2.0 * dpar * dpq)
+                        cosang = max(-1.0, min(1.0, cosang))
+                        if math.degrees(math.acos(cosang)) < h_angle_max:
+                            _gate_tally["h_point"] += 1
                             return True
             # 4. bare metal / total decoordination (clear margin: ZERO donors).
             for mi in metal_idx:
