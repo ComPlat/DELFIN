@@ -271,13 +271,34 @@ def test_parent_segment_detection(command, climbs):
 # Isolation
 # ---------------------------------------------------------------------------
 
+def _pretend_bwrap_is_available(monkeypatch):
+    """Decide the policy question on a machine that has bwrap either way.
+
+    The builder gates twice: the cached probe (installed AND the namespace
+    actually works) and a plain lookup for the case where settings force
+    isolation without probing. Faking only the probe leaves the lookup to
+    answer for the runner, so a host without bwrap fell back to plain bash
+    and the locked-session test failed on a point it was not making. The
+    unlocked test failed the other way -- it passed wherever bwrap was
+    missing, which is passing for the wrong reason.
+    """
+    import delfin.agent.api_client as A
+
+    real_which = A.shutil.which
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    monkeypatch.setattr(
+        A.shutil, "which",
+        lambda name, *a, **kw: "/usr/bin/bwrap" if name == "bwrap"
+        else real_which(name, *a, **kw))
+
+
 def test_filesystem_isolation_is_forced_for_a_locked_session(scene, monkeypatch):
     """Where bwrap works, take the real containment rather than trusting
     a parser to catch every shape a shell command can take."""
     import delfin.agent.api_client as A
 
     office, _ = scene
-    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    _pretend_bwrap_is_available(monkeypatch)
     argv = A._bash_isolation_argv("ls", office, _perms(office, mode="default"))
     assert argv[0] == "bwrap"
 
@@ -286,7 +307,7 @@ def test_an_unlocked_interactive_session_keeps_plain_bash(scene, monkeypatch):
     import delfin.agent.api_client as A
 
     office, _ = scene
-    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    _pretend_bwrap_is_available(monkeypatch)
     perms = KitToolPermissions(workspace=str(office))
     perms.mode = "default"
     argv = A._bash_isolation_argv("ls", office, perms)

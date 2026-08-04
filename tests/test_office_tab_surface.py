@@ -35,6 +35,21 @@ _CHEMISTRY_CONTROLS = (
 )
 
 
+@pytest.fixture(autouse=True)
+def every_optional_control_is_present(monkeypatch):
+    """Build the full control surface, not the one this machine happens to have.
+
+    calc-ssh-transfer-btn is only placed when the remote archive feature is
+    switched on in the user settings, which is off by default. A developer
+    who runs with it on sees the whole surface; CI, with default settings,
+    sees one control fewer -- and the test that pins the hiding rule then
+    fails for a reason that has nothing to do with Office. Turning the
+    feature on here keeps both assertions strong: the rule must name a
+    control that exists, and Calculations must keep all of them.
+    """
+    monkeypatch.setattr(browser, 'load_remote_archive_enabled', lambda: True)
+
+
 @pytest.fixture
 def ctx(tmp_path):
     for name in ('calc', 'archive', 'office'):
