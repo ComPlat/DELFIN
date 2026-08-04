@@ -437,59 +437,113 @@ def create_tab(ctx):
             raise ValueError('Element composition mismatch.')
 
         n_atoms = len(ref_symbols)
+        identity = np.arange(n_atoms, dtype=int)
         direct_rmsd = None
         direct_aligned = None
         if ref_seq == target_seq:
             direct_aligned, direct_rmsd = _orca_kabsch_align(ref_coords, target_coords)
 
-        best_mapping = np.arange(n_atoms, dtype=int)
-        best_source = 'direct'
-        best_aligned = direct_aligned
-        best_rmsd = float(direct_rmsd) if direct_rmsd is not None else float('inf')
+        # Primary strategy: DELFIN's universal atom mapper (metal- and
+        # reaction-aware, returns a *verified* graph isomorphism).  The legacy
+        # geometry strategies below are kept only as an automatic fallback for
+        # the cases the mapper cannot resolve (too many simultaneous bond
+        # changes, or a broken / ambiguous connectivity graph).
+        best_mapping = None
+        best_source = None
+        best_aligned = None
+        best_rmsd = float('inf')
+        n_bond_edits = 0
+        bond_edits = []
+        used_fallback = False
 
-        topo_mapping = _orca_topology_mapping_from_xyz(ref_symbols, ref_coords, target_symbols, target_coords)
-        if topo_mapping is not None:
-            aligned, rmsd = _orca_kabsch_align(ref_coords, target_coords, mapping=topo_mapping)
-            if rmsd < best_rmsd - 1e-12:
-                best_mapping, best_source, best_aligned, best_rmsd = topo_mapping, 'rdkit-topology', aligned, float(rmsd)
-
-        ref_centered = np.asarray(ref_coords, dtype=float) - np.asarray(ref_coords, dtype=float).mean(axis=0)
-        target_centered = np.asarray(target_coords, dtype=float) - np.asarray(target_coords, dtype=float).mean(axis=0)
-        for rot_guess in _orca_generate_proper_axis_rotations():
-            mapping = _orca_element_assignment_for_rotation(
-                ref_seq,
-                target_seq,
-                ref_centered @ rot_guess,
-                target_centered,
+        xyzmap_result = None
+        try:
+            from delfin.atom_mapping import map_atoms as _delfin_map_atoms
+            xyzmap_result = _delfin_map_atoms(
+                ref_symbols, ref_coords, target_symbols, target_coords
             )
-            if mapping is None:
-                continue
-            aligned, rmsd = _orca_kabsch_align(ref_coords, target_coords, mapping=mapping)
-            if rmsd < best_rmsd - 1e-12:
-                best_mapping, best_source, best_aligned, best_rmsd = mapping, 'global-permutation', aligned, float(rmsd)
+        except ValueError:
+            raise  # different molecular formula -> reported as not comparable
+        except Exception:
+            xyzmap_result = None  # any other failure -> legacy fallback below
 
-        identity = np.arange(n_atoms, dtype=int)
-        numbering_ok = bool(
-            np.array_equal(best_mapping, identity)
-            or (
-                direct_rmsd is not None
-                and best_rmsd >= float(direct_rmsd) - 1e-4
+        if xyzmap_result is not None and xyzmap_result.get('verified'):
+            best_mapping = np.asarray(xyzmap_result['order'], dtype=int)
+            best_source = xyzmap_result.get('method', 'xyzmap')
+            best_aligned, best_rmsd = _orca_kabsch_align(
+                ref_coords, target_coords, mapping=best_mapping
             )
-        )
-        suspicious = bool(
-            not numbering_ok
-            and direct_rmsd is not None
-            and best_rmsd + 0.10 < float(direct_rmsd)
-            and best_rmsd <= 0.60
-        )
-        if direct_rmsd is None and not np.array_equal(best_mapping, identity) and best_rmsd <= 0.60:
+            best_rmsd = float(best_rmsd)
+            n_bond_edits = int(xyzmap_result.get('n_bond_edits', 0))
+            bond_edits = (
+                list(xyzmap_result.get('bond_edits_ref', []))
+                + list(xyzmap_result.get('bond_edits_tgt', []))
+            )
+        else:
+            used_fallback = True
+            best_mapping = np.arange(n_atoms, dtype=int)
+            best_source = 'direct'
+            best_aligned = direct_aligned
+            best_rmsd = float(direct_rmsd) if direct_rmsd is not None else float('inf')
+
+            topo_mapping = _orca_topology_mapping_from_xyz(ref_symbols, ref_coords, target_symbols, target_coords)
+            if topo_mapping is not None:
+                aligned, rmsd = _orca_kabsch_align(ref_coords, target_coords, mapping=topo_mapping)
+                if rmsd < best_rmsd - 1e-12:
+                    best_mapping, best_source, best_aligned, best_rmsd = topo_mapping, 'rdkit-topology', aligned, float(rmsd)
+
+            ref_centered = np.asarray(ref_coords, dtype=float) - np.asarray(ref_coords, dtype=float).mean(axis=0)
+            target_centered = np.asarray(target_coords, dtype=float) - np.asarray(target_coords, dtype=float).mean(axis=0)
+            for rot_guess in _orca_generate_proper_axis_rotations():
+                mapping = _orca_element_assignment_for_rotation(
+                    ref_seq,
+                    target_seq,
+                    ref_centered @ rot_guess,
+                    target_centered,
+                )
+                if mapping is None:
+                    continue
+                aligned, rmsd = _orca_kabsch_align(ref_coords, target_coords, mapping=mapping)
+                if rmsd < best_rmsd - 1e-12:
+                    best_mapping, best_source, best_aligned, best_rmsd = mapping, 'global-permutation', aligned, float(rmsd)
+
+        if n_bond_edits > 0:
+            # Genuine reaction mapping (educt <-> product): not "wrong
+            # numbering", but a reorder onto the reference numbering IS available.
+            numbering_ok = False
+            suspicious = False
+        elif not used_fallback and not np.array_equal(best_mapping, identity):
+            # The verified mapper found a real same-molecule reordering.
+            numbering_ok = False
             suspicious = True
+        else:
+            numbering_ok = bool(
+                np.array_equal(best_mapping, identity)
+                or (
+                    direct_rmsd is not None
+                    and best_rmsd >= float(direct_rmsd) - 1e-4
+                )
+            )
+            suspicious = bool(
+                not numbering_ok
+                and direct_rmsd is not None
+                and best_rmsd + 0.10 < float(direct_rmsd)
+                and best_rmsd <= 0.60
+            )
+            if direct_rmsd is None and not np.array_equal(best_mapping, identity) and best_rmsd <= 0.60:
+                suspicious = True
 
         return {
             'direct_rmsd': None if direct_rmsd is None else float(direct_rmsd),
             'best_rmsd': float(best_rmsd),
             'best_mapping': [int(v) for v in np.asarray(best_mapping, dtype=int).tolist()],
             'best_source': best_source,
+            'n_bond_edits': int(n_bond_edits),
+            'bond_edits': [
+                (int(i) + 1, str(ei), int(j) + 1, str(ej))
+                for (i, j, ei, ej) in bond_edits
+            ],
+            'used_fallback': bool(used_fallback),
             'numbering_ok': numbering_ok,
             'suspicious': suspicious,
             'reordered_target_xyz': _orca_build_xyz_from_symbols_coords(
@@ -1042,7 +1096,10 @@ def create_tab(ctx):
                 target_symbols, target_coords = _orca_parse_xyz_symbols_coords(xyz_text)
                 result = _orca_check_numbering_pair(ref_symbols, ref_coords, target_symbols, target_coords)
                 results[idx] = result
-                if result.get('suspicious'):
+                n_edits = int(result.get('n_bond_edits', 0))
+                if n_edits > 0:
+                    verdict = f'reaction mapping ({n_edits} bond edit(s)) - reorder available'
+                elif result.get('suspicious'):
                     verdict = 'numbering could be wrong'
                 elif result.get('numbering_ok'):
                     verdict = 'numbering looks consistent'
@@ -1058,6 +1115,10 @@ def create_tab(ctx):
                     f'(direct={direct_text}, best={result["best_rmsd"]:.4f} A, '
                     f'method={result["best_source"]})'
                 )
+                for a_idx, a_el, b_idx, b_el in result.get('bond_edits', []):
+                    lines.append(
+                        f'    formed/broken bond: {a_el}{a_idx}-{b_el}{b_idx}'
+                    )
             except Exception as exc:
                 results[idx] = {'error': str(exc)}
                 lines.append(f'- {name}: not comparable ({exc})')
