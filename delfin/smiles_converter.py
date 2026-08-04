@@ -30667,6 +30667,30 @@ def _clean_gate_filter(isomers):
         #          this short (shortest M-heavy-donor bonds ~1.5A).
         md_collapse_on = (os.environ.get(
             "DELFIN_FFFREE_CLEAN_GATE_MD_COLLAPSE", "0") == "1")
+        # clash_vdw_on: measure the inter-ligand clash against the VAN DER WAALS sum instead of
+        #   the covalent sum.  Default OFF -> byte-identical.
+        #
+        #   WHY.  Measured 2026-08-04 on the 142 worst-broken systems: the gate's five criteria
+        #   fired 420 times for `collapse` and EXACTLY ZERO times for `clash` -- while the eye
+        #   reports inter-ligand clashes on 3272 of 27757 frames (11.79 %), a defect class that
+        #   occurs in the clean crystals at 0.00 %.  The gate is blind to it, and the reason is a
+        #   radius mix-up, not a threshold:
+        #       gate  0.70 x (rcov_i + rcov_j)   ->  C-C below 1.06 A   <- guessed default
+        #       eye   0.65 x (rvdW_i + rvdW_j)   ->  C-C below 2.21 A   <- COD-validated, FP -> 0
+        #   Two carbons never reach 1.06 A without failing the collapse test first, so the clash
+        #   branch could not fire.  Switching to the vdW sum is NOT a loosening -- it replaces a
+        #   guessed reference with the one the eye's own metric_inter_ligand_clash was calibrated
+        #   on ("real crystals have inter-ligand contacts >= 0.85 x vdW sum"; 0.65 is the
+        #   conservative firing point where the COD false-positive rate goes to zero).
+        clash_vdw_on = (os.environ.get(
+            "DELFIN_FFFREE_CLEAN_GATE_CLASH_VDW", "0") == "1")
+        clash_vdw_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_CLASH_VDW_F", "0.65"))
+        _vdw_r = None
+        if clash_vdw_on:
+            try:
+                from delfin.manta.refine import _vdw as _vdw_r
+            except Exception:
+                clash_vdw_on = False
 
         def _radius(sym):
             return _COVALENT_RADII.get(sym, 0.76)
@@ -30725,8 +30749,8 @@ def _clean_gate_filter(isomers):
         # LOOSER there, not tighter.  Hence: count, do not guess.
         # Pure instrumentation -- no frame is kept or dropped differently, output is
         # byte-identical; the tally only reaches stderr under DELFIN_TRACE_CLEAN_GATE=1.
-        _gate_tally = {"invalid": 0, "collapse": 0, "vdw_h": 0, "clash": 0, "bare_metal": 0,
-                       "md_collapse": 0}
+        _gate_tally = {"invalid": 0, "collapse": 0, "vdw_h": 0, "clash": 0, "clash_vdw": 0,
+                       "bare_metal": 0, "md_collapse": 0, "rescued_last_of_kind": 0}
 
         # ---- PER-FRAME absolute certainly-bad test ------------------------
         def _certainly_bad(f):
@@ -30800,6 +30824,11 @@ def _clean_gate_filter(isomers):
                         if comp[i] != comp[j] and d < clash_f * rsum:
                             _gate_tally["clash"] += 1
                             return True
+                        # vdW-referenced inter-ligand clash (the eye's calibration point).
+                        if (clash_vdw_on and comp[i] != comp[j]
+                                and d < clash_vdw_f * (_vdw_r(si) + _vdw_r(sj))):
+                            _gate_tally["clash_vdw"] += 1
+                            return True
             # 4. bare metal / total decoordination (clear margin: ZERO donors).
             for mi in metal_idx:
                 has_donor = False
@@ -30830,7 +30859,50 @@ def _clean_gate_filter(isomers):
                             return True
             return False
 
-        kept = [item for item, f in zip(isomers, frames) if not _certainly_bad(f)]
+        # ============ "LETZTES SEINER ART": EIN BODEN DARF KEIN ISOMER AUSLOESCHEN ============
+        # Measured 2026-08-04, twice and independently, and it contradicts a claim written
+        # verbatim in this function's own docstring ("NO ensemble consensus"):
+        #     pcrejW      24 frames dropped -> smiles_ccdc_regressed 5, pyramid_frame 3, backbone 1
+        #     cleangateW 547 frames dropped -> ccdc_backbone_lost 3 (GILKAQ HOJSUX UHEJIB),
+        #                                      isomers_lost 3 (UHEJIB 10 -> 4 of 38 theory)
+        # A filter that only REMOVES frames cannot make a system worse -- unless the frame it
+        # removed was the only one realising that coordination isomer.  UHEJIB did not lose
+        # quality, it lost SIX ISOMERS.
+        #
+        # For the question "is this frame bad?" judging it alone is right.  For the question
+        # "may it go?" it is wrong: a frame can be geometrically impossible AND the last of its
+        # kind.  GILKAQ's crystal backbone sits in a frame that has a collapsed bond somewhere.
+        #
+        # The rule (DELFIN_FFFREE_CLEAN_GATE_LAST_OF_KIND, default OFF -> byte-identical):
+        # group the frames by their COORDINATION FINGERPRINT -- per metal, the sorted elements of
+        # the heavy atoms inside the first shell -- and never let a group become empty.  If every
+        # frame of an isomer is bad, the FIRST one survives (lowest index = the emitter's own top
+        # rank; deterministic, no score, no RMSD).  No consensus, no majority, no vote: the only
+        # question asked of the ensemble is "is there a replacement?".
+        _bad_flags = [_certainly_bad(f) for f in frames]
+        if os.environ.get("DELFIN_FFFREE_CLEAN_GATE_LAST_OF_KIND", "0") == "1":
+            try:
+                def _coord_fp(f):
+                    syms = f[0]
+                    out = []
+                    for mi in range(n_atoms):
+                        if not _is_metal(syms[mi]):
+                            continue
+                        sh = sorted(syms[k] for k in range(n_atoms)
+                                    if k != mi and syms[k] != "H" and not _is_metal(syms[k])
+                                    and math.sqrt(_d2(f, mi, k)) < md_shell)
+                        out.append(syms[mi] + ":" + ",".join(sh))
+                    return "|".join(sorted(out))
+                _groups = {}
+                for _i, f in enumerate(frames):
+                    _groups.setdefault(_coord_fp(f), []).append(_i)
+                for _fp, _idxs in _groups.items():
+                    if all(_bad_flags[_i] for _i in _idxs):
+                        _bad_flags[_idxs[0]] = False        # the last of its kind stays
+                        _gate_tally["rescued_last_of_kind"] += 1
+            except Exception:
+                pass
+        kept = [item for item, _b in zip(isomers, _bad_flags) if not _b]
         _trace_dst = os.environ.get("DELFIN_TRACE_CLEAN_GATE", "")
         if len(kept) != len(isomers) and _trace_dst and _trace_dst != "0":
             # A FILE, not stderr.  loop.py routes the build workers' stderr to
