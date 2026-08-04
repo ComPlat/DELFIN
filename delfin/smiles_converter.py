@@ -30831,13 +30831,18 @@ def _clean_gate_filter(isomers):
             return False
 
         kept = [item for item, f in zip(isomers, frames) if not _certainly_bad(f)]
-        if (len(kept) != len(isomers)
-                and os.environ.get("DELFIN_TRACE_CLEAN_GATE", "0") == "1"):
+        _trace_dst = os.environ.get("DELFIN_TRACE_CLEAN_GATE", "")
+        if len(kept) != len(isomers) and _trace_dst and _trace_dst != "0":
+            # A FILE, not stderr.  loop.py routes the build workers' stderr to
+            # results/debug_<rid>.log and only when a debug pattern matches -- otherwise it is
+            # discarded, so a stderr trace from inside a worker reaches nothing (measured
+            # 2026-08-04: 139 of 142 systems built, ZERO trace lines).  O_APPEND with one short
+            # line per call is atomic enough across the parallel workers.
             try:
-                import sys as _sysg
-                _sysg.stderr.write("[CLEANGATE] %d -> %d frames | %s\n" % (
-                    len(isomers), len(kept),
-                    " ".join("%s=%d" % (k, v) for k, v in _gate_tally.items() if v)))
+                with open(_trace_dst, "a") as _fg:
+                    _fg.write("[CLEANGATE] %d -> %d frames | %s\n" % (
+                        len(isomers), len(kept),
+                        " ".join("%s=%d" % (k, v) for k, v in _gate_tally.items() if v)))
             except Exception:
                 pass
         # In-doubt-keep: if (and only if) EVERY frame is certainly bad, keep the
