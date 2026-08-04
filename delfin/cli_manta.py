@@ -216,6 +216,31 @@ _CHAMPION_FLAGS = (
                           # LP_SIBLING) adds frames to manifolds in which 62.7 % of frames already carry a hard
                           # finding.  The floor at the emit point is the separate work that RAISES quality.
                           # Env DELFIN_FFFREE_SIGMA_ENSEMBLE; impl delfin/manta/converter_backend.py.
+    "BETA_SIBLING", "BETA_SIBLING_STRICT",
+                          # #27: ADDITIVE donor-plane (beta) sibling, with the sibling bar.  beta is the angle
+                          # between M->D and the plane of the donor's own substituents; the crystals sit at
+                          # 3.4 deg (monodentate) to 4.8 (tetradentate), our builds at 9.3 (bidentate) to 15.9
+                          # (tetradentate).  The lever appends a beta-relaxed pose as a SIBLING instead of
+                          # replacing the frame -- as a SELECTION (betasel/betaband) the same idea cost 4
+                          # capabilities against 3 gained; appending costs none.
+                          # _STRICT is the sibling BAR: a sibling is only emitted if it does not introduce a
+                          # collapsed bond, does not worsen the worst relative covalent-bond deviation
+                          # (_org_bond_worst, band 2 %), and does not worsen sp2 planarity (_sp2_planarity_worst,
+                          # angle sum 360 = planar).  Built 2026-08-03 after the bar was three times measured
+                          # against the WRONG quantity (contact bar: reach 0 because the primary IS the
+                          # clash-minimal frame; _beta_score instead of the sp2 Walsh angle: blockers unchanged;
+                          # a flat 0.82x collapse factor instead of a graded org_bond: AVUNUC02 STRETCHED a bond,
+                          # it did not collapse one).
+                          # landed 2026-08-04, full:1000 (betastr1k):
+                          #   affected=16 + byte-identical=977; builds IDENTICAL in both arms (ok 993 / timeout 7)
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   n=16, valid 10->10, cap_LOST=0, cap_gained=0, n_improved=13, n_equal=2, n_worse=1,
+                          #   mean_delta -2.312 (BETTER).  EVERY regression term exactly 0.
+                          # NOTE this one is PURE QUALITY: it gains no capability and no valid system, it makes
+                          # 13 of 16 touched manifolds better.  That is the rarer and more valuable shape --
+                          # the other additive levers grow the manifold, this one improves it.
+                          # Env DELFIN_FFFREE_BETA_SIBLING(+_STRICT); impl converter_backend.py / assemble_complex.py.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
