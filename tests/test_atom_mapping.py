@@ -95,6 +95,27 @@ def test_roundtrip_symmetric_organic():
     _roundtrip(syms, coords, seed=2)
 
 
+@pytest.mark.parametrize(
+    "smiles",
+    ["c1ccccc1", "c1ccc2ccccc2c1", "C1CCCCC1", "CC(C)(C)C", "C1C2CC3CC1CC(C2)C3"],
+)
+def test_symmetric_molecules_resolve_via_seeding(smiles):
+    # benzene, naphthalene, cyclohexane, neopentane, adamantane: no unique
+    # anchors -> must be recovered by the anchor-free multi-orientation seeding.
+    syms, coords = _mol_from_smiles(smiles)
+    rng = np.random.default_rng(5)
+    perm = rng.permutation(len(syms))
+    tsyms = [syms[i] for i in perm]
+    tcoords = coords[perm]
+
+    res = am.map_atoms(syms, coords, tsyms, tcoords)
+
+    assert res["verified"] is True
+    assert res["n_bond_edits"] == 0
+    # a valid isomorphism onto an exact permuted copy must reach ~0 RMSD
+    assert res["rmsd"] < 1e-3
+
+
 def test_metal_complex_roundtrip():
     syms, coords = _metal_complex("Fe")
     _roundtrip(syms, coords, seed=3)

@@ -306,6 +306,28 @@ def is_isomorphism(mapping, G1, s1, G2, s2):
     return all(G2.has_edge(mapping[u], mapping[v]) for u, v in G1.edges())
 
 
+def _rotation_seeds():
+    """A spread of rigid proper rotations to seed the anchor-free superposition
+    for symmetric / anchor-poor systems: the 24 octahedral axis-permutation
+    rotations plus a few deterministic random rotations for coverage."""
+    seeds = []
+    for perm in itertools.permutations((0, 1, 2)):
+        for signs in itertools.product((-1.0, 1.0), repeat=3):
+            mat = np.zeros((3, 3))
+            for new_axis, old_axis in enumerate(perm):
+                mat[old_axis, new_axis] = signs[new_axis]
+            if np.linalg.det(mat) > 0.0:
+                seeds.append(mat)
+    rng = np.random.default_rng(0)
+    for _ in range(12):
+        q, r = np.linalg.qr(rng.standard_normal((3, 3)))
+        q = q * np.sign(np.diag(r))          # fix QR sign ambiguity
+        if np.linalg.det(q) < 0.0:
+            q[:, 0] = -q[:, 0]               # keep it a proper rotation
+        seeds.append(q)
+    return seeds
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -369,21 +391,19 @@ def map_atoms(sym_ref, xyz_ref, sym_tgt, xyz_tgt, max_edits=2, verbose=False):
         sings = sum(1 for v in cls1.values() if len(v) == 1)
         print('WL classes: %d, singletons: %d/%d' % (len(cls1), sings, n))
 
-    # anchor on topologically unique atoms
-    anchor = {v[0]: cls2[c][0] for c, v in cls1.items() if len(v) == 1}
-    if len(anchor) < 3:
-        raise RuntimeError('too few unique anchor atoms for superposition')
-    ke = sorted(anchor)
-    R, pc, qc = kabsch_rt(x2[[anchor[i] for i in ke]], x1[ke])
-    x2a = apply_rt(x2, R, pc, qc)
-
     from scipy.optimize import linear_sum_assignment
 
-    best, best_rmsd = None, np.inf
-    for _ in range(10):
+    ref_centroid = x1.mean(0)
+    x2_centered = x2 - x2.mean(0)
+
+    def _assign(x2a):
+        """One Hungarian-within-class assignment for a superposed target x2a.
+        Returns the mapping dict, or None if it is not a valid isomorphism."""
         m = {}
         for c, ve in cls1.items():
             vp = cls2[c]
+            if len(ve) != len(vp):
+                return None
             if len(ve) == 1:
                 m[ve[0]] = vp[0]
                 continue
@@ -392,25 +412,59 @@ def map_atoms(sym_ref, xyz_ref, sym_tgt, xyz_tgt, max_edits=2, verbose=False):
             for a, b in zip(row, col):
                 m[ve[a]] = vp[b]
         if not is_isomorphism(m, H1, sym_ref, H2, sym_tgt):
-            break
-        order = [m[i] for i in range(n)]
-        R, pc, qc = kabsch_rt(x2[order], x1)
-        x2a = apply_rt(x2, R, pc, qc)
-        rmsd = float(np.sqrt(((x2a[order] - x1) ** 2).sum(1).mean()))
-        if rmsd < best_rmsd - 1e-8:
-            best, best_rmsd = order, rmsd
-        else:
-            break
+            return None
+        return m
 
-    method = 'xyzmap-verified' if best is not None else 'failed'
+    def _refine(x2a):
+        """Iterated Hungarian + Kabsch (ICP-like) from an initial superposition.
+        Returns (order, rmsd) for a verified mapping, or None."""
+        local, local_rmsd = None, np.inf
+        for _ in range(12):
+            m = _assign(x2a)
+            if m is None:
+                break
+            order = [m[i] for i in range(n)]
+            R, pc, qc = kabsch_rt(x2[order], x1)
+            x2a = apply_rt(x2, R, pc, qc)
+            rmsd = float(np.sqrt(((x2a[order] - x1) ** 2).sum(1).mean()))
+            if rmsd < local_rmsd - 1e-9:
+                local, local_rmsd = order, rmsd
+            else:
+                break
+        return None if local is None else (local, local_rmsd)
 
-    # fallback / safety net: VF2 restricted by WL colours (both element + colour)
+    best, best_rmsd, method = None, np.inf, 'failed'
+
+    # Seed 1 (fast path): superpose on topologically unique anchor atoms.  Exact
+    # whenever >= 3 atoms are unique, which covers essentially every real
+    # molecule and complex.
+    anchor = {v[0]: cls2[c][0] for c, v in cls1.items() if len(v) == 1}
+    if len(anchor) >= 3:
+        ke = sorted(anchor)
+        R, pc, qc = kabsch_rt(x2[[anchor[i] for i in ke]], x1[ke])
+        res = _refine(apply_rt(x2, R, pc, qc))
+        if res is not None:
+            best, best_rmsd, method = res[0], res[1], 'xyzmap-verified'
+
+    # Seed 2 (symmetric / anchor-poor systems): no unique anchors needed -- try a
+    # spread of rigid orientations and refine each with Hungarian-in-class.  This
+    # recovers benzene, ferrocene and other highly symmetric species.  Only runs
+    # when the anchor path did not already verify, keeping the common case fast.
+    if best is None:
+        if verbose:
+            print('few unique anchors -> multi-orientation seeding')
+        for rot in _rotation_seeds():
+            res = _refine(x2_centered @ rot.T + ref_centroid)
+            if res is not None and res[1] < best_rmsd:
+                best, best_rmsd, method = res[0], res[1], 'xyzmap-verified'
+
+    # Last resort: colour-constrained VF2 (bounded), pick the lowest-RMSD
+    # isomorphism.  Handles the rare case the seeded refinement misses.
     if best is None:
         import networkx as nx
 
         if verbose:
-            print('per-class assignment inconsistent -> VF2 fallback')
-        # bake the WL colour into the node attributes so VF2 respects it
+            print('seeded refinement failed -> VF2 fallback')
         for i in range(n):
             H1.nodes[i]['wl'] = c1[i]
             H2.nodes[i]['wl'] = c2[i]
@@ -421,8 +475,7 @@ def map_atoms(sym_ref, xyz_ref, sym_tgt, xyz_tgt, max_edits=2, verbose=False):
             R, pc, qc = kabsch_rt(x2[order], x1)
             rmsd = float(np.sqrt(((apply_rt(x2, R, pc, qc)[order] - x1) ** 2).sum(1).mean()))
             if rmsd < best_rmsd:
-                best, best_rmsd = order, rmsd
-                method = 'xyzmap-vf2'
+                best, best_rmsd, method = order, rmsd, 'xyzmap-vf2'
             if k > 50000:
                 break
 
