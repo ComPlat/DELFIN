@@ -766,7 +766,7 @@ def create_tab(ctx):
         "    // under rotation) along the screen-right model direction, so f\n"
         "    // tracks the mouse-wheel zoom only, NOT rotation.  DISP is the base\n"
         "    // on-screen size; lower it for smaller numbers.\n"
-        "    var DISP=0.20, f=1;\n"
+        "    var DISP=0.15, f=1;\n"
         "    if(typeof v.modelToScreen==='function'&&m>0){ try{\n"
         "      var pcx=-w[0],pcy=-w[1],pcz=-w[2];\n"
         "      var q1=v.modelToScreen({x:pcx,y:pcy,z:pcz});\n"
