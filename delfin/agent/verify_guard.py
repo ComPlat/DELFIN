@@ -1354,3 +1354,91 @@ def functional_claim_caveat(flags: list[FunctionalClaimFlag]) -> str:
         "\n\n[verify] Caveat: the following was NOT verified in this session: "
         + "; ".join(items) + "." + note + " Treat it as unconfirmed."
     )
+
+
+# ---------------------------------------------------------------------------
+# Totals over a column the reader could not read
+# ---------------------------------------------------------------------------
+#
+# A spreadsheet column of values like "8.986" reads as 8986 or as 8.986
+# depending on the convention, and when nothing in the column settles it the
+# reader says so in its notes. Observed on the benchmark: the model was told
+# exactly that, chose a reading anyway, and answered with a single total —
+# with its own note admitting the assumption. In a report handed on to
+# somebody else that figure is indistinguishable from a measured one.
+#
+# The prompt already forbids it and the tool result already says it. Neither
+# binds, which is why this is a scanner.
+
+# The gap between the column name and the phrase carries the example
+# value — "values like '8.986'" — so it must allow the dot that made the
+# value ambiguous in the first place. A character class excluding '.' put
+# the one character the note is about outside the pattern.
+_AMBIGUOUS_COLUMN_RE = re.compile(
+    r"column '([^']{1,60})':.{0,120}?read as two different numbers")
+
+# A stated total: a total word, then a number within the same clause.
+_TOTAL_CLAIM_RE = re.compile(
+    r"(?i)(gesamt(?:wert|summe|betrag)?|summe|insgesamt|total|zusammen)"
+    r"[^.\n]{0,40}?(\d[\d.,]{2,})")
+
+# Signs the answer is offering the reading rather than asserting it: a
+# question, or both readings named. These are the GOOD answer, and the
+# scanner must not fire on them.
+_OFFERS_THE_CHOICE_RE = re.compile(
+    r"(?i)(\?|mehrdeutig|zwei(?:erlei)? (?:lesart|deutung)|beide lesarten"
+    r"|welche (?:lesart|konvention)|ambiguous|which reading)")
+
+
+def extract_ambiguous_columns(tool_output: str) -> list[str]:
+    """Column names a document reader reported as undecidable.
+
+    Reads the reader's own note rather than re-deriving the judgement, so
+    the two cannot disagree about which columns are in question.
+    """
+    if not tool_output:
+        return []
+    return [m.group(1) for m in _AMBIGUOUS_COLUMN_RE.finditer(str(tool_output))]
+
+
+def scan_for_totals_over_ambiguous_columns(
+    text: str, ambiguous_columns: list[str] | tuple[str, ...],
+) -> list[str]:
+    """Columns whose ambiguity the answer states a total over anyway.
+
+    Returns the column names to warn about, empty when the answer either
+    states no total or presents the ambiguity with it. Presenting both
+    readings and asking which applies is the correct answer and must pass:
+    the failure is a single figure offered as the value.
+    """
+    if not text or not ambiguous_columns:
+        return []
+    if _OFFERS_THE_CHOICE_RE.search(text):
+        return []
+    if not _TOTAL_CLAIM_RE.search(text):
+        return []
+    hit = []
+    lowered = text.lower()
+    for column in ambiguous_columns:
+        name = str(column or "").strip()
+        if not name:
+            continue
+        # Only when the answer is actually about that column: a total in a
+        # reply that never mentions it is some other figure.
+        if name.lower() in lowered and name not in hit:
+            hit.append(name)
+    return hit
+
+
+def ambiguous_column_caveat(columns: list[str]) -> str:
+    """The note appended to an answer that totalled an unreadable column."""
+    if not columns:
+        return ""
+    named = ", ".join(f"'{c}'" for c in columns[:4])
+    return (
+        "\n\n> ⚠️ Die Spalte " + named + " ist nicht eindeutig lesbar: "
+        "ein Wert wie `8.986` bedeutet 8986 oder 8,986, und nichts in der "
+        "Spalte entscheidet das. Die Zahl oben beruht daher auf einer "
+        "Annahme und ist nicht gemessen — bitte die Lesart bestätigen, "
+        "bevor sie weitergegeben wird."
+    )

@@ -506,6 +506,18 @@ def save_session(
     todo_payload: list[dict[str, Any]] | None = None,
     transcript_archive_path: str = "",
     workspace: str = "",
+    # Engine state the exporter already produces. Without these two a
+    # resumed session forgets the directory it was pinned to, and the
+    # context estimator loses its floor — so the window bar reads far
+    # emptier than the conversation actually is, until the next turn
+    # re-establishes it from the provider.
+    project_dir: str = "",
+    last_input_tokens: int = 0,
+    # What stands in for the history a long session has already trimmed
+    # away. Dropping these on save means a resumed session keeps the
+    # messages it still has and loses the condensed memory of the ones it
+    # does not — the part that cannot be reconstructed from anything.
+    compaction_summaries: dict[str, Any] | None = None,
 ) -> Path:
     """Save a session to disk.
 
@@ -593,6 +605,9 @@ def save_session(
         "pending_plan_body": pending_plan_body or "",
         "todo_payload": todo_payload or [],
         "transcript_archive_path": transcript_archive_path or "",
+        "project_dir": str(project_dir or ""),
+        "last_input_tokens": int(last_input_tokens or 0),
+        "compaction_summaries": compaction_summaries or {},
     }
 
     # Set created_at only on first save

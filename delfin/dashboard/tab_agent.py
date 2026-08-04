@@ -3006,6 +3006,18 @@ def create_tab(ctx):
     css_widget = widgets.HTML(value=_AGENT_CSS)
 
     # Mode selector
+    # Modes that run ONE agent rather than a role pipeline. Kept in one
+    # place because the same fact drives two independent pieces of UI (the
+    # cycle inspector and the minimal layout); when it lived in both, a new
+    # mode was added to one and forgotten in the other.
+    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office")
+
+    # Modes that are not tied to a directory: their workspace is a fixed
+    # location, so their sessions are reachable from any launch. Kept
+    # beside the set above because both describe the same modes from
+    # different angles and a new mode has to be considered for each.
+    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office")
+
     _MODE_DESCRIPTIONS = {
         "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
                      "set CONTROL keys, configure ORCA Builder, browse & analyze calculations, "
@@ -3018,6 +3030,10 @@ def create_tab(ctx):
                     "pipelines via the delfin-tools MCP server (get_guide → discover → "
                     "build → validate → save → submit). Results in ~/calc; needs the "
                     "delfin-tools MCP server registered.",
+        "office": "Office — administrative work on your documents and data: "
+                  "spreadsheets, PDF forms, Word templates, letters, lists. No "
+                  "chemistry tools; the calc search and the ORCA manual are off "
+                  "in this mode.",
         "plan": "Read-only research first — the agent explores the codebase, drafts a "
                 "step-by-step plan in markdown, and waits for your approval via "
                 "ExitPlanMode before any file edits or bash run.",
@@ -3045,11 +3061,15 @@ def create_tab(ctx):
         #   Code      — general terminal-style coding agent (internal id stays
         #               "solo" so the engine's mode logic + saved sessions keep
         #               working; /mode solo remains a back-compat alias).
+        #   Office     — documents, tables and administrative work; the
+        #               chemistry tools are denied for this role so an
+        #               administrative question cannot be answered with
+        #               methodology.
         # The old multi-agent pipeline modes (quick/reviewed/tdd/cluster/full)
         # are retired. "Plan" is NOT a mode — it's a permission profile (set
         # Perms = Plan for read-only-first / draft-a-plan-then-approve).
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Pipeline", "pipeline")],
+                 ("Office", "office"), ("Pipeline", "pipeline")],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -5154,8 +5174,20 @@ def create_tab(ctx):
         """Rebuild the session dropdown from saved sessions."""
         try:
             from delfin.agent.session_store import list_sessions
-            sessions = list_sessions(limit=30,
-                                     workspace=_agent_workspace_path() or None)
+            if mode_dropdown.value in _LAUNCH_INDEPENDENT_MODES:
+                # These modes do not belong to a directory, so neither do
+                # their sessions: they are listed by MODE and reachable from
+                # any launch. Scoping them by folder made a conversation
+                # disappear the moment the dashboard was started elsewhere,
+                # and a session that cannot be found again is
+                # indistinguishable from one that was never saved.
+                sessions = [s for s in list_sessions(limit=80)
+                            if s.get("mode") == mode_dropdown.value][:30]
+            else:
+                # Code mode is the opposite: the launch directory IS the
+                # project, so its history is that project's history.
+                sessions = list_sessions(
+                    limit=30, workspace=_agent_workspace_path() or None)
         except Exception:
             sessions = []
 
@@ -5246,6 +5278,9 @@ def create_tab(ctx):
                 pending_plan_body=state.get("_pending_plan_body", ""),
                 todo_payload=state.get("current_todos") or [],
                 workspace=_agent_workspace_path(),
+                project_dir=estate.get("project_dir", ""),
+                last_input_tokens=estate.get("last_input_tokens", 0),
+                compaction_summaries=estate.get("compaction_summaries", {}),
             )
             state["active_session_id"] = engine.session_id
             # Episodic memory: one compact per-session record so a later
@@ -5317,6 +5352,13 @@ def create_tab(ctx):
             "token_usage": data.get("token_usage", {"input": 0, "output": 0}),
             "cost_usd": data.get("cost_usd", 0.0),
             "session_id": session_id,
+            # restore_state reads both, and both were being dropped on the
+            # way out: the directory pin, and the estimator's floor that
+            # keeps the context bar honest before the first turn of the
+            # resumed session re-establishes it.
+            "project_dir": data.get("project_dir", ""),
+            "last_input_tokens": data.get("last_input_tokens", 0),
+            "compaction_summaries": data.get("compaction_summaries", {}),
         })
 
         # Restore chat UI
@@ -5611,7 +5653,55 @@ def create_tab(ctx):
             _read_only_dirs = [p for p in (_abs_dir(getattr(ctx, "archive_dir", None)),
                                            _abs_dir(getattr(ctx, "repo_dir", None))) if p]
             _ws_dir = str(ctx.agent_dir) if ctx.agent_dir else ""
+
+            # Office mode works in the Office folder and nowhere else. The
+            # permission layer refuses everything outside the workspace for
+            # this role, so the workspace IS the boundary the user sees in
+            # the Office tab — pointing it anywhere else would confine the
+            # agent to the wrong folder. The other reachable roots (calc,
+            # archive, the DELFIN checkout) are dropped here as well; the
+            # lock ignores them anyway, and passing them would only suggest
+            # a reach the session does not have.
+            if mode_dropdown.value == "office":   # _LAUNCH_INDEPENDENT_MODES
+                _office_p = _abs_dir(getattr(ctx, "office_dir", None))
+                if not _office_p:
+                    try:
+                        ctx.office_dir.mkdir(parents=True, exist_ok=True)
+                        _office_p = _abs_dir(ctx.office_dir)
+                    except Exception:
+                        _office_p = None
+                if _office_p:
+                    # A working folder for scripts and intermediate files.
+                    # Created here rather than left to the agent so it is
+                    # always the same place: the recurring monthly job wants
+                    # last month's script, and a folder that only exists
+                    # after someone thought to make it is not findable.
+                    try:
+                        (Path(_office_p) / "office_analysis").mkdir(
+                            parents=True, exist_ok=True)
+                    except Exception:
+                        pass
+                    # Memory and saved sessions are keyed by this folder, so
+                    # naming it means a later session can be found again.
+                    _append_system_message(
+                        f"📁 Office-Modus arbeitet in `{_office_p}` "
+                        "(Skripte und Zwischendateien: `office_analysis/`)")
+                    repo_dir = _office_p
+                    _ws_dir = _office_p
+                    _extra_dirs = []
+                    _read_only_dirs = []
+                    _confirm_write_dirs = []
+
             if mode_dropdown.value == "dashboard":
+                # Like Office, this mode is not about a project checkout —
+                # it drives the UI and answers questions. Binding it to the
+                # launch directory would key its saved sessions to wherever
+                # the dashboard happened to be started, so the same
+                # conversation could not be found again from elsewhere. Its
+                # own scratch folder is a fixed location.
+                _dash_ws = _abs_dir(getattr(ctx, "agent_dir", None))
+                if _dash_ws:
+                    repo_dir = _dash_ws
                 _cli_tools = [
                     "Read", "Grep", "Glob",      # read code + data
                     "Write", "Bash",              # agent_workspace only
@@ -5678,6 +5768,18 @@ def create_tab(ctx):
             if provider == "kit" and _kit_callback is not None:
                 try:
                     engine.set_kit_confirm_callback(_kit_callback)
+                except Exception:
+                    pass
+
+            # The engine stamps the role onto the permissions when a turn
+            # starts. Stamp it now as well, so an office session is locked
+            # from construction — otherwise a directory could be granted
+            # through the settings UI in the window before the first turn.
+            if mode_dropdown.value == "office":
+                try:
+                    _kp = getattr(engine, "kit_permissions", None)
+                    if _kp is not None:
+                        _kp.agent_role = "office_agent"
                 except Exception:
                     pass
 
@@ -6250,8 +6352,12 @@ def create_tab(ctx):
         )
 
     def _update_cycle_inspector():
-        # Hide Cycle Inspector for dashboard/solo — only relevant for pipelines
-        _is_pipeline = mode_dropdown.value not in ("dashboard", "solo")
+        # The inspector reports on a multi-agent ROUTE: the locked goal, the
+        # gate the pipeline waits at, the next role, open risks. A mode that
+        # runs a single agent has none of those, so the panel would show
+        # empty fields that read like missing data rather than like an
+        # inapplicable view.
+        _is_pipeline = mode_dropdown.value not in _SINGLE_AGENT_MODES
         _disp = "block" if _is_pipeline else "none"
         for _w in (cycle_inspector_html, inspector_actions_row, inspector_detail_box):
             _w.layout.display = _disp
@@ -7798,9 +7904,20 @@ def create_tab(ctx):
                 return True
             # /session resume — continue this WORKSPACE's last conversation
             if arg in ("resume", "continue"):
-                _ws_now = _agent_workspace_path()
+                # Office and Dashboard are not tied to a directory, so
+                # "the last conversation" is the last one of THAT MODE,
+                # from wherever the dashboard was started. Code resumes
+                # its own directory's history.
+                _launch_free = mode_dropdown.value in _LAUNCH_INDEPENDENT_MODES
+                _ws_now = "" if _launch_free else _agent_workspace_path()
                 try:
-                    latest = _ss.latest_session(_ws_now or None)
+                    if _launch_free:
+                        _recent = [x for x in _ss.list_sessions(limit=80)
+                                   if x.get("mode") == mode_dropdown.value]
+                        latest = (_ss.load_session(_recent[0]["session_id"])
+                                  if _recent else None)
+                    else:
+                        latest = _ss.latest_session(_ws_now or None)
                 except Exception as exc:
                     _append_system_message(f"Resume failed: {exc}")
                     return True
@@ -9715,14 +9832,25 @@ def create_tab(ctx):
                     from delfin.agent.memory_store import (
                         prune_memories, save_typed_memory,
                     )
+                    # In Office mode the memory belongs to the office
+                    # folder, not to the DELFIN checkout. Passing repo_dir
+                    # here would file it as a code-domain memory: it would
+                    # miss the personal-data check that guards office
+                    # writes, and it would never be recalled in the folder
+                    # it was written for.
+                    _mem_root = ctx.repo_dir or "."
+                    if mode_dropdown.value == "office":
+                        _office_root = getattr(ctx, "office_dir", None)
+                        if _office_root:
+                            _mem_root = _office_root
                     fpath, slug, mem_type = save_typed_memory(
-                        text_to_save, repo_root=ctx.repo_dir or ".",
+                        text_to_save, repo_root=_mem_root,
                     )
                     # Self-limit on every write path — auto-memory distill
                     # is opt-in, so /remember alone must not grow the store
                     # unbounded.
                     try:
-                        prune_memories(ctx.repo_dir or ".")
+                        prune_memories(_mem_root)
                     except Exception:
                         pass
                     short = str(fpath).replace(str(Path.home()), "~")
@@ -15438,6 +15566,18 @@ def create_tab(ctx):
         old_mode = (change.get("old") or "")
         if not state.get("_mode_change_internal"):
             state["_mode_manual_override"] = True
+            # Remember the choice like provider / model / effort. Only a
+            # user-driven switch is stored: an internal one (mode routing,
+            # the restore below) is not a preference and must not silently
+            # become the new default.
+            try:
+                from delfin.user_settings import load_settings, save_settings
+                _s = load_settings()
+                _s.setdefault("agent", {})
+                _s["agent"]["mode"] = new_mode
+                save_settings(_s)
+            except Exception:
+                pass
         # Update mode description label
         desc = _MODE_DESCRIPTIONS.get(new_mode, "")
         mode_desc_html.value = (
@@ -15507,7 +15647,7 @@ def create_tab(ctx):
         _update_cycle_inspector()
 
         # Solo-minimal UI: hide pipeline overhead for solo/dashboard
-        _is_minimal = new_mode in ("solo", "dashboard", "plan")
+        _is_minimal = new_mode in _SINGLE_AGENT_MODES or new_mode == "plan"
         # Hide mode description (saves vertical space)
         mode_desc_html.layout.display = "none" if _is_minimal else "block"
         # Hide pipeline-only buttons (but keep commit/push visible)
@@ -15914,6 +16054,19 @@ def create_tab(ctx):
     push_confirm_btn.on_click(_on_push_confirm)
     push_cancel_btn.on_click(_on_push_cancel)
     mode_dropdown.observe(_on_mode_change, names="value")
+
+    # Restore the last mode the user chose. This runs AFTER the observer is
+    # wired on purpose: setting the value here goes through _on_mode_change,
+    # so the restored mode brings its own UI rules (permission locks, the
+    # minimal layout, the cycle inspector) instead of a mismatch between the
+    # dropdown label and the panel around it. Marked internal, so restoring
+    # does not re-save what it just read.
+    try:
+        _saved_mode = str(_get_agent_settings().get("mode", "") or "").strip()
+        if _saved_mode and _saved_mode != mode_dropdown.value:
+            _set_mode_programmatically(_saved_mode)
+    except Exception:
+        pass
     provider_dropdown.observe(_on_provider_change, names="value")
     model_dropdown.observe(_on_model_change, names="value")
     effort_dropdown.observe(_on_effort_change, names="value")
@@ -16187,7 +16340,9 @@ def create_tab(ctx):
     except Exception:
         pass
 
-    return tab_widget, {"init_js": _enter_key_init_js}
+    ctx.add_init_js(_enter_key_init_js)
+
+    return tab_widget, {}
 
 
 # ---------------------------------------------------------------------------

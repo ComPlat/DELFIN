@@ -415,3 +415,44 @@ def test_isolation_check_is_registered_and_never_raises(monkeypatch):
     monkeypatch.setattr(us, "load_settings",
                         lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert doc._check_bash_isolation({})[0]["check"] == "bash isolation"
+
+
+# ---------------------------------------------------------------------------
+# Document backends
+# ---------------------------------------------------------------------------
+
+def test_document_backend_check_is_registered():
+    import delfin.agent.doctor as doc
+    assert ("document backends", "_check_document_backends") in doc._CHECK_ATTRS
+
+
+def test_document_backends_report_one_row_each():
+    import delfin.agent.doctor as doc
+    rows = doc._check_document_backends({})
+    assert [r["check"] for r in rows] == [
+        "documents: spreadsheets", "documents: PDF", "documents: Word",
+        "documents: PDF writing", "documents: OpenDocument",
+        "documents: OCR"]
+    assert all(r["status"] in ("PASS", "WARN") for r in rows)
+
+
+def test_a_missing_backend_warns_and_names_the_lost_capability(monkeypatch):
+    """Missing document support is a WARN — the agent still works."""
+    import importlib
+
+    import delfin.agent.doctor as doc
+
+    real = importlib.import_module
+
+    def fail_openpyxl(name, *a, **kw):
+        if name == "openpyxl":
+            raise ImportError("no openpyxl")
+        return real(name, *a, **kw)
+
+    monkeypatch.setattr(doc.importlib, "import_module", fail_openpyxl)
+    rows = {r["check"]: r for r in doc._check_document_backends({})}
+    sheet = rows["documents: spreadsheets"]
+    assert sheet["status"] == "WARN"
+    assert "edit_sheet" in sheet["detail"]
+    assert "office" in sheet["fix"]
+    assert rows["documents: PDF"]["status"] == "PASS"

@@ -5340,8 +5340,9 @@ def create_tab(ctx):
     }})();
     """
 
+    ctx.add_init_js(init_js)
+
     return tab_widget, {
-        "init_js": init_js,
         # --- Agent-accessible widgets ---
         # Navigation
         "path_input": path_input,

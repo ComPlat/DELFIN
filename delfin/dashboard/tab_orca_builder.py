@@ -2016,6 +2016,8 @@ def create_tab(ctx):
         }, true);
     })();
     """
+    ctx.add_init_js(_orca_drop_js)
+
     return tab_widget, {
         'orca_pal': orca_pal,
         'orca_maxcore': orca_maxcore,

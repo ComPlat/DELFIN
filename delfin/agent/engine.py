@@ -275,6 +275,7 @@ _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "test_agent":      _FULL_TOOLS,
     "builder_agent":   _FULL_TOOLS,
     "solo_agent":      _SOLO_TOOLS,
+    "office_agent":    _SOLO_TOOLS,          # documents + shell, no chemistry
 }
 
 
@@ -1114,6 +1115,28 @@ class AgentEngine:
                 f"folder or switch to a different directory name mid-task; that "
                 f"splits the project and breaks imports/tests.")
 
+    def _scope_memory_domain(self, role: str) -> str:
+        """Tell the memory store which kind of work this turn is.
+
+        Recall is gated on the domain of the role that runs, and every
+        stored memory carries the domain of the folder it was written for.
+        Registering the folder here is what connects the two: the write
+        path reaches the store through the permission workspace and has no
+        other way to learn that this folder is where administrative work
+        happens. Returns the domain; best-effort, never raises.
+        """
+        try:
+            from .memory_store import (
+                DOMAIN_OFFICE, domain_for_role, register_office_workspace,
+            )
+            domain = domain_for_role(role, getattr(self, "mode", "") or "")
+            if domain == DOMAIN_OFFICE:
+                workspace = getattr(self.kit_permissions, "workspace", None)
+                register_office_workspace(workspace or self.repo_dir)
+            return domain
+        except Exception:
+            return ""
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -1123,6 +1146,8 @@ class AgentEngine:
         role = self.current_role
         if not role:
             role = self.route[0] if self.route else "builder_agent"
+
+        self._scope_memory_domain(role)
 
         # Inject session error context into memory (Feature 4)
         error_ctx = self.format_error_context()
@@ -1252,6 +1277,13 @@ class AgentEngine:
         # the correction turn (nested call), which must not re-arm itself.
         if not self._claim_guard_active:
             self._claim_guard_corrected = False
+            # The ambiguity ledger is per TURN: the question is whether
+            # THIS answer totals a column THIS turn was told it could not
+            # read. Carrying it across turns would caveat a later, unrelated
+            # figure. The correction turn is a nested call and keeps the
+            # ledger, or the retry would lose the very evidence it is being
+            # judged against.
+            self._ambiguous_columns_turn = []
 
         # UserPromptSubmit hooks — fire BEFORE the message is appended so a
         # blocking hook can short-circuit the turn entirely. Stop hooks are
@@ -1446,6 +1478,11 @@ class AgentEngine:
                 elif event.type == "tool_result":
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
+                    # Evidence for the ambiguous-column guard: which columns
+                    # a reader said it could not decide. Taken from the
+                    # reader's own note rather than re-derived, so the two
+                    # cannot disagree about what is in question.
+                    self._note_ambiguous_columns(event.tool_output or "")
                     self._record_tool_trace(
                         event.tool_name, event.tool_output or "", ok=True)
                     # Crash insurance: full session saves happen only at
@@ -1773,6 +1810,72 @@ class AgentEngine:
         except Exception:
             pass
 
+    def _note_ambiguous_columns(self, tool_output: str) -> None:
+        """Record columns a document reader reported as undecidable.
+
+        Per TURN, not per session: the question is whether THIS answer
+        totals a column THIS turn could not read. Best-effort — the
+        bookkeeping must never break the turn it observes."""
+        try:
+            from . import verify_guard as _vg
+            found = _vg.extract_ambiguous_columns(tool_output)
+            if not found:
+                return
+            ledger = getattr(self, "_ambiguous_columns_turn", None)
+            if ledger is None:
+                ledger = self._ambiguous_columns_turn = []
+            for name in found:
+                if name not in ledger:
+                    ledger.append(name)
+            if len(ledger) > 40:
+                del ledger[:len(ledger) - 40]
+        except Exception:
+            pass
+
+    def _scan_ambiguous_column_totals(self, text: str) -> list:
+        """Columns this answer totals although the reader could not read them."""
+        try:
+            from . import verify_guard as _vg
+            return _vg.scan_for_totals_over_ambiguous_columns(
+                text, list(getattr(self, "_ambiguous_columns_turn", ()) or ()))
+        except Exception:
+            return []
+
+    def _append_ambiguous_column_caveat(
+        self, text: str, columns: list,
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
+        """Mark a figure that rests on a guessed reading, in the answer itself.
+
+        A caveat rather than a forced correction: the number is not wrong,
+        it is unfounded, and the reader needs it labelled rather than
+        withheld. A retry would also be free to make the same assumption
+        again — the tool result and the role prompt both already said not
+        to, and neither bound. Appending puts the warning where the figure
+        is, and into the transcript, so a later turn sees it marked."""
+        if not columns:
+            return text
+        try:
+            from . import verify_guard as _vg
+            caveat = _vg.ambiguous_column_caveat(columns)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _scan_functional_claims(self, text: str) -> list:
         """Scan a finished answer for claims that something now works which
         this session never exercised. Returns the flag list; never raises."""
@@ -1871,15 +1974,22 @@ class AgentEngine:
         loc, qty = self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))
         func = self._scan_functional_claims(response_text)
+        # A figure over a column the reader could not read joins the caveat
+        # class rather than the correction class: the number is not wrong,
+        # it is unfounded, and a retry is free to guess the same way again.
+        ambiguous = self._scan_ambiguous_column_totals(response_text)
         if not loc and not qty:
-            return self._append_functional_caveat(
-                response_text, func, on_token)
+            return self._append_ambiguous_column_caveat(
+                self._append_functional_caveat(response_text, func, on_token),
+                ambiguous, on_token)
         if self._claim_guard_corrected:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
-            return self._append_functional_caveat(
-                response_text + _vg.grounding_caveat(loc, qty), func,
-                on_token)
+            return self._append_ambiguous_column_caveat(
+                self._append_functional_caveat(
+                    response_text + _vg.grounding_caveat(loc, qty), func,
+                    on_token),
+                ambiguous, on_token)
         parts: list[str] = []
         if loc:
             parts.append(_vg.location_claim_feedback(loc))

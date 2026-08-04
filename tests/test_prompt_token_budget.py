@@ -41,6 +41,15 @@ def _estimate_tokens(text: str) -> int:
         # internals, and removed tool-signature listings that duplicate the
         # tool schemas.
         ("solo_agent.md", 10600),
+        # Written lean from the start: the shared addenda carry the general
+        # contracts, so this prompt only states what is specific to working
+        # on someone's real records. Raised as the mode's surface grew —
+        # series work, record-addressed edits, PDF assembly, remembered
+        # folder conventions, the working folder — each replacing something
+        # the model would otherwise improvise, so each has to be named. The
+        # prose was tightened three times on the way; what is left is
+        # contract, not explanation.
+        ("office_agent.md", 1600),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):

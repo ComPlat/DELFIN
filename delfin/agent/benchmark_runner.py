@@ -111,8 +111,22 @@ def _default_engine_factory(model: str, backend: str, provider: str, mode: str) 
     from pathlib import Path as _Path
     from .engine import AgentEngine
 
+    # Office mode is DEFINED by working inside one folder, so a task in
+    # that mode has to start there. Pointing it at the repository root
+    # instead left the fixtures three levels down, and whether the model
+    # found them was luck: one run cited the full path, the next answered
+    # "the file is not in the working directory" — and that scored as a
+    # failure of the rubric it never got to exercise. A benchmark that
+    # intermittently measures file discovery instead of the behaviour
+    # under test is worse than no benchmark.
+    root = _Path(_os.getcwd()).resolve()
+    if (mode or "") == "office":
+        fixtures = root / "tests" / "fixtures" / "office_workspace"
+        if fixtures.is_dir():
+            root = fixtures
+
     return AgentEngine(
-        repo_dir=_Path(_os.getcwd()).resolve(),
+        repo_dir=root,
         backend=backend or "api",
         provider=provider,
         model=model,
@@ -143,6 +157,10 @@ def _cost_delta(before: float, after: float) -> float:
 _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     Path("tests") / "fixtures" / "behavior_workspace",
     Path("tests") / "fixtures" / "user_project_workspace",
+    # Office tasks read and edit the same small tables; without a restore
+    # between attempts a later run scores against rows an earlier one
+    # changed.
+    Path("tests") / "fixtures" / "office_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 

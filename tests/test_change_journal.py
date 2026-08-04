@@ -279,3 +279,109 @@ def test_record_never_raises_on_unwritable_store(home, ws, monkeypatch):
         finally:
             (root / "undo").chmod(0o700)
         assert cj.list_changes("s2") == []
+
+
+# ---------------------------------------------------------------------------
+# Binary changes (spreadsheets, PDFs)
+# ---------------------------------------------------------------------------
+
+# Bytes that do not survive a utf-8 round-trip: 0x80-0xFF are invalid
+# continuation bytes, so decode(errors="replace") maps them all onto the
+# same replacement character. A text pre-image of this cannot restore it.
+_BINARY = bytes(range(256)) * 8
+
+
+def test_binary_pre_image_restores_byte_for_byte(home, ws):
+    p = ws / "book.xlsx"
+    p.write_bytes(_BINARY)
+    pre = p.read_bytes()
+    p.write_bytes(b"EDITED" + _BINARY[:100])
+
+    rec = cj.record_binary_change("s1", tool="edit_sheet", path=p,
+                                  pre_bytes=pre)
+    assert rec is not None
+
+    out = cj.revert("s1", scope="last")
+    assert out["reverted"] == [str(p)]
+    assert p.read_bytes() == _BINARY
+
+
+def test_text_journal_cannot_restore_binary(home, ws):
+    """The reason record_binary_change exists, pinned as a test."""
+    p = ws / "book.xlsx"
+    p.write_bytes(_BINARY)
+    lossy = p.read_bytes().decode("utf-8", errors="replace")
+    assert lossy.encode("utf-8", errors="replace") != _BINARY
+
+
+def test_binary_revert_refuses_when_file_changed_since(home, ws):
+    p = ws / "book.xlsx"
+    p.write_bytes(_BINARY)
+    pre = p.read_bytes()
+    p.write_bytes(b"agent-write")
+    cj.record_binary_change("s1", tool="edit_sheet", path=p, pre_bytes=pre)
+
+    p.write_bytes(b"user-touched-it-afterwards")
+    out = cj.revert("s1", scope="last")
+    assert out["reverted"] == []
+    assert out["conflicts"] and "post-hash" in out["conflicts"][0]["reason"]
+    assert p.read_bytes() == b"user-touched-it-afterwards"
+
+
+def test_binary_created_entry_is_deleted_on_revert(home, ws):
+    p = ws / "new.pdf"
+    p.write_bytes(_BINARY)
+    cj.record_binary_change("s1", tool="fill_pdf_form", path=p, pre_bytes=None)
+
+    out = cj.revert("s1", scope="last")
+    assert out["reverted"] == [str(p)]
+    assert not p.exists()
+
+
+def test_binary_record_is_flagged_and_uses_bin_pre_image(home, ws):
+    p = ws / "book.xlsx"
+    p.write_bytes(b"after")
+    cj.record_binary_change("s1", tool="edit_sheet", path=p, pre_bytes=b"before")
+    rec = cj.list_changes("s1")[-1]
+    assert rec["binary"] is True
+    assert rec["pre_file"].endswith(".bin")
+
+
+def test_text_records_stay_text_records(home, ws):
+    """Journals written before binary support must revert unchanged."""
+    p = _edit(ws, "a.txt", "v1\n", "v2\n")
+    cj.record_change("s1", tool="write_file", path=p,
+                     old_text="v1\n", new_text="v2\n")
+    rec = cj.list_changes("s1")[-1]
+    assert "binary" not in rec
+    assert cj.revert("s1", scope="last")["reverted"] == [str(p)]
+    assert p.read_text() == "v1\n"
+
+
+def test_mixed_text_and_binary_unwind_together(home, ws):
+    txt = _edit(ws, "notes.md", "one\n", "two\n")
+    cj.record_change("s1", tool="write_file", path=txt,
+                     old_text="one\n", new_text="two\n")
+    book = ws / "book.xlsx"
+    book.write_bytes(_BINARY)
+    pre = book.read_bytes()
+    book.write_bytes(b"edited")
+    cj.record_binary_change("s1", tool="edit_sheet", path=book, pre_bytes=pre)
+
+    out = cj.revert("s1", scope="session")
+    assert sorted(out["reverted"]) == sorted([str(txt), str(book)])
+    assert txt.read_text() == "one\n"
+    assert book.read_bytes() == _BINARY
+
+
+def test_oversize_binary_pre_image_is_refused_not_corrupted(home, ws):
+    p = ws / "big.xlsx"
+    p.write_bytes(b"after")
+    huge = b"\xff" * (cj.MAX_PRE_IMAGE_BYTES + 1)
+    cj.record_binary_change("s1", tool="edit_sheet", path=p, pre_bytes=huge)
+    assert cj.list_changes("s1")[-1]["truncated"] is True
+
+    out = cj.revert("s1", scope="last")
+    assert out["reverted"] == []
+    assert out["skipped"]
+    assert p.read_bytes() == b"after"

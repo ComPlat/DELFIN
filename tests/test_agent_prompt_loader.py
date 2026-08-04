@@ -831,10 +831,10 @@ def test_solo_prompt_includes_external_memory_when_present(
     loader = PromptLoader(agent_tree)
     monkeypatch.setattr(
         loader, "_load_external_memory_context",
-        lambda max_chars=6000, memory_root=None, task_text="":
+        lambda max_chars=6000, memory_root=None, task_text="", domain="":
             loader.__class__._load_external_memory_context(
                 loader, memory_root=mem, max_chars=max_chars,
-                task_text=task_text,
+                task_text=task_text, domain=domain,
             ),
     )
     prompt = loader.build_system_prompt(
@@ -866,10 +866,10 @@ def test_external_memory_injected_into_dashboard_prompt(agent_tree, tmp_path, mo
     captured: dict = {}
     real = loader._load_external_memory_context
 
-    def _spy(max_chars=6000, memory_root=None, task_text=""):
+    def _spy(max_chars=6000, memory_root=None, task_text="", domain=""):
         captured["max_chars"] = max_chars
         return real.__func__(loader, memory_root=mem, max_chars=max_chars,
-                             task_text=task_text)
+                             task_text=task_text, domain=domain)
 
     monkeypatch.setattr(loader, "_load_external_memory_context", _spy)
     prompt = loader.build_system_prompt(
@@ -896,10 +896,10 @@ def test_external_memory_not_injected_for_other_roles(agent_tree, tmp_path, monk
     loader = PromptLoader(agent_tree)
     monkeypatch.setattr(
         loader, "_load_external_memory_context",
-        lambda max_chars=6000, memory_root=None, task_text="":
+        lambda max_chars=6000, memory_root=None, task_text="", domain="":
             loader.__class__._load_external_memory_context(
                 loader, memory_root=mem, max_chars=max_chars,
-                task_text=task_text,
+                task_text=task_text, domain=domain,
             ),
     )
     prompt = loader.build_system_prompt(
@@ -1285,3 +1285,51 @@ def test_episode_recall_injected_into_solo_prompt(
         lambda *a, **k: {"agent": {"episodes": {"enabled": False}}})
     prompt_disabled = loader.build_system_prompt(**build)
     assert "--- Past Sessions ---" not in prompt_disabled
+
+
+# ---------------------------------------------------------------------------
+# Document module — triggers in both languages the users write in
+# ---------------------------------------------------------------------------
+
+_DOC_MODULE_TEXT = (
+    "## Intro\n"
+    "Always kept.\n"
+    "\n"
+    "<!-- module:documents -->\n"
+    "## Documents\n"
+    "document module body\n"
+    "\n"
+    "## Tail\n"
+    "tail body\n"
+)
+
+
+def _doc_module_active(agent_tree, task_text: str, key: str) -> bool:
+    from delfin.agent.prompt_loader import PromptLoader
+
+    out = PromptLoader(agent_tree)._strip_lazy_modules(
+        _DOC_MODULE_TEXT, task_text=task_text, mode_id="solo",
+        session_key=key, role_id="solo_agent",
+    )
+    return "document module body" in out
+
+
+@pytest.mark.parametrize("task", [
+    "werte bitte die Tabelle aus",
+    "fill in the PDF Formular for me",
+    "summarise budget.xlsx",
+    "die Rechnung prüfen",
+    "read the spreadsheet and total column C",
+])
+def test_document_module_activates_for_office_work(agent_tree, task):
+    assert _doc_module_active(agent_tree, task, f"k-{hash(task)}")
+
+
+@pytest.mark.parametrize("task", [
+    "fix the import in delfin/agent/engine.py",
+    "format the output of the parser",
+    "give me more information about the run",
+])
+def test_document_module_stays_out_of_unrelated_work(agent_tree, task):
+    """'formular' and 'tabelle' must not fire on 'format' or 'information'."""
+    assert not _doc_module_active(agent_tree, task, f"n-{hash(task)}")
