@@ -754,7 +754,18 @@ def create_tab(ctx):
         "  var orig=v.render.bind(v), busy=false;\n"
         "  v.render=function(){ if(!busy){busy=true; try{place();}catch(e){} busy=false;}"
         " return orig.apply(v,arguments); };\n"
+        "  // Watchdog: re-place the labels and redraw whenever the view changes\n"
+        "  // (drag / zoom / inertia), even if that change did not go through\n"
+        "  // v.render() -- this keeps every number pinned to its atom and\n"
+        "  // facing the camera while the system is rotated.\n"
+        "  var raf=window.requestAnimationFrame||function(f){return setTimeout(f,16);};\n"
+        "  var lastKey=null;\n"
+        "  function loop(){\n"
+        "    try{ var w=v.getView(); var k=''+w; if(k!==lastKey){ lastKey=k; v.render(); } }catch(e){}\n"
+        "    raf(loop);\n"
+        "  }\n"
         "  try{place();}catch(e){}\n"
+        "  raf(loop);\n"
         "})();"
     )
 
@@ -779,9 +790,12 @@ def create_tab(ctx):
             except ValueError:
                 continue
             calls.append(
+                # fontSize 22 (thicker strokes, easier to read) + a light white
+                # background for contrast on any atom colour.
                 '%s.__delfinLbls.push({c:[%.6f,%.6f,%.6f],l:%s.addLabel("%d",'
-                '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:15,fontColor:"black",'
-                'showBackground:false,inFront:false})});'
+                '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:22,fontColor:"black",'
+                'showBackground:true,backgroundColor:"white",backgroundOpacity:0.5,'
+                'inFront:false})});'
                 % (var, x, y, z, var, i, x, y, z)
             )
         if len(calls) <= 1:
