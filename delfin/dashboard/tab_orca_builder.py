@@ -758,6 +758,22 @@ def create_tab(ctx):
         "          if(ex*ex+ey*ey<RAD2){ occ=true; break; } } }\n"
         "      var s=L[a].l&&L[a].l.sprite; if(s) s.visible=!occ;\n"
         "    }\n"
+        "    // zoom-proportional font: shrink the numbers when zooming out and\n"
+        "    // grow them when zooming in, relative to the first frame (clamped).\n"
+        "    if(typeof v.modelToScreen==='function'&&m>0){ try{\n"
+        "      var c0=L[0].c;\n"
+        "      var q1=v.modelToScreen({x:c0[0],y:c0[1],z:c0[2]});\n"
+        "      var q2=v.modelToScreen({x:c0[0]+1,y:c0[1],z:c0[2]});\n"
+        "      var ppa=Math.sqrt((q1.x-q2.x)*(q1.x-q2.x)+(q1.y-q2.y)*(q1.y-q2.y));\n"
+        "      if(ppa>0){ var base=v.__delfinPPA0||(v.__delfinPPA0=ppa);\n"
+        "        var f=ppa/base; if(f<0.4)f=0.4; if(f>2.5)f=2.5;\n"
+        "        for(var g=0;g<m;g++){ var sg=L[g].l&&L[g].l.sprite;\n"
+        "          if(!sg||!sg.scale) continue;\n"
+        "          if(!L[g].s0&&sg.scale.x>0) L[g].s0=[sg.scale.x,sg.scale.y];\n"
+        "          if(L[g].s0){ sg.scale.x=L[g].s0[0]*f; sg.scale.y=L[g].s0[1]*f; }\n"
+        "        }\n"
+        "      }\n"
+        "    }catch(e){} }\n"
         "  }\n"
         "  var orig=v.render.bind(v), busy=false;\n"
         "  v.render=function(){ if(!busy){busy=true; try{update();}catch(e){} busy=false;}"
@@ -787,7 +803,16 @@ def create_tab(ctx):
             n_atoms = int(lines[0].strip())
         except (ValueError, IndexError):
             return ''
-        calls = ['%s.__delfinLbls=%s.__delfinLbls||[];' % (var, var)]
+        # alignment:center anchors the text box on its centre, so the number
+        # stays on the atom centre at every zoom (default corner-anchoring drifts
+        # aside as atoms shrink).  Fall back to the string form if the enum is
+        # unavailable.
+        preamble = [
+            'var __delfinAL=($3Dmol&&$3Dmol.SpriteAlignment&&$3Dmol.SpriteAlignment.center)'
+            '?$3Dmol.SpriteAlignment.center:"center";',
+            '%s.__delfinLbls=%s.__delfinLbls||[];' % (var, var),
+        ]
+        pushes = []
         for i, line in enumerate(lines[2: 2 + n_atoms]):
             parts = line.split()
             if len(parts) < 4:
@@ -796,20 +821,20 @@ def create_tab(ctx):
                 x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
             except ValueError:
                 continue
-            calls.append(
-                # fontSize 22 for thicker, readable digits; no background;
-                # inFront:true keeps the number centred on its own atom, while
-                # the occlusion test in _LABEL_DEPTH_PATCH_JS hides it when the
-                # atom is behind another.
+            pushes.append(
+                # fontSize 22, no background; alignment centred; inFront:true.
+                # Occlusion + zoom-proportional sizing are done per frame in
+                # _LABEL_DEPTH_PATCH_JS.
                 '%s.__delfinLbls.push({c:[%.6f,%.6f,%.6f],l:%s.addLabel("%d",'
                 '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:22,fontColor:"black",'
-                'showBackground:false,inFront:true})});'
+                'alignment:__delfinAL,showBackground:false,inFront:true})});'
                 % (var, x, y, z, var, i, x, y, z)
             )
-        if len(calls) <= 1:
+        if not pushes:
             return ''
-        calls.append(_LABEL_DEPTH_PATCH_JS.replace('__VAR__', var))
-        return '\n    '.join(calls)
+        return '\n    '.join(
+            preamble + pushes + [_LABEL_DEPTH_PATCH_JS.replace('__VAR__', var)]
+        )
 
     def _viewer_html(xyz_data, label_js='', reset_view=False):
         """Build a self-contained HTML block that renders xyz_data in a $3Dmol viewer.
