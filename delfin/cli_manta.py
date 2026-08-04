@@ -176,6 +176,26 @@ _CHAMPION_FLAGS = (
                           # puck1krt3 was NOT a verdict at all: 501 of 1000 systems lost to the per-system clock
                           # on an overbooked machine, build_lost_hard empty.
                           # Env DELFIN_FFFREE_RING_PUCKER; impl delfin/manta/converter_backend.py:427.
+
+    "LP_SIBLING",         # #25: ADDITIVE lone-pair-oriented sibling.  A donor's in-plane lone pair must point AT
+                          # the metal; the seating gets that right and the conformer/re-embed passes tilt it back.
+                          # Adds the lone-pair-oriented pose as a SIBLING (-lp) next to the seated frame instead of
+                          # REPLACING it -- the same lever failed as a seating (commit ee9a1cf3) because replacing
+                          # the frame cost systems their good pose.  landed 2026-08-04, full:1000 (lpsib1k):
+                          #   affected=8 + byte-identical=983, builds SYMMETRIC (off ok 991/timeout 9,
+                          #   on ok 991/timeout 9 -> no build_lost, no build_gained, the compared set is clean)
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   valid 3->4, cap_LOST=0, cap_gained=1, n_improved=4, n_equal=3, n_worse=1,
+                          #   mean_delta -2.09 (BETTER).  EVERY regression term exactly 0.
+                          # Affected: AVUNUC02 BIGDAX JOCCUC MANPAS OVEXIZ REYFOS VURMIE WUDNEQ -- VURMIE is the
+                          # system the user pointed at for sp2-built donors that must coordinate sp3.
+                          # ⚠ PRE-REGISTERED PREDICTION NOT CONFIRMED: the affected set was expected to be
+                          # ENRICHED in the 57 systems whose PRIMARY frame is hard on the donor-elevation axis
+                          # (elev_hard_f0_57.tsv, base rate 5.7 %).  Measured: 1 of 8 = 12.5 %, i.e. MANPAS alone
+                          # -- at n=8 that is ordinary chance (expected 0.46).  So this lever does NOT address
+                          # the tilted-donor class; those 57 need their own lever (DELFIN_FFFREE_PI_RIGID_PLACE,
+                          # measured separately).  Env DELFIN_FFFREE_LP_SIBLING; impl converter_backend.py.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
