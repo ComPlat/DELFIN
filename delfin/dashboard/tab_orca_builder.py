@@ -730,6 +730,7 @@ def create_tab(ctx):
         '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
         '    }\n'
         '    var saved=window._orcaBuildViewState;\n'
+        '    if(prev&&window.__delfinDisposeViewer){window.__delfinDisposeViewer(prev);}\n'
         '    var viewer=$3Dmol.createViewer(el,__VIEWER_CONFIG__);\n'
         '    __MOUSE__\n'
         '    viewer.addModel(__XYZ__,"xyz");\n'
@@ -754,33 +755,44 @@ def create_tab(ctx):
     # drawn on top (inFront:true), so a number never drifts off its atom and is
     # never hidden by its OWN sphere -- no matter the zoom (no parallax).  To
     # still hide numbers of atoms that are *behind other atoms*, an occlusion
-    # test runs on every view change: each atom is projected with the current
-    # model rotation, and its label sprite is hidden when a nearer atom projects
-    # within RAD (Angstrom) of it.  RAD ~ atom display radius; DEPTH_SIGN flips
-    # if front/back ever come out inverted.
+    # test runs once after an interaction settles. During mouse movement labels
+    # remain visible with their last settled visibility, while no expensive
+    # all-label pass runs in the render hot path. A small projected-coordinate
+    # grid limits the settled occlusion pass to nearby candidates instead of
+    # comparing every atom with every other atom.
     _LABEL_DEPTH_PATCH_JS = (
         "(function(){\n"
         "  var v=__VAR__, RAD=0.5, RAD2=RAD*RAD, EPS=0.05, DEPTH_SIGN=1;\n"
+        "  var disposed=false, updateTimer=0;\n"
         "  if(v.__delfinLabelDepthPatched) return;\n"
         "  v.__delfinLabelDepthPatched=true;\n"
         "  function update(){\n"
+        "    if(disposed||v.__delfinDisposed||v.__delfinInteracting) return false;\n"
         "    var w; try{w=v.getView();}catch(e){return;}\n"
-        "    if(!w||w.length<8) return;\n"
+        "    if(!w||w.length<8) return false;\n"
         "    var x=w[4],y=w[5],z=w[6],q=w[7];\n"
         "    var r11=1-2*(y*y+z*z), r12=2*(x*y-q*z), r13=2*(x*z+q*y);\n"
         "    var r21=2*(x*y+q*z), r22=1-2*(x*x+z*z), r23=2*(y*z-q*x);\n"
         "    var r31=2*(x*z-q*y), r32=2*(y*z+q*x), r33=1-2*(x*x+y*y);\n"
         "    var L=v.__delfinLbls||[], m=L.length;\n"
         "    var P=v.__delfinProj||(v.__delfinProj=[]);\n"
+        "    var grid=Object.create(null);\n"
         "    for(var i=0;i<m;i++){ var c=L[i].c; var p=P[i]||(P[i]=[0,0,0]);\n"
         "      p[0]=r11*c[0]+r12*c[1]+r13*c[2];\n"
         "      p[1]=r21*c[0]+r22*c[1]+r23*c[2];\n"
         "      p[2]=DEPTH_SIGN*(r31*c[0]+r32*c[1]+r33*c[2]);\n"
+        "      var gx=Math.floor(p[0]/RAD),gy=Math.floor(p[1]/RAD);\n"
+        "      var key=gx+':'+gy,bucket=grid[key]||(grid[key]=[]);bucket.push(i);\n"
         "    }\n"
         "    for(var a=0;a<m;a++){ var occ=false, pa=P[a];\n"
-        "      for(var b=0;b<m;b++){ if(b===a) continue; var pb=P[b];\n"
-        "        if(pb[2]>pa[2]+EPS){ var ex=pa[0]-pb[0], ey=pa[1]-pb[1];\n"
-        "          if(ex*ex+ey*ey<RAD2){ occ=true; break; } } }\n"
+        "      var agx=Math.floor(pa[0]/RAD),agy=Math.floor(pa[1]/RAD);\n"
+        "      for(var ox=-1;ox<=1&&!occ;ox++){for(var oy=-1;oy<=1&&!occ;oy++){\n"
+        "        var near=grid[(agx+ox)+':'+(agy+oy)]||[];\n"
+        "        for(var n=0;n<near.length;n++){var b=near[n];if(b===a)continue;var pb=P[b];\n"
+        "          if(pb[2]>pa[2]+EPS){var ex=pa[0]-pb[0],ey=pa[1]-pb[1];\n"
+        "            if(ex*ex+ey*ey<RAD2){occ=true;break;}}\n"
+        "        }\n"
+        "      }}\n"
         "      var s=L[a].l&&L[a].l.sprite; if(s) s.visible=!occ;\n"
         "    }\n"
         "    // Label sizing.  The text texture is rendered at a high fontSize\n"
@@ -805,20 +817,30 @@ def create_tab(ctx):
         "      if(!L[g].s0&&sg.scale.x>0) L[g].s0=[sg.scale.x,sg.scale.y];\n"
         "      if(L[g].s0){ sg.scale.x=L[g].s0[0]*DISP*f; sg.scale.y=L[g].s0[1]*DISP*f; }\n"
         "    }\n"
+        "    return true;\n"
         "  }\n"
-        "  var orig=v.render.bind(v), busy=false;\n"
-        "  v.render=function(){ if(!busy){busy=true; try{update();}catch(e){} busy=false;}"
-        " return orig.apply(v,arguments); };\n"
-        "  // Watchdog: recompute occlusion + redraw on any view change (drag /\n"
-        "  // zoom / inertia), even if it did not go through v.render().\n"
-        "  var raf=window.requestAnimationFrame||function(f){return setTimeout(f,16);};\n"
-        "  var lastKey=null;\n"
-        "  function loop(){\n"
-        "    try{ var w=v.getView(); var k=''+w; if(k!==lastKey){ lastKey=k; v.render(); } }catch(e){}\n"
-        "    raf(loop);\n"
+        "  function applySettled(){\n"
+        "    updateTimer=0;\n"
+        "    if(disposed||v.__delfinDisposed) return;\n"
+        "    try{if(update()&&typeof v.render==='function')v.render();}catch(e){}\n"
         "  }\n"
-        "  try{update();}catch(e){}\n"
-        "  raf(loop);\n"
+        "  function schedule(delay){\n"
+        "    if(disposed||v.__delfinDisposed)return;\n"
+        "    if(updateTimer)clearTimeout(updateTimer);\n"
+        "    updateTimer=setTimeout(applySettled,delay||0);\n"
+        "  }\n"
+        "  var afterInteraction=function(){schedule(0);};\n"
+        "  var handlers=v.__delfinInteractionEndHandlers||(v.__delfinInteractionEndHandlers=[]);\n"
+        "  handlers.push(afterInteraction);\n"
+        "  var previousCleanup=v.__delfinCleanup;\n"
+        "  v.__delfinCleanup=function(){\n"
+        "    if(disposed)return;disposed=true;\n"
+        "    if(updateTimer)clearTimeout(updateTimer);updateTimer=0;\n"
+        "    var hs=v.__delfinInteractionEndHandlers||[];\n"
+        "    var pos=hs.indexOf(afterInteraction);if(pos>=0)hs.splice(pos,1);\n"
+        "    if(typeof previousCleanup==='function'){try{previousCleanup();}catch(e){}}\n"
+        "  };\n"
+        "  schedule(0);\n"
         "})();"
     )
 
@@ -826,9 +848,9 @@ def create_tab(ctx):
         """Return JS fragment adding atom-index labels with occlusion culling.
 
         Numbers sit at exact atom centres and on top (inFront:true) so they never
-        drift with zoom and an atom never hides its own number; a per-frame
-        occlusion test (see _LABEL_DEPTH_PATCH_JS) hides the numbers of atoms that
-        are behind other atoms."""
+        drift with zoom and an atom never hides its own number. After camera
+        interaction settles, _LABEL_DEPTH_PATCH_JS hides numbers of atoms that
+        are behind other atoms without adding work to mouse-move renders."""
         lines = full_xyz.split('\n')
         try:
             n_atoms = int(lines[0].strip())
@@ -863,8 +885,9 @@ def create_tab(ctx):
             )
         if not pushes:
             return ''
+        depth_patch = _LABEL_DEPTH_PATCH_JS.replace('__VAR__', var)
         return '\n    '.join(
-            preamble + pushes + [_LABEL_DEPTH_PATCH_JS.replace('__VAR__', var)]
+            preamble + pushes + [depth_patch]
         )
 
     def _labels_js(full_xyz, var='viewer'):
@@ -932,6 +955,7 @@ def create_tab(ctx):
             '      try{window._orcaBuildViewState=prev.getView();}catch(_e){}\n'
             '    }\n'
             '    var saved=window._orcaBuildViewState;\n'
+            '    if(prev&&window.__delfinDisposeViewer){window.__delfinDisposeViewer(prev);}\n'
             f'    var viewer=$3Dmol.createViewer(el,{profile["viewer_config_js"]});\n'
             f'    {mouse_js}\n'
             f'    viewer.addModel({json.dumps(target_xyz)},"xyz");\n'

@@ -23,6 +23,27 @@ _SETTINGS_UI_SOURCE = (
     / "tab_settings.py"
 ).read_text(encoding="utf-8")
 
+_ORCA_VIEWER_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "delfin"
+    / "dashboard"
+    / "tab_orca_builder.py"
+).read_text(encoding="utf-8")
+
+_CALC_VIEWER_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "delfin"
+    / "dashboard"
+    / "tab_calculations_browser.py"
+).read_text(encoding="utf-8")
+
+_REMOTE_VIEWER_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "delfin"
+    / "dashboard"
+    / "tab_remote_archive.py"
+).read_text(encoding="utf-8")
+
 
 def test_settings_ui_exposes_and_persists_viewer_controls():
     for widget_name in (
@@ -44,8 +65,8 @@ def test_settings_ui_exposes_and_persists_viewer_controls():
         "'ambient_occlusion': bool(viewer_ambient_occlusion_toggle.value)",
     ):
         assert settings_key in _SETTINGS_UI_SOURCE
-    assert "XYZ-/ORCA-Koordinaten enthalten keine" in _SETTINGS_UI_SOURCE
-    assert "nur MOL/SDF mit Bindungsordnung" in _SETTINGS_UI_SOURCE
+    assert "XYZ/ORCA coordinates do not" in _SETTINGS_UI_SOURCE
+    assert "only affects MOL/SDF" in _SETTINGS_UI_SOURCE
 
 
 def test_viewer_representation_styles_use_global_dimensions():
@@ -105,6 +126,9 @@ def test_quality_profiles_control_renderer_independently():
 
     assert low["antialias"] is False
     assert medium["antialias"] is True
+    assert low["upscale"] is False
+    assert "upscale" not in medium
+    assert "upscale" not in high
     assert "style" not in medium
     assert high["antialias"] is True
     assert "style" not in high
@@ -163,3 +187,39 @@ def test_py3dmol_style_application_injects_renderer_config(monkeypatch):
     assert '{"backgroundColor":"white","antialias":false}' in view.startjs
     assert view.style == ({}, profile["style"])
     assert view.background == "white"
+
+
+def test_mouse_patch_coalesces_drag_rendering_and_disposes_old_contexts():
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+
+    assert "pendingDx += dx" in patch
+    assert "pendingMoveEvent=e" in patch
+    assert "firstMovePending" in patch
+    assert "now-moveFrameStarted>34" in patch
+    assert "requestAnimationFrame" in patch
+    assert "moveFrame=requestFrame(flushTranslation)" in patch
+    assert 'viewer.translate(dx, dy);\nif(typeof viewer.render' not in patch
+    assert "viewer.__delfinInteracting=true" in patch
+    assert "useFastInteractionStyle" in patch
+    assert 'style.replace("ambientOcclusion","")' in patch
+    assert "__delfinInteractionEndHandlers" in patch
+    assert "window.__delfinDisposeViewer" in patch
+    assert "WEBGL_lose_context" in patch
+    assert "window.setInterval" not in patch
+
+
+def test_orca_label_occlusion_is_deferred_until_mouse_interaction_ends():
+    assert "grid=Object.create(null)" in _ORCA_VIEWER_SOURCE
+    assert "hideForInteraction" not in _ORCA_VIEWER_SOURCE
+    assert "__delfinInteractionEndHandlers" in _ORCA_VIEWER_SOURCE
+    assert "schedule(0)" in _ORCA_VIEWER_SOURCE
+    assert "v.render=function()" not in _ORCA_VIEWER_SOURCE
+    assert "raf(loop)" not in _ORCA_VIEWER_SOURCE
+    assert "window.__delfinDisposeViewer(prev)" in _ORCA_VIEWER_SOURCE
+
+
+def test_trajectory_playback_yields_rendering_while_viewer_is_dragged():
+    for source in (_CALC_VIEWER_SOURCE, _REMOTE_VIEWER_SOURCE):
+        assert "viewer && !viewer.__delfinInteracting" in source
+        assert "state.get('traj_playing')" in source or 'state.get("traj_playing")' in source
+        assert "window.__delfinDisposeViewer(previousViewer)" in source

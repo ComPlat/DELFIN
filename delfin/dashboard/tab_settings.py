@@ -243,28 +243,28 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     viewer_enabled_toggle = widgets.Checkbox(
         value=True,
-        description='3D-Viewer aktivieren',
+        description='Enable 3D viewer',
         indent=False,
         layout=widgets.Layout(width='220px', height='28px'),
     )
     viewer_quality_dropdown = widgets.Dropdown(
-        options=[('Niedrig (schnell)', 'low'),
-                 ('Mittel (Kantenglättung)', 'medium'),
-                 ('Hoch (höchste Detailstufe)', 'high')],
+        options=[('Low (older PCs, softer image)', 'low'),
+                 ('Medium (antialiasing)', 'medium'),
+                 ('High (maximum detail)', 'high')],
         value='high',
-        description='Qualität:',
+        description='Quality:',
         style={'description_width': '70px'},
         layout=widgets.Layout(width='350px', height='28px'),
     )
     viewer_representation_dropdown = widgets.Dropdown(
         options=[
-            ('Kugel–Stab-Modell', 'ball_and_stick'),
-            ('Stabmodell', 'stick'),
-            ('Kugelmodell', 'sphere'),
-            ('Drahtmodell', 'line'),
+            ('Ball-and-stick', 'ball_and_stick'),
+            ('Stick', 'stick'),
+            ('Space-filling spheres', 'sphere'),
+            ('Wireframe', 'line'),
         ],
         value='ball_and_stick',
-        description='Modell:',
+        description='Model:',
         style={'description_width': '70px'},
         layout=widgets.Layout(width='350px', height='28px'),
     )
@@ -274,7 +274,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         max=1.50,
         step=0.01,
         readout_format='.2f',
-        description='Kugelgröße (× vdW)',
+        description='Atom size (× vdW)',
         style={'description_width': '145px'},
         continuous_update=False,
         layout=widgets.Layout(width='480px', height='28px'),
@@ -285,26 +285,26 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         max=0.50,
         step=0.01,
         readout_format='.2f',
-        description='Bindungsradius (Å)',
+        description='Bond radius (Å)',
         style={'description_width': '145px'},
         continuous_update=False,
         layout=widgets.Layout(width='480px', height='28px'),
     )
     viewer_multiple_bonds_toggle = widgets.Checkbox(
         value=True,
-        description='Mehrfachbindungen anzeigen (nur MOL/SDF mit Bindungsordnung)',
+        description='Show multiple bonds (MOL/SDF with bond order only)',
         indent=False,
         layout=widgets.Layout(width='520px', height='28px'),
     )
     viewer_depth_fog_toggle = widgets.Checkbox(
         value=True,
-        description='Atome im Hintergrund blasser darstellen (Tiefennebel)',
+        description='Fade background atoms (depth fog)',
         indent=False,
         layout=widgets.Layout(width='440px', height='28px'),
     )
     viewer_ambient_occlusion_toggle = widgets.Checkbox(
         value=False,
-        description='Zusätzliche Tiefenschattierung (Ambient Occlusion)',
+        description='Additional depth shading (ambient occlusion)',
         indent=False,
         layout=widgets.Layout(width='440px', height='28px'),
     )
@@ -3450,10 +3450,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         [
             widgets.HTML(
                 '<div style="color:#455a64;">'
-                'Globale Darstellung für alle 3D-Molekülviewer (py3Dmol). '
-                'Modelltyp und Renderqualität sind unabhängig wählbar; Größen '
-                'gelten auch für Trajektorien und Vergleichsansichten. Änderungen '
-                'werden mit <b>Save Settings</b> auf die aktuelle Sitzung angewendet.'
+                'Global display settings for every 3D molecule viewer (py3Dmol). '
+                'Model type and rendering quality can be selected independently; '
+                'sizes also apply to trajectories and comparison views. Use '
+                '<b>Save Settings</b> to apply changes to the current session.'
                 '</div>'
             ),
             widgets.HBox([viewer_enabled_toggle, viewer_quality_dropdown], layout=_row_layout),
@@ -3465,19 +3465,22 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             viewer_ambient_occlusion_toggle,
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin-top:2px;">'
-                '<b>Kugelgröße:</b> Faktor der van-der-Waals-Radien; '
-                '<code>0.28</code> = klassisches Kugel–Stab-Modell, '
-                '<code>1.00</code> = Kalottenmodell. '
-                '<b>Bindungsradius:</b> Zylinderradius in Å; beim Drahtmodell '
-                'ist die Linienbreite browserabhängig. Niedrige Qualität deaktiviert '
-                'Kantenglättung; Tiefenschattierung ist separat schaltbar. '
-                '<b>Mehrfachbindungen:</b> XYZ-/ORCA-Koordinaten enthalten keine '
-                'Bindungsordnung und erscheinen daher immer einfach; die Option '
-                'wirkt nur auf MOL/SDF und andere Formate mit Bindungsordnungen. '
-                '<b>Tiefennebel:</b> mischt weiter hinten liegende Atome in die '
-                'weiße Hintergrundfarbe und stellt damit den bisherigen Blasseffekt her. '
-                '<b>Ambient Occlusion:</b> verstärkt Kontakt- und Hohlraumschatten; '
-                'standardmäßig aus, damit der klassische Viewer-Look erhalten bleibt.'
+                '<b>Atom size:</b> factor applied to van der Waals radii; '
+                '<code>0.28</code> gives a classic ball-and-stick model and '
+                '<code>1.00</code> gives a space-filling model. '
+                '<b>Bond radius:</b> cylinder radius in Å; wireframe line width '
+                'depends on browser support. Low quality disables antialiasing. '
+                'Only <b>Low</b> also skips high-resolution canvas upscaling, making '
+                'interaction faster on older PCs but slightly softer. Medium and '
+                'High remain sharp. Mouse movement is limited to one render per '
+                'display frame at every quality level. Depth shading is controlled '
+                'separately. <b>Multiple bonds:</b> XYZ/ORCA coordinates do not '
+                'contain bond orders and therefore always appear as single bonds; '
+                'this option only affects MOL/SDF and other formats that include '
+                'bond orders. <b>Depth fog:</b> blends atoms farther from the camera '
+                'into the white background, producing the familiar fading effect. '
+                '<b>Ambient occlusion:</b> strengthens contact and cavity shadows; '
+                'it is off by default to preserve the classic viewer appearance.'
                 '</div>'
             ),
         ],

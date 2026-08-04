@@ -1042,6 +1042,9 @@ def create_tab(ctx):
                         window._remoteMolViewStateByScope[previousScope] = previousViewer.getView();
                     }} catch (_e) {{}}
                 }}
+                if (previousViewer && window.__delfinDisposeViewer) {{
+                    window.__delfinDisposeViewer(previousViewer);
+                }}
                 if (window._remoteMolViewerByScope) delete window._remoteMolViewerByScope[scopeKey];
                 if (window._remoteTrajViewerByScope) delete window._remoteTrajViewerByScope[scopeKey];
             }})();
@@ -1545,6 +1548,9 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._remoteMolViewStateByScope[viewScope] || null;
+                            if (previousViewer && window.__delfinDisposeViewer) {{
+                                window.__delfinDisposeViewer(previousViewer);
+                            }}
                             var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             var molData = {data_json};
@@ -1721,6 +1727,9 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._remoteMolViewStateByScope[viewScope] || null;
+                            if (previousViewer && window.__delfinDisposeViewer) {{
+                                window.__delfinDisposeViewer(previousViewer);
+                            }}
                             var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
@@ -2920,7 +2929,7 @@ def create_tab(ctx):
                     current = next;
                     syncFrameValue(next);
                     var viewer = getViewer();
-                    if (viewer) {{
+                    if (viewer && !viewer.__delfinInteracting) {{
                         try {{
                             viewer.setFrame(next - 1);
                             viewer.render();
@@ -3049,6 +3058,10 @@ def create_tab(ctx):
         if not frames:
             return
         state["current_xyz_index"] = max(0, min(len(frames) - 1, int(frame_input.value) - 1))
+        # Browser playback already updates this GLViewer. Avoid a second render
+        # after every widget synchronization, especially while it is dragged.
+        if state.get("traj_playing"):
+            return
         _render_selected_frame()
         _refresh_measure_after_render()
 

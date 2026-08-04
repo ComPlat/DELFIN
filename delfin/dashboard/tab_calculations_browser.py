@@ -3729,7 +3729,7 @@ def create_tab(ctx):
                     current = next;
                     syncFrameValue(next);
                     var viewer = getViewer();
-                    if (viewer) {{
+                    if (viewer && !viewer.__delfinInteracting) {{
                         try {{
                             viewer.setFrame(next - 1);
                             viewer.render();
@@ -3804,11 +3804,11 @@ def create_tab(ctx):
                 var currentViewScope = {current_view_scope_json};
                 window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
                 window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+                var currentViewer =
+                    (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey])
+                    || (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey])
+                    || null;
                 if (!{clear_views_flag}) {{
-                    var currentViewer =
-                        (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey])
-                        || (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey])
-                        || null;
                     var previousScope =
                         window._calcMolViewScopeKeyByScope[scopeKey] || currentViewScope;
                     if (currentViewer && typeof currentViewer.getView === 'function') {{
@@ -3816,6 +3816,9 @@ def create_tab(ctx):
                             window._calcMolViewStateByScope[previousScope] = currentViewer.getView();
                         }} catch (_e) {{}}
                     }}
+                }}
+                if (currentViewer && window.__delfinDisposeViewer) {{
+                    window.__delfinDisposeViewer(currentViewer);
                 }}
                 var scopeRoot = document.querySelector('.{calc_scope_id}');
                 var wrappers = scopeRoot
@@ -3960,6 +3963,9 @@ def create_tab(ctx):
                     }} catch (_e) {{}}
                 }}
                 var savedView = window._calcMolViewStateByScope[viewScope] || null;
+                if (previousViewer && window.__delfinDisposeViewer) {{
+                    window.__delfinDisposeViewer(previousViewer);
+                }}
                 var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var molData = {data_json};
@@ -6961,6 +6967,9 @@ def create_tab(ctx):
                     }} catch (_e) {{}}
                 }}
                 var savedView = window._calcMolViewStateByScope[viewScope] || null;
+                if (previousViewer && window.__delfinDisposeViewer) {{
+                    window.__delfinDisposeViewer(previousViewer);
+                }}
                 var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var targetData = {target_json};
@@ -7244,6 +7253,9 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._calcMolViewStateByScope[viewScope] || null;
+                            if (previousViewer && window.__delfinDisposeViewer) {{
+                                window.__delfinDisposeViewer(previousViewer);
+                            }}
                             var viewer = $3Dmol.createViewer(el, {viewer_config_js});
                             {VIEWER_MOUSE_PATCH_JS}
                             var xyz = `{full_xyz}`;
@@ -8402,6 +8414,11 @@ def create_tab(ctx):
         new_val = change['new']
         if state['xyz_frames'] and 1 <= new_val <= len(state['xyz_frames']):
             state['xyz_current_frame'][0] = new_val - 1
+            # The browser-side playback loop already advances the GLViewer.
+            # Re-rendering the same frame again after every widget round-trip
+            # doubles the work and competes directly with mouse interaction.
+            if state.get('traj_playing'):
+                return
             calc_update_xyz_viewer(initial_load=False)
 
     def calc_on_xyz_loop_change(change):
