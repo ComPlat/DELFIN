@@ -30710,12 +30710,31 @@ def _clean_gate_filter(isomers):
             dz = f[3][i] - f[3][j]
             return dx * dx + dy * dy + dz * dz
 
+        # ---- WHICH criterion actually drops the frames? (measurement, not behaviour) -----
+        # Measured 2026-08-04 (cleangateW, the 142 worst-broken systems): the gate removes
+        # 547 of 2341 frames and takes the hard-frame fraction from 84.2 % to 77.2 % -- the
+        # first lever that lowers the ABSOLUTE defect rate at all.  But it also drops frames
+        # that MATCHED THE CRYSTAL: ccdc_backbone_lost 3 (GILKAQ, HOJSUX, UHEJIB),
+        # isomers_lost 3 (UHEJIB 10 -> 4 of 38 theory).  That violates the gate's own
+        # governing invariant ("nur die SCHLECHTEN aussortieren, nicht die guten").
+        #
+        # Before touching any threshold: find out WHICH of the five criteria does it.  The
+        # obvious suspect was the clash factor -- and that guess was WRONG: the gate measures
+        # clash against the COVALENT sum (0.70 x ~1.52 A = 1.06 A for C-C) while the eye's
+        # COD-validated metric uses the VDW sum (0.65 x 3.40 = 2.21 A), so the gate is far
+        # LOOSER there, not tighter.  Hence: count, do not guess.
+        # Pure instrumentation -- no frame is kept or dropped differently, output is
+        # byte-identical; the tally only reaches stderr under DELFIN_TRACE_CLEAN_GATE=1.
+        _gate_tally = {"invalid": 0, "collapse": 0, "vdw_h": 0, "clash": 0, "bare_metal": 0,
+                       "md_collapse": 0}
+
         # ---- PER-FRAME absolute certainly-bad test ------------------------
         def _certainly_bad(f):
             """True iff frame f is CERTAINLY bad on its OWN geometry (a definite
             defect with a clear margin).  In any doubt -> False (KEEP)."""
             # 1. structurally invalid.
             if not f[4]:
+                _gate_tally["invalid"] += 1
                 return True
             syms = f[0]
             metal_idx = [k for k in range(n_atoms) if _is_metal(syms[k])]
@@ -30765,18 +30784,21 @@ def _clean_gate_filter(isomers):
                     if bonded:
                         # 3. collapsed bond (fused atoms) -> certainly bad.
                         if d < collapse_f * rsum:
+                            _gate_tally["collapse"] += 1
                             return True
                         continue
                     # non-bonded pair:
                     if hi or hj:
                         # deep H interpenetration floor (hard).
                         if d < vdw_f * rsum:
+                            _gate_tally["vdw_h"] += 1
                             return True
                     else:
                         # 2. real inter-ligand clash (different per-frame ligands,
                         # clear overlap).  Same-component close contacts are NOT
                         # flagged (a tight intra-ligand contact is not a defect).
                         if comp[i] != comp[j] and d < clash_f * rsum:
+                            _gate_tally["clash"] += 1
                             return True
             # 4. bare metal / total decoordination (clear margin: ZERO donors).
             for mi in metal_idx:
@@ -30788,6 +30810,7 @@ def _clean_gate_filter(isomers):
                         has_donor = True
                         break
                 if not has_donor:
+                    _gate_tally["bare_metal"] += 1
                     return True
             # 5. DONOR COLLAPSED ONTO METAL (blindspot; only when explicitly on).
             #    The pair tests above skip every metal pair, so a heavy donor fused
@@ -30803,10 +30826,20 @@ def _clean_gate_filter(isomers):
                             continue
                         if math.sqrt(_d2(f, mi, k)) < collapse_f * (
                                 rm + _radius(syms[k])):
+                            _gate_tally["md_collapse"] += 1
                             return True
             return False
 
         kept = [item for item, f in zip(isomers, frames) if not _certainly_bad(f)]
+        if (len(kept) != len(isomers)
+                and os.environ.get("DELFIN_TRACE_CLEAN_GATE", "0") == "1"):
+            try:
+                import sys as _sysg
+                _sysg.stderr.write("[CLEANGATE] %d -> %d frames | %s\n" % (
+                    len(isomers), len(kept),
+                    " ".join("%s=%d" % (k, v) for k, v in _gate_tally.items() if v)))
+            except Exception:
+                pass
         # In-doubt-keep: if (and only if) EVERY frame is certainly bad, keep the
         # input unchanged rather than dropping all or fabricating a broken
         # survivor (the removed "cleanest-available" fallback behaviour).
