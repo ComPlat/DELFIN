@@ -758,26 +758,28 @@ def create_tab(ctx):
         "          if(ex*ex+ey*ey<RAD2){ occ=true; break; } } }\n"
         "      var s=L[a].l&&L[a].l.sprite; if(s) s.visible=!occ;\n"
         "    }\n"
-        "    // zoom-proportional font: shrink the numbers when zooming out and\n"
-        "    // grow them when zooming in, relative to the first frame (clamped).\n"
-        "    // Measure pixels-per-Angstrom in the SCREEN PLANE at the rotation\n"
-        "    // centre (world (0,0,rz), depth fixed under rotation) along the\n"
-        "    // screen-right model direction (r11,r12,r13); this depends on the\n"
-        "    // zoom only, NOT on the rotation, so dragging never resizes.\n"
+        "    // Label sizing.  The text texture is rendered at a high fontSize\n"
+        "    // (crisp), and we always DOWN-scale the sprite (DISP) so it looks\n"
+        "    // small and sharp -- never up-scaled (which is what caused blur).\n"
+        "    // The zoom factor f measures pixels-per-Angstrom in the SCREEN\n"
+        "    // PLANE at the rotation centre (world (0,0,rz), depth invariant\n"
+        "    // under rotation) along the screen-right model direction, so f\n"
+        "    // tracks the mouse-wheel zoom only, NOT rotation.  DISP is the base\n"
+        "    // on-screen size; lower it for smaller numbers.\n"
+        "    var DISP=0.20, f=1;\n"
         "    if(typeof v.modelToScreen==='function'&&m>0){ try{\n"
         "      var pcx=-w[0],pcy=-w[1],pcz=-w[2];\n"
         "      var q1=v.modelToScreen({x:pcx,y:pcy,z:pcz});\n"
         "      var q2=v.modelToScreen({x:pcx+r11,y:pcy+r12,z:pcz+r13});\n"
         "      var ppa=Math.sqrt((q1.x-q2.x)*(q1.x-q2.x)+(q1.y-q2.y)*(q1.y-q2.y));\n"
         "      if(ppa>0){ var base=v.__delfinPPA0||(v.__delfinPPA0=ppa);\n"
-        "        var f=ppa/base; if(f<0.4)f=0.4; if(f>2.5)f=2.5;\n"
-        "        for(var g=0;g<m;g++){ var sg=L[g].l&&L[g].l.sprite;\n"
-        "          if(!sg||!sg.scale) continue;\n"
-        "          if(!L[g].s0&&sg.scale.x>0) L[g].s0=[sg.scale.x,sg.scale.y];\n"
-        "          if(L[g].s0){ sg.scale.x=L[g].s0[0]*f; sg.scale.y=L[g].s0[1]*f; }\n"
-        "        }\n"
-        "      }\n"
+        "        f=ppa/base; if(f<0.4)f=0.4; if(f>2.5)f=2.5; }\n"
         "    }catch(e){} }\n"
+        "    for(var g=0;g<m;g++){ var sg=L[g].l&&L[g].l.sprite;\n"
+        "      if(!sg||!sg.scale) continue;\n"
+        "      if(!L[g].s0&&sg.scale.x>0) L[g].s0=[sg.scale.x,sg.scale.y];\n"
+        "      if(L[g].s0){ sg.scale.x=L[g].s0[0]*DISP*f; sg.scale.y=L[g].s0[1]*DISP*f; }\n"
+        "    }\n"
         "  }\n"
         "  var orig=v.render.bind(v), busy=false;\n"
         "  v.render=function(){ if(!busy){busy=true; try{update();}catch(e){} busy=false;}"
@@ -826,11 +828,11 @@ def create_tab(ctx):
             except ValueError:
                 continue
             pushes.append(
-                # fontSize 12 (small start size), no background; alignment
-                # centred; inFront:true.  Occlusion + zoom-proportional sizing
-                # are done per frame in _LABEL_DEPTH_PATCH_JS.
+                # fontSize 48 = HIGH-RES texture (kept sharp); the sprite is
+                # then down-scaled (DISP) in _LABEL_DEPTH_PATCH_JS so the number
+                # appears small and crisp.  alignment centred; no background.
                 '%s.__delfinLbls.push({c:[%.6f,%.6f,%.6f],l:%s.addLabel("%d",'
-                '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:12,fontColor:"black",'
+                '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:48,fontColor:"black",'
                 'alignment:__delfinAL,showBackground:false,inFront:true})});'
                 % (var, x, y, z, var, i, x, y, z)
             )
