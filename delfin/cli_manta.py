@@ -196,6 +196,26 @@ _CHAMPION_FLAGS = (
                           # -- at n=8 that is ordinary chance (expected 0.46).  So this lever does NOT address
                           # the tilted-donor class; those 57 need their own lever (DELFIN_FFFREE_PI_RIGID_PLACE,
                           # measured separately).  Env DELFIN_FFFREE_LP_SIBLING; impl converter_backend.py.
+    "SIGMA_ENSEMBLE",     # #26: ADDITIVE sigma-donor conformer ensemble -- by far the widest lever landed so far
+                          # (152 of 1000 systems touched).  An ETKDG conformer pool is generated for the ligand
+                          # and the resulting poses are APPENDED as siblings next to the seated frame.
+                          # ⚠ IT WAS NOT ALWAYS ADDITIVE.  Until 2026-08-03 two short-circuit branches in
+                          # converter_backend.py REPLACED the primary frame with an ensemble member for 49 of 187
+                          # systems -- which is why every earlier ensemble A/B lost capability.  Both branches are
+                          # deleted; conformers now flow through the normal path and are appended afterwards.
+                          # Containment measured 187/187 (every off-arm frame still present in the on arm).
+                          # landed 2026-08-04, full:1000 (sigmaens1k):
+                          #   affected=152 + byte-identical=842; builds off ok 993/timeout 7, on ok 994/timeout 6
+                          #   (build_gained 1, no build_lost -- the compared set is clean)
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   n=151, valid 119->127 (+8), cap_LOST=0, cap_gained=8, n_improved=82, n_equal=61,
+                          #   n_worse=8, mean_delta -1.286 (BETTER).  EVERY regression term exactly 0.
+                          #   capability gained: DUGWAG HEZPEJ HEZPIN JOCCUC URUTEH VAQPAE WIGFIB XUPGAR
+                          # NOTE it makes manifolds BIGGER, not cleaner: the additive family (this, RING_PUCKER,
+                          # LP_SIBLING) adds frames to manifolds in which 62.7 % of frames already carry a hard
+                          # finding.  The floor at the emit point is the separate work that RAISES quality.
+                          # Env DELFIN_FFFREE_SIGMA_ENSEMBLE; impl delfin/manta/converter_backend.py.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
