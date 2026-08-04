@@ -18,9 +18,21 @@ if "delfin.dashboard" not in sys.modules:
     _DASHBOARD_PKG.__path__ = [str(_ROOT / "dashboard")]
     sys.modules["delfin.dashboard"] = _DASHBOARD_PKG
 
-if "delfin.dashboard.helpers" not in sys.modules:
+# Use the REAL module wherever it can be imported, and only fill in what
+# is missing. A bare ModuleType put into sys.modules has no __file__ and
+# outlives this file — pytest imports every test module into one process,
+# so the stub then answers for the rest of the run. Any later module doing
+# "from .helpers import disable_spellcheck" gets
+# "cannot import name ... (unknown location)", pointing at a file that is
+# perfectly fine. That is how it reached CI: the browser tests began
+# importing the dashboard, and this file sorts before them.
+try:
+    import delfin.dashboard.helpers as _HELPERS
+except Exception:
     _HELPERS = types.ModuleType("delfin.dashboard.helpers")
+    sys.modules["delfin.dashboard.helpers"] = _HELPERS
 
+if not hasattr(_HELPERS, "parse_time_to_seconds"):
     def _parse_time_to_seconds(value):
         parts = str(value).split(":")
         if len(parts) != 3:
@@ -29,7 +41,6 @@ if "delfin.dashboard.helpers" not in sys.modules:
         return hours * 3600 + minutes * 60 + seconds
 
     _HELPERS.parse_time_to_seconds = _parse_time_to_seconds
-    sys.modules["delfin.dashboard.helpers"] = _HELPERS
 
 _SPEC = importlib.util.spec_from_file_location("delfin.dashboard.backend_local", _MODULE_PATH)
 if _SPEC is None or _SPEC.loader is None:

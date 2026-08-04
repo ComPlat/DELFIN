@@ -61,23 +61,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[agent,docs,dev]"
 
-      - name: Diagnose the dashboard import (temporary)
-        run: |
-          echo "--- files ---"
-          ls -la delfin/dashboard/ | head -30
-          echo "--- resolution ---"
-          python - <<'EOF'
-          import importlib.util, sys
-          for name in ("delfin", "delfin.dashboard", "delfin.dashboard.helpers"):
-              spec = importlib.util.find_spec(name)
-              print(name, "->", getattr(spec, "origin", None),
-                    "| search:", getattr(spec, "submodule_search_locations", None))
-          import delfin.dashboard as d
-          print("dashboard __path__:", list(d.__path__))
-          EOF
-          echo "--- installed copies ---"
-          pip list 2>/dev/null | grep -i delfin || true
-
       - name: Run fast test suite (excludes heavy + order-dependent tests)
         run: pytest -q -m "not slow"
 
