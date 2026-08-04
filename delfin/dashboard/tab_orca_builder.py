@@ -219,8 +219,12 @@ def create_tab(ctx):
         layout=widgets.Layout(width='36px', height='28px'),
     )
     orca_mol_nav_label = widgets.HTML(value='')
+    orca_mol_labels_btn = widgets.ToggleButton(
+        value=True, description='#', tooltip='Show / hide atom numbers',
+        layout=widgets.Layout(width='40px', height='28px'),
+    )
     orca_mol_nav_row = widgets.HBox(
-        [orca_mol_prev_btn, orca_mol_nav_label, orca_mol_next_btn],
+        [orca_mol_prev_btn, orca_mol_nav_label, orca_mol_next_btn, orca_mol_labels_btn],
         layout=widgets.Layout(display='none', align_items='center', gap='6px'),
     )
     # -- state ----------------------------------------------------------
@@ -234,6 +238,7 @@ def create_tab(ctx):
         'numbering_check_results': {},
         'numbering_check_block_idx': 1,
         'numbering_view_step': 0,
+        'show_atom_labels': True,
     }
 
     # -- helpers --------------------------------------------------------
@@ -842,6 +847,12 @@ def create_tab(ctx):
             preamble + pushes + [_LABEL_DEPTH_PATCH_JS.replace('__VAR__', var)]
         )
 
+    def _labels_js(full_xyz, var='viewer'):
+        """Atom-number labels, gated by the preview's labels on/off toggle."""
+        if not state.get('show_atom_labels', True):
+            return ''
+        return _atom_labels_js(full_xyz, var=var)
+
     def _viewer_html(xyz_data, label_js='', reset_view=False):
         """Build a self-contained HTML block that renders xyz_data in a $3Dmol viewer.
 
@@ -919,13 +930,13 @@ def create_tab(ctx):
         if step == 1:
             return _viewer_html(
                 reference_xyz,
-                _atom_labels_js(reference_xyz, var='viewer'),
+                _labels_js(reference_xyz, var='viewer'),
                 reset_view=reset_view,
             )
         if step == 2:
             return _viewer_html(
                 reordered_target_xyz,
-                _atom_labels_js(reordered_target_xyz, var='viewer'),
+                _labels_js(reordered_target_xyz, var='viewer'),
                 reset_view=reset_view,
             )
         return _overlay_viewer_html(reference_xyz, target_xyz, reset_view=reset_view)
@@ -946,6 +957,8 @@ def create_tab(ctx):
                 f'{step + 1}&thinsp;/&thinsp;3: {labels[step]} for {block_name}'
                 f'</span>'
             )
+            orca_mol_prev_btn.layout.display = ''
+            orca_mol_next_btn.layout.display = ''
             orca_mol_nav_row.layout.display = ''
             return
 
@@ -957,10 +970,16 @@ def create_tab(ctx):
                 f'{idx + 1}&thinsp;/&thinsp;{n}: {blocks[idx][0]}'
                 f'</span>'
             )
+            orca_mol_prev_btn.layout.display = ''
+            orca_mol_next_btn.layout.display = ''
             orca_mol_nav_row.layout.display = ''
         else:
+            # Single (or no parsed) molecule: hide the prev/next counter but keep
+            # the row visible so the labels on/off toggle stays reachable.
             orca_mol_nav_label.value = ''
-            orca_mol_nav_row.layout.display = 'none'
+            orca_mol_prev_btn.layout.display = 'none'
+            orca_mol_next_btn.layout.display = 'none'
+            orca_mol_nav_row.layout.display = '' if blocks else 'none'
 
     def _refresh_mol_view(reset_view=False):
         """Re-render the molecule viewer, preserving orientation unless *reset_view*."""
@@ -1001,7 +1020,7 @@ def create_tab(ctx):
                             )
                         )
                     else:
-                        label_js = _atom_labels_js(full_xyz)
+                        label_js = _labels_js(full_xyz)
                         display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
                 except Exception as e:
                     print(f'Could not visualize: {e}')
@@ -1018,7 +1037,7 @@ def create_tab(ctx):
                     atom_lines = [l for l in coords.split('\n') if l.strip()]
                     n = len(atom_lines)
                     xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
-                    label_js = _atom_labels_js(xyz_data)
+                    label_js = _labels_js(xyz_data)
                     display(HTML(_viewer_html(xyz_data, label_js, reset_view=reset_view)))
                 except Exception as e:
                     print(f'Could not visualize: {e}')
@@ -1057,6 +1076,10 @@ def create_tab(ctx):
         state['xyz_view_idx'] = (state['xyz_view_idx'] + 1) % len(blocks)
         _update_nav_label()
         _refresh_mol_view(reset_view=False)  # keep orientation
+
+    def on_mol_labels_toggle(change):
+        state['show_atom_labels'] = bool(orca_mol_labels_btn.value)
+        _refresh_mol_view(reset_view=False)  # keep orientation, just add/drop labels
 
     def handle_orca_convert_smiles(button):
         raw_input = orca_coords.value.strip()
@@ -1451,6 +1474,7 @@ def create_tab(ctx):
     orca_coords.observe(update_orca_molecule_view, names='value')
     orca_mol_prev_btn.on_click(on_mol_prev)
     orca_mol_next_btn.on_click(on_mol_next)
+    orca_mol_labels_btn.observe(on_mol_labels_toggle, names='value')
     update_orca_molecule_view()
     update_orca_preview()
     state['last_auto_keywords'] = _build_keyword_line()
