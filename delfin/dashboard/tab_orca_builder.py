@@ -2016,7 +2016,13 @@ def create_tab(ctx):
         }, true);
     })();
     """
-    ctx.add_init_js(_orca_drop_js)
+    # Both startup scripts of this tab, registered together: the
+    # structure viewer's fullscreen bootstrap arrived on one branch
+    # while the drop handler had already moved to the context on
+    # another, and a merge that keeps only one of the two loses a
+    # feature without any test noticing which.
+    ctx.add_init_js(structure_viewer_fullscreen_bootstrap_js()
+                    + '\n' + _orca_drop_js)
 
     return tab_widget, {
         'orca_pal': orca_pal,
@@ -2047,5 +2053,4 @@ def create_tab(ctx):
         'orca_mol_next_btn': orca_mol_next_btn,
         'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
         'update_orca_preview': update_orca_preview,
-        'init_js': structure_viewer_fullscreen_bootstrap_js() + '\n' + _orca_drop_js,
     }

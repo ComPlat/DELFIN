@@ -98,7 +98,22 @@ agent = [
     # are part of its surface, and shipping the agent without them means
     # read_file refuses a spreadsheet while pointing at a tool that was
     # never advertised.
-    "delfin-complat[office]",
+    #
+    # Listed rather than pulled in as "delfin-complat[office]". The
+    # self-reference reads cleaner and cost a CI run: this project is
+    # published under that name, so pip resolved it against the index and
+    # installed the RELEASED wheel beside the editable checkout. Imports
+    # then landed partly in the wheel, and a module of the checkout
+    # resolved as an empty namespace — "cannot import name ... (unknown
+    # location)" in a file nobody had touched. An extra must never be able
+    # to pull a published copy of the project into the environment that is
+    # testing it.
+    "openpyxl>=3.1",
+    "pypdf>=4.0",
+    "python-docx>=0.8.11",
+    "reportlab>=4.0",
+    "formulas>=1.2",
+    "odfpy>=1.4",
 ]
 docs = [
     "mcp>=1.0",

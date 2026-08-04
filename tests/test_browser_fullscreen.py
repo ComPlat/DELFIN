@@ -141,7 +141,14 @@ def test_escape_presses_the_button_rather_than_undoing_the_class(page):
     _widget, _refs, _scripts, ctx = page
     startup = '\n'.join(ctx.init_js_parts)
     assert "e.key !== 'Escape'" in startup
-    escape_block = startup[startup.index("e.key !== 'Escape'"):][:500]
+    # Locate THIS feature's handler, not the first Escape handler in the
+    # startup script. The structure viewer registers one of its own, and
+    # after both features met on one branch it came first — slicing from
+    # the first match then read the wrong block and failed a handler that
+    # was intact.
+    marker = "if (!root.classList.contains('calc-zen')) return;"
+    assert marker in startup
+    escape_block = startup[startup.index(marker):][:500]
     assert 'calc-fullscreen-btn' in escape_block
     assert 'btn.click()' in escape_block
     assert 'calc-zen' in escape_block
