@@ -742,9 +742,12 @@ def create_tab(ctx):
             except ValueError:
                 continue
             calls.append(
+                # inFront:false -> the number is depth-tested, so a label on a
+                # back atom is occluded by any atom in front of it (instead of
+                # always floating on top of the whole molecule).
                 f'{var}.addLabel("{i}",'
                 f'{{position:{{x:{x:.6f},y:{y:.6f},z:{z:.6f}}},'
-                f'fontSize:15,fontColor:"black",showBackground:false,inFront:true}});'
+                f'fontSize:15,fontColor:"black",showBackground:false,inFront:false}});'
             )
         return '\n    '.join(calls)
 
