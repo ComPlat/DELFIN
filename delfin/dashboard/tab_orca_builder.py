@@ -725,14 +725,51 @@ def create_tab(ctx):
         '</script>\n'
     )
 
+    # JS installed once per viewer: before every render, nudge each atom-index
+    # label a small distance toward the camera.  Labels are depth-tested
+    # (inFront:false), so the number of a hidden atom is occluded by atoms in
+    # front of it; the toward-camera nudge keeps an atom's *own* sphere from
+    # covering its own number (the label floats just in front of its own shell,
+    # while a nearer atom still hides it).  OFF is the nudge in Angstrom; the
+    # toward-viewer direction is the 3rd row of the model rotation matrix
+    # (== inverse rotation of screen +z) read from viewer.getView().
+    _LABEL_DEPTH_PATCH_JS = (
+        "(function(){\n"
+        "  var v=__VAR__, OFF=0.6;\n"
+        "  if(v.__delfinLabelDepthPatched) return;\n"
+        "  v.__delfinLabelDepthPatched=true;\n"
+        "  function place(){\n"
+        "    var w; try{w=v.getView();}catch(e){return;}\n"
+        "    if(!w||w.length<8) return;\n"
+        "    var x=w[4],y=w[5],z=w[6],q=w[7];\n"
+        "    var dx=2*(x*z-q*y), dy=2*(y*z+q*x), dz=1-2*(x*x+y*y);\n"
+        "    var n=Math.sqrt(dx*dx+dy*dy+dz*dz)||1; dx/=n; dy/=n; dz/=n;\n"
+        "    var L=v.__delfinLbls||[];\n"
+        "    for(var i=0;i<L.length;i++){\n"
+        "      var it=L[i], s=it.l&&it.l.sprite;\n"
+        "      if(!s||!s.position) continue;\n"
+        "      s.position.set(it.c[0]+dx*OFF, it.c[1]+dy*OFF, it.c[2]+dz*OFF);\n"
+        "    }\n"
+        "  }\n"
+        "  var orig=v.render.bind(v), busy=false;\n"
+        "  v.render=function(){ if(!busy){busy=true; try{place();}catch(e){} busy=false;}"
+        " return orig.apply(v,arguments); };\n"
+        "  try{place();}catch(e){}\n"
+        "})();"
+    )
+
     def _atom_labels_js(full_xyz, var='viewer'):
-        """Return JS fragment adding atom-index labels at atom centers."""
+        """Return JS fragment adding depth-occluded atom-index labels.
+
+        Numbers sit at atom centres with inFront:false so a back atom's number
+        is hidden behind atoms in front of it, and each label is nudged toward
+        the camera every frame so an atom never hides its own number."""
         lines = full_xyz.split('\n')
         try:
             n_atoms = int(lines[0].strip())
         except (ValueError, IndexError):
             return ''
-        calls = []
+        calls = ['%s.__delfinLbls=%s.__delfinLbls||[];' % (var, var)]
         for i, line in enumerate(lines[2: 2 + n_atoms]):
             parts = line.split()
             if len(parts) < 4:
@@ -742,13 +779,14 @@ def create_tab(ctx):
             except ValueError:
                 continue
             calls.append(
-                # inFront:false -> the number is depth-tested, so a label on a
-                # back atom is occluded by any atom in front of it (instead of
-                # always floating on top of the whole molecule).
-                f'{var}.addLabel("{i}",'
-                f'{{position:{{x:{x:.6f},y:{y:.6f},z:{z:.6f}}},'
-                f'fontSize:15,fontColor:"black",showBackground:false,inFront:false}});'
+                '%s.__delfinLbls.push({c:[%.6f,%.6f,%.6f],l:%s.addLabel("%d",'
+                '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:15,fontColor:"black",'
+                'showBackground:false,inFront:false})});'
+                % (var, x, y, z, var, i, x, y, z)
             )
+        if len(calls) <= 1:
+            return ''
+        calls.append(_LABEL_DEPTH_PATCH_JS.replace('__VAR__', var))
         return '\n    '.join(calls)
 
     def _viewer_html(xyz_data, label_js='', reset_view=False):
