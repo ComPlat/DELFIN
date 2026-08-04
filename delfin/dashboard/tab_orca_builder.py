@@ -725,56 +725,63 @@ def create_tab(ctx):
         '</script>\n'
     )
 
-    # JS installed once per viewer: before every render, nudge each atom-index
-    # label a small distance toward the camera.  Labels are depth-tested
-    # (inFront:false), so the number of a hidden atom is occluded by atoms in
-    # front of it; the toward-camera nudge keeps an atom's *own* sphere from
-    # covering its own number (the label floats just in front of its own shell,
-    # while a nearer atom still hides it).  OFF is the nudge in Angstrom; the
-    # toward-viewer direction is the 3rd row of the model rotation matrix
-    # (== inverse rotation of screen +z) read from viewer.getView().
+    # JS installed once per viewer: labels sit at the exact atom centre and are
+    # drawn on top (inFront:true), so a number never drifts off its atom and is
+    # never hidden by its OWN sphere -- no matter the zoom (no parallax).  To
+    # still hide numbers of atoms that are *behind other atoms*, an occlusion
+    # test runs on every view change: each atom is projected with the current
+    # model rotation, and its label sprite is hidden when a nearer atom projects
+    # within RAD (Angstrom) of it.  RAD ~ atom display radius; DEPTH_SIGN flips
+    # if front/back ever come out inverted.
     _LABEL_DEPTH_PATCH_JS = (
         "(function(){\n"
-        "  var v=__VAR__, OFF=0.6;\n"
+        "  var v=__VAR__, RAD=0.5, RAD2=RAD*RAD, EPS=0.05, DEPTH_SIGN=1;\n"
         "  if(v.__delfinLabelDepthPatched) return;\n"
         "  v.__delfinLabelDepthPatched=true;\n"
-        "  function place(){\n"
+        "  function update(){\n"
         "    var w; try{w=v.getView();}catch(e){return;}\n"
         "    if(!w||w.length<8) return;\n"
         "    var x=w[4],y=w[5],z=w[6],q=w[7];\n"
-        "    var dx=2*(x*z-q*y), dy=2*(y*z+q*x), dz=1-2*(x*x+y*y);\n"
-        "    var n=Math.sqrt(dx*dx+dy*dy+dz*dz)||1; dx/=n; dy/=n; dz/=n;\n"
-        "    var L=v.__delfinLbls||[];\n"
-        "    for(var i=0;i<L.length;i++){\n"
-        "      var it=L[i], s=it.l&&it.l.sprite;\n"
-        "      if(!s||!s.position) continue;\n"
-        "      s.position.set(it.c[0]+dx*OFF, it.c[1]+dy*OFF, it.c[2]+dz*OFF);\n"
+        "    var r11=1-2*(y*y+z*z), r12=2*(x*y-q*z), r13=2*(x*z+q*y);\n"
+        "    var r21=2*(x*y+q*z), r22=1-2*(x*x+z*z), r23=2*(y*z-q*x);\n"
+        "    var r31=2*(x*z-q*y), r32=2*(y*z+q*x), r33=1-2*(x*x+y*y);\n"
+        "    var L=v.__delfinLbls||[], m=L.length;\n"
+        "    var P=v.__delfinProj||(v.__delfinProj=[]);\n"
+        "    for(var i=0;i<m;i++){ var c=L[i].c; var p=P[i]||(P[i]=[0,0,0]);\n"
+        "      p[0]=r11*c[0]+r12*c[1]+r13*c[2];\n"
+        "      p[1]=r21*c[0]+r22*c[1]+r23*c[2];\n"
+        "      p[2]=DEPTH_SIGN*(r31*c[0]+r32*c[1]+r33*c[2]);\n"
+        "    }\n"
+        "    for(var a=0;a<m;a++){ var occ=false, pa=P[a];\n"
+        "      for(var b=0;b<m;b++){ if(b===a) continue; var pb=P[b];\n"
+        "        if(pb[2]>pa[2]+EPS){ var ex=pa[0]-pb[0], ey=pa[1]-pb[1];\n"
+        "          if(ex*ex+ey*ey<RAD2){ occ=true; break; } } }\n"
+        "      var s=L[a].l&&L[a].l.sprite; if(s) s.visible=!occ;\n"
         "    }\n"
         "  }\n"
         "  var orig=v.render.bind(v), busy=false;\n"
-        "  v.render=function(){ if(!busy){busy=true; try{place();}catch(e){} busy=false;}"
+        "  v.render=function(){ if(!busy){busy=true; try{update();}catch(e){} busy=false;}"
         " return orig.apply(v,arguments); };\n"
-        "  // Watchdog: re-place the labels and redraw whenever the view changes\n"
-        "  // (drag / zoom / inertia), even if that change did not go through\n"
-        "  // v.render() -- this keeps every number pinned to its atom and\n"
-        "  // facing the camera while the system is rotated.\n"
+        "  // Watchdog: recompute occlusion + redraw on any view change (drag /\n"
+        "  // zoom / inertia), even if it did not go through v.render().\n"
         "  var raf=window.requestAnimationFrame||function(f){return setTimeout(f,16);};\n"
         "  var lastKey=null;\n"
         "  function loop(){\n"
         "    try{ var w=v.getView(); var k=''+w; if(k!==lastKey){ lastKey=k; v.render(); } }catch(e){}\n"
         "    raf(loop);\n"
         "  }\n"
-        "  try{place();}catch(e){}\n"
+        "  try{update();}catch(e){}\n"
         "  raf(loop);\n"
         "})();"
     )
 
     def _atom_labels_js(full_xyz, var='viewer'):
-        """Return JS fragment adding depth-occluded atom-index labels.
+        """Return JS fragment adding atom-index labels with occlusion culling.
 
-        Numbers sit at atom centres with inFront:false so a back atom's number
-        is hidden behind atoms in front of it, and each label is nudged toward
-        the camera every frame so an atom never hides its own number."""
+        Numbers sit at exact atom centres and on top (inFront:true) so they never
+        drift with zoom and an atom never hides its own number; a per-frame
+        occlusion test (see _LABEL_DEPTH_PATCH_JS) hides the numbers of atoms that
+        are behind other atoms."""
         lines = full_xyz.split('\n')
         try:
             n_atoms = int(lines[0].strip())
@@ -790,12 +797,13 @@ def create_tab(ctx):
             except ValueError:
                 continue
             calls.append(
-                # fontSize 22 (thicker strokes, easier to read) + a light white
-                # background for contrast on any atom colour.
+                # fontSize 22 for thicker, readable digits; no background;
+                # inFront:true keeps the number centred on its own atom, while
+                # the occlusion test in _LABEL_DEPTH_PATCH_JS hides it when the
+                # atom is behind another.
                 '%s.__delfinLbls.push({c:[%.6f,%.6f,%.6f],l:%s.addLabel("%d",'
                 '{position:{x:%.6f,y:%.6f,z:%.6f},fontSize:22,fontColor:"black",'
-                'showBackground:true,backgroundColor:"white",backgroundOpacity:0.5,'
-                'inFront:false})});'
+                'showBackground:false,inFront:true})});'
                 % (var, x, y, z, var, i, x, y, z)
             )
         if len(calls) <= 1:
