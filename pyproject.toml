@@ -179,6 +179,11 @@ include = ["delfin*"]
     "installers/*.sh",
     "logo/*.png",
     "logo/*.PNG",
+    # The submit tab loads MANTA_readme_demo.gif through importlib.resources
+    # and falls back to an empty data URI when it is missing, so leaving the
+    # animations out of the wheel loses the viewer's loading animation with
+    # no error anywhere.
+    "logo/*.gif",
     "qm_tools/*.txt",
     "qm_tools/*.sh",
     "qm_tools/bin/stda_v1.6.1",
