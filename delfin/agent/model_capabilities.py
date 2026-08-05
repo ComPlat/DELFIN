@@ -644,7 +644,15 @@ def _cache_key(provider: str, model: str, base_url: str,
     # Authed and key-less probes can yield different windows (a 401 falls back
     # to static), so cache them under distinct keys — an authed lookup must not
     # be served a stale key-less miss.
-    return f"{provider}\x1f{model}\x1f{base_url}\x1f{int(authed)}"
+    #
+    # The URL is normalised because the two callers disagree about a trailing
+    # slash: the prewarm reads it back from the OpenAI SDK, which appends one,
+    # while the per-turn path passes the configured string, which has none.
+    # Two keys for one endpoint meant the prewarm filled a slot the turn never
+    # read, so the ~5s authenticated probe it exists to avoid was paid inside
+    # the first turn anyway — the one turn a user is already waiting on.
+    return (f"{provider}\x1f{model}\x1f{(base_url or '').rstrip('/')}"
+            f"\x1f{int(authed)}")
 
 
 def _load_disk_cache() -> None:

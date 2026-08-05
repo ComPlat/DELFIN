@@ -3071,6 +3071,23 @@ class AgentEngine:
         """Request the current streaming response to stop."""
         self._stop_requested = True
 
+    def clear_stop(self) -> None:
+        """Cancel a previous stop so a NEW turn can run.
+
+        The flag used to be cleared in exactly one place -- the top of
+        ``stream_response`` -- which works only if that method is reached.
+        A caller that checks the flag BEFORE calling it can never clear
+        it again: the code that resets the flag sits behind the check the
+        flag itself fails. That is not a hypothetical; it silenced the
+        dashboard permanently after any Stop, and every re-send reported
+        "no output" without ever contacting the backend.
+
+        A stop belongs to the turn it interrupted. Starting a new turn is
+        the moment it stops applying, so the owner of that decision is
+        whoever begins the turn.
+        """
+        self._stop_requested = False
+
     def steer(self, text: str) -> bool:
         """Inject a user message into the RUNNING tool loop (mid-loop steering).
         The model reacts to it on the next round, without ending the turn.

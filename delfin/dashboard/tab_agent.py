@@ -1065,6 +1065,27 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
             ("Accept Edits", "repo_free"), ("Bypass", "all_free")]
 
 
+def _should_run_step(engine, step: int) -> bool:
+    """Whether the worker may run auto-step *step* of the current turn.
+
+    Two conditions used to share one line, and one of them was wrong at
+    step 0. A stop belongs to the turn it interrupted: on a NEW turn the
+    flag has already been cleared by `clear_stop`, and this check refuses
+    to act on a leftover anyway. From step 1 on it is the real
+    between-roles stop -- a multi-role route ends at the next handoff.
+
+    Read the flag defensively: the guard exists precisely because a stale
+    stop must never be able to silence a turn the user just started.
+    """
+    if engine is None:
+        return False
+    if getattr(engine, "is_cycle_complete", False):
+        return False
+    if step > 0 and getattr(engine, "_stop_requested", False):
+        return False
+    return True
+
+
 def _turn_warrants_a_cycle_report(tool_calls: int) -> bool:
     """Whether the pipeline ceremony belongs after this turn.
 
@@ -14194,8 +14215,18 @@ def create_tab(ctx):
                 _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
 
+                # A Stop applied to the turn it interrupted, not to this
+                # one. Clearing it here is what makes the reset reachable
+                # at all: the engine only cleared the flag inside
+                # stream_response, which the gate below prevented it from
+                # ever entering again.
+                try:
+                    engine.clear_stop()
+                except Exception:
+                    pass
+
                 for _step in range(max_auto_steps):
-                    if engine._stop_requested or engine.is_cycle_complete:
+                    if not _should_run_step(engine, _step):
                         break
 
                     # Role-specific thinking budget and model routing
