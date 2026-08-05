@@ -9748,6 +9748,11 @@ class _DocToolExecutor:
                 cwd=str(run_cwd),
                 description=description,
                 timeout_s=timeout_s,
+                # Without this the registry falls back to cwd, so a job
+                # started in a SUBDIRECTORY wrote its completion event
+                # somewhere the drain -- which reads the workspace -- never
+                # looks. The job finished and nobody was told.
+                workspace=str(perms.workspace),
             )
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
@@ -11860,6 +11865,34 @@ class OpenAIClient(_BaseClient):
             with self._steer_lock:
                 self._steer_msgs.append(t)
 
+    def _drain_background_events(self) -> list[str]:
+        """Completion notices for jobs that finished during this turn.
+
+        Best-effort and never raises: this is a convenience path, and a
+        failure here must not end a turn that is otherwise working.
+        """
+        perms = getattr(self, "_permissions", None)
+        workspace = getattr(perms, "workspace", None)
+        if workspace is None:
+            return []
+        notes: list[str] = []
+        try:
+            from . import bash_jobs as _bj
+            for event in _bj.drain_finished_events(workspace) or ():
+                if not isinstance(event, dict):
+                    continue
+                jid = event.get("job_id") or "?"
+                rc = event.get("exit_code")
+                desc = str(event.get("description") or "").strip()
+                notes.append(
+                    f"[background] job {jid}"
+                    + (f" ({desc})" if desc else "")
+                    + f" finished with exit code {rc}. Read its output with "
+                    "bash_output before relying on it.")
+        except Exception:
+            return notes
+        return notes
+
     def _drain_steer(self) -> list[str]:
         with self._steer_lock:
             if not self._steer_msgs:
@@ -13141,6 +13174,19 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "user", "content": _steer})
                     yield StreamEvent(
                         type="text_delta", text="\n\n💬 [you, mid-run]: " + _steer + "\n")
+
+                # A background job that finished DURING this turn. The only
+                # delivery path was the system prompt, which is built once
+                # and frozen for the whole turn -- so a job that ended while
+                # the agent was working stayed invisible until the user sent
+                # another message, and the model fell back to polling
+                # bash_status, which is what the event machinery exists to
+                # replace. Same channel as the steer inbox, and the events
+                # are acknowledged exactly once by the drain itself.
+                for _job_note in self._drain_background_events():
+                    api_messages.append({"role": "user", "content": _job_note})
+                    yield StreamEvent(
+                        type="text_delta", text="\n\n" + _job_note + "\n")
 
                 # Plan-mode redirect. When this round hit the plan-mode gate
                 # (task_create / write / bash / apply_patch all reject with

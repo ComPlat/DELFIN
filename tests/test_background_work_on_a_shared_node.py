@@ -174,3 +174,73 @@ def test_the_wake_up_records_the_agents_workspace():
             "would silently never fire")
     finally:
         sched.get_scheduler().delete(out.get("id"))
+
+
+# ---------------------------------------------------------------------------
+# A job that finishes DURING a turn
+# ---------------------------------------------------------------------------
+
+def _client_with_workspace():
+    from delfin.agent.api_client import OpenAIClient
+
+    client = OpenAIClient.__new__(OpenAIClient)
+    client._permissions = A.KitToolPermissions(
+        workspace=pathlib.Path(tempfile.mkdtemp(prefix="ws_")))
+    return client
+
+
+def test_a_finished_job_is_delivered_inside_the_turn(monkeypatch):
+    """The only delivery path was the system prompt, which is built once
+    and frozen for the whole turn. A job that ended while the agent was
+    working stayed invisible until the user sent another message, so the
+    model fell back to polling -- which is what the event machinery exists
+    to replace."""
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.drain_finished_events",
+        lambda ws: [{"job_id": "5c294b67", "exit_code": 0,
+                     "description": "orca opt"}])
+    notes = _client_with_workspace()._drain_background_events()
+    assert len(notes) == 1
+    assert "5c294b67" in notes[0]
+    assert "orca opt" in notes[0]
+    assert "exit code 0" in notes[0]
+
+
+def test_the_notice_tells_the_model_to_read_before_relying(monkeypatch):
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.drain_finished_events",
+        lambda ws: [{"job_id": "1", "exit_code": 1}])
+    assert "bash_output" in _client_with_workspace()._drain_background_events()[0]
+
+
+def test_a_registry_failure_does_not_end_the_turn(monkeypatch):
+    """A convenience path must never be able to break a working turn."""
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.drain_finished_events",
+        lambda ws: (_ for _ in ()).throw(OSError("registry down")))
+    assert _client_with_workspace()._drain_background_events() == []
+
+
+def test_no_workspace_means_no_delivery():
+    from delfin.agent.api_client import OpenAIClient
+
+    client = OpenAIClient.__new__(OpenAIClient)
+    client._permissions = None
+    assert client._drain_background_events() == []
+
+
+def test_events_are_written_where_the_drain_reads():
+    """The registry falls back to cwd, so a job started in a SUBDIRECTORY
+    wrote its completion event somewhere the drain never looks: the job
+    finished and nobody was told."""
+    source = pathlib.Path(A.__file__).read_text(encoding="utf-8")
+    block = source[source.index("_bj.get_registry().start("):]
+    assert "workspace=str(perms.workspace)" in block[:600]
+
+
+def test_the_delivery_sits_beside_the_steer_inbox():
+    """Same channel, same round boundary -- the plumbing already existed."""
+    source = pathlib.Path(A.__file__).read_text(encoding="utf-8")
+    steer = source.index("for _steer in self._drain_steer():")
+    events = source.index("for _job_note in self._drain_background_events():")
+    assert 0 < events - steer < 1500
