@@ -664,6 +664,17 @@ def create_tab(ctx):
         layout=widgets.Layout(width='84px', height='30px'),
         disabled=True,
     )
+    submit_relax_btn = widgets.ToggleButton(
+        value=False, description='Relax', icon='magic',
+        button_style='',
+        tooltip=(
+            'Relax the molecule with a UFF force field while you drag, the way '
+            'Avogadro does: the atom you grab follows the cursor and the rest '
+            'follows it.'
+        ),
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
     submit_manip_status = widgets.HTML(
         value='<span class="submit-manip-status" style="color:#888;font-size:0.9em;">— viewer empty —</span>',
         layout=widgets.Layout(flex='1 1 auto', min_width='0', overflow_x='hidden'),
@@ -676,6 +687,7 @@ def create_tab(ctx):
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn,
             submit_manip_clear_btn, submit_manip_undo_btn,
+            submit_relax_btn,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -940,6 +952,7 @@ def create_tab(ctx):
         submit_select_btn.disabled = not enabled
         submit_manip_btn.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
+        submit_relax_btn.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
         if not enabled:
@@ -3013,6 +3026,69 @@ def create_tab(ctx):
             submit_select_btn.value = False  # mutex
         _apply_manip_mode_js('manipulate' if active else 'off')
 
+    def _ensure_ff_bootstrap():
+        if state.get('ff_bootstrap_done'):
+            return
+        try:
+            from .molecule_forcefield_js import molecule_ff_bootstrap_js
+            ctx.run_js(molecule_ff_bootstrap_js())
+            state['ff_bootstrap_done'] = True
+        except Exception:
+            pass
+
+    def _enable_live_forcefield():
+        """Assign UFF parameters for the geometry now in the viewer.
+
+        Runs once, when the toggle is switched on -- never during a drag. The
+        browser relaxes from these parameters alone; a round trip per frame
+        would cap the drag at about 13 Hz.
+        """
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            _set_mol_status('Load a structure before enabling Relax.')
+            submit_relax_btn.value = False
+            return
+        try:
+            from .molecule_forcefield import export_forcefield_terms
+            payload = export_forcefield_terms(xyz)
+        except Exception as exc:
+            _set_mol_status(f'Force field unavailable: {exc}')
+            submit_relax_btn.value = False
+            return
+        if not payload.get('ok'):
+            _set_mol_status('Force field could not be assigned for this structure.')
+            submit_relax_btn.value = False
+            return
+        _ensure_manip_bootstrap()
+        _ensure_ff_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setForceField('
+            f'{json.dumps(submit_scope_id)},{json.dumps(payload)});'
+        )
+        # Terms derived from the input geometry rather than real UFF typing --
+        # the transition-metal case -- are worth saying out loud.
+        warnings = payload.get('warnings') or []
+        if warnings:
+            _set_mol_status(*warnings[:2])
+
+    def on_submit_relax_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_relax_btn.value)
+        submit_relax_btn.button_style = 'info' if active else ''
+        if not active:
+            _ensure_manip_bootstrap()
+            _run_manip_js(
+                'if(window.__delfinSubmitManip)'
+                'window.__delfinSubmitManip.setForceField('
+                f'{json.dumps(submit_scope_id)},null);'
+            )
+            return
+        if not submit_manip_btn.value:
+            submit_manip_btn.value = True   # relaxing only makes sense while dragging
+        _enable_live_forcefield()
+
     def on_submit_manip_clear(_button=None):
         _ensure_manip_bootstrap()
         _run_manip_js(
@@ -3073,6 +3149,7 @@ def create_tab(ctx):
     submit_manip_btn.observe(on_submit_manip_toggle, names='value')
     submit_manip_clear_btn.on_click(on_submit_manip_clear)
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
+    submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)

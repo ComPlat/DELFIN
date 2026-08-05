@@ -889,6 +889,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (!s) {
             s = {
                 mode: 'off',
+                scopeKey: scopeKey,
+                ffActive: false,
+                ffFrameMs: 16,
                 picks: [],
                 pivot: null,
                 shapes: [],
@@ -1529,6 +1532,79 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         redrawHighlights(scopeKey);
     }
 
+    // --- live force field -------------------------------------------------
+    // Avogadro relaxes the molecule while you drag: the grabbed atom follows
+    // the cursor exactly and everything else settles around it. The relaxation
+    // runs in the browser (window.__delfinFF) because a per-frame round trip to
+    // the kernel costs 45 ms and collapses to 13 Hz under a drag. Term indices
+    // are 0-based into the model's atom order, which is the XYZ order Python
+    // exported the parameters from.
+    function ffIndicesOf(viewer, serials) {
+        var atoms = getAtoms(viewer);
+        var out = [];
+        for (var i = 0; i < atoms.length; i++) {
+            if (serials.indexOf(atoms[i].serial) >= 0) out.push(i);
+        }
+        return out;
+    }
+    function ffReadPositions(viewer) {
+        var atoms = getAtoms(viewer);
+        var p = new Float64Array(3 * atoms.length);
+        for (var i = 0; i < atoms.length; i++) {
+            p[3*i] = atoms[i].x; p[3*i+1] = atoms[i].y; p[3*i+2] = atoms[i].z;
+        }
+        return p;
+    }
+    function ffWritePositions(viewer, pos) {
+        var atoms = getAtoms(viewer);
+        if (!pos || pos.length < 3 * atoms.length) return false;
+        for (var i = 0; i < atoms.length; i++) {
+            atoms[i].x = pos[3*i]; atoms[i].y = pos[3*i+1]; atoms[i].z = pos[3*i+2];
+        }
+        return true;
+    }
+    function ffEnabled(state) {
+        return !!(state.ffActive && window.__delfinFF &&
+                  window._delfinFFByScope && window._delfinFFByScope[state.scopeKey]);
+    }
+    function ffBeginDrag(scopeKey, targets) {
+        var state = getState(scopeKey);
+        if (!ffEnabled(state)) return;
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return;
+        try {
+            window.__delfinFF.grab(scopeKey, ffIndicesOf(viewer, targets));
+            state.ffFrameMs = 16;
+        } catch (e) {}
+    }
+    function ffRelaxFrame(scopeKey) {
+        var state = getState(scopeKey);
+        if (!ffEnabled(state)) return false;
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return false;
+        var t0 = nowMs();
+        try {
+            var out = window.__delfinFF.step(
+                scopeKey, ffReadPositions(viewer), state.ffFrameMs || 16);
+            if (!out) return false;
+            ffWritePositions(viewer, out);
+        } catch (e) { return false; }
+        // The budget the engine adapts to is a *full frame*: 3Dmol's own
+        // geometry rebuild costs up to 12 ms at 400 atoms and comes out of the
+        // same 33 ms, so it has to be measured together with the relaxation.
+        state.ffFrameMs = nowMs() - t0;
+        return true;
+    }
+    function ffEndDrag(scopeKey) {
+        var state = getState(scopeKey);
+        if (!ffEnabled(state)) return;
+        try { window.__delfinFF.release(scopeKey); } catch (e) {}
+    }
+    function nowMs() {
+        return (window.performance && typeof window.performance.now === 'function')
+            ? window.performance.now() : Date.now();
+    }
+
     // ``serials`` is the set of atoms this drag owns — the current selection
     // when the user grabbed a selected atom, a single atom when they grabbed an
     // unselected one. Falls back to the selection so callers without a drag
@@ -1656,6 +1732,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                         lastX: e.clientX, lastY: e.clientY,
                         movedEnough: false, snapshotted: false
                     };
+                    ffBeginDrag(scopeKey, state.drag.targets);
                     return;
                 }
 
@@ -1683,6 +1760,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                         lastX: e.clientX, lastY: e.clientY,
                         movedEnough: false, snapshotted: false
                     };
+                    ffBeginDrag(scopeKey, state.drag.targets);
                 }
                 return;
             }
@@ -1732,6 +1810,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     z: basis.right.z * dx * s - basis.up.z * dy * s
                 };
                 applyTranslate(scopeKey, delta, d.targets);
+                // The grabbed atoms are already where the cursor put them;
+                // the relaxation pulls everything else after them.
+                if (ffRelaxFrame(scopeKey)) redrawHighlights(scopeKey);
             } else if (d.kind === 'rotate' && d.movedEnough) {
                 e.preventDefault();
                 if (!d.snapshotted) { snapshotForUndo(scopeKey); d.snapshotted = true; }
@@ -1751,6 +1832,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var d = state2.drag;
             state2.drag = null;
             if (d.kind === 'translate' || d.kind === 'rotate') {
+                ffEndDrag(scopeKey);
                 if (d.movedEnough) {
                     pushXyzToPython(scopeKey);
                 }
@@ -1809,6 +1891,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.overlay = null;
         state.rect = null;
         state.drag = null;
+        // The parameters were assigned for the geometry that just went away.
+        state.ffActive = false;
+        state.ffInfo = null;
         state.measureBox = null;
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
@@ -2042,11 +2127,41 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }, true);
     }
 
+    // Hand the browser the force-field parameters Python assigned for the
+    // current geometry, or null to switch live relaxation off again. Called
+    // once when the mode is entered, never during a drag.
+    function setForceField(scopeKey, terms) {
+        var state = getState(scopeKey);
+        if (!terms) {
+            state.ffActive = false;
+            state.ffInfo = null;
+            if (window.__delfinFF) {
+                try { window.__delfinFF.dispose(scopeKey); } catch (e) {}
+            }
+            updateStatus(scopeKey);
+            return {ok: false, error: 'force field cleared'};
+        }
+        if (!window.__delfinFF) {
+            return {ok: false, error: 'force-field engine not loaded'};
+        }
+        var result;
+        try {
+            result = window.__delfinFF.load(scopeKey, terms);
+        } catch (e) {
+            return {ok: false, error: 'force field failed to load'};
+        }
+        state.ffActive = !!(result && result.ok);
+        state.ffInfo = result;
+        updateStatus(scopeKey);
+        return result;
+    }
+
     window.__delfinSubmitManip = {
         onViewerReady: onViewerReady,
         setMode: setMode,
         clear: clearPicks,
-        undo: undo
+        undo: undo,
+        setForceField: setForceField
     };
 })();
 """

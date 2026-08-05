@@ -87,3 +87,36 @@ def test_manipulate_mode_still_lets_the_camera_be_turned():
 def test_editor_ships_no_debug_logging():
     """One of these fired on every mousemove of a rotate drag."""
     assert 'console.log' not in EDITOR
+
+
+def test_dragging_an_atom_relaxes_the_rest_through_the_force_field():
+    """Avogadro's manipulation: the grabbed atom follows the cursor exactly and
+    the molecule settles around it. The relaxation runs in the browser because
+    a per-frame round trip to the kernel costs 45 ms."""
+    # Frozen atoms are a gradient mask on the engine side, set once per drag.
+    assert 'ffBeginDrag(scopeKey, state.drag.targets)' in EDITOR
+    assert 'window.__delfinFF.grab(scopeKey, ffIndicesOf(viewer, targets))' in EDITOR
+    # The relaxation runs after the grabbed atoms are placed, not before.
+    grab_then_relax = EDITOR.index('applyTranslate(scopeKey, delta, d.targets)')
+    assert EDITOR.index('ffRelaxFrame(scopeKey)', grab_then_relax) > grab_then_relax
+    assert 'window.__delfinFF.release(scopeKey)' in EDITOR
+
+    # The engine adapts its batch to a full-frame budget, so the time it is
+    # given has to include the renderer's share of the frame.
+    relax = _body('ffRelaxFrame')
+    assert 'state.ffFrameMs = nowMs() - t0;' in relax
+
+    # Parameters are assigned for one geometry; a re-render invalidates them.
+    ready = _body('onViewerReady')
+    assert 'state.ffActive = false;' in ready
+
+
+def test_force_field_is_switched_on_from_python_not_polled():
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'def _enable_live_forcefield' in source
+    assert 'export_forcefield_terms' in source
+    assert 'setForceField' in source
+    # Assigning parameters is a one-off; nothing may talk to Python mid-drag.
+    assert 'Runs once, when the toggle is switched on' in source
