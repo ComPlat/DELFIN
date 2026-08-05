@@ -488,6 +488,9 @@ class AgentEngine:
         # exercised. Filled live from tool calls (see _note_exec_command),
         # cleared on a new work cycle like the rest of the session state.
         self._exec_commands_session: list[str] = []
+        # Commands issued but not yet known to have run. Committed to the
+        # ledger above only once their result shows they did.
+        self._exec_pending: list[tuple[str, str]] = []
         # Live state: a per-turn snippet (Dashboard widget state, calc folder,
         # etc.) appended to the system prompt — keeps it OUT of the user
         # message body so it doesn't accumulate in self.messages history.
@@ -1650,9 +1653,17 @@ class AgentEngine:
                     _turn_tool_calls += 1
                     _turn_tool_names.append(event.tool_name)
                     # Evidence for the functional-claim guard: record WHAT
-                    # was executed, not just that some tool ran.
-                    self._note_exec_command(
-                        event.tool_name, event.tool_input)
+                    # was executed, not just that some tool ran. Held here
+                    # and committed when the RESULT arrives -- recording it
+                    # at the call meant a command that was denied by a
+                    # gate, blocked by a hook, or died with a traceback
+                    # counted as "run", and the guard that exists to catch
+                    # "it works now" then found its evidence. The ledger is
+                    # about what happened, not what was attempted.
+                    self._exec_pending.append(
+                        (event.tool_name, event.tool_input))
+                    if len(self._exec_pending) > 64:
+                        del self._exec_pending[:-64]
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
                     self._maybe_pin_project_dir(
@@ -1663,6 +1674,9 @@ class AgentEngine:
                 elif event.type == "tool_result":
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
+                    # Commit the held command only if it actually ran.
+                    self._commit_exec_command(
+                        event.tool_name, event.tool_output or "")
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -2010,6 +2024,48 @@ class AgentEngine:
                        for t in (getattr(self, "_last_turn_tools", None) or ()))
         except Exception:
             return False
+
+    # Result text that means the command did not run, or ran and failed.
+    # A functional claim ("it works now") must not be able to cite any of
+    # these as the run that proves it.
+    _EXEC_FAILURE_MARKERS = (
+        "traceback (most recent call last)", "command not found",
+        "no such file or directory", "permission denied",
+        "modulenotfounderror", "syntaxerror", "importerror",
+        "exit code 1", "exit code 2", "exit code 127",
+        "blocked by hook", "is not available to the",
+    )
+
+    def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
+        """Record a held command, but only if its result shows it ran.
+
+        The ledger used to be written at the CALL. Everything that can go
+        wrong between deciding to run something and it succeeding -- a
+        permission gate, a hook block, a missing interpreter, a traceback,
+        a non-zero exit -- was therefore invisible to it, and the guard
+        that asks "was this artifact ever exercised?" found evidence for a
+        command that never produced output. Best-effort; bookkeeping must
+        never break a turn.
+        """
+        try:
+            pending = self._exec_pending
+            if not pending:
+                return
+            for idx in range(len(pending) - 1, -1, -1):
+                if pending[idx][0] == tool_name:
+                    name, tool_input = pending.pop(idx)
+                    break
+            else:
+                return
+            out = (tool_output or "").strip()
+            if out.lstrip().startswith('{"error"'):
+                return
+            low = out.lower()
+            if any(marker in low for marker in self._EXEC_FAILURE_MARKERS):
+                return
+            self._note_exec_command(name, tool_input)
+        except Exception:
+            pass
 
     def _note_exec_command(self, tool_name: str, tool_input: str) -> None:
         """Record an executed command in the session ledger.
