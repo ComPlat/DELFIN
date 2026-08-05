@@ -5284,6 +5284,32 @@ _OFFICE_OBSERVATION_ARGS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Results that mean a read tool was pointed at a file and came back with
+# nothing to show for it. Kept small and literal on purpose: a broader
+# "does this look empty" judgement would start discarding real evidence,
+# and a guard that fires on correct answers teaches the model to write
+# around it.
+_EMPTY_READ_MARKERS = (
+    "no matches found", "no matches", "0 matches",
+    "permission denied", "is a directory",
+)
+
+
+def _read_saw_content(fn_name: str, result: str) -> bool:
+    """Whether a read/search call actually returned file content.
+
+    A write is evidence on its own terms -- the agent produced the bytes,
+    so it knows them -- which is why the write tools are exempt.
+    """
+    if fn_name in ("write_file", "edit_file", "multi_edit", "notebook_edit"):
+        return True
+    text = (result or "").strip()
+    if not text:
+        return False
+    low = text.lower()
+    return not any(low.startswith(m) or low == m for m in _EMPTY_READ_MARKERS)
+
+
 def _observe_read_files(
     observed: set, fn_name: str, fn_args: Any, result: str,
 ) -> None:
@@ -5298,6 +5324,14 @@ def _observe_read_files(
         if (result or "").lstrip().startswith('{"error"'):
             return
         if fn_name in _OBSERVATION_TOOLS:
+            # The call has to have SHOWN something. A grep with no matches,
+            # a read past the end of a file, and a refusal that is not
+            # JSON-shaped all used to ground every later claim about the
+            # path, because the ledger only asked whether the tool had been
+            # pointed at it. One deliberately non-matching grep was enough
+            # to disarm the guard for a whole file.
+            if not _read_saw_content(fn_name, result):
+                return
             path = str(fn_args.get("path") or "").strip()
             if path:
                 observed.add(path)

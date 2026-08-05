@@ -137,3 +137,49 @@ def test_a_broken_ledger_write_does_not_end_the_turn(eng, monkeypatch):
         E.AgentEngine, "_note_exec_command",
         lambda self, *a: (_ for _ in ()).throw(RuntimeError("boom")))
     assert _run(eng, "mcp__kit-coding__bash", '{"command": "echo hi"}', "hi") == []
+
+
+# ---------------------------------------------------------------------------
+# The observed-files ledger needs the read to have shown something
+# ---------------------------------------------------------------------------
+
+def _observed(fn_name, result, path="delfin/agent/engine.py"):
+    from delfin.agent.api_client import _observe_read_files
+    seen = set()
+    _observe_read_files(seen, fn_name, {"path": path}, result)
+    return seen
+
+
+def test_a_grep_with_no_matches_does_not_ground_the_file():
+    """One deliberately non-matching grep used to disarm the location
+    guard for a whole file."""
+    assert _observed("grep_file", "No matches found.") == set()
+
+
+def test_a_read_that_returned_nothing_does_not_ground_the_file():
+    assert _observed("read_file", "") == set()
+
+
+def test_a_plain_text_refusal_does_not_ground_the_file():
+    """Only JSON-shaped errors were excluded; a bare refusal was not."""
+    assert _observed("read_file", "Permission denied") == set()
+
+
+def test_a_read_that_returned_content_still_grounds_it():
+    assert _observed("read_file", "1  import os\n2  import sys") == {
+        "delfin/agent/engine.py"}
+
+
+def test_a_grep_with_a_hit_still_grounds_it():
+    assert _observed("grep_file", "delfin/agent/engine.py:12: import os") == {
+        "delfin/agent/engine.py"}
+
+
+def test_a_write_grounds_the_file_whatever_it_returns():
+    """The agent produced the bytes, so it knows them."""
+    assert _observed("write_file", "") == {"delfin/agent/engine.py"}
+    assert _observed("edit_file", "ok") == {"delfin/agent/engine.py"}
+
+
+def test_a_json_error_is_still_excluded():
+    assert _observed("read_file", '{"error": "not found"}') == set()
