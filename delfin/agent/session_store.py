@@ -523,6 +523,11 @@ def save_session(
     # messages it still has and loses the condensed memory of the ones it
     # does not — the part that cannot be reconstructed from anything.
     compaction_summaries: dict[str, Any] | None = None,
+    # The ledgers the grounding guards judge against. Without them a
+    # resumed session runs the guards in their enforcing branch against an
+    # empty record, and corrects the agent for restating what it verified
+    # before the save.
+    evidence: dict[str, Any] | None = None,
 ) -> Path:
     """Save a session to disk.
 
@@ -613,6 +618,7 @@ def save_session(
         "project_dir": str(project_dir or ""),
         "last_input_tokens": int(last_input_tokens or 0),
         "system_prompt_chars": int(system_prompt_chars or 0),
+        "evidence": dict(evidence or {}),
         "compaction_summaries": compaction_summaries or {},
     }
 

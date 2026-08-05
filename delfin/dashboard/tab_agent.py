@@ -5396,6 +5396,7 @@ def create_tab(ctx):
                 project_dir=estate.get("project_dir", ""),
                 last_input_tokens=estate.get("last_input_tokens", 0),
                 system_prompt_chars=estate.get("system_prompt_chars", 0),
+                evidence=estate.get("evidence") or {},
                 compaction_summaries=estate.get("compaction_summaries", {}),
             )
             state["active_session_id"] = engine.session_id
@@ -5475,6 +5476,7 @@ def create_tab(ctx):
             "project_dir": data.get("project_dir", ""),
             "last_input_tokens": data.get("last_input_tokens", 0),
             "system_prompt_chars": data.get("system_prompt_chars", 0),
+            "evidence": data.get("evidence") or {},
             "compaction_summaries": data.get("compaction_summaries", {}),
         })
 

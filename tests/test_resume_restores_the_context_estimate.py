@@ -138,3 +138,68 @@ def test_headless_resume_forwards_the_whole_stored_session():
     assert "**data," in source, (
         'delfin/agent/cli.py enumerates restore fields again, so every new '
         'piece of session state has to be remembered in a second place')
+
+
+# ---------------------------------------------------------------------------
+# The evidence a resumed session judges itself against
+# ---------------------------------------------------------------------------
+
+def _engine_with_evidence():
+    eng = _bare_engine()
+    eng._last_observed_files = {"a.py", "b.xlsx"}
+    eng._exec_commands_session = ["pytest -q", "python build.py"]
+    eng._session_tool_names = {"subagent", "read_file"}
+    eng._delegation_satisfied = True
+    eng.role_verdicts = {"test_agent": {"verdict": "PASS"}}
+    eng._trimmed_chars_since_floor = 40_000
+    return eng
+
+
+def test_the_ledgers_survive_a_round_trip():
+    """A resumed session got the whole conversation and none of the
+    evidence, while the "a ledger exists" flags came back True -- which is
+    the ENFORCING branch, not the silent one."""
+    resumed = _bare_engine()
+    resumed.restore_state(_engine_with_evidence().export_state())
+
+    assert resumed._last_observed_files == {"a.py", "b.xlsx"}
+    assert resumed._exec_commands_session == ["pytest -q", "python build.py"]
+    assert resumed._session_tool_names == {"subagent", "read_file"}
+    assert resumed._delegation_satisfied is True
+    assert resumed.role_verdicts == {"test_agent": {"verdict": "PASS"}}
+
+
+def test_the_trim_credit_survives():
+    """The sharpest of them: restore brings back _last_input_tokens, a
+    PRE-trim provider snapshot, and the credit that offsets it reset to
+    zero -- so a resumed session read its context as larger than it was and
+    compacted early."""
+    resumed = _bare_engine()
+    resumed.restore_state(_engine_with_evidence().export_state())
+    assert resumed._trimmed_chars_since_floor == 40_000
+
+
+def test_a_session_saved_before_this_existed_still_loads():
+    eng = _engine_with_evidence()
+    eng.restore_state({"mode": "solo", "engine_messages": [], "session_id": "x"})
+    assert eng._last_observed_files == set()
+    assert eng._exec_commands_session == []
+    assert eng._trimmed_chars_since_floor == 0
+    assert eng._delegation_satisfied is False
+
+
+def test_a_malformed_evidence_block_does_not_raise():
+    for junk in ("not a dict", 42, [], None):
+        eng = _bare_engine()
+        eng.restore_state({"mode": "solo", "engine_messages": [],
+                           "session_id": "x", "evidence": junk})
+        assert eng._last_observed_files == set()
+
+
+def test_the_saver_takes_the_new_field():
+    """export_state gaining a key is useless if save_session cannot store
+    it -- the exact break this file already guards against for the others."""
+    import inspect
+    from delfin.agent import session_store
+
+    assert "evidence" in inspect.signature(session_store.save_session).parameters

@@ -3297,7 +3297,68 @@ class AgentEngine:
             # full __init__, and export must not be the thing that breaks.
             "system_prompt_chars": int(
                 getattr(self, "_system_prompt_chars", 0) or 0),
+            # One sub-dict, written and read as a unit, so a new ledger is
+            # added in one place instead of four.
+            "evidence": self._export_evidence(),
         }
+
+    def _export_evidence(self) -> dict:
+        """The ledgers the guards judge against.
+
+        A resumed session got the whole conversation and none of the
+        evidence -- while the "a ledger exists" flags came back True, which
+        is the ENFORCING branch. So the first answer after a resume that
+        restated a file:line from restored history was corrected as
+        unsupported, and every "it works now" got an unverified caveat for
+        commands that had run before the save.
+
+        _trimmed_chars_since_floor is the sharpest of them: restore_state
+        brings back _last_input_tokens, a PRE-trim provider snapshot, while
+        the credit that offsets it resets to zero. A resumed session then
+        reads its context as larger than it is and compacts early.
+        """
+        return {
+            "observed_files": sorted(
+                getattr(self, "_last_observed_files", None) or ()),
+            "exec_commands": list(
+                getattr(self, "_exec_commands_session", None) or ()),
+            "session_tool_names": sorted(
+                getattr(self, "_session_tool_names", None) or ()),
+            "delegation_satisfied": bool(
+                getattr(self, "_delegation_satisfied", False)),
+            "role_verdicts": dict(getattr(self, "role_verdicts", None) or {}),
+            "trimmed_chars_since_floor": int(
+                getattr(self, "_trimmed_chars_since_floor", 0) or 0),
+        }
+
+    def _restore_evidence(self, data: dict) -> None:
+        """Read the ledgers back. Missing or malformed means empty, never
+        raises: a session saved before this existed must still load."""
+        ev = data.get("evidence")
+        if not isinstance(ev, dict):
+            ev = {}
+        try:
+            self._last_observed_files = set(ev.get("observed_files") or ())
+        except Exception:
+            self._last_observed_files = set()
+        try:
+            self._exec_commands_session = list(ev.get("exec_commands") or ())
+        except Exception:
+            self._exec_commands_session = []
+        try:
+            self._session_tool_names = set(ev.get("session_tool_names") or ())
+        except Exception:
+            self._session_tool_names = set()
+        self._delegation_satisfied = bool(ev.get("delegation_satisfied", False))
+        try:
+            self.role_verdicts = dict(ev.get("role_verdicts") or {})
+        except Exception:
+            self.role_verdicts = {}
+        try:
+            self._trimmed_chars_since_floor = int(
+                ev.get("trimmed_chars_since_floor", 0) or 0)
+        except (TypeError, ValueError):
+            self._trimmed_chars_since_floor = 0
 
     def restore_state(self, data: dict) -> None:
         """Restore engine state from a saved session.
@@ -3328,6 +3389,7 @@ class AgentEngine:
             self._system_prompt_chars = int(data.get("system_prompt_chars", 0) or 0)
         except (TypeError, ValueError):
             self._system_prompt_chars = 0
+        self._restore_evidence(data)
         # Crash recovery: a surviving mid-turn checkpoint means the
         # previous process died inside a turn, so that turn's work was
         # never committed. Inject the recovery note using the house
