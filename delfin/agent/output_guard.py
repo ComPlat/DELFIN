@@ -78,7 +78,13 @@ _BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+([A-Za-z0-9._\-+/=]{16,})")
 # anchors the match — bare high-entropy strings in prose never match, which
 # is what keeps git SHAs, DOIs and SMILES safe.
 _ASSIGNMENT = re.compile(
-    r"(?i)\b("
+    # A lookbehind, not \b: in OPENAI_API_KEY the character before "API"
+    # is an underscore, which IS a word character, so the boundary never
+    # matched and every PROVIDER_API_KEY=... assignment -- the commonest
+    # shape there is -- went unredacted. "not preceded by a letter or
+    # digit" keeps the same protection against matching inside a longer
+    # word while allowing the underscore-separated prefix.
+    r"(?i)(?<![A-Za-z0-9])("
     r"api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|"
     r"auth[_-]?token|token|password|passwd|secret"
     r")\b[\"']?\s*[:=]\s*[\"']?"

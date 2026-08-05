@@ -281,6 +281,10 @@ _HOME_SECRET_DIRS = (
     ".azure", ".gcp", ".config/gcloud", ".config/gh", ".config/git",
     ".git-credentials", ".npmrc", ".pypirc",
     ".anthropic", ".openai", ".claude",
+    # The framework's own credential store. The other providers' folders
+    # were masked and this one was not, which is the wrong way round: it
+    # is the file holding the key the running agent is using.
+    ".delfin/credentials.json",
 )
 
 

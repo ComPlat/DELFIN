@@ -7694,11 +7694,14 @@ class _DocToolExecutor:
         It's intentionally permissive — false positives only block the
         offending command, not the workflow.
         """
-        # Strip quoted strings entirely from the scan: even a benign
-        # `echo "/home/user/.ssh"` shouldn't be confusing. We replace
-        # contents but keep the structure so the regex still locks onto
-        # standalone path tokens elsewhere.
-        cleaned = re.sub(r"'[^']*'|\"[^\"]*\"", " ", cmd)
+        # Keep quoted CONTENT, drop only the quote characters. Removing
+        # the whole quoted string made the scan blind to exactly the shape
+        # that matters most -- python -c "open('~/.ssh/id_rsa')" -- because
+        # everything interesting lives inside quotes there. The original
+        # reason for dropping it was that `echo "/home/user/.ssh"` should
+        # not confuse the scan; a false positive on an echo costs one
+        # confirmation dialog, and this cost a credential.
+        cleaned = re.sub(r"['\"]", " ", cmd)
         # Match absolute /paths and ~ / $HOME prefixed paths.
         candidates = set(re.findall(
             r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+",
@@ -9223,7 +9226,7 @@ class _DocToolExecutor:
         else:
             run_cwd = perms.workspace
 
-        env = os.environ.copy()
+        env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
 
@@ -10916,6 +10919,56 @@ def _announce_isolation_unavailable(perms) -> None:
         pass
 
 
+_SECRET_ENV_MARKERS = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD",
+                       "_CREDENTIALS", "_PRIVATE_KEY")
+_SECRET_ENV_NAMES = frozenset({
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "KIT_TOOLBOX_API_KEY",
+    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+    "HF_TOKEN", "NETRC", "PGPASSWORD",
+})
+
+
+def _scrubbed_bash_env() -> dict:
+    """The process environment, without the keys the agent runs on.
+
+    ``env`` and ``printenv`` are on the auto-allow list -- reaching for
+    them is an ordinary debugging reflex, not an attack -- and a tool
+    result goes straight into the transcript and then into the next
+    request to the provider. The output guard only ever ran on the final
+    answer, so a dump of the environment was never redacted anywhere.
+
+    Removing the variables is better than redacting the output: there is
+    then nothing to leak, whatever shape the command takes. Nothing the
+    agent legitimately runs needs the model provider's own key.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in _SECRET_ENV_NAMES
+           and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    return env
+
+
+def _redact_tool_result(text: str) -> str:
+    """Redact credentials in a tool result before it enters the context.
+
+    The output guard ran on the final ANSWER only, so anything a tool
+    printed went into the transcript and then into every later request
+    verbatim -- and the transcript is what a bug report bundles. Reading a
+    file, echoing a variable or a stack trace that quotes a URL with a
+    token in it all end up here.
+
+    Best-effort and non-fatal by design: a guard that can break a tool
+    result would cost more than it saves.
+    """
+    if not text or len(text) > 400_000:
+        return text
+    try:
+        from .output_guard import _redact_secrets
+        findings: list = []
+        return _redact_secrets(text, findings)
+    except Exception:
+        return text
+
+
 def _announce_auto_isolation() -> None:
     """Surface (once) that filesystem isolation auto-engaged, so it's visible
     that an unattended run is sandboxed."""
@@ -12490,7 +12543,8 @@ class OpenAIClient(_BaseClient):
                     # marker so tracebacks survive. JSON-error blobs and
                     # short results pass through untouched.
                     context_result = _smart_truncate(
-                        result, cap=_tool_result_cap, label="tool_result"
+                        _redact_tool_result(result),
+                        cap=_tool_result_cap, label="tool_result"
                     )
                     # Thrash detector: prepend a one-time progress nudge when a
                     # low-progress loop (repeated cleanup, same-file rewrites) is
