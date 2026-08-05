@@ -909,7 +909,10 @@ class PromptLoader:
         stops oscillating (which would kill prefix caching). The union
         is cleared by ``reset_session_prompt_state``.
         """
-        if mode_id not in ("solo", "plan"):
+        # Pipeline runs the same role as solo and was simply not named
+        # here, so it shipped every lazy module unconditionally -- ~11k
+        # characters more prompt per turn than solo, for the same agent.
+        if mode_id not in ("solo", "plan", "pipeline"):
             return set(self._MODULE_TRIGGERS)
         s = (task_text or "").lower()
         active: set[str] = set()
@@ -1324,6 +1327,21 @@ class PromptLoader:
                 except Exception:
                     pass
                 add("role_prompt", self.LAYER_STABLE, role_prompt)
+
+            # Modes whose .md carries OPERATING INSTRUCTIONS rather than a
+            # description of the mode for the dropdown. Pipeline is the
+            # case: its file says "call get_guide first", "validate before
+            # every run", "work only through delfin-tools" -- and none of
+            # it reached the model, because this branch returns below and
+            # the gate that injects mode_description sits after that
+            # return. Pipeline was Code mode under a different label.
+            #
+            # An opt-in set rather than "every mode": solo.md and
+            # dashboard.md describe what their mode IS for a human reading
+            # the dropdown, and injecting those would spend tokens
+            # restating what the role prompt already says.
+            if mode_description and mode_id in ("pipeline",):
+                add("mode_description", self.LAYER_STABLE, mode_description)
 
             # Plan addendum: the agent must investigate first and finalise via
             # ExitPlanMode. Triggered either by the legacy "plan" mode_id OR by

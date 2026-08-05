@@ -499,8 +499,10 @@ class AgentEngine:
             pass
         try:
             from .context_distiller import ContextDistiller
-            _enable = self.mode in ("solo", "quick", "reviewed", "tdd",
-                                    "cluster", "full")
+            # "pipeline" runs the solo agent; omitting it here left the
+            # distiller off for a mode that carries MORE prompt than solo.
+            _enable = self.mode in ("solo", "pipeline", "quick", "reviewed",
+                                    "tdd", "cluster", "full")
             self._distiller = ContextDistiller(enabled=_enable)
         except Exception:
             pass
