@@ -1506,6 +1506,43 @@ _ANCHOR_WINDOW = 20
 _RECALL_REF_CHECK_CAP = 8
 
 
+# A file suffix: a dot followed by 1-5 letters, at the very end.
+_FILE_SUFFIX_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}$")
+
+
+def _looks_like_a_path(candidate: str) -> bool:
+    """Whether a slash-bearing token is plausibly a filesystem path.
+
+    The pattern accepted ANY token containing a slash. In a
+    quantum-chemistry agent that is catastrophic on its own terms:
+    `functional/basis/dispersion` is simply how a method is named, so
+    every memory mentioning one was checked for a file that never
+    existed and injected carrying "[stale: BP86/def2-TZVP/D3BJ no longer
+    exists]". Measured on the live store: 2441 such hits against 2 real
+    uses of that memory.
+
+    The damage went past noise. A non-empty note routes the memory to the
+    rotted branch, which skips the recall bookkeeping and freezes
+    ``updated_at`` -- and ``prune_memories`` sorts by ``updated_at``. So
+    the newer memory, written to CORRECT an older one, was the one queued
+    for eviction while the superseded one was refreshed every turn.
+
+    Two ways to qualify: a dotted final segment (``engine.py``,
+    ``config.yaml``), or a prefix that actually exists on disk (which is
+    how a directory reference like ``delfin/agent/`` still counts).
+    Neither is satisfiable by a method string.
+    """
+    text = (candidate or "").rstrip("/")
+    if not text:
+        return False
+    if _FILE_SUFFIX_RE.search(text.rsplit("/", 1)[-1]):
+        return True
+    try:
+        return Path(text).exists()
+    except OSError:
+        return False
+
+
 def _extract_path_refs(text: str) -> list[tuple[str, str, int | None]]:
     """``(ref, path_part, line)`` for every path-shaped reference in
     ``text`` (line is None without a ``:NN`` suffix). Applies the URL /
@@ -1518,6 +1555,8 @@ def _extract_path_refs(text: str) -> list[tuple[str, str, int | None]]:
         if "://" in path_part or path_part.startswith(("v", "V")) and path_part[1:2].isdigit():
             continue
         if "." not in path_part and "/" not in path_part:
+            continue
+        if not _looks_like_a_path(path_part):
             continue
         line_no: int | None = None
         if match.group(2):
