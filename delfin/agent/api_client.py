@@ -2385,7 +2385,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "First line (0-based).",
+                        "description": (
+                            "First line, 1-based — the same numbering "
+                            "grep_file reports, so a `file.py:35` hit is "
+                            "read with offset 35."
+                        ),
                     },
                     "limit": {
                         "type": "integer",
@@ -7045,16 +7049,33 @@ class _DocToolExecutor:
             lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as exc:
             return json.dumps({"error": str(exc)})
-        offset = _as_int(arguments.get("offset"), 0)
+        # 1-BASED, to agree with grep_file.
+        #
+        # grep emitted i+1 and read_file emitted i+offset, so the two most
+        # used tools in the whole surface disagreed about what line 35 is.
+        # The standard loop is grep -> read -> edit: the agent greps a
+        # symbol, reads at the reported offset, lands one line off, and
+        # copies the wrong block into edit_file(old_string=...). It then
+        # gets "old_string not found" -- or worse, the fuzzy fallback
+        # finds a different unique match and edits THAT.
+        #
+        # offset=0 is accepted as "the beginning" rather than refused,
+        # because a model that has read the schema as 0-based should get
+        # the first line, not an error.
+        offset = _as_int(arguments.get("offset"), 1)
         limit = _as_int(arguments.get("limit"), 200)
-        if offset < 0:
-            offset = 0
+        if offset < 1:
+            offset = 1
         if limit <= 0:
             limit = 200
-        selected = lines[offset:offset + limit]
-        result = "\n".join(f"{i + offset}  {line}" for i, line in enumerate(selected))
-        if len(lines) > offset + limit:
-            result += f"\n... ({len(lines)} lines total, showing {offset}-{offset + limit})"
+        start = offset - 1
+        selected = lines[start:start + limit]
+        result = "\n".join(f"{start + i + 1}  {line}"
+                            for i, line in enumerate(selected))
+        if len(lines) > start + limit:
+            last = start + len(selected)
+            result += (f"\n... ({len(lines)} lines total, showing "
+                       f"{offset}-{last})")
         return result
 
     # ------------------------------------------------------------------
