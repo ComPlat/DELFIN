@@ -2084,7 +2084,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // a gentle setting can be dragged against instead of fought.
     function setOptimizerStrength(scopeKey, steps) {
         var state = getState(scopeKey);
-        state.ffStrength = Math.max(1, Math.min(200, parseInt(steps, 10) || 40));
+        state.ffStrength = Math.max(1, Math.min(200, parseInt(steps, 10) || 20));
         if (window.__delfinFF && window._delfinFFByScope &&
             window._delfinFFByScope[scopeKey]) {
             try {

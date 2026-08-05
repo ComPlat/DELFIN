@@ -736,7 +736,7 @@ def create_tab(ctx):
     submit_manip_sync.add_class('submit-manip-sync')
 
     submit_strength_slider = widgets.IntSlider(
-        value=40, min=1, max=200, step=1,
+        value=20, min=1, max=200, step=1,
         description='Strength', continuous_update=False,
         readout=True, readout_format='d',
         style={'description_width': '58px'},
