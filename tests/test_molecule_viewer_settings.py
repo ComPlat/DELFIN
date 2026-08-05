@@ -333,8 +333,8 @@ def test_3dmol_is_vendored_and_satisfies_both_loader_guards():
     assert bundle.with_suffix(".js.LICENSE.txt").is_file()
 
     js = _MODULE.vendored_3dmol_js()
-    assert js.startswith('if (typeof $3Dmol === "undefined")')
-    assert "window.$3Dmolpromise = window.$3Dmolpromise" in js
+    assert 'typeof __delfinGlobal.$3Dmol === "undefined"' in js
+    assert "__delfinGlobal.$3Dmolpromise = __delfinGlobal.$3Dmolpromise" in js
 
     # It has to run before anything that creates a viewer.
     dashboard = (
