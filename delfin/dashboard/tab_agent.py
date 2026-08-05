@@ -5083,33 +5083,30 @@ def create_tab(ctx):
         layout=widgets.Layout(width="90px", height="80px"),
     )
     image_upload.add_class("delfin-agent-upload")
-    state["_pending_images"] = []
+    state["_pending_uploads"] = []
 
     # Hard size cap per file to keep dashboard memory bounded. 32 MB is
     # generous for code, configs, PDFs, and small datasets but blocks
     # accidental drops of huge archives.
     _UPLOAD_SIZE_CAP = 32 * 1024 * 1024
+    # And a ceiling on the whole batch, because buffering means the bytes
+    # sit in the kernel until the next send.
+    _UPLOAD_BUFFER_CAP = 128 * 1024 * 1024
 
     def _on_image_upload(change):
-        """Save uploaded files to <workspace>/.delfin/uploads/ for the agent.
+        """Buffer uploaded files; they are written when the message is sent.
 
-        Drops the file under the workspace and lets the agent read it via
-        read_file / notebook_read / find_definition / etc. The agent
-        learns about the upload via a system message inserted on the
-        next send.
+        The destination used to be chosen HERE, and before the first
+        message there is no engine, so it fell back to ctx.repo_dir -- the
+        DELFIN checkout. In office mode that folder is not even readable:
+        the UI reported the file saved and the agent's one attempt came
+        back "read denied ... no confirmation can grant it". Every upload
+        made before the first message of a session failed that way.
+
+        Buffering moves the decision to the moment the workspace is known.
         """
         files = image_upload.value
-        eng = state.get("engine")
-        ws = None
-        if eng is not None:
-            kp = getattr(eng, "kit_permissions", None)
-            if kp is not None:
-                ws = kp.workspace
-        if ws is None:
-            ws = ctx.repo_dir or Path.cwd()
-        upload_dir = Path(ws) / ".delfin" / "uploads"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        saved: list[Path] = []
+        buffered: list[tuple[str, bytes]] = []
         items = (files.items() if isinstance(files, dict)
                  else [(f["name"], f) for f in files])
         for fname, fmeta in items:
@@ -5125,19 +5122,71 @@ def create_tab(ctx):
                     f"{fname}"
                 )
                 continue
+            buffered.append((Path(fname).name, bytes(content)))
+        # Cap the buffer as a whole, not just each file: the per-file cap
+        # bounded one drop, not fifty.
+        total = sum(len(c) for _n, c in buffered)
+        if total > _UPLOAD_BUFFER_CAP:
+            _append_system_message(
+                f"Attachments exceed "
+                f"{_UPLOAD_BUFFER_CAP // (1024 * 1024)} MB in total and were "
+                "not queued. Send them in smaller batches.")
+            return
+        state["_pending_uploads"] = buffered
+        if buffered:
+            names = "\n".join(f"  - {n}" for n, _c in buffered)
+            _append_system_message(
+                f"📎 {len(buffered)} file(s) attached — written into the "
+                f"agent's folder when you send:\n{names}")
+
+
+    def _materialise_uploads(engine) -> list[Path]:
+        """Write the buffered attachments where the agent may read them.
+
+        Verified rather than assumed: the resolved target has to sit under
+        a root the permissions actually grant. If it does not, say so
+        instead of promising the agent will read it -- an upload that
+        cannot be read is worse than one that was refused, because the
+        agent spends a turn discovering it.
+        """
+        buffered = state.get("_pending_uploads") or []
+        if not buffered:
+            return []
+        kp = getattr(engine, "kit_permissions", None)
+        ws = getattr(kp, "workspace", None) or ctx.repo_dir or Path.cwd()
+        upload_dir = Path(ws) / ".delfin" / "uploads"
+        saved: list[Path] = []
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _append_system_message(f"Could not create the upload folder: {exc}")
+            state["_pending_uploads"] = []
+            return []
+        for name, content in buffered:
+            target = upload_dir / name
             try:
-                target = upload_dir / Path(fname).name
+                resolved = target.resolve()
+            except OSError:
+                resolved = target
+            if kp is not None and hasattr(kp, "find_readable_root_for"):
+                if kp.find_readable_root_for(resolved) is None:
+                    _append_system_message(
+                        f"'{name}' was NOT attached: {upload_dir} is outside "
+                        f"what this session may read ({ws}). Put the file in "
+                        "that folder yourself, or switch to a mode that can "
+                        "reach it.")
+                    continue
+            try:
                 target.write_bytes(content)
                 saved.append(target)
             except OSError as exc:
-                _append_system_message(f"Save failed: {exc}")
-        state["_pending_images"] = saved
+                _append_system_message(f"Save failed for {name}: {exc}")
+        state["_pending_uploads"] = []
         if saved:
             paths = "\n".join(f"  - {p}" for p in saved)
             _append_system_message(
-                f"📎 {len(saved)} file(s) saved — will be referenced in "
-                f"the next message:\n{paths}"
-            )
+                f"📎 {len(saved)} file(s) written:\n{paths}")
+        return saved
 
     image_upload.observe(_on_image_upload, names="value")
 
@@ -14327,7 +14376,9 @@ def create_tab(ctx):
                     # vision-capable model as pixels (image_url content);
                     # everything else (and images on a non-vision model) is
                     # referenced as a file path the agent can read_file.
-                    _pending_imgs = state.get("_pending_images") or []
+                    # Written now, not at drop time: this is the first
+                    # moment the workspace is known.
+                    _pending_imgs = [str(p) for p in _materialise_uploads(engine)]
                     _vision_images: list[str] = []
                     if _pending_imgs:
                         import mimetypes as _mt
@@ -14350,7 +14401,7 @@ def create_tab(ctx):
                                 f"read_file (for text/code/configs) or notebook_read "
                                 f"(for .ipynb):\n{_img_lines}]"
                             )
-                        state["_pending_images"] = []
+                        state["_pending_uploads"] = []
                         try:
                             image_upload.value = ()
                         except Exception:

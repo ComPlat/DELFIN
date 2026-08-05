@@ -1203,6 +1203,19 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"\bdd\s+if=",
     r"\bdd\s+of=/dev/",
     r"\bmkfs(\.|\s)",
+    # Cancelling by USER, not by job: scancel -u / --user ends every job
+    # that person has queued or running, including the ones this session
+    # knows nothing about and the ones somebody else is waiting on. On a
+    # shared cluster the blast radius is hours of other people's compute,
+    # and there is no version of "the agent meant well" that gives it back.
+    # A single named job stays reachable and goes through the normal gate.
+    r"\bscancel\b[^;|&]*(?:-u\b|--user\b)",
+    r"\bscontrol\b[^;|&]*\bsuspend\b",
+    # The same shape one layer down: killall -u ends every process a user
+    # owns, which on a login node is their editor, their shell and their
+    # running calculations.
+    r"\bkillall\b[^;|&]*-u\b",
+    r"\bpkill\b[^;|&]*(?:-u\b|--uid\b|-U\b)",
     r"\b(shutdown|reboot|halt|poweroff|init\s+0|init\s+6)\b",
     r"\bsudo\b",
     r"(?:^|\s)su\s+-",
