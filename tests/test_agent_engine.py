@@ -1126,8 +1126,21 @@ def test_thinking_budget_for_role_uses_task_profile_multiplier():
 
 
 def test_recommend_task_route_escalates_low_success_coding_tasks():
-    """Low task-class success should escalate coding changes from quick."""
+    """Low task-class success escalates coding changes -- when asked for.
+
+    This used to run unconditionally, and the number it reads is not
+    trustworthy: outcome_history.jsonl on this machine holds 55 records,
+    all PASS, with no `quick` record at all, while the provider profile
+    holds kit coding 0.007. Two accumulators for one fact, never
+    reconciled. It also read the wrong provider, defaulting to claude for
+    a KIT session. Off unless the user turns it on; the recorded numbers
+    are still shown by /profile.
+    """
     from delfin.agent.engine import AgentEngine
+
+    def _route():
+        return AgentEngine.recommend_task_route(
+            "Fix the regression in delfin/agent/engine.py", "quick")
 
     with patch(
         "delfin.agent.provider_profile.load_provider_profile",
@@ -1135,14 +1148,16 @@ def test_recommend_task_route_escalates_low_success_coding_tasks():
             "task_performance": {"coding": {"success_rate": 0.6}},
         },
     ):
-        decision = AgentEngine.recommend_task_route(
-            "Fix the regression in delfin/agent/engine.py",
-            "quick",
-        )
+        with patch("delfin.user_settings.load_settings", return_value={}):
+            off = _route()
+        with patch("delfin.user_settings.load_settings", return_value={
+                "agent": {"routing": {"adaptive_escalation": True}}}):
+            on = _route()
 
-    assert decision["task_class"] == "coding"
-    assert decision["mode"] == "reviewed"
-    assert any("task success" in reason for reason in decision["reasons"])
+    assert off["task_class"] == "coding"
+    assert off["mode"] == "quick", "a recorded rate still rewrites the route"
+    assert on["mode"] == "reviewed"
+    assert any("recorded" in reason for reason in on["reasons"])
 
 
 def test_build_handoff_message(agent_tree, mock_client):

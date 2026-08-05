@@ -1311,6 +1311,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
   ("Memory", "/memories", "List project memories", False),
   ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Session", "/changes", "What this session changed (audit log): files, commands, denials", False),
+    ("Session", "/profile", "Show the learned per-provider routing state (`/profile reset` restores the shipped defaults)", False),
     ("Session", "/undo-file", "Undo agent FILE changes from the undo journal (list | last | turn | session) — restores content, unlike /undo which only drops context", False),
     ("Session", "/pending", "List staged diffs awaiting approval (diff-approval mode)", False),
     ("Session", "/approve", "Apply a staged diff (/approve <id|all>)", True),
@@ -7288,6 +7289,21 @@ def create_tab(ctx):
                         f"Stream stalled ({mins} min, no output)",
                         mode="stale",
                     )
+                    return
+                # Re-arm. This was a single non-repeating Timer, so the
+                # check happened exactly once per turn, at threshold+1s.
+                # A turn that streamed normally for twelve minutes and
+                # THEN went silent was never flagged: the one check had
+                # already fired, seen recent activity, and returned. The
+                # spinner stayed normal however long the silence lasted.
+                # Its sibling _check_kill re-arms itself for exactly this
+                # reason; the warning half was simply never given the
+                # same treatment.
+                again = _threading.Timer(
+                    max(5.0, threshold / 4.0), _check_stale)
+                again.daemon = True
+                again.start()
+                state["_stale_timer"] = again
             except Exception:
                 pass
 
@@ -9972,6 +9988,59 @@ def create_tab(ctx):
                     _tag = " (global)" if m.get("scope") == "user" else ""
                     lines.append(f"    • {m['name']}{_tag} — {desc}")
                 _append_system_message("Agent memories:\n" + "\n".join(lines))
+            return True
+
+        if cmd.startswith("/profile"):
+            # The learned routing state. reset_profile() has existed since
+            # the module was written, its docstring promises "fully
+            # reversible", and it had zero callers repo-wide -- no
+            # command, no flag, no UI. Meanwhile the recorded rates are
+            # injected into the model's own prompt and, when adaptive
+            # escalation is on, rewrite the route. State that changes
+            # behaviour has to be inspectable and undoable.
+            from delfin.agent import provider_profile as _pp
+            _prov = str(provider_dropdown.value or "claude")
+            _arg = cmd[len("/profile"):].strip().lower()
+            if _arg == "reset":
+                try:
+                    _pp.reset_profile(_prov)
+                    _append_system_message(
+                        f"Learned routing state for **{_prov}** reset to the "
+                        "shipped defaults.")
+                except Exception as _exc:
+                    _append_system_message(f"Could not reset: {_exc}")
+                return True
+            if _arg:
+                _append_system_message(
+                    "Usage: `/profile` to show, `/profile reset` to restore "
+                    "the shipped defaults.")
+                return True
+            try:
+                _prof = _pp.load_provider_profile(_prov) or {}
+            except Exception as _exc:
+                _append_system_message(f"Could not read the profile: {_exc}")
+                return True
+            _lines = [f"**Learned routing state — {_prov}**"]
+            _sr = _prof.get("success_rate") or {}
+            if _sr:
+                _lines.append("Mode success: " + ", ".join(
+                    f"{k}={v:.0%}" for k, v in sorted(_sr.items())
+                    if isinstance(v, (int, float))))
+            _tp = _prof.get("task_performance") or {}
+            if _tp:
+                _lines.append("Task class success:")
+                for _k, _v in sorted(_tp.items()):
+                    _rate = (_v or {}).get("success_rate")
+                    if isinstance(_rate, (int, float)):
+                        _lines.append(f"- {_k}: {_rate:.0%}")
+            _on = bool(((_get_agent_settings().get("routing") or {})
+                        .get("adaptive_escalation", False)))
+            _lines.append(
+                f"\nAdaptive route escalation: **{'on' if _on else 'off'}** "
+                "(agent.routing.adaptive_escalation). While off, these "
+                "numbers are reported and never change a route.")
+            _lines.append("`/profile reset` restores the shipped defaults.")
+            _append_system_message("\n".join(_lines))
             return True
 
         if cmd.startswith("/undo-file"):

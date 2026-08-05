@@ -2385,7 +2385,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "First line (0-based).",
+                        "description": "First line, 1-based.",
                     },
                     "limit": {
                         "type": "integer",
@@ -7045,16 +7045,33 @@ class _DocToolExecutor:
             lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as exc:
             return json.dumps({"error": str(exc)})
-        offset = _as_int(arguments.get("offset"), 0)
+        # 1-BASED, to agree with grep_file.
+        #
+        # grep emitted i+1 and read_file emitted i+offset, so the two most
+        # used tools in the whole surface disagreed about what line 35 is.
+        # The standard loop is grep -> read -> edit: the agent greps a
+        # symbol, reads at the reported offset, lands one line off, and
+        # copies the wrong block into edit_file(old_string=...). It then
+        # gets "old_string not found" -- or worse, the fuzzy fallback
+        # finds a different unique match and edits THAT.
+        #
+        # offset=0 is accepted as "the beginning" rather than refused,
+        # because a model that has read the schema as 0-based should get
+        # the first line, not an error.
+        offset = _as_int(arguments.get("offset"), 1)
         limit = _as_int(arguments.get("limit"), 200)
-        if offset < 0:
-            offset = 0
+        if offset < 1:
+            offset = 1
         if limit <= 0:
             limit = 200
-        selected = lines[offset:offset + limit]
-        result = "\n".join(f"{i + offset}  {line}" for i, line in enumerate(selected))
-        if len(lines) > offset + limit:
-            result += f"\n... ({len(lines)} lines total, showing {offset}-{offset + limit})"
+        start = offset - 1
+        selected = lines[start:start + limit]
+        result = "\n".join(f"{start + i + 1}  {line}"
+                            for i, line in enumerate(selected))
+        if len(lines) > start + limit:
+            last = start + len(selected)
+            result += (f"\n... ({len(lines)} lines total, showing "
+                       f"{offset}-{last})")
         return result
 
     # ------------------------------------------------------------------
@@ -9869,6 +9886,47 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _bash_target_needs_a_read(
+        self, path: Path, perms: "KitToolPermissions",
+    ) -> Optional[str]:
+        """The read-before-write contract, applied to a shell write.
+
+        write_file, edit_file, multi_edit, notebook_edit and edit_sheet
+        all require a read baseline and an unchanged mtime. bash applied
+        only the PATH policy, so the same file that edit_file refused
+        could be rewritten with `sed -i`, `echo >` or `tee` -- and the
+        documented next move after a blocked write IS the shell, so this
+        is the path the agent gets steered into. The overwrite protection
+        then never fired, and a concurrent user edit was destroyed
+        silently.
+
+        Only EXISTING files need a baseline: creating a new one has
+        nothing to clobber, which is the same rule write_file follows.
+        """
+        try:
+            if not path.is_file():
+                return None
+            resolved = path.resolve()
+            tracked = perms.read_tracker.get(str(resolved))
+            if tracked is None:
+                return json.dumps({"error": (
+                    f"refusing to let a shell command overwrite "
+                    f"'{path.name}' without a prior read_file in this "
+                    "session — call read_file on it first. The same rule "
+                    "applies to edit_file; the shell is not a way around "
+                    "it."
+                )})
+            current = resolved.stat().st_mtime
+            if current > tracked + 1e-3:
+                return json.dumps({"error": (
+                    f"'{path.name}' was modified since last read_file "
+                    "(mtime mismatch). Re-read it before overwriting — "
+                    "someone else's change is in there."
+                )})
+        except OSError:
+            return None
+        return None
+
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -9902,6 +9960,9 @@ class _DocToolExecutor:
                     path = Path(base) / path
                 if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
                     continue
+                stale = self._bash_target_needs_a_read(path, perms)
+                if stale is not None:
+                    return stale
                 gate = self._gate_write_path(
                     str(path), perms, "bash", {"command": cmd})
                 if gate is not None:
@@ -12644,7 +12705,14 @@ class OpenAIClient(_BaseClient):
         # empty — the agent simply won't see those tools.
         try:
             from . import mcp_client as _mcp
-            _ws = self._permissions.workspace if self._permissions else None
+            # Guarded, not raw. An MCP server definition is executable
+            # configuration: it is spawned with the parent environment
+            # while the tool surface is being ASSEMBLED -- before any
+            # model output and before any user consent -- and then
+            # answers every call routed to it. Strictly more powerful
+            # than a hook, which at least waits for a tool call. A folder
+            # that receives files from other people supplies neither.
+            _ws = _hook_workspace(self._permissions)
             _registry = _mcp.get_registry(_ws)
             _mcp_tools = _registry.discover_all()
             # Same context scoping for MCP tools: a namespaced backend tool
@@ -13437,8 +13505,7 @@ class OpenAIClient(_BaseClient):
                         else:
                             try:
                                 from . import mcp_client as _mcp
-                                _ws = (self._permissions.workspace
-                                       if self._permissions else None)
+                                _ws = _hook_workspace(self._permissions)
                                 result = _wrap_untrusted(
                                     _mcp.get_registry(_ws).call(
                                         fn_name, fn_args))
@@ -13464,8 +13531,7 @@ class OpenAIClient(_BaseClient):
                         else:
                             try:
                                 from . import mcp_client as _mcp
-                                _ws = (self._permissions.workspace
-                                       if self._permissions else None)
+                                _ws = _hook_workspace(self._permissions)
                                 _reg = _mcp.get_registry(_ws)
                                 if fn_name == "mcp_read_resource":
                                     result = _wrap_untrusted(

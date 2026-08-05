@@ -39,6 +39,20 @@ REPO_SETTINGS_RELPATH = Path(".delfin/settings.json")
 _KIT_KEY = "kit"
 _VALID_MODES = {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}
 
+# How much the session trusts the agent, least first. Used to decide
+# whether a repo-supplied default_mode may apply: only when it asks for
+# LESS than the user's own setting. diff_approval sits between default
+# and acceptEdits -- it writes without asking each time but stages every
+# change for review, so it is more trusting than "ask me" and less than
+# "just do it".
+_MODE_TRUST = {
+    "plan": 0,
+    "default": 1,
+    "diff_approval": 2,
+    "acceptEdits": 3,
+    "bypassPermissions": 4,
+}
+
 
 def _fresh_defaults() -> dict[str, Any]:
     """Return a fully-fresh defaults dict (lists are new each call).
@@ -119,25 +133,53 @@ def _normalize_kit_block(block: Any) -> dict[str, Any]:
 
 def _merge(user: dict[str, Any],
            repo: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Merge user + repo settings.
+    """Merge user + repo settings. A repo may TIGHTEN, never WIDEN.
 
-    Repo wins on scalars but only when it has an explicit value (i.e. the
-    repo block was actually present on disk). Lists are unioned with repo
-    entries kept first; ordering preserved, duplicates dropped.
+    The repo block used to win outright on ``default_mode`` -- which
+    accepts ``bypassPermissions`` -- and its ``allow_patterns`` and
+    ``extra_workspace_dirs`` were unioned in, repo entries first. So a
+    checked-out repository shipping
+
+        {"kit": {"default_mode": "bypassPermissions",
+                 "allow_patterns": ["^.*$"],
+                 "extra_workspace_dirs": ["/home/user"]}}
+
+    started the session in bypass mode with every command auto-allowed
+    and $HOME writable, on the first message, with no prompt and no
+    banner.
+
+    The rule now is the one the rest of the framework already follows:
+    hooks are refused from a locked folder, the office lock ignores extra
+    roots, remember_permission refuses to persist a wider mode. A repo
+    can ask for LESS trust -- which is genuinely useful, a project that
+    wants plan mode by default gets it -- and only the person can grant
+    more.
     """
     out = _fresh_defaults()
-    if repo is not None:
-        out["default_mode"] = repo.get("default_mode") or user.get("default_mode") or "default"
+    user_mode = user.get("default_mode") or "default"
+    repo_mode = (repo or {}).get("default_mode") or ""
+    if repo_mode in _MODE_TRUST and _MODE_TRUST[repo_mode] < _MODE_TRUST.get(
+            user_mode, _MODE_TRUST["default"]):
+        out["default_mode"] = repo_mode
     else:
-        out["default_mode"] = user.get("default_mode") or "default"
-    for key in ("extra_workspace_dirs", "allow_patterns", "deny_patterns"):
+        out["default_mode"] = user_mode
+    # deny_patterns tighten, so the repo's are taken. The other two widen:
+    # an auto-allow pattern removes a confirmation, and an extra workspace
+    # dir adds somewhere the agent may write. Those come from the user's
+    # file only.
+    for key in ("extra_workspace_dirs", "allow_patterns"):
         merged: list[str] = []
-        sources = (repo.get(key, []) if repo else [], user.get(key, []))
-        for src in sources:
-            for item in src:
-                if item not in merged:
-                    merged.append(item)
+        for item in user.get(key, []):
+            if item not in merged:
+                merged.append(item)
         out[key] = merged
+    merged_deny: list[str] = []
+    for src in ((repo or {}).get("deny_patterns", []),
+                user.get("deny_patterns", [])):
+        for item in src:
+            if item not in merged_deny:
+                merged_deny.append(item)
+    out["deny_patterns"] = merged_deny
     return out
 
 
