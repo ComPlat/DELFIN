@@ -5333,6 +5333,20 @@ _EMPTY_READ_MARKERS = (
 )
 
 
+# A grep hit line: "<path>:<line>: <text>". Anchored at the start of the
+# line so a colon inside the matched text cannot invent a path.
+_GREP_HIT_RE = re.compile(r"^([^\s:][^:]*):(\d+):", re.MULTILINE)
+
+
+def _paths_in_grep_output(result: str) -> set[str]:
+    """Files a repo-wide grep demonstrably showed the agent."""
+    try:
+        return {m.group(1).strip() for m in _GREP_HIT_RE.finditer(result or "")
+                if m.group(1).strip()}
+    except Exception:
+        return set()
+
+
 def _read_saw_content(fn_name: str, result: str) -> bool:
     """Whether a read/search call actually returned file content.
 
@@ -5370,9 +5384,21 @@ def _observe_read_files(
             # to disarm the guard for a whole file.
             if not _read_saw_content(fn_name, result):
                 return
-            path = str(fn_args.get("path") or "").strip()
+            # Take the path the way the EXECUTOR takes it. Reading only
+            # "path" here while the executor also accepts file_path /
+            # filename / file / target meant a successful read under an
+            # alias grounded nothing -- and the models that use aliases
+            # are the weak ones, least able to survive the forced
+            # correction turn an ungrounded citation costs.
+            path = _DocToolExecutor._get_path_arg(fn_args)
             if path:
                 observed.add(path)
+            elif fn_name == "grep_file":
+                # A repo-wide grep has no path argument at all; its hits
+                # are in the result, and the agent read them there. The
+                # code-nav branch below already harvests locations this
+                # way -- grep was simply never given the same treatment.
+                observed.update(_paths_in_grep_output(result))
             return
         if fn_name in _OFFICE_OBSERVATION_ARGS:
             for key in _OFFICE_OBSERVATION_ARGS[fn_name]:

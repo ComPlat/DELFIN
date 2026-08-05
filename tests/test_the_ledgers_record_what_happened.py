@@ -122,7 +122,7 @@ def test_results_are_paired_with_their_own_call(eng):
         yield StreamEvent(type="tool_use", tool_name="mcp__kit-coding__bash",
                           tool_input='{"command": "python bad.py"}')
         yield StreamEvent(type="tool_result", tool_name="mcp__kit-coding__bash",
-                          tool_output="Traceback (most recent call last):")
+                          tool_output="boom\nexit code 1")
         yield StreamEvent(type="text_delta", text="done")
 
     eng.client.stream_message = MagicMock(side_effect=stream)
@@ -183,3 +183,97 @@ def test_a_write_grounds_the_file_whatever_it_returns():
 
 def test_a_json_error_is_still_excluded():
     assert _observed("read_file", '{"error": "not found"}') == set()
+
+
+# ---------------------------------------------------------------------------
+# What the first version of these fixes got wrong
+# ---------------------------------------------------------------------------
+
+def test_a_failing_test_run_still_counts_as_having_run(eng):
+    """The first marker list matched "traceback" anywhere in the output.
+
+    A pytest run with one failure contains a traceback, so the run that
+    demonstrably happened was discarded and the guard then told an
+    accurate, appropriately-scoped report that the file had never been
+    exercised. A guard that fires on correct answers teaches the model to
+    write around it.
+    """
+    ledger = _run(
+        eng, "mcp__kit-coding__bash", '{"command": "pytest tests/test_x.py"}',
+        "tests/test_x.py ...F\nTraceback (most recent call last):\n"
+        "AssertionError\n3 passed, 1 failed")
+    assert any("pytest" in c for c in ledger), ledger
+
+
+def test_ordinary_output_mentioning_a_denial_still_counts(eng):
+    ledger = _run(
+        eng, "mcp__kit-coding__bash", '{"command": "python scan.py"}',
+        "scanning... 3 files skipped (Permission denied), 41 processed. Done.")
+    assert any("scan.py" in c for c in ledger), ledger
+
+
+def test_a_reported_exit_code_still_disqualifies(eng):
+    ledger = _run(eng, "mcp__kit-coding__bash", '{"command": "python app.py"}',
+                  "some output\nexit code 1")
+    assert ledger == [], ledger
+
+
+def test_a_program_that_merely_prints_about_exit_codes_counts(eng):
+    ledger = _run(
+        eng, "mcp__kit-coding__bash", '{"command": "python doc.py"}',
+        "usage: the tool returns exit code 1 on failure\n"
+        "and exit code 2 on a usage error\n"
+        "Generating documentation...\nWrote doc.txt\nAll done.")
+    assert any("doc.py" in c for c in ledger), ledger
+
+
+def test_two_calls_in_one_round_are_paired_in_order(eng):
+    """Taking the NEWEST pending entry was guaranteed wrong for a batch:
+    the first command's failure popped the second command's entry, so the
+    crashed one entered the ledger and the successful one was dropped."""
+    def stream(**kw):
+        yield StreamEvent(type="tool_use", tool_name="mcp__kit-coding__bash",
+                          tool_input='{"command": "python crashed.py"}')
+        yield StreamEvent(type="tool_use", tool_name="mcp__kit-coding__bash",
+                          tool_input='{"command": "python worked.py"}')
+        yield StreamEvent(type="tool_result", tool_name="mcp__kit-coding__bash",
+                          tool_output="boom\nexit code 1")
+        yield StreamEvent(type="tool_result", tool_name="mcp__kit-coding__bash",
+                          tool_output="fine\n")
+        yield StreamEvent(type="text_delta", text="done")
+
+    eng.client.stream_message = MagicMock(side_effect=stream)
+    eng.stream_response("do it")
+    joined = " ".join(eng._exec_commands_session)
+    assert "worked.py" in joined, joined
+    assert "crashed.py" not in joined, joined
+
+
+def test_a_read_under_an_argument_alias_grounds_the_file():
+    """The executor accepts file_path/filename/file/target; the ledger
+    read only "path", so a successful read under an alias grounded
+    nothing -- and alias-using models are the weak ones."""
+    from delfin.agent.api_client import _observe_read_files
+    for key in ("path", "file_path", "filename", "file", "target"):
+        seen = set()
+        _observe_read_files(seen, "read_file", {key: "a/b.py"}, "1  import os")
+        assert seen == {"a/b.py"}, key
+
+
+def test_a_repo_wide_grep_grounds_the_files_it_showed():
+    """grep with no path argument is the normal way to search a repo."""
+    from delfin.agent.api_client import _observe_read_files
+    seen = set()
+    _observe_read_files(
+        seen, "grep_file", {"pattern": "_note_exec"},
+        "delfin/agent/engine.py:1654: self._note_exec_command(\n"
+        "delfin/agent/engine.py:2014:     def _note_exec_command(")
+    assert seen == {"delfin/agent/engine.py"}
+
+
+def test_a_colon_in_matched_text_does_not_invent_a_path():
+    from delfin.agent.api_client import _observe_read_files
+    seen = set()
+    _observe_read_files(seen, "grep_file", {"pattern": "x"},
+                        "a/b.py:12: url = \"http://x/y:9\"")
+    assert seen == {"a/b.py"}

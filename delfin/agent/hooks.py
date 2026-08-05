@@ -178,15 +178,47 @@ def _merge_hooks(into: HooksConfig, raw: dict[str, Any]) -> None:
                 )
 
 
+def _project_hooks_allowed(workspace: Path | str | None) -> bool:
+    """Whether hooks may be read from inside *workspace*.
+
+    A hook file is executable configuration: it runs a shell command
+    before and after every tool call, outside the permission gate and
+    outside filesystem isolation. That is right for a project the user
+    chose to work on, and wrong for a folder that receives files from
+    other people -- which is exactly what a locked scope means.
+
+    The check lives HERE rather than at the call sites because it was
+    written at one of four call sites and forgotten at the other three:
+    the engine's own turn path and both dashboard paths loaded workspace
+    hooks unguarded, so a locked office folder's settings file executed on
+    every message. A guard a caller has to remember is a guard that gets
+    forgotten.
+    """
+    if workspace is None:
+        return False
+    try:
+        from .memory_store import is_office_workspace
+        if is_office_workspace(workspace):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def load_hooks(
     workspace: Path | str | None = None,
     *,
     extra_paths: list[Path] | None = None,
 ) -> HooksConfig:
-    """Read all settings files and return a merged HooksConfig."""
+    """Read all settings files and return a merged HooksConfig.
+
+    The user's own file is always read. The workspace's is read only when
+    the workspace is one the user is working IN rather than one they have
+    pointed the agent AT -- see ``_project_hooks_allowed``.
+    """
     cfg = HooksConfig()
     paths: list[Path] = [_user_settings_path()]
-    if workspace is not None:
+    if workspace is not None and _project_hooks_allowed(workspace):
         paths.extend(_project_settings_paths(Path(workspace)))
     for p in extra_paths or ():
         paths.append(Path(p))

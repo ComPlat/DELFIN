@@ -2028,13 +2028,28 @@ class AgentEngine:
     # Result text that means the command did not run, or ran and failed.
     # A functional claim ("it works now") must not be able to cite any of
     # these as the run that proves it.
+    # Deliberately narrow, and narrower than the first attempt at it.
+    #
+    # That attempt matched "traceback", "permission denied" and "no such
+    # file or directory" as substrings anywhere in the output. A pytest
+    # run with one failing test contains a traceback, so a run that
+    # demonstrably happened was discarded and the guard then told an
+    # accurate report that the file had never been exercised. Ordinary
+    # stdout says "3 files skipped (Permission denied)" all the time.
+    # A marker that fires on real output makes the guard louder on
+    # CORRECT answers, which is the failure mode that teaches a model to
+    # write around a guard instead of satisfying it.
+    #
+    # What is left are statements that the command itself did not run:
+    # the shell could not find it, a gate refused it, a hook blocked it.
+    # Whether what ran then FAILED is a different question, answered by
+    # the exit code below.
     _EXEC_FAILURE_MARKERS = (
-        "traceback (most recent call last)", "command not found",
-        "no such file or directory", "permission denied",
-        "modulenotfounderror", "syntaxerror", "importerror",
-        "exit code 1", "exit code 2", "exit code 127",
-        "blocked by hook", "is not available to the",
+        "command not found", "blocked by hook",
+        "is not available to the", "permission denied: cannot execute",
     )
+    _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
+                               re.IGNORECASE)
 
     def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
         """Record a held command, but only if its result shows it ran.
@@ -2051,8 +2066,14 @@ class AgentEngine:
             pending = self._exec_pending
             if not pending:
                 return
-            for idx in range(len(pending) - 1, -1, -1):
-                if pending[idx][0] == tool_name:
+            # Results arrive in call order, so the OLDEST unmatched call of
+            # this name is the one this result belongs to. Taking the
+            # newest was guaranteed wrong for a batched round: two bash
+            # calls in one round, the first one's traceback arrives first
+            # and pops the second one's entry -- so the crashed command
+            # ended up in the ledger and the successful one was dropped.
+            for idx, (pname, _) in enumerate(pending):
+                if pname == tool_name:
                     name, tool_input = pending.pop(idx)
                     break
             else:
@@ -2062,6 +2083,11 @@ class AgentEngine:
                 return
             low = out.lower()
             if any(marker in low for marker in self._EXEC_FAILURE_MARKERS):
+                return
+            # A non-zero exit reported in the last few lines, where a
+            # runner puts it. Searching the whole body would match a
+            # program that merely PRINTS about exit codes.
+            if self._EXIT_CODE_RE.search("\n".join(out.splitlines()[-3:])):
                 return
             self._note_exec_command(name, tool_input)
         except Exception:
