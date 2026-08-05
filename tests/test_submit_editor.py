@@ -231,6 +231,10 @@ def test_value_box_says_what_it_sets_and_shows_the_current_value():
     # And it has to refresh whenever the selection changes.
     status = _body('updateStatus')
     assert 'updateInternalReadout(scopeKey)' in status
+    # The status line carries state, not instructions: gesture hints belong in
+    # the tooltips, and the value box already labels itself.
+    assert 'turns the view' not in status
+    assert 'press <b>Set</b>' not in status
 
 
 def test_toolbar_wraps_instead_of_clipping_its_own_controls():
@@ -253,11 +257,15 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     assert 'submit_internal_label, submit_internal_value, submit_internal_btn' in group
     assert "flex_flow='row nowrap'" in group
 
-    # Force field first, then the one-shot run, then the continuous one.
+    # Force field, then its strength, then the one-shot run, then the
+    # continuous one, then the internal-coordinate group.
     children = source.split('submit_manip_toolbar = widgets.HBox')[1].split(']')[0]
-    assert children.index('submit_ff_dd') < children.index('submit_optimize_btn')
-    assert children.index('submit_optimize_btn') < children.index('submit_relax_btn')
-    assert children.index('submit_relax_btn') < children.index('submit_internal_group')
+    order = [
+        'submit_ff_dd', 'submit_strength_slider',
+        'submit_optimize_btn', 'submit_relax_btn', 'submit_internal_group',
+    ]
+    positions = [children.index(name) for name in order]
+    assert positions == sorted(positions), children
 
 
 def test_relaxation_strength_is_adjustable():

@@ -1495,18 +1495,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var modeBadge = modeTxt
             ? '<span style="color:#1976d2;font-weight:600;">' + modeTxt + '</span> · '
             : '';
+        // No gesture hints here: they live in the buttons' tooltips, and the
+        // value box labels itself. The status line stays short enough to sit
+        // beside the controls instead of pushing them onto another row.
         var hint = '';
-        var faint = ' <span style="color:#888;font-size:0.9em;">';
-        if (state.mode === 'select' && n === 0) {
-            hint = faint + '(click an atom · <b>Shift</b>+drag = rectangle)</span>';
-        } else if (state.mode === 'manipulate' && n === 0) {
-            hint = faint + '(drag any atom · empty space turns the view · ' +
-                   (state.autoOpt ? 'right-drag pans' : 'right-click sets a pivot') +
-                   ')</span>';
-        } else if (n >= 2 && n <= 4) {
-            var names = {2: 'bond', 3: 'angle', 4: 'dihedral'};
-            hint = faint + '(' + names[n] + ': type a value and press <b>Set</b>)</span>';
-        }
         el.innerHTML = modeBadge +
             '<b>' + n + '</b> atom' + (n === 1 ? '' : 's') + ' selected' +
             pivotTxt + undoTxt + hint;
