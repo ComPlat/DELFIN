@@ -8156,11 +8156,19 @@ class _DocToolExecutor:
                 "chip to 'acceptEdits' to proceed."
             )
 
-        if name in _NETWORK_TOOLS and getattr(perms, "scope_locked", False):
+        if (name in _NETWORK_TOOLS
+                and getattr(perms, "scope_locked", False)
+                and perms.mode != "bypassPermissions"):
             # A locked session works on someone's real records. Sending them
             # somewhere is not a smaller act than writing them somewhere, and
             # nothing else in the stack sees it: the egress scanner reads
             # shell commands, and this is not a shell command.
+            #
+            # Bypass is exempt, and deliberately so. The ladder promises that
+            # profile asks nothing; a gate that overrides it turns the
+            # setting into a suggestion, and the first field report after
+            # this shipped was a user asking why Bypass still prompted. The
+            # protection belongs where the user has NOT opted out.
             target = str(args.get("url") or args.get("query")
                          or args.get("payload") or args.get("message") or "")
             if perms.confirm_callback is None:
@@ -8439,6 +8447,15 @@ class _DocToolExecutor:
                 return gate_err
             return self._gate_bash_write_targets(
                 cmd, {**args, "command": cmd}, perms)
+
+        # (1b) Network tools by base name. Native web_fetch asked under a
+        # locked scope while mcp__<server>__web_fetch did not, which is the
+        # same bypass-by-another-name the shell branch above had: the model
+        # reaches the internet by choosing a different server.
+        if base in _NETWORK_TOOLS:
+            if perms is None:
+                return None
+            return self._run_permission_gate(base, args, perms)
 
         # (2) File mutators → the matching write gate (path-based). The MCP
         # arg shape matches the native tool, so args pass through unchanged.

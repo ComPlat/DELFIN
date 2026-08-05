@@ -295,3 +295,65 @@ def test_unmapped_mcp_tools_are_refused_to_a_scoped_role():
     for tool in ("mcp__fs__read_text_file", "mcp__fs__list_directory",
                  "mcp__other__shell", "mcp__delfin-tools__run_application"):
         assert _tool_denied_for_role("office_agent", tool), tool
+
+
+# ---------------------------------------------------------------------------
+# Network egress: gated where the user has not opted out, and only there
+# ---------------------------------------------------------------------------
+
+def _net_perms(mode):
+    perms = _perms(locked=True)
+    perms.mode = mode
+    return perms
+
+
+@pytest.mark.parametrize("mode", ["default", "acceptEdits"])
+def test_a_locked_session_asks_before_data_leaves(mode):
+    """The folder lock bounds where data may be WRITTEN. A record leaves
+    through a fetched URL without any path crossing the boundary, and the
+    egress scanner reads shell commands -- this is not a shell command."""
+    asked: list[str] = []
+    perms = _net_perms(mode)
+    perms.confirm_callback = lambda n, a, prev: (asked.append(n), True)[1]
+    _executor()._run_permission_gate("web_fetch", {"url": "https://x/y"}, perms)
+    assert asked == ["web_fetch"]
+
+
+def test_bypass_asks_nothing_because_that_is_what_it_says():
+    """A gate that overrides the profile turns the setting into a
+    suggestion. The first field report after this shipped was a user asking
+    why Bypass still prompted."""
+    asked: list[str] = []
+    perms = _net_perms("bypassPermissions")
+    perms.confirm_callback = lambda n, a, prev: (asked.append(n), True)[1]
+    assert _executor()._run_permission_gate(
+        "web_fetch", {"url": "https://x/y"}, perms) is None
+    assert asked == []
+
+
+@pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])
+def test_the_mcp_variant_behaves_exactly_like_the_native_one(mode):
+    """Reaching the internet by naming a different server is the same
+    bypass-by-another-name the shell branch had."""
+    native: list[str] = []
+    through_mcp: list[str] = []
+
+    p1 = _net_perms(mode)
+    p1.confirm_callback = lambda n, a, prev: (native.append(n), True)[1]
+    _executor()._run_permission_gate("web_search", {"query": "x"}, p1)
+
+    p2 = _net_perms(mode)
+    p2.confirm_callback = lambda n, a, prev: (through_mcp.append(n), True)[1]
+    _executor()._gate_mcp_tool(
+        "mcp__kit-coding__web_search", {"query": "x"}, p2)
+
+    assert bool(native) == bool(through_mcp), mode
+
+
+def test_an_unlocked_session_never_asks_about_the_network():
+    asked: list[str] = []
+    perms = _perms(locked=False)
+    perms.confirm_callback = lambda n, a, prev: (asked.append(n), True)[1]
+    assert _executor()._run_permission_gate(
+        "web_fetch", {"url": "https://x"}, perms) is None
+    assert asked == []
