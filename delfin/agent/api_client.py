@@ -1332,6 +1332,23 @@ _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # answer when the answer is always no.
 _SCOPE_LOCKED_ROLES: frozenset[str] = frozenset({"office_agent"})
 
+# Tools that leave the machine. The folder lock bounds where data may be
+# WRITTEN; it never bounded where data may go. A record can leave through a
+# fetched URL without any path crossing the boundary, so these need their own
+# decision — and under a locked scope that decision is the user's, every time.
+_NETWORK_TOOLS: frozenset[str] = frozenset({
+    "web_fetch", "web_search", "remote_trigger", "push_notification",
+})
+
+# Everything that must pass the permission gate before it runs. The set used
+# to be the five file/shell tools, so plan mode -- the profile the UI calls
+# read-only -- did not stop a network call or a test run, because those
+# dispatched without ever consulting the gate.
+_GATED_TOOLS: frozenset[str] = frozenset({
+    "write_file", "edit_file", "multi_edit", "bash", "bash_background",
+    "run_tests",
+}) | _NETWORK_TOOLS
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
@@ -5891,20 +5908,30 @@ class _DocToolExecutor:
         permissions: Optional["KitToolPermissions"],
     ) -> str:
         # Coding-agent tools are only available with explicit permissions.
-        if name in ("write_file", "edit_file", "multi_edit",
-                    "bash", "bash_background"):
+        if name in _GATED_TOOLS:
             if permissions is None:
-                return json.dumps({"error": (
-                    f"Tool '{name}' requires permissions to be configured. "
-                    "Pass a KitToolPermissions instance to OpenAIClient."
-                )})
+                # The file and shell tools have always required permissions.
+                # The network tools have not, and a head-less notification
+                # path legitimately runs without any: refusing there would
+                # break callers that never had a sandbox to violate.
+                if name not in _NETWORK_TOOLS and name != "run_tests":
+                    return json.dumps({"error": (
+                        f"Tool '{name}' requires permissions to be "
+                        "configured. Pass a KitToolPermissions instance to "
+                        "OpenAIClient."
+                    )})
             # bash_background reuses the bash gate verbatim — the
             # command, cwd, deny-list, secret scanner, and auto-allow
             # check are identical; only the execution model differs.
-            gate_name = "bash" if name == "bash_background" else name
-            gate_err = self._run_permission_gate(gate_name, arguments, permissions)
-            if gate_err is not None:
-                return json.dumps({"error": gate_err})
+            if permissions is not None:
+                gate_name = "bash" if name == "bash_background" else name
+                gate_err = self._run_permission_gate(
+                    gate_name, arguments, permissions)
+                if gate_err is not None:
+                    return json.dumps({"error": gate_err})
+            # The network tools and run_tests only needed the gate; their
+            # executors live further down the normal dispatch path, so fall
+            # through rather than re-entering it (which recurses).
             if name == "write_file":
                 return self._execute_write_file(arguments, permissions)
             if name == "edit_file":
@@ -7954,6 +7981,54 @@ class _DocToolExecutor:
                 "'Plan akzeptieren & ausführen' or switch the mode "
                 "chip to 'acceptEdits' to proceed."
             )
+
+        if name in _NETWORK_TOOLS and getattr(perms, "scope_locked", False):
+            # A locked session works on someone's real records. Sending them
+            # somewhere is not a smaller act than writing them somewhere, and
+            # nothing else in the stack sees it: the egress scanner reads
+            # shell commands, and this is not a shell command.
+            target = str(args.get("url") or args.get("query")
+                         or args.get("payload") or args.get("message") or "")
+            if perms.confirm_callback is None:
+                _record_security_event("egress", name, target[:120], blocked=True)
+                return (
+                    f"'{name}' would send data out of {perms.workspace} and no "
+                    "approval dialog is configured, so it is refused. This "
+                    "session works on one folder of real records; anything "
+                    "leaving it is the user's decision."
+                )
+            preview = f"{name} -> {target[:400]}"
+            try:
+                ok = bool(perms.confirm_callback(name, args, preview))
+            except Exception as exc:
+                return f"confirm_callback raised: {exc}"
+            _record_security_event("egress", name, target[:120], blocked=not ok)
+            if not ok:
+                return (f"user denied '{name}'. Do NOT retry it or reach the "
+                        "same destination another way.")
+            return None
+
+        if name == "run_tests" and getattr(perms, "scope_locked", False):
+            # pytest imports conftest.py from wherever it is pointed, so a
+            # target outside the folder is arbitrary code execution outside
+            # the folder. The path gates never saw this tool.
+            _t = str(args.get("target") or "").strip()
+            if _t:
+                try:
+                    _resolved = (Path(_t) if Path(_t).is_absolute()
+                                 else (perms.workspace / _t)).resolve()
+                    if perms.find_readable_root_for(_resolved) is None:
+                        _record_security_event(
+                            "locked_scope_exec", name, str(_resolved), blocked=True)
+                        return (
+                            f"run_tests target '{_t}' is outside "
+                            f"{perms.workspace}. pytest executes conftest.py "
+                            "from the directory it is pointed at, so this "
+                            "would run code outside the folder this session "
+                            "is limited to."
+                        )
+                except OSError:
+                    return f"run_tests target '{_t}' cannot be resolved."
 
         if name in ("write_file", "edit_file", "multi_edit"):
             # Tolerate the `file_path` / `filename` / … aliases here too — the

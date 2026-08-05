@@ -753,9 +753,15 @@ def test_external_memory_records_only_files_inside_prompt_limit(
         encoding="utf-8",
     )
     index_chunk = f"# MEMORY.md\n{index.read_text(encoding='utf-8').strip()}"
+    # Size the budget by what is actually INJECTED, not by the file on disk:
+    # the frontmatter (name/description/timestamps/use_count/domain) is the
+    # store's bookkeeping and is stripped before the fact reaches the prompt.
+    # Measuring the raw file would leave the budget generous enough for both
+    # entries and the boundary this test exists for would never be reached.
+    from delfin.agent.prompt_loader import _memory_body_only
     first_chunk = (
         f"# First ({first.name})\n"
-        f"{first.read_text(encoding='utf-8').strip()}"
+        f"{_memory_body_only(first.read_text(encoding='utf-8'))}"
     )
 
     out = loader._load_external_memory_context(

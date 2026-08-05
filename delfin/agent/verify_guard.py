@@ -350,18 +350,34 @@ def scan_for_ungrounded_code_claims(
                         continue
                 except OSError:
                     continue
+            # A cited DIRECTORY is not a fabrication. Only files were
+            # checked here, so naming a folder that exists -- "the forms are
+            # in office_analysis/Reisekostenantraege/" -- was classified the
+            # same as inventing a path, which is the hardest flag and forces
+            # a correction turn. Observed in the field on a folder that held
+            # the 31 files the sentence was about, and the answer that came
+            # back from the forced retry was worse than the one it replaced.
             exists = False
+            is_dir = False
             try:
                 p = Path(path)
                 if p.is_absolute():
-                    exists = p.is_file()
+                    target = p
                 elif root is not None:
-                    exists = (root / path).is_file()
+                    target = root / path
                 else:
-                    exists = Path(path).is_file()
+                    target = Path(path)
+                exists = target.is_file()
+                if not exists:
+                    is_dir = target.is_dir()
             except OSError:
                 exists = False
-            if not exists:
+            if is_dir:
+                # It is there. Whether the agent looked inside is the
+                # "unread" question, never the "you made this up" one.
+                flags.append(CodeClaimFlag(path=path, line=line,
+                                           kind="unread"))
+            elif not exists:
                 flags.append(CodeClaimFlag(path=path, line=line,
                                            kind="nonexistent"))
             else:

@@ -99,6 +99,26 @@ def _parse_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(text) or {}
 
 
+def _memory_body_only(raw: str) -> str:
+    """The fact, without the store's bookkeeping.
+
+    Frontmatter (name, description, created_at, updated_at, use_count,
+    domain, metadata) is how the store finds and ages a memory; it is not
+    what the agent needs to read, and it was ~80% of the injected block.
+
+    Stripped at injection time and NOT in the gatherer, because the drift
+    check reads the anchors out of that frontmatter. Removing it earlier
+    silently turned every "[drifted: ...]" annotation off -- the one thing
+    that stops a rotted memory being replayed as ground truth.
+    """
+    try:
+        from .memory_store import _parse_frontmatter as _pf
+        _meta, body = _pf(raw)
+        return body.strip() or raw.strip()
+    except Exception:
+        return raw.strip()
+
+
 class PromptLoader:
     """Load and cache markdown prompt files from the DELFIN agent packs.
 
@@ -288,6 +308,20 @@ class PromptLoader:
                     task_text, [f"{t}\n{b}" for t, _, b in entries])
                 order = sorted(range(len(entries)),
                                key=lambda i: scores[i], reverse=True)
+                # Rank AND filter. Ranking alone only decides what gets
+                # dropped first when the budget runs out, so with a store
+                # under budget the injected block was byte-identical for
+                # every task -- the same memories recalled whether or not
+                # they had anything to do with the question. format_memory_
+                # context and recall_episodes both already gate on score > 0;
+                # this path is the one that did not.
+                #
+                # Only filter when the query actually matched something. A
+                # task whose words appear in no memory scores 0 across the
+                # board, and dropping everything there would be worse than
+                # falling back to MEMORY.md order.
+                if any(scores[i] > 0 for i in range(len(entries))):
+                    order = [i for i in order if scores[i] > 0]
                 entries = [entries[i] for i in order]
             except Exception:
                 pass
@@ -341,12 +375,19 @@ class PromptLoader:
             from .memory_store import DOMAIN_OFFICE as _DOMAIN_OFFICE
         except Exception:
             _DOMAIN_OFFICE = "office"
-        if domain == _DOMAIN_OFFICE and self.workspace_root:
-            # Office memories belong to the folder the work happens in, and
-            # that folder is what the write path keys them by. repo_root
-            # locates the prompt pack (the DELFIN source tree), so reading
-            # the project store from it would look in a folder no office
-            # session ever wrote to.
+        if self.workspace_root:
+            # Memories belong to the folder the work happens in, and that
+            # folder is what the write path keys them by. repo_root locates
+            # the prompt PACK (the DELFIN source tree), so reading the
+            # project store from it looks in a folder the session never
+            # wrote to.
+            #
+            # This was fixed for office and left in place for everything
+            # else, which hid it: development happens inside the DELFIN
+            # checkout, where the two roots coincide and recall appears to
+            # work. Everywhere else the store was write-only -- of 184
+            # project directories on the author's machine, 180 had plans/
+            # and 4 had memory/.
             try:
                 repo_root = Path(self.workspace_root).resolve()
             except OSError:
@@ -406,7 +447,7 @@ class PromptLoader:
             for title, rel, body in glob_entries:
                 if used + 2 >= glob_cap:
                     break
-                chunk = f"# {title} ({rel})\n{body}"
+                chunk = f"# {title} ({rel})\n{_memory_body_only(body)}"
                 chunks.append(chunk)
                 glob_injected.add(rel)
                 used += 2 + len(chunk)
@@ -431,7 +472,7 @@ class PromptLoader:
                     notes = recall_reference_notes(body, repo_root)
                 except Exception:
                     notes = []
-                chunk = f"# {title} ({rel})\n{body}"
+                chunk = f"# {title} ({rel})\n{_memory_body_only(body)}"
                 if notes:
                     chunk += "\n" + "\n".join(notes)
                     proj_rotted.add(rel)
@@ -482,7 +523,10 @@ class PromptLoader:
             pass
         try:
             from .episodes import recall_episodes
-            return recall_episodes(Path(self.repo_root), task_text)
+            # Same root as the memory store, and for the same reason: the
+            # writer keys episodes by the workspace.
+            return recall_episodes(
+                Path(self.workspace_root or self.repo_root), task_text)
         except Exception:
             return ""
 
