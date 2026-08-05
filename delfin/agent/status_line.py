@@ -53,10 +53,27 @@ def _gather_status_lines(workspace: Path | None) -> list[dict]:
             workspace / ".delfin" / "settings.local.json",
         ])
     out: list[dict] = []
-    for p in paths:
+    for idx, p in enumerate(paths):
         sl = _read_json(p).get("statusLine")
         if isinstance(sl, dict):
-            out.append(sl)
+            spec = dict(sl)
+            # A template is data; a command is code. The first path is the
+            # user's own settings file, the rest are inside the workspace
+            # -- and the winning spec's `command` is run with shell=True,
+            # cwd set to that workspace, on every status refresh, before
+            # the agent has taken a single action. Granting the agent a
+            # colleague's directory, or opening a repository that ships
+            # `.delfin/settings.local.json`, was enough to execute a
+            # command of that folder's choosing, with its stdout becoming
+            # the status line and its stderr discarded. No allow-list, no
+            # confirmation, no security event, no audit record.
+            #
+            # Same reasoning as the hooks file, and the same rule: the
+            # workspace may describe how the line LOOKS, and may not
+            # decide what RUNS.
+            if idx > 0:
+                spec.pop("command", None)
+            out.append(spec)
         elif isinstance(sl, str):
             out.append({"template": sl})
     return out
