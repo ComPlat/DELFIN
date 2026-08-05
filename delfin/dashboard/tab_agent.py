@@ -5602,29 +5602,45 @@ def create_tab(ctx):
         # Long-session state restore. Each block is wrapped in try/except
         # so a missing dropdown option or a legacy field never breaks the
         # restore — we always end up with a usable engine + chat.
-        saved_perm = data.get("perm_profile") or ""
-        if saved_perm:
-            try:
-                state["_perm_profile"] = saved_perm
-                if perm_dropdown.value != saved_perm:
-                    perm_dropdown.value = saved_perm
-            except Exception:
-                pass
-        saved_provider = data.get("provider") or ""
-        if saved_provider:
-            try:
-                if provider_dropdown.value != saved_provider:
-                    provider_dropdown.value = saved_provider
-            except Exception:
-                pass
-        saved_model = data.get("model") or ""
-        if saved_model:
-            try:
-                valid_models = {v for _, v in (model_dropdown.options or [])}
-                if saved_model in valid_models and model_dropdown.value != saved_model:
-                    model_dropdown.value = saved_model
-            except Exception:
-                pass
+        # Sync the selectors to what the session was saved with, WITHOUT
+        # letting their observers act. Each of those observers drops the
+        # engine so the next message rebuilds it from the new selection --
+        # correct when a person turns the knob, ruinous here: the engine
+        # was restored a few lines above with the full history, and the
+        # three assignments below destroyed it three times over before the
+        # user could type. The transcript still rendered, because that
+        # lives in the widget state, so nothing looked wrong.
+        #
+        # The guard already existed for one of the three (the KIT chip
+        # sets _chip_syncing_perm and the perms observer returns early on
+        # it); it was simply never used for a restore.
+        state["_controls_sync_internal"] = True
+        try:
+            saved_perm = data.get("perm_profile") or ""
+            if saved_perm:
+                try:
+                    state["_perm_profile"] = saved_perm
+                    if perm_dropdown.value != saved_perm:
+                        perm_dropdown.value = saved_perm
+                except Exception:
+                    pass
+            saved_provider = data.get("provider") or ""
+            if saved_provider:
+                try:
+                    if provider_dropdown.value != saved_provider:
+                        provider_dropdown.value = saved_provider
+                except Exception:
+                    pass
+            saved_model = data.get("model") or ""
+            if saved_model:
+                try:
+                    valid_models = {v for _, v in (model_dropdown.options or [])}
+                    if saved_model in valid_models and model_dropdown.value != saved_model:
+                        model_dropdown.value = saved_model
+                except Exception:
+                    pass
+        finally:
+            state["_controls_sync_internal"] = False
         saved_effort = data.get("effort") or ""
         if saved_effort:
             try:
@@ -15973,6 +15989,11 @@ def create_tab(ctx):
         """Switch provider (Anthropic / OpenAI / KIT / Ollama), update model options."""
         if state["streaming"]:
             return
+        # A programmatic sync (restoring a saved session) sets the
+        # selector to what the session already IS. Acting on it would drop
+        # the engine that was just restored with its history.
+        if state.get("_controls_sync_internal"):
+            return
         provider = change["new"]
         # Try fetching models dynamically from API
         fetched = _fetch_models(provider)
@@ -15980,16 +16001,23 @@ def create_tab(ctx):
             _PROVIDER_MODELS[provider] = fetched
         models = _PROVIDER_MODELS.get(provider, _PROVIDER_MODELS_FALLBACK.get(
             provider, _PROVIDER_MODELS_FALLBACK["claude"]))
+        # Shut the old engine down BEFORE touching the model selector.
+        # Setting model_dropdown.value fires _on_model_change, which drops
+        # the engine reference -- so by the time this block ran, `engine`
+        # was already None and the CLI subprocess was never killed. Every
+        # provider switch leaked one.
+        engine = state["engine"]
+        if engine:
+            if hasattr(engine.client, "kill"):
+                try:
+                    engine.client.kill()
+                except Exception:
+                    pass
+            state["engine"] = None
         model_dropdown.options = models
         default = _PROVIDER_DEFAULTS.get(provider, models[0][1])
         valid_values = {v for _, v in models}
         model_dropdown.value = default if default in valid_values else models[0][1]
-        # Invalidate engine
-        engine = state["engine"]
-        if engine:
-            if hasattr(engine.client, "kill"):
-                engine.client.kill()
-            state["engine"] = None
         # Show/hide the KIT confirmation panel based on the new provider.
         try:
             _show_kit_confirm_panel(provider == "kit")
@@ -16014,6 +16042,11 @@ def create_tab(ctx):
     def _on_model_change(change):
         """Recreate engine with new model on next send."""
         if state["streaming"]:
+            return
+        # A programmatic sync (restoring a saved session) sets the
+        # selector to what the session already IS. Acting on it would drop
+        # the engine that was just restored with its history.
+        if state.get("_controls_sync_internal"):
             return
         engine = state["engine"]
         if engine:
@@ -16061,6 +16094,10 @@ def create_tab(ctx):
         # already reflects it and we don't need to recreate the engine.
         # Just sync silently and return.
         if state.get("_chip_syncing_perm"):
+            return
+        # Same reasoning for a session restore: the selector is being set
+        # to what the restored session already used.
+        if state.get("_controls_sync_internal"):
             return
         engine = state["engine"]
         if engine:
