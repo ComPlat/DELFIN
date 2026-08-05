@@ -940,9 +940,21 @@ def test_suggest_mode_detects_reviewed():
     assert result == "reviewed"
 
 
-def test_suggest_mode_no_escalation_needed():
-    """Test that unrelated files don't trigger escalation."""
+def test_suggest_mode_no_escalation_needed(monkeypatch):
+    """Test that unrelated files don't trigger escalation.
+
+    The provider profile is neutralised because the router also escalates
+    ADAPTIVELY, from a recorded task-success rate under ~/.delfin. That
+    made this test a function of how much the agent had been run on this
+    machine: it passed on a fresh checkout and failed once real cycles had
+    been recorded, which is a property of the box rather than of the code
+    it claims to test.
+    """
     from delfin.agent.engine import AgentEngine
+
+    monkeypatch.setattr(
+        "delfin.agent.provider_profile.load_provider_profile",
+        lambda *a, **kw: {})
 
     result = AgentEngine.suggest_mode(
         "Fix a typo in the README", "quick"

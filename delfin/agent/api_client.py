@@ -83,6 +83,7 @@ class _BaseClient:
         max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
+        no_tools: bool = False,
     ) -> Generator[StreamEvent, None, None]:
         raise NotImplementedError
 
@@ -201,6 +202,7 @@ class CLIClient(_BaseClient):
         max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
+        no_tools: bool = False,
     ) -> Generator[StreamEvent, None, None]:
         """Send a message and stream the response via the persistent process.
 
@@ -569,6 +571,7 @@ class APIClient(_BaseClient):
         max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
+        no_tools: bool = False,
     ) -> Generator[StreamEvent, None, None]:
         """Stream via the Anthropic Messages API.
 
@@ -4209,15 +4212,23 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "history_get",
             "description": (
-                "Fetch the FULL text of one earlier message by its "
-                "history_search ref — quote decisions and errors exactly "
-                "instead of reconstructing them."
+                "Fetch one earlier message in full — quote decisions and "
+                "errors exactly instead of reconstructing them."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "ref": {
                         "type": "string",
+                        # The grammar lived only in a Python docstring and an
+                        # error string, so the one channel present at every
+                        # decision never mentioned that a trim marker's ref
+                        # is a legal argument here. The store was built,
+                        # indexed and reachable, and undiscoverable.
+                        "description": (
+                            "A history_search ref, or 'elided:<id>' from a "
+                            "trim marker."
+                        ),
                     },
                     "max_chars": {
                         "type": "integer",
@@ -5481,9 +5492,16 @@ def _elide_old_tool_results(
         content = str(api_messages[i].get("content", ""))
         if content.startswith(_ELIDED_PREFIX):
             continue
+        # Do not claim the findings survive somewhere. Nothing checks that
+        # they do, and the sentence reads as a guarantee: a model told its
+        # findings are "reflected above" has been given a reason not to
+        # look, on the one path that cannot give the content back. The
+        # engine's own trims persist the original and hand out a retrieval
+        # ref; this one does not, so it says so instead.
         api_messages[i]["content"] = (
-            f"{_ELIDED_PREFIX} — {len(content)} chars; "
-            f"its findings are reflected in the assistant reasoning above]"
+            f"{_ELIDED_PREFIX} — {len(content)} chars dropped to free "
+            f"context. This copy is gone; if the detail matters, run the "
+            f"tool again or search the transcript with history_search]"
         )
         elided += 1
     return elided
@@ -12150,6 +12168,7 @@ class OpenAIClient(_BaseClient):
         max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
+        no_tools: bool = False,
     ) -> Generator[StreamEvent, None, None]:
         """Stream via the OpenAI Chat Completions API.
 
@@ -12355,7 +12374,13 @@ class OpenAIClient(_BaseClient):
         # preflight): a model with no native tool support would only choke on
         # the tool schema and leak malformed calls. Suppress tool advertising
         # so it runs cleanly in chat-only mode instead of failing silently.
-        _suppress_tools = bool(_caps is not None and not _caps.supports_tools)
+        # ...and per turn: a message that is nothing but a greeting needs
+        # no tools, and sending the surface anyway costs the whole schema
+        # block for a one-sentence reply. Measured in the field: a "hallo"
+        # cost 12,385 input tokens, roughly nine thousand of which were
+        # tool schemas the turn had no use for.
+        _suppress_tools = bool(no_tools) or bool(
+            _caps is not None and not _caps.supports_tools)
 
         # Augment with MCP tools discovered from configured servers.
         # Failures (missing config, server crash) leave the registry
@@ -13714,6 +13739,7 @@ class CodexCLIClient(_BaseClient):
         max_tokens: int = 8192,
         session_id: str = "",
         thinking_budget: int = 0,
+        no_tools: bool = False,
     ) -> Generator[StreamEvent, None, None]:
         """Run ``codex exec --json`` and stream JSONL events.
 

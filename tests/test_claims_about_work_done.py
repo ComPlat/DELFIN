@@ -130,3 +130,64 @@ def test_the_same_tool_is_recorded_once():
     for _ in range(5):
         eng._note_truncated_tool("list_files")
     assert eng._truncated_tools_turn == ["list_files"]
+
+
+# ---------------------------------------------------------------------------
+# A greeting does not need the tool surface
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "hallo", "Hallo Delfin", "danke!", "guten morgen", "ok", "moin moin", "👍",
+])
+def test_a_bare_greeting_is_recognised(text):
+    assert AgentEngine.is_bare_greeting(text) is True, text
+
+
+@pytest.mark.parametrize("text", [
+    "hallo, kannst du die tabelle prüfen?",
+    "hi, lies bitte buchungen.csv",
+    "danke, jetzt noch das PDF",
+    "ok mach weiter",
+    "",
+])
+def test_a_request_wearing_a_greeting_is_not_one(text):
+    """is_greeting accepts a greeting PREFIX, which is right for picking a
+    reasoning budget and far too loose for dropping the tools: every one of
+    these satisfies it, and the agent would be unable to do what it was
+    just asked."""
+    assert AgentEngine.is_bare_greeting(text) is False, text
+    if text:
+        assert AgentEngine.is_greeting(text) is True, (
+            f"{text!r} no longer exercises the difference between the two")
+
+
+def test_the_engine_uses_the_strict_one_for_tool_suppression():
+    import pathlib
+
+    source = pathlib.Path(
+        __import__("delfin.agent.engine", fromlist=["x"]).__file__
+    ).read_text(encoding="utf-8")
+    assert 'self.is_bare_greeting(\n                        user_message)' in source \
+        or "is_bare_greeting(user_message)" in source
+
+
+def test_the_flag_is_only_passed_to_clients_that_accept_it():
+    """Adding a parameter must not break a caller built against the older
+    signature -- test doubles and any out-of-tree backend. Passing it
+    unconditionally cost 24 tests before this guard existed, and it is the
+    second time today the same mistake was available."""
+    import pathlib
+
+    source = pathlib.Path(
+        __import__("delfin.agent.engine", fromlist=["x"]).__file__
+    ).read_text(encoding="utf-8")
+    assert '"no_tools" in _inspect.signature(' in source
+    assert "**_stream_kwargs," in source
+
+
+def test_the_client_honours_the_flag():
+    import inspect
+    from delfin.agent.api_client import OpenAIClient
+
+    assert "no_tools" in inspect.signature(OpenAIClient.stream_message).parameters
+    assert "bool(no_tools)" in inspect.getsource(OpenAIClient.stream_message)

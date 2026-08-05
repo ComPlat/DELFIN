@@ -1167,11 +1167,23 @@ class AgentEngine:
         # compaction fires (no value for other roles — they run in
         # pipeline mode with their own context budgets).
         live_state = self._live_state
-        if role in ("solo_agent", "dashboard_agent"):
+        # office_agent joins the interactive roles. It was left out when this
+        # gate was written and never revisited, so the mode that works on
+        # real records ran on prompt text alone -- on the model this project
+        # has established prompt text does not bind. Measured across the
+        # archived office runs: not one had a live-state block at all, while
+        # one of them spent 1.6M input tokens.
+        #
+        # The blocks it gains are the role-agnostic ones: open tasks,
+        # finished background jobs, the run budget, a late answer to a
+        # question that timed out. The context snapshot and the project pin
+        # stay solo-only -- office is pinned to its folder by construction,
+        # so a pin block would state what the lock already guarantees.
+        if role in ("solo_agent", "dashboard_agent", "office_agent"):
             extra_blocks: list[str] = []
             # Context-usage snapshot is solo-only (other roles run in pipeline
             # mode with their own budgets); the open-tasks reminder applies to
-            # both interactive roles that drive the task list.
+            # every interactive role that drives the task list.
             if role == "solo_agent":
                 proj_block = self._build_project_dir_block()
                 if proj_block:
@@ -1406,6 +1418,20 @@ class AgentEngine:
         self._cost_cap_hit = False
         self._cost_cap_value = self._cost_hard_cap()   # read once per turn
         try:
+            # Pass no_tools only to a client that accepts it. Adding a
+            # parameter must not break a caller built against the older
+            # signature -- test doubles and any out-of-tree backend. I made
+            # exactly this mistake once already today with _fetch_bytes;
+            # here the cost would have been every mocked engine test.
+            _stream_kwargs = {}
+            try:
+                import inspect as _inspect
+                if "no_tools" in _inspect.signature(
+                        self.client.stream_message).parameters:
+                    _stream_kwargs["no_tools"] = self.is_bare_greeting(
+                        user_message)
+            except (TypeError, ValueError):
+                pass
             for event in self.client.stream_message(
                 system=system_prompt,
                 # Wire view: identical to self.messages except private
@@ -1415,6 +1441,7 @@ class AgentEngine:
                 max_tokens=effective_max,
                 session_id=self.session_id,
                 thinking_budget=thinking_budget,
+                **_stream_kwargs,
             ):
                 if self._stop_requested:
                     break
@@ -3648,6 +3675,36 @@ class AgentEngine:
             or lower.startswith(g + "!") or lower.startswith(g + ",")
             for g in _GREETING_PATTERNS
         )
+
+    @staticmethod
+    def is_bare_greeting(text: str) -> bool:
+        """True only when the message is a greeting and NOTHING else.
+
+        Deliberately stricter than is_greeting, which is used to pick a
+        reasoning budget and is happy with a greeting PREFIX. That is far
+        too loose for the decision here: "hi, lies bitte buchungen.csv" and
+        "hallo, kannst du die tabelle prüfen?" both satisfy it, and
+        suppressing the tool surface on either would leave the agent unable
+        to do the work it was just asked to do.
+
+        So every word has to be a greeting word, the agent's name, or
+        punctuation, and a question mark disqualifies outright: a question
+        is a request even when it is polite.
+        """
+        lower = (text or "").strip().lower()
+        if not lower or len(lower) > 40 or "?" in lower:
+            return False
+        cleaned = re.sub(r"[^\w\s]+", " ", lower, flags=re.UNICODE)
+        # Multi-word greetings first, so "guten morgen" is not judged as
+        # two unknown words.
+        for phrase in sorted(_GREETING_PATTERNS, key=len, reverse=True):
+            if " " in phrase:
+                cleaned = cleaned.replace(phrase, " ")
+        words = [w for w in cleaned.split() if w]
+        if not words:
+            return bool(lower)      # punctuation or an emoji alone
+        allowed = set(_GREETING_PATTERNS) | {"delfin", "du", "dir", "mal"}
+        return all(w in allowed for w in words)
 
     @staticmethod
     def classify_task_complexity(text: str) -> str:
