@@ -13083,6 +13083,13 @@ def create_tab(ctx):
         if mode_dropdown.value in ("solo", "dashboard"):
             return
         steps = eng.pipeline_status()
+        # A pipeline of one is not a pipeline. "Pipeline: [ok] Office Agent"
+        # lists the single agent that just answered, which the reply above
+        # it already made clear. The named exclusions above catch the two
+        # modes that existed when this was written; the length check is the
+        # rule behind them, so a new single-role mode needs no entry.
+        if len(steps) < 2:
+            return
         _icons = {"done": "\u2705", "active": "\u23f3", "pending": "\u25cb"}
         parts = []
         for s in steps:
@@ -15163,7 +15170,7 @@ def create_tab(ctx):
                             _append_system_message(
                                 f"--- Cycle complete {_cycle_verdict} ---"
                             )
-                        _update_pipeline_display(engine)
+                            _update_pipeline_display(engine)
 
                         # --- Persistent Cycle Memory + Provider Profile ---
                         try:

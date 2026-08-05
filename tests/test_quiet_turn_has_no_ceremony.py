@@ -69,7 +69,6 @@ def test_the_measurements_are_not_gated():
     for call, what in (
         ('_record_cycle_event("cycle", "Cycle complete")', "the cycle event"),
         ("_check_acceptance_gate(engine)", "the acceptance verdict"),
-        ("_update_pipeline_display(engine)", "the pipeline display"),
         ("engine.record_cycle_outcome(", "the self-optimization measurement"),
     ):
         idx = tail.find(call)
@@ -184,3 +183,36 @@ def test_the_role_label_sits_tight_against_its_line():
     block = block[:block.index("}")]
     assert "margin-bottom: 1px" in block, block
     assert "line-height: 1.1" in block, block
+
+
+# ---------------------------------------------------------------------------
+# The pipeline line is chat, not a widget
+# ---------------------------------------------------------------------------
+
+def test_the_pipeline_line_is_gated_like_the_rest():
+    """I first read _update_pipeline_display as a widget refresh and
+    protected it from the gate. It posts a chat message, so a greeting was
+    still answered with "Pipeline: [ok] Office Agent"."""
+    decided = _SOURCE.index("_report_cycle = _turn_warrants_a_cycle_report")
+    tail = _SOURCE[decided:decided + 1200]
+    idx = tail.index("_update_pipeline_display(engine)")
+    indent = len(tail[tail.rfind("\n", 0, idx) + 1:idx])
+    gate = tail.rindex("if _report_cycle:", 0, idx)
+    gate_indent = len(tail[tail.rfind("\n", 0, gate) + 1:gate])
+    assert indent > gate_indent, (
+        "the pipeline line is posted outside the gate again")
+
+
+def test_a_route_of_one_is_not_announced_as_a_pipeline():
+    """Single-role modes list the one agent that just answered."""
+    assert "if len(steps) < 2:" in _SOURCE, (
+        'a one-step route is announced as a pipeline again')
+
+
+def test_the_length_rule_is_not_a_list_of_mode_names():
+    """Named exclusions have to be extended for every new single-role mode;
+    the length check is the rule behind them."""
+    block = _SOURCE[_SOURCE.index("def _update_pipeline_display"):]
+    block = block[:block.index("_append_system_message")]
+    assert "office" not in block, (
+        'the pipeline line excludes office by name instead of by shape')
