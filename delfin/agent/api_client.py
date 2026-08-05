@@ -6538,13 +6538,22 @@ class _DocToolExecutor:
         if name not in self._AUDITED_TOOLS:
             return
         from . import audit_log as _al
-        # Best-effort decision parsing.
+        # Best-effort decision parsing, and the reason with it. The gate
+        # already wrote a sentence saying which rule refused and what to do
+        # instead; it went to the model and was dropped here, so the
+        # durable record could only ever say "denied".
         decision = "ok"
+        reason = ""
         if isinstance(result, str):
             if result.startswith('{"error"'):
                 decision = "denied"
+                try:
+                    reason = str((json.loads(result) or {}).get("error", ""))
+                except Exception:
+                    reason = result[:300]
             elif '"status": "denied"' in result[:200]:
                 decision = "denied"
+                reason = result[:300]
         mode = ""
         session_id = ""
         if permissions is not None:
@@ -6558,6 +6567,7 @@ class _DocToolExecutor:
             path=str(arguments.get("path", "")),
             command=str(arguments.get("command", "")),
             session_id=session_id,
+            reason=reason,
             extra={"cwd": cwd} if cwd else None,
         )
         _al.append(record)
