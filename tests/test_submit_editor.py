@@ -400,7 +400,7 @@ def test_empty_space_belongs_to_the_viewer_for_both_buttons():
     assert window_steal.index('probeClickAtom') < window_steal.index('e.preventDefault()')
     assert 'if (!picked) continue;' in window_steal
 
-    overlay = EDITOR.split("ov.addEventListener('mousedown'")[1].split('\n        });')[0]
-    right = overlay.split('if (e.button === 2) {')[1].split('return;')[0]
-    assert right.index('probeClickAtom') < right.index('e.preventDefault()')
+    overlay = EDITOR.split("ov.addEventListener('mousedown'")[1]
+    right = overlay.split('if (e.button === 2) {')[1].split('if (e.button !== 0)')[0]
+    assert right.index('probeClickAtom') < right.index('e.preventDefault();')
     assert 'if (!picked) return;' in right
