@@ -1477,6 +1477,69 @@ def scan_for_counts_over_truncated_output(
         return []
 
 
+# "31 PDF-Dateien", "29 Einträge", "all 31 files" — the claimed size.
+_ENUMERATION_COUNT_RE = re.compile(
+    r"(?i)\b(?:alle|all|insgesamt|total(?:ly)?|es\s+(?:sind|wurden))?\s*"
+    r"(\d{2,})\s+"
+    r"(?:pdf|docx?|xlsx?|csv|dateien|files?|zeilen|rows?|eintr[äa]ge|"
+    r"entries|dokumente|documents?|antr[äa]ge|requests?)\b"
+)
+
+# A numbered or bulleted list item at the start of a line.
+_LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d{1,3}[.)]\s+|[-*•]\s+)\S")
+
+
+def scan_for_count_vs_enumeration(text: str) -> list[tuple[int, int]]:
+    """(claimed, listed) pairs where an answer states N and then lists M.
+
+    No ledger and no tool trace: this reads the answer against itself.
+    The field case is exact -- "ich habe 31 PDF-Dateien verifiziert",
+    then items 1 to 29, then a table restating 31. Three inconsistent
+    counts in one message, after both existing guard layers had run,
+    because both compare the answer to EVIDENCE and neither compares it
+    to itself.
+
+    Only fires when the list is long enough to be the enumeration the
+    number refers to (a count of 31 followed by two examples is not a
+    contradiction) and when the gap is real rather than an off-by-one
+    from a header row.
+    """
+    if not text:
+        return []
+    try:
+        listed = len(_LIST_ITEM_RE.findall(text))
+        if listed < 3:
+            return []
+        out: list[tuple[int, int]] = []
+        for match in _ENUMERATION_COUNT_RE.finditer(text):
+            try:
+                claimed = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if claimed <= listed or claimed - listed <= 1:
+                continue
+            # A count far larger than the list is a summary, not an
+            # enumeration ("3,000 rows" above a 10-row sample).
+            if claimed > listed * 3:
+                continue
+            if (claimed, listed) not in out:
+                out.append((claimed, listed))
+        return out[:3]
+    except Exception:
+        return []
+
+
+def count_vs_enumeration_caveat(pairs: list[tuple[int, int]]) -> str:
+    """The note appended to an answer that contradicts its own list."""
+    if not pairs:
+        return ""
+    claimed, listed = pairs[0]
+    return (
+        f"\n\n> ⚠️ This answer states {claimed} but lists {listed} entries. "
+        "One of the two is wrong — count them again before passing it on."
+    )
+
+
 def truncated_output_caveat(counts: list[str], tools: list[str]) -> str:
     """The note appended to an answer counting from a cut-short result."""
     if not counts:
@@ -1484,11 +1547,10 @@ def truncated_output_caveat(counts: list[str], tools: list[str]) -> str:
     named = ", ".join(counts[:3])
     where = ", ".join(sorted(set(tools))[:3]) or "a tool result"
     return (
-        "\n\n> ⚠️ Diese Antwort nennt " + named + ", aber die Ausgabe von "
-        + where + " wurde in diesem Zug gekürzt. Eine Zahl, deren einzige "
-        "Quelle abgeschnitten war, ist nicht gezählt, sondern geschätzt — "
-        "bitte gegen die vollständige Liste prüfen, bevor sie weitergegeben "
-        "wird."
+        "\n\n> ⚠️ This answer states " + named + ", but the output of "
+        + where + " was truncated this turn. A number whose only source was "
+        "cut short is estimated, not counted — check it against the full "
+        "list before passing it on."
     )
 
 

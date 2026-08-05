@@ -1893,6 +1893,37 @@ class AgentEngine:
         except Exception:
             return []
 
+    def _append_self_consistency_caveat(
+        self, text: str,
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
+        """Mark an answer that contradicts its own list.
+
+        The other two guards compare the answer to EVIDENCE -- a ledger of
+        what was read, a note about what could not be. Neither compares it
+        to itself, which is how "ich habe 31 PDF-Dateien verifiziert"
+        survived above a list of 29 and a table restating 31: three
+        inconsistent counts in one message, after both layers had run.
+
+        Caveat and not correction, and naming BOTH numbers rather than
+        picking one. A retry cannot fix a counting error the model just
+        made twice, and the framework does not know which figure is the
+        right one -- only that they disagree."""
+        try:
+            from . import verify_guard as _vg
+            pairs = _vg.scan_for_count_vs_enumeration(text)
+            caveat = _vg.count_vs_enumeration_caveat(pairs)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        return text + caveat
+
     def _append_truncated_count_caveat(
         self, text: str,
         on_token: Callable[[str], None] | None = None,
@@ -2062,11 +2093,13 @@ class AgentEngine:
         # it is unfounded, and a retry is free to guess the same way again.
         ambiguous = self._scan_ambiguous_column_totals(response_text)
         if not loc and not qty:
-            return self._append_truncated_count_caveat(
-                self._append_ambiguous_column_caveat(
-                    self._append_functional_caveat(
-                        response_text, func, on_token),
-                    ambiguous, on_token),
+            return self._append_self_consistency_caveat(
+                self._append_truncated_count_caveat(
+                    self._append_ambiguous_column_caveat(
+                        self._append_functional_caveat(
+                            response_text, func, on_token),
+                        ambiguous, on_token),
+                    on_token),
                 on_token)
         if self._claim_guard_corrected:
             # The single correction for this user turn is spent (e.g. a

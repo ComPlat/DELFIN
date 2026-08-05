@@ -108,14 +108,14 @@ def test_the_caveat_names_the_number_and_the_tool():
     text = vg.truncated_output_caveat(["31 PDF-Dateien"], ["list_files"])
     assert "31 PDF-Dateien" in text
     assert "list_files" in text
-    assert "gekürzt" in text
+    assert "truncated" in text
 
 
 def test_the_caveat_says_what_the_number_is_worth():
     """"Estimated, not counted" is the sentence the user needs; "warning"
     on its own tells them nothing they can act on."""
-    text = vg.truncated_output_caveat(["31 Dateien"], ["list_files"])
-    assert "geschätzt" in text
+    text = vg.truncated_output_caveat(["31 files"], ["list_files"])
+    assert "estimated, not counted" in text
 
 
 def test_the_ledger_is_per_turn_and_bounded():
