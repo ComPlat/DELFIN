@@ -2206,12 +2206,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     // Pivot picking is off while the field runs -- the right
                     // button pans the scene then, so let the event through.
                     if (state.autoOpt) return;
-                    e.preventDefault(); e.stopPropagation();
                     var picked = probeClickAtom(scopeKey, e.clientX, e.clientY);
-                    if (picked) {
-                        state.pivot = {serial: picked.serial, elem: picked.elem || 'X'};
-                        redrawHighlights(scopeKey);
-                    }
+                    // Empty space belongs to the viewer, which pans there.
+                    if (!picked) return;
+                    e.preventDefault(); e.stopPropagation();
+                    state.pivot = {serial: picked.serial, elem: picked.elem || 'X'};
+                    redrawHighlights(scopeKey);
                     // Rotation only makes sense with picks; still allow pivot change without picks.
                     if (state.pivot && state.picks.length > 0) {
                         state.drag = {
@@ -2489,16 +2489,19 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 // instead: with the structure moving under the cursor, shifting
                 // the view is what the user reaches for, not a pivot rotation.
                 if (s.autoOpt) continue;
+                // The right button only belongs to the editor when it lands on
+                // an atom, where it sets the pivot. On empty space it stays the
+                // viewer's, which pans the scene -- the same division the left
+                // button already has between dragging an atom and turning the
+                // view.
+                var picked = null;
+                try { picked = probeClickAtom(k, e.clientX, e.clientY); } catch (_) {}
+                if (!picked) continue;
                 e.preventDefault(); e.stopImmediatePropagation();
-                // Forward to our normal mousedown logic by synthesising
-                // a direct call (our overlay listener expects this shape).
                 try {
-                    var picked = probeClickAtom(k, e.clientX, e.clientY);
-                    if (picked) {
-                        s.pivot = {serial: picked.serial, elem: picked.elem || 'X'};
-                        redrawHighlights(k);
-                    }
-                    if (s.pivot && s.picks.length > 0) {
+                    s.pivot = {serial: picked.serial, elem: picked.elem || 'X'};
+                    redrawHighlights(k);
+                    if (s.picks.length > 0) {
                         s.drag = {
                             kind: 'rotate',
                             startX: e.clientX, startY: e.clientY,

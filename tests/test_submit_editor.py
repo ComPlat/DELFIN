@@ -385,3 +385,22 @@ def test_toolbar_parts_are_found_even_when_fullscreen_moves_them():
         body = _body(name)
         assert 'findInScope(' in body, name
         assert 'getRoot(scopeKey)' not in body, name
+
+
+def test_empty_space_belongs_to_the_viewer_for_both_buttons():
+    """In Manipulate mode the buttons split the same way on empty space as on
+    an atom: left turns the view, right pans it. The editor only takes the
+    right button where it lands on an atom, to set the pivot.
+
+    Measured in a browser: left on empty space rotates and does not pan, right
+    on empty space pans and does not rotate, right on an atom sets the pivot
+    and moves neither."""
+    window_steal = EDITOR.split("window.addEventListener('mousedown'")[1].split('}, true);')[0]
+    # The probe has to happen before the event is taken, not after.
+    assert window_steal.index('probeClickAtom') < window_steal.index('e.preventDefault()')
+    assert 'if (!picked) continue;' in window_steal
+
+    overlay = EDITOR.split("ov.addEventListener('mousedown'")[1].split('\n        });')[0]
+    right = overlay.split('if (e.button === 2) {')[1].split('return;')[0]
+    assert right.index('probeClickAtom') < right.index('e.preventDefault()')
+    assert 'if (!picked) return;' in right
