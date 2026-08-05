@@ -7289,6 +7289,21 @@ def create_tab(ctx):
                         f"Stream stalled ({mins} min, no output)",
                         mode="stale",
                     )
+                    return
+                # Re-arm. This was a single non-repeating Timer, so the
+                # check happened exactly once per turn, at threshold+1s.
+                # A turn that streamed normally for twelve minutes and
+                # THEN went silent was never flagged: the one check had
+                # already fired, seen recent activity, and returned. The
+                # spinner stayed normal however long the silence lasted.
+                # Its sibling _check_kill re-arms itself for exactly this
+                # reason; the warning half was simply never given the
+                # same treatment.
+                again = _threading.Timer(
+                    max(5.0, threshold / 4.0), _check_stale)
+                again.daemon = True
+                again.start()
+                state["_stale_timer"] = again
             except Exception:
                 pass
 
