@@ -520,7 +520,9 @@ class LocalJobBackend(JobBackend):
             },
         )
 
-    def list_jobs(self) -> List[JobInfo]:
+    def list_jobs(self, force: bool = False) -> List[JobInfo]:
+        # Local state lives in a JSON file and the process table; there is no
+        # shared service to protect, so `force` is accepted and ignored.
         with self._lock:
             data = self._load_jobs()
             jobs = data.get('jobs', [])

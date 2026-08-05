@@ -390,7 +390,8 @@ def create_tab(ctx):
             clear_output()
 
         try:
-            all_jobs = ctx.backend.list_jobs()
+            # The user asked for the queue, so bypass the rate limit.
+            all_jobs = ctx.backend.list_jobs(force=True)
             state['job_data'] = all_jobs
 
             # Apply state filter (all / running / pending).
