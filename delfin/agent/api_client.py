@@ -1579,6 +1579,12 @@ def _hook_workspace(perms) -> "Path | None":
 # WRITTEN; it never bounded where data may go. A record can leave through a
 # fetched URL without any path crossing the boundary, so these need their own
 # decision — and under a locked scope that decision is the user's, every time.
+# Returned by the egress scan when the scan itself failed under a locked
+# scope. A distinct object rather than a message string: the caller treats
+# every other truthy return as a reason to record and possibly approve,
+# and "we could not check this" must not be able to travel that path.
+EGRESS_UNCHECKABLE = "egress-scan-failed"
+
 _NETWORK_TOOLS: frozenset[str] = frozenset({
     "web_fetch", "web_search", "remote_trigger", "push_notification",
 })
@@ -1592,6 +1598,33 @@ _GATED_TOOLS: frozenset[str] = frozenset({
     "run_tests",
 }) | _NETWORK_TOOLS
 
+# What plan mode may run. Plan promises the user that the agent explores
+# and proposes and changes nothing, so the safe list is the one that has
+# to be enumerated -- the alternative, a hand-maintained list of families
+# to refuse, is a list that is wrong the moment a tool is added, and it
+# was: scheduling a future agent turn, creating a git worktree and adding
+# a writable root to the live permissions, running a workspace binary to
+# report its Python version, and every MCP tool outside three known
+# families all executed in the mode whose label is "read-only".
+#
+# Membership means "cannot change anything the user would care about".
+# `remember`/`forget` are deliberately absent: a plan turn writing durable
+# memory is a change that outlives the plan.
+_PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
+    # Reading the world
+    "read_file", "grep_file", "list_files", "find_definition",
+    "find_references", "notebook_read", "view_image", "read_document",
+    "compare_tables", "list_docs", "list_sections", "read_section",
+    "search_docs", "search_calcs", "get_calc_info", "calc_summary",
+    "check_environment", "list_changes_made",
+    # Reading this session
+    "history_search", "history_get", "task_list", "task_get",
+    "bash_status", "bash_output", "subagent_result", "cron_list",
+    # Planning itself
+    "task_create", "task_update", "task_adopt", "exit_plan_mode",
+    "ask_user_question", "report_verdict", "skill",
+})
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
@@ -1599,6 +1632,17 @@ _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # methodology it has no business applying.
     "office_agent": _DELFIN_ONLY_TOOL_NAMES,
 }
+
+
+def _bare_tool_name(name: str) -> str:
+    """A namespaced ``mcp__server__tool`` reduced to its tool name.
+
+    Every rule about what a tool DOES has to be judged on this, or a
+    namespaced call routes around it -- which is how the locked-scope
+    shell gates were first bypassed.
+    """
+    text = str(name or "")
+    return text.rsplit("__", 1)[-1] if text.startswith("mcp__") else text
 
 
 def _tool_denied_for_role(role: str, name: str) -> bool:
@@ -5278,6 +5322,46 @@ _OFFICE_OBSERVATION_ARGS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Results that mean a read tool was pointed at a file and came back with
+# nothing to show for it. Kept small and literal on purpose: a broader
+# "does this look empty" judgement would start discarding real evidence,
+# and a guard that fires on correct answers teaches the model to write
+# around it.
+_EMPTY_READ_MARKERS = (
+    "no matches found", "no matches", "0 matches",
+    "permission denied", "is a directory",
+)
+
+
+# A grep hit line: "<path>:<line>: <text>". Anchored at the start of the
+# line so a colon inside the matched text cannot invent a path.
+_GREP_HIT_RE = re.compile(r"^([^\s:][^:]*):(\d+):", re.MULTILINE)
+
+
+def _paths_in_grep_output(result: str) -> set[str]:
+    """Files a repo-wide grep demonstrably showed the agent."""
+    try:
+        return {m.group(1).strip() for m in _GREP_HIT_RE.finditer(result or "")
+                if m.group(1).strip()}
+    except Exception:
+        return set()
+
+
+def _read_saw_content(fn_name: str, result: str) -> bool:
+    """Whether a read/search call actually returned file content.
+
+    A write is evidence on its own terms -- the agent produced the bytes,
+    so it knows them -- which is why the write tools are exempt.
+    """
+    if fn_name in ("write_file", "edit_file", "multi_edit", "notebook_edit"):
+        return True
+    text = (result or "").strip()
+    if not text:
+        return False
+    low = text.lower()
+    return not any(low.startswith(m) or low == m for m in _EMPTY_READ_MARKERS)
+
+
 def _observe_read_files(
     observed: set, fn_name: str, fn_args: Any, result: str,
 ) -> None:
@@ -5292,9 +5376,29 @@ def _observe_read_files(
         if (result or "").lstrip().startswith('{"error"'):
             return
         if fn_name in _OBSERVATION_TOOLS:
-            path = str(fn_args.get("path") or "").strip()
+            # The call has to have SHOWN something. A grep with no matches,
+            # a read past the end of a file, and a refusal that is not
+            # JSON-shaped all used to ground every later claim about the
+            # path, because the ledger only asked whether the tool had been
+            # pointed at it. One deliberately non-matching grep was enough
+            # to disarm the guard for a whole file.
+            if not _read_saw_content(fn_name, result):
+                return
+            # Take the path the way the EXECUTOR takes it. Reading only
+            # "path" here while the executor also accepts file_path /
+            # filename / file / target meant a successful read under an
+            # alias grounded nothing -- and the models that use aliases
+            # are the weak ones, least able to survive the forced
+            # correction turn an ungrounded citation costs.
+            path = _DocToolExecutor._get_path_arg(fn_args)
             if path:
                 observed.add(path)
+            elif fn_name == "grep_file":
+                # A repo-wide grep has no path argument at all; its hits
+                # are in the result, and the agent read them there. The
+                # code-nav branch below already harvests locations this
+                # way -- grep was simply never given the same treatment.
+                observed.update(_paths_in_grep_output(result))
             return
         if fn_name in _OFFICE_OBSERVATION_ARGS:
             for key in _OFFICE_OBSERVATION_ARGS[fn_name]:
@@ -6227,11 +6331,19 @@ class _DocToolExecutor:
         bash) and gates them through workspace sandbox + denylist + optional
         confirm callback. When None, those tools are unavailable.
         """
+        # Plan mode, deny-by-default. One check at the single entry point,
+        # before hooks, before dispatch, covering namespaced MCP calls too
+        # -- rather than a per-family refusal each new tool has to be
+        # remembered into. What it caught the day it was added: scheduling
+        # a future agent turn, creating a worktree and adding a writable
+        # root to the live permissions, running a workspace binary to read
+        # its Python version, and every MCP tool outside three families.
         if permissions is not None and permissions.pre_tool_hook:
             try:
                 permissions.pre_tool_hook(name, arguments)
             except Exception:
                 pass
+
 
         # Settings-driven PreToolUse hooks (.delfin-native).
         # A blocking hook short-circuits dispatch and surfaces the
@@ -6276,6 +6388,25 @@ class _DocToolExecutor:
                     "and researches via search_docs — it does not read/edit source "
                     "or run shell commands."
                 )})
+        elif (getattr(permissions, "mode", "") == "plan"
+                and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
+                and not bool((arguments or {}).get("check_only"))):
+            # Plan mode, deny-by-default. One gate covering everything the
+            # per-family refusals had not been remembered into -- future
+            # agent turns, worktrees that widen the live permissions,
+            # workspace binaries, and every MCP tool -- judged on the bare
+            # name so a namespaced call cannot route around it.
+            #
+            # It sits AFTER the role check on purpose: a role that can
+            # NEVER use a tool should be told that, not told it is merely
+            # the wrong mode. The more permanent reason is more useful.
+            # A check_only call is a dry run and stays allowed.
+            result = json.dumps({"error": (
+                f"plan mode (read-only) — '{_bare_tool_name(name)}' "
+                "rejected because it can change something. Finish "
+                "investigating, then call exit_plan_mode with the plan; "
+                "execution begins after the user approves it."
+            )})
         elif block_reason:
             result = json.dumps({
                 "error": "blocked_by_hook",
@@ -6407,13 +6538,22 @@ class _DocToolExecutor:
         if name not in self._AUDITED_TOOLS:
             return
         from . import audit_log as _al
-        # Best-effort decision parsing.
+        # Best-effort decision parsing, and the reason with it. The gate
+        # already wrote a sentence saying which rule refused and what to do
+        # instead; it went to the model and was dropped here, so the
+        # durable record could only ever say "denied".
         decision = "ok"
+        reason = ""
         if isinstance(result, str):
             if result.startswith('{"error"'):
                 decision = "denied"
+                try:
+                    reason = str((json.loads(result) or {}).get("error", ""))
+                except Exception:
+                    reason = result[:300]
             elif '"status": "denied"' in result[:200]:
                 decision = "denied"
+                reason = result[:300]
         mode = ""
         session_id = ""
         if permissions is not None:
@@ -6427,6 +6567,7 @@ class _DocToolExecutor:
             path=str(arguments.get("path", "")),
             command=str(arguments.get("command", "")),
             session_id=session_id,
+            reason=reason,
             extra={"cwd": cwd} if cwd else None,
         )
         _al.append(record)
@@ -8335,9 +8476,21 @@ class _DocToolExecutor:
         (r"\b(?:scp|rsync)\b[^|;&\n]*\s\S+@\S+:", "copy to a remote host"),
     )
 
-    def _scan_bash_egress(self, cmd: str) -> Optional[str]:
-        """Detect an outbound data-transfer (exfiltration) command. Returns a
-        short reason, or None. Pure regex over the command; never raises."""
+    def _scan_bash_egress(
+        self, cmd: str, perms: Optional["KitToolPermissions"] = None,
+    ) -> Optional[str]:
+        """Detect an outbound data-transfer (exfiltration) command.
+
+        Returns a short reason, ``EGRESS_UNCHECKABLE`` when the scan itself
+        failed under a locked scope, or None. Pure regex over the command;
+        never raises.
+
+        ``perms`` decides only what a FAILED scan means. It was read here
+        without being a parameter — the fail-closed branch raised NameError
+        instead of failing closed, and returned a JSON object from a
+        function whose contract is a short label. Both were invisible
+        because a regex search over a string effectively never raises.
+        """
         try:
             for pat, label in self._EGRESS_PATTERNS:
                 if re.search(pat, cmd, re.IGNORECASE):
@@ -8351,12 +8504,7 @@ class _DocToolExecutor:
             if getattr(perms, "scope_locked", False):
                 _record_security_event(
                     "locked_scope_parse", "bash", str(exc)[:80], blocked=True)
-                return json.dumps({"error": (
-                    "blocked: this command could not be checked against the "
-                    f"boundary of {perms.workspace}, and this session cannot "
-                    "run what it cannot check. Rewrite it as something "
-                    "simpler, or tell the user what you need."
-                )})
+                return EGRESS_UNCHECKABLE
             return None
         return None
 
@@ -8719,7 +8867,14 @@ class _DocToolExecutor:
             # routed through the normal user approval otherwise (so an
             # interactive user stays in control — ordinary downloads, GET
             # curl/git/pip, are never flagged).
-            egress = self._scan_bash_egress(cmd)
+            egress = self._scan_bash_egress(cmd, perms)
+            if egress == EGRESS_UNCHECKABLE:
+                return (
+                    "blocked: this command could not be checked against the "
+                    f"boundary of {perms.workspace}, and this session cannot "
+                    "run what it cannot check. Rewrite it as something "
+                    "simpler, or tell the user what you need."
+                )
             if egress is not None:
                 _record_security_event(
                     "egress", "bash", f"{egress}: {cmd[:80]}",
@@ -10885,6 +11040,34 @@ class _DocToolExecutor:
 
     # ------- Skill invocation ---------------------------------------------
 
+    @staticmethod
+    def _session_domain(perms: Optional["KitToolPermissions"]) -> str:
+        """Which half of the skill catalogue this session can execute.
+
+        Reuses the memory store's vocabulary (office / code) rather than
+        inventing a second one, and reads the FOLDER as well as the role:
+        a registered office folder is an office session whatever the role
+        string says. Returns "" when it cannot tell, which disables
+        filtering — a catalogue is advertising, and failing open there
+        costs tokens while failing closed would hide a skill the session
+        legitimately has.
+        """
+        if perms is None:
+            return ""
+        try:
+            from .memory_store import (
+                DOMAIN_CODE, DOMAIN_OFFICE, domain_for_role,
+                is_office_workspace,
+            )
+            if domain_for_role(getattr(perms, "agent_role", "") or "") == DOMAIN_OFFICE:
+                return DOMAIN_OFFICE
+            workspace = getattr(perms, "workspace", None)
+            if workspace is not None and is_office_workspace(workspace):
+                return DOMAIN_OFFICE
+            return DOMAIN_CODE
+        except Exception:
+            return ""
+
     def _execute_skill(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -10900,11 +11083,25 @@ class _DocToolExecutor:
         if not name:
             return json.dumps({"error": "skill name must be non-empty"})
         workspace = perms.workspace if perms is not None else None
+        domain = self._session_domain(perms)
+        # Look it up unfiltered first: "no such skill" and "that skill does
+        # not apply here" are different mistakes, and answering the second
+        # with the first invites the model to retry the same name.
         sk = _skills_mod.get_skill(name, workspace)
+        available = [s.name for s in
+                     _skills_mod.discover_skills(workspace, domain=domain)]
         if sk is None:
-            available = [s.name for s in _skills_mod.discover_skills(workspace)]
             return json.dumps({
                 "error": f"skill '{name}' not found",
+                "available": available,
+            })
+        if not sk.applies_to(domain):
+            return json.dumps({
+                "error": (
+                    f"skill '{name}' exists but does not apply to this "
+                    f"workspace ({domain}) — its steps call tools this "
+                    "session cannot reach. Use one of the listed skills, "
+                    "or do the work with the tools you have."),
                 "available": available,
             })
         body = _skills_mod.render_skill_invocation(sk, args)
@@ -12042,6 +12239,62 @@ class OpenAIClient(_BaseClient):
             with self._steer_lock:
                 self._steer_msgs.append(t)
 
+    def _turn_cost_cap(self) -> float:
+        """This turn's spending ceiling in USD, or 0.0 for no ceiling.
+
+        The engine owns the number and used to be the only place that
+        checked it -- inside its ``message_delta`` handler, which every
+        client emits exactly once, at the END of a turn. So the "per-turn
+        circuit breaker" was a post-mortem: a turn could run its whole
+        round budget, each round a fresh request carrying the accumulated
+        tool context, and the ceiling was consulted afterwards. The same
+        defect disabled the scheduler's per-entry budget, which is
+        implemented by overriding that same cap.
+        """
+        probe = getattr(self, "turn_cost_cap", None)
+        if probe is None:
+            return 0.0
+        try:
+            return max(0.0, float(probe() or 0.0))
+        except Exception:
+            return 0.0
+
+    def _stop_was_requested(self) -> bool:
+        """Whether the caller asked this turn to stop.
+
+        The engine checks its own flag between STREAM EVENTS. The tool loop
+        runs between those events, so during a ten-minute command or a
+        stalled stream nothing observed the flag at all -- Stop turned the
+        spinner off and the work carried on. The engine installs a probe
+        here; a client without one behaves exactly as before.
+        """
+        probe = getattr(self, "should_stop", None)
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:
+            return False
+
+    def _drain_turn_steering(self) -> list[str]:
+        """Steering blocks that became true while this turn was running.
+
+        The engine owns the blocks and installs a callback here (see
+        ``AgentEngine._drain_turn_steering``); the loop just asks between
+        rounds. Same reasoning as the background-job events above: the
+        system prompt is built once per turn, so anything that changes
+        after it is built has no other way in. Best-effort and never
+        raises — a bookkeeping callback must not end a working turn.
+        """
+        provider = getattr(self, "steering_provider", None)
+        if provider is None:
+            return []
+        try:
+            blocks = provider() or []
+        except Exception:
+            return []
+        return [str(b) for b in blocks if str(b or "").strip()]
+
     def _drain_background_events(self) -> list[str]:
         """Completion notices for jobs that finished during this turn.
 
@@ -12353,7 +12606,11 @@ class OpenAIClient(_BaseClient):
         try:
             from .skills import discover_skills as _disc_skills
             _ws_sk = self._permissions.workspace if self._permissions else None
-            _skills = _disc_skills(_ws_sk)
+            # Only the skills this session can actually follow. Advertising
+            # the others cost 125 tokens a turn to name playbooks whose
+            # first step calls a tool the role is denied.
+            _skills = _disc_skills(
+                _ws_sk, domain=self._session_domain(self._permissions))
             if _skills:
                 _listing = "; ".join(
                     s.name + (f" — {s.description[:70]}" if s.description else "")
@@ -12618,6 +12875,40 @@ class OpenAIClient(_BaseClient):
         _tool_budget = _tool_context_char_budget(_caps)
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
+            # A Stop the user pressed while a tool was running. The engine
+            # only checks its flag between STREAM EVENTS, and everything
+            # this loop does happens between them -- so during a long
+            # command Stop turned the spinner off and the work carried on.
+            # Ending here leaves the rounds already completed intact.
+            if self._stop_was_requested():
+                yield StreamEvent(type="text_delta", text=(
+                    "\n⏹️ Stopped. The rounds completed so far are kept; "
+                    "send a message to continue from here.\n"))
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=_total_in, output_tokens=_total_out,
+                    cost_usd=self._estimate_cost(_total_in, _total_out),
+                    cached_tokens=_total_cached, stop_reason="stopped")
+                return
+            # The turn's spending ceiling, checked where the spending
+            # happens. Evaluating it only on the terminal event meant one
+            # check per turn after up to several hundred billed requests.
+            _cap = self._turn_cost_cap()
+            if _cap > 0:
+                _spent = self._estimate_cost(_total_in, _total_out)
+                if _spent >= _cap:
+                    yield StreamEvent(type="text_delta", text=(
+                        f"\n🛑 This turn reached its cost ceiling "
+                        f"(${_spent:.2f} of ${_cap:.2f}) and was stopped. "
+                        "The work done so far is kept — raise "
+                        "agent.cost_hard_limit_usd or send 'continue' to "
+                        "go on.\n"))
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in, output_tokens=_total_out,
+                        cost_usd=_spent, cached_tokens=_total_cached,
+                        stop_reason="cost_cap")
+                    return
             # Semantic context editing: once accumulated tool output over
             # this loop grows large, elide the OLDEST tool results (keep
             # the recent ones + all reasoning) so a long agentic turn
@@ -12960,7 +13251,7 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name="<malformed>",
-                            tool_output=result[:2000],
+                            tool_output=_redact_tool_result(result)[:2000],
                         )
                         api_messages.append({
                             "role": "tool",
@@ -12983,7 +13274,7 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name=fn_name,
-                            tool_output=result[:2000],
+                            tool_output=_redact_tool_result(result)[:2000],
                         )
                         api_messages.append({
                             "role": "tool",
@@ -13039,7 +13330,7 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name=_ap_display,
-                            tool_output=result[:2000],
+                            tool_output=_redact_tool_result(result)[:2000],
                         )
                         api_messages.append({
                             "role": "tool",
@@ -13246,12 +13537,23 @@ class OpenAIClient(_BaseClient):
                     except Exception:
                         pass
 
-                    # Emit tool_result event for UI display
+                    # Emit tool_result event for UI display.
+                    #
+                    # Redacted HERE, not only on the context-bound copy
+                    # below. This event is what the engine writes to
+                    # ~/.delfin/tool_traces/<sid>.jsonl, and that file is
+                    # created with a plain append and no chmod (observed
+                    # 0664, 426 files), then bundled into a bug report
+                    # whose packer explicitly adds group-read to every
+                    # path. So a token that appeared in a traceback was
+                    # stripped from the transcript, which is why nobody
+                    # would notice, and written verbatim to a
+                    # group-readable file that gets shipped.
                     yield StreamEvent(
                         type="tool_result",
                         tool_name=fn_name if (is_mcp or is_mcp_meta)
                                   else f"mcp__{ns_prefix}__{fn_name}",
-                        tool_output=result[:2000],
+                        tool_output=_redact_tool_result(result)[:2000],
                     )
 
                     # Truncate the *context-bound* copy so a 200 kB MCP
@@ -13371,6 +13673,16 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "user", "content": _job_note})
                     yield StreamEvent(
                         type="text_delta", text="\n\n" + _job_note + "\n")
+
+                # Steering blocks that changed since the turn started (open
+                # tasks, budget wind-down, a late answer). Injected here and
+                # NOT yielded to the chat: the dashboard already shows the
+                # task list and the budget, so echoing them into the
+                # conversation would be noise for the reader while the model
+                # is the one that needs them.
+                for _steer_block in self._drain_turn_steering():
+                    api_messages.append(
+                        {"role": "user", "content": _steer_block})
 
                 # Plan-mode redirect. When this round hit the plan-mode gate
                 # (task_create / write / bash / apply_patch all reject with

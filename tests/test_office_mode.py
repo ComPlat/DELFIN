@@ -182,12 +182,25 @@ def _office_block() -> str:
         'if mode_dropdown.value == "office":', 1)[1][:2200]
 
 
-def test_office_sessions_are_pointed_at_the_office_folder():
+def test_office_sessions_are_pointed_at_the_office_folder(tmp_path):
     """The permission workspace comes from repo_dir (create_client passes it
-    as cwd), so that is the line that decides which folder is enclosed."""
+    as cwd), so that is the line that decides which folder is enclosed.
+
+    The folder used to be resolved inline; it now goes through
+    ``resolve_office_workspace``, which also refuses rather than falling
+    back to the launch directory. Assert the guarantee through that
+    function and the assignment it feeds -- reading the resolution out of
+    the source text only ever tested that a particular spelling survived.
+    """
+    from delfin.dashboard.tab_agent import resolve_office_workspace
+
     block = _office_block()
-    assert "ctx.office_dir" in block
+    assert "resolve_office_workspace(" in block
     assert "repo_dir = _office_p" in block
+
+    configured = tmp_path / "Dokumente"
+    assert resolve_office_workspace(configured) == configured.resolve()
+    assert configured.is_dir()
 
 
 def test_office_sessions_drop_the_other_reachable_roots():

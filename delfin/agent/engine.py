@@ -20,6 +20,13 @@ _LEGACY_MODE_MAP = {
     "high_risk": "reviewed",
     "runtime_cluster": "cluster",
     "release": "full",
+    # Pipeline was never a mode in any sense the rest of the system used:
+    # it routed to solo_agent, ran the same tools, and differed only by a
+    # page of instructions. That page is a procedure, so it is a skill
+    # (`pipeline-build`) — reachable from the coding mode without having
+    # to switch into a mode you can then be stuck in, and paid for only
+    # when it is invoked. Saved sessions and `/mode pipeline` land here.
+    "pipeline": "solo",
 }
 
 
@@ -264,6 +271,25 @@ _KIT_CODING_PREFIX = "mcp__kit-coding__"
 _DASHBOARD_SOURCE_DENY = frozenset({
     "read_file", "grep_file", "list_files", "glob_files",
 })
+# Roles that drive a conversation and therefore receive the per-turn steering
+# blocks (open tasks, finished jobs, budget, late answers). The pipeline roles
+# run one scripted step each and have no list of their own to keep.
+_STEERING_ROLES = ("solo_agent", "dashboard_agent", "office_agent")
+# Of those blocks, the ones worth re-sending when they change mid-turn. The
+# project pin never changes within a turn, and the backend notice is a
+# session-opening statement — re-sending either would cost tokens to say
+# what the system prompt already says.
+_MID_TURN_STEERING_KEYS = frozenset({
+    "context_status", "open_tasks", "unmet_delegation", "unmet_tasklist",
+    "finished_jobs", "budget", "answered",
+})
+# Blocks backed by a store that drains: their content is new by construction,
+# so comparing it against the last delivery would suppress a real event that
+# happens to read the same as an earlier one.
+_DRAINED_STEERING_KEYS = frozenset({"finished_jobs", "answered"})
+# Ceiling on mid-turn steering deliveries. A block that flaps (a task list
+# edited repeatedly) must not be able to spend a turn's context on itself.
+_MAX_STEERING_REFRESHES = 6
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
@@ -412,6 +438,10 @@ class AgentEngine:
         # input count). Backends that only report usage in message_delta get
         # an accounting-only fallback there.
         self._saw_message_start: bool = False
+        # Whether this turn's compaction floor has been taken.
+        # Separate from _saw_message_start, which also tracks a
+        # zero-token event and feeds the accounting fallback.
+        self._floor_captured_this_turn: bool = False
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
@@ -462,10 +492,27 @@ class AgentEngine:
         # exercised. Filled live from tool calls (see _note_exec_command),
         # cleared on a new work cycle like the rest of the session state.
         self._exec_commands_session: list[str] = []
+        # Commands issued but not yet known to have run. Committed to the
+        # ledger above only once their result shows they did.
+        self._exec_pending: list[tuple[str, str]] = []
         # Live state: a per-turn snippet (Dashboard widget state, calc folder,
         # etc.) appended to the system prompt — keeps it OUT of the user
         # message body so it doesn't accumulate in self.messages history.
         self._live_state: str = ""
+        # What the per-turn steering blocks said when this turn's system
+        # prompt was built, keyed by block. The system prompt is frozen for
+        # the whole tool loop, so a block that becomes true DURING the turn
+        # (a task created in round 2, the budget crossing its threshold)
+        # could not reach the model at all. Comparing against this map is
+        # what makes a mid-loop re-delivery carry only what CHANGED.
+        self._steering_delivered: dict[str, str] = {}
+        # Mid-turn deliveries used so far this turn (see _drain_turn_steering).
+        self._steering_refreshes: int = 0
+        # One turn at a time per conversation. See the gate in
+        # stream_response: two workers on one engine interleave the history
+        # and the per-turn cost state.
+        self._turn_gate = threading.Lock()
+        self._turn_in_flight: bool = False
         # Project-directory pin: the dir of the FIRST project write this
         # session. Re-injected every turn so the agent keeps writing there and
         # doesn't drift into sibling folders over a long session (a framework
@@ -499,11 +546,22 @@ class AgentEngine:
             pass
         try:
             from .context_distiller import ContextDistiller
-            # "pipeline" runs the solo agent; omitting it here left the
-            # distiller off for a mode that carries MORE prompt than solo.
-            _enable = self.mode in ("solo", "pipeline", "quick", "reviewed",
-                                    "tdd", "cluster", "full")
-            self._distiller = ContextDistiller(enabled=_enable)
+            _provider = (getattr(self, "provider", "") or "claude").lower()
+            # Only where the distiller's compression path actually works.
+            # Its API call builds an Anthropic client from the ambient
+            # environment; on any other provider that call fails and the
+            # lossy line-level fallback becomes the ONLY path -- silently,
+            # with no marker in the prompt and nothing written to the
+            # elision store. Measured on the shipped pack, that fallback
+            # keeps 18-35% of a section and cuts in file order, so the
+            # last sections get zero budget: live state and session
+            # environment were deleted in full, every time it ran.
+            _enable = (
+                self.mode in ("solo", "quick", "reviewed", "tdd",
+                              "cluster", "full")
+                and _provider in ("claude", "anthropic"))
+            self._distiller = ContextDistiller(
+                enabled=_enable, provider=_provider)
         except Exception:
             pass
 
@@ -1145,6 +1203,103 @@ class AgentEngine:
         except Exception:
             return ""
 
+    def _steering_blocks(self, role: str) -> list[tuple[str, str]]:
+        """The per-turn steering blocks for an interactive role, in prompt
+        order, as ``(key, text)`` with empty blocks dropped.
+
+        One builder for two consumers — the turn-start system prompt and the
+        mid-loop refresh. Kept as a single list on purpose: two copies of
+        this order would drift, and the second consumer would then silently
+        re-send blocks the first had already delivered.
+        """
+        pairs: list[tuple[str, str]] = []
+        # Context-usage snapshot and the project pin are solo-only (other
+        # roles run in pipeline mode with their own budgets, and office is
+        # pinned to its folder by construction); the open-tasks reminder
+        # applies to every interactive role that drives the task list.
+        if role == "solo_agent":
+            pairs.append(("project_dir", self._build_project_dir_block()))
+            pairs.append(("context_status", self._build_context_status_block()))
+        pairs.append(("open_tasks", self._build_open_tasks_block()))
+        pairs.append(("foreign_tasks", self._build_open_foreign_tasks_block()))
+        pairs.append(("unmet_delegation", self._build_unmet_delegation_block()))
+        pairs.append(("unmet_tasklist", self._build_unmet_tasklist_block()))
+        pairs.append(("finished_jobs", self._build_finished_jobs_block()))
+        pairs.append(("budget", self._build_budget_block()))
+        pairs.append(("answered", self._build_answered_attention_block()))
+        # One-time backend capability notice: reduced surfaces (no tool
+        # loop, no verify enforcement, ...) are stated at session start
+        # instead of failing silently mid-task. Best-effort — a missing
+        # attribute on a partially built engine must not break the
+        # prompt build.
+        try:
+            from .backend_parity import degradation_notice as _deg_notice
+            pairs.append(("backend_parity", _deg_notice(
+                getattr(self, "backend", "") or "",
+                getattr(self, "provider", "") or "",
+                first_turn=len(self.messages) <= 1,
+                has_permissions=self.kit_permissions is not None) or ""))
+        except Exception:
+            pass
+        return [(key, text) for key, text in pairs if text]
+
+    def _drain_turn_steering(self) -> list[str]:
+        """Steering blocks that became true *during* the running turn.
+
+        The system prompt is built once and then frozen for the whole tool
+        loop. Every block above therefore describes the world as it was
+        before the first tool call: a task the agent creates in round 2 is
+        absent from the reminder that exists to make it check the task off,
+        and a run budget crossing its wind-down threshold in round 30 is
+        not read until the user sends another message. Measured on this
+        project's benchmark workspaces, every one of these blocks is empty
+        at turn start — so for a single-turn task they never fire at all.
+
+        Returns the blocks whose text has CHANGED since the last delivery,
+        capped per turn. Drain-backed blocks (finished jobs, late answers)
+        are consumed exactly once by their own store, so they are passed on
+        as they come. Read-only and best-effort: this runs inside the tool
+        loop and must never end a turn that is otherwise working.
+        """
+        role = self.current_role or (self.route[0] if self.route else "")
+        if role not in _STEERING_ROLES:
+            return []
+        # Off-switch, for measuring this mechanism against itself: a
+        # benchmark arm can run with the refresh disabled and be compared
+        # against one that has it, which is the only way to put a number on
+        # what it is worth.
+        import os as _os
+        if _os.environ.get(
+                "DELFIN_TURN_STEERING", "").strip() in ("0", "off", "false"):
+            return []
+        if self._steering_refreshes >= _MAX_STEERING_REFRESHES:
+            return []
+        try:
+            pairs = self._steering_blocks(role)
+        except Exception:
+            return []
+        out: list[str] = []
+        for key, text in pairs:
+            if key not in _MID_TURN_STEERING_KEYS:
+                continue
+            if key in _DRAINED_STEERING_KEYS:
+                # Its store already guarantees exactly-once delivery.
+                out.append(text)
+                continue
+            # A window-usage line that ticks up a percent every round would
+            # be pure noise; it is worth a turn's attention only once it
+            # warns about the compaction that is about to fire.
+            if key == "context_status" and "WARNING" not in text:
+                continue
+            if self._steering_delivered.get(key) == text:
+                continue
+            self._steering_delivered[key] = text
+            out.append(text)
+        if out:
+            self._steering_refreshes += 1
+        return [f"[live update — this changed since the turn started]\n{t}"
+                for t in out]
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -1179,53 +1334,14 @@ class AgentEngine:
         # question that timed out. The context snapshot and the project pin
         # stay solo-only -- office is pinned to its folder by construction,
         # so a pin block would state what the lock already guarantees.
-        if role in ("solo_agent", "dashboard_agent", "office_agent"):
-            extra_blocks: list[str] = []
-            # Context-usage snapshot is solo-only (other roles run in pipeline
-            # mode with their own budgets); the open-tasks reminder applies to
-            # every interactive role that drives the task list.
-            if role == "solo_agent":
-                proj_block = self._build_project_dir_block()
-                if proj_block:
-                    extra_blocks.append(proj_block)
-                ctx_status = self._build_context_status_block()
-                if ctx_status:
-                    extra_blocks.append(ctx_status)
-            tasks_block = self._build_open_tasks_block()
-            if tasks_block:
-                extra_blocks.append(tasks_block)
-            foreign_block = self._build_open_foreign_tasks_block()
-            if foreign_block:
-                extra_blocks.append(foreign_block)
-            delegation_block = self._build_unmet_delegation_block()
-            if delegation_block:
-                extra_blocks.append(delegation_block)
-            tasklist_block = self._build_unmet_tasklist_block()
-            if tasklist_block:
-                extra_blocks.append(tasklist_block)
-            jobs_block = self._build_finished_jobs_block()
-            if jobs_block:
-                extra_blocks.append(jobs_block)
-            budget_block = self._build_budget_block()
-            if budget_block:
-                extra_blocks.append(budget_block)
-            answers_block = self._build_answered_attention_block()
-            if answers_block:
-                extra_blocks.append(answers_block)
-            # One-time backend capability notice: reduced surfaces (no tool
-            # loop, no verify enforcement, ...) are stated at session start
-            # instead of failing silently mid-task. Best-effort — a missing
-            # attribute on a partially built engine must not break the
-            # prompt build.
-            try:
-                from .backend_parity import degradation_notice as _deg_notice
-                extra_blocks.extend(filter(None, [_deg_notice(
-                    getattr(self, "backend", "") or "",
-                    getattr(self, "provider", "") or "",
-                    first_turn=len(self.messages) <= 1,
-                    has_permissions=self.kit_permissions is not None)]))
-            except Exception:
-                pass
+        if role in _STEERING_ROLES:
+            pairs = self._steering_blocks(role)
+            # Remember what each block said here, so the mid-loop refresh
+            # (see _drain_turn_steering) re-sends a block only once it has
+            # actually changed.
+            self._steering_delivered = dict(pairs)
+            self._steering_refreshes = 0
+            extra_blocks: list[str] = [text for _, text in pairs]
             if extra_blocks:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
@@ -1349,6 +1465,28 @@ class AgentEngine:
         except Exception:
             pass
 
+        # One conversation, one turn at a time. Nothing used to refuse a
+        # second turn while the first was still running: a Stop clears the
+        # widget flag without waiting for the worker, so the next send
+        # started a second thread on THIS engine. Both appended to this
+        # message list, both mutated the per-turn cost state, and both ran
+        # tools in the same workspace. The guard belongs here, on the object
+        # that owns the conversation, not on a flag a Stop has already
+        # cleared.
+        with self._turn_gate:
+            if self._turn_in_flight:
+                _busy = (
+                    "A turn is already running on this session. Stop it "
+                    "first, or send this once it has finished — starting a "
+                    "second turn would interleave both into one history.")
+                if on_token:
+                    try:
+                        on_token(_busy)
+                    except Exception:
+                        pass
+                return _busy
+            self._turn_in_flight = True
+
         self.messages.append(self._build_user_message(user_message, images))
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
@@ -1378,6 +1516,36 @@ class AgentEngine:
         # in the message list, since the API takes it as a separate arg.
         self.last_system_prompt = system_prompt
         self._system_prompt_chars = len(system_prompt or "")
+
+        # Let the tool loop re-read the steering blocks between rounds. The
+        # system prompt above is frozen from here until the turn ends, so
+        # without this callback anything that becomes true during the turn
+        # waits for the next user message. Best-effort: a client that does
+        # not look for the attribute is unaffected by carrying it.
+        try:
+            self.client.steering_provider = self._drain_turn_steering
+        except Exception:
+            pass
+
+        # Let the tool loop see a Stop. The engine only checks its own flag
+        # between STREAM EVENTS, and the loop that runs tools between those
+        # events never looked at it -- the name did not occur in the client
+        # module at all. During a long command or a stalled stream, Stop set
+        # a flag nobody read.
+        try:
+            self.client.should_stop = lambda: bool(self._stop_requested)
+        except Exception:
+            pass
+
+        # ...and the turn's cost ceiling, for the same reason: the check
+        # below fires on message_delta, which every client emits once, at
+        # the end. Checked in the loop it bounds the spend instead of
+        # reporting it.
+        try:
+            self.client.turn_cost_cap = lambda: float(
+                getattr(self, "_cost_cap_value", 0.0) or 0.0)
+        except Exception:
+            pass
 
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
@@ -1410,6 +1578,7 @@ class AgentEngine:
         _ckpt_events = 0
         _ckpt_last = _turn_t0
         self._saw_message_start = False
+        self._floor_captured_this_turn = False
         # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
         # single turn's tool-loop can't run away forever. Resets every turn — it
         # is NOT a cumulative session budget. (_MAX_TOOL_ROUNDS already bounds
@@ -1502,9 +1671,17 @@ class AgentEngine:
                     _turn_tool_calls += 1
                     _turn_tool_names.append(event.tool_name)
                     # Evidence for the functional-claim guard: record WHAT
-                    # was executed, not just that some tool ran.
-                    self._note_exec_command(
-                        event.tool_name, event.tool_input)
+                    # was executed, not just that some tool ran. Held here
+                    # and committed when the RESULT arrives -- recording it
+                    # at the call meant a command that was denied by a
+                    # gate, blocked by a hook, or died with a traceback
+                    # counted as "run", and the guard that exists to catch
+                    # "it works now" then found its evidence. The ledger is
+                    # about what happened, not what was attempted.
+                    self._exec_pending.append(
+                        (event.tool_name, event.tool_input))
+                    if len(self._exec_pending) > 64:
+                        del self._exec_pending[:-64]
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
                     self._maybe_pin_project_dir(
@@ -1515,6 +1692,9 @@ class AgentEngine:
                 elif event.type == "tool_result":
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
+                    # Commit the held command only if it actually ran.
+                    self._commit_exec_command(
+                        event.tool_name, event.tool_output or "")
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -1526,8 +1706,22 @@ class AgentEngine:
                     _out = event.tool_output or ""
                     if "truncated," in _out and "chars" in _out:
                         self._note_truncated_tool(event.tool_name or "a tool")
+                    # Whether it worked is decided by the result, not
+                    # asserted. ok=True was hardcoded here, and the only
+                    # writer of ok=False is the permission_denied event --
+                    # which ONLY the CLI backend emits. On every other
+                    # backend a gate refusal arrives as an ordinary
+                    # tool_result carrying {"error": ...} and was traced
+                    # green. Five consumers read this flag: /trace printed
+                    # a checkmark for the blocked call, the aggregates
+                    # reported an error rate of zero forever, `/agents
+                    # tools` showed a permanent 0% error column, and the
+                    # live panel rendered a green tick. A user looking for
+                    # what went wrong found a clean list.
+                    _failed, _reason = self._tool_result_failed(_out)
                     self._record_tool_trace(
-                        event.tool_name, event.tool_output or "", ok=True)
+                        event.tool_name, _out,
+                        ok=not _failed, error=_reason)
                     # Crash insurance: full session saves happen only at
                     # turn boundaries, but one turn can run hundreds of
                     # tool rounds — persist a cheap checkpoint (throttled,
@@ -1568,10 +1762,35 @@ class AgentEngine:
                         self.token_usage["input"] += event.input_tokens
                         self._saw_message_start = True
                         # Snapshot the real per-request input count so the
-                        # compaction budget can use it as a ground-truth floor
-                        # (it includes the system prompt + tool schemas that
-                        # self.messages omits).
-                        if event.input_tokens:
+                        # compaction budget can use it as a ground-truth
+                        # floor (it includes the system prompt + tool
+                        # schemas that self.messages omits) -- but only
+                        # from the FIRST request of the turn.
+                        #
+                        # The tool-loop backends emit one message_start per
+                        # ROUND, and each later round carries that turn's
+                        # accumulated tool results. Those results never
+                        # enter self.messages and are gone by the time the
+                        # next request is built, so keeping round N made the
+                        # floor the intra-turn peak. Measured on a real
+                        # loop: true next-request size 1,155 tokens, floor
+                        # kept 17,634 -- 15x. The next turn's compaction
+                        # then saw pressure that did not exist and trimmed
+                        # every older message on a conversation occupying
+                        # 2% of the window, every turn, for the rest of the
+                        # session; above the summary threshold it also
+                        # bought an LLM summarisation call to destroy nine
+                        # messages worth 1.5% of the window. The same
+                        # estimate feeds the self-monitoring block, which
+                        # told the agent it was at 89% and should wind down
+                        # while it held one token of history.
+                        #
+                        # The docstring already said "the last real count
+                        # for THIS context". Round N's prompt is this
+                        # context plus ephemeral tool results, so the code
+                        # contradicted its own contract.
+                        if event.input_tokens and not self._floor_captured_this_turn:
+                            self._floor_captured_this_turn = True
                             self._last_input_tokens = int(event.input_tokens)
                             # Fresh provider count -> trims applied since the
                             # previous floor are already reflected in it.
@@ -1625,6 +1844,22 @@ class AgentEngine:
         except Exception as _turn_exc:
             if not chunks:
                 self.messages.pop()
+            else:
+                # Text streamed and then the turn died. Re-raising here
+                # skips the append below, so the history ended on a user
+                # message with no answer -- and the alternation sanitiser
+                # resolves two consecutive user messages by keeping the
+                # NEWEST. The next thing the user typed therefore replaced
+                # their original question, which the dashboard could not
+                # show because it had already printed the partial text.
+                # Commit what arrived, marked as unfinished so the model
+                # does not read its own truncated output as an answer.
+                self.messages.append({
+                    "role": "assistant",
+                    "content": "".join(chunks)
+                    + "\n\n[this turn ended with an error before it "
+                      "finished; the text above is incomplete]",
+                })
             # The FAIL side of the learning loop: errored turns previously
             # recorded NO outcome at all, so provider profiles only ever
             # learned from successes. Classify + record before re-raising.
@@ -1646,6 +1881,10 @@ class AgentEngine:
                 pass
             raise
         finally:
+            # Release the one-turn gate on EVERY exit path. A failed turn
+            # that left it set would make the engine refuse work forever.
+            with self._turn_gate:
+                self._turn_in_flight = False
             # Stop hooks — fire after the stream finishes (success or
             # exception). Failures are silenced so a misconfigured hook
             # never bubbles up.
@@ -1842,6 +2081,74 @@ class AgentEngine:
                        for t in (getattr(self, "_last_turn_tools", None) or ()))
         except Exception:
             return False
+
+    # Result text that means the command did not run, or ran and failed.
+    # A functional claim ("it works now") must not be able to cite any of
+    # these as the run that proves it.
+    # Deliberately narrow, and narrower than the first attempt at it.
+    #
+    # That attempt matched "traceback", "permission denied" and "no such
+    # file or directory" as substrings anywhere in the output. A pytest
+    # run with one failing test contains a traceback, so a run that
+    # demonstrably happened was discarded and the guard then told an
+    # accurate report that the file had never been exercised. Ordinary
+    # stdout says "3 files skipped (Permission denied)" all the time.
+    # A marker that fires on real output makes the guard louder on
+    # CORRECT answers, which is the failure mode that teaches a model to
+    # write around a guard instead of satisfying it.
+    #
+    # What is left are statements that the command itself did not run:
+    # the shell could not find it, a gate refused it, a hook blocked it.
+    # Whether what ran then FAILED is a different question, answered by
+    # the exit code below.
+    _EXEC_FAILURE_MARKERS = (
+        "command not found", "blocked by hook",
+        "is not available to the", "permission denied: cannot execute",
+    )
+    _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
+                               re.IGNORECASE)
+
+    def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
+        """Record a held command, but only if its result shows it ran.
+
+        The ledger used to be written at the CALL. Everything that can go
+        wrong between deciding to run something and it succeeding -- a
+        permission gate, a hook block, a missing interpreter, a traceback,
+        a non-zero exit -- was therefore invisible to it, and the guard
+        that asks "was this artifact ever exercised?" found evidence for a
+        command that never produced output. Best-effort; bookkeeping must
+        never break a turn.
+        """
+        try:
+            pending = self._exec_pending
+            if not pending:
+                return
+            # Results arrive in call order, so the OLDEST unmatched call of
+            # this name is the one this result belongs to. Taking the
+            # newest was guaranteed wrong for a batched round: two bash
+            # calls in one round, the first one's traceback arrives first
+            # and pops the second one's entry -- so the crashed command
+            # ended up in the ledger and the successful one was dropped.
+            for idx, (pname, _) in enumerate(pending):
+                if pname == tool_name:
+                    name, tool_input = pending.pop(idx)
+                    break
+            else:
+                return
+            out = (tool_output or "").strip()
+            if out.lstrip().startswith('{"error"'):
+                return
+            low = out.lower()
+            if any(marker in low for marker in self._EXEC_FAILURE_MARKERS):
+                return
+            # A non-zero exit reported in the last few lines, where a
+            # runner puts it. Searching the whole body would match a
+            # program that merely PRINTS about exit codes.
+            if self._EXIT_CODE_RE.search("\n".join(out.splitlines()[-3:])):
+                return
+            self._note_exec_command(name, tool_input)
+        except Exception:
+            pass
 
     def _note_exec_command(self, tool_name: str, tool_input: str) -> None:
         """Record an executed command in the session ledger.
@@ -2203,6 +2510,29 @@ class AgentEngine:
         id when present, else a per-engine uuid (so OpenAI/KIT/Ollama turns,
         which have no server session id, still get a stable trace file)."""
         return self.session_id or self._trace_id
+
+    @staticmethod
+    def _tool_result_failed(output: str) -> tuple[bool, str]:
+        """Whether a tool result reports a failure, and the reason.
+
+        Every executor returns a refusal or an error as a JSON object with
+        an ``error`` key -- that is the one shape the whole tool layer
+        agrees on, which is why the grounding ledgers key on it too. Read
+        it here rather than trusting the caller's assertion.
+
+        Deliberately NOT a judgement about the content: a command that ran
+        and exited non-zero is a successful tool call reporting a failed
+        command, and conflating the two would make the error rate measure
+        the user's code instead of the agent's tooling.
+        """
+        text = (output or "").lstrip()
+        if not text.startswith('{"error"'):
+            return False, ""
+        try:
+            reason = str((json.loads(output) or {}).get("error", ""))
+        except Exception:
+            reason = text[:200]
+        return True, reason[:300]
 
     def _record_tool_trace(
         self, name: str, output: str = "", *, ok: bool = True, error: str = "",

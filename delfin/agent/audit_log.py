@@ -115,6 +115,15 @@ def append(
             _rotate_if_needed(path, now)
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
+            # 0600 AFTER the write: on the first append the file does
+            # not exist yet, so a chmod before it silently did nothing.
+            # These files carry raw tool output, commands and paths;
+            # they were created at the process umask (observed 0664)
+            # and a bug report bundles them, adding group-read.
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
     except Exception:
         # Audit must not crash the agent. If the user removed the home
         # dir or ran out of disk, the action proceeds without logging.
@@ -171,9 +180,20 @@ def make_record(
     diff_lines_removed: int = 0,
     persistence: Optional[dict] = None,
     session_id: str = "",
+    reason: str = "",
     extra: Optional[dict[str, Any]] = None,
 ) -> dict:
-    """Construct a record dict with the standard fields."""
+    """Construct a record dict with the standard fields.
+
+    ``reason`` carries WHY a call was refused. Without it a denial read
+    "bash: <command> [denied]" and nothing more -- so after an unattended
+    run that stopped having produced nothing, the user could not tell
+    whether it was the deny-list, the secret scan, the egress scan, the
+    workspace boundary, an auto-allow miss or a hook, and therefore could
+    not know what to allow. The gate's own message was handed to the model
+    and then discarded; the only place the rule name survived was a
+    process-local deque that dies with the process.
+    """
     rec: dict[str, Any] = {
         "session_id": session_id,
         "tool": tool,
@@ -181,6 +201,8 @@ def make_record(
         "mode": mode,
         "pid": os.getpid(),
     }
+    if reason:
+        rec["reason"] = str(reason)[:300]
     if path:
         rec["path"] = path
     if command:
@@ -217,7 +239,11 @@ _WRITE_TOOLS = frozenset({
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})
-_DENIED_DECISIONS = frozenset({"denied", "error"})
+# "block" is what a PreToolUse hook writes. It was missing here, so a
+# hook that stopped an edit produced a record that matched none of the
+# write/command/persist families either -- and dropped out of the changes
+# report entirely. A refusal nobody can see is a refusal nobody can undo.
+_DENIED_DECISIONS = frozenset({"denied", "error", "block"})
 
 
 def _read_all_records(log_path: Optional[Path] = None) -> list[dict]:
@@ -289,7 +315,7 @@ def build_changes_report(
 
         {"files_written":        [{"path", "tool", "count"}],
          "commands":             [{"command", "cwd"}],
-         "denied":               [{"tool", "target", "decision"}],
+         "denied":               [{"tool", "target", "decision", "reason"}],
          "permissions_persisted":[{"tool", "persistence"}],
          "window": {"from_ts", "to_ts", "records"}}
 
@@ -336,6 +362,7 @@ def build_changes_report(
                     "tool": tool,
                     "target": path or command,
                     "decision": decision,
+                    "reason": str(rec.get("reason", "") or ""),
                 })
                 continue
             if tool in _WRITE_TOOLS and path:
@@ -401,9 +428,14 @@ def format_changes_report(report: dict) -> str:
         if denied:
             lines.append("Denied / failed:")
             for d in denied:
+                # The reason is the whole point of the line. Without it
+                # the report says something was refused and leaves the
+                # user unable to find out which rule to relax.
+                _why = str(d.get("reason", "") or "").strip()
                 lines.append(
                     f"- {d.get('tool', '?')}: {d.get('target', '?')}"
-                    f" [{d.get('decision', 'denied')}]")
+                    f" [{d.get('decision', 'denied')}]"
+                    + (f" — {_why}" if _why else ""))
         if persisted:
             lines.append("Permissions persisted:")
             for p in persisted:

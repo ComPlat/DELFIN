@@ -1,3 +1,6 @@
+---
+domains: office
+---
 # Fill a form or letter template
 > Fill a PDF form or a Word template from given data and verify the result before handing it over.
 

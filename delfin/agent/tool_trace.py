@@ -11,6 +11,8 @@ per-file size, and silently no-ops on any IO error.
 
 from __future__ import annotations
 
+import os
+
 import json
 import time
 from collections import Counter
@@ -75,6 +77,15 @@ def record(
         }
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # 0600 AFTER the write: on the first append the file does
+        # not exist yet, so a chmod before it silently did nothing.
+        # These files carry raw tool output, commands and paths;
+        # they were created at the process umask (observed 0664)
+        # and a bug report bundles them, adding group-read.
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
     except Exception:
         pass
 

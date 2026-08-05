@@ -1065,6 +1065,54 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
             ("Accept Edits", "repo_free"), ("Bypass", "all_free")]
 
 
+def resolve_office_workspace(configured) -> Path | None:
+    """The one folder an office session may work in, or ``None``.
+
+    Office is DEFINED by its folder: the permission layer locks the role
+    to the workspace, so the workspace is the boundary the user was shown.
+    The dashboard used to resolve it and, on failure, simply skip the
+    block that assigns it — leaving the session running as office_agent
+    with the LAUNCH directory as its workspace, and locked to it. The user
+    is told "Office works in your documents folder" while the agent is
+    confined to the DELFIN checkout.
+
+    A wrong folder is worse than no session, because nothing about it
+    looks wrong from the outside. So: the configured folder, then the
+    documented default, and if neither can be made to exist, nothing.
+    """
+    for candidate in (configured, Path.home() / "office"):
+        if candidate is None:
+            continue
+        p = Path(candidate)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if p.is_dir():
+            try:
+                return p.resolve()
+            except OSError:
+                continue
+    return None
+
+
+# Slash commands the AGENT must never be able to run. The dashboard
+# executes any line of model output beginning with ACTION as a slash
+# command, in every mode -- which is how the model drives the UI, and is
+# the point of the mechanism. But `/perms all_free` switches the live
+# engine to bypassPermissions AND writes the profile into the user's
+# settings file, so a session deliberately placed on Plan could be talked
+# into "asks nothing", permanently, by one line of generated text. The
+# ladder is only a ladder if the thing it restrains cannot climb it.
+_USER_ONLY_SLASH_COMMANDS = frozenset({"/perms", "/perm-cycle"})
+
+
+def _slash_is_user_only(cmd: str) -> bool:
+    """Whether this command may come only from the person, not the model."""
+    first = (cmd or "").strip().split(" ", 1)[0].strip().lower()
+    return first in _USER_ONLY_SLASH_COMMANDS
+
+
 def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
     """Whether switching between these modes moves the working folder.
 
@@ -1263,6 +1311,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
   ("Memory", "/memories", "List project memories", False),
   ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Session", "/changes", "What this session changed (audit log): files, commands, denials", False),
+    ("Session", "/undo-file", "Undo agent FILE changes from the undo journal (list | last | turn | session) — restores content, unlike /undo which only drops context", False),
     ("Session", "/pending", "List staged diffs awaiting approval (diff-approval mode)", False),
     ("Session", "/approve", "Apply a staged diff (/approve <id|all>)", True),
     ("Session", "/reject", "Discard a staged diff (/reject <id|all>)", True),
@@ -3132,11 +3181,9 @@ def create_tab(ctx):
         "solo": "Code — direct, terminal-style coding agent on your own code: ask "
                 "questions, read & edit files, run sandboxed shell commands, debug, "
                 "refactor. Delegates to subagents for parallel/background work. For "
-                "read-only-first planning, set Perms = Plan.",
-        "pipeline": "Pipeline Builder — assemble/validate/run computational-chemistry "
-                    "pipelines via the delfin-tools MCP server (get_guide → discover → "
-                    "build → validate → save → submit). Results in ~/calc; needs the "
-                    "delfin-tools MCP server registered.",
+                "read-only-first planning, set Perms = Plan. To assemble a "
+                "computational-chemistry pipeline, ask for it here — the "
+                "`pipeline-build` skill carries that procedure.",
         "office": "Office — administrative work on your documents and data: "
                   "spreadsheets, PDF forms, Word templates, letters, lists. "
                   "Files: this one folder and nothing outside it, in any "
@@ -3177,8 +3224,12 @@ def create_tab(ctx):
         # The old multi-agent pipeline modes (quick/reviewed/tdd/cluster/full)
         # are retired. "Plan" is NOT a mode — it's a permission profile (set
         # Perms = Plan for read-only-first / draft-a-plan-then-approve).
+        # Neither is "Pipeline": it routed to the same agent as Code with a
+        # page of instructions attached, which is what a skill is. What
+        # remains is what genuinely differs — which folder the session works
+        # in, and what it is allowed to reach from there.
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Office", "office"), ("Pipeline", "pipeline")],
+                 ("Office", "office")],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -5504,6 +5555,9 @@ def create_tab(ctx):
             "release": "solo", "quick": "solo", "reviewed": "solo",
             "tdd": "solo", "cluster": "solo", "full": "solo",
             "research": "solo", "plan": "solo", "code": "solo",
+            # Pipeline is a skill now; a session saved under it reopens as
+            # the agent it always ran, with the procedure one call away.
+            "pipeline": "solo",
         }
         saved_mode = data.get("mode", "dashboard")
         saved_mode = _legacy_map.get(saved_mode, saved_mode)
@@ -5549,29 +5603,45 @@ def create_tab(ctx):
         # Long-session state restore. Each block is wrapped in try/except
         # so a missing dropdown option or a legacy field never breaks the
         # restore — we always end up with a usable engine + chat.
-        saved_perm = data.get("perm_profile") or ""
-        if saved_perm:
-            try:
-                state["_perm_profile"] = saved_perm
-                if perm_dropdown.value != saved_perm:
-                    perm_dropdown.value = saved_perm
-            except Exception:
-                pass
-        saved_provider = data.get("provider") or ""
-        if saved_provider:
-            try:
-                if provider_dropdown.value != saved_provider:
-                    provider_dropdown.value = saved_provider
-            except Exception:
-                pass
-        saved_model = data.get("model") or ""
-        if saved_model:
-            try:
-                valid_models = {v for _, v in (model_dropdown.options or [])}
-                if saved_model in valid_models and model_dropdown.value != saved_model:
-                    model_dropdown.value = saved_model
-            except Exception:
-                pass
+        # Sync the selectors to what the session was saved with, WITHOUT
+        # letting their observers act. Each of those observers drops the
+        # engine so the next message rebuilds it from the new selection --
+        # correct when a person turns the knob, ruinous here: the engine
+        # was restored a few lines above with the full history, and the
+        # three assignments below destroyed it three times over before the
+        # user could type. The transcript still rendered, because that
+        # lives in the widget state, so nothing looked wrong.
+        #
+        # The guard already existed for one of the three (the KIT chip
+        # sets _chip_syncing_perm and the perms observer returns early on
+        # it); it was simply never used for a restore.
+        state["_controls_sync_internal"] = True
+        try:
+            saved_perm = data.get("perm_profile") or ""
+            if saved_perm:
+                try:
+                    state["_perm_profile"] = saved_perm
+                    if perm_dropdown.value != saved_perm:
+                        perm_dropdown.value = saved_perm
+                except Exception:
+                    pass
+            saved_provider = data.get("provider") or ""
+            if saved_provider:
+                try:
+                    if provider_dropdown.value != saved_provider:
+                        provider_dropdown.value = saved_provider
+                except Exception:
+                    pass
+            saved_model = data.get("model") or ""
+            if saved_model:
+                try:
+                    valid_models = {v for _, v in (model_dropdown.options or [])}
+                    if saved_model in valid_models and model_dropdown.value != saved_model:
+                        model_dropdown.value = saved_model
+                except Exception:
+                    pass
+        finally:
+            state["_controls_sync_internal"] = False
         saved_effort = data.get("effort") or ""
         if saved_effort:
             try:
@@ -5836,14 +5906,21 @@ def create_tab(ctx):
             # lock ignores them anyway, and passing them would only suggest
             # a reach the session does not have.
             if mode_dropdown.value == "office":   # _LAUNCH_INDEPENDENT_MODES
-                _office_p = _abs_dir(getattr(ctx, "office_dir", None))
-                if not _office_p:
-                    try:
-                        ctx.office_dir.mkdir(parents=True, exist_ok=True)
-                        _office_p = _abs_dir(ctx.office_dir)
-                    except Exception:
-                        _office_p = None
-                if _office_p:
+                _office_p = resolve_office_workspace(
+                    getattr(ctx, "office_dir", None))
+                if _office_p is None:
+                    # Falling through here would start the session in the
+                    # launch directory — locked to it, and labelled Office.
+                    _append_system_message(
+                        "⚠️ Office mode needs a folder to work in, and none "
+                        "could be created (tried the configured "
+                        "`paths.office_dir` and `~/office`). Point "
+                        "`paths.office_dir` at a writable folder and switch "
+                        "again. Staying in Code: an office session in the "
+                        "wrong folder would be locked to the wrong folder.")
+                    _set_mode_programmatically("solo")
+                else:
+                    _office_p = str(_office_p)
                     # A working folder for scripts and intermediate files.
                     # Created here rather than left to the agent so it is
                     # always the same place: the recurring monthly job wants
@@ -9897,6 +9974,73 @@ def create_tab(ctx):
                 _append_system_message("Agent memories:\n" + "\n".join(lines))
             return True
 
+        if cmd.startswith("/undo-file"):
+            # The journal-backed undo, which until now only the MODEL
+            # could reach through its own undo_changes tool. /undo drops
+            # messages from context and touches no file; the hidden "Undo
+            # Edit" button shells out to git and tells a non-git workspace
+            # that "the original content was not saved" -- while the
+            # pre-image sits in ~/.delfin/undo/<sid>/. So the user's only
+            # recourse after a bad overwrite was to ask the model that
+            # made it to undo itself.
+            from delfin.agent import change_journal as _cj
+            engine = state.get("engine")
+            _sid = ""
+            if engine is not None:
+                _kp = getattr(engine, "kit_permissions", None)
+                _sid = str(getattr(_kp, "task_session_id", "") or "")
+            if not _sid:
+                _append_system_message(
+                    "No active session — there is no change journal to undo "
+                    "from. Send a message first.")
+                return True
+            _arg = cmd[len("/undo-file"):].strip().lower() or "list"
+            _ws = _agent_workspace_path()
+            if _arg in ("list", "ls", ""):
+                _recs = _cj.list_changes(_sid, last_n=20)
+                if not _recs:
+                    _append_system_message(
+                        "No file changes recorded this session.")
+                    return True
+                _lines = ["**Recorded file changes** (newest last):"]
+                for _r in _recs:
+                    _kind = ("created" if _r.get("created")
+                             else "truncated pre-image — cannot undo"
+                             if _r.get("truncated") else "edited")
+                    _lines.append(
+                        f"- [{_r.get('seq', '?')}] {_r.get('path', '?')}"
+                        f" ({_kind})")
+                _lines.append(
+                    "\nUndo with `/undo-file last`, `/undo-file turn` or "
+                    "`/undo-file session`. A file changed since the agent "
+                    "wrote it is reported as a conflict and never "
+                    "overwritten.")
+                _append_system_message("\n".join(_lines))
+                return True
+            if _arg not in ("last", "turn", "session"):
+                _append_system_message(
+                    f"Unknown scope '{_arg}'. Use: list | last | turn | "
+                    "session.")
+                return True
+            _seqs = list(state.get("_turn_change_seqs") or [])
+            _res = _cj.revert(_sid, scope=_arg, turn_seqs=_seqs,
+                              workspace=Path(_ws) if _ws else None)
+            _out = [f"**Undo ({_arg})**"]
+            for _key, _label in (("reverted", "Restored"),
+                                 ("conflicts", "Conflicts — NOT touched"),
+                                 ("skipped", "Skipped")):
+                _items = _res.get(_key) or []
+                if _items:
+                    _out.append(f"{_label}:")
+                    for _it in _items:
+                        _out.append(
+                            "- " + (_it if isinstance(_it, str)
+                                    else str(_it.get("path", _it))))
+            if len(_out) == 1:
+                _out.append("Nothing to undo.")
+            _append_system_message("\n".join(_out))
+            return True
+
         if cmd in ("/changes", "/changes all"):
             from delfin.agent import audit_log as _audit
             engine = state.get("engine")
@@ -12190,6 +12334,15 @@ def create_tab(ctx):
             if not m:
                 return ""
             cmd_text = m.group(1).strip()
+            # The permission profile is the user's to set. Reaching it from
+            # generated text would let a session on Plan be moved to
+            # "asks nothing" by one line the model wrote.
+            if _slash_is_user_only(cmd_text):
+                _append_system_message(
+                    f"⚠️ Ignored `{cmd_text}` from the agent: the permission "
+                    "profile can only be changed by you, in the Perms "
+                    "selector.")
+                return ""
             if stripped.upper().startswith("ACTION"):
                 return cmd_text
             # Bare-slash: only accept if the first token is a known
@@ -12856,34 +13009,20 @@ def create_tab(ctx):
             _on_send(None)
             return
 
-        # --- File operations: upgrade permission profile if needed ---
-        current_profile = state.get("_perm_profile", "ask_all")
-        _PROFILE_RANK = {"plan": 0, "ask_all": 1, "repo_free": 2, "all_free": 3}
-        current_rank = _PROFILE_RANK.get(current_profile, 1)
-        # Edit/Write need "repo_free", Bash needs "all_free"
-        needed_rank = 2 if tool in ("Edit", "Write", "Read", "Glob", "Grep", "") else 3
-        need_upgrade = current_rank < needed_rank
-
-        if need_upgrade:
-            new_profile = "repo_free" if needed_rank == 2 else "all_free"
-            _append_system_message(
-                f"\u2705 Approved: {readable}\n"
-                f"\u2191 Upgrading permissions: {current_profile} \u2192 {new_profile}"
-            )
-            old_engine = state["engine"]
-            session_id = ""
-            if old_engine:
-                session_id = old_engine.session_id
-            perm_dropdown.value = new_profile  # triggers _on_perm_change → syncs state
-            engine = _ensure_engine()
-            if engine and session_id:
-                engine.session_id = session_id
-            input_textarea.value = f"Please retry: {readable}"
-            _on_send(None)
-        else:
-            _append_system_message(f"\u2705 Approved: {readable}")
-            input_textarea.value = f"Yes, proceed with: {readable}"
-            _on_send(None)
+        # --- File operations: this approval covers THIS call ---
+        #
+        # It used to raise the session-wide profile a rung instead, and for
+        # any tool name the branch did not recognise (MultiEdit, a WebFetch,
+        # any mcp__* name, or an unparseable payload defaulting to "") it
+        # raised it to the TOP rung and wrote that into the user's settings
+        # file. The question on screen is "may this one operation proceed";
+        # the answer must not be "and everything else, from now on, in
+        # every future session". Applying it also rebuilt the engine, which
+        # discarded the conversation, so the retried call arrived with no
+        # idea what it had been doing.
+        _append_system_message(f"\u2705 Approved: {readable}")
+        input_textarea.value = f"Yes, proceed with: {readable}"
+        _on_send(None)
 
     def _on_deny(button):
         """User denies a blocked operation."""
@@ -15918,6 +16057,11 @@ def create_tab(ctx):
         """Switch provider (Anthropic / OpenAI / KIT / Ollama), update model options."""
         if state["streaming"]:
             return
+        # A programmatic sync (restoring a saved session) sets the
+        # selector to what the session already IS. Acting on it would drop
+        # the engine that was just restored with its history.
+        if state.get("_controls_sync_internal"):
+            return
         provider = change["new"]
         # Try fetching models dynamically from API
         fetched = _fetch_models(provider)
@@ -15925,16 +16069,23 @@ def create_tab(ctx):
             _PROVIDER_MODELS[provider] = fetched
         models = _PROVIDER_MODELS.get(provider, _PROVIDER_MODELS_FALLBACK.get(
             provider, _PROVIDER_MODELS_FALLBACK["claude"]))
+        # Shut the old engine down BEFORE touching the model selector.
+        # Setting model_dropdown.value fires _on_model_change, which drops
+        # the engine reference -- so by the time this block ran, `engine`
+        # was already None and the CLI subprocess was never killed. Every
+        # provider switch leaked one.
+        engine = state["engine"]
+        if engine:
+            if hasattr(engine.client, "kill"):
+                try:
+                    engine.client.kill()
+                except Exception:
+                    pass
+            state["engine"] = None
         model_dropdown.options = models
         default = _PROVIDER_DEFAULTS.get(provider, models[0][1])
         valid_values = {v for _, v in models}
         model_dropdown.value = default if default in valid_values else models[0][1]
-        # Invalidate engine
-        engine = state["engine"]
-        if engine:
-            if hasattr(engine.client, "kill"):
-                engine.client.kill()
-            state["engine"] = None
         # Show/hide the KIT confirmation panel based on the new provider.
         try:
             _show_kit_confirm_panel(provider == "kit")
@@ -15959,6 +16110,11 @@ def create_tab(ctx):
     def _on_model_change(change):
         """Recreate engine with new model on next send."""
         if state["streaming"]:
+            return
+        # A programmatic sync (restoring a saved session) sets the
+        # selector to what the session already IS. Acting on it would drop
+        # the engine that was just restored with its history.
+        if state.get("_controls_sync_internal"):
             return
         engine = state["engine"]
         if engine:
@@ -16006,6 +16162,10 @@ def create_tab(ctx):
         # already reflects it and we don't need to recreate the engine.
         # Just sync silently and return.
         if state.get("_chip_syncing_perm"):
+            return
+        # Same reasoning for a session restore: the selector is being set
+        # to what the restored session already used.
+        if state.get("_controls_sync_internal"):
             return
         engine = state["engine"]
         if engine:

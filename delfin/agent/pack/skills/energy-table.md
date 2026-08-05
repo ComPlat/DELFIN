@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # Build energy table
 > Extract Gibbs / ZPE / electronic energies across all calc folders into a CSV.
 

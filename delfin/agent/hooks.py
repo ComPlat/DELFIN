@@ -178,15 +178,47 @@ def _merge_hooks(into: HooksConfig, raw: dict[str, Any]) -> None:
                 )
 
 
+def _project_hooks_allowed(workspace: Path | str | None) -> bool:
+    """Whether hooks may be read from inside *workspace*.
+
+    A hook file is executable configuration: it runs a shell command
+    before and after every tool call, outside the permission gate and
+    outside filesystem isolation. That is right for a project the user
+    chose to work on, and wrong for a folder that receives files from
+    other people -- which is exactly what a locked scope means.
+
+    The check lives HERE rather than at the call sites because it was
+    written at one of four call sites and forgotten at the other three:
+    the engine's own turn path and both dashboard paths loaded workspace
+    hooks unguarded, so a locked office folder's settings file executed on
+    every message. A guard a caller has to remember is a guard that gets
+    forgotten.
+    """
+    if workspace is None:
+        return False
+    try:
+        from .memory_store import is_office_workspace
+        if is_office_workspace(workspace):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def load_hooks(
     workspace: Path | str | None = None,
     *,
     extra_paths: list[Path] | None = None,
 ) -> HooksConfig:
-    """Read all settings files and return a merged HooksConfig."""
+    """Read all settings files and return a merged HooksConfig.
+
+    The user's own file is always read. The workspace's is read only when
+    the workspace is one the user is working IN rather than one they have
+    pointed the agent AT -- see ``_project_hooks_allowed``.
+    """
     cfg = HooksConfig()
     paths: list[Path] = [_user_settings_path()]
-    if workspace is not None:
+    if workspace is not None and _project_hooks_allowed(workspace):
         paths.extend(_project_settings_paths(Path(workspace)))
     for p in extra_paths or ():
         paths.append(Path(p))
@@ -196,13 +228,27 @@ def load_hooks(
 
 
 def _expand(template: str, arguments: dict[str, Any]) -> str:
-    """Replace ${var} placeholders from arguments. Unknown vars left as-is."""
+    """Replace ${var} placeholders from arguments. Unknown vars left as-is.
+
+    Every substituted value is shell-quoted. The expanded string is run
+    with ``shell=True``, so an unquoted value is command text: the
+    documented example hook is ``ruff check ${file}``, and a file called
+    ``x.py; curl … | sh`` — named by the model, or simply present in an
+    untrusted repository — would then execute. Nothing the hook author
+    wrote is wrong; the substitution was the sink. ``shlex`` has been
+    imported for this since the module was written and was never called.
+
+    An unknown placeholder is left as literal text and NOT quoted: it is
+    not a value, and quoting it would change what the author sees.
+    """
     def repl(m: re.Match[str]) -> str:
         key = m.group(1)
-        val = arguments.get(key, m.group(0))
+        if key not in arguments:
+            return m.group(0)
+        val = arguments[key]
         if isinstance(val, (dict, list)):
-            return json.dumps(val)
-        return str(val)
+            val = json.dumps(val)
+        return shlex.quote(str(val))
     return re.sub(r"\$\{(\w+)\}", repl, template)
 
 

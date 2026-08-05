@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # TDDFT excited states
 > Set up and interpret TDDFT excitation calculations — roots, TDA, triplets, and what the spectrum means.
 

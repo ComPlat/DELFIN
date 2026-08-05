@@ -1,3 +1,6 @@
+---
+domains: office
+---
 # Summarise a spreadsheet
 > Read a table, compute the figures asked for, and report them with the cells they came from.
 

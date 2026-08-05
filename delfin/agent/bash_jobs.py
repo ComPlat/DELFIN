@@ -70,14 +70,58 @@ _DEFAULT_BG_TIMEOUT_S = 24 * 3600    # 24 h hard cap
 #
 # Four rather than eight: a background command here is usually a real
 # calculation, not a helper process.
-_DEFAULT_MAX_BG_JOBS = 4
+# Ceiling on the derived cap. Background commands are a convenience, not
+# the way to use a compute node -- that is what the batch scheduler is for
+# -- so a large allocation must not turn into a large fan-out.
+_MAX_BG_JOBS_CEILING = 8
+
+
+def _affinity_cpus() -> int:
+    """CPUs this process may actually run on.
+
+    ``sched_getaffinity`` reflects cgroup cpusets and ``taskset``, which
+    ``cpu_count`` does not: inside a container or a scheduler-managed
+    cpuset, the machine's core count is not the process's.
+    """
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+
+
+def _available_cpus() -> int:
+    """How many CPUs this process was granted.
+
+    A SLURM allocation states it outright and wins: on a shared node the
+    affinity mask can still show the whole machine while the job was
+    granted a slice of it, and spending the machine's width there is
+    taking other people's CPU.
+    """
+    for var in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
+        try:
+            n = int(str(os.environ.get(var, "")).strip())
+            if n > 0:
+                return n
+        except (TypeError, ValueError):
+            continue
+    try:
+        return max(1, int(_affinity_cpus()))
+    except Exception:
+        return 1
 
 
 def _max_background_jobs() -> int:
-    """The concurrency cap, from settings, with a floor of one.
+    """The concurrency cap: an explicit setting, else what the grant allows.
 
     Read per call rather than cached: a user who raises it mid-session
-    should not have to restart to get the slot.
+    should not have to restart to get the slot, and an allocation can
+    differ between one turn and the next.
+
+    This used to be the constant 4 -- a sensible number for the
+    workstation it was chosen on, and unrelated to the shared node the
+    agent actually runs on, where it both oversubscribes a small slice
+    and wastes a large one. Half the grant, floored at one and capped,
+    still yields 4 on an eight-core box and adapts everywhere else.
     """
     try:
         from delfin.user_settings import load_settings
@@ -87,7 +131,10 @@ def _max_background_jobs() -> int:
             return max(1, int(raw))
     except Exception:
         pass
-    return _DEFAULT_MAX_BG_JOBS
+    try:
+        return max(1, min(_MAX_BG_JOBS_CEILING, _available_cpus() // 2))
+    except Exception:
+        return 1
 _OUTPUT_HEAD_DEFAULT = 60            # lines kept from head
 _OUTPUT_TAIL_DEFAULT = 200           # lines kept from tail
 _KILL_GRACE_S = 3.0                  # SIGTERM → SIGKILL gap

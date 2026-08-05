@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # Recalc failed jobs
 > Find calculations that need recalc and prepare a confirmation list.
 

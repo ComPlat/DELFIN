@@ -39,6 +39,15 @@ from typing import Callable, Optional
 _DEFAULT_PATH = Path.home() / ".delfin" / "cron.json"
 _POLL_S = 30.0
 _MAX_CONSECUTIVE_FAILURES = 3
+# How late a ONE-SHOT wake-up may still be honoured. A one-shot is a
+# statement about a moment ("in two hours, check the calculation"); firing
+# it days later, on a machine whose state has moved on, is not a late
+# version of that request. Observed live: starting the daemon fired an
+# entry that had been due for 85 minutes, against a /tmp workspace left
+# by a test, and spent a real agent turn on it. Wide enough that a closed
+# laptop or a rebooted node still gets its wake-up. Recurring entries are
+# deliberately exempt — firing late IS the schedule.
+_STALE_ONCE_GRACE_S = 4 * 3600
 
 
 class DisableEntry(Exception):
@@ -75,6 +84,17 @@ class ScheduleEntry:
 
     def is_due(self, now: float | None = None) -> bool:
         return (now or time.time()) >= self.next_fire_at
+
+    def is_stale(self, now: float | None = None) -> bool:
+        """Whether this entry is too late to be worth firing.
+
+        Only one-shots can go stale. A recurring entry firing late is the
+        schedule catching up, which is what it is for; a one-shot names a
+        moment, and the moment is gone.
+        """
+        if self.kind != "once":
+            return False
+        return ((now or time.time()) - self.next_fire_at) > _STALE_ONCE_GRACE_S
 
     def reschedule(self, fired_at: float | None = None) -> bool:
         """Update next_fire_at after a fire. Return True if still active."""
@@ -221,6 +241,18 @@ class Scheduler:
         with self._lock:
             for ent in list(self._entries.values()):
                 if ent.disabled or not ent.is_due(now):
+                    continue
+                # A one-shot that went unseen for hours is not fired late;
+                # it is disabled with the reason, so the entry can still be
+                # found and understood rather than vanishing.
+                if ent.is_stale(now):
+                    ent.disabled = True
+                    ent.disabled_reason = (
+                        f"not fired: overdue by "
+                        f"{int(now - ent.next_fire_at)}s, past the "
+                        f"{int(_STALE_ONCE_GRACE_S)}s grace for a one-shot "
+                        "wake-up. Schedule it again if it is still wanted.")
+                    changed = True
                     continue
                 cb = fire_callback or self._fire_callback
                 if cb is None:

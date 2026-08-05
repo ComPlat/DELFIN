@@ -69,6 +69,22 @@ _GITHUB_TOKEN = re.compile(
 
 _SLACK_TOKEN = re.compile(r"\bxox[bpars]-[A-Za-z0-9\-]{10,}\b")
 
+# Provider API keys in their own vendor-prefixed shape. The assignment
+# rule below only fires when a KEY NAME precedes the value, so a key that
+# simply appears in a traceback, a curl echo or an error body -- which is
+# how one actually leaks -- matched nothing at all. The vendor prefixes
+# are specific enough to need no entropy check: nothing else looks like
+# them. Anthropic is first because it is the one this project ships with.
+_PROVIDER_API_KEY = re.compile(
+    r"\b(?:"
+    r"sk-ant-[A-Za-z0-9\-_]{16,}"        # Anthropic
+    r"|sk-proj-[A-Za-z0-9\-_]{16,}"      # OpenAI project
+    r"|sk-[A-Za-z0-9]{32,}"              # OpenAI classic / compatible
+    r"|AIza[0-9A-Za-z\-_]{30,}"          # Google
+    r"|hf_[A-Za-z0-9]{20,}"              # Hugging Face
+    r")\b"
+)
+
 # ``Bearer <token>`` in headers: only the token part is redacted, and only
 # when the candidate passes the high-entropy validation below (so prose
 # like "Bearer authentication requires ..." is never touched).
@@ -149,6 +165,7 @@ _SECRET_CHECKS: list[tuple[re.Pattern, str, int, bool]] = [
     (_AWS_ACCESS_KEY, "aws-access-key", 0, False),
     (_GITHUB_TOKEN, "github-token", 0, False),
     (_SLACK_TOKEN, "slack-token", 0, False),
+    (_PROVIDER_API_KEY, "provider-api-key", 0, False),
     (_BEARER_TOKEN, "bearer-token", 1, True),
     (_ASSIGNMENT, "credential-assignment", 2, True),
 ]

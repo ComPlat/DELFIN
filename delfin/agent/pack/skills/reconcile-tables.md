@@ -1,3 +1,6 @@
+---
+domains: office
+---
 # Reconcile two tables
 > Compare two lists on a key column and report matches, gaps and differing values.
 
