@@ -197,6 +197,9 @@ include = ["delfin*"]
     "ai_tools/*.txt",
     "submit_templates/*.sh",
 ]
+# 3Dmol is vendored so viewers work without outbound network; leaving it
+# out of the wheel silently returns every viewer to the two CDNs.
+"delfin.dashboard" = ["static/*.js", "static/*.txt"]
 "delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
 "delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
 "delfin.notebooks" = ["*.ipynb"]

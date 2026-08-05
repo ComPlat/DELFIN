@@ -316,3 +316,36 @@ def test_trajectory_playback_yields_rendering_while_viewer_is_dragged():
         assert "viewer && !viewer.__delfinInteracting" in source
         assert "state.get('traj_playing')" in source or 'state.get("traj_playing")' in source
         assert "window.__delfinDisposeViewer(previousViewer)" in source
+
+
+def test_3dmol_is_vendored_and_satisfies_both_loader_guards():
+    """py3Dmol's loader fetches jsdelivr and guards on $3Dmolpromise; the
+    hand-written viewers fetch 3Dmol.org and guard on $3Dmol. The guards never
+    see each other, so a page mixing tabs downloaded the library twice and the
+    second copy replaced the global for every later viewer. Without outbound
+    network no molecule appeared at all, and nothing said why."""
+    bundle = (
+        Path(__file__).resolve().parents[1]
+        / "delfin" / "dashboard" / "static" / "3Dmol-min.js"
+    )
+    assert bundle.is_file()
+    assert bundle.stat().st_size > 100_000
+    assert bundle.with_suffix(".js.LICENSE.txt").is_file()
+
+    js = _MODULE.vendored_3dmol_js()
+    assert js.startswith('if (typeof $3Dmol === "undefined")')
+    assert "window.$3Dmolpromise = window.$3Dmolpromise" in js
+
+    # It has to run before anything that creates a viewer.
+    dashboard = (
+        Path(__file__).resolve().parents[1] / "delfin" / "dashboard" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    assert "vendored_3dmol_js()" in dashboard
+    order = dashboard.index("vendored_3dmol_js()")
+    assert order < dashboard.index("RIGHT_MOUSE_TRANSLATE_PATCH_JS, *ctx.init_js_parts")
+
+    # And it has to reach the wheel, or every viewer quietly returns to the CDNs.
+    pyproject = (
+        Path(__file__).resolve().parents[1] / "pyproject.toml"
+    ).read_text(encoding="utf-8")
+    assert '"delfin.dashboard" = ["static/*.js", "static/*.txt"]' in pyproject

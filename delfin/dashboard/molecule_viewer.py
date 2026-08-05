@@ -228,6 +228,47 @@ def get_viewer_profile():
 def viewer_disabled_html(width=None, height=None):
     """Return the placeholder HTML shown when the viewer is disabled."""
     return _VIEWER_DISABLED_PLACEHOLDER_HTML
+_VENDORED_3DMOL_CACHE = None
+
+
+def vendored_3dmol_js():
+    """Return JS that installs the bundled 3Dmol build, or '' if it is missing.
+
+    Every viewer used to pull 3Dmol over the network, and from two different
+    origins: py3Dmol's generated loader fetches jsdelivr and guards on
+    ``$3Dmolpromise``, while the hand-written viewers fetch 3Dmol.org and guard
+    on ``$3Dmol``. The guards do not see each other, so a page mixing tabs
+    downloaded the library twice and whichever landed second replaced the
+    global for every later viewer. On a cluster without outbound network the
+    molecule simply never appeared, with no error shown anywhere.
+
+    Running this once at start-up satisfies *both* guards: the library is
+    already defined, and ``$3Dmolpromise`` is an already-resolved promise, so
+    neither loader fetches anything.
+    """
+    global _VENDORED_3DMOL_CACHE
+    if _VENDORED_3DMOL_CACHE is not None:
+        return _VENDORED_3DMOL_CACHE
+    try:
+        from importlib.resources import files
+        source = (
+            files('delfin.dashboard')
+            .joinpath('static/3Dmol-min.js')
+            .read_text(encoding='utf-8')
+        )
+    except Exception:
+        _VENDORED_3DMOL_CACHE = ''
+        return ''
+    _VENDORED_3DMOL_CACHE = (
+        'if (typeof $3Dmol === "undefined") {\n'
+        + source
+        + '\n}\n'
+        'try { window.$3Dmolpromise = window.$3Dmolpromise '
+        '|| Promise.resolve(window.$3Dmol); } catch (e) {}\n'
+    )
+    return _VENDORED_3DMOL_CACHE
+
+
 RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     '(function(){\n'
     'var PATCH_VERSION=8;\n'

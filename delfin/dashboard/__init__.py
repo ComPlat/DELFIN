@@ -70,7 +70,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         create_page_css,
         disable_spellcheck_global,
     )
-    from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
 
     from . import (
         tab_agent,
@@ -481,7 +481,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # ctx.add_init_js) rather than listed here. When they were listed here,
     # the Office tab was added without being added to the list, and its
     # splitter, upload target and viewer resize silently never bound.
-    _calc_init = '\n'.join([RIGHT_MOUSE_TRANSLATE_PATCH_JS, *ctx.init_js_parts])
+    # The bundled 3Dmol goes first: every viewer's loader checks for the
+    # library before fetching it, so having it already there is what makes
+    # the dashboard work without outbound network.
+    _calc_init = '\n'.join(
+        [vendored_3dmol_js(), RIGHT_MOUSE_TRANSLATE_PATCH_JS, *ctx.init_js_parts]
+    )
     if _calc_init.strip():
         ctx.run_js(_calc_init)
 
