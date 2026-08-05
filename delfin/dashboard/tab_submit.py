@@ -887,6 +887,14 @@ def create_tab(ctx):
             + '\n(function(){\n'
             '  try {\n'
             '    window._submitMolViewerByScope = window._submitMolViewerByScope || {};\n'
+            # Every render of this tab creates a fresh WebGL viewer. Without
+            # releasing the previous one its context, observers and window-level
+            # mouse listeners stay alive; browsers cap contexts and start
+            # killing the oldest, which blacks out the viewers in other tabs.
+            f'    var prev = window._submitMolViewerByScope[{scope_key_js}];\n'
+            '    if (prev && prev !== viewer_UNIQUEID && window.__delfinDisposeViewer) {\n'
+            '      window.__delfinDisposeViewer(prev);\n'
+            '    }\n'
             f'    window._submitMolViewerByScope[{scope_key_js}] = viewer_UNIQUEID;\n'
             '    var el = document.getElementById("3dmolviewer_UNIQUEID");\n'
             '    var fire = function(){\n'

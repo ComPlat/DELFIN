@@ -234,7 +234,27 @@ def test_mouse_patch_leaves_editor_drag_handlers_on_window_alive():
     assert 'window._submitManipStateByScope' in patch
 
     # An already-open dashboard rebinds only when the version changes.
-    assert 'var PATCH_VERSION=7;' in patch
+    assert 'var PATCH_VERSION=8;' in patch
+
+
+def test_py3dmol_viewers_release_the_contexts_they_leave_behind():
+    """py3Dmol builds a fresh container and a fresh window.viewer_<id> on every
+    render, so the caller has no previous handle to release. Browsers cap live
+    WebGL contexts and evict the oldest, which blanks viewers in other tabs."""
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    sweep = patch.split('window.__delfinDisposeOrphanedViewers = function(){')[1]
+    sweep = sweep.split('window.__delfinPatchAllKnown3DmolViewers')[0]
+    # Only viewers whose element has left the document may be released.
+    assert 'document.body.contains(el)' in sweep
+    assert 'window.__delfinDisposeViewer(v)' in sweep
+    assert 'v.__delfinDisposed' in sweep
+
+    submit = (
+        Path(__file__).resolve().parents[1]
+        / "delfin" / "dashboard" / "tab_submit.py"
+    ).read_text(encoding="utf-8")
+    # The Submit tab keeps a scope-keyed handle, so it can release directly.
+    assert '__delfinDisposeViewer(prev)' in submit
 
 
 def test_deferred_recentering_never_overrides_the_user():

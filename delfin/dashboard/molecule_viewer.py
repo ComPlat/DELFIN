@@ -230,7 +230,7 @@ def viewer_disabled_html(width=None, height=None):
     return _VIEWER_DISABLED_PLACEHOLDER_HTML
 RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     '(function(){\n'
-    'var PATCH_VERSION=7;\n'
+    'var PATCH_VERSION=8;\n'
     'if(window.__delfinRightDragTranslateVersion===PATCH_VERSION) return;\n'
     'if(window.__delfinRightDragTranslateTimer){\n'
     'try{clearInterval(window.__delfinRightDragTranslateTimer);}catch(e){}\n'
@@ -524,6 +524,27 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'if(Array.isArray(viewer.shapes))viewer.shapes.length=0;\n'
     'viewer.surfaces={};viewer.scene=null;viewer.modelGroup=null;viewer.rotationGroup=null;\n'
     '}catch(e){}\n'
+    '} catch(e) {}\n'
+    '};\n'
+    # py3Dmol-backed viewers (Submit, ChemDarwin, TURBOMOLE) get a fresh
+    # container and a fresh window.viewer_<id> global on every render, so there
+    # is no previous handle for the caller to release. Their WebGL contexts,
+    # observers and window-level listeners otherwise survive the div that owned
+    # them. Browsers cap live contexts and evict the oldest, which blacks out
+    # viewers the user is still working in elsewhere.
+    'window.__delfinDisposeOrphanedViewers = function(){\n'
+    'try {\n'
+    'for (var k in window) {\n'
+    'if (!Object.prototype.hasOwnProperty.call(window, k)) continue;\n'
+    'if (k.indexOf("viewer_") !== 0) continue;\n'
+    'var v = window[k];\n'
+    'if (!v || typeof v !== "object" || v.__delfinDisposed) continue;\n'
+    'var el = window.__delfinResolveViewerElement(v, null);\n'
+    'if (!el) continue;\n'
+    'if (document.body && document.body.contains(el)) continue;\n'
+    'window.__delfinDisposeViewer(v);\n'
+    'try { window[k] = null; } catch(e) {}\n'
+    '}\n'
     '} catch(e) {}\n'
     '};\n'
     'window.__delfinPatchAllKnown3DmolViewers = function(){\n'
@@ -2447,6 +2468,10 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
                     '};'
                     'setTimeout(__delfinRecenter,0);'
                     'setTimeout(__delfinRecenter,120);'
+                    'setTimeout(function(){'
+                    'if(window.__delfinDisposeOrphanedViewers)'
+                    'window.__delfinDisposeOrphanedViewers();'
+                    '},0);'
                     '})();'
                 )
                 + '\n'
