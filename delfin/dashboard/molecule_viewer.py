@@ -1114,17 +1114,24 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function getRoot(scopeKey) {
         return document.querySelector('.' + scopeKey);
     }
-    function getSyncInput(scopeKey) {
+    // Toolbar parts are looked up inside the tab's own scope first, then
+    // anywhere on the page. Fullscreen moves the toolbar into a floating
+    // overlay outside that scope: a scope-only lookup then found nothing, so
+    // the value box stayed empty and — worse — edits never reached Python,
+    // because the sync input had left the scope too. There is one Submit tab
+    // per dashboard, so the page-wide fallback cannot address the wrong one.
+    function findInScope(scopeKey, selector) {
         var root = getRoot(scopeKey);
-        if (!root) return null;
-        var wrap = root.querySelector('.submit-manip-sync');
+        var found = root ? root.querySelector(selector) : null;
+        return found || document.querySelector(selector);
+    }
+    function getSyncInput(scopeKey) {
+        var wrap = findInScope(scopeKey, '.submit-manip-sync');
         if (!wrap) return null;
         return wrap.querySelector('input, textarea');
     }
     function getStatusEl(scopeKey) {
-        var root = getRoot(scopeKey);
-        if (!root) return null;
-        return root.querySelector('.submit-manip-status');
+        return findInScope(scopeKey, '.submit-manip-status');
     }
 
     function vecAdd(a,b){return {x:a.x+b.x,y:a.y+b.y,z:a.z+b.z};}
@@ -1456,10 +1463,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // and say which quantity that is. Without this the box was an unlabelled
     // number field and nothing told the user it wanted a bond length.
     function updateInternalReadout(scopeKey) {
-        var root = getRoot(scopeKey);
-        if (!root) return;
-        var label = root.querySelector('.submit-internal-label');
-        var box = root.querySelector('.submit-internal-value input');
+        var label = findInScope(scopeKey, '.submit-internal-label');
+        var box = findInScope(scopeKey, '.submit-internal-value input');
         var info = null;
         try { info = readInternal(scopeKey); } catch (e) { info = null; }
         if (label) {

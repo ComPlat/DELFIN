@@ -372,3 +372,16 @@ def test_hydrogens_can_be_grabbed_in_their_own_right():
     assert EDITOR.index('H: 1.10') > 0
     radii = _body('elementRadius')
     assert 'DEFAULT_VDW' in radii
+
+
+def test_toolbar_parts_are_found_even_when_fullscreen_moves_them():
+    """Fullscreen lifts the toolbar into a floating overlay, outside the tab's
+    scope container. A scope-only lookup then found nothing: the value box
+    stayed empty and, worse, edits never reached Python at all, because the
+    sync input had left the scope too."""
+    finder = _body('findInScope')
+    assert 'document.querySelector(selector)' in finder
+    for name in ('getSyncInput', 'getStatusEl', 'updateInternalReadout'):
+        body = _body(name)
+        assert 'findInScope(' in body, name
+        assert 'getRoot(scopeKey)' not in body, name
