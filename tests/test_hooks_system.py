@@ -324,3 +324,71 @@ def test_only_events_that_fire_are_configurable():
     for event in _VALID_EVENTS:
         assert event in ("PreToolUse", "PostToolUse", "UserPromptSubmit",
                          "Stop"), event
+
+
+# ---------------------------------------------------------------------------
+# A skill can run in a sub-agent
+# ---------------------------------------------------------------------------
+
+def _skill_scene():
+    import pathlib
+    import tempfile
+    from delfin.agent import api_client as A
+
+    ws = pathlib.Path(tempfile.mkdtemp(prefix="ws_"))
+    (ws / ".delfin" / "skills").mkdir(parents=True)
+    (ws / ".delfin" / "skills" / "tidy.md").write_text(
+        "---\nname: tidy\ndescription: tidy a folder\n---\n\n"
+        "List the files, then report.\n", encoding="utf-8")
+    perms = A.KitToolPermissions(workspace=ws)
+    perms.mode = "acceptEdits"
+    return A._DocToolExecutor.__new__(A._DocToolExecutor), perms
+
+
+def test_a_skill_still_returns_its_playbook_by_default():
+    import json
+
+    executor, perms = _skill_scene()
+    out = json.loads(executor._execute_skill({"name": "tidy"}, perms))
+    assert out["status"] == "ok"
+    assert "List the files" in out["content"]
+
+
+def test_a_skill_can_be_delegated():
+    """Both halves existed and there was no bridge: a skill returned text
+    for THIS agent to follow, and a sub-agent took a prompt. So a
+    self-contained job could be packaged as a skill or delegated, never
+    both -- and every step of it landed in the parent's context whether or
+    not the parent needed it."""
+    import json
+
+    executor, perms = _skill_scene()
+    captured: dict = {}
+    executor._execute_subagent = lambda args, p: (
+        captured.update(args), '{"status": "delegated"}')[1]
+
+    out = json.loads(
+        executor._execute_skill({"name": "tidy", "delegate": True}, perms))
+    assert out["status"] == "delegated"
+    assert "List the files" in captured["prompt"], (
+        "the delegate must receive the skill body, not just its name")
+    assert captured["description"] == "skill: tidy"
+
+
+def test_delegating_an_unknown_skill_reports_it_rather_than_delegating():
+    import json
+
+    executor, perms = _skill_scene()
+    executor._execute_subagent = lambda args, p: '{"status": "delegated"}'
+    out = json.loads(
+        executor._execute_skill({"name": "nope", "delegate": True}, perms))
+    assert "error" in out
+    assert "available" in out
+
+
+def test_the_flag_is_documented_where_the_model_reads_it():
+    from delfin.agent.api_client import _DOC_TOOLS_OPENAI
+
+    skill = next(t["function"] for t in _DOC_TOOLS_OPENAI
+                 if t["function"]["name"] == "skill")
+    assert "delegate" in skill["parameters"]["properties"]

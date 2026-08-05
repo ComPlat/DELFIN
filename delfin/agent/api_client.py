@@ -3902,17 +3902,18 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "skill",
             "description": (
-                "Invoke a skill — a Markdown playbook under .delfin/skills/. "
-                "The body is returned verbatim: read it and follow it. Use "
-                "when the user types '/skill-name' or one matches the task."
+                "Invoke a skill — a playbook under .delfin/skills/. Returns "
+                "the body to follow, or with delegate=true the finished "
+                "result. Use on '/skill-name' or when one fits."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Skill name, no leading slash.",
+                        "description": "Skill name, no slash.",
                     },
+                    "delegate": {"type": "boolean"},
                     "args": {
                         "type": "string",
                     },
@@ -10789,12 +10790,24 @@ class _DocToolExecutor:
                 "error": f"skill '{name}' not found",
                 "available": available,
             })
+        body = _skills_mod.render_skill_invocation(sk, args)
+        if arguments.get("delegate"):
+            # The two halves existed and there was no bridge: a skill
+            # returned text for THIS agent to follow, and a sub-agent took
+            # a prompt. So a self-contained job could be packaged as a
+            # skill or delegated, never both -- and every step of it landed
+            # in the parent's context whether or not the parent needed it.
+            return self._execute_subagent({
+                "subagent_type": "general-purpose",
+                "description": f"skill: {sk.name}",
+                "prompt": body,
+            }, perms)
         return json.dumps({
             "status": "ok",
             "skill": sk.name,
             "description": sk.description,
             "source": str(sk.source),
-            "content": _skills_mod.render_skill_invocation(sk, args),
+            "content": body,
         }, ensure_ascii=False)
 
     # ------- Plan-mode roundtrip ------------------------------------------
