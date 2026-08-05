@@ -2,6 +2,7 @@
 docs/*.pdf
 
 # Ignore build artifacts
+build/
 dist/
 *.egg-info/
 own_auto_tree.json
