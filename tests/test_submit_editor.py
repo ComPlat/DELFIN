@@ -160,19 +160,48 @@ def test_force_field_choice_is_honest_about_what_it_changes():
     assert 'MMFF94 has no transition-metal parameters' in source
 
 
-def test_optimisation_is_undoable_and_off_the_ui_thread():
-    """The browser's own undo stack cannot cover an optimisation: the result
-    arrives from Python and re-renders the viewer, which resets editor state.
-    The geometry from before the run is therefore kept on the Python side."""
+def test_optimisation_covers_every_frame_and_is_undoable():
+    """The Submit tab can hold a whole set at once -- generated isomers or the
+    frames of a batch -- and any of them can end up submitted, so optimising
+    only the visible one would leave the rest untouched. The browser's undo
+    stack cannot cover this: results arrive from Python and re-render."""
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding='utf-8').read()
-    assert 'def on_submit_optimize' in source
-    assert "state['pre_optimize_xyz'] = coords_widget.value" in source
-    # Undo checks that before falling back to the browser's coordinate stack.
-    undo = source.split('def on_submit_manip_undo')[1].split('def ')[0]
-    assert "state.pop('pre_optimize_xyz', None)" in undo
-    assert undo.index('pre_optimize_xyz') < undo.index('_ensure_manip_bootstrap')
-    # A 500-step minimisation takes seconds on a large structure.
-    assert 'threading.Thread(target=_work, daemon=True).start()' in source
-    assert 'relax_xyz(xyz, max_steps=500, method=method)' in source
+    body = source.split('def on_submit_optimize')[1].split('\n    def ')[0]
+    assert "frames = list(state.get('isomers') or [])" in body
+    assert "state['pre_optimize_frames']" in body
+    assert 'relax_xyz(xyz, max_steps=500, method=method)' in body
+    # A 500-step minimisation per frame takes seconds; it must not block the UI.
+    assert 'threading.Thread(target=_work, daemon=True).start()' in body
+    # One bad frame must not lose the others.
+    assert 'results.append(item)' in body
+
+    undo = source.split('def on_submit_manip_undo')[1].split('\n    def ')[0]
+    assert "state.pop('pre_optimize_frames', None)" in undo
+    assert "state['isomers'] = snapshot['isomers']" in undo
+
+
+def test_optimize_toggle_runs_the_field_continuously():
+    """Avogadro's auto optimisation keeps the force field running on a timer,
+    so the structure settles whether or not the mouse is down and a grabbed
+    atom drags the relaxing molecule along."""
+    assert 'function startAutoOptimize' in EDITOR
+    assert 'function stopAutoOptimize' in EDITOR
+    tick = _body('autoOptimizeTick')
+    # A drag already relaxes in its own handler; a second batch here would
+    # double the step budget for that frame.
+    assert 'if (!state.drag) {' in tick
+    assert 'window.requestAnimationFrame' in tick
+    # The coordinate box follows at a readable rate -- each push is a round trip.
+    assert "state.autoPushed" in tick
+
+    stop = _body('stopAutoOptimize')
+    assert 'cancelAnimationFrame' in stop
+    assert 'pushXyzToPython(scopeKey)' in stop
+
+    # Starting is undoable, and a re-render must not leave a loop spinning on
+    # a viewer that no longer exists.
+    assert 'snapshotForUndo(scopeKey);\n        state.autoOpt = true;' in EDITOR
+    ready = _body('onViewerReady')
+    assert 'state.autoOpt = false;' in ready

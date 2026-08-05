@@ -665,23 +665,24 @@ def create_tab(ctx):
         disabled=True,
     )
     submit_relax_btn = widgets.ToggleButton(
-        value=False, description='Relax', icon='magic',
+        value=False, description='Optimize', icon='magic',
         button_style='',
         tooltip=(
-            'Relax the molecule with a UFF force field while you drag, the way '
-            'Avogadro does: the atom you grab follows the cursor and the rest '
-            'follows it.'
+            'Keep a force field running, the way Avogadro\'s auto optimisation '
+            'does: the structure settles continuously, and an atom you grab '
+            'drags the relaxing molecule along with it. Toggle off to stop.'
         ),
         layout=widgets.Layout(width='84px', height='30px'),
         disabled=True,
     )
     submit_optimize_btn = widgets.Button(
-        description='Optimize', button_style='success', icon='compress',
+        description='Optimize all', button_style='success', icon='compress',
         tooltip=(
-            'Minimise the whole structure with the selected force field. '
-            'Undo restores the geometry from before the optimisation.'
+            'Minimise every frame currently loaded -- all isomers or batch '
+            'entries, not just the one on screen. Undo restores the geometries '
+            'from before the run.'
         ),
-        layout=widgets.Layout(width='96px', height='30px'),
+        layout=widgets.Layout(width='116px', height='30px'),
         disabled=True,
     )
     submit_ff_dd = widgets.Dropdown(
@@ -3115,54 +3116,88 @@ def create_tab(ctx):
         if not active:
             _ensure_manip_bootstrap()
             _run_manip_js(
-                'if(window.__delfinSubmitManip)'
+                'if(window.__delfinSubmitManip){'
+                'window.__delfinSubmitManip.stopAutoOptimize('
+                f'{json.dumps(submit_scope_id)});'
                 'window.__delfinSubmitManip.setForceField('
                 f'{json.dumps(submit_scope_id)},null);'
+                '}'
             )
             return
         if not submit_manip_btn.value:
-            submit_manip_btn.value = True   # relaxing only makes sense while dragging
+            submit_manip_btn.value = True   # dragging is what it is there for
         _enable_live_forcefield()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.startAutoOptimize('
+            f'{json.dumps(submit_scope_id)});'
+        )
 
     def on_submit_optimize(_button=None):
-        """Minimise the whole structure with the selected force field.
+        """Minimise every frame that is loaded, not just the one on screen.
 
-        The geometry from before the run is kept so Undo can put it back --
-        the browser's own undo stack cannot, because the optimised
-        coordinates arrive from Python and re-render the viewer.
+        The Submit tab can hold a whole set at once -- generated isomers, or
+        the frames of a batch -- and any of them can end up submitted, so
+        optimising only the visible one would leave the rest untouched.
+
+        The geometries from before the run are kept so Undo can put them back:
+        the browser's own undo stack cannot, because the results arrive from
+        Python and re-render the viewer.
         """
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
-        if not xyz:
+        frames = list(state.get('isomers') or [])
+        single = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not frames and not single:
             _set_mol_status('Load a structure before optimising.')
             return
         method = submit_ff_dd.value
-        _set_mol_status(f'Optimising with {method.upper()}...', spinner=True)
+        count = len(frames) or 1
+        _set_mol_status(
+            f'Optimising {count} frame(s) with {method.upper()}...', spinner=True,
+        )
         submit_optimize_btn.disabled = True
 
         def _work():
-            try:
-                from .molecule_forcefield import relax_xyz
-                result = relax_xyz(xyz, max_steps=500, method=method)
-            except Exception as exc:
-                _schedule_ui_update(_set_mol_status, f'Optimisation failed: {exc}')
-                _schedule_ui_update(setattr, submit_optimize_btn, 'disabled', False)
-                return
+            from .molecule_forcefield import relax_xyz
+            results, failures = [], []
+            targets = frames or [(single, None, None)]
+            for position, item in enumerate(targets):
+                xyz = item[0]
+                try:
+                    outcome = relax_xyz(xyz, max_steps=500, method=method)
+                except Exception as exc:
+                    failures.append(f'frame {position + 1}: {exc}')
+                    results.append(item)
+                    continue
+                if outcome.get('ok'):
+                    results.append((outcome['xyz'],) + tuple(item[1:]))
+                else:
+                    failures.append(
+                        f"frame {position + 1}: {outcome.get('status') or 'failed'}"
+                    )
+                    results.append(item)
 
             def _apply():
                 submit_optimize_btn.disabled = False
-                if not result.get('ok'):
-                    _set_mol_status(result.get('status') or 'Optimisation failed.')
-                    return
-                state['pre_optimize_xyz'] = coords_widget.value
-                lines = [
-                    line for line in result['xyz'].splitlines()[2:] if line.strip()
-                ]
-                coords_widget.value = (
-                    f"{len(lines)}\nOptimised in DELFIN viewer\n"
-                    + '\n'.join(lines)
+                state['pre_optimize_frames'] = {
+                    'isomers': frames,
+                    'coords': coords_widget.value,
+                }
+                if frames:
+                    state['isomers'] = results
+                    _show_isomer_at_index(state.get('isomer_index', 0))
+                else:
+                    lines = [
+                        line for line in results[0][0].splitlines()[2:] if line.strip()
+                    ]
+                    coords_widget.value = (
+                        f"{len(lines)}\nOptimised in DELFIN viewer\n"
+                        + '\n'.join(lines)
+                    )
+                done = count - len(failures)
+                _set_mol_status(
+                    f'Optimised {done} of {count} frame(s) with {method.upper()}.',
+                    *failures[:2],
                 )
-                _set_mol_status(result.get('status') or 'Optimised.',
-                                *(result.get('warnings') or [])[:1])
 
             _schedule_ui_update(_apply)
 
@@ -3193,10 +3228,14 @@ def create_tab(ctx):
         )
 
     def on_submit_manip_undo(_button=None):
-        previous = state.pop('pre_optimize_xyz', None)
-        if previous:
-            coords_widget.value = previous
-            _set_mol_status('Reverted to the geometry from before the optimisation.')
+        snapshot = state.pop('pre_optimize_frames', None)
+        if snapshot:
+            if snapshot['isomers']:
+                state['isomers'] = snapshot['isomers']
+                _show_isomer_at_index(state.get('isomer_index', 0))
+            else:
+                coords_widget.value = snapshot['coords']
+            _set_mol_status('Reverted to the geometries from before the optimisation.')
             return
         _ensure_manip_bootstrap()
         _run_manip_js(

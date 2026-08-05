@@ -1791,6 +1791,63 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.ffFrameMs = nowMs() - t0;
         return true;
     }
+    // Avogadro's Auto Optimization tool: the force field keeps running on a
+    // timer whether or not the mouse is down, so the structure visibly settles
+    // and a grabbed atom drags the relaxed molecule along with it. Avogadro 1
+    // ticks at 50 ms; an animation frame is the browser's equivalent and lets
+    // the engine's own 33 ms batch budget do the pacing.
+    function autoOptimizeRunning(scopeKey) {
+        var state = getState(scopeKey);
+        return !!state.autoOpt;
+    }
+    function autoOptimizeTick(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.autoOpt) return;
+        var viewer = getViewer(scopeKey);
+        if (!viewer || !ffEnabled(state)) { stopAutoOptimize(scopeKey); return; }
+        // While a drag is in flight its own handler already relaxes and
+        // redraws; running a second batch here would double the step budget.
+        if (!state.drag) {
+            if (ffRelaxFrame(scopeKey)) {
+                redrawHighlights(scopeKey);
+                var now = nowMs();
+                // The coordinate box follows at a readable rate, not per frame:
+                // each push is a widget round trip.
+                if (now - (state.autoPushed || 0) > 500) {
+                    state.autoPushed = now;
+                    pushXyzToPython(scopeKey);
+                }
+            }
+        }
+        state.autoRaf = window.requestAnimationFrame(function() {
+            autoOptimizeTick(scopeKey);
+        });
+    }
+    function startAutoOptimize(scopeKey) {
+        var state = getState(scopeKey);
+        if (state.autoOpt) return true;
+        if (!ffEnabled(state)) return false;
+        snapshotForUndo(scopeKey);
+        state.autoOpt = true;
+        state.autoPushed = nowMs();
+        autoOptimizeTick(scopeKey);
+        updateStatus(scopeKey);
+        return true;
+    }
+    function stopAutoOptimize(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.autoOpt) return false;
+        state.autoOpt = false;
+        if (state.autoRaf) {
+            try { window.cancelAnimationFrame(state.autoRaf); } catch (e) {}
+            state.autoRaf = null;
+        }
+        // The last frames since the throttled push have to reach Python too.
+        pushXyzToPython(scopeKey);
+        updateStatus(scopeKey);
+        return true;
+    }
+
     function ffEndDrag(scopeKey) {
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
@@ -2088,6 +2145,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.rect = null;
         state.drag = null;
         // The parameters were assigned for the geometry that just went away.
+        if (state.autoOpt && state.autoRaf) {
+            try { window.cancelAnimationFrame(state.autoRaf); } catch (e) {}
+        }
+        state.autoOpt = false;
+        state.autoRaf = null;
         state.ffActive = false;
         state.ffInfo = null;
         state.measureBox = null;
@@ -2359,7 +2421,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         undo: undo,
         setForceField: setForceField,
         readInternal: readInternal,
-        setInternal: setInternal
+        setInternal: setInternal,
+        startAutoOptimize: startAutoOptimize,
+        stopAutoOptimize: stopAutoOptimize,
+        autoOptimizeRunning: autoOptimizeRunning
     };
 })();
 """
