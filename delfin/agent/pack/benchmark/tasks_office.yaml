@@ -154,3 +154,39 @@ tasks:
     max_duration_s: 240
     max_cost_usd: 0.80
     max_tool_calls: 14
+# anything between does not.
+
+  # ── a list you keep is a list you close ──────────────────────────────
+  - id: office_task_list_is_closed_out
+    task_class: office
+    mode: office
+    prompt: >
+      Mach den Monatsabschluss für Juni: die Summe aus buchungen.csv, den
+      Abgleich mit rechnungen.csv, und prüf kostenstellen_roh.csv auf
+      Formfehler. Plan das als Aufgabenliste und arbeite sie ab.
+    expected_signals:
+      # It plans the work as a list -- the precondition for the reminder
+      # to have anything to remind about.
+      - pattern: 'task_create'
+        against: tool_name
+      # The behaviour under test: a finished step gets marked finished
+      # without having been told to do so in the prompt.
+      - pattern: 'task_update'
+        against: tool_name
+      - pattern: 'read_document'
+        against: tool_name
+      # The work itself still has to be right -- a task that scores list
+      # hygiene while the numbers are wrong measures the wrong thing.
+      - pattern: '(?i)(R-004|ohne Betrag|kein(en)? Betrag)'
+        against: text
+      - pattern: '(?i)(kostenstellen|zeile|spalte)'
+        against: text
+    forbidden_signals:
+      # The failure this exists to catch on the other side: claiming the
+      # close is done while the list still says otherwise.
+      - pattern: '(?i)alle (drei )?(schritte|aufgaben) (sind )?(erledigt|abgeschlossen)'
+        against: text
+        optional: true
+    max_duration_s: 420
+    max_cost_usd: 1.20
+    max_tool_calls: 30
