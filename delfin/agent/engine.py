@@ -15,6 +15,15 @@ from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
 # -- Legacy mode name migration ------------------------------------------------
+def _load_settings() -> dict:
+    """User settings, defensively. Routing must never break on a bad file."""
+    try:
+        from delfin import user_settings
+        return user_settings.load_settings() or {}
+    except Exception:
+        return {}
+
+
 _LEGACY_MODE_MAP = {
     "default": "quick",
     "high_risk": "reviewed",
@@ -4463,23 +4472,51 @@ class AgentEngine:
             confidence = "medium"
             reasons.append("de-escalated to single-agent code exploration")
 
-        # Adaptive routing: use provider profile to prefer higher-success modes
+        # Adaptive routing: prefer a higher-success mode when this
+        # installation's recorded rate for the task class is poor.
+        #
+        # OFF unless asked for, because the number it reads is not
+        # trustworthy and the rewrite it performs is invisible. Measured
+        # on this machine: outcome_history.jsonl holds 55 records, all
+        # PASS, in modes solo and dashboard -- not one `quick` record
+        # exists -- while provider_profile_state.json holds kit solo
+        # 0.005 and kit coding 0.007. Two accumulators for one fact, with
+        # no reconciliation: update_from_outcome never reads the history,
+        # and the two writes sit in separate try/except blocks so the
+        # profile mutates even when the audit write fails. The EMA also
+        # seeds at 0.5, below the threshold, so a class recovering from a
+        # single FAIL escalates until several consecutive passes.
+        #
+        # It had already corrupted two tests, both carrying written-up
+        # workarounds saying the assertion measures the machine rather
+        # than the code. A mechanism that rewrites a decision has to be
+        # visible and resettable first; /profile now shows and resets it.
+        try:
+            _adaptive = bool(((_load_settings().get("agent") or {})
+                              .get("routing") or {}).get(
+                                  "adaptive_escalation", False))
+        except Exception:
+            _adaptive = False
         try:
             from delfin.agent.provider_profile import load_provider_profile
-            # Use a class-level provider hint if available; fall back to "claude"
-            _prov = getattr(AgentEngine, "_active_provider", "claude")
-            _profile = load_provider_profile(_prov)
+            # The provider actually in use. This fell back to "claude",
+            # so a KIT session was routed by numbers recorded for
+            # Anthropic -- which is why the live reason string said 17%
+            # while KIT's own rate for the same class was 0.7%.
+            _prov = getattr(AgentEngine, "_active_provider", "") or "claude"
+            _profile = load_provider_profile(_prov) if _adaptive else {}
             _task_perf = _profile.get("task_performance", {}).get(task_class, {})
             _task_rate = _task_perf.get("success_rate")
             if (
-                isinstance(_task_rate, (int, float))
+                _adaptive
+                and isinstance(_task_rate, (int, float))
                 and mode == "quick"
                 and task_class in ("chemistry", "coding")
                 and _task_rate < 0.75
             ):
                 reasons.append(
                     f"adaptive: escalate {task_class} task from quick to reviewed "
-                    f"(task success {_task_rate:.0%})"
+                    f"({_prov} recorded {_task_rate:.0%} success for this class)"
                 )
                 mode = "reviewed"
         except Exception:
