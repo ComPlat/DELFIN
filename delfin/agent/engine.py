@@ -1517,6 +1517,16 @@ class AgentEngine:
         except Exception:
             pass
 
+        # ...and the turn's cost ceiling, for the same reason: the check
+        # below fires on message_delta, which every client emits once, at
+        # the end. Checked in the loop it bounds the spend instead of
+        # reporting it.
+        try:
+            self.client.turn_cost_cap = lambda: float(
+                getattr(self, "_cost_cap_value", 0.0) or 0.0)
+        except Exception:
+            pass
+
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
 

@@ -12104,6 +12104,26 @@ class OpenAIClient(_BaseClient):
             with self._steer_lock:
                 self._steer_msgs.append(t)
 
+    def _turn_cost_cap(self) -> float:
+        """This turn's spending ceiling in USD, or 0.0 for no ceiling.
+
+        The engine owns the number and used to be the only place that
+        checked it -- inside its ``message_delta`` handler, which every
+        client emits exactly once, at the END of a turn. So the "per-turn
+        circuit breaker" was a post-mortem: a turn could run its whole
+        round budget, each round a fresh request carrying the accumulated
+        tool context, and the ceiling was consulted afterwards. The same
+        defect disabled the scheduler's per-entry budget, which is
+        implemented by overriding that same cap.
+        """
+        probe = getattr(self, "turn_cost_cap", None)
+        if probe is None:
+            return 0.0
+        try:
+            return max(0.0, float(probe() or 0.0))
+        except Exception:
+            return 0.0
+
     def _stop_was_requested(self) -> bool:
         """Whether the caller asked this turn to stop.
 
@@ -12735,6 +12755,25 @@ class OpenAIClient(_BaseClient):
                     cost_usd=self._estimate_cost(_total_in, _total_out),
                     cached_tokens=_total_cached, stop_reason="stopped")
                 return
+            # The turn's spending ceiling, checked where the spending
+            # happens. Evaluating it only on the terminal event meant one
+            # check per turn after up to several hundred billed requests.
+            _cap = self._turn_cost_cap()
+            if _cap > 0:
+                _spent = self._estimate_cost(_total_in, _total_out)
+                if _spent >= _cap:
+                    yield StreamEvent(type="text_delta", text=(
+                        f"\n🛑 This turn reached its cost ceiling "
+                        f"(${_spent:.2f} of ${_cap:.2f}) and was stopped. "
+                        "The work done so far is kept — raise "
+                        "agent.cost_hard_limit_usd or send 'continue' to "
+                        "go on.\n"))
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in, output_tokens=_total_out,
+                        cost_usd=_spent, cached_tokens=_total_cached,
+                        stop_reason="cost_cap")
+                    return
             # Semantic context editing: once accumulated tool output over
             # this loop grows large, elide the OLDEST tool results (keep
             # the recent ones + all reasoning) so a long agentic turn

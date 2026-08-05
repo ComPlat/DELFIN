@@ -114,7 +114,15 @@ DEFAULT_SETTINGS = {
         # forcing manual nudges; the per-turn cost circuit-breaker
         # (cost_hard_limit_usd) and the consecutive-failure abort remain
         # the actual safety nets. 0 → uncapped (cost/fail-abort only).
-        "max_tool_rounds": 500,
+        #
+        # None means "unset", which is what lets the per-model profile
+        # decide. Shipping a number here instead made "unset" impossible
+        # to express, so the profile branch in _resolve_max_tool_rounds
+        # was unreachable and every model got 500 rounds -- including the
+        # small ones whose profiles ask for 10 or 20 precisely so that a
+        # degenerate loop dies early. A user who wants a fixed number
+        # still sets one and it still wins.
+        "max_tool_rounds": None,
         # Per-run limits for a delegated sub-agent. Wall-clock is the one
         # that actually binds on a slow endpoint (a build task spends ~30 s
         # per tool call there); call count and output size have not been
