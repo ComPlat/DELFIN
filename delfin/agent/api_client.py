@@ -12104,6 +12104,23 @@ class OpenAIClient(_BaseClient):
             with self._steer_lock:
                 self._steer_msgs.append(t)
 
+    def _stop_was_requested(self) -> bool:
+        """Whether the caller asked this turn to stop.
+
+        The engine checks its own flag between STREAM EVENTS. The tool loop
+        runs between those events, so during a ten-minute command or a
+        stalled stream nothing observed the flag at all -- Stop turned the
+        spinner off and the work carried on. The engine installs a probe
+        here; a client without one behaves exactly as before.
+        """
+        probe = getattr(self, "should_stop", None)
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:
+            return False
+
     def _drain_turn_steering(self) -> list[str]:
         """Steering blocks that became true while this turn was running.
 
@@ -12703,6 +12720,21 @@ class OpenAIClient(_BaseClient):
         _tool_budget = _tool_context_char_budget(_caps)
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
+            # A Stop the user pressed while a tool was running. The engine
+            # only checks its flag between STREAM EVENTS, and everything
+            # this loop does happens between them -- so during a long
+            # command Stop turned the spinner off and the work carried on.
+            # Ending here leaves the rounds already completed intact.
+            if self._stop_was_requested():
+                yield StreamEvent(type="text_delta", text=(
+                    "\n⏹️ Stopped. The rounds completed so far are kept; "
+                    "send a message to continue from here.\n"))
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=_total_in, output_tokens=_total_out,
+                    cost_usd=self._estimate_cost(_total_in, _total_out),
+                    cached_tokens=_total_cached, stop_reason="stopped")
+                return
             # Semantic context editing: once accumulated tool output over
             # this loop grows large, elide the OLDEST tool results (keep
             # the recent ones + all reasoning) so a long agentic turn

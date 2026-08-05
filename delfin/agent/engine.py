@@ -501,6 +501,11 @@ class AgentEngine:
         self._steering_delivered: dict[str, str] = {}
         # Mid-turn deliveries used so far this turn (see _drain_turn_steering).
         self._steering_refreshes: int = 0
+        # One turn at a time per conversation. See the gate in
+        # stream_response: two workers on one engine interleave the history
+        # and the per-turn cost state.
+        self._turn_gate = threading.Lock()
+        self._turn_in_flight: bool = False
         # Project-directory pin: the dir of the FIRST project write this
         # session. Re-injected every turn so the agent keeps writing there and
         # doesn't drift into sibling folders over a long session (a framework
@@ -1440,6 +1445,28 @@ class AgentEngine:
         except Exception:
             pass
 
+        # One conversation, one turn at a time. Nothing used to refuse a
+        # second turn while the first was still running: a Stop clears the
+        # widget flag without waiting for the worker, so the next send
+        # started a second thread on THIS engine. Both appended to this
+        # message list, both mutated the per-turn cost state, and both ran
+        # tools in the same workspace. The guard belongs here, on the object
+        # that owns the conversation, not on a flag a Stop has already
+        # cleared.
+        with self._turn_gate:
+            if self._turn_in_flight:
+                _busy = (
+                    "A turn is already running on this session. Stop it "
+                    "first, or send this once it has finished — starting a "
+                    "second turn would interleave both into one history.")
+                if on_token:
+                    try:
+                        on_token(_busy)
+                    except Exception:
+                        pass
+                return _busy
+            self._turn_in_flight = True
+
         self.messages.append(self._build_user_message(user_message, images))
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
@@ -1477,6 +1504,16 @@ class AgentEngine:
         # not look for the attribute is unaffected by carrying it.
         try:
             self.client.steering_provider = self._drain_turn_steering
+        except Exception:
+            pass
+
+        # Let the tool loop see a Stop. The engine only checks its own flag
+        # between STREAM EVENTS, and the loop that runs tools between those
+        # events never looked at it -- the name did not occur in the client
+        # module at all. During a long command or a stalled stream, Stop set
+        # a flag nobody read.
+        try:
+            self.client.should_stop = lambda: bool(self._stop_requested)
         except Exception:
             pass
 
@@ -1726,6 +1763,22 @@ class AgentEngine:
         except Exception as _turn_exc:
             if not chunks:
                 self.messages.pop()
+            else:
+                # Text streamed and then the turn died. Re-raising here
+                # skips the append below, so the history ended on a user
+                # message with no answer -- and the alternation sanitiser
+                # resolves two consecutive user messages by keeping the
+                # NEWEST. The next thing the user typed therefore replaced
+                # their original question, which the dashboard could not
+                # show because it had already printed the partial text.
+                # Commit what arrived, marked as unfinished so the model
+                # does not read its own truncated output as an answer.
+                self.messages.append({
+                    "role": "assistant",
+                    "content": "".join(chunks)
+                    + "\n\n[this turn ended with an error before it "
+                      "finished; the text above is incomplete]",
+                })
             # The FAIL side of the learning loop: errored turns previously
             # recorded NO outcome at all, so provider profiles only ever
             # learned from successes. Classify + record before re-raising.
@@ -1747,6 +1800,10 @@ class AgentEngine:
                 pass
             raise
         finally:
+            # Release the one-turn gate on EVERY exit path. A failed turn
+            # that left it set would make the engine refuse work forever.
+            with self._turn_gate:
+                self._turn_in_flight = False
             # Stop hooks — fire after the stream finishes (success or
             # exception). Failures are silenced so a misconfigured hook
             # never bubbles up.
