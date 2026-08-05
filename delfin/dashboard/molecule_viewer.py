@@ -482,7 +482,12 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'lastX = x;\n'
     'lastY = y;\n'
     'pendingDx += dx;\n'
-    'pendingDy -= dy;\n'
+    # translateScene takes screen-space deltas: a positive dy moves the scene
+    # down, which is where the cursor went. The negation here was tuned for
+    # viewer.translate(), which turned out to do nothing at all, so the sign was
+    # never actually exercised -- and once panning started working it dragged
+    # the molecule the wrong way.
+    'pendingDy += dy;\n'
     'if(firstMovePending){\n'
     'firstMovePending=false;\n'
     'var firstDx=pendingDx,firstDy=pendingDy;pendingDx=0;pendingDy=0;\n'

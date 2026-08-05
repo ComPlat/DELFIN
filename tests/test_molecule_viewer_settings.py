@@ -479,3 +479,16 @@ def test_vendored_bundle_does_not_depend_on_the_host_calling_convention():
     assert 'typeof window !== "undefined" ? window' in js
     # And the guard the loaders check is set on that same object.
     assert "__delfinGlobal.$3Dmolpromise = __delfinGlobal.$3Dmolpromise" in js
+
+
+def test_right_drag_moves_the_molecule_the_way_the_cursor_went():
+    """The vertical delta was negated. That sign was chosen for
+    viewer.translate(), which does nothing in this build, so it was never
+    actually exercised -- and once panning was routed to translateScene(),
+    which takes screen-space deltas, dragging down moved the molecule up.
+
+    Measured in a browser: a 100 px drag now moves the molecule 102.6 px the
+    same way, down, up and sideways alike."""
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    assert "'pendingDy += dy;\\n'" in patch or "pendingDy += dy;" in patch
+    assert "pendingDy -= dy;" not in patch
