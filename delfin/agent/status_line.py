@@ -149,7 +149,12 @@ def render_status_line(ctx: StatusContext) -> str:
                 cwd=str(ctx.workspace) if ctx.workspace else None,
             )
             return (proc.stdout or "").strip()[:240]
-        except subprocess.SubprocessError:
+        except (subprocess.SubprocessError, OSError):
+            # OSError too: cwd is passed unchecked, so a workspace that
+            # has since been deleted or renamed raises FileNotFoundError
+            # -- which is not a SubprocessError and escaped the render.
+            # The caller wraps the whole status refresh in a bare except,
+            # so the status line simply vanished with no explanation.
             return ""
     tpl = str(spec.get("template") or _DEFAULT_TEMPLATE)
     return _expand_template(tpl, ctx)[:240]

@@ -126,7 +126,16 @@ def test_status_custom_template_from_settings():
         assert out == "[plan] @ 500t"
 
 
-def test_status_command_line():
+def test_a_workspace_command_is_not_executed():
+    """This used to assert the opposite, and that is how the hole lived.
+
+    The winning spec's `command` runs with shell=True, cwd set to the
+    workspace, on every status refresh -- repeatedly, before the agent
+    has taken a single action. So a repository that ships a .delfin
+    settings file, or a colleague's directory granted to the agent, could
+    execute a command of its choosing. A template is data; a command is
+    code. The workspace may supply the first only.
+    """
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)
         (ws / ".delfin").mkdir()
@@ -135,19 +144,55 @@ def test_status_command_line():
         }))
         ctx = SL.StatusContext(workspace=ws, mode="default")
         out = SL.render_status_line(ctx)
-        assert out == "CUSTOM"
+        assert "CUSTOM" not in out
+        assert "mode=default" in out          # fell back to the template
 
 
-def test_status_failure_returns_empty():
+def test_the_users_own_command_still_runs():
+    """The feature itself, tested where it belongs: the user's own file."""
     with tempfile.TemporaryDirectory() as d:
-        ws = Path(d)
-        (ws / ".delfin").mkdir()
-        (ws / ".delfin" / "settings.json").write_text(json.dumps({
+        home = Path(d) / "home"
+        (home / ".delfin").mkdir(parents=True)
+        (home / ".delfin" / "settings.json").write_text(json.dumps({
+            "statusLine": {"command": "echo CUSTOM"}
+        }))
+        import unittest.mock as _m
+        ws = Path(d) / "ws"
+        ws.mkdir()
+        with _m.patch.object(SL.Path, "home", classmethod(lambda cls: home)):
+            ctx = SL.StatusContext(workspace=ws, mode="default")
+            assert SL.render_status_line(ctx) == "CUSTOM"
+
+
+def test_a_failing_user_command_returns_empty():
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d) / "home"
+        (home / ".delfin").mkdir(parents=True)
+        (home / ".delfin" / "settings.json").write_text(json.dumps({
             "statusLine": {"command": "exit 1"},
         }))
-        ctx = SL.StatusContext(workspace=ws)
-        out = SL.render_status_line(ctx)
-        assert out == ""
+        import unittest.mock as _m
+        ws = Path(d) / "ws"
+        ws.mkdir()
+        with _m.patch.object(SL.Path, "home", classmethod(lambda cls: home)):
+            ctx = SL.StatusContext(workspace=ws)
+            assert SL.render_status_line(ctx) == ""
+
+
+def test_a_vanished_workspace_does_not_raise():
+    """cwd is passed unchecked; FileNotFoundError is not a
+    SubprocessError, so it escaped the render and the caller's bare
+    except made the status line vanish with no explanation."""
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d) / "home"
+        (home / ".delfin").mkdir(parents=True)
+        (home / ".delfin" / "settings.json").write_text(json.dumps({
+            "statusLine": {"command": "echo CUSTOM"},
+        }))
+        import unittest.mock as _m
+        with _m.patch.object(SL.Path, "home", classmethod(lambda cls: home)):
+            ctx = SL.StatusContext(workspace=Path(d) / "gone")
+            assert SL.render_status_line(ctx) == ""
 
 
 # ---- image_input -----------------------------------------------------------
