@@ -1468,6 +1468,28 @@ _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # answer when the answer is always no.
 _SCOPE_LOCKED_ROLES: frozenset[str] = frozenset({"office_agent"})
 
+
+def _subagent_caps_phrase() -> str:
+    """The sub-agent limits, read from the constants that enforce them.
+
+    Typed into the schema, this said "300s" while the code allowed 900 --
+    the same drift that once made the model decline to delegate at all,
+    because a 60-second budget makes delegated work look pointless. It was
+    fixed in the docstring and then reappeared here, in the one place the
+    model actually reads at decision time. Generated, not linted: a test
+    can only catch a divergence that has already shipped.
+    """
+    try:
+        from . import subagents as _sa
+        limits = _sa._subagent_limits()
+        calls = int(limits.get("max_tool_calls", 40) or 40)
+        wall = int(float(limits.get("max_wall_s", 900) or 900))
+        out = int(limits.get("max_output_tokens", 16000) or 16000)
+    except Exception:
+        calls, wall, out = 40, 900, 16000
+    return f"{calls} tool calls, {wall}s, {out // 1000}k output tokens"
+
+
 _LOCKED_ROOTS_CACHE: tuple[Path, ...] | None = None
 
 
@@ -3785,7 +3807,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "parallel research, read-only audits, or planning that must "
                 "not edit. 'explore' / 'plan' / 'code-reviewer' are "
                 "read-only; 'general-purpose' inherits the parent's FULL "
-                "permissions. Caps: 40 tool calls, 300s, 16k output tokens."
+                "permissions. Caps: " + _subagent_caps_phrase() + "."
             ),
             "parameters": {
                 "type": "object",
@@ -4567,6 +4589,48 @@ def _auto_watch_submitted_jobs(stdout: str, perms) -> list[str]:
     except Exception:
         return ids
     return ids
+
+
+def _merge_delegate_evidence(observed: set, fn_name: str, result: str) -> None:
+    """Union a sub-agent's verified file list into the parent's ledger.
+
+    Only from the verification block, which is derived from the child's own
+    tool trace -- never from the report prose. The limit the module states
+    about itself holds here too: this compares a report to its own run, not
+    to reality. It makes a delegated read count as a read; it does not make
+    the delegate's conclusions true.
+    """
+    try:
+        if not fn_name.rsplit("__", 1)[-1].startswith("subagent"):
+            return
+        data = json.loads(result) if isinstance(result, str) else result
+        if not isinstance(data, dict):
+            return
+        evidence = ((data.get("verification") or {}).get("evidence") or {})
+        for path in evidence.get("files_touched") or ():
+            if isinstance(path, str) and path.strip():
+                observed.add(path.strip())
+    except Exception:
+        return
+
+
+def _mcp_schema_budget_chars() -> int:
+    """How many characters of MCP tool schema may ride on each request.
+
+    Roughly a third of the built-in catalogue: enough for a normal server,
+    small enough that adding servers cannot silently double the cost of
+    every turn. Raisable in settings for someone who genuinely needs a
+    large MCP surface and has measured what it costs them.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        raw = ((load_settings() or {}).get("agent") or {}).get(
+            "mcp_schema_budget_chars")
+        if raw is not None:
+            return max(2000, int(raw))
+    except Exception:
+        pass
+    return 12000
 
 
 def _smart_truncate(text: str, cap: int, label: str) -> str:
@@ -12115,18 +12179,46 @@ class OpenAIClient(_BaseClient):
             # central execution check remain the backstop; this keeps them out
             # of the surface in the first place.
             _adv_role = _surface_ctx.role
+            # The built-in catalogue is capped at 9,000 tokens by a test and
+            # currently sits twelve tokens under it. MCP schemas were
+            # appended after that, uncapped and unmeasured: two servers with
+            # thirty tools each would silently double the per-request tool
+            # surface -- the single largest part of a request -- with
+            # nothing to notice it. Bounded here, and what is dropped is
+            # SAID rather than quietly cut, because a surface that shrinks
+            # in silence looks like a broken server to whoever debugs it
+            # next.
+            _mcp_budget = _mcp_schema_budget_chars()
+            _mcp_spent = 0
+            _mcp_dropped: list[str] = []
             for _tool in _mcp_tools:
                 if tool_unavailable_reason(
                         _tool.namespaced_name, _surface_ctx) is not None:
                     continue
-                advertised_tools.append({
+                _entry = {
                     "type": "function",
                     "function": {
                         "name": _tool.namespaced_name,
                         "description": _tool.description or _tool.name,
                         "parameters": _tool.schema or {"type": "object"},
                     },
-                })
+                }
+                try:
+                    _cost = len(json.dumps(_entry, ensure_ascii=False))
+                except Exception:
+                    _cost = 400
+                if _mcp_spent + _cost > _mcp_budget:
+                    _mcp_dropped.append(_tool.namespaced_name)
+                    continue
+                _mcp_spent += _cost
+                advertised_tools.append(_entry)
+            if _mcp_dropped:
+                _record_security_event(
+                    "mcp_budget", "tool_surface",
+                    f"{len(_mcp_dropped)} MCP tools were not advertised: the "
+                    f"schema budget of {_mcp_budget} chars is spent. Dropped: "
+                    + ", ".join(_mcp_dropped[:8]),
+                    blocked=False)
             # MCP resources + prompts surface as on-demand meta-tools so the
             # agent can read a resource / render a prompt mid-task. Advertised
             # only when connected servers actually expose them, with the
@@ -12922,6 +13014,17 @@ class OpenAIClient(_BaseClient):
                             result = _tamper_note + "\n\n" + result
                         _observe_read_files(
                             self._observed_files, fn_name, fn_args, result)
+                        # A delegate's reads and writes are evidence too.
+                        # The cross-check already computes files_touched
+                        # from the child's OWN trace; it was produced and
+                        # never consumed, so a parent relaying a TRUE
+                        # delegate finding was penalised exactly like one
+                        # that invented it -- which makes delegating more
+                        # expensive than doing the work, the opposite of
+                        # what the delegation reminder is trying to
+                        # achieve.
+                        _merge_delegate_evidence(
+                            self._observed_files, fn_name, result)
                         self._observed_files_session |= self._observed_files
                     except Exception:
                         pass

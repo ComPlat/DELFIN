@@ -395,3 +395,50 @@ def test_ask_user_question_option_preview_is_still_declared():
     item = _schema("ask_user_question")["parameters"]["properties"]["options"]["items"]
     assert item["properties"]["preview"]["type"] == "string"
     assert "markdown" in item["properties"]["preview"]["description"].lower()
+
+
+# ---------------------------------------------------------------------------
+# The MCP surface rides on every request too
+# ---------------------------------------------------------------------------
+
+def test_mcp_schemas_have_a_budget():
+    """The built-in catalogue is capped and sits twelve tokens under its
+    ceiling. MCP schemas were appended after that check, uncapped: two
+    servers with thirty tools each would silently double the largest single
+    part of a request, with nothing to notice it."""
+    from delfin.agent.api_client import _mcp_schema_budget_chars
+
+    assert _mcp_schema_budget_chars() > 0
+
+
+def test_the_mcp_budget_cannot_be_switched_off(monkeypatch):
+    """A budget a typo disables is not a budget."""
+    from delfin.agent import api_client as A
+
+    for junk in (0, -1, "", None, "lots"):
+        monkeypatch.setattr(
+            "delfin.user_settings.load_settings",
+            lambda *a, **kw: {"agent": {"mcp_schema_budget_chars": junk}})
+        assert A._mcp_schema_budget_chars() >= 2000
+
+
+def test_dropping_a_tool_is_recorded_not_silent():
+    """A surface that shrinks in silence looks like a broken server to
+    whoever debugs it next."""
+    import pathlib
+    from delfin.agent import api_client as A
+
+    source = pathlib.Path(A.__file__).read_text(encoding="utf-8")
+    block = source[source.index("_mcp_budget = _mcp_schema_budget_chars()"):]
+    block = block[:2000]
+    assert "_mcp_dropped" in block
+    assert "_record_security_event" in block
+    assert "were not advertised" in block
+
+
+def test_the_builtin_catalogue_is_still_measured_on_its_own():
+    """The MCP budget is additive; it must not become an excuse to let the
+    catalogue itself grow."""
+    from delfin.agent.api_client import tool_schema_token_report
+
+    assert tool_schema_token_report()["total_tokens"] <= _TOKEN_BUDGET
