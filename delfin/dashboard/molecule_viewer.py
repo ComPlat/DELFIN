@@ -1445,7 +1445,38 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         updateMeasureBox(scopeKey);
     }
 
+    // Fill the toolbar's value box with what the current selection describes,
+    // and say which quantity that is. Without this the box was an unlabelled
+    // number field and nothing told the user it wanted a bond length.
+    function updateInternalReadout(scopeKey) {
+        var root = getRoot(scopeKey);
+        if (!root) return;
+        var label = root.querySelector('.submit-internal-label');
+        var box = root.querySelector('.submit-internal-value input');
+        var info = null;
+        try { info = readInternal(scopeKey); } catch (e) { info = null; }
+        if (label) {
+            label.innerHTML = info
+                ? ('set <b>' + info.kind + '</b> (' +
+                   (info.unit === 'A' ? '\u00c5' : '\u00b0') + ')')
+                : 'pick 2-4 atoms';
+        }
+        if (box && info && document.activeElement !== box) {
+            var rounded = info.unit === 'A'
+                ? info.value.toFixed(3) : info.value.toFixed(1);
+            if (box.value !== rounded) {
+                var setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value');
+                if (setter && setter.set) setter.set.call(box, rounded);
+                else box.value = rounded;
+                box.dispatchEvent(new Event('input', {bubbles: true}));
+                box.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+        }
+    }
+
     function updateStatus(scopeKey) {
+        updateInternalReadout(scopeKey);
         var el = getStatusEl(scopeKey);
         if (!el) return;
         var state = getState(scopeKey);
@@ -1464,10 +1495,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             ? '<span style="color:#1976d2;font-weight:600;">' + modeTxt + '</span> · '
             : '';
         var hint = '';
+        var faint = ' <span style="color:#888;font-size:0.9em;">';
         if (state.mode === 'select' && n === 0) {
-            hint = ' <span style="color:#888;font-size:0.9em;">(click atom to pick · hold <b>Shift</b>+drag = rect)</span>';
+            hint = faint + '(click an atom · <b>Shift</b>+drag = rectangle)</span>';
         } else if (state.mode === 'manipulate' && n === 0) {
-            hint = ' <span style="color:#888;font-size:0.9em;">(pick atoms first)</span>';
+            hint = faint + '(drag any atom · drag empty space turns the view)</span>';
+        } else if (n >= 2 && n <= 4) {
+            var names = {2: 'bond', 3: 'angle', 4: 'dihedral'};
+            hint = faint + '(' + names[n] + ': type a value and press <b>Set</b>)</span>';
         }
         el.innerHTML = modeBadge +
             '<b>' + n + '</b> atom' + (n === 1 ? '' : 's') + ' selected' +

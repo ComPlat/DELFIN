@@ -215,3 +215,33 @@ def test_ctrl_z_belongs_to_whatever_is_being_typed_in():
     assert "tag === 'INPUT' || tag === 'TEXTAREA'" in handler
     assert 'focused.isContentEditable' in handler
     assert handler.index('activeElement') < handler.index('_submitManipStateByScope')
+
+
+def test_value_box_says_what_it_sets_and_shows_the_current_value():
+    """It was an unlabelled number field: nothing said it wanted a bond length,
+    and it did not show what the selection currently measures."""
+    readout = _body('updateInternalReadout')
+    assert '.submit-internal-label' in readout
+    assert '.submit-internal-value input' in readout
+    assert 'pick 2-4 atoms' in readout
+    # Angstrom for a bond, degrees for an angle or dihedral.
+    assert "info.unit === 'A'" in readout
+    # Typing must not be overwritten under the user's fingers.
+    assert 'document.activeElement !== box' in readout
+    # And it has to refresh whenever the selection changes.
+    status = _body('updateStatus')
+    assert 'updateInternalReadout(scopeKey)' in status
+
+
+def test_toolbar_wraps_instead_of_clipping_its_own_controls():
+    """On a laptop the row was wider than the panel, and nowrap plus
+    overflow hidden simply cut off whatever did not fit."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    toolbar = source.split('submit_manip_toolbar = widgets.HBox')[1].split(')\n')[0]
+    assert "flex_flow='row wrap'" in toolbar
+    assert "overflow='hidden'" not in toolbar
+    # The status line takes a row of its own rather than a sliver of the first.
+    status = source.split('submit_manip_status = widgets.HTML')[1].split(')\n')[0]
+    assert "flex='1 1 100%'" in status

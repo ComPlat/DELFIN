@@ -641,14 +641,22 @@ def create_tab(ctx):
     submit_select_btn = widgets.ToggleButton(
         value=False, description='Select', icon='crosshairs',
         button_style='',
-        tooltip='Click atoms to pick/unpick. Hold Shift and drag to rectangle-select.',
+        tooltip=(
+            'Click atoms to pick or unpick them. Hold Shift and drag for a '
+            'rectangle; add Ctrl to keep the previous selection.'
+        ),
         layout=widgets.Layout(width='96px', height='30px'),
         disabled=True,
     )
     submit_manip_btn = widgets.ToggleButton(
         value=False, description='Manipulate', icon='arrows',
         button_style='',
-        tooltip='Left-drag: translate selected atoms. Right-click atom: set pivot. Right-drag: rotate around pivot.',
+        tooltip=(
+            'Grab any atom and drag it; grabbing a selected atom moves the '
+            'whole selection. Drag empty space to turn the view. Right-click '
+            'an atom to set the pivot, right-drag to rotate the selection '
+            'about it.'
+        ),
         layout=widgets.Layout(width='112px', height='30px'),
         disabled=True,
     )
@@ -691,11 +699,20 @@ def create_tab(ctx):
         layout=widgets.Layout(width='104px'),
         disabled=True,
     )
+    submit_internal_label = widgets.HTML(
+        value=(
+            '<span class="submit-internal-label" '
+            'style="color:#888;font-size:0.9em;white-space:nowrap;">'
+            'pick 2-4 atoms</span>'
+        ),
+        layout=widgets.Layout(margin='0 0 0 4px'),
+    )
     submit_internal_value = widgets.FloatText(
         value=0.0, step=0.01,
         layout=widgets.Layout(width='92px', height='30px'),
         disabled=True,
     )
+    submit_internal_value.add_class('submit-internal-value')
     submit_internal_btn = widgets.Button(
         description='Set', button_style='primary',
         tooltip=(
@@ -708,7 +725,9 @@ def create_tab(ctx):
     )
     submit_manip_status = widgets.HTML(
         value='<span class="submit-manip-status" style="color:#888;font-size:0.9em;">— viewer empty —</span>',
-        layout=widgets.Layout(flex='1 1 auto', min_width='0', overflow_x='hidden'),
+        layout=widgets.Layout(
+            flex='1 1 100%', min_width='0', overflow_x='hidden',
+        ),
     )
     submit_manip_sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
     submit_manip_sync.add_class('submit-manip-sync')
@@ -719,13 +738,13 @@ def create_tab(ctx):
             submit_select_btn, submit_manip_btn,
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_relax_btn, submit_optimize_btn, submit_ff_dd,
-            submit_internal_value, submit_internal_btn,
+            submit_internal_label, submit_internal_value, submit_internal_btn,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
             display='none', gap='6px', align_items='center',
-            width='100%', flex_flow='row nowrap',
-            margin='0 0 6px 0', overflow='hidden',
+            width='100%', flex_flow='row wrap',
+            margin='0 0 6px 0', overflow='visible',
         ),
     )
 
