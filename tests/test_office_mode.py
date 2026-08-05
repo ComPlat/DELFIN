@@ -402,3 +402,59 @@ def test_the_chemistry_deny_survives_the_allow_list():
                  "read_section", "list_docs", "list_sections",
                  "get_calc_info"):
         assert _tool_denied_for_role("office_agent", tool), tool
+
+
+# ---------------------------------------------------------------------------
+# Office work has to count as evidence
+# ---------------------------------------------------------------------------
+
+def _ledger(calls):
+    from delfin.agent.api_client import _observe_read_files
+
+    observed: set = set()
+    for name, args, result in calls:
+        _observe_read_files(observed, name, args, result)
+    return observed
+
+
+def test_reading_a_document_is_evidence():
+    """Replaying two real field traces, a 61-call office run produced 3
+    ledger entries and a 67-call run produced 1 -- while the guards ran
+    against that ledger in its ENFORCING branch, so the agent was corrected
+    for describing files it had just read."""
+    assert "Buchungen_2026.xlsx" in _ledger([
+        ("read_document", {"path": "Buchungen_2026.xlsx"}, "64 rows")])
+
+
+def test_both_sides_of_a_comparison_are_evidence():
+    got = _ledger([("compare_tables",
+                    {"path": "soll.csv", "right_path": "ist.csv"}, "ok")])
+    assert {"soll.csv", "ist.csv"} <= got
+
+
+def test_a_produced_document_is_evidence():
+    """A file the agent made is grounded for the same reason a write is."""
+    got = _ledger([
+        ("create_pdf", {"output": "bericht.pdf"}, "ok"),
+        ("fill_pdf_form", {"src": "form.pdf", "output": "gefuellt.pdf"}, "ok"),
+    ])
+    assert {"bericht.pdf", "form.pdf", "gefuellt.pdf"} <= got
+
+
+def test_a_series_run_records_what_it_produced():
+    import json
+
+    got = _ledger([("fill_series", {"template": "vorlage.docx"},
+                    json.dumps({"written": ["out/RK-1.pdf", "out/RK-2.pdf"]}))])
+    assert {"vorlage.docx", "out/RK-1.pdf", "out/RK-2.pdf"} <= got
+
+
+def test_a_failed_call_is_not_evidence():
+    assert not _ledger([
+        ("read_document", {"path": "weg.xlsx"}, '{"error": "no such file"}')])
+
+
+def test_the_coding_tools_still_work():
+    """The office table is an addition, not a replacement."""
+    assert "src/mod.py" in _ledger([
+        ("read_file", {"path": "src/mod.py"}, "contents")])

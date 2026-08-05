@@ -4917,6 +4917,27 @@ _OBSERVATION_TOOLS = frozenset({
     "write_file", "edit_file", "multi_edit", "notebook_edit",
 })
 
+# The document tools, whose path argument is not always called "path".
+# Without these an office session's ledger was near-empty while the guards
+# still ran against it: replaying two real field traces, a 61-call run
+# produced 3 entries and a 67-call run produced 1. That is the ENFORCING
+# branch of the claim guard -- the ledger exists, so an unmatched citation
+# is treated as unsupported rather than uncheckable -- so the agent was
+# being corrected for describing files it had just read or written.
+_OFFICE_OBSERVATION_ARGS: dict[str, tuple[str, ...]] = {
+    "read_document": ("path",),
+    "edit_sheet": ("path", "output"),
+    "compare_tables": ("path", "left", "right", "right_path"),
+    "fill_pdf_form": ("path", "src", "output"),
+    "fill_docx_template": ("path", "src", "output"),
+    "create_docx": ("path", "output"),
+    "create_pdf": ("path", "output"),
+    "merge_pdfs": ("output",),
+    "split_pdf": ("path",),
+    "fill_series": ("template", "path"),
+    "list_files": ("path", "dir", "directory"),
+}
+
 
 def _observe_read_files(
     observed: set, fn_name: str, fn_args: Any, result: str,
@@ -4936,6 +4957,30 @@ def _observe_read_files(
             if path:
                 observed.add(path)
             return
+        if fn_name in _OFFICE_OBSERVATION_ARGS:
+            for key in _OFFICE_OBSERVATION_ARGS[fn_name]:
+                value = fn_args.get(key)
+                if isinstance(value, str) and value.strip():
+                    observed.add(value.strip())
+                elif isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, str) and item.strip():
+                            observed.add(item.strip())
+            # fill_series reports the files it produced; those are the ones
+            # an answer about the run will name, and they are evidence for
+            # the same reason a write is: the agent made them.
+            if fn_name == "fill_series":
+                try:
+                    data = json.loads(result)
+                    for item in (data.get("written") or data.get("files") or []):
+                        if isinstance(item, str):
+                            observed.add(item)
+                        elif isinstance(item, dict) and item.get("path"):
+                            observed.add(str(item["path"]))
+                except Exception:
+                    pass
+            return
+
         if fn_name in ("find_definition", "find_references"):
             data = json.loads(result)
             items = data if isinstance(data, list) else (
