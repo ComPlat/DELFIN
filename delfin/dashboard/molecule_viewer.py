@@ -777,11 +777,41 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     # through this instead, which applies the configured supersampling factor
     # for the duration of construction and is where the quality setting becomes
     # visible at all.
+    # Resize handlers are called from several places at once -- a viewer being
+    # created, a MutationObserver watching every inline-style change in the tab,
+    # the splitter -- and each call reallocates the renderer's buffers and draws
+    # three times. Coalescing them costs nothing and removes the storm.
+    'window.__delfinCoalesce = function(fn, delay){\n'
+    'var pending = null;\n'
+    'return function(){\n'
+    'if (pending) return;\n'
+    'pending = window.setTimeout(function(){\n'
+    'pending = null;\n'
+    'try { fn(); } catch(e) {}\n'
+    '}, delay || 60);\n'
+    '};\n'
+    '};\n'
+    'window.__delfinViewerCreatedHooks = window.__delfinViewerCreatedHooks || [];\n'
+    'window.__delfinOnViewerCreated = function(fn){\n'
+    'if(typeof fn !== "function") return false;\n'
+    'if(window.__delfinViewerCreatedHooks.indexOf(fn) < 0) '
+    'window.__delfinViewerCreatedHooks.push(fn);\n'
+    'return true;\n'
+    '};\n'
     'window.__delfinCreateViewer = function(element, config){\n'
     'var ratio = window.__delfinViewerPixelRatio || 0;\n'
-    'return window.__delfinWithPixelRatio(ratio, function(){\n'
+    'var viewer = window.__delfinWithPixelRatio(ratio, function(){\n'
     'return $3Dmol.createViewer(element, config);\n'
     '});\n'
+    # This funnel is the only reliable place to notice that a viewer appeared.
+    # Patching the factory cannot work: 3Dmol exposes createViewer as a
+    # non-configurable getter, so assigning over it fails silently and the
+    # assignment's catch block never runs either.
+    'var hooks = window.__delfinViewerCreatedHooks || [];\n'
+    'for (var i = 0; i < hooks.length; i++) {\n'
+    'try { hooks[i](viewer, element); } catch(e) {}\n'
+    '}\n'
+    'return viewer;\n'
     '};\n'
     'var bootstrapAttempt=0;\n'
     'function bootstrap(){\n'
@@ -2359,6 +2389,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (e.key === 'Shift') { propagateShift(true); }
             var key = e.key || '';
             if ((e.ctrlKey || e.metaKey) && (key === 'z' || key === 'Z') && !e.shiftKey) {
+                // Ctrl-Z belongs to whatever the user is typing in. Taking it
+                // globally meant that undoing a typo in the coordinate box
+                // silently moved atoms instead.
+                var focused = document.activeElement;
+                if (focused) {
+                    var tag = (focused.tagName || '').toUpperCase();
+                    if (tag === 'INPUT' || tag === 'TEXTAREA' ||
+                        focused.isContentEditable) {
+                        return;
+                    }
+                }
                 var states = window._submitManipStateByScope || {};
                 var keys = Object.keys(states);
                 for (var i = 0; i < keys.length; i++) {

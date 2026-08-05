@@ -416,3 +416,46 @@ def test_png_export_re_renders_instead_of_upscaling_the_screen():
     # The off-screen viewer must not leak a WebGL context.
     assert "__delfinDisposeViewer(shot)" in render
     assert "removeChild(host)" in render
+
+
+def test_viewer_creation_is_observable_without_patching_the_factory():
+    """The Calculations browser carried a monkey-patch of $3Dmol.createViewer
+    meant to kick every scoped resizer 300 ms after a viewer appeared. It never
+    ran once: createViewer is a non-configurable getter, so the assignment
+    fails silently in sloppy mode — no exception, so the defineProperty
+    fallback inside the catch was never reached either, and the 'patched' flag
+    was set regardless."""
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    assert "window.__delfinOnViewerCreated" in patch
+    assert "window.__delfinViewerCreatedHooks" in patch
+    funnel = patch.split("window.__delfinCreateViewer = function")[1][:1400]
+    assert "hooks[i](viewer, element)" in funnel
+
+    calc = (
+        Path(__file__).resolve().parents[1]
+        / "delfin" / "dashboard" / "tab_calculations_browser.py"
+    ).read_text(encoding="utf-8")
+    assert "patchCreateViewer" not in calc
+    assert "_calcResizePatched" not in calc
+    assert "window.__delfinOnViewerCreated(function()" in calc
+
+
+def test_resize_handlers_are_coalesced():
+    """They are called from viewer creation, the splitter, several timers and a
+    MutationObserver watching every inline-style change in the tab, and each
+    call reallocates the renderer's buffers and draws three times."""
+    assert "window.__delfinCoalesce" in _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    assert "window.__delfinCoalesce(window[" in _CALC_VIEWER_SOURCE
+    assert "__delfinCoalesced" in _REMOTE_VIEWER_SOURCE
+
+
+def test_viewers_no_longer_give_up_while_their_tab_is_hidden():
+    """80 tries at 50 ms was a hard four-second deadline, and the poll skips a
+    host whose tab is not the visible one — so switching away for four seconds
+    lost the molecule with no error anywhere."""
+    for source in (_CALC_VIEWER_SOURCE, _REMOTE_VIEWER_SOURCE, _ORCA_VIEWER_SOURCE):
+        assert "tries < 80" not in source
+        assert "tries<80" not in source
+    assert "tries < 400" in _CALC_VIEWER_SOURCE
+    assert "tries < 40 ? 50 : 250" in _CALC_VIEWER_SOURCE
+    assert "tries<400" in _ORCA_VIEWER_SOURCE

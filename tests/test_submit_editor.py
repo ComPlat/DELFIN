@@ -205,3 +205,13 @@ def test_optimize_toggle_runs_the_field_continuously():
     assert 'snapshotForUndo(scopeKey);\n        state.autoOpt = true;' in EDITOR
     ready = _body('onViewerReady')
     assert 'state.autoOpt = false;' in ready
+
+
+def test_ctrl_z_belongs_to_whatever_is_being_typed_in():
+    """The editor took Ctrl-Z globally, so undoing a typo while editing the
+    coordinate box silently moved atoms instead."""
+    handler = EDITOR.split("window.addEventListener('keydown'")[1].split('}, true);')[0]
+    assert 'document.activeElement' in handler
+    assert "tag === 'INPUT' || tag === 'TEXTAREA'" in handler
+    assert 'focused.isContentEditable' in handler
+    assert handler.index('activeElement') < handler.index('_submitManipStateByScope')

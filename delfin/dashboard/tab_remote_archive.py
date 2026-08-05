@@ -1480,7 +1480,7 @@ def create_tab(ctx):
                             if (!scopeRoot) scopeRoot = document.querySelector('.{scope_id}');
                             if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
                                 tries += 1;
-                                if (tries < 80) setTimeout(initViewer, 50);
+                                if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                                 return;
                             }}
                             var rightPanel = scopeRoot ? scopeRoot.querySelector('.remote-right') : null;
@@ -1659,7 +1659,7 @@ def create_tab(ctx):
                             if (!scopeRoot) scopeRoot = document.querySelector('.{scope_id}');
                             if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
                                 tries += 1;
-                                if (tries < 80) setTimeout(initViewer, 50);
+                                if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                                 return;
                             }}
                             var rightPanel = scopeRoot ? scopeRoot.querySelector('.remote-right') : null;
@@ -5316,6 +5316,15 @@ def create_tab(ctx):
             }};
             installRemoteArchiveEnter(root);
             installRemoteArchiveSplitter(root);
+            /* Coalesce the resize handler: it is called from viewer creation,
+               the splitter and three separate timers, and each call
+               reallocates the renderer's buffers and draws three times. */
+            if (window.__delfinCoalesce &&
+                !window["{remote_resize_mol_fn}"].__delfinCoalesced) {{
+                window["{remote_resize_mol_fn}"] = window.__delfinCoalesce(
+                    window["{remote_resize_mol_fn}"], 80);
+                window["{remote_resize_mol_fn}"].__delfinCoalesced = true;
+            }}
             window["{remote_resize_mol_fn}"]();
             setTimeout(window["{remote_resize_mol_fn}"], 150);
             setTimeout(window["{remote_resize_mol_fn}"], 450);

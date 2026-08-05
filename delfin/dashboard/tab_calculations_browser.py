@@ -3285,7 +3285,7 @@ def create_tab(ctx):
                         if (!el || typeof $3Dmol === "undefined"
                             || !box || box.offsetParent === null) {{
                             tries += 1;
-                            if (tries < 80) setTimeout(initViewer, 50);
+                            if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                             return;
                         }}
                         var rect = box.getBoundingClientRect();
@@ -4047,7 +4047,7 @@ def create_tab(ctx):
                 if (!el || typeof $3Dmol === "undefined"
                     || !mv || mv.offsetParent === null) {{
                     tries += 1;
-                    if (tries < 80) setTimeout(initViewer, 50);
+                    if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                     return;
                 }}
                 /* Compute size from actual free space in the right panel */
@@ -7083,7 +7083,7 @@ def create_tab(ctx):
                 if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
                 if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
                     tries += 1;
-                    if (tries < 80) setTimeout(initViewer, 50);
+                    if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                     return;
                 }}
                 var rightPanel = scopeRoot ? scopeRoot.querySelector('.calc-right') : null;
@@ -7262,7 +7262,7 @@ def create_tab(ctx):
                 var el = document.getElementById("{viewer_id}");
                 if (!el || typeof $3Dmol === "undefined") {{
                     tries += 1;
-                    if (tries < 80) setTimeout(initViewer, 50);
+                    if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                     return;
                 }}
                 var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
@@ -7368,7 +7368,7 @@ def create_tab(ctx):
                             if (!el || typeof $3Dmol === "undefined"
                                 || !mv || mv.offsetParent === null) {{
                                 tries += 1;
-                                if (tries < 80) setTimeout(initViewer, 50);
+                                if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                                 return;
                             }}
                             /* Pre-size to actual free space in right panel */
@@ -14461,44 +14461,26 @@ def create_tab(ctx):
             }});
         }}
 
-        /* --- Monkey-patch $3Dmol.createViewer to trigger all scoped resizers --- */
-        function patchCreateViewer() {{
-            if (typeof $3Dmol === 'undefined' || $3Dmol._calcResizePatched) return;
-            var orig = $3Dmol.createViewer;
-            var wrapper = function() {{
-                var v = orig.apply(this, arguments);
+        /* --- Kick every scoped resizer once a viewer appears ---------------
+           This used to monkey-patch $3Dmol.createViewer. That can never work:
+           3Dmol exposes createViewer as a non-configurable getter, so the
+           assignment fails silently in sloppy mode -- no exception, so the
+           defineProperty fallback in the catch block never ran either, and
+           the flag was set anyway. The resize kick therefore never fired once
+           in the life of this code. Every construction now goes through
+           window.__delfinCreateViewer instead, which reports what it built. */
+        if (window.__delfinOnViewerCreated) {{
+            window.__delfinOnViewerCreated(function() {{
                 setTimeout(function() {{
                     try {{
                         var fns = window._calcResizeMolViewerFns || {{}};
                         Object.keys(fns).forEach(function(k) {{
-                            var fn = fns[k];
-                            if (typeof fn === 'function') fn();
+                            if (typeof fns[k] === 'function') fns[k]();
                         }});
                     }} catch (_e) {{}}
                 }}, 300);
-                return v;
-            }};
-            try {{
-                $3Dmol.createViewer = wrapper;
-                $3Dmol._calcResizePatched = true;
-            }} catch (_e1) {{
-                try {{
-                    Object.defineProperty($3Dmol, 'createViewer', {{
-                        value: wrapper, writable: true, configurable: true
-                    }});
-                    $3Dmol._calcResizePatched = true;
-                }} catch (_e2) {{
-                    $3Dmol._calcResizePatched = true;
-                }}
-            }}
+            }});
         }}
-        patchCreateViewer();
-        var patchInterval = setInterval(function() {{
-            patchCreateViewer();
-            if (typeof $3Dmol !== 'undefined' && $3Dmol._calcResizePatched) {{
-                clearInterval(patchInterval);
-            }}
-        }}, 500);
 
         /* --- Dynamic mol-viewer resize --- */
         window["{calc_resize_mol_fn}"] = function() {{
@@ -14586,6 +14568,14 @@ def create_tab(ctx):
                 }} catch (_e) {{}}
             }}
         }};
+        /* Every caller -- viewer creation, the style MutationObserver, the
+           splitter -- goes through the same coalesced handler, so a burst of
+           requests costs one resize instead of one buffer reallocation and
+           three draws apiece. */
+        if (window.__delfinCoalesce) {{
+            window["{calc_resize_mol_fn}"] =
+                window.__delfinCoalesce(window["{calc_resize_mol_fn}"], 80);
+        }}
         window._calcResizeMolViewerFns = window._calcResizeMolViewerFns || {{}};
         window._calcResizeMolViewerFns[scopeKey] = window["{calc_resize_mol_fn}"];
         window.addEventListener('resize', function() {{
