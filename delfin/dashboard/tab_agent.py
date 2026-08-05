@@ -3138,9 +3138,11 @@ def create_tab(ctx):
                     "build → validate → save → submit). Results in ~/calc; needs the "
                     "delfin-tools MCP server registered.",
         "office": "Office — administrative work on your documents and data: "
-                  "spreadsheets, PDF forms, Word templates, letters, lists. No "
-                  "chemistry tools; the calc search and the ORCA manual are off "
-                  "in this mode.",
+                  "spreadsheets, PDF forms, Word templates, letters, lists. "
+                  "Files: this one folder and nothing outside it, in any "
+                  "permission profile. Network: not bounded by that folder — "
+                  "sending data out is confirmed instead, except under "
+                  "Bypass. No chemistry tools.",
         "plan": "Read-only research first — the agent explores the codebase, drafts a "
                 "step-by-step plan in markdown, and waits for your approval via "
                 "ExitPlanMode before any file edits or bash run.",

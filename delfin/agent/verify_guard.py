@@ -1446,6 +1446,52 @@ def scan_for_totals_over_ambiguous_columns(
     return hit
 
 
+# A count in an answer: "31 PDF-Dateien", "31 files", "29 rows".
+_COUNT_CLAIM_RE = re.compile(
+    r"(?i)\b(\d{2,})\s+"
+    r"(?:pdf|docx?|xlsx?|csv|dateien|files?|zeilen|rows?|eintr[äa]ge|"
+    r"entries|dokumente|documents?|antr[äa]ge)\b"
+)
+
+
+def scan_for_counts_over_truncated_output(
+    text: str, truncated_tools: list[str] | tuple[str, ...],
+) -> list[str]:
+    """Counts an answer states after its only source was cut short.
+
+    The failure this exists for: fill_series reported 29 complete of 31,
+    the listing that would have settled it was cut at "... 2,000 chars
+    total", and the answer asserted "31 PDF-Dateien verifiziert" while
+    naming 29. The truncation marker was present and simply not honoured.
+
+    Returns the counts to warn about, empty when nothing was truncated or
+    the answer states no count. Deliberately does not try to decide
+    whether the number is right -- only that its source could not have
+    supported it.
+    """
+    if not text or not truncated_tools:
+        return []
+    try:
+        return [m.group(0).strip() for m in _COUNT_CLAIM_RE.finditer(text)][:4]
+    except Exception:
+        return []
+
+
+def truncated_output_caveat(counts: list[str], tools: list[str]) -> str:
+    """The note appended to an answer counting from a cut-short result."""
+    if not counts:
+        return ""
+    named = ", ".join(counts[:3])
+    where = ", ".join(sorted(set(tools))[:3]) or "a tool result"
+    return (
+        "\n\n> ⚠️ Diese Antwort nennt " + named + ", aber die Ausgabe von "
+        + where + " wurde in diesem Zug gekürzt. Eine Zahl, deren einzige "
+        "Quelle abgeschnitten war, ist nicht gezählt, sondern geschätzt — "
+        "bitte gegen die vollständige Liste prüfen, bevor sie weitergegeben "
+        "wird."
+    )
+
+
 def ambiguous_column_caveat(columns: list[str]) -> str:
     """The note appended to an answer that totalled an unreadable column."""
     if not columns:

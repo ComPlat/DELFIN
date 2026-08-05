@@ -1491,6 +1491,12 @@ class AgentEngine:
                     # reader's own note rather than re-derived, so the two
                     # cannot disagree about what is in question.
                     self._note_ambiguous_columns(event.tool_output or "")
+                    # And whether the model saw the whole result. A count
+                    # taken from output that was cut short is an estimate
+                    # wearing the clothes of a measurement.
+                    _out = event.tool_output or ""
+                    if "truncated," in _out and "chars" in _out:
+                        self._note_truncated_tool(event.tool_name or "a tool")
                     self._record_tool_trace(
                         event.tool_name, event.tool_output or "", ok=True)
                     # Crash insurance: full session saves happen only at
@@ -1851,6 +1857,33 @@ class AgentEngine:
         except Exception:
             pass
 
+    def _note_truncated_tool(self, tool_name: str) -> None:
+        """Record that a tool result was cut short this turn.
+
+        Per TURN, like the ambiguous-column ledger and for the same
+        reason: the question is whether THIS answer counts from output
+        THIS turn could not see in full."""
+        try:
+            ledger = getattr(self, "_truncated_tools_turn", None)
+            if ledger is None:
+                ledger = self._truncated_tools_turn = []
+            name = str(tool_name or "a tool")
+            if name not in ledger:
+                ledger.append(name)
+            if len(ledger) > 20:
+                del ledger[:len(ledger) - 20]
+        except Exception:
+            pass
+
+    def _scan_truncated_counts(self, text: str) -> list:
+        """Counts this answer states although its source was cut short."""
+        try:
+            from . import verify_guard as _vg
+            return _vg.scan_for_counts_over_truncated_output(
+                text, list(getattr(self, "_truncated_tools_turn", ()) or ()))
+        except Exception:
+            return []
+
     def _scan_ambiguous_column_totals(self, text: str) -> list:
         """Columns this answer totals although the reader could not read them."""
         try:
@@ -1859,6 +1892,37 @@ class AgentEngine:
                 text, list(getattr(self, "_ambiguous_columns_turn", ()) or ()))
         except Exception:
             return []
+
+    def _append_truncated_count_caveat(
+        self, text: str,
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
+        """Mark a count whose only source was cut short.
+
+        Same consequence as the ambiguous-column caveat and for the same
+        reason: the number is not demonstrably wrong, it is unfounded. A
+        correction turn cannot help either -- the full listing is still not
+        in context, so a retry would count the same truncated output
+        again. In the field this produced "31 PDF-Dateien verifiziert"
+        followed by a list of 29, after the framework's own verify nudge
+        had already fired once."""
+        try:
+            counts = self._scan_truncated_counts(text)
+            if not counts:
+                return text
+            from . import verify_guard as _vg
+            caveat = _vg.truncated_output_caveat(
+                counts, list(getattr(self, "_truncated_tools_turn", ()) or ()))
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        return text + caveat
 
     def _append_ambiguous_column_caveat(
         self, text: str, columns: list,
@@ -1998,9 +2062,12 @@ class AgentEngine:
         # it is unfounded, and a retry is free to guess the same way again.
         ambiguous = self._scan_ambiguous_column_totals(response_text)
         if not loc and not qty:
-            return self._append_ambiguous_column_caveat(
-                self._append_functional_caveat(response_text, func, on_token),
-                ambiguous, on_token)
+            return self._append_truncated_count_caveat(
+                self._append_ambiguous_column_caveat(
+                    self._append_functional_caveat(
+                        response_text, func, on_token),
+                    ambiguous, on_token),
+                on_token)
         if self._claim_guard_corrected:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.

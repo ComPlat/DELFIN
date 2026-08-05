@@ -4483,6 +4483,51 @@ def _thrash_check(state: dict, fn_name: str, fn_args: dict) -> str:
     return ""
 
 
+# File types a task subject can promise, and the extension that proves it.
+_ARTIFACT_PROMISES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pdf", (".pdf",)),
+    ("word", (".docx", ".doc")),
+    ("docx", (".docx",)),
+    ("excel", (".xlsx", ".xls", ".csv")),
+    ("xlsx", (".xlsx",)),
+    ("tabelle", (".xlsx", ".xls", ".csv")),
+    ("spreadsheet", (".xlsx", ".xls", ".csv")),
+    ("csv", (".csv",)),
+    ("bericht", (".pdf", ".docx", ".md", ".html")),
+    ("report", (".pdf", ".docx", ".md", ".html")),
+    ("brief", (".docx", ".pdf")),
+    ("letter", (".docx", ".pdf")),
+    ("presentation", (".pptx",)),
+)
+
+
+def _unmet_artifact(subject: str, produced) -> str:
+    """The artefact a task subject promises but the session never made.
+
+    Returns the missing kind, or "" when the subject promises nothing
+    checkable or the evidence shows it was produced.
+
+    The failure this exists for: a task marked complete as "PDF report"
+    while create_pdf had failed for a missing library and only a .docx
+    existed. Nothing said so -- not the task, not the summary -- and the
+    user was told the work was done. Advisory on purpose: only the ones
+    with an unambiguous extension are checked, and the answer is a note
+    the model can correct rather than a refusal it has to fight.
+    """
+    try:
+        text = (subject or "").lower()
+        made = " ".join(str(p).lower() for p in (produced or ()))
+        for word, extensions in _ARTIFACT_PROMISES:
+            if word not in text:
+                continue
+            if any(ext in made for ext in extensions):
+                return ""
+            return word
+        return ""
+    except Exception:
+        return ""
+
+
 def _smart_truncate(text: str, cap: int, label: str) -> str:
     """Cap a long output by keeping HEAD and TAIL.
 
@@ -10940,8 +10985,29 @@ class _DocToolExecutor:
             return json.dumps({"error": str(exc)})
         except Exception as exc:
             return json.dumps({"error": f"task_update failed: {exc}"})
-        return json.dumps({"status": "updated", "task": task},
-                          ensure_ascii=False)
+        payload = {"status": "updated", "task": task}
+        # Completing a task is a claim about the world. Check the cheap,
+        # unambiguous half of it: a subject naming a file type the session
+        # never produced. The consequence is a note in the tool result, the
+        # same shape as the subagent-report notice -- named, advisory, and
+        # in front of the model at the moment it would otherwise move on.
+        try:
+            if str(fields.get("status", "")).strip().lower() == "completed":
+                missing = _unmet_artifact(
+                    str(task.get("subject", "") if isinstance(task, dict)
+                        else ""),
+                    getattr(self, "_observed_files_session", None) or (),
+                )
+                if missing:
+                    payload["note"] = (
+                        f"[task-verify] this task names a {missing} and no "
+                        f"{missing} file was produced in this session. Either "
+                        "produce it, or say plainly which part is missing "
+                        "before reporting the task as done."
+                    )
+        except Exception:
+            pass
+        return json.dumps(payload, ensure_ascii=False)
 
     def _execute_task_list(
         self, arguments: dict, perms: "KitToolPermissions"
