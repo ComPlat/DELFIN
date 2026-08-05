@@ -7908,6 +7908,34 @@ class _DocToolExecutor:
                 return f"confirm_callback raised: {exc}"
             _w = "protected path" if is_protected else "calc file"
             return None if ok else f"user denied '{name}' on {_w} '{rel_str}'"
+
+        # Inside a writable root. "default" asks before the change; that is
+        # what makes acceptEdits mean something — a mode that turns off a
+        # prompt nobody was shown is an inert setting, and "Ask All" that
+        # asks about shell commands but silently rewrites files does not
+        # describe itself honestly.
+        #
+        # Unlike bash, a missing callback ALLOWS rather than refuses. Bash
+        # can refuse head-lessly because its auto-allow list is the escape
+        # hatch; writing has no such list, so refusing would leave every
+        # unattended run unable to produce anything. A head-less caller
+        # picks its own mode, and the sandbox still bounds where it writes.
+        if perms.mode == "default" and perms.confirm_callback is not None:
+            preview = (self._build_change_preview(name, args, resolved)
+                       or f"{name} -> {rel_str}")
+            try:
+                ok = bool(perms.confirm_callback(name, args, preview))
+            except Exception as exc:
+                return f"confirm_callback raised: {exc}"
+            if not ok:
+                _record_security_event("denied_by_user", name, rel_str)
+                return (
+                    f"user denied '{name}' on '{rel_str}'. Do NOT retry it or "
+                    "write the same content by another route — ask the user "
+                    "what they would like changed instead."
+                )
+            return None
+
         # Writable roots (workspace + agent_workspace + grants): allow.
         return None
 

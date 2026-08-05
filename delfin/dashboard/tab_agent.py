@@ -1040,6 +1040,31 @@ def _syntax_highlight(code: str, lang: str) -> str:
     return escaped
 
 
+
+def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
+    """The permission ladder, one rung per thing that can be turned off.
+
+        Plan          read only
+        Ask All       asks before a file changes AND before a shell command
+        Accept Edits  file changes go through, shell still asks
+        Bypass        asks nothing
+
+    The stored values are historical -- ``repo_free`` is the identifier for
+    the Accept Edits rung and ``all_free`` for Bypass. They are left alone
+    because saved sessions and settings carry them; only the labels are
+    what a user reads.
+
+    Every rung is offered in every mode. Until the write confirmation
+    existed, Ask All and Accept Edits decided every case identically
+    (nothing ever asked before a write), which made the middle rung inert
+    and the top one misnamed. Now the difference is real everywhere,
+    including a locked scope: the lock decides WHERE the agent may write,
+    this ladder decides how much it asks first. The two are independent.
+    """
+    return [("Plan", "plan"), ("Ask All", "ask_all"),
+            ("Accept Edits", "repo_free"), ("Bypass", "all_free")]
+
+
 def _turn_warrants_a_cycle_report(tool_calls: int) -> bool:
     """Whether the pipeline ceremony belongs after this turn.
 
@@ -3416,18 +3441,15 @@ def create_tab(ctx):
     # Unified permission profile selector
     # Maps to BOTH zone permissions (slash commands) and CLI permission_mode (tools)
     perm_dropdown = widgets.Dropdown(
-        options=[
-            ("Plan", "plan"),
-            ("Ask All", "ask_all"),
-            ("Repo Free", "repo_free"),
-            ("All Free", "all_free"),
-        ],
+        options=_perm_options_for_mode(mode_dropdown.value),
         value="ask_all",
         description="Perms:",
         layout=widgets.Layout(width="195px"),
         style={"description_width": "42px"},
-        tooltip="Permission profile: Plan=read + navigate/UI, Default=ask all changes, "
-                "Erlaubt=repo free/calc asks, Full=all free (archive always read-only)",
+        tooltip=("Plan = read only · Ask All = asks before every file change "
+                 "and every shell command · Accept Edits = file changes go "
+                 "through, shell still asks · Bypass = asks nothing "
+                 "(archive stays read-only in all of them)"),
     )
 
     # Load saved preferences
@@ -3473,6 +3495,13 @@ def create_tab(ctx):
         }
         _saved_perm = _perm_migration.get(_saved_perm, _saved_perm)
         if _saved_perm in ("plan", "ask_all", "repo_free", "all_free"):
+            # Assigning a value the dropdown does not carry raises, and
+            # the whole restore -- model, effort, everything after it --
+            # would be lost to the except below. Every rung is offered in
+            # every mode today, so this only catches a profile retired by
+            # a future version.
+            if _saved_perm not in {v for _, v in perm_dropdown.options}:
+                _saved_perm = "ask_all"
             perm_dropdown.value = _saved_perm
             state["_perm_profile"] = _saved_perm
     except Exception:
@@ -15712,6 +15741,19 @@ def create_tab(ctx):
                 model_dropdown.value = saved_model
         # Show/hide Cycle Inspector based on mode
         _update_cycle_inspector()
+
+        # Rebuild the profile list for the new mode. The ladder is the
+        # same everywhere today; the rebuild stays so a mode that retires
+        # a rung does not leave a stale one selected.
+        try:
+            _opts = _perm_options_for_mode(new_mode)
+            _values = {v for _, v in _opts}
+            _keep = perm_dropdown.value if perm_dropdown.value in _values else "ask_all"
+            perm_dropdown.options = _opts
+            perm_dropdown.value = _keep
+            state["_perm_profile"] = _keep
+        except Exception:
+            pass
 
         # Solo-minimal UI: hide pipeline overhead for solo/dashboard
         _is_minimal = new_mode in _SINGLE_AGENT_MODES or new_mode == "plan"
