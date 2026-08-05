@@ -33,14 +33,23 @@ class TestSplitLayer0:
         assert "Role prompt" in layer0
         assert "--- Repo Map ---" in rest
 
-    def test_no_marker_splits_at_30_percent(self):
+    def test_no_marker_means_nothing_is_compressed(self):
+        """Without a marker we cannot tell the role's own rules from the
+        injected context, so there is nothing we are entitled to compress.
+
+        The old behaviour kept the first 30% and compressed the rest. On
+        mode="full", which has no marker and has the distiller enabled,
+        that cut mid-sentence and handed 16,127 characters of the ROLE
+        PROMPT to a line-level heuristic -- which deleted the
+        prompt-injection defence, the refusal rules and the
+        destructive-action safeguards. Compressing text you cannot
+        classify is deletion by coin flip.
+        """
         prompt = "A" * 100
         layer0, rest = _split_layer0(prompt)
-        assert len(layer0) == 30
-        assert len(rest) == 70
+        assert layer0 == prompt
+        assert rest == ""
 
-
-class TestContextDistiller:
     def test_disabled_by_default(self):
         d = ContextDistiller()
         assert d.should_distill("x" * 200_000, []) is False

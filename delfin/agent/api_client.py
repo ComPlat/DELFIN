@@ -6338,21 +6338,12 @@ class _DocToolExecutor:
         # a future agent turn, creating a worktree and adding a writable
         # root to the live permissions, running a workspace binary to read
         # its Python version, and every MCP tool outside three families.
-        if permissions is not None and getattr(permissions, "mode", "") == "plan":
-            _bare = _bare_tool_name(name)
-            if _bare not in _PLAN_READONLY_TOOLS:
-                return json.dumps({"error": (
-                    f"plan mode (read-only) — '{_bare}' rejected because it "
-                    "can change something. Finish investigating, then call "
-                    "exit_plan_mode with the plan; execution begins after "
-                    "the user approves it."
-                )})
-
         if permissions is not None and permissions.pre_tool_hook:
             try:
                 permissions.pre_tool_hook(name, arguments)
             except Exception:
                 pass
+
 
         # Settings-driven PreToolUse hooks (.delfin-native).
         # A blocking hook short-circuits dispatch and surfaces the
@@ -6397,6 +6388,25 @@ class _DocToolExecutor:
                     "and researches via search_docs — it does not read/edit source "
                     "or run shell commands."
                 )})
+        elif (getattr(permissions, "mode", "") == "plan"
+                and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
+                and not bool((arguments or {}).get("check_only"))):
+            # Plan mode, deny-by-default. One gate covering everything the
+            # per-family refusals had not been remembered into -- future
+            # agent turns, worktrees that widen the live permissions,
+            # workspace binaries, and every MCP tool -- judged on the bare
+            # name so a namespaced call cannot route around it.
+            #
+            # It sits AFTER the role check on purpose: a role that can
+            # NEVER use a tool should be told that, not told it is merely
+            # the wrong mode. The more permanent reason is more useful.
+            # A check_only call is a dry run and stays allowed.
+            result = json.dumps({"error": (
+                f"plan mode (read-only) — '{_bare_tool_name(name)}' "
+                "rejected because it can change something. Finish "
+                "investigating, then call exit_plan_mode with the plan; "
+                "execution begins after the user approves it."
+            )})
         elif block_reason:
             result = json.dumps({
                 "error": "blocked_by_hook",

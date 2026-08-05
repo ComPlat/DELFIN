@@ -73,8 +73,16 @@ def _split_layer0(system_prompt: str) -> tuple[str, str]:
         if pos != -1 and pos < best_pos:
             best_pos = pos
     if best_pos == len(system_prompt):
-        # No marker found — treat first 30% as layer 0
-        best_pos = len(system_prompt) * 3 // 10
+        # No marker: we cannot tell the role's own rules from injected
+        # context, so there is nothing here we are entitled to compress.
+        #
+        # The old guess -- keep the first 30%, compress the rest -- cut
+        # mid-sentence and handed 16,127 characters of the ROLE PROMPT to
+        # a line-level heuristic. Measured on what it deleted: the
+        # prompt-injection defence, the refusal rules, and the
+        # destructive-action safeguards. Compressing text you cannot
+        # classify is not compression, it is deletion by coin flip.
+        return system_prompt, ""
     return system_prompt[:best_pos], system_prompt[best_pos:]
 
 
@@ -86,9 +94,19 @@ class ContextDistiller:
         *,
         token_threshold: int = _TOKEN_THRESHOLD,
         enabled: bool = False,
+        provider: str = "claude",
     ):
         self.token_threshold = token_threshold
         self.enabled = enabled
+        # Which provider this engine is actually pointed at. The API path
+        # below builds an Anthropic client; on any other provider that is
+        # either a silent failure (no key -> the lossy fallback runs and
+        # nobody is told) or, if the host happens to export
+        # ANTHROPIC_API_KEY for unrelated reasons, this engine's project
+        # memory, external memory and repo map are sent to a provider the
+        # user never selected and billed to an account they never pointed
+        # it at.
+        self.provider = (provider or "claude").strip().lower()
         self._client: Any = None
 
     def should_distill(
@@ -130,7 +148,17 @@ class ContextDistiller:
         return layer0 + self._extractive_compress(rest)
 
     def _api_distill(self, context: str) -> str:
-        """Call a cheap model to compress the context."""
+        """Call a cheap model to compress the context.
+
+        Refuses outright when this engine is not pointed at Anthropic.
+        The client below is built from the ambient environment with no
+        base_url and no key, so on any other provider it either fails --
+        silently, into the lossy fallback -- or, where the host happens to
+        export an Anthropic key, ships this engine's injected context to a
+        provider the user never chose.
+        """
+        if self.provider not in ("claude", "anthropic"):
+            return ""
         if self._client is None:
             try:
                 import anthropic

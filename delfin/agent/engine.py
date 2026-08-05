@@ -438,6 +438,10 @@ class AgentEngine:
         # input count). Backends that only report usage in message_delta get
         # an accounting-only fallback there.
         self._saw_message_start: bool = False
+        # Whether this turn's compaction floor has been taken.
+        # Separate from _saw_message_start, which also tracks a
+        # zero-token event and feeds the accounting fallback.
+        self._floor_captured_this_turn: bool = False
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
@@ -542,9 +546,22 @@ class AgentEngine:
             pass
         try:
             from .context_distiller import ContextDistiller
-            _enable = self.mode in ("solo", "quick", "reviewed",
-                                    "tdd", "cluster", "full")
-            self._distiller = ContextDistiller(enabled=_enable)
+            _provider = (getattr(self, "provider", "") or "claude").lower()
+            # Only where the distiller's compression path actually works.
+            # Its API call builds an Anthropic client from the ambient
+            # environment; on any other provider that call fails and the
+            # lossy line-level fallback becomes the ONLY path -- silently,
+            # with no marker in the prompt and nothing written to the
+            # elision store. Measured on the shipped pack, that fallback
+            # keeps 18-35% of a section and cuts in file order, so the
+            # last sections get zero budget: live state and session
+            # environment were deleted in full, every time it ran.
+            _enable = (
+                self.mode in ("solo", "quick", "reviewed", "tdd",
+                              "cluster", "full")
+                and _provider in ("claude", "anthropic"))
+            self._distiller = ContextDistiller(
+                enabled=_enable, provider=_provider)
         except Exception:
             pass
 
@@ -1561,6 +1578,7 @@ class AgentEngine:
         _ckpt_events = 0
         _ckpt_last = _turn_t0
         self._saw_message_start = False
+        self._floor_captured_this_turn = False
         # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
         # single turn's tool-loop can't run away forever. Resets every turn — it
         # is NOT a cumulative session budget. (_MAX_TOOL_ROUNDS already bounds
@@ -1730,10 +1748,35 @@ class AgentEngine:
                         self.token_usage["input"] += event.input_tokens
                         self._saw_message_start = True
                         # Snapshot the real per-request input count so the
-                        # compaction budget can use it as a ground-truth floor
-                        # (it includes the system prompt + tool schemas that
-                        # self.messages omits).
-                        if event.input_tokens:
+                        # compaction budget can use it as a ground-truth
+                        # floor (it includes the system prompt + tool
+                        # schemas that self.messages omits) -- but only
+                        # from the FIRST request of the turn.
+                        #
+                        # The tool-loop backends emit one message_start per
+                        # ROUND, and each later round carries that turn's
+                        # accumulated tool results. Those results never
+                        # enter self.messages and are gone by the time the
+                        # next request is built, so keeping round N made the
+                        # floor the intra-turn peak. Measured on a real
+                        # loop: true next-request size 1,155 tokens, floor
+                        # kept 17,634 -- 15x. The next turn's compaction
+                        # then saw pressure that did not exist and trimmed
+                        # every older message on a conversation occupying
+                        # 2% of the window, every turn, for the rest of the
+                        # session; above the summary threshold it also
+                        # bought an LLM summarisation call to destroy nine
+                        # messages worth 1.5% of the window. The same
+                        # estimate feeds the self-monitoring block, which
+                        # told the agent it was at 89% and should wind down
+                        # while it held one token of history.
+                        #
+                        # The docstring already said "the last real count
+                        # for THIS context". Round N's prompt is this
+                        # context plus ephemeral tool results, so the code
+                        # contradicted its own contract.
+                        if event.input_tokens and not self._floor_captured_this_turn:
+                            self._floor_captured_this_turn = True
                             self._last_input_tokens = int(event.input_tokens)
                             # Fresh provider count -> trims applied since the
                             # previous floor are already reflected in it.

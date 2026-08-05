@@ -91,9 +91,18 @@ def test_message_delta_fallback_counts_input_without_message_start(agent_tree):
 
 
 def test_per_round_message_starts_sum_like_billing(agent_tree):
-    """A multi-round tool turn emits one message_start per request; the
-    engine sums them (each round is a separately billed request) and the
-    floor tracks the latest round."""
+    """A multi-round tool turn emits one message_start per request. The
+    engine SUMS them, because each round is a separately billed request --
+    and takes its compaction floor from the FIRST one only.
+
+    The floor used to track the latest round, which made it the intra-turn
+    peak: every later round carries that turn's accumulated tool results,
+    and those never enter self.messages. Measured on a real loop, the true
+    next-request size was 1,155 tokens while the floor kept 17,634. The
+    next turn's compaction then trimmed every older message on a
+    conversation occupying 2% of the window, and the self-monitoring block
+    told the agent it was at 89% and should wind down while it held one
+    token of history."""
     from delfin.agent.api_client import StreamEvent
     ev = [
         StreamEvent(type="message_start", input_tokens=1000),
@@ -104,7 +113,7 @@ def test_per_round_message_starts_sum_like_billing(agent_tree):
     engine = _engine(agent_tree, _client_from(ev))
     engine.stream_response("hi")
     assert engine.token_usage["input"] == 2600
-    assert engine._last_input_tokens == 1600
+    assert engine._last_input_tokens == 1000
 
 
 # ---------------------------------------------------------------------------

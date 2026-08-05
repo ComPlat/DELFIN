@@ -72,8 +72,11 @@ def test_called_each_round_in_source():
            / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
     i = src.find("for _round in range(_MAX_TOOL_ROUNDS")
     assert i != -1
-    # Called each round with the context-scaled budget (bug 172455).
-    assert "_elide_old_tool_results(api_messages, char_budget=" in src[i:i + 600]
+    # Called each round with the context-scaled budget (bug 172455). The
+    # window is generous because the top of the loop also carries the
+    # per-round Stop check and the cost ceiling -- both of which have to
+    # run before any work, so they sit above this call.
+    assert "_elide_old_tool_results(api_messages, char_budget=" in src[i:i + 2500]
 
 
 # ---------------------------------------------------------------------------
