@@ -4496,3 +4496,120 @@ def read_document(path: Any, **kwargs: Any) -> dict:
         f"{p.name}: no document reader for {p.suffix!r}. Supported: "
         + ", ".join(sorted(DOCUMENT_SUFFIXES))
     )
+
+
+# ---------------------------------------------------------------------------
+# Email drafts
+# ---------------------------------------------------------------------------
+
+_ADDRESS_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[A-Za-z]{2,}$")
+
+
+def _addresses(value: Any, field: str) -> list[str]:
+    """Split and validate a recipient field.
+
+    Validated here rather than left to the mail client, because the whole
+    point of a draft is that the user opens something already correct. An
+    address the client silently drops is worse than one it rejects.
+    """
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        parts = [p.strip() for p in re.split(r"[,;]", value)]
+    elif isinstance(value, (list, tuple)):
+        parts = [str(p).strip() for p in value]
+    else:
+        raise OfficeError(f"{field} must be a string or a list of addresses")
+    out: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        if not _ADDRESS_RE.match(part):
+            raise OfficeError(
+                f"{field}: {part!r} is not an email address. Write it as "
+                "name@example.org; separate several with commas.")
+        if part not in out:
+            out.append(part)
+    return out
+
+
+def draft_email(
+    path: Any,
+    *,
+    to: Any = None,
+    subject: str = "",
+    body: str = "",
+    cc: Any = None,
+    attachments: Optional[list] = None,
+    overwrite: bool = False,
+) -> dict:
+    """Write a ready-to-send .eml the USER opens and sends themselves.
+
+    Deliberately not a send. Sending is irreversible, happens under the
+    user's identity, and has no read-back — and reading back what was
+    written is the discipline that makes the rest of this module
+    trustworthy. Their own mail client is also a better final
+    confirmation than any preview we could build: it shows the real
+    rendering, the real sender, and the send button is theirs.
+
+    So this produces a file. Double-clicking it opens a fully populated
+    message. Nothing leaves the machine, no credential is involved, and
+    the file goes through the same write gate as every other document.
+    """
+    from email.message import EmailMessage
+    from email.utils import formatdate, make_msgid
+
+    p = _resolve(path, must_exist=False)
+    if p.suffix.lower() != ".eml":
+        raise OfficeError(
+            f"cannot write {p.suffix!r} as an email draft — use .eml")
+    if p.exists() and not overwrite:
+        raise OfficeError(
+            f"{p.name} already exists — pass overwrite=True to replace it")
+
+    recipients = _addresses(to, "to")
+    carbon = _addresses(cc, "cc")
+    if not recipients:
+        raise OfficeError("to: at least one recipient is required")
+    if not str(subject).strip():
+        raise OfficeError("subject must be non-empty")
+
+    msg = EmailMessage()
+    msg["To"] = ", ".join(recipients)
+    if carbon:
+        msg["Cc"] = ", ".join(carbon)
+    msg["Subject"] = str(subject)
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+    msg.set_content(str(body or ""))
+
+    attached: list[str] = []
+    skipped: list[str] = []
+    for item in attachments or ():
+        try:
+            src = _resolve(item, must_exist=True)
+        except OfficeError:
+            skipped.append(str(item))
+            continue
+        try:
+            msg.add_attachment(
+                src.read_bytes(), maintype="application",
+                subtype="octet-stream", filename=src.name)
+            attached.append(src.name)
+        except OSError:
+            skipped.append(str(item))
+
+    p.write_bytes(bytes(msg))
+    return {
+        "path": str(p),
+        "to": recipients,
+        "cc": carbon,
+        "subject": str(subject),
+        "attachments": attached,
+        "attachments_skipped": skipped,
+        "bytes": p.stat().st_size,
+        "note": (
+            "Draft written. It is NOT sent: open it in your mail client, "
+            "check it, and send it yourself."
+        ),
+    }

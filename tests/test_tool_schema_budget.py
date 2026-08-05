@@ -43,7 +43,13 @@ _BASELINE_TOKENS = 11_422
 # when-to-call and the argument shapes; the caveats — page counts,
 # refusals, what did not verify — are returned by the runtime, where they
 # cost nothing until they apply. The remaining headroom is deliberate.
-_TOKEN_BUDGET = 9_000
+# Raised once, by exactly what draft_email measures at (125 tokens), when
+# that capability was added. Not a relaxation: the catalogue had no slack
+# left, and paying for a new tool by shortening descriptions that already
+# work would trade clarity for capacity. The tool is also named in
+# _POST_COMPACTION_TOOLS below, so the diet ratchet still measures the
+# compacted surface on its own and cannot be quietly undone by additions.
+_TOKEN_BUDGET = 9_125
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -52,7 +58,7 @@ _TOKEN_BUDGET = 9_000
 _POST_COMPACTION_TOOLS = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
     "fill_docx_template", "create_docx", "compare_tables", "fill_series",
-    "merge_pdfs", "split_pdf", "create_pdf",
+    "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
 })
 
 

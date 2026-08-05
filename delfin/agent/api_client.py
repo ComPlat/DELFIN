@@ -1421,6 +1421,7 @@ _OFFICE_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # Documents: the reason this mode exists.
     "read_document", "edit_sheet", "compare_tables", "fill_series",
     "fill_pdf_form", "fill_docx_template", "create_docx", "create_pdf",
+    "draft_email",
     "merge_pdfs", "split_pdf",
     # Files and shell. bash stays: the field reports show real work done
     # with small python scripts over the folder's data.
@@ -2871,6 +2872,32 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "draft_email",
+            "description": (
+                "Write a .eml the USER opens and sends. Never sends: no "
+                "credential, no network. Say the file is ready and that "
+                "sending is theirs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "to": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string"},
+                    "cc": {"type": "string"},
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["path", "to", "subject", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "merge_pdfs",
             "description": (
                 "Combine PDFs into one NEW file, in the order given. "
@@ -4233,7 +4260,7 @@ _CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
 # not installed" — advertising them there only buys a wasted round-trip.
 _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
-    "fill_docx_template", "create_docx", "compare_tables",
+    "fill_docx_template", "create_docx", "draft_email", "compare_tables",
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
 })
 
@@ -4254,6 +4281,9 @@ _OFFICE_TOOL_BACKENDS: dict[str, tuple[str, ...]] = {
     "create_pdf": ("pdf_write",),
     "fill_docx_template": ("word",),
     "create_docx": ("word",),
+    # Pure stdlib (email.message): no optional backend to be missing, so it
+    # is never withheld for a library that is not installed.
+    "draft_email": (),
     "fill_series": ("pdf", "word"),
 }
 
@@ -6431,7 +6461,7 @@ class _DocToolExecutor:
         # share the block above.
         if name in ("edit_sheet", "fill_pdf_form",
                     "fill_docx_template", "create_docx", "fill_series",
-                    "merge_pdfs", "split_pdf", "create_pdf"):
+                    "merge_pdfs", "split_pdf", "create_pdf", "draft_email"):
             if permissions is None:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured."
@@ -6455,6 +6485,8 @@ class _DocToolExecutor:
                 return self._execute_split_pdf(arguments, permissions)
             if name == "create_pdf":
                 return self._execute_create_pdf(arguments, permissions)
+            if name == "draft_email":
+                return self._execute_draft_email(arguments, permissions)
             return self._execute_create_docx(arguments, permissions)
 
         # Background-job inspection tools — no command execution, just
@@ -7453,6 +7485,73 @@ class _DocToolExecutor:
         if result.get("notes"):
             out["notes"] = result["notes"]
         return json.dumps(out, ensure_ascii=False)
+
+    def _execute_draft_email(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        target, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        if target.exists():
+            return json.dumps({"error": (
+                f"'{self._display_path(target, perms)}' already exists — "
+                "write to a new path")})
+
+        gate_err = self._gate_write_path(
+            str(target), perms, "draft_email", arguments)
+        if gate_err is not None:
+            return json.dumps({"error": gate_err})
+
+        from . import office as _office
+        if getattr(perms, "mode", "") == "diff_approval":
+            preview = (
+                f"Draft {self._display_path(target, perms)}\n"
+                f"  To: {arguments.get('to')}\n"
+                f"  Subject: {arguments.get('subject')}"
+            )
+            approved = self._confirm_office_change(
+                "draft_email", arguments, perms, preview)
+            if approved is not True:
+                return approved
+
+        # Attachments are named the way the agent sees the folder --
+        # relative. Handing those to the writer unresolved made it resolve
+        # them against the PROCESS directory, where they are not, and the
+        # writer then skipped them silently: the draft went out without the
+        # document it was about. Resolve against the workspace and check
+        # each for read access, the same as merge_pdfs does with its
+        # inputs.
+        root = perms.workspace
+        attach: list[str] = []
+        for item in _as_structured(arguments.get("attachments"), list) or ():
+            rel = str(item or "").strip()
+            if not rel:
+                continue
+            full = (root / rel) if not Path(rel).is_absolute() else Path(rel)
+            denied = self._check_read_access(perms, full, label=rel)
+            if denied is not None:
+                return json.dumps({"error": denied})
+            attach.append(str(full))
+
+        try:
+            result = _office.draft_email(
+                target,
+                to=arguments.get("to"),
+                subject=str(arguments.get("subject") or ""),
+                body=str(arguments.get("body") or ""),
+                cc=arguments.get("cc"),
+                attachments=attach,
+            )
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"could not write the draft: {exc}"},
+                ensure_ascii=False)
+
+        self._capture_binary_change("draft_email", target, None, perms)
+        result["path"] = self._display_path(target, perms)
+        return json.dumps(result, ensure_ascii=False)
 
     def _execute_create_docx(
         self, arguments: dict, perms: "KitToolPermissions"
