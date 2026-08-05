@@ -852,7 +852,7 @@ def open_document(path: Path):
         page_count = int(doc.page_count)
     except Exception as exc:
         doc.close()
-        raise PdfError(f'PDF konnte nicht gelesen werden: {exc}') from exc
+        raise PdfError(f'PDF could not be read: {exc}') from exc
     if page_count <= 0:
         doc.close()
         raise PdfError('The PDF has no pages.')
@@ -1009,7 +1009,7 @@ def cap_note(result: SearchResult) -> str:
         notes.append(f'stopped at {result.n_hits} hits')
     if result.page_cap_reached:
         notes.append(
-            f'nur Seite 1–{result.pages_searched} von {result.total_pages} durchsucht'
+            f'only pages 1–{result.pages_searched} of {result.total_pages} searched'
         )
     return ', '.join(notes)
 

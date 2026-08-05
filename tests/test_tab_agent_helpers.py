@@ -568,7 +568,7 @@ def test_render_action_confirmation_lists_commands():
         "/control key functional BP86",
         "/orca submit",
     ])
-    assert "2 Aktion" in html
+    assert "2 action" in html
     assert "/control key functional BP86" in html
     assert "/orca submit" in html
 
@@ -623,7 +623,10 @@ def test_suggestion_calculations_tab_offers_skill():
 def test_suggestion_orca_builder_tab():
     out = _suggestion_for_tab("ORCA Builder")
     assert out is not None
-    assert "Input" in out or "Builder" in out
+    # Case-insensitive: the suggestion is a sentence now, so the words the
+    # test cares about sit mid-sentence rather than capitalised.
+    lowered = out.lower()
+    assert "input" in lowered or "builder" in lowered
 
 
 def test_suggestion_silent_tabs_return_none():
@@ -1453,8 +1456,10 @@ def test_short_list_is_not_a_plan():
 def test_wait_chip_renders_and_clears():
     from delfin.dashboard.tab_agent import _wait_chip_html
     assert _wait_chip_html("") == ""
-    out = _wait_chip_html("Plan-Freigabe")
-    assert "wartet:" in out and "Plan-Freigabe" in out
+    # The label is passed IN, so the test should assert the chip renders
+    # whatever it was given rather than pinning one particular label.
+    out = _wait_chip_html("Plan approval")
+    assert "waiting:" in out and "Plan approval" in out
     long = _wait_chip_html("x" * 100)
     assert "…" in long
     # HTML in the wait text must be escaped, not rendered.

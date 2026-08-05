@@ -446,8 +446,8 @@ def _render_summary(stats: dict) -> str:
         return (
             '<div style="padding:12px;background:#f9fafb;border-radius:6px;'
             'color:#6b7280;font-size:12px;">'
-            'Keine Outcome-Einträge gefunden. Sobald der Agent Cycles abschließt, '
-            'erscheinen sie hier.</div>'
+            'No outcome entries found. They appear here as soon as the agent '
+            'completes cycles.</div>'
         )
     cards = [
         ("Total runs", str(stats["n"]), "#3b82f6"),
@@ -556,7 +556,7 @@ def _render_timeline(outcomes: list[CycleOutcome], limit: int = 100) -> str:
     """
     if not outcomes:
         return '<div style="padding:12px;color:#6b7280;font-size:12px;">' \
-               'Keine Einträge passen zum Filter.</div>'
+               'No entries match the filter.</div>'
     rows = []
     for o in reversed(outcomes[-limit:]):
         verdict_color = _VERDICT_COLORS.get(o.verdict, "#9ca3af")
@@ -672,7 +672,7 @@ def _render_timeline(outcomes: list[CycleOutcome], limit: int = 100) -> str:
 def _options_with_blank(values: list[str]) -> list[tuple[str, str]]:
     """Build ipywidgets dropdown options with a leading blank entry."""
     seen = sorted({v for v in values if v})
-    return [("(alle)", "")] + [(v, v) for v in seen]
+    return [("(all)", "")] + [(v, v) for v in seen]
 
 
 def create_tab(ctx, history_path: Path | None = None):
@@ -689,27 +689,27 @@ def create_tab(ctx, history_path: Path | None = None):
     title = widgets.HTML(
         value='<h3 style="margin:0;color:#111827;">Agent Activity</h3>'
               '<p style="margin:4px 0 12px 0;color:#6b7280;font-size:12px;">'
-              'Outcome history aller Agent-Cycles (Lese-Modus).</p>'
+              'Outcome history of all agent cycles (read-only).</p>'
     )
     provider_dd = widgets.Dropdown(
-        options=[("(alle)", "")], value="", description="Provider:",
+        options=[("(all)", "")], value="", description="Provider:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )
     mode_dd = widgets.Dropdown(
-        options=[("(alle)", "")], value="", description="Mode:",
+        options=[("(all)", "")], value="", description="Mode:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )
     verdict_dd = widgets.Dropdown(
-        options=[("(alle)", ""), ("PASS", "PASS"), ("FAIL", "FAIL"),
+        options=[("(all)", ""), ("PASS", "PASS"), ("FAIL", "FAIL"),
                  ("PARTIAL", "PARTIAL")],
         value="", description="Verdict:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )
     class_dd = widgets.Dropdown(
-        options=[("(alle)", "")], value="", description="Class:",
+        options=[("(all)", "")], value="", description="Class:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )

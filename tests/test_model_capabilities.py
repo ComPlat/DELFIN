@@ -307,7 +307,7 @@ def test_preflight_ollama_unreachable(monkeypatch):
     )
     ok, msg = mc.preflight("ollama", "qwen3-coder:32b", _OLLAMA_BASE)
     assert ok is False
-    assert "erreichbar" in msg
+    assert "not reachable" in msg
 
 
 def test_preflight_model_not_installed(monkeypatch):
@@ -330,7 +330,7 @@ def test_preflight_no_tool_support_blocks(monkeypatch):
     )
     ok, msg = mc.preflight("ollama", "tinyllama:1b", _OLLAMA_BASE)
     assert ok is False
-    assert "Tool-Unterst" in msg
+    assert "no native tool support" in msg
 
 
 def test_preflight_kit_weak_model_warns_and_recommends(monkeypatch):

@@ -60,6 +60,34 @@ from typing import Optional
 
 
 _DEFAULT_BG_TIMEOUT_S = 24 * 3600    # 24 h hard cap
+
+# How many background commands one agent may have running at once. There
+# was no cap at all, in explicit contrast to background SUB-AGENTS, which
+# have had an eight-slot semaphore since they were built. On a laptop an
+# unbounded fan-out is untidy; on a shared cluster node it is other
+# people's CPU, and the agent is the one participant that can start
+# hundreds without noticing.
+#
+# Four rather than eight: a background command here is usually a real
+# calculation, not a helper process.
+_DEFAULT_MAX_BG_JOBS = 4
+
+
+def _max_background_jobs() -> int:
+    """The concurrency cap, from settings, with a floor of one.
+
+    Read per call rather than cached: a user who raises it mid-session
+    should not have to restart to get the slot.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        raw = ((load_settings() or {}).get("agent") or {}).get(
+            "max_background_jobs")
+        if raw is not None:
+            return max(1, int(raw))
+    except Exception:
+        pass
+    return _DEFAULT_MAX_BG_JOBS
 _OUTPUT_HEAD_DEFAULT = 60            # lines kept from head
 _OUTPUT_TAIL_DEFAULT = 200           # lines kept from tail
 _KILL_GRACE_S = 3.0                  # SIGTERM → SIGKILL gap
@@ -384,6 +412,18 @@ class _Registry:
             raise ValueError("command must be non-empty")
         if timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
+        # Refuse rather than queue: a queued job looks started to the model,
+        # which would then wait for output that cannot arrive yet. Refusing
+        # with the count tells it what to do instead -- wait for one to
+        # finish -- which is a decision it can act on.
+        running = self.count_running()
+        cap = _max_background_jobs()
+        if running >= cap:
+            raise ValueError(
+                f"{running} background jobs are already running and the cap "
+                f"is {cap}. Wait for one to finish (bash_status) before "
+                "starting another, or raise agent.max_background_jobs if "
+                "this machine can carry more.")
         timeout_s = min(timeout_s, _DEFAULT_BG_TIMEOUT_S)
 
         # tempfiles for stdout/stderr — opened append+text so the
@@ -501,6 +541,20 @@ class _Registry:
         # Unknown to THIS process — e.g. after a dashboard/kernel restart.
         # Re-attach from the persistent workspace registry.
         return _reattach(job_id, workspace)
+
+    def count_running(self) -> int:
+        """How many jobs this registry still has in flight.
+
+        Counted from poll() rather than from a stored flag: a process that
+        died without anyone asking would otherwise hold a slot forever, and
+        a cap that leaks slots is worse than no cap -- it stops the agent
+        working and gives no reason a user can act on.
+        """
+        try:
+            return sum(1 for j in self.list_jobs(include_finished=False)
+                       if j.poll() is None)
+        except Exception:
+            return 0
 
     def list_jobs(self, include_finished: bool = True) -> list[BashJob]:
         with self._lock:

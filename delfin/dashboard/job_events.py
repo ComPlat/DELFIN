@@ -115,10 +115,10 @@ def is_notable_event(event: JobEvent) -> bool:
 
 
 def format_job_event_message(event: JobEvent) -> str:
-    """Compose a short German chat message describing the event.
+    """Compose a short chat message describing the event.
 
     Includes a concrete next-step suggestion appropriate to the
-    terminal status, so the user can either reply "ja" / approve via
+    terminal status, so the user can either reply "yes" / approve via
     UI or ignore the notification.
     """
     name = event.name or event.job_id
@@ -126,22 +126,21 @@ def format_job_event_message(event: JobEvent) -> str:
     folder = f" in {event.job_dir}" if event.job_dir else ""
     if event.to_status == "COMPLETED":
         action = (
-            "Soll ich die Energien analysieren oder einen Recalc-Check "
-            "durchführen?"
+            "Should I analyse the energies or run a Recalc check?"
         )
-        return f"✅ {label} ist erfolgreich beendet{folder}.  {action}"
+        return f"✅ {label} finished successfully{folder}.  {action}"
     if event.to_status == "FAILED":
         action = (
-            "Soll ich die Output-Datei lesen und einen Recalc mit "
-            "angepassten Parametern vorschlagen?"
+            "Should I read the output file and suggest a Recalc with "
+            "adjusted parameters?"
         )
-        return f"❌ {label} fehlgeschlagen{folder}.  {action}"
+        return f"❌ {label} failed{folder}.  {action}"
     if event.to_status == "TIMEOUT":
-        action = "Soll ich einen Recalc mit höherem time_limit vorschlagen?"
-        return f"⏱️ {label} hat das Zeitlimit erreicht{folder}.  {action}"
+        action = "Should I suggest a Recalc with a higher time_limit?"
+        return f"⏱️ {label} hit its time limit{folder}.  {action}"
     if event.to_status == "CANCELLED":
         # Less actionable — user usually triggered it themselves
-        return f"🚫 {label} wurde abgebrochen{folder}."
+        return f"🚫 {label} was cancelled{folder}."
     return f"ℹ️ {label}: {event.transition}{folder}."
 
 

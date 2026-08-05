@@ -1203,7 +1203,7 @@ def create_tab(ctx):
     calc_xyz_workflow_bfw = widgets.ToggleButton(
         value=False,
         description='BFW Off',
-        tooltip='Aktiviere -BFW fuer tadf_xtb/std2.',
+        tooltip='Enable -BFW for tadf_xtb/std2.',
         button_style='',
         layout=widgets.Layout(width='110px', min_width='110px', height='26px', display='none'),
     )
@@ -11103,7 +11103,7 @@ def create_tab(ctx):
             original = path.read_text(encoding='utf-8', errors='replace')
         except Exception as exc:
             calc_text_status.value = (
-                f'<span style="color:#d32f2f;">Fehler: {_html.escape(str(exc))}</span>'
+                f'<span style="color:#d32f2f;">Error: {_html.escape(str(exc))}</span>'
             )
             calc_text_status.layout.display = ''
             return
@@ -11851,7 +11851,7 @@ def create_tab(ctx):
         except _pdf.PdfError as exc:
             panel.show_error(str(exc))
         except Exception as exc:
-            panel.show_error(f'PDF konnte nicht angezeigt werden: {exc}')
+            panel.show_error(f'PDF could not be displayed: {exc}')
         calc_update_view()
 
     # -- item open logic (shared by dblclick and single-click on files) ------
@@ -12389,7 +12389,7 @@ def create_tab(ctx):
                 _calc_docx_note = str(exc)
             except Exception as exc:  # noqa: BLE001
                 document = None
-                _calc_docx_note = f'Dokument konnte nicht gelesen werden: {exc}'
+                _calc_docx_note = f'Document could not be read: {exc}'
             if document is not None:
                 _calc_render_docx(full_path, document, name, size_str)
                 return

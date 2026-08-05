@@ -3621,7 +3621,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "delay_seconds": {
                         "type": "integer",
                         "minimum": 60,
-                        "maximum": 3600,
+                        # A day, not an hour. The old ceiling made the tool
+                        # useless for the thing this framework exists for:
+                        # a six-hour calculation could not be waited on in
+                        # one call, so the agent either chained wake-ups or
+                        # gave up and left the user to come back.
+                        "maximum": 86400,
                     },
                     "prompt": {
                         "type": "string",
@@ -4526,6 +4531,42 @@ def _unmet_artifact(subject: str, produced) -> str:
         return ""
     except Exception:
         return ""
+
+
+_SBATCH_SUBMITTED_RE = re.compile(r"Submitted batch job\s+(\d+)")
+
+
+def _auto_watch_submitted_jobs(stdout: str, perms) -> list[str]:
+    """Register every SLURM job the command just submitted.
+
+    Model-independent on purpose. The watch machinery already existed, and
+    the prompt pack mentions ``watch_job`` exactly once -- it has zero
+    recorded uses. Asking the model to remember a second call after every
+    sbatch is the kind of rule this project has learned does not bind; the
+    job id is right there in the output, so the framework can read it.
+
+    Without this a job the AGENT submitted was watched by nobody: the
+    auto-watch helper is wired only into the dashboard's Submit tab, and
+    the headless daemon reports failures only, so a job that COMPLETED
+    notified nothing at all.
+    """
+    ids: list[str] = []
+    try:
+        workspace = getattr(perms, "workspace", None)
+        if workspace is None:
+            return ids
+        from . import job_monitor as _jm
+        for match in _SBATCH_SUBMITTED_RE.finditer(stdout or ""):
+            job_id = match.group(1)
+            try:
+                _jm.register_agent_job(
+                    workspace, job_id, description="submitted by the agent")
+                ids.append(job_id)
+            except Exception:
+                continue
+    except Exception:
+        return ids
+    return ids
 
 
 def _smart_truncate(text: str, cap: int, label: str) -> str:
@@ -6395,7 +6436,7 @@ class _DocToolExecutor:
         # Scheduler: one-shot wake-ups + interval cron.
         if name in ("schedule_wakeup", "cron_create",
                     "cron_list", "cron_delete"):
-            return self._execute_scheduler(name, arguments)
+            return self._execute_scheduler(name, arguments, permissions)
 
         # Notifications + remote triggers.
         if name == "push_notification":
@@ -9576,7 +9617,7 @@ class _DocToolExecutor:
         out = _smart_truncate(out, cap, "stdout")
         err = _smart_truncate(err, cap, "stderr")
 
-        return json.dumps({
+        payload = {
             "exit_code": proc.returncode,
             "elapsed_s": round(elapsed, 3),
             "stdout": out,
@@ -9584,7 +9625,16 @@ class _DocToolExecutor:
             "command": cmd[:500],
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
-        }, ensure_ascii=False)
+        }
+        watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
+        if watched:
+            payload["watched_slurm_jobs"] = watched
+            payload["note"] = (
+                "[watch] job(s) " + ", ".join(watched) + " are now watched; "
+                "their completion is reported to you without polling. Do not "
+                "loop on squeue."
+            )
+        return json.dumps(payload, ensure_ascii=False)
 
     # ------- Background bash jobs ----------------------------------------
 
@@ -10208,15 +10258,23 @@ class _DocToolExecutor:
 
     # ------- Scheduler / cron ---------------------------------------------
 
-    def _execute_scheduler(self, name: str, arguments: dict) -> str:
+    def _execute_scheduler(self, name: str, arguments: dict,
+                           perms: "KitToolPermissions | None" = None) -> str:
         from . import scheduler as _sched
         sch = _sched.get_scheduler()
+        # The entry records a workspace; supplied none, the scheduler stored
+        # os.getcwd() -- under Voila the notebook's directory, not the
+        # agent's -- and the daemon then disabled the entry because the path
+        # did not match. A wake-up that silently never fires is worse than
+        # one that was refused.
+        _ws = str(getattr(perms, "workspace", "") or "")
         try:
             if name == "schedule_wakeup":
                 ent = sch.schedule_once(
                     delay_seconds=int(arguments.get("delay_seconds", 0)),
                     prompt=str(arguments.get("prompt", "")),
                     reason=str(arguments.get("reason", "")),
+                    workspace=_ws,
                 )
                 return json.dumps({
                     "status": "ok",

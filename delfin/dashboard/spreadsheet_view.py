@@ -68,11 +68,11 @@ LOSSY_PARTS = (
     ('xl/charts/', 'charts'),
     ('xl/chartsheets/', 'chart sheets'),
     ('xl/media/', 'embedded images'),
-    ('xl/drawings/drawing', 'Zeichnungen'),
+    ('xl/drawings/drawing', 'drawings'),
     ('xl/pivotTables/', 'pivot tables'),
-    ('xl/threadedComments/', 'Unterhaltungs-Kommentare'),
-    ('xl/slicers', 'Datenschnitte'),
-    ('customXml/', 'benutzerdefiniertes XML'),
+    ('xl/threadedComments/', 'threaded comments'),
+    ('xl/slicers', 'slicers'),
+    ('customXml/', 'custom XML'),
 )
 
 _INT_RE = re.compile(r'^[+-]?(?:0|[1-9][0-9]*)$')

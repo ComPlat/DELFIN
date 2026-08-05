@@ -1519,7 +1519,7 @@ def _wait_chip_html(text: str) -> str:
         '<span style="font-family:monospace; color:#b45309; '
         'padding:2px 6px; background:#fef3c7; border:1px solid #f59e0b; '
         'border-radius:4px; font-size:11px;">'
-        f'⏸ wartet: {_html.escape(short)}</span>'
+        f'⏸ waiting: {_html.escape(short)}</span>'
     )
 
 
@@ -1861,23 +1861,23 @@ def _proposed_actions_need_gate(commands, needs_confirm) -> bool:
 # "never suggest anything for this tab".
 _TAB_SUGGESTIONS: dict[str, str] = {
     "Submit Job":
-        "Soll ich die aktuellen CONTROL-Werte validieren oder einen Submit "
-        "vorbereiten?",
+        "Shall I validate the current CONTROL values or prepare a "
+        "submit?",
     "Recalc":
-        "Soll ich `/recalc check-all` laufen lassen, um Folder mit "
-        "fehlgeschlagenen oder unvollständigen Jobs zu finden?",
+        "Shall I run `/recalc check-all` to find folders with failed or "
+        "incomplete jobs?",
     "Job Status":
-        "Soll ich die letzten Job-Events prüfen (`/jobs check`) und "
-        "fehlgeschlagene Jobs analysieren?",
+        "Shall I check the latest job events (`/jobs check`) and analyse "
+        "failed jobs?",
     "Calculations":
-        "Soll ich eine Energie-Tabelle für alle Folder hier erzeugen "
+        "Shall I generate an energy table for all folders here "
         "(`/skill energy-table`)?",
     "Literature":
-        "Soll ich nach einem Thema in der DELFIN-Literatur (search_docs) "
-        "suchen — z. B. Funktional/Basis für dein aktuelles System?",
+        "Shall I search the DELFIN literature (search_docs) for a topic — "
+        "e.g. functional/basis set for your current system?",
     "ORCA Builder":
-        "Soll ich aus dem aktuellen Builder-State eine ORCA-Input-Datei "
-        "generieren oder die Parameter prüfen?",
+        "Shall I generate an ORCA input file from the current builder "
+        "state, or check the parameters?",
     "Agent Activity": "",
     "DELFIN Agent": "",
     "Archive": "",
@@ -2044,7 +2044,7 @@ def _render_action_confirmation_html(commands: list[str]) -> str:
         '<div style="flex:1;min-width:0;">'
         '<div style="font-size:11px;font-weight:700;color:#92400e;'
         'margin-bottom:4px;">'
-        f'Soll ich diese {len(commands)} Aktion(en) ausführen?</div>'
+        f'Shall I run these {len(commands)} action(s)?</div>'
         '<ul style="list-style:disc;margin:0;padding-left:20px;">'
         + rows + '</ul></div>'
     )
@@ -3724,12 +3724,12 @@ def create_tab(ctx):
     # Approve/Deny via clicks instead of typing "ja".
     action_confirm_html = widgets.HTML(value="")
     action_approve_btn = widgets.Button(
-        description="Ausführen",
+        description="Run",
         button_style="success",
         layout=widgets.Layout(width="120px", height="34px"),
     )
     action_deny_btn = widgets.Button(
-        description="Abbrechen",
+        description="Cancel",
         button_style="danger",
         layout=widgets.Layout(width="110px", height="34px"),
     )
@@ -3766,21 +3766,21 @@ def create_tab(ctx):
             '<div class="delfin-cycle-inspector">'
             '<div class="inspector-header">'
             '<span class="inspector-title">Cycle Inspector</span>'
-            '<span class="inspector-meta">Noch kein aktiver Cycle</span>'
+            '<span class="inspector-meta">No active cycle yet</span>'
             '</div>'
             '<div class="inspector-grid">'
             '<div class="inspector-card"><span class="card-label">Locked Goal</span>'
-            '<span class="card-value">Noch kein gelocktes Ziel.</span></div>'
+            '<span class="card-value">No locked goal yet.</span></div>'
             '<div class="inspector-card gate-card"><span class="card-label">Current Gate</span>'
-            '<span class="card-value">Kein aktives Gate</span></div>'
+            '<span class="card-value">No active gate</span></div>'
             '<div class="inspector-card"><span class="card-label">Next Role</span>'
             '<span class="card-value">Session Manager</span></div>'
             '<div class="inspector-card risk-card"><span class="card-label">Open Risks</span>'
-            '<span class="card-value">Keine offenen Risiken.</span></div>'
+            '<span class="card-value">No open risks.</span></div>'
             '<div class="inspector-card retry-card"><span class="card-label">Retry Count</span>'
             '<span class="card-value">0</span></div>'
             '<div class="inspector-card history-card"><span class="card-label">Recent Activity</span>'
-            '<span class="card-value">Noch keine Aktivität.</span></div>'
+            '<span class="card-value">No activity yet.</span></div>'
             '</div></div>'
         ),
     )
@@ -3809,7 +3809,7 @@ def create_tab(ctx):
         tooltip="Advance to the next role without extra chat input",
     )
     inspector_actions_info = widgets.HTML(
-        value='<span class="delfin-cycle-actions-info">Direkte Cycle-Steuerung.</span>',
+        value='<span class="delfin-cycle-actions-info">Direct cycle control.</span>',
     )
     inspector_actions_row = widgets.HBox(
         [inspector_primary_btn, inspector_retry_btn, inspector_stop_btn, inspector_next_btn, inspector_actions_info],
@@ -3817,16 +3817,16 @@ def create_tab(ctx):
     )
     inspector_actions_row.add_class("delfin-cycle-actions")
     inspector_detail_dropdown = widgets.Dropdown(
-        options=[("Keine Details verfügbar", "")],
+        options=[("No details available", "")],
         value="",
         layout=widgets.Layout(width="430px"),
     )
     inspector_detail_html = widgets.HTML(
         value=(
             '<div class="delfin-cycle-detail">'
-            '<div class="detail-title">Keine Details verfügbar</div>'
+            '<div class="detail-title">No details available</div>'
             '<div class="detail-meta">Cycle Inspector</div>'
-            '<div class="detail-body">Sobald Gates, History oder Rollen-Outputs vorliegen, erscheinen sie hier.</div>'
+            '<div class="detail-body">As soon as gates, history or role outputs exist, they show up here.</div>'
             '</div>'
         ),
     )
@@ -3914,20 +3914,21 @@ def create_tab(ctx):
                        "acceptEdits", "bypassPermissions")
     _KIT_MODE_VISUAL = {
         "plan":              ("Plan", "#5f6368", "#f1f3f4",
-                              "Read-only · Agent schlägt vor, führt nichts aus"),
+                              "Read-only · agent proposes, executes nothing"),
         "default":           ("Default", "#1a73e8", "#e8f0fe",
-                              "Schreiben/Bash bestätigt jeden Schritt"),
+                              "Write/Bash confirmed on every step"),
         "diff_approval":     ("Diff-Approval", "#188038", "#e6f4ea",
                               "Writes staged as diffs · apply via /approve"),
         "acceptEdits":       ("Accept Edits", "#e8710a", "#fef7e0",
-                              "Schreiben/Edit auto · Bash bestätigt"),
+                              "Write/Edit auto · Bash confirmed"),
         "bypassPermissions": ("Bypass", "#c5221f", "#fce8e6",
-                              "Alles auto · Sandbox + Denylist gelten weiter"),
+                              "Everything auto · sandbox + denylist still apply"),
     }
 
     kit_mode_chip = widgets.Button(
         description="Plan",
-        tooltip="Click cycelt: plan → default → acceptEdits → bypass",
+        tooltip=("Click cycles: Plan → Default → Diff-Approval "
+                 "→ Accept Edits → Bypass"),
         layout=widgets.Layout(width="auto", height="32px",
                               margin="0 6px 0 0", display="none"),
     )
@@ -3944,7 +3945,7 @@ def create_tab(ctx):
 
     kit_mode_quick_btn = widgets.Button(
         description="Plan",
-        tooltip="Cycle KIT mode (next: default)",
+        tooltip="Cycle KIT mode (next: Default)",
         layout=widgets.Layout(width="80px", height="80px",
                               margin="0 0 0 4px", display="none"),
     )
@@ -3974,8 +3975,9 @@ def create_tab(ctx):
         idx = _KIT_MODE_ORDER.index(mode)
         next_mode = _KIT_MODE_ORDER[(idx + 1) % len(_KIT_MODE_ORDER)]
         kit_mode_quick_btn.description = label
+        next_label = _KIT_MODE_VISUAL[next_mode][0]
         kit_mode_quick_btn.tooltip = (
-            f"KIT-Mode: {label}\nClick cycelt → {next_mode}"
+            f"KIT-Mode: {label}\nClick cycles → {next_label}"
         )
         kit_mode_quick_btn.style.button_color = bg
         kit_mode_quick_btn.layout.display = ""
@@ -4002,7 +4004,8 @@ def create_tab(ctx):
         nxt = _KIT_MODE_ORDER[(_KIT_MODE_ORDER.index(cur) + 1) % len(_KIT_MODE_ORDER)]
         ok = bool(eng.set_kit_permission_mode(nxt))
         if ok:
-            _append_system_message(f"KIT-Mode → {nxt}")
+            _append_system_message(
+                f"KIT-Mode → {_KIT_MODE_VISUAL[nxt][0]}")
             # Sync the header Perms dropdown so a future engine-recreate
             # starts in the same mode. Suppress the dropdown's verbose
             # "takes effect on next message" notice since the chip already
@@ -4076,7 +4079,7 @@ def create_tab(ctx):
             try:
                 from delfin.agent.kit_confirm import KitConfirmBroker
                 broker = KitConfirmBroker()
-                # Wire the "Erlauben + Dauerhaft" button to the engine's
+                # Wire the "Allow + Permanent" button to the engine's
                 # persist hooks. Bound lazily so it always picks up the
                 # currently-active engine (provider may switch at runtime).
                 # ``kind`` is 'allow' / 'deny' (bash-pattern persistence)
@@ -4086,23 +4089,23 @@ def create_tab(ctx):
                 def _persist(kind: str, value: str) -> tuple[bool, str]:
                     eng = state.get("engine")
                     if eng is None:
-                        return False, "KIT-Engine nicht aktiv"
+                        return False, "KIT engine not active"
                     if kind in ("allow", "deny"):
                         if not hasattr(eng, "persist_kit_pattern"):
-                            return False, "persist_kit_pattern fehlt"
+                            return False, "persist_kit_pattern missing"
                         return eng.persist_kit_pattern(value, kind=kind)
                     if kind == "extra_dir":
                         if not hasattr(eng, "add_kit_workspace_dir"):
-                            return False, "add_kit_workspace_dir fehlt"
+                            return False, "add_kit_workspace_dir missing"
                         return eng.add_kit_workspace_dir(value, persist=True)
                     if kind == "extra_dir_session":
                         # Session-only grant (bug 065503): add to live perms
                         # without writing settings.json, so the agent stops
                         # re-prompting per file in a just-allowed directory.
                         if not hasattr(eng, "add_kit_workspace_dir"):
-                            return False, "add_kit_workspace_dir fehlt"
+                            return False, "add_kit_workspace_dir missing"
                         return eng.add_kit_workspace_dir(value, persist=False)
-                    return False, f"unbekannter persist-kind: {kind}"
+                    return False, f"unknown persist kind: {kind}"
                 broker.set_persist_callback(_persist)
                 panel = broker.build_widget()
                 kit_confirm_container.children = (panel,)
@@ -4688,11 +4691,11 @@ def create_tab(ctx):
             running = read_running()
             # Each RUNNING subagent is an expandable block (open by default)
             # showing its live steps (read/write/bash …) — the live
-            # drill-down the user asked for ("man sieht nicht was die machen").
+            # drill-down that makes subagent work visible.
             # COMPACT one-liners only — the full per-step activity (and the noisy
             # tool names) now lives in the "• Subagent" drill-in chips above, so
-            # the bottom panel stays lean (user 2026-06-26: "die mcp_ Sachen …
-            # das ist zu viel unten"). Shows the current action, not every step.
+            # the bottom panel stays lean (the raw mcp_ step names were too much
+            # detail down here). Shows the current action, not every step.
             blocks = []
             for sa in running.values():
                 el = int(_t.time() - float(sa.get("started_at", _t.time())))
@@ -5043,7 +5046,7 @@ def create_tab(ctx):
         # observes state changes from _on_plan_accept.
         state["_kit_plan_has_response"] = True
         _refresh_plan_accept_btn()
-        _set_wait_chip("Plan-Freigabe")
+        _set_wait_chip("Plan approval")
         # The worker blocks here waiting for the click; without a
         # checkpoint a reload during that window loses the plan and the
         # conversation that produced it.
@@ -5367,7 +5370,7 @@ def create_tab(ctx):
             sid = s.get("session_id", "")
             # Format: "title (mode, N msgs)" — map the internal id to its
             # user-facing label so the dropdown shows "Code", not "solo"
-            # (bug 20260617-152728: "paar stellen mit Solo nicht Code").
+            # (bug 20260617-152728: some places showed "Solo", not "Code").
             label = f"{title}  [{_mode_label(mode)}, {n_msgs} msgs]"
             options.append((label, sid))
 
@@ -5802,12 +5805,12 @@ def create_tab(ctx):
 
             # CLI tool configuration per mode and permission profile
             _cli_tools = None
-            # TIERED reachability (security: "delfin soll ein sicheres agent
-            # framework sein bei perfekter funktionalität", 2026-06-26):
-            #   WRITABLE  — agent_workspace ("kann er sich austoben") + calc.
+            # TIERED reachability (security requirement: a safe agent
+            # framework without losing functionality, 2026-06-26):
+            #   WRITABLE  — agent_workspace (free scratch space) + calc.
             #   CONFIRM   — calc edits ALSO need an explicit confirm so stored
             #               calculations can't be silently destroyed.
-            #   READ-ONLY — archive (stored results, "fix") + the DELFIN
+            #   READ-ONLY — archive (stored, fixed results) + the DELFIN
             #               checkout: reachable for reading, writes hard-denied.
             # The launch-dir workspace stays the primary writable root; all four
             # are reachable for READING without a prompt.
@@ -6031,8 +6034,8 @@ def create_tab(ctx):
         state["_pending_action_text"] = agent_text
         state["_pending_action_commands"] = list(commands)
         _set_wait_chip(
-            f"Freigabe für {len(commands)} Aktion(en)" if commands
-            else "Freigabe für Aktion")
+            f"Approval for {len(commands)} action(s)" if commands
+            else "Approval for action")
 
     def _hide_action_confirmation() -> None:
         action_confirm_html.value = ""
@@ -6065,7 +6068,7 @@ def create_tab(ctx):
         )
         # Feed the refusal back to the agent so it knows to plan differently.
         try:
-            input_textarea.value = "Bitte die Aktionen NICHT ausführen — anderen Vorschlag machen."
+            input_textarea.value = "Please do NOT run the actions — make a different proposal."
         except Exception:
             pass
 
@@ -6263,15 +6266,15 @@ def create_tab(ctx):
     def _render_cycle_inspector() -> str:
         engine = state.get("engine")
         active_gate = state.get("_active_gate") or {}
-        goal_text = "Noch kein gelocktes Ziel."
-        gate_value = "Kein aktives Gate"
-        gate_note = "Die Pipeline kann ohne Benutzerfreigabe weiterlaufen."
+        goal_text = "No locked goal yet."
+        gate_value = "No active gate"
+        gate_note = "The pipeline can continue without user approval."
         next_role_value = "Session Manager"
-        next_role_note = "Startet den nächsten Cycle."
+        next_role_note = "Starts the next cycle."
         risks: list[str] = []
         retry_parts: list[str] = []
         history = list(state.get("_cycle_history", []))
-        header_meta = "Noch kein aktiver Cycle"
+        header_meta = "No active cycle yet"
 
         if engine:
             try:
@@ -6297,23 +6300,23 @@ def create_tab(ctx):
 
             if active_gate:
                 gate_value = active_gate.get("title") or _gate_label(active_gate.get("type", ""))
-                gate_note = active_gate.get("detail") or "Wartet auf Benutzerentscheidung."
+                gate_note = active_gate.get("detail") or "Waiting for a user decision."
                 next_role_value = "User Input Required"
                 paused_role = active_gate.get("role", "")
                 next_role_note = (
-                    f"Pausiert nach {_format_role_label(paused_role)}."
-                    if paused_role else "Pausiert bis zur nächsten Freigabe."
+                    f"Paused after {_format_role_label(paused_role)}."
+                    if paused_role else "Paused until the next approval."
                 )
             elif engine.is_cycle_complete:
                 next_role_value = "Cycle Complete"
-                next_role_note = "Kein weiterer Rollenschritt offen."
+                next_role_note = "No further role step open."
             elif engine.current_role:
                 next_role_value = _format_role_label(engine.current_role)
                 upcoming = ""
                 if engine.current_role_index + 1 < len(engine.route):
                     upcoming = _format_role_label(engine.route[engine.current_role_index + 1])
                 next_role_note = (
-                    f"Danach: {upcoming}" if upcoming else "Danach: Abschluss des Cycles."
+                    f"Then: {upcoming}" if upcoming else "Then: end of the cycle."
                 )
 
             roles_to_scan = list(reversed(engine.route))
@@ -6357,10 +6360,10 @@ def create_tab(ctx):
                 header_meta += f" · ${engine.cost_usd:.2f}"
 
         retry_value = "0"
-        retry_note = "Keine aktiven Retries."
+        retry_note = "No active retries."
         if retry_parts:
             retry_value = " · ".join(retry_parts)
-            retry_note = "Aktive Wiederholungen im aktuellen Cycle."
+            retry_note = "Active retries in the current cycle."
 
         gate_type = active_gate.get("type", "")
         gate_pill = _gate_label(gate_type) if gate_type else "Open"
@@ -6372,7 +6375,7 @@ def create_tab(ctx):
         risk_body = (
             f'<ul class="card-list">{"".join(f"<li>{_html.escape(_compact_text(risk, 120))}</li>" for risk in risks[:3])}</ul>'
             if risks else
-            '<span class="card-note">Keine offenen Risiken aus den letzten Agent-Ausgaben.</span>'
+            '<span class="card-note">No open risks from the latest agent outputs.</span>'
         )
         history_items = history[-4:]
         history_body = (
@@ -6390,7 +6393,7 @@ def create_tab(ctx):
             ) +
             '</ul>'
             if history_items else
-            '<span class="card-note">Noch keine Gates, Handoffs oder Retries im aktuellen Cycle.</span>'
+            '<span class="card-note">No gates, handoffs or retries in the current cycle yet.</span>'
         )
 
         return (
@@ -6403,7 +6406,7 @@ def create_tab(ctx):
             '<div class="inspector-card">'
             '<span class="card-label">Locked Goal</span>'
             f'<span class="card-value">{_html.escape(goal_text)}</span>'
-            '<span class="card-note">Gelocktes Ziel aus dem Session-Manager-Plan.</span>'
+            '<span class="card-note">Locked goal from the session manager plan.</span>'
             '</div>'
             '<div class="inspector-card gate-card">'
             '<span class="card-label">Current Gate</span>'
@@ -6452,7 +6455,7 @@ def create_tab(ctx):
                         _format_role_label(active_gate.get("role", "")) if active_gate.get("role") else "",
                     ] if part
                 ),
-                "body": active_gate.get("detail") or "Kein weiteres Detail hinterlegt.",
+                "body": active_gate.get("detail") or "No further detail recorded.",
             })
 
         for idx, item in enumerate(reversed(history[-6:]), 1):
@@ -6466,7 +6469,7 @@ def create_tab(ctx):
                         _format_role_label(item.get("role", "")) if item.get("role") else "",
                     ] if part
                 ),
-                "body": item.get("detail") or "Kein weiteres Detail hinterlegt.",
+                "body": item.get("detail") or "No further detail recorded.",
             })
 
         if engine:
@@ -6507,12 +6510,12 @@ def create_tab(ctx):
         if not entry:
             return (
                 '<div class="delfin-cycle-detail">'
-                '<div class="detail-title">Keine Details verfügbar</div>'
+                '<div class="detail-title">No details available</div>'
                 '<div class="detail-meta">Cycle Inspector</div>'
-                '<div class="detail-body">Sobald Gates, History oder Rollen-Outputs vorliegen, erscheinen sie hier.</div>'
+                '<div class="detail-body">As soon as gates, history or role outputs exist, they show up here.</div>'
                 '</div>'
             )
-        body_html = _md_to_html(entry.get("body", "") or "Kein weiteres Detail hinterlegt.")
+        body_html = _md_to_html(entry.get("body", "") or "No further detail recorded.")
         return (
             '<div class="delfin-cycle-detail">'
             f'<div class="detail-title">{_html.escape(entry.get("title", "Detail"))}</div>'
@@ -6537,7 +6540,7 @@ def create_tab(ctx):
 
     def _update_inspector_detail(force_reset: bool = False):
         entries = _build_inspector_detail_entries()
-        options = [(entry["label"], entry["key"]) for entry in entries] or [("Keine Details verfügbar", "")]
+        options = [(entry["label"], entry["key"]) for entry in entries] or [("No details available", "")]
         selected = state.get("_inspector_detail_key", "")
         valid_keys = {value for _, value in options}
         if force_reset or selected not in valid_keys:
@@ -6575,14 +6578,14 @@ def create_tab(ctx):
             inspector_primary_btn.tooltip = "Approve the pending permission or dashboard action"
             inspector_actions_info.value = (
                 '<span class="delfin-cycle-actions-info">'
-                'Eine Freigabe wartet auf Bestätigung.</span>'
+                'An approval is waiting for confirmation.</span>'
             )
         elif active_gate or awaiting_gate:
             inspector_primary_btn.description = "Continue"
             inspector_primary_btn.tooltip = "Continue past the current gate with a go signal"
             inspector_actions_info.value = (
                 '<span class="delfin-cycle-actions-info">'
-                'Gate aktiv: direkt freigeben, retryen oder stoppen.</span>'
+                'Gate active: approve, retry or stop directly.</span>'
             )
         elif is_streaming:
             inspector_primary_btn.description = "Running"
@@ -6590,7 +6593,7 @@ def create_tab(ctx):
             inspector_primary_btn.disabled = True
             inspector_actions_info.value = (
                 '<span class="delfin-cycle-actions-info">'
-                'Agent läuft gerade. Stopptaste beendet den aktuellen Schritt.</span>'
+                'Agent is running. Stop Cycle ends the current step.</span>'
             )
         elif engine and not engine.is_cycle_complete and engine.current_role_index < len(engine.route) - 1 and engine.messages:
             inspector_primary_btn.description = "Continue"
@@ -6598,7 +6601,7 @@ def create_tab(ctx):
             inspector_next_btn.disabled = False
             inspector_actions_info.value = (
                 '<span class="delfin-cycle-actions-info">'
-                'Cycle bereit für den nächsten Rollenschritt.</span>'
+                'Cycle ready for the next role step.</span>'
             )
         elif engine and engine.is_cycle_complete:
             inspector_primary_btn.description = "Complete"
@@ -6606,7 +6609,7 @@ def create_tab(ctx):
             inspector_primary_btn.disabled = True
             inspector_actions_info.value = (
                 '<span class="delfin-cycle-actions-info">'
-                'Cycle abgeschlossen. Neue Session starten oder Follow-up schicken.</span>'
+                'Cycle complete. Start a new session or send a follow-up.</span>'
             )
         else:
             inspector_primary_btn.description = "Continue"
@@ -6614,7 +6617,7 @@ def create_tab(ctx):
             inspector_primary_btn.disabled = not bool(engine)
             inspector_actions_info.value = (
                 '<span class="delfin-cycle-actions-info">'
-                'Cycle-Steuerung steht bereit.</span>'
+                'Cycle control is ready.</span>'
             )
 
     def _send_control_reply(text: str):
@@ -12986,9 +12989,9 @@ def create_tab(ctx):
         qtype = question_info["type"]
         _n_opts = len(question_info.get("options") or [])
         _set_wait_chip(
-            f"Auswahl ({_n_opts} Optionen)" if qtype == "numbered"
-            else "Ja/Nein-Frage" if qtype == "yesno"
-            else "Antwort auf Frage")
+            f"Selection ({_n_opts} options)" if qtype == "numbered"
+            else "Yes/No question" if qtype == "yesno"
+            else "Answer to question")
         children = []
 
         if qtype == "numbered":
@@ -13456,7 +13459,7 @@ def create_tab(ctx):
             _set_active_gate()
             _update_status()
             _role_lbl = _format_role_label(_question_role)
-            _append_system_message(f"Antwort an {_role_lbl} gesendet.")
+            _append_system_message(f"Answer sent to {_role_lbl}.")
 
         # Handle conflict resolution
         if state.pop("_awaiting_conflict_resolution", False):
@@ -14485,8 +14488,8 @@ def create_tab(ctx):
                             and _final_text.strip()):
                         chunks[:] = [_final_text]
                         _append_system_message(
-                            "✓ Selbstverifikation: Angaben geprüft, "
-                            "Antwort korrigiert.")
+                            "✓ Self-verification: statements checked, "
+                            "answer corrected.")
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
@@ -14788,15 +14791,15 @@ def create_tab(ctx):
                                     finalize=True,
                                 )
                                 _append_system_message(
-                                    "✓ Selbstverifikation: Angaben "
-                                    "geprüft, Antwort korrigiert.")
+                                    "✓ Self-verification: statements "
+                                    "checked, answer corrected.")
                         if _vflags:
                             _kws = ", ".join(
                                 getattr(f, "keyword", str(f))
                                 for f in _vflags[:3])
                             _append_system_message(
-                                f"🔎 Verifiziere {len(_vflags)} "
-                                f"Keyword-Angabe(n) ({_kws}) …")
+                                f"🔎 Verifying {len(_vflags)} "
+                                f"keyword claim(s) ({_kws}) …")
                             _grounded = any(
                                 re.search(r"(?i)search|read|grep|fetch|docs",
                                           _t or "")
@@ -14827,8 +14830,8 @@ def create_tab(ctx):
                                         finalize=True,
                                     )
                                     _append_system_message(
-                                        "✓ Selbstverifikation: Angaben "
-                                        "geprüft, Antwort korrigiert.")
+                                        "✓ Self-verification: statements "
+                                        "checked, answer corrected.")
 
                         # Quantity-claim check: physical quantities stated
                         # without any evidence act this turn (no calculation
@@ -14847,8 +14850,8 @@ def create_tab(ctx):
                             _qflags = []
                         if _qflags:
                             _append_system_message(
-                                f"🔎 Verifiziere {len(_qflags)} "
-                                f"Zahlenangabe(n) ohne Beleg …")
+                                f"🔎 Verifying {len(_qflags)} "
+                                f"unsourced numeric claim(s) …")
                         if _qflags and not _vflags and not _c_hard:
                             _qgrounded = any(
                                 re.search(r"(?i)search|read|grep|fetch|docs",
@@ -14881,8 +14884,8 @@ def create_tab(ctx):
                                         finalize=True,
                                     )
                                     _append_system_message(
-                                        "✓ Selbstverifikation: Angaben "
-                                        "geprüft, Antwort korrigiert.")
+                                        "✓ Self-verification: statements "
+                                        "checked, answer corrected.")
 
                     # -- Interactive question detection (solo/dashboard) --
                     # After the agent finishes a turn, check if the response
@@ -15060,9 +15063,9 @@ def create_tab(ctx):
                             _append_gate_message(
                                 "question",
                                 prev_role_id,
-                                f"{_role_label} fragt dich:",
+                                f"{_role_label} is asking you:",
                                 _q_text,
-                                f"Antworte dem {_role_label}.",
+                                f"Reply to the {_role_label}.",
                             )
                             state["_awaiting_agent_question"] = prev_role_id
                             _update_status()

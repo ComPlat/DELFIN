@@ -76,7 +76,7 @@ class _ConfirmRequest:
     persist_pattern: Optional[str] = None  # value for ~/.delfin/settings.json
     persist_kind: Optional[str] = None     # 'allow_pattern' or 'extra_dir'
     # Directory to grant for THIS session (non-persisted) when a plain
-    # "Erlauben (1×)" approves an outside-workspace access — so the agent
+    # "Allow (once)" approves an outside-workspace access — so the agent
     # can keep reading in that dir without re-prompting per file (bug 065503).
     session_dir: Optional[str] = None
 
@@ -106,7 +106,7 @@ class KitConfirmBroker:
         self._on_timeout: Optional[Any] = None
         # Optional persistence hook: callable(kind, pattern) -> (ok, msg).
         # When a remember_permission request goes through the broker and the
-        # user ticks "Dauerhaft speichern", the broker forwards the
+        # user clicks "Allow + Permanent", the broker forwards the
         # suggested pattern here. The dashboard wires this to
         # engine.persist_kit_pattern so it survives across sessions.
         self._persist_callback: Optional[Any] = persist_callback
@@ -209,7 +209,7 @@ class KitConfirmBroker:
             except Exception:
                 pass
 
-        # If the user clicked "Erlauben + Dauerhaft", forward the value
+        # If the user clicked "Allow + Permanent", forward the value
         # to the engine's persist hook so it lands in settings.json AND
         # applies to the live perms (so the next call doesn't re-prompt).
         # Persist only fires when the user APPROVED — a deny + persist
@@ -226,10 +226,11 @@ class KitConfirmBroker:
             self._set_toast(
                 f"{'OK' if ok else 'FAIL'} persisted: {msg}"
             )
-        # Plain "Erlauben (1×)" on an outside-workspace access: grant the
+        # Plain "Allow (once)" on an outside-workspace access: grant the
         # directory for THIS session only (live perms, not persisted) so the
         # agent doesn't re-prompt for every file in it (bug 065503). Skipped
-        # when 'Dauerhaft' was used — that already added + persisted the dir.
+        # when "Allow + Permanent" was used — that already added + persisted
+        # the dir.
         elif persist_cb and req.decision and session_dir:
             try:
                 ok, msg = persist_cb("extra_dir_session", session_dir)
@@ -284,8 +285,9 @@ class KitConfirmBroker:
         # Header text + border are set per refresh: a scary red "Self-
         # Modification Guard" ONLY when a protected-core write is pending,
         # otherwise a neutral "Confirmation required" for ordinary bash /
-        # file confirms (user 2026-06-25: "Self-Mod Guard passt? — was machen?"
-        # on a plain mkdir in a subagent worktree).
+        # file confirms — the red header previously fired for a plain mkdir
+        # in a subagent worktree, where it reads as a false security alarm
+        # (bug 2026-06-25).
         self._title_label = widgets.HTML(value="")
 
         self._panel = widgets.VBox(
@@ -361,9 +363,9 @@ class KitConfirmBroker:
 
     def _build_request_row(self, req: _ConfirmRequest, widgets):
         # ---- 1. Classify the request and compute what (if anything) can
-        # be persisted. The user wants the dauerhaft-button to be
-        # actionable when it makes sense, and CLEARLY explain why it's
-        # disabled when it doesn't. -----------------------------------
+        # be persisted. The "Allow + Permanent" button must be actionable
+        # when it makes sense, and CLEARLY explain why it is unavailable
+        # when it isn't. ----------------------------------------------
         tool = req.tool_name
         cmd = req.args.get("command", "") if tool == "bash" else ""
         path_arg = req.args.get("path", "") if tool != "bash" else ""
@@ -378,9 +380,9 @@ class KitConfirmBroker:
             persist_kind = "allow_pattern"
             if not persist_pat:
                 persist_disabled_reason = (
-                    "Kein generalisierbares Pattern aus dem Bash-Befehl "
-                    "ableitbar — kannst du im Chat mit "
-                    "remember_permission(...) selbst formulieren."
+                    "No generalisable pattern can be derived from the bash "
+                    "command — you can write one yourself in chat via "
+                    "remember_permission(...)."
                 )
         elif tool in ("write_file", "edit_file", "multi_edit"):
             # Two distinct cases — show the RIGHT reason for each, so the
@@ -391,8 +393,8 @@ class KitConfirmBroker:
                 persist_disabled_reason = (
                     "Self-Modification Guard: writes to protected core files "
                     "(api_client.py, kit_confirm.py, engine.py, tab_agent.py) "
-                    "must be approved explicitly every time. Click 'Allow' "
-                    "for THIS action."
+                    "must be approved explicitly every time. Click "
+                    "'Allow (once)' for THIS action."
                 )
             else:
                 # Normal file: there is no per-file persist rule for edits.
@@ -401,7 +403,7 @@ class KitConfirmBroker:
                 persist_disabled_reason = (
                     "There is no per-file persist rule for writes/edits. To "
                     "stop being asked before every edit: switch the Perms "
-                    "dropdown to 'acceptEdits' — write/edit actions then run "
+                    "dropdown to 'Accept Edits' — write/edit actions then run "
                     "without prompting (sandbox + self-modification guard "
                     "stay active)."
                 )
@@ -418,8 +420,9 @@ class KitConfirmBroker:
         elif tool in ("remember_permission", "remember_permission_bundle"):
             # The click IS the persistence — no separate permanent option.
             persist_disabled_reason = (
-                "This tool action IS the persistence: clicking 'Allow' writes "
-                "the rule straight to settings.json. 'Deny' discards it."
+                "This tool action IS the persistence: clicking 'Allow (once)' "
+                "writes the rule straight to settings.json. 'Deny' discards "
+                "it."
             )
 
         # ---- 2. Header: tool name + path/cmd snippet + rationale ----
@@ -435,7 +438,7 @@ class KitConfirmBroker:
             if rationale else ""
         )
 
-        # ---- 3. Vorschau IMMER sichtbar (nicht in <details>) --------
+        # ---- 3. Preview ALWAYS visible (not inside <details>) -------
         preview_pre = (
             f'<pre style="max-height:280px; overflow:auto; '
             f'font-size:11px; line-height:1.4; padding:6px; '
@@ -455,7 +458,7 @@ class KitConfirmBroker:
             )
         )
 
-        # ---- 4. Dauerhaft-Status row: explicit target file --------
+        # ---- 4. Permanent-status row: explicit target file --------
         target_path = ""
         try:
             from . import kit_settings as _ks
@@ -471,14 +474,15 @@ class KitConfirmBroker:
             )
             persist_status = widgets.HTML(value=(
                 f'<div style="font-size:10px; color:#6b7280; margin:2px 0;">'
-                f'With <b>Permanent</b>: <code>{_html_escape(persist_pat)}</code> '
+                f'With <b>Allow + Permanent</b>: '
+                f'<code>{_html_escape(persist_pat)}</code> '
                 f'({kind_label}) → <code>{_html_escape(target_path)}</code>'
                 f'</div>'
             ))
         elif persist_disabled_reason:
             persist_status = widgets.HTML(value=(
                 f'<div style="font-size:10px; color:#a16207; margin:2px 0;">'
-                f'<b>Permanent</b> not available: '
+                f'<b>Allow + Permanent</b> not available: '
                 f'{_html_escape(persist_disabled_reason)}'
                 f'</div>'
             ))
@@ -509,8 +513,8 @@ class KitConfirmBroker:
                 # Approving an outside-workspace access grants its directory
                 # for the rest of this session (live perms, not persisted) so
                 # the agent stops re-prompting per file (bug 065503). The
-                # request() handler skips this when 'Dauerhaft' was clicked —
-                # that path already adds the dir AND persists it.
+                # request() handler skips this when "Allow + Permanent" was
+                # clicked — that path already adds the dir AND persists it.
                 if (ok and persist_kind == "extra_dir" and persist_pat
                         and _is_grantable_session_dir(persist_pat)):
                     req.session_dir = persist_pat
@@ -521,8 +525,8 @@ class KitConfirmBroker:
                 # so the row disappears on THIS click. The worker thread also
                 # removes it (idempotent) and refreshes, but that refresh runs
                 # off the UI thread and may not render — leaving the row up until
-                # a second click (bug 2026-06-25: "Erlauben/Dauerhaft braucht 2x
-                # Klick / verschwindet nicht").
+                # a second click (bug 2026-06-25: the approve buttons needed two
+                # clicks and the row did not disappear).
                 try:
                     self._pending.remove(req)
                 except ValueError:
@@ -537,8 +541,8 @@ class KitConfirmBroker:
         # Only show "Allow + Permanent" when something is actually persistable
         # AND a persist hook is wired. Otherwise it was rendered DISABLED — a
         # dead button that does nothing on click and leaves the dialog up
-        # (the user's "Dauerhaft geht garnicht, Fenster verschwindet nicht").
-        # Show only buttons that really act and dismiss the row.
+        # (reported as: the permanent option had no effect and the panel did
+        # not close). Show only buttons that really act and dismiss the row.
         _can_persist = bool(persist_pat) and self._persist_callback is not None
         _buttons = [approve] + ([approve_persist] if _can_persist else []) + [deny]
         return widgets.VBox(

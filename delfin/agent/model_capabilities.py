@@ -67,7 +67,7 @@ _CACHE_VERSION = 2
 # KIT Toolbox hosts many models; only a few are worth driving the agent
 # (strong agentic tool use, large window). Selecting a weak one should warn
 # and point at the best. ``KIT_BEST_MODEL`` is the curated default; the
-# recommended set is the small pool that "lohnt sich" for agent work.
+# recommended set is the small pool that is worth using for agent work.
 KIT_BEST_MODEL = "kit.qwen3.5-397b-A17b"
 _KIT_RECOMMENDED: frozenset[str] = frozenset({
     "kit.qwen3.5-397b-A17b",   # best: strong agentic tool routing, no footguns
@@ -829,7 +829,7 @@ def kit_recommendation(model: str, caps: "ModelCapabilities") -> str:
     """Warn-and-redirect string for a KIT model not worth the agent.
 
     Empty string when the model is fine. Only the strong, tool-capable,
-    large-window KIT models "lohnen sich"; everything else gets a warning
+    large-window KIT models are worth it; everything else gets a warning
     pointing at :data:`KIT_BEST_MODEL`.
     """
     if model in _KIT_RECOMMENDED:
@@ -839,15 +839,15 @@ def kit_recommendation(model: str, caps: "ModelCapabilities") -> str:
         return ""
     reasons: list[str] = []
     if not caps.supports_tools:
-        reasons.append("kein Tool-Support")
+        reasons.append("no tool support")
     if _is_weak(model):
-        reasons.append("schwaches/kleines Modell")
+        reasons.append("weak/small model")
     if caps.context_window < _KIT_MIN_WINDOW:
-        reasons.append(f"kleines Kontextfenster ({caps.context_window})")
-    why = ", ".join(reasons) or "für Agent-Aufgaben nicht empfohlen"
+        reasons.append(f"small context window ({caps.context_window})")
+    why = ", ".join(reasons) or "not recommended for agent work"
     return (
-        f"KIT-Modell `{model}` lohnt sich für Agent-Aufgaben kaum ({why}). "
-        f"Bestes KIT-Modell: `{KIT_BEST_MODEL}`."
+        f"KIT model `{model}` is hardly worth it for agent work ({why}). "
+        f"Best KIT model: `{KIT_BEST_MODEL}`."
     )
 
 
@@ -875,17 +875,17 @@ def preflight(
         installed = _ollama_installed(root)
         if installed is None:
             return False, (
-                f"Ollama unter {root} nicht erreichbar — läuft `ollama serve`? "
-                f"(Endpoint via OLLAMA_HOST überschreibbar.)"
+                f"Ollama at {root} is not reachable — is `ollama serve` "
+                f"running? (The endpoint can be overridden via OLLAMA_HOST.)"
             )
         # Ollama tags include the ":latest" suffix; match leniently.
         def _match(tag: str) -> bool:
             return tag == model or tag.split(":")[0] == model.split(":")[0]
         if model and not any(_match(t) for t in installed):
-            avail = ", ".join(sorted(installed)[:8]) or "(keine)"
+            avail = ", ".join(sorted(installed)[:8]) or "(none)"
             return False, (
-                f"Modell `{model}` ist in Ollama nicht installiert — "
-                f"`ollama pull {model}`. Verfügbar: {avail}"
+                f"Model `{model}` is not installed in Ollama — "
+                f"`ollama pull {model}`. Available: {avail}"
             )
 
     caps = resolve(provider, model, base_url)
@@ -893,10 +893,10 @@ def preflight(
     # Hard block: agent work with a model that can't call tools at all.
     if needs_tools and not caps.supports_tools:
         return False, (
-            f"Modell `{model}` hat keine native Tool-Unterstützung und kann "
-            f"daher keine Agent-Werkzeuge (bash/edit/read …) ausführen. Wähle "
-            f"ein tool-fähiges Modell (z. B. `qwen2.5-coder`, `llama3.3`, "
-            f"`{KIT_BEST_MODEL}`) oder nutze dieses Modell im reinen Chat-Modus."
+            f"Model `{model}` has no native tool support and therefore cannot "
+            f"run agent tools (bash/edit/read …). Pick a tool-capable model "
+            f"(e.g. `qwen2.5-coder`, `llama3.3`, `{KIT_BEST_MODEL}`) or use "
+            f"this model in pure chat mode."
         )
 
     # Soft warning: a KIT model that works but isn't worth the agent.
