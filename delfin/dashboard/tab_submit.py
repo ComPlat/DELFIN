@@ -675,6 +675,15 @@ def create_tab(ctx):
         layout=widgets.Layout(width='84px', height='30px'),
         disabled=True,
     )
+    submit_optimize_btn = widgets.Button(
+        description='Optimize', button_style='success', icon='compress',
+        tooltip=(
+            'Minimise the whole structure with the selected force field. '
+            'Undo restores the geometry from before the optimisation.'
+        ),
+        layout=widgets.Layout(width='96px', height='30px'),
+        disabled=True,
+    )
     submit_ff_dd = widgets.Dropdown(
         options=[('UFF', 'uff'), ('MMFF94', 'mmff94')],
         value='uff',
@@ -708,7 +717,7 @@ def create_tab(ctx):
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn,
             submit_manip_clear_btn, submit_manip_undo_btn,
-            submit_relax_btn, submit_ff_dd,
+            submit_relax_btn, submit_optimize_btn, submit_ff_dd,
             submit_internal_value, submit_internal_btn,
             submit_manip_status, submit_manip_sync,
         ],
@@ -976,6 +985,7 @@ def create_tab(ctx):
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_ff_dd.disabled = not enabled
+        submit_optimize_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
         submit_internal_btn.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
@@ -3114,6 +3124,50 @@ def create_tab(ctx):
             submit_manip_btn.value = True   # relaxing only makes sense while dragging
         _enable_live_forcefield()
 
+    def on_submit_optimize(_button=None):
+        """Minimise the whole structure with the selected force field.
+
+        The geometry from before the run is kept so Undo can put it back --
+        the browser's own undo stack cannot, because the optimised
+        coordinates arrive from Python and re-render the viewer.
+        """
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            _set_mol_status('Load a structure before optimising.')
+            return
+        method = submit_ff_dd.value
+        _set_mol_status(f'Optimising with {method.upper()}...', spinner=True)
+        submit_optimize_btn.disabled = True
+
+        def _work():
+            try:
+                from .molecule_forcefield import relax_xyz
+                result = relax_xyz(xyz, max_steps=500, method=method)
+            except Exception as exc:
+                _schedule_ui_update(_set_mol_status, f'Optimisation failed: {exc}')
+                _schedule_ui_update(setattr, submit_optimize_btn, 'disabled', False)
+                return
+
+            def _apply():
+                submit_optimize_btn.disabled = False
+                if not result.get('ok'):
+                    _set_mol_status(result.get('status') or 'Optimisation failed.')
+                    return
+                state['pre_optimize_xyz'] = coords_widget.value
+                lines = [
+                    line for line in result['xyz'].splitlines()[2:] if line.strip()
+                ]
+                coords_widget.value = (
+                    f"{len(lines)}\nOptimised in DELFIN viewer\n"
+                    + '\n'.join(lines)
+                )
+                _set_mol_status(result.get('status') or 'Optimised.',
+                                *(result.get('warnings') or [])[:1])
+
+            _schedule_ui_update(_apply)
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def on_submit_set_internal(_button=None):
         """Set the bond, angle or dihedral the current selection describes."""
         _ensure_manip_bootstrap()
@@ -3139,6 +3193,11 @@ def create_tab(ctx):
         )
 
     def on_submit_manip_undo(_button=None):
+        previous = state.pop('pre_optimize_xyz', None)
+        if previous:
+            coords_widget.value = previous
+            _set_mol_status('Reverted to the geometry from before the optimisation.')
+            return
         _ensure_manip_bootstrap()
         _run_manip_js(
             f'if(window.__delfinSubmitManip) '
@@ -3194,6 +3253,7 @@ def create_tab(ctx):
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
     submit_internal_btn.on_click(on_submit_set_internal)
+    submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)

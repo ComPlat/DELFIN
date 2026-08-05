@@ -158,3 +158,21 @@ def test_force_field_choice_is_honest_about_what_it_changes():
     assert 'Silently relabelling' in source
     assert 'MMFFGetMoleculeForceField' in source
     assert 'MMFF94 has no transition-metal parameters' in source
+
+
+def test_optimisation_is_undoable_and_off_the_ui_thread():
+    """The browser's own undo stack cannot cover an optimisation: the result
+    arrives from Python and re-renders the viewer, which resets editor state.
+    The geometry from before the run is therefore kept on the Python side."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'def on_submit_optimize' in source
+    assert "state['pre_optimize_xyz'] = coords_widget.value" in source
+    # Undo checks that before falling back to the browser's coordinate stack.
+    undo = source.split('def on_submit_manip_undo')[1].split('def ')[0]
+    assert "state.pop('pre_optimize_xyz', None)" in undo
+    assert undo.index('pre_optimize_xyz') < undo.index('_ensure_manip_bootstrap')
+    # A 500-step minimisation takes seconds on a large structure.
+    assert 'threading.Thread(target=_work, daemon=True).start()' in source
+    assert 'relax_xyz(xyz, max_steps=500, method=method)' in source
