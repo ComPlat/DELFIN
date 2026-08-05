@@ -13251,7 +13251,7 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name="<malformed>",
-                            tool_output=result[:2000],
+                            tool_output=_redact_tool_result(result)[:2000],
                         )
                         api_messages.append({
                             "role": "tool",
@@ -13274,7 +13274,7 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name=fn_name,
-                            tool_output=result[:2000],
+                            tool_output=_redact_tool_result(result)[:2000],
                         )
                         api_messages.append({
                             "role": "tool",
@@ -13330,7 +13330,7 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="tool_result",
                             tool_name=_ap_display,
-                            tool_output=result[:2000],
+                            tool_output=_redact_tool_result(result)[:2000],
                         )
                         api_messages.append({
                             "role": "tool",
@@ -13537,12 +13537,23 @@ class OpenAIClient(_BaseClient):
                     except Exception:
                         pass
 
-                    # Emit tool_result event for UI display
+                    # Emit tool_result event for UI display.
+                    #
+                    # Redacted HERE, not only on the context-bound copy
+                    # below. This event is what the engine writes to
+                    # ~/.delfin/tool_traces/<sid>.jsonl, and that file is
+                    # created with a plain append and no chmod (observed
+                    # 0664, 426 files), then bundled into a bug report
+                    # whose packer explicitly adds group-read to every
+                    # path. So a token that appeared in a traceback was
+                    # stripped from the transcript, which is why nobody
+                    # would notice, and written verbatim to a
+                    # group-readable file that gets shipped.
                     yield StreamEvent(
                         type="tool_result",
                         tool_name=fn_name if (is_mcp or is_mcp_meta)
                                   else f"mcp__{ns_prefix}__{fn_name}",
-                        tool_output=result[:2000],
+                        tool_output=_redact_tool_result(result)[:2000],
                     )
 
                     # Truncate the *context-bound* copy so a 200 kB MCP

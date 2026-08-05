@@ -115,6 +115,15 @@ def append(
             _rotate_if_needed(path, now)
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
+            # 0600 AFTER the write: on the first append the file does
+            # not exist yet, so a chmod before it silently did nothing.
+            # These files carry raw tool output, commands and paths;
+            # they were created at the process umask (observed 0664)
+            # and a bug report bundles them, adding group-read.
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
     except Exception:
         # Audit must not crash the agent. If the user removed the home
         # dir or ran out of disk, the action proceeds without logging.
