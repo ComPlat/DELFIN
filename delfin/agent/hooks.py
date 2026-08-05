@@ -196,13 +196,27 @@ def load_hooks(
 
 
 def _expand(template: str, arguments: dict[str, Any]) -> str:
-    """Replace ${var} placeholders from arguments. Unknown vars left as-is."""
+    """Replace ${var} placeholders from arguments. Unknown vars left as-is.
+
+    Every substituted value is shell-quoted. The expanded string is run
+    with ``shell=True``, so an unquoted value is command text: the
+    documented example hook is ``ruff check ${file}``, and a file called
+    ``x.py; curl … | sh`` — named by the model, or simply present in an
+    untrusted repository — would then execute. Nothing the hook author
+    wrote is wrong; the substitution was the sink. ``shlex`` has been
+    imported for this since the module was written and was never called.
+
+    An unknown placeholder is left as literal text and NOT quoted: it is
+    not a value, and quoting it would change what the author sees.
+    """
     def repl(m: re.Match[str]) -> str:
         key = m.group(1)
-        val = arguments.get(key, m.group(0))
+        if key not in arguments:
+            return m.group(0)
+        val = arguments[key]
         if isinstance(val, (dict, list)):
-            return json.dumps(val)
-        return str(val)
+            val = json.dumps(val)
+        return shlex.quote(str(val))
     return re.sub(r"\$\{(\w+)\}", repl, template)
 
 

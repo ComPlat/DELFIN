@@ -1096,6 +1096,23 @@ def resolve_office_workspace(configured) -> Path | None:
     return None
 
 
+# Slash commands the AGENT must never be able to run. The dashboard
+# executes any line of model output beginning with ACTION as a slash
+# command, in every mode -- which is how the model drives the UI, and is
+# the point of the mechanism. But `/perms all_free` switches the live
+# engine to bypassPermissions AND writes the profile into the user's
+# settings file, so a session deliberately placed on Plan could be talked
+# into "asks nothing", permanently, by one line of generated text. The
+# ladder is only a ladder if the thing it restrains cannot climb it.
+_USER_ONLY_SLASH_COMMANDS = frozenset({"/perms", "/perm-cycle"})
+
+
+def _slash_is_user_only(cmd: str) -> bool:
+    """Whether this command may come only from the person, not the model."""
+    first = (cmd or "").strip().split(" ", 1)[0].strip().lower()
+    return first in _USER_ONLY_SLASH_COMMANDS
+
+
 def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
     """Whether switching between these modes moves the working folder.
 
@@ -12233,6 +12250,15 @@ def create_tab(ctx):
             if not m:
                 return ""
             cmd_text = m.group(1).strip()
+            # The permission profile is the user's to set. Reaching it from
+            # generated text would let a session on Plan be moved to
+            # "asks nothing" by one line the model wrote.
+            if _slash_is_user_only(cmd_text):
+                _append_system_message(
+                    f"⚠️ Ignored `{cmd_text}` from the agent: the permission "
+                    "profile can only be changed by you, in the Perms "
+                    "selector.")
+                return ""
             if stripped.upper().startswith("ACTION"):
                 return cmd_text
             # Bare-slash: only accept if the first token is a known
@@ -12899,34 +12925,20 @@ def create_tab(ctx):
             _on_send(None)
             return
 
-        # --- File operations: upgrade permission profile if needed ---
-        current_profile = state.get("_perm_profile", "ask_all")
-        _PROFILE_RANK = {"plan": 0, "ask_all": 1, "repo_free": 2, "all_free": 3}
-        current_rank = _PROFILE_RANK.get(current_profile, 1)
-        # Edit/Write need "repo_free", Bash needs "all_free"
-        needed_rank = 2 if tool in ("Edit", "Write", "Read", "Glob", "Grep", "") else 3
-        need_upgrade = current_rank < needed_rank
-
-        if need_upgrade:
-            new_profile = "repo_free" if needed_rank == 2 else "all_free"
-            _append_system_message(
-                f"\u2705 Approved: {readable}\n"
-                f"\u2191 Upgrading permissions: {current_profile} \u2192 {new_profile}"
-            )
-            old_engine = state["engine"]
-            session_id = ""
-            if old_engine:
-                session_id = old_engine.session_id
-            perm_dropdown.value = new_profile  # triggers _on_perm_change → syncs state
-            engine = _ensure_engine()
-            if engine and session_id:
-                engine.session_id = session_id
-            input_textarea.value = f"Please retry: {readable}"
-            _on_send(None)
-        else:
-            _append_system_message(f"\u2705 Approved: {readable}")
-            input_textarea.value = f"Yes, proceed with: {readable}"
-            _on_send(None)
+        # --- File operations: this approval covers THIS call ---
+        #
+        # It used to raise the session-wide profile a rung instead, and for
+        # any tool name the branch did not recognise (MultiEdit, a WebFetch,
+        # any mcp__* name, or an unparseable payload defaulting to "") it
+        # raised it to the TOP rung and wrote that into the user's settings
+        # file. The question on screen is "may this one operation proceed";
+        # the answer must not be "and everything else, from now on, in
+        # every future session". Applying it also rebuilt the engine, which
+        # discarded the conversation, so the retried call arrived with no
+        # idea what it had been doing.
+        _append_system_message(f"\u2705 Approved: {readable}")
+        input_textarea.value = f"Yes, proceed with: {readable}"
+        _on_send(None)
 
     def _on_deny(button):
         """User denies a blocked operation."""
