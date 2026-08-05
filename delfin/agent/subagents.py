@@ -1560,6 +1560,21 @@ def _derive_perms(parent_perms, mode: str, workspace=None):
     depth = int(getattr(parent_perms, "subagent_depth", 0)) + 1
     try:
         extra = {"subagent_depth": depth}
+        # dataclasses.replace copies field VALUES, so a mutable one is
+        # shared by reference. read_tracker is the stale-write guard's
+        # memory of "this file was read at this mtime, so overwriting it is
+        # safe" -- and that question is per agent. Shared, one child's write
+        # bumped the entry and the next child's overwrite then saw an
+        # unchanged mtime, passed, and clobbered it silently; the "no prior
+        # read in this session" refusal was likewise satisfied by a
+        # sibling's read. Give each child its own copy of what the parent
+        # knew, so it inherits the history without writing into it.
+        try:
+            _tracker = getattr(parent_perms, "read_tracker", None)
+            if isinstance(_tracker, dict):
+                extra["read_tracker"] = dict(_tracker)
+        except Exception:
+            pass
         if workspace is not None:
             return dataclasses.replace(
                 parent_perms, mode=mode, workspace=workspace, **extra)

@@ -191,3 +191,62 @@ def test_a_working_bwrap_still_isolates_a_locked_session(monkeypatch):
         else real_which(n, *a, **k))
     ws = pathlib.Path(tempfile.mkdtemp(prefix="ws_"))
     assert A._bash_isolation_argv("ls", ws, _perms(locked=True, ws=ws))[0] == "bwrap"
+
+
+# ---------------------------------------------------------------------------
+# One child's write must not satisfy the guard for the next
+# ---------------------------------------------------------------------------
+
+def test_each_subagent_gets_its_own_stale_write_tracker():
+    """dataclasses.replace copies field VALUES, so a dict is shared by
+    reference. read_tracker is the stale-write guard's memory of "this file
+    was read at this mtime, so overwriting it is safe" -- and that question
+    is per agent. Shared, sibling A's write bumped the entry and sibling B's
+    overwrite then saw an unchanged mtime, passed, and clobbered it."""
+    from delfin.agent.subagents import _derive_perms
+
+    parent = A.KitToolPermissions(
+        workspace=pathlib.Path(tempfile.mkdtemp(prefix="ws_")))
+    parent.read_tracker["shared.txt"] = 111.0
+
+    first = _derive_perms(parent, "acceptEdits")
+    second = _derive_perms(parent, "acceptEdits")
+
+    assert first.read_tracker is not parent.read_tracker
+    assert first.read_tracker is not second.read_tracker
+
+
+def test_a_child_still_inherits_what_the_parent_read():
+    """Copying, not clearing: a child that has to re-read everything the
+    parent read would turn one bug into a pile of wasted rounds."""
+    from delfin.agent.subagents import _derive_perms
+
+    parent = A.KitToolPermissions(
+        workspace=pathlib.Path(tempfile.mkdtemp(prefix="ws_")))
+    parent.read_tracker["shared.txt"] = 111.0
+    child = _derive_perms(parent, "acceptEdits")
+    assert child.read_tracker.get("shared.txt") == 111.0
+
+
+def test_a_childs_write_does_not_reach_its_sibling_or_its_parent():
+    from delfin.agent.subagents import _derive_perms
+
+    parent = A.KitToolPermissions(
+        workspace=pathlib.Path(tempfile.mkdtemp(prefix="ws_")))
+    parent.read_tracker["shared.txt"] = 111.0
+    first = _derive_perms(parent, "acceptEdits")
+    second = _derive_perms(parent, "acceptEdits")
+
+    first.read_tracker["shared.txt"] = 999.0
+    assert second.read_tracker["shared.txt"] == 111.0
+    assert parent.read_tracker["shared.txt"] == 111.0
+
+
+def test_the_child_still_inherits_the_lock():
+    """The isolation must not have cost the containment."""
+    from delfin.agent.subagents import _derive_perms
+
+    parent = _perms(locked=True)
+    child = _derive_perms(parent, "bypassPermissions")
+    assert child.scope_locked is True
+    assert child.workspace == parent.workspace
