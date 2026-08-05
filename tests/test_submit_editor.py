@@ -120,3 +120,41 @@ def test_force_field_is_switched_on_from_python_not_polled():
     assert 'setForceField' in source
     # Assigning parameters is a one-off; nothing may talk to Python mid-drag.
     assert 'Runs once, when the toggle is switched on' in source
+
+
+def test_internal_coordinates_move_the_far_fragment():
+    """Setting a bond, angle or dihedral has to move a whole fragment, not one
+    atom: which one follows from the model's own connectivity, cutting the bond
+    the coordinate turns about."""
+    assert 'function setInternal' in EDITOR
+    assert 'function readInternal' in EDITOR
+    frag = _body('fragmentFrom')
+    assert 'cutA' in frag and 'cutB' in frag
+
+    body = _body('setInternal')
+    # Every edit is undoable and reaches the coordinate box.
+    assert 'snapshotForUndo(scopeKey)' in body
+    assert 'pushXyzToPython(scopeKey)' in body
+    # A ring keeps both halves attached, so the caller is told rather than
+    # silently tearing the ring open.
+    assert 'ring: only the second atom moved' in body
+    assert 'that dihedral turns about a ring bond' in body
+    # The sign of a rotation is verified against the value actually reached.
+    assert 'if (Math.abs(angleV(' in body
+
+
+def test_force_field_choice_is_honest_about_what_it_changes():
+    """MMFF94's bond, angle, torsion and van der Waals forms are all different
+    from the ones the browser engine evaluates, so selecting it must not just
+    relabel UFF terms."""
+    from delfin.dashboard import molecule_forcefield as mff
+
+    assert mff.normalise_method('MMFF94') == 'mmff94'
+    assert mff.normalise_method('mmff-94') == 'mmff94'
+    assert mff.normalise_method(None) == 'uff'
+    assert mff.normalise_method('nonsense') == 'uff'
+
+    source = open(mff.__file__, encoding='utf-8').read()
+    assert 'Silently relabelling' in source
+    assert 'MMFFGetMoleculeForceField' in source
+    assert 'MMFF94 has no transition-metal parameters' in source

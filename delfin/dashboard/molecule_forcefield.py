@@ -1001,10 +1001,22 @@ def _empty_payload(source: str, warnings: Sequence[str]) -> Dict[str, Any]:
     }
 
 
+METHODS = ('uff', 'mmff94')
+
+
+def normalise_method(method: Optional[str]) -> str:
+    """Validate a force-field choice, falling back to UFF."""
+    name = str(method or 'uff').strip().lower().replace('-', '').replace('_', '')
+    if name in ('mmff', 'mmff94', 'mmff94s'):
+        return 'mmff94'
+    return 'uff'
+
+
 def export_forcefield_terms(
     xyz_text: str,
     *,
     perceived: Optional[PerceivedMolecule] = None,
+    method: Optional[str] = 'uff',
 ) -> Dict[str, Any]:
     """Build the JSON payload of force-field terms for the browser engine.
 
@@ -1247,9 +1259,24 @@ def export_forcefield_terms(
     if not bonds and n_atoms > 1:
         warnings.append('No bonds were perceived; only van-der-Waals terms are exported.')
 
+    chosen = normalise_method(method)
+    if chosen == 'mmff94':
+        # MMFF94 is not a drop-in for UFF here. Its bond stretch is quartic,
+        # its angle bend cubic-corrected, its torsion a three-term Fourier
+        # series and its van der Waals a buffered 14-7 -- none of which are the
+        # functional forms the browser engine evaluates. Silently relabelling
+        # UFF terms as MMFF94 would be a fabrication, so the live drag keeps
+        # UFF-shaped terms and MMFF94 governs the clean-up minimisation on
+        # release, where RDKit evaluates the real thing.
+        warnings.append(
+            'MMFF94 selected: the interactive drag uses UFF-shaped terms, and '
+            'MMFF94 is applied by the relaxation that runs when you let go.'
+        )
+
     payload: Dict[str, Any] = {
         'ok': True,
         'source': source,
+        'method': chosen,
         'n_atoms': n_atoms,
         'elements': list(symbols),
         'bonds': bonds,
@@ -1388,6 +1415,7 @@ def _relax_with_rdkit(
     coords: Sequence[Sequence[float]],
     fixed: Sequence[int],
     max_steps: int,
+    method: str = 'uff',
 ) -> Optional[Tuple[List[Tuple[float, float, float]], str]]:
     """Constrained RDKit UFF minimisation with ``fixed`` atoms pinned.
 
@@ -1420,9 +1448,25 @@ def _relax_with_rdkit(
             # say).  Refreshing the property cache non-strictly accepts that
             # valence instead of letting the force-field constructor raise.
             work.UpdatePropertyCache(strict=False)
-            if not _uff_helpers.UFFHasAllMoleculeParams(work):
-                return None
-            force_field = _uff_helpers.UFFGetMoleculeForceField(work)
+            engine = 'UFF'
+            force_field = None
+            if normalise_method(method) == 'mmff94':
+                # MMFF94 covers organics well and is the better clean-up there,
+                # but it has no transition-metal parameters at all, so fall
+                # back rather than silently produce nothing.
+                if _uff_helpers.MMFFHasAllMoleculeParams(work):
+                    props = _uff_helpers.MMFFGetMoleculeProperties(work)
+                    if props is not None:
+                        force_field = _uff_helpers.MMFFGetMoleculeForceField(
+                            work, props,
+                        )
+                        if force_field is not None:
+                            engine = 'MMFF94'
+            if force_field is None:
+                if not _uff_helpers.UFFHasAllMoleculeParams(work):
+                    return None
+                force_field = _uff_helpers.UFFGetMoleculeForceField(work)
+                engine = 'UFF'
             if force_field is None:
                 return None
             for index in fixed:
@@ -1437,7 +1481,7 @@ def _relax_with_rdkit(
         force_field = None
 
     status = (
-        f'RDKit UFF relaxed {work.GetNumAtoms()} atoms '
+        f'RDKit {engine} relaxed {work.GetNumAtoms()} atoms '
         f'({len(fixed)} fixed), E = {energy:.2f} kcal/mol'
         + ('' if converged == 0 else f'; not converged in {max_steps} steps')
     )
@@ -1517,6 +1561,7 @@ def relax_xyz(
     max_steps: int = 200,
     *,
     perceived: Optional[PerceivedMolecule] = None,
+    method: Optional[str] = 'uff',
 ) -> Dict[str, Any]:
     """Run the mouse-release clean-up minimisation.
 
@@ -1587,6 +1632,7 @@ def relax_xyz(
             fixed.append(index)
 
     warnings = list(perceived.warnings)
+    chosen = normalise_method(method)
     if len(fixed) == perceived.n_atoms and perceived.n_atoms:
         return {
             'ok': True,
@@ -1611,13 +1657,21 @@ def relax_xyz(
             'Metal present: relaxed with Open Babel UFF, which has '
             'transition-metal parameters; RDKit UFF does not.'
         )
+        if chosen == 'mmff94':
+            warnings.append(
+                'MMFF94 has no transition-metal parameters at all, so this '
+                'structure was relaxed with UFF regardless of the choice.'
+            )
     else:
         attempts.append((SOURCE_RDKIT, _relax_with_rdkit))
         attempts.append((SOURCE_OPENBABEL, _relax_with_openbabel))
 
     for source, runner in attempts:
         try:
-            outcome = runner(perceived, coords, fixed, max_steps)
+            if runner is _relax_with_rdkit:
+                outcome = runner(perceived, coords, fixed, max_steps, chosen)
+            else:
+                outcome = runner(perceived, coords, fixed, max_steps)
         except Exception as exc:  # defensive: never break the drag UI
             logger.debug('Relaxation with %s failed: %s', source, exc)
             outcome = None

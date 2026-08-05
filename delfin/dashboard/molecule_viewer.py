@@ -938,6 +938,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function vecScale(a,s){return {x:a.x*s,y:a.y*s,z:a.z*s};}
     function vecLen(a){return Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z);}
     function vecNorm(a){var l=vecLen(a); return l<1e-9?{x:0,y:0,z:0}:vecScale(a,1/l);}
+    function crossV(a,b){return {x:a.y*b.z-a.z*b.y, y:a.z*b.x-a.x*b.z, z:a.x*b.y-a.y*b.x};}
 
     // --- Camera-space basis from rotationGroup matrix (3Dmol uses THREE.js) ---
     function getCameraBasis(viewer) {
@@ -1530,6 +1531,160 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         updateStatus(scopeKey);
         redrawHighlights(scopeKey);
+    }
+
+    // --- internal coordinates: set a bond, angle or dihedral --------------
+    // The routine edits a chemist actually asks for: "make this bond 2.10 A",
+    // "open that angle to 120 deg", "turn this substituent to 60 deg". Which
+    // half of the molecule moves is decided from the model's own connectivity:
+    // cut the bond the coordinate turns about and move the fragment that is no
+    // longer attached to the anchor. Inside a ring both halves stay connected,
+    // so only the terminal atom moves and the caller is told why.
+    function indexOfSerial(atoms, serial) {
+        for (var i = 0; i < atoms.length; i++) {
+            if (atoms[i].serial === serial) return i;
+        }
+        return -1;
+    }
+    function bondAdjacency(viewer) {
+        var atoms = getAtoms(viewer);
+        var adj = new Array(atoms.length);
+        for (var i = 0; i < atoms.length; i++) {
+            adj[i] = (atoms[i].bonds || []).slice();
+        }
+        return adj;
+    }
+    function fragmentFrom(adj, start, cutA, cutB) {
+        var seen = {}, stack = [start], out = [];
+        seen[start] = true;
+        while (stack.length) {
+            var a = stack.pop();
+            out.push(a);
+            var nb = adj[a] || [];
+            for (var t = 0; t < nb.length; t++) {
+                var b = nb[t];
+                if ((a === cutA && b === cutB) || (a === cutB && b === cutA)) continue;
+                if (seen[b]) continue;
+                seen[b] = true;
+                stack.push(b);
+            }
+        }
+        return {atoms: out, seen: seen};
+    }
+    function pickedIndices(scopeKey) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return null;
+        var state = getState(scopeKey);
+        var atoms = getAtoms(viewer);
+        var idx = [];
+        for (var i = 0; i < state.picks.length; i++) {
+            var at = indexOfSerial(atoms, state.picks[i].serial);
+            if (at < 0) return null;
+            idx.push(at);
+        }
+        return idx;
+    }
+    // The value the current selection describes: two atoms are a bond, three
+    // an angle, four a dihedral, in the order they were picked.
+    function readInternal(scopeKey) {
+        var viewer = getViewer(scopeKey);
+        var idx = pickedIndices(scopeKey);
+        if (!viewer || !idx) return null;
+        var a = getAtoms(viewer);
+        if (idx.length === 2) {
+            return {kind: 'bond', unit: 'A', idx: idx,
+                    value: distV(a[idx[0]], a[idx[1]])};
+        }
+        if (idx.length === 3) {
+            return {kind: 'angle', unit: 'deg', idx: idx,
+                    value: angleV(a[idx[0]], a[idx[1]], a[idx[2]])};
+        }
+        if (idx.length === 4) {
+            return {kind: 'dihedral', unit: 'deg', idx: idx,
+                    value: dihedralV(a[idx[0]], a[idx[1]], a[idx[2]], a[idx[3]])};
+        }
+        return null;
+    }
+    function translateAtoms(atoms, indices, delta) {
+        for (var i = 0; i < indices.length; i++) {
+            var at = atoms[indices[i]];
+            at.x += delta.x; at.y += delta.y; at.z += delta.z;
+        }
+    }
+    function rotateAtomsAbout(atoms, indices, origin, axis, angle) {
+        for (var i = 0; i < indices.length; i++) {
+            var at = atoms[indices[i]];
+            var rel = rotateAboutAxis(vecSub(at, origin), axis, angle);
+            var np = vecAdd(rel, origin);
+            at.x = np.x; at.y = np.y; at.z = np.z;
+        }
+    }
+    function setInternal(scopeKey, target) {
+        var viewer = getViewer(scopeKey);
+        var info = readInternal(scopeKey);
+        if (!viewer || !info) {
+            return {ok: false, error: 'pick 2, 3 or 4 atoms first'};
+        }
+        if (typeof target !== 'number' || !isFinite(target)) {
+            return {ok: false, error: 'not a number'};
+        }
+        var atoms = getAtoms(viewer);
+        var adj = bondAdjacency(viewer);
+        var idx = info.idx;
+        var note = '';
+        snapshotForUndo(scopeKey);
+
+        if (info.kind === 'bond') {
+            if (target <= 0) return {ok: false, error: 'a bond must be positive'};
+            var i = idx[0], j = idx[1];
+            var u = vecNorm(vecSub(atoms[j], atoms[i]));
+            if (vecLen(u) < 0.5) return {ok: false, error: 'atoms coincide'};
+            var frag = fragmentFrom(adj, j, i, j);
+            var moving = frag.atoms;
+            if (frag.seen[i]) { moving = [j]; note = 'ring: only the second atom moved'; }
+            translateAtoms(atoms, moving, vecScale(u, target - info.value));
+        } else if (info.kind === 'angle') {
+            var i2 = idx[0], j2 = idx[1], k2 = idx[2];
+            var axis = vecNorm(crossV(vecSub(atoms[i2], atoms[j2]),
+                                     vecSub(atoms[k2], atoms[j2])));
+            if (vecLen(axis) < 0.5) {
+                return {ok: false, error: 'the three atoms are collinear'};
+            }
+            var frag2 = fragmentFrom(adj, k2, j2, k2);
+            var moving2 = frag2.atoms;
+            if (frag2.seen[j2]) { moving2 = [k2]; note = 'ring: only the third atom moved'; }
+            var d2 = (target - info.value) * Math.PI / 180;
+            rotateAtomsAbout(atoms, moving2, atoms[j2], axis, d2);
+            if (Math.abs(angleV(atoms[i2], atoms[j2], atoms[k2]) - target) > 1e-3) {
+                rotateAtomsAbout(atoms, moving2, atoms[j2], axis, -2 * d2);
+            }
+        } else {
+            var j3 = idx[1], k3 = idx[2];
+            var axis3 = vecNorm(vecSub(atoms[k3], atoms[j3]));
+            if (vecLen(axis3) < 0.5) {
+                return {ok: false, error: 'the central bond has no length'};
+            }
+            var frag3 = fragmentFrom(adj, k3, j3, k3);
+            var moving3 = frag3.atoms;
+            if (frag3.seen[j3]) {
+                return {ok: false,
+                        error: 'that dihedral turns about a ring bond'};
+            }
+            var d3 = (target - info.value) * Math.PI / 180;
+            rotateAtomsAbout(atoms, moving3, atoms[j3], axis3, d3);
+            var got = dihedralV(atoms[idx[0]], atoms[j3], atoms[k3], atoms[idx[3]]);
+            if (Math.abs(((got - target + 540) % 360) - 180) > 1e-3) {
+                rotateAtomsAbout(atoms, moving3, atoms[j3], axis3, -2 * d3);
+            }
+        }
+
+        invalidateGeometry(viewer);
+        try { viewer.render(); } catch (e) {}
+        redrawHighlights(scopeKey);
+        pushXyzToPython(scopeKey);
+        var after = readInternal(scopeKey);
+        return {ok: true, kind: info.kind, was: info.value,
+                now: after ? after.value : target, note: note};
     }
 
     // --- live force field -------------------------------------------------
@@ -2161,7 +2316,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setMode: setMode,
         clear: clearPicks,
         undo: undo,
-        setForceField: setForceField
+        setForceField: setForceField,
+        readInternal: readInternal,
+        setInternal: setInternal
     };
 })();
 """

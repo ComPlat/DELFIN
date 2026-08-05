@@ -675,6 +675,27 @@ def create_tab(ctx):
         layout=widgets.Layout(width='84px', height='30px'),
         disabled=True,
     )
+    submit_ff_dd = widgets.Dropdown(
+        options=[('UFF', 'uff'), ('MMFF94', 'mmff94')],
+        value='uff',
+        layout=widgets.Layout(width='104px'),
+        disabled=True,
+    )
+    submit_internal_value = widgets.FloatText(
+        value=0.0, step=0.01,
+        layout=widgets.Layout(width='92px', height='30px'),
+        disabled=True,
+    )
+    submit_internal_btn = widgets.Button(
+        description='Set', button_style='primary',
+        tooltip=(
+            'Set the value the selection describes: two atoms a bond length, '
+            'three an angle, four a dihedral. The fragment on the far side of '
+            'the coordinate moves.'
+        ),
+        layout=widgets.Layout(width='58px', height='30px'),
+        disabled=True,
+    )
     submit_manip_status = widgets.HTML(
         value='<span class="submit-manip-status" style="color:#888;font-size:0.9em;">— viewer empty —</span>',
         layout=widgets.Layout(flex='1 1 auto', min_width='0', overflow_x='hidden'),
@@ -687,7 +708,8 @@ def create_tab(ctx):
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn,
             submit_manip_clear_btn, submit_manip_undo_btn,
-            submit_relax_btn,
+            submit_relax_btn, submit_ff_dd,
+            submit_internal_value, submit_internal_btn,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -953,6 +975,9 @@ def create_tab(ctx):
         submit_manip_btn.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
+        submit_ff_dd.disabled = not enabled
+        submit_internal_value.disabled = not enabled
+        submit_internal_btn.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
         if not enabled:
@@ -3050,7 +3075,7 @@ def create_tab(ctx):
             return
         try:
             from .molecule_forcefield import export_forcefield_terms
-            payload = export_forcefield_terms(xyz)
+            payload = export_forcefield_terms(xyz, method=submit_ff_dd.value)
         except Exception as exc:
             _set_mol_status(f'Force field unavailable: {exc}')
             submit_relax_btn.value = False
@@ -3088,6 +3113,23 @@ def create_tab(ctx):
         if not submit_manip_btn.value:
             submit_manip_btn.value = True   # relaxing only makes sense while dragging
         _enable_live_forcefield()
+
+    def on_submit_set_internal(_button=None):
+        """Set the bond, angle or dihedral the current selection describes."""
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setInternal('
+            f'{json.dumps(submit_scope_id)},{float(submit_internal_value.value)!r});'
+        )
+
+    def on_submit_ff_changed(change):
+        if change.get('name') != 'value':
+            return
+        # Re-assign parameters under the newly chosen method, but only if the
+        # live relaxation is actually switched on.
+        if submit_relax_btn.value:
+            _enable_live_forcefield()
 
     def on_submit_manip_clear(_button=None):
         _ensure_manip_bootstrap()
@@ -3150,6 +3192,8 @@ def create_tab(ctx):
     submit_manip_clear_btn.on_click(on_submit_manip_clear)
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
+    submit_ff_dd.observe(on_submit_ff_changed, names='value')
+    submit_internal_btn.on_click(on_submit_set_internal)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
