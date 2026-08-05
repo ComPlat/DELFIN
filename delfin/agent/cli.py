@@ -68,6 +68,13 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
         return ""
     try:
         engine.restore_state({
+            # Forward everything the store holds, then apply the defaults
+            # below. Listing the fields by hand was the bug: restore_state
+            # learned to read the compaction summaries, the project pin and
+            # the context floor, and this path kept handing over the same
+            # seven keys it always had, so headless --resume came back
+            # thinner than the session that was saved.
+            **data,
             "mode": data.get("mode", args.mode or "solo"),
             "role_index": data.get("role_index", 0),
             "role_outputs": data.get("role_outputs", {}),

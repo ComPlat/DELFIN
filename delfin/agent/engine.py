@@ -376,7 +376,13 @@ class AgentEngine:
         self.token_usage = {"input": 0, "output": 0, "cached": 0}
         self.cost_usd: float = 0.0
         # Exact system prompt of the most recent turn (for bug reports).
+        # Kept for the running process only -- it carries the injected
+        # memory, so it is not written into every session file.
         self.last_system_prompt: str = ""
+        # Its size, which IS persisted: the context estimate has to count
+        # the system prompt, and a resumed session that starts at zero
+        # reads far emptier than the conversation really is.
+        self._system_prompt_chars: int = 0
         # Auto-compact configuration. Threshold is a fraction of the
         # context window; once an estimated turn would exceed it, the
         # engine summarises older messages before sending. Set
@@ -1357,6 +1363,7 @@ class AgentEngine:
         # playbook + memory determine behaviour). Kept on the engine, not
         # in the message list, since the API takes it as a separate arg.
         self.last_system_prompt = system_prompt
+        self._system_prompt_chars = len(system_prompt or "")
 
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
@@ -2297,7 +2304,12 @@ class AgentEngine:
                     else:
                         total_chars += len(str(part))
         est = total_chars // 4
-        est += len(getattr(self, "last_system_prompt", "") or "") // 4
+        # The live prompt text is authoritative while a process is running;
+        # the persisted size stands in only after a resume, when the text is
+        # gone (it is not written into session files -- it carries the
+        # injected memory) but its weight in the window is unchanged.
+        _sp_live = len(getattr(self, "last_system_prompt", "") or "")
+        est += (_sp_live or int(getattr(self, "_system_prompt_chars", 0) or 0)) // 4
         # The provider floor is a PRE-trim snapshot; credit chars that
         # in-place trims removed since it was taken, or the trim loops'
         # stop conditions ("estimate <= budget") could never be reached
@@ -3252,6 +3264,10 @@ class AgentEngine:
             # project-directory pin or the compaction estimator's floor.
             "project_dir": self._project_dir,
             "last_input_tokens": self._last_input_tokens,
+            # getattr: engines built for a targeted test never ran the
+            # full __init__, and export must not be the thing that breaks.
+            "system_prompt_chars": int(
+                getattr(self, "_system_prompt_chars", 0) or 0),
         }
 
     def restore_state(self, data: dict) -> None:
@@ -3279,6 +3295,10 @@ class AgentEngine:
             self._last_input_tokens = int(data.get("last_input_tokens", 0) or 0)
         except (TypeError, ValueError):
             self._last_input_tokens = 0
+        try:
+            self._system_prompt_chars = int(data.get("system_prompt_chars", 0) or 0)
+        except (TypeError, ValueError):
+            self._system_prompt_chars = 0
         # Crash recovery: a surviving mid-turn checkpoint means the
         # previous process died inside a turn, so that turn's work was
         # never committed. Inject the recovery note using the house

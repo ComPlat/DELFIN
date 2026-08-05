@@ -513,6 +513,11 @@ def save_session(
     # re-establishes it from the provider.
     project_dir: str = "",
     last_input_tokens: int = 0,
+    # Size of the system prompt that drove the last turn. The prompt text
+    # itself stays in the process (it carries the injected memory); the
+    # estimate only needs its length, and without it a resumed session
+    # counts the prompt as nothing.
+    system_prompt_chars: int = 0,
     # What stands in for the history a long session has already trimmed
     # away. Dropping these on save means a resumed session keeps the
     # messages it still has and loses the condensed memory of the ones it
@@ -607,6 +612,7 @@ def save_session(
         "transcript_archive_path": transcript_archive_path or "",
         "project_dir": str(project_dir or ""),
         "last_input_tokens": int(last_input_tokens or 0),
+        "system_prompt_chars": int(system_prompt_chars or 0),
         "compaction_summaries": compaction_summaries or {},
     }
 

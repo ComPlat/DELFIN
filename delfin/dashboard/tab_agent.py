@@ -1035,6 +1035,19 @@ def _syntax_highlight(code: str, lang: str) -> str:
     return escaped
 
 
+def _assistant_turn_is_wordless(msg: dict) -> bool:
+    """True when an assistant entry carries no prose.
+
+    A turn that answers only in tool calls produces one: the model emits
+    tool_calls and no text, so the chat gets an entry whose whole content
+    is the role name. Three places have to agree about it -- the renderer,
+    the search rebuild, and the updater that decides whether to store it at
+    all -- so the question is asked in one place. Two of them silently
+    drifting apart is how an empty box ends up before every tool line.
+    """
+    return not str(msg.get("content") or "").strip()
+
+
 def _md_to_html(text: str) -> str:
     """Convert markdown subset to HTML for chat display."""
     # Protect code blocks first (extract, replace later)
@@ -5280,6 +5293,7 @@ def create_tab(ctx):
                 workspace=_agent_workspace_path(),
                 project_dir=estate.get("project_dir", ""),
                 last_input_tokens=estate.get("last_input_tokens", 0),
+                system_prompt_chars=estate.get("system_prompt_chars", 0),
                 compaction_summaries=estate.get("compaction_summaries", {}),
             )
             state["active_session_id"] = engine.session_id
@@ -5358,6 +5372,7 @@ def create_tab(ctx):
             # resumed session re-establishes it.
             "project_dir": data.get("project_dir", ""),
             "last_input_tokens": data.get("last_input_tokens", 0),
+            "system_prompt_chars": data.get("system_prompt_chars", 0),
             "compaction_summaries": data.get("compaction_summaries", {}),
         })
 
@@ -6554,12 +6569,21 @@ def create_tab(ctx):
             except Exception:
                 pass
         msgs = state["chat_messages"]
+        # Keeping an empty entry out of the history matters beyond the
+        # display: it is saved with the session and replayed on resume.
+        blank = _assistant_turn_is_wordless({"content": content})
         if msgs and msgs[-1]["role"] == "assistant":
-            msgs[-1]["content"] = content
+            had_text = not _assistant_turn_is_wordless(msgs[-1])
+            if not (blank and had_text):
+                msgs[-1]["content"] = content
             if role_label:
                 msgs[-1]["role_label"] = role_label
             msgs[-1]["_streaming"] = not finalize
-        else:
+            if finalize and blank and not had_text:
+                # Finalized with nothing in it — the turn spoke only in tool
+                # calls, so this entry will never fill.
+                msgs.pop()
+        elif not blank:
             msgs.append(
                 {"role": "assistant", "content": content,
                  "role_label": role_label, "_streaming": not finalize}
@@ -6592,6 +6616,13 @@ def create_tab(ctx):
                 f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>'
             )
         elif role == "assistant":
+            # A turn that answers only in tool calls produces no prose. The
+            # bubble would then be a box holding nothing but the role name,
+            # wedged between the request and the tool line it triggered.
+            # Render nothing instead — this also cleans up sessions that
+            # already have such entries stored.
+            if _assistant_turn_is_wordless(msg):
+                return ""
             label = msg.get("role_label", "Agent")
             # During streaming: plain <pre> — no expensive markdown parsing.
             # On finalize: full _md_to_html with code blocks, formatting etc.
@@ -12248,6 +12279,8 @@ def create_tab(ctx):
             if role == "user":
                 parts.append(f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>')
             elif role == "assistant":
+                if _assistant_turn_is_wordless(msg):
+                    continue        # tool-only turn: no prose to show or match
                 label = msg.get("role_label", "Agent")
                 parts.append(
                     f'<div class="delfin-chat-msg delfin-chat-agent">'
