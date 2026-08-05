@@ -1305,8 +1305,42 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # and gives a defense-in-depth net for any tool whose own handler forgets a
 # check. Only roles that appear here are restricted; every other role stays
 # unrestricted at this layer (its per-tool + plan-mode gates still apply).
+
+# What an administrative session actually needs. Derived by subtraction
+# from the full catalogue and checked two ways: every tool the office
+# benchmark has ever called is on it, and every tool it removes was one
+# the audit named as "not document work".
+#
+# The point is cost, not safety -- the deny-list and the folder lock do
+# the safety. Tool schemas are the single largest part of a request,
+# larger than the system prompt, and 33 of the 63 tools advertised here
+# had nothing to do with documents. They were paid for on every turn.
+_OFFICE_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
+    # Documents: the reason this mode exists.
+    "read_document", "edit_sheet", "compare_tables", "fill_series",
+    "fill_pdf_form", "fill_docx_template", "create_docx", "create_pdf",
+    "merge_pdfs", "split_pdf",
+    # Files and shell. bash stays: the field reports show real work done
+    # with small python scripts over the folder's data.
+    "read_file", "write_file", "edit_file", "multi_edit", "list_files",
+    "grep_file", "view_image",
+    "bash", "bash_background", "bash_status", "bash_output", "bash_kill",
+    # Undo and provenance -- the read-back half of "verify what you wrote".
+    "undo_changes", "list_changes_made",
+    # Working memory across a long administrative session.
+    "task_create", "task_update", "task_list", "task_get", "task_adopt",
+    "remember", "forget", "history_search", "history_get",
+    # Instructions the user can extend without touching code.
+    "skill",
+    # The network tools stay for now. Whether an administrative session
+    # should reach the internet at all is a product decision that has not
+    # been made yet, and dropping them here would make it by omission.
+    "web_fetch", "web_search",
+})
+
 _ROLE_EXEC_ALLOWLIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_AGENT_ALLOWED_TOOLS,
+    "office_agent": _OFFICE_AGENT_ALLOWED_TOOLS,
 }
 
 # Meta/plumbing tools with no side effects or scope concern — always permitted

@@ -1384,6 +1384,7 @@ class AgentEngine:
         # tool rounds). Recorded in the finally below so errored/partial turns
         # are captured too. See turn_metrics.
         _turn_t0 = _time.monotonic()
+        _usage_before = dict(self.token_usage)
         _turn_ttft: float | None = None
         _turn_tool_calls = 0
         # Tool NAMES this turn — evidence input for the claim-grounding
@@ -1635,6 +1636,17 @@ class AgentEngine:
                     output_chars=sum(len(c) for c in chunks),
                     tool_calls=_turn_tool_calls,
                     stopped=self._stop_requested,
+                    # Per-TURN deltas, not the running totals: a cache hit
+                    # rate is only meaningful per request.
+                    input_tokens=max(
+                        0, int(self.token_usage.get("input", 0))
+                        - int(_usage_before.get("input", 0))),
+                    output_tokens=max(
+                        0, int(self.token_usage.get("output", 0))
+                        - int(_usage_before.get("output", 0))),
+                    cached_tokens=max(
+                        0, int(self.token_usage.get("cached", 0))
+                        - int(_usage_before.get("cached", 0))),
                 )
             except Exception:
                 pass

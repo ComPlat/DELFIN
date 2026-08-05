@@ -345,3 +345,60 @@ def test_the_unattended_profile_does_not_ask(tmp_path):
     """bypassPermissions is the unattended one; the deny-list still holds."""
     asked, blocked = _bash("bypassPermissions", True, tmp_path)
     assert asked is False and blocked is False
+
+
+# ---------------------------------------------------------------------------
+# The advertised surface is what the work needs, and no more
+# ---------------------------------------------------------------------------
+
+def test_office_advertises_a_scoped_tool_surface():
+    """Tool schemas are the largest single part of a request -- larger than
+    the system prompt -- and 33 of the 63 tools office used to advertise had
+    nothing to do with documents. They were paid for on every turn."""
+    from delfin.agent.api_client import role_tool_surface_report
+
+    report = role_tool_surface_report(["", "office_agent"])
+    baseline = report[""]["total_tokens"]
+    office = report["office_agent"]["total_tokens"]
+    assert office < baseline * 0.65, (
+        f"office surface is {office} tokens against a {baseline} baseline; "
+        "the scoping has been widened back out")
+
+
+def test_every_tool_the_office_benchmark_uses_is_still_permitted():
+    """The committed reference was measured at real API cost. Removing a
+    tool it depends on would invalidate it silently."""
+    from delfin.agent.api_client import _tool_denied_for_role
+
+    for tool in ("bash", "compare_tables", "grep_file", "list_files",
+                 "read_document", "read_file"):
+        assert not _tool_denied_for_role("office_agent", tool), tool
+
+
+def test_the_document_tools_are_all_reachable():
+    from delfin.agent.api_client import _tool_denied_for_role
+
+    for tool in ("read_document", "edit_sheet", "fill_pdf_form",
+                 "fill_docx_template", "create_docx", "create_pdf",
+                 "merge_pdfs", "split_pdf", "compare_tables", "fill_series",
+                 "undo_changes"):
+        assert not _tool_denied_for_role("office_agent", tool), tool
+
+
+def test_what_is_not_document_work_is_gone():
+    from delfin.agent.api_client import _tool_denied_for_role
+
+    for tool in ("cron_create", "schedule_wakeup", "remote_trigger",
+                 "worktree_merge", "enter_worktree", "run_tests",
+                 "find_definition", "project_introspect", "notebook_edit"):
+        assert _tool_denied_for_role("office_agent", tool), tool
+
+
+def test_the_chemistry_deny_survives_the_allow_list():
+    """An allow-list and a deny-list on the same role must not cancel out."""
+    from delfin.agent.api_client import _tool_denied_for_role
+
+    for tool in ("search_docs", "search_calcs", "calc_summary",
+                 "read_section", "list_docs", "list_sections",
+                 "get_calc_info"):
+        assert _tool_denied_for_role("office_agent", tool), tool

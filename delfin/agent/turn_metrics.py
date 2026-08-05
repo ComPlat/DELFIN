@@ -52,8 +52,24 @@ def record(
     tool_calls: int = 0,
     stopped: bool = False,
     error: str = "",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cached_tokens: int = 0,
 ) -> None:
-    """Append one turn-timing entry to the session log. Never raises."""
+    """Append one turn-timing entry to the session log. Never raises.
+
+    The token counts are here because a claim about them could not be
+    checked. The prompt is deliberately byte-stable and re-sent every turn,
+    justified by prefix caching making that nearly free -- and a probe once
+    found ``cached_tokens = 0`` on the KIT endpoint, which would make the
+    justification wrong and real shortening the only lever that helps.
+
+    Neither could be confirmed later, because the number reached no
+    persistent store: the only consumer renders a cache line ONLY when the
+    count is above zero, so on an endpoint that reports none it silently
+    vanished. Recording it makes the question answerable from data instead
+    of from one probe somebody remembers running.
+    """
     try:
         _DIR.mkdir(parents=True, exist_ok=True)
         p = metrics_path(session)
@@ -74,6 +90,9 @@ def record(
             "tool_calls": int(tool_calls),
             "stopped": bool(stopped),
             "error": str(error or "")[:300],
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "cached_tokens": int(cached_tokens or 0),
         }
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
