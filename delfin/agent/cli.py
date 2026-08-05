@@ -23,8 +23,10 @@ Examples::
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -275,6 +277,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
         print(f"\n{len(tasks)} tasks")
         return 0
 
+    if action in ("gate", "set-baseline"):
+        return _cmd_bench_baseline(args, action)
+
     if action == "audit":
         run_path = Path(getattr(args, "run", "")).expanduser().resolve()
         if not run_path.exists():
@@ -453,6 +458,116 @@ def cmd_bench(args: argparse.Namespace) -> int:
     _print_behavior_rates(_bm, results)
     print(f"\nWritten to: {path}")
     return 0
+
+
+
+# ---------------------------------------------------------------------------
+# Reference standard (committed) — gate a run, or deliberately move the bar
+# ---------------------------------------------------------------------------
+
+def _default_baseline_path() -> Path:
+    """The committed reference, resolved relative to the installed package."""
+    return (Path(__file__).resolve().parents[2]
+            / "tests" / "fixtures" / "office_baseline.json")
+
+
+def _resolve_run_file(args, _bm) -> Path | None:
+    """The run to judge: an explicit file, else the newest for a model."""
+    runs_dir = (getattr(args, "runs_dir", "") or "").strip()
+    base = Path(runs_dir).expanduser() if runs_dir else _bm.runs_dir()
+    raw = (getattr(args, "run", "") or "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if p.exists():
+            return p.resolve()
+        candidate = base / raw
+        return candidate.resolve() if candidate.exists() else None
+    model = (getattr(args, "model", "") or "").strip()
+    if not model:
+        return None
+    try:
+        from . import bench_watch as _bw
+        files = _bw.list_model_runs(model, runs_dir=base)
+    except Exception:
+        files = []
+    return Path(files[0]).resolve() if files else None
+
+
+def _cmd_bench_baseline(args, action: str) -> int:
+    """`bench gate` and `bench set-baseline`."""
+    from . import benchmark as _bm
+    from . import benchmark_baseline as _bb
+
+    raw_path = (getattr(args, "baseline_path", "") or "").strip()
+    baseline_path = (Path(raw_path).expanduser() if raw_path
+                     else _default_baseline_path())
+
+    run_path = _resolve_run_file(args, _bm)
+    if run_path is None:
+        print("ERROR: no run file. Give one, or --model to take the newest.",
+              file=sys.stderr)
+        return 2
+    rows = _bm.read_run(run_path)
+    if not rows:
+        print(f"ERROR: no results in {run_path}", file=sys.stderr)
+        return 2
+
+    if action == "set-baseline":
+        note = (getattr(args, "note", "") or "").strip()
+        commit = ""
+        try:
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parents[2]),
+            ).stdout.strip()
+        except Exception:
+            pass
+        measured = datetime.date.fromtimestamp(
+            run_path.stat().st_mtime).isoformat()
+        new = _bb.baseline_from_results(
+            rows, measured_at=measured, commit=commit, note=note)
+        old = None
+        try:
+            old = _bb.load_baseline(baseline_path)
+        except ValueError as exc:
+            print(f"note: existing reference unreadable ({exc})")
+        print(f"Run:       {run_path}")
+        print(f"Reference: {baseline_path}")
+        if old is not None:
+            print(f"  replacing {old.suite_pass_rate:.1%} over "
+                  f"{old.total_samples} samples (measured {old.measured_at})")
+        print(f"  with      {new.suite_pass_rate:.1%} over "
+              f"{new.total_samples} samples (measured {measured})")
+        if old is not None and new.suite_pass_rate < old.suite_pass_rate:
+            print("  WARNING: this LOWERS the standard. A reference that "
+                  "follows the code downwards guards nothing.")
+        if not getattr(args, "yes", False):
+            print("\nNothing written. Re-run with --yes to move the standard.")
+            return 0
+        _bb.save_baseline(new, baseline_path)
+        print(f"\nWritten. Commit it so the change is reviewed: {baseline_path}")
+        return 0
+
+    # --- gate ---------------------------------------------------------------
+    try:
+        baseline = _bb.load_baseline(baseline_path)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if baseline is None:
+        print(f"No reference at {baseline_path}. Nothing to judge against; "
+              "create one with `bench set-baseline`.", file=sys.stderr)
+        return 0        # absence of a standard is not a failed run
+
+    result = _bb.compare_to_baseline(rows, baseline)
+    if getattr(args, "json", False):
+        print(json.dumps(
+            {**result, "run": str(run_path), "baseline": str(baseline_path)},
+            indent=2, ensure_ascii=False))
+    else:
+        print(f"Run: {run_path}")
+        print(_bb.format_baseline_report(result, baseline))
+    return 1 if result.get("verdict") == "regressed" else 0
 
 
 _BENCH_SCHEDULE_HINT = (
@@ -1064,6 +1179,55 @@ def build_parser() -> argparse.ArgumentParser:
     bench_cmp.add_argument("--markdown", action="store_true",
                            help="Emit a markdown report (PR-body ready, "
                                 "annotates profile commits between runs)")
+
+    bench_gate = bench_sub.add_parser(
+        "gate",
+        help=("Judge a run against the committed reference standard "
+              "(tests/fixtures/office_baseline.json) — a file comparison, "
+              "no API spend"),
+        description=(
+            "Unlike `compare --model`, which measures against the last few "
+            "runs on this machine, the reference is committed to the repo: "
+            "it survives a clone, it is reviewed when it changes, and it "
+            "does not drift downwards with the code it is meant to guard."
+        ),
+    )
+    bench_gate.add_argument(
+        "run", nargs="?", default="",
+        help="Run JSONL (path or name in the runs dir; default: newest)")
+    bench_gate.add_argument("--model", default="",
+                            help="Pick the newest run of this model")
+    bench_gate.add_argument("--baseline", default="", dest="baseline_path",
+                            help="Reference file (default: the committed one)")
+    bench_gate.add_argument("--runs-dir", default="", dest="runs_dir")
+    bench_gate.add_argument("--json", action="store_true")
+    bench_gate.set_defaults(bench_action="gate")
+
+    bench_rebase = bench_sub.add_parser(
+        "set-baseline",
+        help=("Write a run as the new reference standard. Deliberate and "
+              "explicit: nothing else ever writes one"),
+        description=(
+            "A reference that appears by itself records whatever state the "
+            "code happened to be in, which is how a benchmark ends up "
+            "certifying its own regression. This command exists so that "
+            "moving the standard is an act somebody performs and signs."
+        ),
+    )
+    bench_rebase.add_argument(
+        "run", nargs="?", default="",
+        help="Run JSONL to promote (path or name in the runs dir)")
+    bench_rebase.add_argument("--model", default="",
+                              help="Pick the newest run of this model")
+    bench_rebase.add_argument("--baseline", default="", dest="baseline_path",
+                              help="Where to write (default: the committed one)")
+    bench_rebase.add_argument("--runs-dir", default="", dest="runs_dir")
+    bench_rebase.add_argument("--note", default="",
+                              help="Why this run is the new standard")
+    bench_rebase.add_argument(
+        "--yes", action="store_true",
+        help="Required. Without it the command reports what it would do.")
+    bench_rebase.set_defaults(bench_action="set-baseline")
 
     bench_nightly = bench_sub.add_parser(
         "nightly",

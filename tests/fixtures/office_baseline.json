@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "model": "kit.qwen3.5-397b-A17b",
+  "mode": "office",
+  "measured_at": "2026-07-28",
+  "commit": "5f5b86b1c501a95c1da81e5026a81da049523a66",
+  "repeats": 3,
+  "note": "Three samples per task on unchanged code. The ambiguity task scored 45/93/93 -- it is on record as unstable, which is why the gate reads the suite rate and outright task death, not per-task drops.",
+  "suite_pass_rate": 0.9444,
+  "tasks": {
+    "office_ambiguous_column_is_asked_about": {
+      "n_samples": 3,
+      "n_passed": 2,
+      "quality_mean": 93.0,
+      "quality_stdev": 27.71,
+      "per_run_success": [
+        false,
+        true,
+        true
+      ]
+    },
+    "office_closing_separates_verified": {
+      "n_samples": 3,
+      "n_passed": 3,
+      "quality_mean": 92.0,
+      "quality_stdev": 0.58,
+      "per_run_success": [
+        true,
+        true,
+        true
+      ]
+    },
+    "office_reconcile_uses_the_tool": {
+      "n_samples": 3,
+      "n_passed": 3,
+      "quality_mean": 96.0,
+      "quality_stdev": 0.58,
+      "per_run_success": [
+        true,
+        true,
+        true
+      ]
+    },
+    "office_refusal_is_accepted": {
+      "n_samples": 3,
+      "n_passed": 3,
+      "quality_mean": 91.0,
+      "quality_stdev": 0.58,
+      "per_run_success": [
+        true,
+        true,
+        true
+      ]
+    },
+    "office_shifted_row_is_reported": {
+      "n_samples": 3,
+      "n_passed": 3,
+      "quality_mean": 93.0,
+      "quality_stdev": 0.58,
+      "per_run_success": [
+        true,
+        true,
+        true
+      ]
+    },
+    "office_total_names_what_it_left_out": {
+      "n_samples": 3,
+      "n_passed": 3,
+      "quality_mean": 95.0,
+      "quality_stdev": 1.0,
+      "per_run_success": [
+        true,
+        true,
+        true
+      ]
+    }
+  }
+}
