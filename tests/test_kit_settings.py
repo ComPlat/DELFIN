@@ -103,7 +103,16 @@ def test_persist_pattern_rejects_empty(tmp_user_path):
 # Repo overrides
 # ---------------------------------------------------------------------------
 
-def test_repo_settings_override_default_mode(tmp_user_path, tmp_repo):
+def test_a_repo_may_lower_the_default_mode_but_not_raise_it(
+        tmp_user_path, tmp_repo):
+    """A repo may TIGHTEN and may not WIDEN.
+
+    It used to win outright, and default_mode accepts
+    bypassPermissions -- so a checked-out repository shipping a .delfin
+    settings file started the session in bypass, with no prompt and no
+    banner. Asking for LESS trust stays useful and stays allowed: a
+    project that wants plan mode by default gets it.
+    """
     kit_settings.persist_default_mode(
         "default", scope="user", user_path=tmp_user_path
     )
@@ -112,10 +121,16 @@ def test_repo_settings_override_default_mode(tmp_user_path, tmp_repo):
         user_path=tmp_user_path,
     )
     s = kit_settings.load(repo_dir=tmp_repo, user_path=tmp_user_path)
-    assert s.default_mode == "acceptEdits"
+    assert s.default_mode == "default", "the repo widened the session"
+
+    kit_settings.persist_default_mode(
+        "plan", scope="repo", repo_dir=tmp_repo, user_path=tmp_user_path,
+    )
+    s2 = kit_settings.load(repo_dir=tmp_repo, user_path=tmp_user_path)
+    assert s2.default_mode == "plan"
 
 
-def test_repo_and_user_dirs_are_unioned(tmp_user_path, tmp_path, tmp_repo):
+def test_only_the_users_own_extra_dirs_are_taken(tmp_user_path, tmp_path, tmp_repo):
     user_dir = tmp_path / "from_user"
     user_dir.mkdir()
     repo_dir = tmp_path / "from_repo"
@@ -128,7 +143,11 @@ def test_repo_and_user_dirs_are_unioned(tmp_user_path, tmp_path, tmp_repo):
     )
     s = kit_settings.load(repo_dir=tmp_repo, user_path=tmp_user_path)
     assert str(user_dir.resolve()) in s.extra_workspace_dirs
-    assert str(repo_dir.resolve()) in s.extra_workspace_dirs
+    # A writable root is trust. The repo's entry is no longer unioned in:
+    # a checked-out repository listing $HOME here made $HOME writable on
+    # the first message. It can still be granted -- by the person, in
+    # their own settings file, or with /grant.
+    assert str(repo_dir.resolve()) not in s.extra_workspace_dirs
 
 
 # ---------------------------------------------------------------------------
