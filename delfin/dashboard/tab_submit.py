@@ -725,8 +725,11 @@ def create_tab(ctx):
     )
     submit_manip_status = widgets.HTML(
         value='<span class="submit-manip-status" style="color:#888;font-size:0.9em;">— viewer empty —</span>',
+        # Takes a share of the row when there is room -- fullscreen keeps the
+        # toolbar on one line -- and wraps to its own line when there is not,
+        # which is what happens inside the tab on a laptop.
         layout=widgets.Layout(
-            flex='1 1 100%', min_width='0', overflow_x='hidden',
+            flex='1 1 260px', min_width='0', overflow_x='hidden',
         ),
     )
     submit_manip_sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))

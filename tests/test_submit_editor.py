@@ -242,6 +242,7 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     toolbar = source.split('submit_manip_toolbar = widgets.HBox')[1].split(')\n')[0]
     assert "flex_flow='row wrap'" in toolbar
     assert "overflow='hidden'" not in toolbar
-    # The status line takes a row of its own rather than a sliver of the first.
+    # The status line takes a share of the row when there is room -- so
+    # fullscreen stays one line -- and wraps when there is not.
     status = source.split('submit_manip_status = widgets.HTML')[1].split(')\n')[0]
-    assert "flex='1 1 100%'" in status
+    assert "flex='1 1 260px'" in status
