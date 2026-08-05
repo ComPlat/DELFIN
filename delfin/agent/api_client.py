@@ -1579,6 +1579,12 @@ def _hook_workspace(perms) -> "Path | None":
 # WRITTEN; it never bounded where data may go. A record can leave through a
 # fetched URL without any path crossing the boundary, so these need their own
 # decision — and under a locked scope that decision is the user's, every time.
+# Returned by the egress scan when the scan itself failed under a locked
+# scope. A distinct object rather than a message string: the caller treats
+# every other truthy return as a reason to record and possibly approve,
+# and "we could not check this" must not be able to travel that path.
+EGRESS_UNCHECKABLE = "egress-scan-failed"
+
 _NETWORK_TOOLS: frozenset[str] = frozenset({
     "web_fetch", "web_search", "remote_trigger", "push_notification",
 })
@@ -8335,9 +8341,21 @@ class _DocToolExecutor:
         (r"\b(?:scp|rsync)\b[^|;&\n]*\s\S+@\S+:", "copy to a remote host"),
     )
 
-    def _scan_bash_egress(self, cmd: str) -> Optional[str]:
-        """Detect an outbound data-transfer (exfiltration) command. Returns a
-        short reason, or None. Pure regex over the command; never raises."""
+    def _scan_bash_egress(
+        self, cmd: str, perms: Optional["KitToolPermissions"] = None,
+    ) -> Optional[str]:
+        """Detect an outbound data-transfer (exfiltration) command.
+
+        Returns a short reason, ``EGRESS_UNCHECKABLE`` when the scan itself
+        failed under a locked scope, or None. Pure regex over the command;
+        never raises.
+
+        ``perms`` decides only what a FAILED scan means. It was read here
+        without being a parameter — the fail-closed branch raised NameError
+        instead of failing closed, and returned a JSON object from a
+        function whose contract is a short label. Both were invisible
+        because a regex search over a string effectively never raises.
+        """
         try:
             for pat, label in self._EGRESS_PATTERNS:
                 if re.search(pat, cmd, re.IGNORECASE):
@@ -8351,12 +8369,7 @@ class _DocToolExecutor:
             if getattr(perms, "scope_locked", False):
                 _record_security_event(
                     "locked_scope_parse", "bash", str(exc)[:80], blocked=True)
-                return json.dumps({"error": (
-                    "blocked: this command could not be checked against the "
-                    f"boundary of {perms.workspace}, and this session cannot "
-                    "run what it cannot check. Rewrite it as something "
-                    "simpler, or tell the user what you need."
-                )})
+                return EGRESS_UNCHECKABLE
             return None
         return None
 
@@ -8719,7 +8732,14 @@ class _DocToolExecutor:
             # routed through the normal user approval otherwise (so an
             # interactive user stays in control — ordinary downloads, GET
             # curl/git/pip, are never flagged).
-            egress = self._scan_bash_egress(cmd)
+            egress = self._scan_bash_egress(cmd, perms)
+            if egress == EGRESS_UNCHECKABLE:
+                return (
+                    "blocked: this command could not be checked against the "
+                    f"boundary of {perms.workspace}, and this session cannot "
+                    "run what it cannot check. Rewrite it as something "
+                    "simpler, or tell the user what you need."
+                )
             if egress is not None:
                 _record_security_event(
                     "egress", "bash", f"{egress}: {cmd[:80]}",
@@ -10885,6 +10905,34 @@ class _DocToolExecutor:
 
     # ------- Skill invocation ---------------------------------------------
 
+    @staticmethod
+    def _session_domain(perms: Optional["KitToolPermissions"]) -> str:
+        """Which half of the skill catalogue this session can execute.
+
+        Reuses the memory store's vocabulary (office / code) rather than
+        inventing a second one, and reads the FOLDER as well as the role:
+        a registered office folder is an office session whatever the role
+        string says. Returns "" when it cannot tell, which disables
+        filtering — a catalogue is advertising, and failing open there
+        costs tokens while failing closed would hide a skill the session
+        legitimately has.
+        """
+        if perms is None:
+            return ""
+        try:
+            from .memory_store import (
+                DOMAIN_CODE, DOMAIN_OFFICE, domain_for_role,
+                is_office_workspace,
+            )
+            if domain_for_role(getattr(perms, "agent_role", "") or "") == DOMAIN_OFFICE:
+                return DOMAIN_OFFICE
+            workspace = getattr(perms, "workspace", None)
+            if workspace is not None and is_office_workspace(workspace):
+                return DOMAIN_OFFICE
+            return DOMAIN_CODE
+        except Exception:
+            return ""
+
     def _execute_skill(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -10900,11 +10948,25 @@ class _DocToolExecutor:
         if not name:
             return json.dumps({"error": "skill name must be non-empty"})
         workspace = perms.workspace if perms is not None else None
+        domain = self._session_domain(perms)
+        # Look it up unfiltered first: "no such skill" and "that skill does
+        # not apply here" are different mistakes, and answering the second
+        # with the first invites the model to retry the same name.
         sk = _skills_mod.get_skill(name, workspace)
+        available = [s.name for s in
+                     _skills_mod.discover_skills(workspace, domain=domain)]
         if sk is None:
-            available = [s.name for s in _skills_mod.discover_skills(workspace)]
             return json.dumps({
                 "error": f"skill '{name}' not found",
+                "available": available,
+            })
+        if not sk.applies_to(domain):
+            return json.dumps({
+                "error": (
+                    f"skill '{name}' exists but does not apply to this "
+                    f"workspace ({domain}) — its steps call tools this "
+                    "session cannot reach. Use one of the listed skills, "
+                    "or do the work with the tools you have."),
                 "available": available,
             })
         body = _skills_mod.render_skill_invocation(sk, args)
@@ -12042,6 +12104,25 @@ class OpenAIClient(_BaseClient):
             with self._steer_lock:
                 self._steer_msgs.append(t)
 
+    def _drain_turn_steering(self) -> list[str]:
+        """Steering blocks that became true while this turn was running.
+
+        The engine owns the blocks and installs a callback here (see
+        ``AgentEngine._drain_turn_steering``); the loop just asks between
+        rounds. Same reasoning as the background-job events above: the
+        system prompt is built once per turn, so anything that changes
+        after it is built has no other way in. Best-effort and never
+        raises — a bookkeeping callback must not end a working turn.
+        """
+        provider = getattr(self, "steering_provider", None)
+        if provider is None:
+            return []
+        try:
+            blocks = provider() or []
+        except Exception:
+            return []
+        return [str(b) for b in blocks if str(b or "").strip()]
+
     def _drain_background_events(self) -> list[str]:
         """Completion notices for jobs that finished during this turn.
 
@@ -12353,7 +12434,11 @@ class OpenAIClient(_BaseClient):
         try:
             from .skills import discover_skills as _disc_skills
             _ws_sk = self._permissions.workspace if self._permissions else None
-            _skills = _disc_skills(_ws_sk)
+            # Only the skills this session can actually follow. Advertising
+            # the others cost 125 tokens a turn to name playbooks whose
+            # first step calls a tool the role is denied.
+            _skills = _disc_skills(
+                _ws_sk, domain=self._session_domain(self._permissions))
             if _skills:
                 _listing = "; ".join(
                     s.name + (f" — {s.description[:70]}" if s.description else "")
@@ -13371,6 +13456,16 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "user", "content": _job_note})
                     yield StreamEvent(
                         type="text_delta", text="\n\n" + _job_note + "\n")
+
+                # Steering blocks that changed since the turn started (open
+                # tasks, budget wind-down, a late answer). Injected here and
+                # NOT yielded to the chat: the dashboard already shows the
+                # task list and the budget, so echoing them into the
+                # conversation would be noise for the reader while the model
+                # is the one that needs them.
+                for _steer_block in self._drain_turn_steering():
+                    api_messages.append(
+                        {"role": "user", "content": _steer_block})
 
                 # Plan-mode redirect. When this round hit the plan-mode gate
                 # (task_create / write / bash / apply_patch all reject with

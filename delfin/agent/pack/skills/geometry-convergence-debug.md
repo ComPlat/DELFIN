@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # Geometry convergence debug
 > A geometry optimisation won't converge — find out why and fix it without faking convergence.
 

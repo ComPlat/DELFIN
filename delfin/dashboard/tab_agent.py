@@ -1065,6 +1065,37 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
             ("Accept Edits", "repo_free"), ("Bypass", "all_free")]
 
 
+def resolve_office_workspace(configured) -> Path | None:
+    """The one folder an office session may work in, or ``None``.
+
+    Office is DEFINED by its folder: the permission layer locks the role
+    to the workspace, so the workspace is the boundary the user was shown.
+    The dashboard used to resolve it and, on failure, simply skip the
+    block that assigns it — leaving the session running as office_agent
+    with the LAUNCH directory as its workspace, and locked to it. The user
+    is told "Office works in your documents folder" while the agent is
+    confined to the DELFIN checkout.
+
+    A wrong folder is worse than no session, because nothing about it
+    looks wrong from the outside. So: the configured folder, then the
+    documented default, and if neither can be made to exist, nothing.
+    """
+    for candidate in (configured, Path.home() / "office"):
+        if candidate is None:
+            continue
+        p = Path(candidate)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if p.is_dir():
+            try:
+                return p.resolve()
+            except OSError:
+                continue
+    return None
+
+
 def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
     """Whether switching between these modes moves the working folder.
 
@@ -3132,11 +3163,9 @@ def create_tab(ctx):
         "solo": "Code — direct, terminal-style coding agent on your own code: ask "
                 "questions, read & edit files, run sandboxed shell commands, debug, "
                 "refactor. Delegates to subagents for parallel/background work. For "
-                "read-only-first planning, set Perms = Plan.",
-        "pipeline": "Pipeline Builder — assemble/validate/run computational-chemistry "
-                    "pipelines via the delfin-tools MCP server (get_guide → discover → "
-                    "build → validate → save → submit). Results in ~/calc; needs the "
-                    "delfin-tools MCP server registered.",
+                "read-only-first planning, set Perms = Plan. To assemble a "
+                "computational-chemistry pipeline, ask for it here — the "
+                "`pipeline-build` skill carries that procedure.",
         "office": "Office — administrative work on your documents and data: "
                   "spreadsheets, PDF forms, Word templates, letters, lists. "
                   "Files: this one folder and nothing outside it, in any "
@@ -3177,8 +3206,12 @@ def create_tab(ctx):
         # The old multi-agent pipeline modes (quick/reviewed/tdd/cluster/full)
         # are retired. "Plan" is NOT a mode — it's a permission profile (set
         # Perms = Plan for read-only-first / draft-a-plan-then-approve).
+        # Neither is "Pipeline": it routed to the same agent as Code with a
+        # page of instructions attached, which is what a skill is. What
+        # remains is what genuinely differs — which folder the session works
+        # in, and what it is allowed to reach from there.
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Office", "office"), ("Pipeline", "pipeline")],
+                 ("Office", "office")],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -5504,6 +5537,9 @@ def create_tab(ctx):
             "release": "solo", "quick": "solo", "reviewed": "solo",
             "tdd": "solo", "cluster": "solo", "full": "solo",
             "research": "solo", "plan": "solo", "code": "solo",
+            # Pipeline is a skill now; a session saved under it reopens as
+            # the agent it always ran, with the procedure one call away.
+            "pipeline": "solo",
         }
         saved_mode = data.get("mode", "dashboard")
         saved_mode = _legacy_map.get(saved_mode, saved_mode)
@@ -5836,14 +5872,21 @@ def create_tab(ctx):
             # lock ignores them anyway, and passing them would only suggest
             # a reach the session does not have.
             if mode_dropdown.value == "office":   # _LAUNCH_INDEPENDENT_MODES
-                _office_p = _abs_dir(getattr(ctx, "office_dir", None))
-                if not _office_p:
-                    try:
-                        ctx.office_dir.mkdir(parents=True, exist_ok=True)
-                        _office_p = _abs_dir(ctx.office_dir)
-                    except Exception:
-                        _office_p = None
-                if _office_p:
+                _office_p = resolve_office_workspace(
+                    getattr(ctx, "office_dir", None))
+                if _office_p is None:
+                    # Falling through here would start the session in the
+                    # launch directory — locked to it, and labelled Office.
+                    _append_system_message(
+                        "⚠️ Office mode needs a folder to work in, and none "
+                        "could be created (tried the configured "
+                        "`paths.office_dir` and `~/office`). Point "
+                        "`paths.office_dir` at a writable folder and switch "
+                        "again. Staying in Code: an office session in the "
+                        "wrong folder would be locked to the wrong folder.")
+                    _set_mode_programmatically("solo")
+                else:
+                    _office_p = str(_office_p)
                     # A working folder for scripts and intermediate files.
                     # Created here rather than left to the agent so it is
                     # always the same place: the recurring monthly job wants

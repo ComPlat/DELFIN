@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # Frequencies & thermochemistry
 > Run/interpret frequency calculations: imaginary modes, thermochemistry, and physical-plausibility checks.
 

@@ -39,9 +39,11 @@ from delfin.agent import bash_jobs
 # The cap
 # ---------------------------------------------------------------------------
 
-def test_there_is_a_default_cap():
-    assert bash_jobs._DEFAULT_MAX_BG_JOBS >= 1
+def test_there_is_a_cap():
+    # The number itself is derived from the machine's grant now; see
+    # test_the_cap_comes_from_the_machine.py for where it comes from.
     assert bash_jobs._max_background_jobs() >= 1
+    assert bash_jobs._max_background_jobs() <= bash_jobs._MAX_BG_JOBS_CEILING
 
 
 def test_the_cap_is_configurable(monkeypatch):
@@ -60,11 +62,12 @@ def test_a_nonsense_setting_does_not_disable_the_cap(monkeypatch):
         assert bash_jobs._max_background_jobs() >= 1
 
 
-def test_unreadable_settings_fall_back_to_the_default(monkeypatch):
+def test_unreadable_settings_fall_back_to_the_machine(monkeypatch):
     monkeypatch.setattr(
         "delfin.user_settings.load_settings",
         lambda *a, **kw: (_ for _ in ()).throw(OSError("no settings")))
-    assert bash_jobs._max_background_jobs() == bash_jobs._DEFAULT_MAX_BG_JOBS
+    monkeypatch.setattr(bash_jobs, "_available_cpus", lambda: 8)
+    assert bash_jobs._max_background_jobs() == 4
 
 
 def test_the_registry_refuses_rather_than_queues(monkeypatch):
@@ -153,27 +156,39 @@ def test_a_wake_up_can_span_a_long_calculation():
         "waited on in one call")
 
 
-def test_the_wake_up_records_the_agents_workspace():
+def test_the_wake_up_records_the_agents_workspace(tmp_path, monkeypatch):
+    # Redirect the schedule store into the test's own directory. This used
+    # to write into the real ~/.delfin/cron.json and clean up in a finally
+    # -- which does not run when a suite is interrupted. One such leak was
+    # found later as an overdue entry pointing at a deleted /tmp folder,
+    # and starting the daemon would have spent a paid agent turn on it.
+    # Tests must not be able to bill the user.
+    from delfin.agent import scheduler as sched
+    monkeypatch.setattr(sched, "_DEFAULT_PATH", tmp_path / "cron.json")
+    sched.reset_scheduler()
+
     ws = pathlib.Path(tempfile.mkdtemp(prefix="ws_"))
     perms = A.KitToolPermissions(workspace=ws)
     executor = A._DocToolExecutor.__new__(A._DocToolExecutor)
-    out = json.loads(executor._execute_scheduler(
-        "schedule_wakeup",
-        {"delay_seconds": 7200, "prompt": "check the job", "reason": "long run"},
-        perms))
-    assert out.get("status") == "ok"
-
-    from delfin.agent import scheduler as sched
-    entries = [e for e in sched.get_scheduler().list_entries()
-               if e.id == out.get("id")]
     try:
+        out = json.loads(executor._execute_scheduler(
+            "schedule_wakeup",
+            {"delay_seconds": 7200, "prompt": "check the job",
+             "reason": "long run"},
+            perms))
+        assert out.get("status") == "ok"
+
+        entries = [e for e in sched.get_scheduler().list_entries()
+                   if e.id == out.get("id")]
         assert entries, "the entry was not stored"
         assert str(entries[0].workspace) == str(ws), (
             "the scheduler recorded the process cwd again; the daemon "
             "disables entries whose path does not match, so the wake-up "
             "would silently never fire")
+        assert not (pathlib.Path.home() / ".delfin" / "cron.json").samefile(
+            sched.get_scheduler().path), "the test wrote to the real store"
     finally:
-        sched.get_scheduler().delete(out.get("id"))
+        sched.reset_scheduler()
 
 
 # ---------------------------------------------------------------------------

@@ -125,9 +125,19 @@ def test_recommend_task_route_no_chemistry_outside_delfin():
     assert "chemistry" not in decision.get("task_class", "")
 
 
-def test_recommend_task_route_smiles_converter_escalation():
+def test_recommend_task_route_smiles_converter_escalation(monkeypatch):
     """Editing smiles_converter.py is reviewed-tier inside DELFIN, but
-    just a plain Python file edit outside."""
+    just a plain Python file edit outside.
+
+    The router ALSO escalates adaptively from the recorded task-success
+    rate under ~/.delfin. On a machine whose history says coding tasks
+    succeed 17% of the time, the outside case escalates too, and the test
+    measures this installation's history rather than the workspace bias
+    it is about. Neutralise the profile so only the bias is under test.
+    """
+    monkeypatch.setattr(
+        "delfin.agent.provider_profile.load_provider_profile",
+        lambda *a, **kw: {})
     msg = "fix the H-atom bug in smiles_converter.py"
     inside = AgentEngine.recommend_task_route(
         msg, current_mode="dashboard", is_delfin_workspace=True,

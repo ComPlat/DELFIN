@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # Tune CONTROL parameters
 > Read the active CONTROL.txt and propose targeted optimizations.
 

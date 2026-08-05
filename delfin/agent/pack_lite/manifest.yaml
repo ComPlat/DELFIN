@@ -17,10 +17,6 @@ modes:
     file: modes/solo.md
     route:
       - solo_agent
-  - id: pipeline
-    file: modes/pipeline.md
-    route:
-      - solo_agent
   - id: office
     file: modes/office.md
     route:

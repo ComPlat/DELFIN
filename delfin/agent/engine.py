@@ -20,6 +20,13 @@ _LEGACY_MODE_MAP = {
     "high_risk": "reviewed",
     "runtime_cluster": "cluster",
     "release": "full",
+    # Pipeline was never a mode in any sense the rest of the system used:
+    # it routed to solo_agent, ran the same tools, and differed only by a
+    # page of instructions. That page is a procedure, so it is a skill
+    # (`pipeline-build`) — reachable from the coding mode without having
+    # to switch into a mode you can then be stuck in, and paid for only
+    # when it is invoked. Saved sessions and `/mode pipeline` land here.
+    "pipeline": "solo",
 }
 
 
@@ -264,6 +271,25 @@ _KIT_CODING_PREFIX = "mcp__kit-coding__"
 _DASHBOARD_SOURCE_DENY = frozenset({
     "read_file", "grep_file", "list_files", "glob_files",
 })
+# Roles that drive a conversation and therefore receive the per-turn steering
+# blocks (open tasks, finished jobs, budget, late answers). The pipeline roles
+# run one scripted step each and have no list of their own to keep.
+_STEERING_ROLES = ("solo_agent", "dashboard_agent", "office_agent")
+# Of those blocks, the ones worth re-sending when they change mid-turn. The
+# project pin never changes within a turn, and the backend notice is a
+# session-opening statement — re-sending either would cost tokens to say
+# what the system prompt already says.
+_MID_TURN_STEERING_KEYS = frozenset({
+    "context_status", "open_tasks", "unmet_delegation", "unmet_tasklist",
+    "finished_jobs", "budget", "answered",
+})
+# Blocks backed by a store that drains: their content is new by construction,
+# so comparing it against the last delivery would suppress a real event that
+# happens to read the same as an earlier one.
+_DRAINED_STEERING_KEYS = frozenset({"finished_jobs", "answered"})
+# Ceiling on mid-turn steering deliveries. A block that flaps (a task list
+# edited repeatedly) must not be able to spend a turn's context on itself.
+_MAX_STEERING_REFRESHES = 6
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
@@ -466,6 +492,15 @@ class AgentEngine:
         # etc.) appended to the system prompt — keeps it OUT of the user
         # message body so it doesn't accumulate in self.messages history.
         self._live_state: str = ""
+        # What the per-turn steering blocks said when this turn's system
+        # prompt was built, keyed by block. The system prompt is frozen for
+        # the whole tool loop, so a block that becomes true DURING the turn
+        # (a task created in round 2, the budget crossing its threshold)
+        # could not reach the model at all. Comparing against this map is
+        # what makes a mid-loop re-delivery carry only what CHANGED.
+        self._steering_delivered: dict[str, str] = {}
+        # Mid-turn deliveries used so far this turn (see _drain_turn_steering).
+        self._steering_refreshes: int = 0
         # Project-directory pin: the dir of the FIRST project write this
         # session. Re-injected every turn so the agent keeps writing there and
         # doesn't drift into sibling folders over a long session (a framework
@@ -499,9 +534,7 @@ class AgentEngine:
             pass
         try:
             from .context_distiller import ContextDistiller
-            # "pipeline" runs the solo agent; omitting it here left the
-            # distiller off for a mode that carries MORE prompt than solo.
-            _enable = self.mode in ("solo", "pipeline", "quick", "reviewed",
+            _enable = self.mode in ("solo", "quick", "reviewed",
                                     "tdd", "cluster", "full")
             self._distiller = ContextDistiller(enabled=_enable)
         except Exception:
@@ -1145,6 +1178,103 @@ class AgentEngine:
         except Exception:
             return ""
 
+    def _steering_blocks(self, role: str) -> list[tuple[str, str]]:
+        """The per-turn steering blocks for an interactive role, in prompt
+        order, as ``(key, text)`` with empty blocks dropped.
+
+        One builder for two consumers — the turn-start system prompt and the
+        mid-loop refresh. Kept as a single list on purpose: two copies of
+        this order would drift, and the second consumer would then silently
+        re-send blocks the first had already delivered.
+        """
+        pairs: list[tuple[str, str]] = []
+        # Context-usage snapshot and the project pin are solo-only (other
+        # roles run in pipeline mode with their own budgets, and office is
+        # pinned to its folder by construction); the open-tasks reminder
+        # applies to every interactive role that drives the task list.
+        if role == "solo_agent":
+            pairs.append(("project_dir", self._build_project_dir_block()))
+            pairs.append(("context_status", self._build_context_status_block()))
+        pairs.append(("open_tasks", self._build_open_tasks_block()))
+        pairs.append(("foreign_tasks", self._build_open_foreign_tasks_block()))
+        pairs.append(("unmet_delegation", self._build_unmet_delegation_block()))
+        pairs.append(("unmet_tasklist", self._build_unmet_tasklist_block()))
+        pairs.append(("finished_jobs", self._build_finished_jobs_block()))
+        pairs.append(("budget", self._build_budget_block()))
+        pairs.append(("answered", self._build_answered_attention_block()))
+        # One-time backend capability notice: reduced surfaces (no tool
+        # loop, no verify enforcement, ...) are stated at session start
+        # instead of failing silently mid-task. Best-effort — a missing
+        # attribute on a partially built engine must not break the
+        # prompt build.
+        try:
+            from .backend_parity import degradation_notice as _deg_notice
+            pairs.append(("backend_parity", _deg_notice(
+                getattr(self, "backend", "") or "",
+                getattr(self, "provider", "") or "",
+                first_turn=len(self.messages) <= 1,
+                has_permissions=self.kit_permissions is not None) or ""))
+        except Exception:
+            pass
+        return [(key, text) for key, text in pairs if text]
+
+    def _drain_turn_steering(self) -> list[str]:
+        """Steering blocks that became true *during* the running turn.
+
+        The system prompt is built once and then frozen for the whole tool
+        loop. Every block above therefore describes the world as it was
+        before the first tool call: a task the agent creates in round 2 is
+        absent from the reminder that exists to make it check the task off,
+        and a run budget crossing its wind-down threshold in round 30 is
+        not read until the user sends another message. Measured on this
+        project's benchmark workspaces, every one of these blocks is empty
+        at turn start — so for a single-turn task they never fire at all.
+
+        Returns the blocks whose text has CHANGED since the last delivery,
+        capped per turn. Drain-backed blocks (finished jobs, late answers)
+        are consumed exactly once by their own store, so they are passed on
+        as they come. Read-only and best-effort: this runs inside the tool
+        loop and must never end a turn that is otherwise working.
+        """
+        role = self.current_role or (self.route[0] if self.route else "")
+        if role not in _STEERING_ROLES:
+            return []
+        # Off-switch, for measuring this mechanism against itself: a
+        # benchmark arm can run with the refresh disabled and be compared
+        # against one that has it, which is the only way to put a number on
+        # what it is worth.
+        import os as _os
+        if _os.environ.get(
+                "DELFIN_TURN_STEERING", "").strip() in ("0", "off", "false"):
+            return []
+        if self._steering_refreshes >= _MAX_STEERING_REFRESHES:
+            return []
+        try:
+            pairs = self._steering_blocks(role)
+        except Exception:
+            return []
+        out: list[str] = []
+        for key, text in pairs:
+            if key not in _MID_TURN_STEERING_KEYS:
+                continue
+            if key in _DRAINED_STEERING_KEYS:
+                # Its store already guarantees exactly-once delivery.
+                out.append(text)
+                continue
+            # A window-usage line that ticks up a percent every round would
+            # be pure noise; it is worth a turn's attention only once it
+            # warns about the compaction that is about to fire.
+            if key == "context_status" and "WARNING" not in text:
+                continue
+            if self._steering_delivered.get(key) == text:
+                continue
+            self._steering_delivered[key] = text
+            out.append(text)
+        if out:
+            self._steering_refreshes += 1
+        return [f"[live update — this changed since the turn started]\n{t}"
+                for t in out]
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -1179,53 +1309,14 @@ class AgentEngine:
         # question that timed out. The context snapshot and the project pin
         # stay solo-only -- office is pinned to its folder by construction,
         # so a pin block would state what the lock already guarantees.
-        if role in ("solo_agent", "dashboard_agent", "office_agent"):
-            extra_blocks: list[str] = []
-            # Context-usage snapshot is solo-only (other roles run in pipeline
-            # mode with their own budgets); the open-tasks reminder applies to
-            # every interactive role that drives the task list.
-            if role == "solo_agent":
-                proj_block = self._build_project_dir_block()
-                if proj_block:
-                    extra_blocks.append(proj_block)
-                ctx_status = self._build_context_status_block()
-                if ctx_status:
-                    extra_blocks.append(ctx_status)
-            tasks_block = self._build_open_tasks_block()
-            if tasks_block:
-                extra_blocks.append(tasks_block)
-            foreign_block = self._build_open_foreign_tasks_block()
-            if foreign_block:
-                extra_blocks.append(foreign_block)
-            delegation_block = self._build_unmet_delegation_block()
-            if delegation_block:
-                extra_blocks.append(delegation_block)
-            tasklist_block = self._build_unmet_tasklist_block()
-            if tasklist_block:
-                extra_blocks.append(tasklist_block)
-            jobs_block = self._build_finished_jobs_block()
-            if jobs_block:
-                extra_blocks.append(jobs_block)
-            budget_block = self._build_budget_block()
-            if budget_block:
-                extra_blocks.append(budget_block)
-            answers_block = self._build_answered_attention_block()
-            if answers_block:
-                extra_blocks.append(answers_block)
-            # One-time backend capability notice: reduced surfaces (no tool
-            # loop, no verify enforcement, ...) are stated at session start
-            # instead of failing silently mid-task. Best-effort — a missing
-            # attribute on a partially built engine must not break the
-            # prompt build.
-            try:
-                from .backend_parity import degradation_notice as _deg_notice
-                extra_blocks.extend(filter(None, [_deg_notice(
-                    getattr(self, "backend", "") or "",
-                    getattr(self, "provider", "") or "",
-                    first_turn=len(self.messages) <= 1,
-                    has_permissions=self.kit_permissions is not None)]))
-            except Exception:
-                pass
+        if role in _STEERING_ROLES:
+            pairs = self._steering_blocks(role)
+            # Remember what each block said here, so the mid-loop refresh
+            # (see _drain_turn_steering) re-sends a block only once it has
+            # actually changed.
+            self._steering_delivered = dict(pairs)
+            self._steering_refreshes = 0
+            extra_blocks: list[str] = [text for _, text in pairs]
             if extra_blocks:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
@@ -1378,6 +1469,16 @@ class AgentEngine:
         # in the message list, since the API takes it as a separate arg.
         self.last_system_prompt = system_prompt
         self._system_prompt_chars = len(system_prompt or "")
+
+        # Let the tool loop re-read the steering blocks between rounds. The
+        # system prompt above is frozen from here until the turn ends, so
+        # without this callback anything that becomes true during the turn
+        # waits for the next user message. Best-effort: a client that does
+        # not look for the attribute is unaffected by carrying it.
+        try:
+            self.client.steering_provider = self._drain_turn_steering
+        except Exception:
+            pass
 
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
