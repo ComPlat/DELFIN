@@ -1332,6 +1332,28 @@ _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # answer when the answer is always no.
 _SCOPE_LOCKED_ROLES: frozenset[str] = frozenset({"office_agent"})
 
+def _hook_workspace(perms) -> "Path | None":
+    """Which workspace may contribute hook definitions.
+
+    A hooks file is executable configuration: entries run through
+    subprocess with shell=True and the process environment, outside the
+    permission gate and outside any filesystem isolation. That is the
+    right power for a project you own and the wrong power for a folder
+    that receives files from other people -- which is exactly what a
+    locked scope is. An office folder is data, not a project.
+
+    Under a locked scope only the user-level settings file supplies
+    hooks; a .delfin/settings.json sitting in the documents folder is
+    ignored. Everywhere else this is unchanged.
+    """
+    try:
+        if getattr(perms, "scope_locked", False):
+            return None
+        return perms.workspace
+    except Exception:
+        return None
+
+
 # Tools that leave the machine. The folder lock bounds where data may be
 # WRITTEN; it never bounded where data may go. A record can leave through a
 # fetched URL without any path crossing the boundary, so these need their own
@@ -5655,7 +5677,7 @@ class _DocToolExecutor:
                 pass
         try:
             from . import hooks as _hooks_mod
-            cfg = _hooks_mod.load_hooks(permissions.workspace)
+            cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
             if not cfg.is_empty():
                 pre_results = _hooks_mod.run_hooks(
                     "PreToolUse", cfg, tool_name=name, arguments=arguments,
@@ -5684,7 +5706,7 @@ class _DocToolExecutor:
                 pass
         try:
             from . import hooks as _hooks_mod
-            cfg = _hooks_mod.load_hooks(permissions.workspace)
+            cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
             if not cfg.is_empty():
                 _hooks_mod.run_hooks(
                     "PostToolUse", cfg, tool_name=name,
@@ -5723,7 +5745,7 @@ class _DocToolExecutor:
         if permissions is not None:
             try:
                 from . import hooks as _hooks_mod
-                cfg = _hooks_mod.load_hooks(permissions.workspace)
+                cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
                 if not cfg.is_empty():
                     pre_results = _hooks_mod.run_hooks(
                         "PreToolUse", cfg,
@@ -5795,7 +5817,7 @@ class _DocToolExecutor:
         if permissions is not None and not block_reason:
             try:
                 from . import hooks as _hooks_mod
-                cfg = _hooks_mod.load_hooks(permissions.workspace)
+                cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
                 if not cfg.is_empty():
                     _hooks_mod.run_hooks(
                         "PostToolUse", cfg,
@@ -8695,6 +8717,25 @@ class _DocToolExecutor:
         if kind not in {"allow_pattern", "deny_pattern",
                         "extra_dir", "default_mode"}:
             return json.dumps({"error": f"unknown kind: {kind!r}"})
+        # A locked scope already refuses extra_dir, because widening the
+        # folder is the obvious way out. These two are the same move by
+        # another route and were not covered: default_mode writes
+        # bypassPermissions into the settings file, so EVERY future session
+        # starts unattended, and allow_pattern can persist a rule that
+        # auto-approves every shell command from now on. Neither is a
+        # decision this session may make for the ones after it.
+        if (kind in ("default_mode", "allow_pattern")
+                and getattr(perms, "scope_locked", False)):
+            _record_security_event(
+                "locked_scope_widen", "remember_permission",
+                f"{kind}={str(arguments.get('value', ''))[:60]}", blocked=True)
+            return json.dumps({"error": (
+                f"'{kind}' is refused while this session is limited to "
+                f"{perms.workspace}. It would persist to the settings file "
+                "and change what LATER sessions are allowed to do, which is "
+                "outside what a locked session decides. Ask the user to "
+                "change it themselves if that is what they want."
+            )})
         if not value:
             return json.dumps({"error": "value must be non-empty"})
         if scope not in {"user", "repo"}:
@@ -10775,6 +10816,36 @@ def _bwrap_functional() -> bool:
     return ok
 
 
+_ISOLATION_GAP_ANNOUNCED = False
+
+
+def _announce_isolation_unavailable(perms) -> None:
+    """Record (once) that a locked session is running without bwrap.
+
+    Not an error and not a refusal: the path gates still hold, and on many
+    HPC nodes user namespaces are forbidden outright, so refusing to start
+    would make the mode unusable exactly where it is most wanted. But the
+    difference between "contained" and "checked by a parser" is one the
+    user is entitled to see rather than discover.
+    """
+    global _ISOLATION_GAP_ANNOUNCED
+    if _ISOLATION_GAP_ANNOUNCED:
+        return
+    _ISOLATION_GAP_ANNOUNCED = True
+    try:
+        _record_security_event(
+            "isolation", "bash",
+            f"filesystem isolation is NOT active for this locked session "
+            f"({getattr(perms, 'workspace', '?')}): bubblewrap is missing or "
+            "its user namespace is refused here. Paths are still checked, "
+            "but a command that hides its target from that check is not "
+            "stopped by the filesystem.",
+            blocked=False,
+        )
+    except Exception:
+        pass
+
+
 def _announce_auto_isolation() -> None:
     """Surface (once) that filesystem isolation auto-engaged, so it's visible
     that an unattended run is sandboxed."""
@@ -10806,8 +10877,16 @@ def _bash_isolation_argv(
     sandbox even though direct path arguments were refused.  Network stays
     available (git/pip are legitimate); the isolation target is FS writes.
 
-    ``mode=None`` reads ``agent.bash_isolation`` from settings ("off"
-    default — opt-in, since HPC setups may need unrestricted bash).
+    ``mode=None`` reads ``agent.bash_isolation`` from settings, which
+    defaults to "auto": isolate only in the unattended (bypass) profile,
+    where no human approves each command, and always for a locked scope.
+    "off" is the explicit escape hatch for HPC setups that need
+    unrestricted bash; "bwrap" forces it everywhere.
+
+    A locked scope on a host where bubblewrap does not work falls back to
+    plain bash and records a security event saying so -- the containment
+    then rests on the path checks alone, and that is a difference the user
+    is entitled to see.
     """
     plain = ["/bin/bash", "-c", cmd]
     if mode is None:
@@ -10830,8 +10909,18 @@ def _bash_isolation_argv(
     # parser catches. Where bwrap works, take the real containment
     # instead of relying on that parsing — the promise is only worth
     # what the weakest path enforces.
-    if getattr(perms, "scope_locked", False) and _bwrap_functional():
-        mode = "bwrap"
+    if getattr(perms, "scope_locked", False):
+        if _bwrap_functional():
+            mode = "bwrap"
+        else:
+            # Say it. A locked scope promises the agent cannot leave one
+            # folder; with no working bwrap that promise rests entirely on
+            # reading the command text, which a symlink, an interpreter or
+            # a base64 round-trip walks past. The degradation was silent --
+            # nothing recorded it, and the only way to find out was to run
+            # the doctor. It is announced once per process so the security
+            # panel shows what is actually protecting the folder.
+            _announce_isolation_unavailable(perms)
     elif mode == "auto":
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
         if perm_mode == "bypassPermissions" and _bwrap_functional():
