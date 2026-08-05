@@ -4989,9 +4989,13 @@ def create_tab(ctx):
         # Stash the plan body so the accept-handler can persist it.
         state["_pending_plan_body"] = plan
         # Surface the plan so the user sees what they're approving.
+        # Name the controls as they are actually labelled: this told the
+        # user to click "Plan akzeptieren" and to switch the "Mode-Chip",
+        # and neither string is on screen anywhere -- the button reads
+        # "Accept plan & execute" and the dropdown is "Perms".
         _append_system_message(
-            "📋 **Plan zur Freigabe** (klicke 'Plan akzeptieren' "
-            "oder wechsle Mode-Chip):\n\n" + plan
+            "📋 **Plan awaiting approval** (click 'Accept plan & execute', "
+            "or set Perms to Accept Edits):\n\n" + plan
         )
         # Reuse existing plan_accept_btn machinery — the callback below
         # observes state changes from _on_plan_accept.
@@ -5757,8 +5761,8 @@ def create_tab(ctx):
                     # Memory and saved sessions are keyed by this folder, so
                     # naming it means a later session can be found again.
                     _append_system_message(
-                        f"📁 Office-Modus arbeitet in `{_office_p}` "
-                        "(Skripte und Zwischendateien: `office_analysis/`)")
+                        f"📁 Office mode works in `{_office_p}` "
+                        "(scripts and intermediate files: `office_analysis/`)")
                     repo_dir = _office_p
                     _ws_dir = _office_p
                     _extra_dirs = []
@@ -9686,9 +9690,9 @@ def create_tab(ctx):
 
         # Internal: Shift+Tab permission cycling (not shown in /help)
         if cmd == "/perm-cycle":
-            if state["streaming"]:
-                _append_system_message("Cannot change permissions while streaming.")
-                return True
+            # Deliberately usable during a turn: _on_perm_change applies the
+            # change live where the backend allows it, and defers only the
+            # case that would need a new engine.
             perm_values = [v for _, v in perm_dropdown.options]
             perm_labels = {v: label for label, v in perm_dropdown.options}
             idx = perm_values.index(perm_dropdown.value) if perm_dropdown.value in perm_values else 0
@@ -14646,15 +14650,15 @@ def create_tab(ctx):
                             _more = (f" (+{len(_c_soft) - 3})"
                                      if len(_c_soft) > 3 else "")
                             _append_system_message(
-                                f"🔎 Hinweis: zitiert, aber diese Runde "
-                                f"nicht gelesen: {_refs}{_more}")
+                                f"🔎 Note: cited but not read this turn: "
+                                f"{_refs}{_more}")
                         if _c_hard and not _vflags:
                             _refs = ", ".join(
                                 f.path for f in _c_hard[:3])
                             _append_system_message(
-                                f"🔎 Verifiziere {len(_c_hard)} unbelegte "
-                                f"Angabe(n) ({_refs}) — Antwort wird "
-                                f"korrigiert …")
+                                f"🔎 Verifying {len(_c_hard)} unsupported "
+                                f"claim(s) ({_refs}) — the answer is being "
+                                f"corrected …")
                             _cfeedback = (
                                 "[Verify] " + _vg.code_claim_feedback(_c_hard)
                             )
@@ -15412,13 +15416,42 @@ def create_tab(ctx):
                         # Don't blame the backend for our own watchdog: it
                         # already explained itself above.
                         if not state.pop("_watchdog_stopped", ""):
+                            # Report what was observed, not a cause. The old
+                            # wording asserted "the backend ended the turn"
+                            # every time -- including after the user pressed
+                            # Stop, and including when nothing about the
+                            # backend had been established at all. A message
+                            # that names a culprit it never checked sends the
+                            # next person looking in the wrong place.
+                            _why = ""
+                            try:
+                                if getattr(engine, "_stop_requested", False):
+                                    _why = (" The turn was stopped before any "
+                                            "text arrived.")
+                                elif not getattr(engine, "_saw_message_start",
+                                                 True):
+                                    _why = (" The request never started "
+                                            "streaming — nothing was billed.")
+                            except Exception:
+                                pass
+                            _dur = ""
+                            try:
+                                _dur = (f" after {time.monotonic() - float(state.get('_turn_started_monotonic') or 0):.0f}s"
+                                        if state.get("_turn_started_monotonic")
+                                        else "")
+                            except Exception:
+                                pass
                             _append_system_message(
-                                "Agent returned no output — the backend ended "
-                                "the turn without producing text. /retry to "
-                                "send the same message again, /status for the "
-                                "connection state."
+                                f"The turn ended{_dur} without producing any "
+                                f"text.{_why} /retry sends the same message "
+                                "again, /status shows the connection state."
                             )
                     _set_working(False)
+                    # A permission change that needed a new engine waited for
+                    # this moment; dropping the engine makes the next send
+                    # build one with the profile the user already chose.
+                    if state.pop("_perm_rebuild_pending", ""):
+                        state["engine"] = None
                     _update_status()
                     _update_button_states()
                     _auto_save_session()
@@ -15839,9 +15872,15 @@ def create_tab(ctx):
             pass
 
     def _on_perm_change(change):
-        """Sync permission profile from dropdown to state, recreate engine."""
-        if state["streaming"]:
-            return
+        """Sync permission profile from dropdown to state, recreate engine.
+
+        A running turn is no longer a reason to refuse. The gate reads
+        ``perms.mode`` on every single tool call, so switching mid-turn
+        takes effect on the next one -- which is the whole point of
+        reaching for it while watching the agent work. Only the backends
+        that need a NEW engine have to wait, because replacing the engine
+        under a running turn orphans that turn.
+        """
         new_profile = change["new"]
         state["_perm_profile"] = new_profile
         # If the change came from the KIT-Mode chip, the live perms.mode
@@ -15861,6 +15900,18 @@ def create_tab(ctx):
                         f"Permissions → **{new_profile}** (KIT mode: {chip_target})."
                     )
                     return
+            if state["streaming"]:
+                # Live switch not available on this backend: the change
+                # needs a new engine, and building one now would orphan the
+                # turn in flight. Honour the choice, apply it when the turn
+                # is done, and say so rather than silently doing nothing.
+                state["_perm_rebuild_pending"] = new_profile
+                _append_system_message(
+                    f"Permissions set to **{new_profile}** — this backend "
+                    "applies it with a fresh engine, so it takes effect "
+                    "when the running turn finishes."
+                )
+                return
             state["engine"] = None
             cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")
             _append_system_message(
