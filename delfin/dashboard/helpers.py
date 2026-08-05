@@ -259,6 +259,31 @@ def create_busy_css():
     )
 
 
+def create_page_css():
+    """Return an HTML widget with the page-level layout CSS.
+
+    Voila pads the notebook and every rendered cell vertically. Those few
+    dozen pixels sit on top of the tab bodies, which size themselves as
+    ``calc(100vh - 145px)``, so the page as a whole ends up taller than the
+    viewport and grows its own thin scrollbar. Dropping the vertical padding
+    lifts the header to the top edge and lets the tabs fit inside the window.
+    """
+    return widgets.HTML(
+        "<style>"
+        # Notebook / cell container: no vertical padding, keep the horizontal
+        # padding so the content is not glued to the window edge.
+        ".jp-Notebook, #rendered_cells { "
+        "padding-top: 0 !important; padding-bottom: 0 !important; }"
+        # Every rendered cell (header cell and tab cell).
+        "#rendered_cells .jp-Cell { "
+        "padding-top: 0 !important; padding-bottom: 0 !important; "
+        "margin-top: 0 !important; margin-bottom: 0 !important; }"
+        # JupyterLab puts a 4px gap above each output area.
+        "#rendered_cells .jp-Cell-outputWrapper { margin-top: 0 !important; }"
+        "</style>"
+    )
+
+
 def create_time_limit_widgets(style=None):
     """Create and return ``(toggle, custom)`` time-limit widgets.
 

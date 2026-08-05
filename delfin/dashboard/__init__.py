@@ -64,7 +64,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
-    from .helpers import apply_branding, create_busy_css, disable_spellcheck_global
+    from .helpers import (
+        apply_branding,
+        create_busy_css,
+        create_page_css,
+        disable_spellcheck_global,
+    )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
 
     from . import (
@@ -587,8 +592,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tabs = ctx.tabs_widget
 
     # -- header bar --------------------------------------------------------
-    backend_label = 'Local' if backend == 'local' else 'BwUniCluster'
-
     pull_delfin_btn = widgets.Button(
         description='PULL DELFIN', button_style='info',
         layout=widgets.Layout(width='150px'),
@@ -833,12 +836,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'style="height:46px; width:46px; object-fit:contain;" />'
             if logo_data_uri else ''
         )
-        + f'<h2 style="color:#1976d2; margin:0;">DELFIN ({backend_label})</h2>'
+        # Wordmark in the logo's own blue (#628FBF, sampled from the dolphin
+        # disc) so header and mark read as one unit.
+        + '<h1 style="color:#628FBF; margin:0; font-size:38px; '
+          'font-weight:700; line-height:1; letter-spacing:1px;">DELFIN</h1>'
         + '</div>'
     )
 
     display(widgets.VBox([
         busy_css,
+        create_page_css(),
         widgets.HBox([
             widgets.HTML(title_html),
             widgets.HBox(
