@@ -1311,6 +1311,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
   ("Memory", "/memories", "List project memories", False),
   ("Memory", "/memories global", "List cross-project (global) memories", False),
     ("Session", "/changes", "What this session changed (audit log): files, commands, denials", False),
+    ("Session", "/undo-file", "Undo agent FILE changes from the undo journal (list | last | turn | session) — restores content, unlike /undo which only drops context", False),
     ("Session", "/pending", "List staged diffs awaiting approval (diff-approval mode)", False),
     ("Session", "/approve", "Apply a staged diff (/approve <id|all>)", True),
     ("Session", "/reject", "Discard a staged diff (/reject <id|all>)", True),
@@ -9971,6 +9972,73 @@ def create_tab(ctx):
                     _tag = " (global)" if m.get("scope") == "user" else ""
                     lines.append(f"    • {m['name']}{_tag} — {desc}")
                 _append_system_message("Agent memories:\n" + "\n".join(lines))
+            return True
+
+        if cmd.startswith("/undo-file"):
+            # The journal-backed undo, which until now only the MODEL
+            # could reach through its own undo_changes tool. /undo drops
+            # messages from context and touches no file; the hidden "Undo
+            # Edit" button shells out to git and tells a non-git workspace
+            # that "the original content was not saved" -- while the
+            # pre-image sits in ~/.delfin/undo/<sid>/. So the user's only
+            # recourse after a bad overwrite was to ask the model that
+            # made it to undo itself.
+            from delfin.agent import change_journal as _cj
+            engine = state.get("engine")
+            _sid = ""
+            if engine is not None:
+                _kp = getattr(engine, "kit_permissions", None)
+                _sid = str(getattr(_kp, "task_session_id", "") or "")
+            if not _sid:
+                _append_system_message(
+                    "No active session — there is no change journal to undo "
+                    "from. Send a message first.")
+                return True
+            _arg = cmd[len("/undo-file"):].strip().lower() or "list"
+            _ws = _agent_workspace_path()
+            if _arg in ("list", "ls", ""):
+                _recs = _cj.list_changes(_sid, last_n=20)
+                if not _recs:
+                    _append_system_message(
+                        "No file changes recorded this session.")
+                    return True
+                _lines = ["**Recorded file changes** (newest last):"]
+                for _r in _recs:
+                    _kind = ("created" if _r.get("created")
+                             else "truncated pre-image — cannot undo"
+                             if _r.get("truncated") else "edited")
+                    _lines.append(
+                        f"- [{_r.get('seq', '?')}] {_r.get('path', '?')}"
+                        f" ({_kind})")
+                _lines.append(
+                    "\nUndo with `/undo-file last`, `/undo-file turn` or "
+                    "`/undo-file session`. A file changed since the agent "
+                    "wrote it is reported as a conflict and never "
+                    "overwritten.")
+                _append_system_message("\n".join(_lines))
+                return True
+            if _arg not in ("last", "turn", "session"):
+                _append_system_message(
+                    f"Unknown scope '{_arg}'. Use: list | last | turn | "
+                    "session.")
+                return True
+            _seqs = list(state.get("_turn_change_seqs") or [])
+            _res = _cj.revert(_sid, scope=_arg, turn_seqs=_seqs,
+                              workspace=Path(_ws) if _ws else None)
+            _out = [f"**Undo ({_arg})**"]
+            for _key, _label in (("reverted", "Restored"),
+                                 ("conflicts", "Conflicts — NOT touched"),
+                                 ("skipped", "Skipped")):
+                _items = _res.get(_key) or []
+                if _items:
+                    _out.append(f"{_label}:")
+                    for _it in _items:
+                        _out.append(
+                            "- " + (_it if isinstance(_it, str)
+                                    else str(_it.get("path", _it))))
+            if len(_out) == 1:
+                _out.append("Nothing to undo.")
+            _append_system_message("\n".join(_out))
             return True
 
         if cmd in ("/changes", "/changes all"):
