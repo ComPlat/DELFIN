@@ -9890,6 +9890,47 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _bash_target_needs_a_read(
+        self, path: Path, perms: "KitToolPermissions",
+    ) -> Optional[str]:
+        """The read-before-write contract, applied to a shell write.
+
+        write_file, edit_file, multi_edit, notebook_edit and edit_sheet
+        all require a read baseline and an unchanged mtime. bash applied
+        only the PATH policy, so the same file that edit_file refused
+        could be rewritten with `sed -i`, `echo >` or `tee` -- and the
+        documented next move after a blocked write IS the shell, so this
+        is the path the agent gets steered into. The overwrite protection
+        then never fired, and a concurrent user edit was destroyed
+        silently.
+
+        Only EXISTING files need a baseline: creating a new one has
+        nothing to clobber, which is the same rule write_file follows.
+        """
+        try:
+            if not path.is_file():
+                return None
+            resolved = path.resolve()
+            tracked = perms.read_tracker.get(str(resolved))
+            if tracked is None:
+                return json.dumps({"error": (
+                    f"refusing to let a shell command overwrite "
+                    f"'{path.name}' without a prior read_file in this "
+                    "session — call read_file on it first. The same rule "
+                    "applies to edit_file; the shell is not a way around "
+                    "it."
+                )})
+            current = resolved.stat().st_mtime
+            if current > tracked + 1e-3:
+                return json.dumps({"error": (
+                    f"'{path.name}' was modified since last read_file "
+                    "(mtime mismatch). Re-read it before overwriting — "
+                    "someone else's change is in there."
+                )})
+        except OSError:
+            return None
+        return None
+
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -9923,6 +9964,9 @@ class _DocToolExecutor:
                     path = Path(base) / path
                 if _is_ephemeral_sink(path, getattr(perms, "workspace", None)):
                     continue
+                stale = self._bash_target_needs_a_read(path, perms)
+                if stale is not None:
+                    return stale
                 gate = self._gate_write_path(
                     str(path), perms, "bash", {"command": cmd})
                 if gate is not None:
