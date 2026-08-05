@@ -1332,6 +1332,65 @@ _ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # answer when the answer is always no.
 _SCOPE_LOCKED_ROLES: frozenset[str] = frozenset({"office_agent"})
 
+_LOCKED_ROOTS_CACHE: tuple[Path, ...] | None = None
+
+
+def _locked_workspace_roots() -> tuple[Path, ...]:
+    """Folders that are locked because of WHAT they are, not who opened them.
+
+    Resolved once per process from the configured office path (default
+    ``~/office``) plus the registry of folders office work has actually
+    happened in. Failure never unlocks: an unreadable settings file still
+    yields the default, because "no office dir configured" must not read
+    as "nothing is locked".
+    """
+    global _LOCKED_ROOTS_CACHE
+    if _LOCKED_ROOTS_CACHE is not None:
+        return _LOCKED_ROOTS_CACHE
+    roots: set[Path] = set()
+    try:
+        roots.add((Path.home() / "office").resolve())
+    except OSError:
+        pass
+    try:
+        from delfin.user_settings import load_settings
+        configured = ((load_settings() or {}).get("paths") or {}).get("office_dir")
+        if configured:
+            roots.add(Path(configured).expanduser().resolve())
+    except Exception:
+        pass
+    try:
+        from .memory_store import _load_office_workspaces
+        for known in _load_office_workspaces():
+            try:
+                roots.add(Path(known).expanduser().resolve())
+            except OSError:
+                continue
+    except Exception:
+        pass
+    _LOCKED_ROOTS_CACHE = tuple(sorted(roots))
+    return _LOCKED_ROOTS_CACHE
+
+
+def _workspace_is_locked(workspace) -> bool:
+    """True when *workspace* is (or lies inside) a folder that is locked."""
+    if workspace is None:
+        return False
+    try:
+        resolved = Path(workspace).expanduser().resolve()
+    except OSError:
+        return False
+    for root in _locked_workspace_roots():
+        if resolved == root:
+            return True
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _hook_workspace(perms) -> "Path | None":
     """Which workspace may contribute hook definitions.
 
@@ -1757,15 +1816,26 @@ class KitToolPermissions:
         refused, not asked about, and cannot be widened while the session
         runs.
 
-        It follows the ROLE rather than a flag the UI has to remember to
-        set. A guarantee that depends on the caller wiring it correctly
-        is not a guarantee; deriving it here means every path that builds
-        permissions for this role gets the containment, including
-        sub-agents (``_derive_perms`` copies the role) and any future
-        entry point.
+        Three independent carriers, and removing any one cannot unlock a
+        session. That redundancy is deliberate for a containment boundary.
+
+        The ROLE, rather than a flag the UI has to remember to set: a
+        guarantee that depends on the caller wiring it correctly is not a
+        guarantee, and sub-agents inherit it because ``_derive_perms``
+        copies the role.
+
+        The WORKSPACE, because the role alone was wrong in one direction.
+        Switching mode mid-session stamps the office role on the next turn
+        while the workspace is still the previous one, which locked the
+        session to the wrong folder -- containment pointing at a place
+        nobody meant. The folder is ground truth: it is a required
+        constructor argument, so unlike a role stamp it cannot be
+        forgotten, and ``dataclasses.replace`` re-runs ``__post_init__``,
+        so a child relocated INTO a locked folder is locked too.
         """
         return bool(self.lock_workspace
-                    or (self.agent_role or "") in _SCOPE_LOCKED_ROLES)
+                    or (self.agent_role or "") in _SCOPE_LOCKED_ROLES
+                    or _workspace_is_locked(self.workspace))
 
     def all_workspace_roots(self) -> tuple[Path, ...]:
         if self.scope_locked:

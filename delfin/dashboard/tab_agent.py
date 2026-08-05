@@ -1065,6 +1065,25 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
             ("Accept Edits", "repo_free"), ("Bypass", "all_free")]
 
 
+def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
+    """Whether switching between these modes moves the working folder.
+
+    Office is pinned to the office folder, Dashboard to the agent folder,
+    and everything else follows the launch directory. Comparing the GROUP
+    rather than the mode name keeps a rebuild from firing on a switch that
+    changes nothing (solo to pipeline), which would discard a live session
+    for no reason.
+    """
+    def group(mode: str) -> str:
+        if mode == "office":
+            return "office"
+        if mode == "dashboard":
+            return "dashboard"
+        return "launch"
+
+    return group(old_mode) != group(new_mode)
+
+
 def _should_run_step(engine, step: int) -> bool:
     """Whether the worker may run auto-step *step* of the current turn.
 
@@ -15724,6 +15743,17 @@ def create_tab(ctx):
     def _on_mode_change(change):
         new_mode = change["new"]
         old_mode = (change.get("old") or "")
+        # A mode change can change the FOLDER the agent works in -- Office
+        # is always the office folder, Code follows the launch directory.
+        # The engine was kept, so only the role was restamped on the next
+        # turn: the session became scope-locked while still pointing at the
+        # previous workspace, i.e. hard-locked to the wrong folder, writing
+        # documents into a code checkout. Drop the engine so the next send
+        # builds one for the folder the user just chose. _on_provider_change
+        # already does exactly this for the same reason.
+        if old_mode and new_mode != old_mode and not state["streaming"]:
+            if _mode_workspace_differs(old_mode, new_mode):
+                state["engine"] = None
         if not state.get("_mode_change_internal"):
             state["_mode_manual_override"] = True
             # Remember the choice like provider / model / effort. Only a
