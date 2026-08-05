@@ -2385,11 +2385,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "offset": {
                         "type": "integer",
-                        "description": (
-                            "First line, 1-based — the same numbering "
-                            "grep_file reports, so a `file.py:35` hit is "
-                            "read with offset 35."
-                        ),
+                        "description": "First line, 1-based.",
                     },
                     "limit": {
                         "type": "integer",

@@ -106,6 +106,13 @@ def test_the_schema_declares_the_convention():
             continue
         desc = str((fn.get("parameters", {}).get("properties", {})
                     .get("offset", {})).get("description", ""))
+        # Just "1-based" -- the grep cross-reference that made this
+        # clearer cost 5 tokens the catalogue did not have, and the
+        # budget is a ratchet: a clarification pays out of its own tool's
+        # text or it does not ship. The safety emphasis in read_file's
+        # own description (the uppercase ABSOLUTE, asserted elsewhere)
+        # outranks a convenience hint, and once both tools agree the
+        # model sees consistent numbers without being told.
         assert "1-based" in desc, desc
         return
     pytest.fail("read_file is not in the catalogue")
