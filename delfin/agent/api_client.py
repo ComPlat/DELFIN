@@ -1598,6 +1598,33 @@ _GATED_TOOLS: frozenset[str] = frozenset({
     "run_tests",
 }) | _NETWORK_TOOLS
 
+# What plan mode may run. Plan promises the user that the agent explores
+# and proposes and changes nothing, so the safe list is the one that has
+# to be enumerated -- the alternative, a hand-maintained list of families
+# to refuse, is a list that is wrong the moment a tool is added, and it
+# was: scheduling a future agent turn, creating a git worktree and adding
+# a writable root to the live permissions, running a workspace binary to
+# report its Python version, and every MCP tool outside three known
+# families all executed in the mode whose label is "read-only".
+#
+# Membership means "cannot change anything the user would care about".
+# `remember`/`forget` are deliberately absent: a plan turn writing durable
+# memory is a change that outlives the plan.
+_PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
+    # Reading the world
+    "read_file", "grep_file", "list_files", "find_definition",
+    "find_references", "notebook_read", "view_image", "read_document",
+    "compare_tables", "list_docs", "list_sections", "read_section",
+    "search_docs", "search_calcs", "get_calc_info", "calc_summary",
+    "check_environment", "list_changes_made",
+    # Reading this session
+    "history_search", "history_get", "task_list", "task_get",
+    "bash_status", "bash_output", "subagent_result", "cron_list",
+    # Planning itself
+    "task_create", "task_update", "task_adopt", "exit_plan_mode",
+    "ask_user_question", "report_verdict", "skill",
+})
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
@@ -1605,6 +1632,17 @@ _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # methodology it has no business applying.
     "office_agent": _DELFIN_ONLY_TOOL_NAMES,
 }
+
+
+def _bare_tool_name(name: str) -> str:
+    """A namespaced ``mcp__server__tool`` reduced to its tool name.
+
+    Every rule about what a tool DOES has to be judged on this, or a
+    namespaced call routes around it -- which is how the locked-scope
+    shell gates were first bypassed.
+    """
+    text = str(name or "")
+    return text.rsplit("__", 1)[-1] if text.startswith("mcp__") else text
 
 
 def _tool_denied_for_role(role: str, name: str) -> bool:
@@ -6267,6 +6305,23 @@ class _DocToolExecutor:
         bash) and gates them through workspace sandbox + denylist + optional
         confirm callback. When None, those tools are unavailable.
         """
+        # Plan mode, deny-by-default. One check at the single entry point,
+        # before hooks, before dispatch, covering namespaced MCP calls too
+        # -- rather than a per-family refusal each new tool has to be
+        # remembered into. What it caught the day it was added: scheduling
+        # a future agent turn, creating a worktree and adding a writable
+        # root to the live permissions, running a workspace binary to read
+        # its Python version, and every MCP tool outside three families.
+        if permissions is not None and getattr(permissions, "mode", "") == "plan":
+            _bare = _bare_tool_name(name)
+            if _bare not in _PLAN_READONLY_TOOLS:
+                return json.dumps({"error": (
+                    f"plan mode (read-only) — '{_bare}' rejected because it "
+                    "can change something. Finish investigating, then call "
+                    "exit_plan_mode with the plan; execution begins after "
+                    "the user approves it."
+                )})
+
         if permissions is not None and permissions.pre_tool_hook:
             try:
                 permissions.pre_tool_hook(name, arguments)
