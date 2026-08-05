@@ -8424,8 +8424,21 @@ class _DocToolExecutor:
                 )
             # Reuse the bash gate verbatim: same deny-list, secret/egress
             # scan, auto-allow, and confirm/head-less block as native bash.
-            return self._run_permission_gate(
+            gate_err = self._run_permission_gate(
                 "bash", {**args, "command": cmd}, perms)
+            if gate_err is not None:
+                return gate_err
+            # ...and the two path gates on top, which _run_permission_gate
+            # does NOT contain: _execute_bash calls them separately, so an
+            # MCP shell reached the model with the deny-list and the secret
+            # scan applied but with the WORKSPACE boundary missing. Under a
+            # locked scope that is the whole promise, routed around by
+            # naming a different server.
+            gate_err = self._gate_bash_read_paths(cmd, perms)
+            if gate_err is not None:
+                return gate_err
+            return self._gate_bash_write_targets(
+                cmd, {**args, "command": cmd}, perms)
 
         # (2) File mutators → the matching write gate (path-based). The MCP
         # arg shape matches the native tool, so args pass through unchanged.

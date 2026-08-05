@@ -250,3 +250,48 @@ def test_the_child_still_inherits_the_lock():
     child = _derive_perms(parent, "bypassPermissions")
     assert child.scope_locked is True
     assert child.workspace == parent.workspace
+
+
+# ---------------------------------------------------------------------------
+# An MCP shell is still a shell
+# ---------------------------------------------------------------------------
+
+def _mcp_scene():
+    ws = pathlib.Path(tempfile.mkdtemp(prefix="office_ws_"))
+    outside = pathlib.Path(tempfile.mkdtemp(prefix="outside_"))
+    (outside / "secret.txt").write_text("s", encoding="utf-8")
+    perms = _perms(locked=True, ws=ws)
+    return _executor(), perms, outside
+
+
+@pytest.mark.parametrize("template,label", [
+    ("cat {out}/secret.txt", "read outside"),
+    ("echo leak > {out}/x.txt", "write outside"),
+    ("cd .. && cat secret.txt", "climb out"),
+])
+def test_an_mcp_shell_is_bounded_by_the_folder(template, label):
+    """_run_permission_gate carries the deny-list and the secret scan; the
+    WORKSPACE boundary lives in two separate gates that only _execute_bash
+    called. So an MCP shell arrived with everything applied except the one
+    thing a locked scope is for -- routed around by naming another server."""
+    executor, perms, outside = _mcp_scene()
+    cmd = template.format(out=outside)
+    assert executor._gate_mcp_tool(
+        "mcp__kit-coding__bash", {"command": cmd}, perms) is not None, label
+
+
+def test_an_ordinary_mcp_shell_command_still_runs():
+    executor, perms, _ = _mcp_scene()
+    assert executor._gate_mcp_tool(
+        "mcp__kit-coding__bash", {"command": "ls -la"}, perms) is None
+
+
+def test_unmapped_mcp_tools_are_refused_to_a_scoped_role():
+    """The office allow-list judges an MCP tool by its base name, so a
+    filesystem server's read tools -- which the MCP gate has no family for
+    -- never reach dispatch."""
+    from delfin.agent.api_client import _tool_denied_for_role
+
+    for tool in ("mcp__fs__read_text_file", "mcp__fs__list_directory",
+                 "mcp__other__shell", "mcp__delfin-tools__run_application"):
+        assert _tool_denied_for_role("office_agent", tool), tool
