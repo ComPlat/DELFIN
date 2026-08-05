@@ -208,6 +208,35 @@ def test_mouse_patch_coalesces_drag_rendering_and_disposes_old_contexts():
     assert "window.setInterval" not in patch
 
 
+def test_mouse_patch_leaves_editor_drag_handlers_on_window_alive():
+    """The Submit-tab editor binds its drag handlers on window in the capture
+    phase, same as this patch. Using stopImmediatePropagation there would kill
+    them and disable rubber-band selection and atom dragging."""
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+
+    window_handlers = patch.split('el.addEventListener("contextmenu"')[0]
+    move_handler = window_handlers.split('var onMouseMove = function(e){')[1]
+    assert 'stopImmediatePropagation' not in move_handler
+    assert 'softStopEvt(e)' in move_handler
+
+    up_handler = window_handlers.split('var onMouseUp = function(e){')[1]
+    assert 'stopImmediatePropagation' not in up_handler
+    assert 'if(wasDragging) softStopEvt(e);' in patch
+
+    # softStopEvt must stop descent to 3Dmol's own listeners but nothing else.
+    soft = patch.split('var softStopEvt = function(e){')[1].split('};')[0]
+    assert 'e.stopPropagation()' in soft
+    assert 'stopImmediatePropagation' not in soft
+
+    # While the editor owns the drag, 3Dmol must not be fed forwarded moves.
+    assert 'if(editorDragActive()) return;' in patch
+    assert '&&!editorDragActive()' in patch
+    assert 'window._submitManipStateByScope' in patch
+
+    # An already-open dashboard rebinds only when the version changes.
+    assert 'var PATCH_VERSION=6;' in patch
+
+
 def test_orca_label_occlusion_is_deferred_until_mouse_interaction_ends():
     assert "grid=Object.create(null)" in _ORCA_VIEWER_SOURCE
     assert "hideForInteraction" not in _ORCA_VIEWER_SOURCE
