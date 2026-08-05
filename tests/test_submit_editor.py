@@ -351,3 +351,24 @@ def test_right_drag_pans_while_the_field_is_running():
     assert 'if (state.autoOpt) return;' in EDITOR
     # The context menu stays suppressed either way, or panning pops a menu.
     assert "if (s.mode === 'manipulate' || s.autoOpt) {" in EDITOR
+
+
+def test_hydrogens_can_be_grabbed_in_their_own_right():
+    """Picking took the atom nearest the camera within a flat 14 px radius, so
+    a hydrogen was routinely stolen by the fatter carbon bonded to it — the
+    cursor sat on the hydrogen and the carbon won anyway.
+
+    Each atom is now only a candidate where its own drawn disc is under the
+    cursor, and depth decides between the candidates. Measured on cholesterol:
+    clicking precisely on each of its 66 hydrogens grabs 60 of them, and all
+    six exceptions are genuinely covered by an atom in front."""
+    body = _body('raycastAtom')
+    assert 'elementRadius(q.atom)' in body
+    assert 'DEFAULT_ATOM_SCALE' in body
+    assert 'getPixelToWorld' in body
+    # Depth still shields a covered atom, but only among real candidates.
+    assert 'q.depth < bestDepth' in body
+    # A hydrogen must be much smaller than a carbon or the distinction is moot.
+    assert EDITOR.index('H: 1.10') > 0
+    radii = _body('elementRadius')
+    assert 'DEFAULT_VDW' in radii

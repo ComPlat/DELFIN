@@ -1072,7 +1072,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     var UNDO_LIMIT = 50;
     var ROT_RAD_PER_PX = 0.01;
     var DRAG_THRESHOLD_PX = 3;
-    var PICK_RADIUS_PX = 14;
+    var PICK_RADIUS_PX = 9;
+    var DEFAULT_ATOM_SCALE = 0.28;
 
     function getViewer(scopeKey) {
         return (window._submitMolViewerByScope || {})[scopeKey] || null;
@@ -1673,28 +1674,64 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return out;
     }
 
+    // Van der Waals radii, in Angstrom. 3Dmol does not expose its own table,
+    // and the numbers matter here only in proportion: a hydrogen is drawn much
+    // smaller than a carbon and has to be pickable in its own right.
+    var VDW_RADII = {
+        H: 1.10, He: 1.40, Li: 1.82, Be: 1.53, B: 1.92, C: 1.70, N: 1.55,
+        O: 1.52, F: 1.47, Ne: 1.54, Na: 2.27, Mg: 1.73, Al: 1.84, Si: 2.10,
+        P: 1.80, S: 1.80, Cl: 1.75, Ar: 1.88, K: 2.75, Ca: 2.31, Fe: 2.04,
+        Co: 2.00, Ni: 1.97, Cu: 1.96, Zn: 2.01, Br: 1.85, I: 1.98
+    };
+    var DEFAULT_VDW = 1.70;
+    var MIN_PICK_PX = 5;
+
+    function elementRadius(atom) {
+        var raw = String(atom.elem || atom.atom || '');
+        if (!raw) return DEFAULT_VDW;
+        var key = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+        var r = VDW_RADII[key];
+        return (typeof r === 'number') ? r : DEFAULT_VDW;
+    }
+
     function raycastAtom(scopeKey, clientX, clientY) {
         var state = getState(scopeKey);
-        if (!state.canvas) return null;
+        var viewer = getViewer(scopeKey);
+        if (!state.canvas || !viewer) return null;
         var rect = state.canvas.getBoundingClientRect();
         var sx = clientX - rect.left;
         var sy = clientY - rect.top;
         var projected = projectAllAtoms(scopeKey);
+        var perPixel = getPixelToWorld(viewer, state.canvas) || 0.03;
+
+        // First pass: only atoms whose own drawn disc is under the cursor.
+        // Depth decides between those, so a sphere in front still shields one
+        // behind it -- but a hydrogen the cursor is actually sitting on is no
+        // longer stolen by the fatter atom bonded to it.
         var best = null, bestDepth = Infinity, bestDist = Infinity;
-        var radius2 = PICK_RADIUS_PX * PICK_RADIUS_PX;
+        var nearest = null, nearestDist = Infinity;
         for (var i = 0; i < projected.length; i++) {
             var q = projected[i];
             var dx = q.x - sx, dy = q.y - sy;
             var d2 = dx*dx + dy*dy;
-            if (d2 > radius2) continue;
-            // Nearest to the camera wins; screen distance only breaks ties
-            // between atoms at effectively the same depth.
+            if (d2 < nearestDist) { nearest = q; nearestDist = d2; }
+            var drawnPx = elementRadius(q.atom) * DEFAULT_ATOM_SCALE / perPixel;
+            if (drawnPx < MIN_PICK_PX) drawnPx = MIN_PICK_PX;
+            if (d2 > drawnPx * drawnPx) continue;
             if (q.depth < bestDepth - 1e-6 ||
                 (Math.abs(q.depth - bestDepth) <= 1e-6 && d2 < bestDist)) {
                 best = q.atom; bestDepth = q.depth; bestDist = d2;
             }
         }
-        return best;
+        if (best) return best;
+
+        // Nothing was hit squarely. Allow a small amount of slack so a click
+        // just beside a thin stick still picks it, but keep empty space empty
+        // so a press there can still turn the view.
+        if (nearest && nearestDist <= PICK_RADIUS_PX * PICK_RADIUS_PX) {
+            return nearest.atom;
+        }
+        return null;
     }
 
     function beginRectDraw(scopeKey, x0, y0) {
