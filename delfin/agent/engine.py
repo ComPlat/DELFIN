@@ -1706,8 +1706,22 @@ class AgentEngine:
                     _out = event.tool_output or ""
                     if "truncated," in _out and "chars" in _out:
                         self._note_truncated_tool(event.tool_name or "a tool")
+                    # Whether it worked is decided by the result, not
+                    # asserted. ok=True was hardcoded here, and the only
+                    # writer of ok=False is the permission_denied event --
+                    # which ONLY the CLI backend emits. On every other
+                    # backend a gate refusal arrives as an ordinary
+                    # tool_result carrying {"error": ...} and was traced
+                    # green. Five consumers read this flag: /trace printed
+                    # a checkmark for the blocked call, the aggregates
+                    # reported an error rate of zero forever, `/agents
+                    # tools` showed a permanent 0% error column, and the
+                    # live panel rendered a green tick. A user looking for
+                    # what went wrong found a clean list.
+                    _failed, _reason = self._tool_result_failed(_out)
                     self._record_tool_trace(
-                        event.tool_name, event.tool_output or "", ok=True)
+                        event.tool_name, _out,
+                        ok=not _failed, error=_reason)
                     # Crash insurance: full session saves happen only at
                     # turn boundaries, but one turn can run hundreds of
                     # tool rounds — persist a cheap checkpoint (throttled,
@@ -2496,6 +2510,29 @@ class AgentEngine:
         id when present, else a per-engine uuid (so OpenAI/KIT/Ollama turns,
         which have no server session id, still get a stable trace file)."""
         return self.session_id or self._trace_id
+
+    @staticmethod
+    def _tool_result_failed(output: str) -> tuple[bool, str]:
+        """Whether a tool result reports a failure, and the reason.
+
+        Every executor returns a refusal or an error as a JSON object with
+        an ``error`` key -- that is the one shape the whole tool layer
+        agrees on, which is why the grounding ledgers key on it too. Read
+        it here rather than trusting the caller's assertion.
+
+        Deliberately NOT a judgement about the content: a command that ran
+        and exited non-zero is a successful tool call reporting a failed
+        command, and conflating the two would make the error rate measure
+        the user's code instead of the agent's tooling.
+        """
+        text = (output or "").lstrip()
+        if not text.startswith('{"error"'):
+            return False, ""
+        try:
+            reason = str((json.loads(output) or {}).get("error", ""))
+        except Exception:
+            reason = text[:200]
+        return True, reason[:300]
 
     def _record_tool_trace(
         self, name: str, output: str = "", *, ok: bool = True, error: str = "",
