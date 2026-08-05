@@ -260,3 +260,67 @@ def test_env_vars_set():
         assert line[0] == "PreToolUse"
         assert line[1] == "edit_file"
         assert str(ws.resolve()) == str(Path(line[2]).resolve())
+
+
+# ---------------------------------------------------------------------------
+# A PostToolUse hook can tell the agent what it found
+# ---------------------------------------------------------------------------
+
+def test_post_tool_hook_output_reaches_the_model():
+    """It went to stderr only, so the most useful hook shape there is --
+    run the linter after every edit and tell the agent what it said -- was
+    impossible. A user could get it only as a BLOCKING PreToolUse, which
+    refuses the edit instead of reporting on it."""
+    from delfin.agent.api_client import _post_hook_note
+
+    class _Outcome:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    note = _post_hook_note([_Outcome("ruff: 2 issues in mod.py")])
+    assert "ruff: 2 issues" in note
+    assert "[hook]" in note, "the model must be able to tell hook from tool"
+
+
+def test_a_silent_hook_adds_nothing():
+    """The common case: no output, no note, no cost."""
+    from delfin.agent.api_client import _post_hook_note
+
+    class _Outcome:
+        stdout = ""
+
+    assert _post_hook_note([]) == ""
+    assert _post_hook_note([_Outcome()]) == ""
+
+
+def test_a_chatty_hook_cannot_bury_the_tool_result():
+    """The original reason for discarding this output was real and still
+    holds -- it just did not justify throwing the output away."""
+    from delfin.agent.api_client import _post_hook_note
+
+    class _Outcome:
+        stdout = "x" * 50_000
+
+    note = _post_hook_note([_Outcome()])
+    assert len(note) < 2_500
+    assert "omitted" in note, "silent truncation reads as complete output"
+
+
+def test_a_broken_outcome_does_not_break_the_tool_result():
+    from delfin.agent.api_client import _post_hook_note
+
+    assert _post_hook_note(None) == ""
+    assert _post_hook_note([object()]) == ""
+
+
+def test_only_events_that_fire_are_configurable():
+    """"Notification" validated in settings and was raised nowhere: a user
+    could configure a hook for it and nothing would ever run. A declared
+    event that never arrives is worse than an absent one, because it looks
+    configured."""
+    from delfin.agent.hooks import _VALID_EVENTS
+
+    assert "Notification" not in _VALID_EVENTS
+    for event in _VALID_EVENTS:
+        assert event in ("PreToolUse", "PostToolUse", "UserPromptSubmit",
+                         "Stop"), event

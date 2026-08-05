@@ -4633,6 +4633,40 @@ def _mcp_schema_budget_chars() -> int:
     return 12000
 
 
+_POST_HOOK_NOTE_CAP = 2000
+
+
+def _post_hook_note(outcomes) -> str:
+    """What a PostToolUse hook said, formatted for the model.
+
+    Empty when no hook produced output, which is the common case. Capped:
+    the reason this output was discarded in the first place was that a
+    noisy hook could bury the tool result it is commenting on, and that
+    concern survives the change -- it just does not justify throwing the
+    output away.
+    """
+    if not outcomes:
+        return ""
+    try:
+        lines: list[str] = []
+        for outcome in outcomes:
+            text = str(getattr(outcome, "stdout", "") or "").strip()
+            if not text:
+                continue
+            lines.append(text)
+        if not lines:
+            return ""
+        body = "\n".join(lines)
+        if len(body) > _POST_HOOK_NOTE_CAP:
+            dropped = len(body) - _POST_HOOK_NOTE_CAP
+            body = (body[:_POST_HOOK_NOTE_CAP]
+                    + f"\n... ({dropped} more chars from the hook omitted)")
+        return ("\n\n[hook] a PostToolUse hook ran after this call and "
+                "reported:\n" + body)
+    except Exception:
+        return ""
+
+
 def _smart_truncate(text: str, cap: int, label: str) -> str:
     """Cap a long output by keeping HEAD and TAIL.
 
@@ -6223,20 +6257,33 @@ class _DocToolExecutor:
             except Exception:
                 pass
 
-        # Settings-driven PostToolUse hooks. Output goes to stderr/audit
-        # (not back to the model) so a noisy linter doesn't pollute the
-        # tool result the agent reads.
+        # Settings-driven PostToolUse hooks. Their output is fed BACK to
+        # the model, named and bounded.
+        #
+        # It used to go to stderr only, so the most useful hook shape there
+        # is -- run the linter after every edit and tell the agent what it
+        # said -- was impossible. A user could get it only as a BLOCKING
+        # PreToolUse, which refuses the edit instead of reporting on it:
+        # the wrong ergonomics for advice.
+        #
+        # Bounded because the original worry was real: a chatty hook must
+        # not be able to bury the tool result it comments on. Labelled
+        # because the model has to be able to tell the hook's opinion from
+        # the tool's own output.
         if permissions is not None and not block_reason:
             try:
                 from . import hooks as _hooks_mod
                 cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
                 if not cfg.is_empty():
-                    _hooks_mod.run_hooks(
+                    _outcomes = _hooks_mod.run_hooks(
                         "PostToolUse", cfg,
                         tool_name=name,
                         arguments={**arguments, "result_preview": (result or "")[:400]},
                         workspace=permissions.workspace,
                     )
+                    _note = _post_hook_note(_outcomes)
+                    if _note:
+                        result = (result or "") + _note
             except Exception:
                 pass
 

@@ -68,12 +68,20 @@ from . import audit_log as _audit
 
 
 _DEFAULT_TIMEOUT_S = 30
+# Only events that something actually FIRES. "Notification" sat here and
+# was raised nowhere: a user could configure a hook for it, the settings
+# would validate, and nothing would ever run. A declared event that never
+# arrives is a promise the configuration makes and the code does not keep,
+# and it is worse than an absent one because it looks configured.
+#
+# The notification need itself is already served by push_notification and
+# remote_trigger, which are tools rather than hooks; adding a third path
+# to the same place would be the wrong way to fix a dead enum member.
 _VALID_EVENTS = (
     "PreToolUse",
     "PostToolUse",
     "UserPromptSubmit",
     "Stop",
-    "Notification",
 )
 
 
