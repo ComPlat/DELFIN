@@ -12644,7 +12644,14 @@ class OpenAIClient(_BaseClient):
         # empty — the agent simply won't see those tools.
         try:
             from . import mcp_client as _mcp
-            _ws = self._permissions.workspace if self._permissions else None
+            # Guarded, not raw. An MCP server definition is executable
+            # configuration: it is spawned with the parent environment
+            # while the tool surface is being ASSEMBLED -- before any
+            # model output and before any user consent -- and then
+            # answers every call routed to it. Strictly more powerful
+            # than a hook, which at least waits for a tool call. A folder
+            # that receives files from other people supplies neither.
+            _ws = _hook_workspace(self._permissions)
             _registry = _mcp.get_registry(_ws)
             _mcp_tools = _registry.discover_all()
             # Same context scoping for MCP tools: a namespaced backend tool
@@ -13437,8 +13444,7 @@ class OpenAIClient(_BaseClient):
                         else:
                             try:
                                 from . import mcp_client as _mcp
-                                _ws = (self._permissions.workspace
-                                       if self._permissions else None)
+                                _ws = _hook_workspace(self._permissions)
                                 result = _wrap_untrusted(
                                     _mcp.get_registry(_ws).call(
                                         fn_name, fn_args))
@@ -13464,8 +13470,7 @@ class OpenAIClient(_BaseClient):
                         else:
                             try:
                                 from . import mcp_client as _mcp
-                                _ws = (self._permissions.workspace
-                                       if self._permissions else None)
+                                _ws = _hook_workspace(self._permissions)
                                 _reg = _mcp.get_registry(_ws)
                                 if fn_name == "mcp_read_resource":
                                     result = _wrap_untrusted(

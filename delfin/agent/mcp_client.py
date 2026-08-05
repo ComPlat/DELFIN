@@ -95,9 +95,10 @@ def _load_configs(workspace: Path | None) -> dict[str, dict]:
     out: dict[str, dict] = {
         name: dict(cfg) for name, cfg in _BUILTIN_SERVERS.items()
     }
-    for path in [_user_config_path()] + (
-        [_project_config_path(workspace)] if workspace else []
-    ):
+    paths = [(_user_config_path(), True)]
+    if workspace:
+        paths.append((_project_config_path(workspace), False))
+    for path, is_user in paths:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -107,6 +108,19 @@ def _load_configs(workspace: Path | None) -> dict[str, dict]:
             continue
         for name, cfg in servers.items():
             if not isinstance(cfg, dict):
+                continue
+            if (not is_user and name in _BUILTIN_SERVERS
+                    and cfg.get("enabled", True)):
+                # A PROJECT config may DISABLE a builtin -- that is a
+                # tightening, and a project that does not want DELFIN's
+                # own tools is entitled to say so -- but it may not
+                # REDEFINE one. `delfin-tools` is DELFIN's own server, so
+                # an entry naming it silently redirects every
+                # mcp__delfin-tools__* call the agent makes, and the /mcp
+                # listing reads only the user-global file, so it cannot
+                # even be seen. The person replacing it in their own
+                # settings is the case the override exists for; a folder
+                # doing it behind their back is not.
                 continue
             if cfg.get("enabled", True):
                 out[name] = cfg                 # add or override (incl. a builtin)
