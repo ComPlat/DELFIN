@@ -296,7 +296,12 @@ _AGENT_CSS = """\
     font-size: 11px;
     font-weight: 600;
     color: #6b7280;
-    margin-bottom: 6px;
+    /* The label names the speaker of the line right below it, so it sits
+       tight against it. line-height matters as much as the margin here:
+       the default leading on an 11px line adds its own gap on top of
+       whatever margin is set. */
+    line-height: 1.1;
+    margin-bottom: 1px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
@@ -1035,6 +1040,25 @@ def _syntax_highlight(code: str, lang: str) -> str:
     return escaped
 
 
+def _turn_warrants_a_cycle_report(tool_calls: int) -> bool:
+    """Whether the pipeline ceremony belongs after this turn.
+
+    "Cycle complete", the acceptance verdict, the self-optimization note
+    and the "continue chatting or /reset" hint all report on a pipeline
+    having run. After a greeting nothing ran -- the model answered in one
+    sentence and touched nothing -- and four lines of machinery then say
+    considerably more than the answer did.
+
+    The question is what the turn DID, not which route it was on: a
+    single-role office session and a multi-role code route are told apart
+    by whether any tool was called, so the rule reads the same in every
+    mode. What is suppressed is the chat noise; the cycle event, the
+    persistent cycle memory and the self-optimization measurement are all
+    still recorded.
+    """
+    return tool_calls > 0
+
+
 def _assistant_turn_is_wordless(msg: dict) -> bool:
     """True when an assistant entry carries no prose.
 
@@ -1050,6 +1074,11 @@ def _assistant_turn_is_wordless(msg: dict) -> bool:
 
 def _md_to_html(text: str) -> str:
     """Convert markdown subset to HTML for chat display."""
+    # Every newline becomes a <br> further down, so leading ones survive as
+    # blank lines directly under the role label -- models frequently open a
+    # reply with one, which then reads as a gap between the name and the
+    # sentence. Trailing ones do the same to the bottom of the bubble.
+    text = str(text or "").strip("\r\n \t")
     # Protect code blocks first (extract, replace later)
     code_blocks: list[str] = []
 
@@ -6627,9 +6656,13 @@ def create_tab(ctx):
             # During streaming: plain <pre> — no expensive markdown parsing.
             # On finalize: full _md_to_html with code blocks, formatting etc.
             if msg.get("_streaming"):
+                # Same trim as the markdown path: the first tokens often
+                # arrive behind a newline, and during streaming that gap
+                # sits under the label for the whole reply.
                 content = (
                     f'<pre class="delfin-streaming-pre">'
-                    f'{_html.escape(msg["content"])}</pre>'
+                    f'{_html.escape(str(msg["content"] or "").strip(chr(13) + chr(10)))}'
+                    f'</pre>'
                 )
             else:
                 content = _md_to_html(msg["content"])
@@ -6864,6 +6897,7 @@ def create_tab(ctx):
                 cached_tokens=s.get("cached_tokens", 0),
                 active_gate_type=active_gate.get("type", ""),
                 active_gate_text=active_gate.get("title", ""),
+                last_turn_cost_usd=float(state.get("_last_turn_cost") or 0.0),
             )
         else:
             backend = _resolve_backend() if _cli_available else "api"
@@ -14732,27 +14766,19 @@ def create_tab(ctx):
                             start_time=_turn_start_time,
                         )
 
-                    # S7 — Show per-turn cost in ALL modes including solo +
-                    # dashboard. Pipeline rows stay verbose (they include the
-                    # role label so the user can attribute cost per agent);
-                    # solo/dashboard get a single compact line.
+                    # Per-turn spend belongs in the status bar, not in the
+                    # conversation. As chat messages this was two lines per
+                    # turn -- and in a pipeline mode both carried the same
+                    # numbers -- so every reply, including a one-sentence
+                    # one, ended under a block of telemetry. The running
+                    # total and the last turn are both on the status row;
+                    # the cost milestones below still speak up in chat,
+                    # because those are the ones worth interrupting for.
                     _role_cost = engine.cost_usd - _cost_before
                     _role_in = engine.token_usage["input"] - _in_before
                     _role_out = engine.token_usage["output"] - _out_before
                     if _role_in > 0 or _role_out > 0:
-                        _cost_str = f"${_role_cost:.3f}" if _role_cost > 0 else ""
-                        _is_pipeline_mode = engine.mode not in ("solo", "dashboard")
-                        if _is_pipeline_mode:
-                            _append_system_message(
-                                f"{role_label}: {_role_in:,} in / {_role_out:,} out"
-                                f"{' · ' + _cost_str if _cost_str else ''}"
-                                f" [{_effective_model}]"
-                            )
-                        elif _cost_str:
-                            _append_system_message(
-                                f"Turn cost: {_cost_str} "
-                                f"({_role_in:,} in / {_role_out:,} out · {_effective_model})"
-                            )
+                        state["_last_turn_cost"] = _role_cost
 
                     if engine._stop_requested:
                         break
@@ -15127,12 +15153,16 @@ def create_tab(ctx):
                         state.pop("_retry_used", None)
                         state.pop("_builder_retries", None)
                         state.pop("_conflict_resolved", None)
+                        # A turn that called no tool ran no pipeline; the
+                        # ceremony below would then be the bulk of the reply.
+                        _report_cycle = _turn_warrants_a_cycle_report(tool_count[0])
                         _record_cycle_event("cycle", "Cycle complete")
                         # Acceptance gate: check if test agent approved
                         _cycle_verdict = _check_acceptance_gate(engine)
-                        _append_system_message(
-                            f"--- Cycle complete {_cycle_verdict} ---"
-                        )
+                        if _report_cycle:
+                            _append_system_message(
+                                f"--- Cycle complete {_cycle_verdict} ---"
+                            )
                         _update_pipeline_display(engine)
 
                         # --- Persistent Cycle Memory + Provider Profile ---
@@ -15162,7 +15192,7 @@ def create_tab(ctx):
                                 denied_commands=_denied,
                                 start_time=state.get("session_start_time"),
                             )
-                            if _opt_changes:
+                            if _opt_changes and _report_cycle:
                                 _opt_str = "; ".join(
                                     f"{k}: {v}" for k, v in _opt_changes.items()
                                 )
@@ -15179,9 +15209,10 @@ def create_tab(ctx):
                         _fu_idx = engine.route.index(_fu_role) if _fu_role in engine.route else 0
                         engine.current_role_index = _fu_idx
                         state["_follow_up"] = True
-                        _append_system_message(
-                            f"Continue chatting or /reset for new task."
-                        )
+                        if _report_cycle:
+                            _append_system_message(
+                                f"Continue chatting or /reset for new task."
+                            )
                         break
 
                     # Show pipeline progress + handoff in chat
@@ -15383,10 +15414,12 @@ def create_tab(ctx):
                             state["_stalled_warning_shown"] = False
                     except Exception:
                         pass
-                    # Live per-turn cost footer: post a one-line system
-                    # message summarising the delta in tokens/cost/
-                    # duration for the turn we just finished. Best-effort,
-                    # silently skips if get_status() raises.
+                    # Per-turn deltas: kept for the metrics record below and
+                    # for the status bar, not posted into the conversation.
+                    # A line of tokens/cost/duration under every reply --
+                    # beside a second line saying the same thing in pipeline
+                    # modes -- buried short answers in telemetry. The running
+                    # total and the last turn both show on the status row.
                     try:
                         _post = engine.get_status()
                         d_in = int(_post.get("input_tokens") or 0) - int(state.get("_turn_pre_in") or 0)
@@ -15394,13 +15427,7 @@ def create_tab(ctx):
                         d_cost = float(_post.get("cost_usd") or 0.0) - float(state.get("_turn_pre_cost") or 0.0)
                         dur = time.monotonic() - float(state.get("_turn_started_monotonic") or time.monotonic())
                         if d_in or d_out or d_cost > 0.0001 or tool_count[0]:
-                            cost_s = f"${d_cost:.4f}" if d_cost > 0.0001 else "<$0.0001"
-                            _append_system_message(
-                                f"⏱ turn  {dur:.1f}s  ·  "
-                                f"{d_in:,}↓ / {d_out:,}↑ tokens  ·  "
-                                f"{tool_count[0]} tool call{'s' if tool_count[0] != 1 else ''}  ·  "
-                                f"{cost_s}"
-                            )
+                            state["_last_turn_cost"] = d_cost
                         # Record agent metrics for iterative behaviour
                         # tuning. Append-only JSONL keyed by model +
                         # profile so /agents metrics can compare windows
@@ -16416,8 +16443,16 @@ def _render_status(
     cached_tokens: int = 0,
     active_gate_type: str = "",
     active_gate_text: str = "",
+    last_turn_cost_usd: float = 0.0,
 ) -> str:
-    """Render the status bar HTML."""
+    """Render the status bar HTML.
+
+    ``last_turn_cost_usd`` rides along beside the running total. It used to
+    be two chat messages per turn -- one naming the role, one the clock --
+    which in a pipeline mode printed the same numbers twice and pushed the
+    conversation up the screen after every reply. The status bar is where
+    a number that changes every turn belongs; the chat is for the answer.
+    """
     role_label = _format_role_label(role)
     role_info = ""
     if role_total > 0:
@@ -16437,7 +16472,7 @@ def _render_status(
     backend_info = f'<span class="backend-badge">{backend_label}</span>'
 
     if cost_usd > 0:
-        cost_str = f"${cost_usd:.3f}"
+        cost_str = _fmt_cost(cost_usd)
     else:
         cost_str = _estimate_cost_str(backend, input_tokens, output_tokens,
                                       provider=provider)
@@ -16448,6 +16483,8 @@ def _render_status(
                    f"{100 * cached_tokens // max(input_tokens, 1)}%)"
                    if cached_tokens else "")
     tokens_str = f"{input_tokens:,} in{_cached_str} / {output_tokens:,} out"
+    _turn_str = (f" · +{_fmt_cost(last_turn_cost_usd)} last turn"
+                 if last_turn_cost_usd > 0.00005 else "")
 
     # Permission profile badge (color-coded)
     _perm_colors = {
@@ -16494,9 +16531,18 @@ def _render_status(
         f"{backend_info}"
         f"{perm_badge}"
         f"{gate_info}"
-        f'<span class="tokens-info">{tokens_str} · {cost_str}</span>'
+        f'<span class="tokens-info">{tokens_str} · {cost_str}{_turn_str}</span>'
         f"</div>"
     )
+
+
+def _fmt_cost(cost_usd: float) -> str:
+    """Money that is small but not nothing must not print as nothing.
+
+    Three decimals turn anything under half a tenth of a cent into
+    "$0.000", which reads as free rather than as cheap.
+    """
+    return f"${cost_usd:.3f}" if cost_usd >= 0.0005 else f"${cost_usd:.4f}"
 
 
 def _estimate_cost_str(
