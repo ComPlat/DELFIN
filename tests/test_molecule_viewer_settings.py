@@ -234,7 +234,7 @@ def test_mouse_patch_leaves_editor_drag_handlers_on_window_alive():
     assert 'window._submitManipStateByScope' in patch
 
     # An already-open dashboard rebinds only when the version changes.
-    assert 'var PATCH_VERSION=8;' in patch
+    assert 'var PATCH_VERSION=9;' in patch
 
 
 def test_py3dmol_viewers_release_the_contexts_they_leave_behind():
@@ -341,11 +341,78 @@ def test_3dmol_is_vendored_and_satisfies_both_loader_guards():
         Path(__file__).resolve().parents[1] / "delfin" / "dashboard" / "__init__.py"
     ).read_text(encoding="utf-8")
     assert "vendored_3dmol_js()" in dashboard
-    order = dashboard.index("vendored_3dmol_js()")
-    assert order < dashboard.index("RIGHT_MOUSE_TRANSLATE_PATCH_JS, *ctx.init_js_parts")
+    init_list = dashboard.split("_calc_init = ")[1].split("])")[0]
+    assert init_list.index("vendored_3dmol_js()") < init_list.index(
+        "RIGHT_MOUSE_TRANSLATE_PATCH_JS"
+    )
 
     # And it has to reach the wheel, or every viewer quietly returns to the CDNs.
     pyproject = (
         Path(__file__).resolve().parents[1] / "pyproject.toml"
     ).read_text(encoding="utf-8")
     assert '"delfin.dashboard" = ["static/*.js", "static/*.txt"]' in pyproject
+
+
+def test_quality_levels_render_at_different_pixel_densities():
+    """Medium and High used to be pixel-identical: they differed only in
+    cartoonQuality, which is dead because DELFIN never renders cartoons, and
+    3Dmol's own `upscale` flag merely raises devicePixelRatio to 2. The one
+    real lever is the pixel ratio the viewer is constructed with."""
+    ratios = _MODULE.VIEWER_QUALITY_PIXEL_RATIO
+    assert ratios["low"] < ratios["medium"] < ratios["high"]
+    assert _MODULE.get_viewer_profile()["pixel_ratio"] in ratios.values()
+
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    # 3Dmol reads window.devicePixelRatio once, at construction. The factory
+    # itself cannot be wrapped -- $3Dmol.createViewer is a non-configurable
+    # getter, so assigning over it silently does nothing and reports success --
+    # so every call site goes through this helper instead.
+    assert "window.__delfinWithPixelRatio" in patch
+    assert "window.__delfinCreateViewer = function" in patch
+    assert "window.__delfinViewerPixelRatio" in patch
+
+    for name in (
+        "tab_calculations_browser.py",
+        "tab_remote_archive.py",
+        "tab_orca_builder.py",
+    ):
+        source = (
+            Path(__file__).resolve().parents[1] / "delfin" / "dashboard" / name
+        ).read_text(encoding="utf-8")
+        assert "$3Dmol.createViewer(" not in source, name
+        assert "window.__delfinCreateViewer(" in source, name
+
+    # py3Dmol builds its own construction call, so it is rerouted in startjs.
+    viewer_source = _MODULE_PATH.read_text(encoding="utf-8")
+    assert "if '$3Dmol.createViewer(' in view.startjs:" in viewer_source
+    assert "'window.__delfinCreateViewer'," in viewer_source or (
+        "'window.__delfinCreateViewer(',"
+    ) in viewer_source
+    # The override must always be undone, whatever the build does.
+    helper = patch.split("window.__delfinWithPixelRatio = function")[1]
+    assert "finally" in helper.split("};")[0] or "finally" in helper[:900]
+
+
+def test_png_export_re_renders_instead_of_upscaling_the_screen():
+    """Export took the on-screen canvas and blew it up 6x with drawImage --
+    bilinear interpolation, so a tens-of-megabyte file that is blurrier than
+    what the user is looking at."""
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    assert "window.__delfinRenderViewerPng" in patch
+
+    download = patch.split("window.__delfinDownloadViewerPng = function")[1]
+    assert "__delfinRenderViewerPng(viewer, opts)" in download
+    assert "__delfinCloneCanvasDataUrl" not in download
+
+    render = patch.split("window.__delfinRenderViewerPng = function")[1].split(
+        "window.__delfinDownloadViewerPng"
+    )[0]
+    # It renders the scene again at a higher pixel density...
+    assert "window.__delfinWithPixelRatio(scale" in render
+    # ...from the geometry on screen, which may be an edit that exists nowhere
+    # else, and matched to the on-screen camera.
+    assert "selectedAtoms({})" in render
+    assert "shot.setView(viewer.getView())" in render
+    # The off-screen viewer must not leak a WebGL context.
+    assert "__delfinDisposeViewer(shot)" in render
+    assert "removeChild(host)" in render

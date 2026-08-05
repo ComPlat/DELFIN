@@ -1551,7 +1551,7 @@ def create_tab(ctx):
                             if (previousViewer && window.__delfinDisposeViewer) {{
                                 window.__delfinDisposeViewer(previousViewer);
                             }}
-                            var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+                            var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             var molData = {data_json};
                             viewer.addModel(molData, "{fmt}");
@@ -1730,7 +1730,7 @@ def create_tab(ctx):
                             if (previousViewer && window.__delfinDisposeViewer) {{
                                 window.__delfinDisposeViewer(previousViewer);
                             }}
-                            var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+                            var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
                             viewer.setStyle({{}}, {style_js});

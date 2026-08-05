@@ -484,9 +484,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # The bundled 3Dmol goes first: every viewer's loader checks for the
     # library before fetching it, so having it already there is what makes
     # the dashboard work without outbound network.
-    _calc_init = '\n'.join(
-        [vendored_3dmol_js(), RIGHT_MOUSE_TRANSLATE_PATCH_JS, *ctx.init_js_parts]
-    )
+    # Supersampling factor for every viewer on the page, read once here so a
+    # quality change takes effect on the next render rather than per call site.
+    try:
+        from .molecule_viewer import get_viewer_profile
+        _pixel_ratio = float(get_viewer_profile().get('pixel_ratio') or 2.0)
+    except Exception:
+        _pixel_ratio = 2.0
+    _calc_init = '\n'.join([
+        vendored_3dmol_js(),
+        f'window.__delfinViewerPixelRatio = {_pixel_ratio};',
+        RIGHT_MOUSE_TRANSLATE_PATCH_JS,
+        *ctx.init_js_parts,
+    ])
     if _calc_init.strip():
         ctx.run_js(_calc_init)
 

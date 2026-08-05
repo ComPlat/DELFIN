@@ -3294,7 +3294,7 @@ def create_tab(ctx):
                             el.style.width = side + 'px';
                             el.style.height = side + 'px';
                         }}
-                        var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+                        var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                         {VIEWER_MOUSE_PATCH_JS}
                         var molData = {mol_json};
                         viewer.addModel(molData, "mol");
@@ -4121,7 +4121,7 @@ def create_tab(ctx):
                 if (previousViewer && window.__delfinDisposeViewer) {{
                     window.__delfinDisposeViewer(previousViewer);
                 }}
-                var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+                var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var molData = {data_json};
                 viewer.addModel(molData, "{fmt}");
@@ -7156,7 +7156,7 @@ def create_tab(ctx):
                 if (previousViewer && window.__delfinDisposeViewer) {{
                     window.__delfinDisposeViewer(previousViewer);
                 }}
-                var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+                var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var targetData = {target_json};
                 var refData = {ref_json};
@@ -7265,7 +7265,7 @@ def create_tab(ctx):
                     if (tries < 80) setTimeout(initViewer, 50);
                     return;
                 }}
-                var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+                var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                 {VIEWER_MOUSE_PATCH_JS}
                 var targetData = {target_json};
                 var refData = {ref_json};
@@ -7442,7 +7442,7 @@ def create_tab(ctx):
                             if (previousViewer && window.__delfinDisposeViewer) {{
                                 window.__delfinDisposeViewer(previousViewer);
                             }}
-                            var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+                            var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                             {VIEWER_MOUSE_PATCH_JS}
                             var xyz = `{full_xyz}`;
                             viewer.addModelsAsFrames(xyz, "xyz");

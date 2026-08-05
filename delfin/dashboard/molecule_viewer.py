@@ -91,27 +91,35 @@ _VIEWER_FIXED_ZOOM = 0.90
 VIEWER_CONTAINER_HEIGHT_PX = 450
 VIEWER_CONTAINER_DYNAMIC_SCALE = 0.9725
 
+# The supersampling factor each quality level renders at. This is the only
+# lever that makes the levels visibly different: 3Dmol's own `upscale` flag
+# just raises devicePixelRatio to 2, and cartoonQuality is dead weight here
+# because DELFIN never renders cartoons, so Medium and High used to produce
+# pixel-identical images.
+VIEWER_QUALITY_PIXEL_RATIO = {
+    'low': 1.0,
+    'medium': 2.0,
+    'high': 3.0,
+}
+
 VIEWER_QUALITY_PROFILES = {
     'low': {
         'viewer_config': {
             'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
             'antialias': False,
             'upscale': False,
-            'cartoonQuality': 5,
         },
     },
     'medium': {
         'viewer_config': {
             'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
             'antialias': True,
-            'cartoonQuality': 10,
         },
     },
     'high': {
         'viewer_config': {
             'backgroundColor': DEFAULT_3DMOL_BACKGROUND,
             'antialias': True,
-            'cartoonQuality': 20,
         },
     },
 }
@@ -222,6 +230,7 @@ def get_viewer_profile():
         'style_js': molecule_view_style_js(style),
         'viewer_config': viewer_config,
         'viewer_config_js': json.dumps(viewer_config, separators=(',', ':')),
+        'pixel_ratio': VIEWER_QUALITY_PIXEL_RATIO.get(quality, 2.0),
     }
 
 
@@ -271,7 +280,7 @@ def vendored_3dmol_js():
 
 RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     '(function(){\n'
-    'var PATCH_VERSION=8;\n'
+    'var PATCH_VERSION=9;\n'
     'if(window.__delfinRightDragTranslateVersion===PATCH_VERSION) return;\n'
     'if(window.__delfinRightDragTranslateTimer){\n'
     'try{clearInterval(window.__delfinRightDragTranslateTimer);}catch(e){}\n'
@@ -573,6 +582,33 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     # observers and window-level listeners otherwise survive the div that owned
     # them. Browsers cap live contexts and evict the oldest, which blacks out
     # viewers the user is still working in elsewhere.
+    # Viewer quality used to differ only in cartoonQuality, which is dead here
+    # because DELFIN never renders cartoons -- High was pixel-identical to
+    # Medium. 3Dmol reads window.devicePixelRatio once, when the viewer is
+    # constructed, and its `upscale` flag only ever raises it to 2. Handing it a
+    # larger value for the duration of construction is what actually buys more
+    # pixels, and it is the same mechanism the PNG export uses.
+    'window.__delfinWithPixelRatio = function(ratio, build){\n'
+    'var owner = null, descriptor = null;\n'
+    'try {\n'
+    'if (ratio && ratio > 0) {\n'
+    'descriptor = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");\n'
+    'Object.defineProperty(window, "devicePixelRatio", '
+    '{value: ratio, configurable: true});\n'
+    'owner = true;\n'
+    '}\n'
+    '} catch(e) { owner = null; }\n'
+    'try {\n'
+    'return build();\n'
+    '} finally {\n'
+    'if (owner) {\n'
+    'try {\n'
+    'if (descriptor) Object.defineProperty(window, "devicePixelRatio", descriptor);\n'
+    'else delete window.devicePixelRatio;\n'
+    '} catch(e) {}\n'
+    '}\n'
+    '}\n'
+    '};\n'
     'window.__delfinDisposeOrphanedViewers = function(){\n'
     'try {\n'
     'for (var k in window) {\n'
@@ -657,15 +693,71 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'return null;\n'
     '}\n'
     '};\n'
+    # Export used to take the on-screen canvas and blow it up with
+    # ctx.drawImage, which is bilinear interpolation: a tens-of-megabyte file
+    # that is genuinely blurrier than what the user sees. Render the scene
+    # again instead, into an off-screen viewer at the requested pixel density,
+    # matched to the on-screen camera.
+    'window.__delfinRenderViewerPng = function(viewer, options){\n'
+    'var host = null, shot = null;\n'
+    'try {\n'
+    'if(!viewer || typeof $3Dmol === "undefined") return null;\n'
+    'var opts = options || {};\n'
+    'var scale = Math.max(1, Math.min(8, parseFloat(opts.scale) || 2));\n'
+    'var el = window.__delfinResolveViewerElement(viewer, opts.element || null);\n'
+    'var source = el ? el.querySelector("canvas") : null;\n'
+    'if(!source) return null;\n'
+    'var w = source.clientWidth || source.width, h = source.clientHeight || source.height;\n'
+    'if(!w || !h) return null;\n'
+    'host = document.createElement("div");\n'
+    'host.style.cssText = "position:fixed;left:-10000px;top:0;width:" + w + '
+    '"px;height:" + h + "px;";\n'
+    'document.body.appendChild(host);\n'
+    'var config = {backgroundColor: opts.background || "white", antialias: true};\n'
+    'shot = window.__delfinWithPixelRatio(scale, function(){\n'
+    # Deliberately the raw factory: __delfinCreateViewer would apply the
+    # viewer-quality ratio and override the export's own, higher one.
+    'return $3Dmol.createViewer(host, config);\n'
+    '});\n'
+    'if(!shot) return null;\n'
+    # Copy the scene rather than re-parsing the file: what is on screen may
+    # already be an edited geometry that exists nowhere else.
+    'var models = viewer.getModel ? [viewer.getModel()] : [];\n'
+    'for (var m = 0; m < models.length; m++) {\n'
+    'if(!models[m] || typeof models[m].selectedAtoms !== "function") continue;\n'
+    'var atoms = models[m].selectedAtoms({}) || [];\n'
+    'var lines = [String(atoms.length), "viewer export"];\n'
+    'for (var a = 0; a < atoms.length; a++) {\n'
+    'lines.push((atoms[a].elem || "X") + " " + atoms[a].x + " " + '
+    'atoms[a].y + " " + atoms[a].z);\n'
+    '}\n'
+    'shot.addModel(lines.join("\\n"), "xyz");\n'
+    '}\n'
+    'shot.setStyle({}, opts.style || {stick: {}, sphere: {scale: 0.28}});\n'
+    'if(typeof viewer.getView === "function" && typeof shot.setView === "function") {\n'
+    'try { shot.setView(viewer.getView()); } catch(e) { shot.zoomTo(); }\n'
+    '} else { shot.zoomTo(); }\n'
+    'shot.render();\n'
+    'return window.__delfinCanvasToPngDataUrl(host.querySelector("canvas"));\n'
+    '} catch(e) {\n'
+    'return null;\n'
+    '} finally {\n'
+    'try { if(shot) window.__delfinDisposeViewer(shot); } catch(e) {}\n'
+    'try { if(host && host.parentNode) host.parentNode.removeChild(host); } catch(e) {}\n'
+    '}\n'
+    '};\n'
     'window.__delfinDownloadViewerPng = function(viewer, options){\n'
     'try {\n'
     'if(!viewer) return false;\n'
     'var opts = options || {};\n'
     'if(typeof viewer.render === "function") viewer.render();\n'
+    'var dataUrl = window.__delfinRenderViewerPng(viewer, opts);\n'
+    'if(!dataUrl) {\n'
+    # Last resort only: a plain screenshot beats no file at all.
     'var el = window.__delfinResolveViewerElement(viewer, opts.element || null);\n'
     'var canvas = el ? el.querySelector("canvas") : null;\n'
-    'var dataUrl = window.__delfinCloneCanvasDataUrl(canvas, opts.scale || 1)\n'
-    ' || window.__delfinCanvasToPngDataUrl(canvas);\n'
+    'dataUrl = window.__delfinCanvasToPngDataUrl(canvas);\n'
+    '}\n'
     'return window.__delfinDownloadDataUrl(dataUrl, opts.filename || "viewer.png");\n'
     '} catch(e) {\n'
     'return false;\n'
@@ -679,6 +771,17 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'window.__delfinPatchAllKnown3DmolViewers();\n'
     '}).catch(function(){});\n'
     '}\n'
+    '};\n'
+    # 3Dmol exposes createViewer as a non-configurable getter, so the factory
+    # cannot be replaced -- assigning to it silently does nothing. Call sites go
+    # through this instead, which applies the configured supersampling factor
+    # for the duration of construction and is where the quality setting becomes
+    # visible at all.
+    'window.__delfinCreateViewer = function(element, config){\n'
+    'var ratio = window.__delfinViewerPixelRatio || 0;\n'
+    'return window.__delfinWithPixelRatio(ratio, function(){\n'
+    'return $3Dmol.createViewer(element, config);\n'
+    '});\n'
     '};\n'
     'var bootstrapAttempt=0;\n'
     'function bootstrap(){\n'
@@ -2813,6 +2916,12 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
                 profile['viewer_config_js'],
                 1,
             )
+        # Route py3Dmol's own construction through the supersampling helper.
+        if '$3Dmol.createViewer(' in view.startjs:
+            view.startjs = view.startjs.replace(
+                '$3Dmol.createViewer(',
+                'window.__delfinCreateViewer(',
+            )
         marker = (
             'window.__delfinEnableRightDragTranslate('
             'viewer_UNIQUEID,document.getElementById("3dmolviewer_UNIQUEID"));'
@@ -3162,7 +3271,7 @@ def build_fukui_viewer_html(
     ensureLoaded(function() {{
         var el = document.getElementById('{viewer_id}');
         if (!el) return;
-        var viewer = $3Dmol.createViewer(el, {viewer_config_js});
+        var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
         viewer.addModel({xyz_json}, 'xyz');
         viewer.setStyle({{}}, {style_js});
         {label_js}
