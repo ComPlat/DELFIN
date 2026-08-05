@@ -268,12 +268,25 @@ def vendored_3dmol_js():
     except Exception:
         _VENDORED_3DMOL_CACHE = ''
         return ''
+    # The bundle is a UMD wrapper whose first statement is ``root = this``, and
+    # its last assigns ``root["3Dmol"]``. ctx.run_js hands scripts to
+    # JupyterLab/Voila through display(Javascript(...)), which evaluates them
+    # with ``this`` undefined -- so the library threw "Cannot set properties of
+    # undefined (setting '3Dmol')" and no viewer could be built. Call it with an
+    # explicit receiver instead of relying on the host's calling convention.
     _VENDORED_3DMOL_CACHE = (
-        'if (typeof $3Dmol === "undefined") {\n'
+        '(function(__delfinGlobal){\n'
+        'if (typeof __delfinGlobal.$3Dmol === "undefined") {\n'
+        '(function(){\n'
         + source
-        + '\n}\n'
-        'try { window.$3Dmolpromise = window.$3Dmolpromise '
-        '|| Promise.resolve(window.$3Dmol); } catch (e) {}\n'
+        + '\n}).call(__delfinGlobal);\n'
+        '}\n'
+        'try {\n'
+        '__delfinGlobal.$3Dmolpromise = __delfinGlobal.$3Dmolpromise '
+        '|| Promise.resolve(__delfinGlobal.$3Dmol);\n'
+        '} catch (e) {}\n'
+        '})(typeof window !== "undefined" ? window '
+        ': (typeof globalThis !== "undefined" ? globalThis : this));\n'
     )
     return _VENDORED_3DMOL_CACHE
 

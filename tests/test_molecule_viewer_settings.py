@@ -459,3 +459,23 @@ def test_viewers_no_longer_give_up_while_their_tab_is_hidden():
     assert "tries < 400" in _CALC_VIEWER_SOURCE
     assert "tries < 40 ? 50 : 250" in _CALC_VIEWER_SOURCE
     assert "tries<400" in _ORCA_VIEWER_SOURCE
+
+
+def test_vendored_bundle_does_not_depend_on_the_host_calling_convention():
+    """The bundle is a UMD wrapper: its first statement is ``root = this`` and
+    its last assigns ``root["3Dmol"]``. ctx.run_js hands scripts to
+    JupyterLab/Voila through display(Javascript(...)), which evaluates them
+    with ``this`` undefined, so the library threw
+
+        Cannot set properties of undefined (setting '3Dmol')
+
+    and — because that abort killed the rest of the start-up script — neither
+    $3Dmolpromise nor the mouse patch that defines __delfinCreateViewer ever
+    ran. Every viewer construction then failed and no molecule appeared."""
+    js = _MODULE.vendored_3dmol_js()
+    assert js.startswith("(function(__delfinGlobal){")
+    # The library is invoked with an explicit receiver, not the host's `this`.
+    assert ").call(__delfinGlobal);" in js
+    assert 'typeof window !== "undefined" ? window' in js
+    # And the guard the loaders check is set on that same object.
+    assert "__delfinGlobal.$3Dmolpromise = __delfinGlobal.$3Dmolpromise" in js
