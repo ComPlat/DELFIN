@@ -230,7 +230,7 @@ def viewer_disabled_html(width=None, height=None):
     return _VIEWER_DISABLED_PLACEHOLDER_HTML
 RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     '(function(){\n'
-    'var PATCH_VERSION=6;\n'
+    'var PATCH_VERSION=7;\n'
     'if(window.__delfinRightDragTranslateVersion===PATCH_VERSION) return;\n'
     'if(window.__delfinRightDragTranslateTimer){\n'
     'try{clearInterval(window.__delfinRightDragTranslateTimer);}catch(e){}\n'
@@ -297,6 +297,9 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'try{viewer.setViewStyle(style);return true;}catch(e){return false;}\n'
     '};\n'
     'var notifyInteractionStart = function(){\n'
+    # Sticky, unlike __delfinInteracting: once the user has touched this viewer,
+    # deferred set-up work must not reset the camera under their hands.
+    'viewer.__delfinUserInteracted=true;\n'
     'if(viewer.__delfinInteracting) return;\n'
     'viewer.__delfinInteracting=true;\n'
     'useFastInteractionStyle();\n'
@@ -2425,8 +2428,13 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
                 + '\n'
                 + (
                     '(function(){'
+                    # Deferred recentering exists because the canvas is not
+                    # always at its final size on the first frame. It must never
+                    # run once the user has started interacting, or the pan,
+                    # zoom or rotation they just made is silently thrown away.
                     'var __delfinRecenter=function(){'
                     'try{'
+                    'if(viewer_UNIQUEID.__delfinUserInteracted) return;'
                     'viewer_UNIQUEID.zoomTo();'
                     'viewer_UNIQUEID.center();'
                     + (

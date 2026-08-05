@@ -234,7 +234,51 @@ def test_mouse_patch_leaves_editor_drag_handlers_on_window_alive():
     assert 'window._submitManipStateByScope' in patch
 
     # An already-open dashboard rebinds only when the version changes.
-    assert 'var PATCH_VERSION=6;' in patch
+    assert 'var PATCH_VERSION=7;' in patch
+
+
+def test_deferred_recentering_never_overrides_the_user():
+    """apply_molecule_view_style recenters again at +120 ms because the canvas
+    is not always at its final size on the first frame. Any pan or zoom the
+    user managed in that window used to be thrown away."""
+
+    class FakeView:
+        def __init__(self):
+            self.startjs = '/*head*/'
+
+        def setStyle(self, *a):
+            pass
+
+        def setBackgroundColor(self, *a):
+            pass
+
+        def zoomTo(self):
+            pass
+
+        def center(self):
+            pass
+
+        def zoom(self, *a):
+            pass
+
+        def render(self):
+            pass
+
+    view = FakeView()
+    _MODULE.apply_molecule_view_style(view)
+    recenter = view.startjs.split('var __delfinRecenter=function(){')[1]
+    guard = 'if(viewer_UNIQUEID.__delfinUserInteracted) return;'
+    assert guard in recenter
+    # The guard has to come before any camera call, not after.
+    body = recenter.split('};')[0]
+    assert body.index(guard) < body.index('zoomTo()')
+
+    # The flag is sticky, unlike __delfinInteracting which clears on release.
+    patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    start = patch.split('var notifyInteractionStart = function(){')[1].split('};')[0]
+    assert 'viewer.__delfinUserInteracted=true;' in start
+    assert start.index('__delfinUserInteracted') < start.index(
+        'if(viewer.__delfinInteracting) return;')
 
 
 def test_orca_label_occlusion_is_deferred_until_mouse_interaction_ends():
