@@ -747,7 +747,8 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         var next = SMOOTHING * st.chunk + (1.0 - SMOOTHING) * ideal;
         if (!isFinite(next)) return;
         if (next < MIN_CHUNK) next = MIN_CHUNK;
-        if (next > MAX_CHUNK) next = MAX_CHUNK;
+        var ceiling = st.maxChunk || MAX_CHUNK;
+        if (next > ceiling) next = ceiling;
         st.chunk = next;
     }
 
@@ -799,6 +800,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         // A fresh grab is a fresh interaction: restart the batch at Avogadro's
         // initial chunk and force a neighbour rebuild on the next frame.
         st.chunk = INITIAL_CHUNK;
+        st.maxChunk = st.maxChunk || MAX_CHUNK;
         st.lambda = INITIAL_LAMBDA;
         st.haveEnergy = false;
         st.sinceRebuild = PAIR_REBUILD_FRAMES;
@@ -860,6 +862,8 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
             st.sinceRebuild++;
 
             var k = Math.round(st.chunk);
+            var ceiling = st.maxChunk || MAX_CHUNK;
+            if (k > ceiling) k = ceiling;
             if (k < MIN_CHUNK) k = MIN_CHUNK;
             if (k > MAX_CHUNK) k = MAX_CHUNK;
 
@@ -914,6 +918,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
             steps: st.totalSteps,
             last_steps: st.lastSteps,
             chunk: st.chunk,
+            max_chunk: st.maxChunk || MAX_CHUNK,
             ms_per_frame: st.lastFrameMs || st.lastFfMs,
             ms_force_field: st.lastFfMs,
             ms_per_step: st.msPerStep,
@@ -942,6 +947,10 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         if (isNum(opts.cutoff) && opts.cutoff > 0) { st.cutoff = opts.cutoff; st.pairI = null; }
         if (isNum(opts.skin) && opts.skin >= 0) { st.skin = opts.skin; st.pairI = null; }
         if (isNum(opts.chunk) && opts.chunk > 0) st.chunk = opts.chunk;
+        if (isNum(opts.maxChunk) && opts.maxChunk > 0) {
+            st.maxChunk = Math.max(MIN_CHUNK, Math.min(MAX_CHUNK, opts.maxChunk));
+            if (st.chunk > st.maxChunk) st.chunk = st.maxChunk;
+        }
         return true;
     }
 

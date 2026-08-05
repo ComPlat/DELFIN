@@ -384,11 +384,12 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     '}\n'
     '};\n'
     'var translateNow = function(dx,dy){\n'
-    'if(typeof viewer.translate === "function"&&(dx||dy)) {\n'
-    'viewer.translate(dx, dy);\n'
-    '} else if(typeof viewer.translateScene === "function"&&(dx||dy)) {\n'
+    'if(!dx && !dy) return;\n'
+    'if(typeof viewer.translateScene === "function") {\n'
     'viewer.translateScene(dx, dy);\n'
-    '} else if(typeof viewer.pan === "function"&&(dx||dy)) {\n'
+    '} else if(typeof viewer.translate === "function") {\n'
+    'viewer.translate(dx, dy);\n'
+    '} else if(typeof viewer.pan === "function") {\n'
     'viewer.pan(dx, dy);\n'
     '}\n'
     '};\n'
@@ -1499,7 +1500,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (state.mode === 'select' && n === 0) {
             hint = faint + '(click an atom · <b>Shift</b>+drag = rectangle)</span>';
         } else if (state.mode === 'manipulate' && n === 0) {
-            hint = faint + '(drag any atom · drag empty space turns the view)</span>';
+            hint = faint + '(drag any atom · empty space turns the view · ' +
+                   (state.autoOpt ? 'right-drag pans' : 'right-click sets a pivot') +
+                   ')</span>';
         } else if (n >= 2 && n <= 4) {
             var names = {2: 'bond', 3: 'angle', 4: 'dihedral'};
             hint = faint + '(' + names[n] + ': type a value and press <b>Set</b>)</span>';
@@ -1992,6 +1995,13 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (ffRelaxFrame(scopeKey)) {
                 redrawHighlights(scopeKey);
                 var now = nowMs();
+                // Take a snapshot every couple of seconds while the field
+                // runs, so Undo steps back through the relaxation instead of
+                // returning to the geometry from before it was switched on.
+                if (now - (state.autoSnapshot || 0) > 2000) {
+                    state.autoSnapshot = now;
+                    snapshotForUndo(scopeKey);
+                }
                 // The coordinate box follows at a readable rate, not per frame:
                 // each push is a widget round trip.
                 if (now - (state.autoPushed || 0) > 500) {
@@ -2011,6 +2021,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         snapshotForUndo(scopeKey);
         state.autoOpt = true;
         state.autoPushed = nowMs();
+        state.autoSnapshot = nowMs();
         autoOptimizeTick(scopeKey);
         updateStatus(scopeKey);
         return true;
@@ -2027,6 +2038,21 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         pushXyzToPython(scopeKey);
         updateStatus(scopeKey);
         return true;
+    }
+
+    // How hard the relaxation pulls. The engine still keeps to its wall-clock
+    // budget; this bounds how far the structure may move in a single frame, so
+    // a gentle setting can be dragged against instead of fought.
+    function setOptimizerStrength(scopeKey, steps) {
+        var state = getState(scopeKey);
+        state.ffStrength = Math.max(1, Math.min(200, parseInt(steps, 10) || 40));
+        if (window.__delfinFF && window._delfinFFByScope &&
+            window._delfinFFByScope[scopeKey]) {
+            try {
+                window.__delfinFF.configure(scopeKey, {maxChunk: state.ffStrength});
+            } catch (e) {}
+        }
+        return state.ffStrength;
     }
 
     function ffEndDrag(scopeKey) {
@@ -2119,6 +2145,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (state.mode === 'manipulate') { e.preventDefault(); e.stopPropagation(); }
         });
 
+        // The overlay covers the canvas while editing, and 3Dmol listens for
+        // the wheel on the canvas -- so scrolling stopped zooming as soon as a
+        // mode was switched on. Hand the event over.
+        ov.addEventListener('wheel', function(e) {
+            if (state.mode === 'off') return;
+            var viewer = getViewer(scopeKey);
+            if (!viewer || typeof viewer._handleMouseScroll !== 'function') return;
+            e.preventDefault();
+            try { viewer._handleMouseScroll(e); } catch (_e) {}
+        }, {passive: false});
+
         ov.addEventListener('mousedown', function(e) {
             if (state.mode === 'off') return;
             var rect = ov.getBoundingClientRect();
@@ -2127,7 +2164,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
             if (state.mode === 'manipulate') {
                 if (e.button === 2) {
-                    // Right mouse always tries to pick a pivot atom under the cursor.
+                    // Pivot picking is off while the field runs -- the right
+                    // button pans the scene then, so let the event through.
+                    if (state.autoOpt) return;
                     e.preventDefault(); e.stopPropagation();
                     var picked = probeClickAtom(scopeKey, e.clientX, e.clientY);
                     if (picked) {
@@ -2286,6 +2325,28 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }, true);
     }
 
+    // The default slab is roughly the size of the loaded molecule, so an atom
+    // pulled towards the viewer crosses the near plane and vanishes. Editing
+    // needs far more room than viewing does.
+    var EDIT_SLAB = 400;
+    function widenSlabForEditing(scopeKey, editing) {
+        var viewer = getViewer(scopeKey);
+        var state = getState(scopeKey);
+        if (!viewer || typeof viewer.setSlab !== 'function') return;
+        try {
+            if (editing) {
+                if (!state.slabSaved && typeof viewer.getSlab === 'function') {
+                    state.slabSaved = viewer.getSlab();
+                }
+                viewer.setSlab(-EDIT_SLAB, EDIT_SLAB);
+            } else if (state.slabSaved) {
+                viewer.setSlab(state.slabSaved.near, state.slabSaved.far);
+                state.slabSaved = null;
+            }
+            viewer.render();
+        } catch (e) {}
+    }
+
     function setOverlayInteractive(scopeKey) {
         var state = getState(scopeKey);
         if (!state.overlay) return;
@@ -2343,6 +2404,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function setMode(scopeKey, mode) {
         var state = getState(scopeKey);
         state.mode = (mode === 'select' || mode === 'manipulate') ? mode : 'off';
+        widenSlabForEditing(scopeKey, state.mode !== 'off');
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
         updateStatus(scopeKey);
@@ -2384,6 +2446,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 if (!s.viewerEl.contains(e.target) && e.target !== s.viewerEl) continue;
                 if (s.mode !== 'manipulate') continue;
                 if (e.button !== 2) continue;  // only steal right-button
+                // While the field is running the right button pans the scene
+                // instead: with the structure moving under the cursor, shifting
+                // the view is what the user reaches for, not a pivot rotation.
+                if (s.autoOpt) continue;
                 e.preventDefault(); e.stopImmediatePropagation();
                 // Forward to our normal mousedown logic by synthesising
                 // a direct call (our overlay listener expects this shape).
@@ -2412,7 +2478,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 var s = states[k];
                 if (!s || !s.viewerEl) continue;
                 if (!s.viewerEl.contains(e.target) && e.target !== s.viewerEl) continue;
-                if (s.mode === 'manipulate') {
+                if (s.mode === 'manipulate' || s.autoOpt) {
                     e.preventDefault(); e.stopImmediatePropagation();
                     return;
                 }
@@ -2602,6 +2668,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.ffActive = !!(result && result.ok);
         state.ffInfo = result;
+        if (state.ffActive && state.ffStrength) {
+            setOptimizerStrength(scopeKey, state.ffStrength);
+        }
         updateStatus(scopeKey);
         return result;
     }
@@ -2614,6 +2683,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setForceField: setForceField,
         readInternal: readInternal,
         setInternal: setInternal,
+        setOptimizerStrength: setOptimizerStrength,
         startAutoOptimize: startAutoOptimize,
         stopAutoOptimize: stopAutoOptimize,
         autoOptimizeRunning: autoOptimizeRunning

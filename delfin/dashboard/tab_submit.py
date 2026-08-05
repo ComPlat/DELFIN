@@ -673,14 +673,14 @@ def create_tab(ctx):
         disabled=True,
     )
     submit_relax_btn = widgets.ToggleButton(
-        value=False, description='Optimize', icon='magic',
+        value=False, description='Dynamik Opt', icon='magic',
         button_style='',
         tooltip=(
-            'Keep a force field running, the way Avogadro\'s auto optimisation '
-            'does: the structure settles continuously, and an atom you grab '
-            'drags the relaxing molecule along with it. Toggle off to stop.'
+            'Keep the force field running: the structure settles continuously, '
+            'and an atom you grab drags the relaxing molecule along with it. '
+            'Use the strength control to make it gentler. Toggle off to stop.'
         ),
-        layout=widgets.Layout(width='84px', height='30px'),
+        layout=widgets.Layout(width='132px', height='30px'),
         disabled=True,
     )
     submit_optimize_btn = widgets.Button(
@@ -690,13 +690,13 @@ def create_tab(ctx):
             'entries, not just the one on screen. Undo restores the geometries '
             'from before the run.'
         ),
-        layout=widgets.Layout(width='116px', height='30px'),
+        layout=widgets.Layout(width='128px', height='30px'),
         disabled=True,
     )
     submit_ff_dd = widgets.Dropdown(
         options=[('UFF', 'uff'), ('MMFF94', 'mmff94')],
         value='uff',
-        layout=widgets.Layout(width='104px'),
+        layout=widgets.Layout(width='112px'),
         disabled=True,
     )
     submit_internal_label = widgets.HTML(
@@ -735,13 +735,30 @@ def create_tab(ctx):
     submit_manip_sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
     submit_manip_sync.add_class('submit-manip-sync')
 
+    submit_strength_slider = widgets.IntSlider(
+        value=40, min=1, max=200, step=1,
+        description='Strength', continuous_update=False,
+        readout=True, readout_format='d',
+        style={'description_width': '58px'},
+        layout=widgets.Layout(width='200px'),
+        disabled=True,
+    )
+    submit_internal_group = widgets.HBox(
+        [submit_internal_label, submit_internal_value, submit_internal_btn],
+        layout=widgets.Layout(
+            gap='6px', align_items='center', flex_flow='row nowrap',
+            flex='0 0 auto', overflow='visible',
+        ),
+    )
+
     submit_manip_toolbar = widgets.HBox(
         [
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn,
             submit_manip_clear_btn, submit_manip_undo_btn,
-            submit_relax_btn, submit_optimize_btn, submit_ff_dd,
-            submit_internal_label, submit_internal_value, submit_internal_btn,
+            submit_ff_dd, submit_optimize_btn,
+            submit_relax_btn, submit_strength_slider,
+            submit_internal_group,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -958,9 +975,33 @@ def create_tab(ctx):
             # mouse listeners stay alive; browsers cap contexts and start
             # killing the oldest, which blacks out the viewers in other tabs.
             f'    var prev = window._submitMolViewerByScope[{scope_key_js}];\n'
-            '    if (prev && prev !== viewer_UNIQUEID && window.__delfinDisposeViewer) {\n'
-            '      window.__delfinDisposeViewer(prev);\n'
+            # Keep the camera across a re-render. Optimising or stepping to
+            # another isomer rebuilds the viewer, and the view otherwise snapped
+            # back to the default orientation every time.
+            '    window._submitMolViewByScope = window._submitMolViewByScope || {};\n'
+            '    if (prev && prev !== viewer_UNIQUEID) {\n'
+            '      try {\n'
+            '        var prevModel = prev.getModel ? prev.getModel() : null;\n'
+            '        var prevCount = prevModel && prevModel.selectedAtoms\n'
+            '          ? prevModel.selectedAtoms({}).length : -1;\n'
+            f'        window._submitMolViewByScope[{scope_key_js}] =\n'
+            '          {view: prev.getView(), atoms: prevCount};\n'
+            '      } catch(e) {}\n'
+            '      if (window.__delfinDisposeViewer) window.__delfinDisposeViewer(prev);\n'
             '    }\n'
+            '    try {\n'
+            f'      var saved = window._submitMolViewByScope[{scope_key_js}];\n'
+            '      var model = viewer_UNIQUEID.getModel();\n'
+            '      var count = model && model.selectedAtoms\n'
+            '        ? model.selectedAtoms({}).length : -1;\n'
+            # Same structure, just moved -- keep the view. A different one
+            # deserves a fresh look at it.
+            '      if (saved && saved.view && saved.atoms === count) {\n'
+            '        viewer_UNIQUEID.setView(saved.view);\n'
+            '        viewer_UNIQUEID.__delfinUserInteracted = true;\n'
+            '        viewer_UNIQUEID.render();\n'
+            '      }\n'
+            '    } catch(e) {}\n'
             f'    window._submitMolViewerByScope[{scope_key_js}] = viewer_UNIQUEID;\n'
             '    var el = document.getElementById("3dmolviewer_UNIQUEID");\n'
             '    var fire = function(){\n'
@@ -1007,6 +1048,7 @@ def create_tab(ctx):
         submit_manip_btn.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
+        submit_strength_slider.disabled = not enabled
         submit_ff_dd.disabled = not enabled
         submit_optimize_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
@@ -3120,9 +3162,12 @@ def create_tab(ctx):
         _ensure_manip_bootstrap()
         _ensure_ff_bootstrap()
         _run_manip_js(
-            'if(window.__delfinSubmitManip)'
+            'if(window.__delfinSubmitManip){'
             'window.__delfinSubmitManip.setForceField('
             f'{json.dumps(submit_scope_id)},{json.dumps(payload)});'
+            'window.__delfinSubmitManip.setOptimizerStrength('
+            f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
+            '}'
         )
         # Terms derived from the input geometry rather than real UFF typing --
         # the transition-metal case -- are worth saying out loud.
@@ -3234,6 +3279,16 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{float(submit_internal_value.value)!r});'
         )
 
+    def on_submit_strength_changed(change):
+        if change.get('name') != 'value':
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setOptimizerStrength('
+            f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
+        )
+
     def on_submit_ff_changed(change):
         if change.get('name') != 'value':
             return
@@ -3313,6 +3368,7 @@ def create_tab(ctx):
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
+    submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')

@@ -246,3 +246,100 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     # fullscreen stays one line -- and wraps when there is not.
     status = source.split('submit_manip_status = widgets.HTML')[1].split(')\n')[0]
     assert "flex='1 1 260px'" in status
+
+    # The label, the value box and Set are one wrapping unit: a label that
+    # lands on a different row from its field explains nothing.
+    group = source.split('submit_internal_group = widgets.HBox')[1].split(')\n')[0]
+    assert 'submit_internal_label, submit_internal_value, submit_internal_btn' in group
+    assert "flex_flow='row nowrap'" in group
+
+    # Force field first, then the one-shot run, then the continuous one.
+    children = source.split('submit_manip_toolbar = widgets.HBox')[1].split(']')[0]
+    assert children.index('submit_ff_dd') < children.index('submit_optimize_btn')
+    assert children.index('submit_optimize_btn') < children.index('submit_relax_btn')
+    assert children.index('submit_relax_btn') < children.index('submit_internal_group')
+
+
+def test_relaxation_strength_is_adjustable():
+    """At full strength the field moves the structure so far per frame that a
+    dragged atom has to be fought rather than led."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_strength_slider' in source
+    assert 'setOptimizerStrength' in source
+
+    strength = _body('setOptimizerStrength')
+    assert 'maxChunk' in strength
+    # Re-applied whenever parameters are assigned, so it survives a reload.
+    assert 'setOptimizerStrength(scopeKey, state.ffStrength)' in EDITOR
+
+    from delfin.dashboard import molecule_forcefield_js as ffjs
+    engine = ffjs.MOLECULE_FF_BOOTSTRAP_JS
+    assert 'st.maxChunk' in engine
+    assert 'opts.maxChunk' in engine
+
+
+def test_undo_steps_back_through_a_running_relaxation():
+    """Switching the field on was the only snapshot taken, so after a spell of
+    continuous relaxation the first Undo jumped to the geometry from before it
+    was switched on."""
+    tick = _body('autoOptimizeTick')
+    assert 'state.autoSnapshot' in tick
+    assert 'snapshotForUndo(scopeKey)' in tick
+    assert '> 2000' in tick
+
+
+def test_camera_survives_a_rebuild_of_the_same_structure():
+    """Optimising or stepping to another isomer rebuilds the viewer, and the
+    view snapped back to the default orientation every time."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert '_submitMolViewByScope' in source
+    assert 'prev.getView()' in source
+    assert 'viewer_UNIQUEID.setView(saved.view)' in source
+    # Only for the same structure: a different molecule deserves a fresh look.
+    assert 'saved.atoms === count' in source
+
+
+def test_panning_calls_the_function_that_actually_moves_the_scene():
+    """viewer.translate() exists in this 3Dmol build but does nothing;
+    translateScene() is the call that moves it. Probing translate first meant
+    the working call was never reached, so right-drag never panned at all."""
+    from delfin.dashboard import molecule_viewer as mv
+
+    body = mv.RIGHT_MOUSE_TRANSLATE_PATCH_JS.split('var translateNow')[1].split('};')[0]
+    assert body.index('translateScene') < body.index('viewer.translate(')
+
+
+def test_editing_gets_room_so_atoms_are_not_clipped_or_fogged_away():
+    """The default slab is about the size of the loaded molecule, so an atom
+    pulled towards the viewer crosses the near plane: it washes out and then
+    disappears. Measured brightness went from 210.5 (nearly gone) back to
+    147.4, against 145.7 at rest, once the slab was widened."""
+    widen = _body('widenSlabForEditing')
+    assert 'viewer.setSlab(-EDIT_SLAB, EDIT_SLAB)' in widen
+    # The viewing slab is restored when editing ends.
+    assert 'state.slabSaved' in widen
+    assert 'viewer.setSlab(state.slabSaved.near, state.slabSaved.far)' in widen
+    mode = _body('setMode')
+    assert "widenSlabForEditing(scopeKey, state.mode !== 'off')" in mode
+
+
+def test_the_wheel_still_zooms_while_a_mode_is_active():
+    """The overlay covers the canvas while editing and 3Dmol listens for the
+    wheel on the canvas, so scrolling stopped zooming the moment a mode was
+    switched on."""
+    assert "ov.addEventListener('wheel'" in EDITOR
+    assert 'viewer._handleMouseScroll(e)' in EDITOR
+    assert '{passive: false}' in EDITOR
+
+
+def test_right_drag_pans_while_the_field_is_running():
+    """With the structure moving under the cursor, shifting the view is what
+    the user reaches for -- not a pivot rotation."""
+    assert 'if (s.autoOpt) continue;' in EDITOR
+    assert 'if (state.autoOpt) return;' in EDITOR
+    # The context menu stays suppressed either way, or panning pops a menu.
+    assert "if (s.mode === 'manipulate' || s.autoOpt) {" in EDITOR
