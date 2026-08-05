@@ -492,3 +492,25 @@ def test_right_drag_moves_the_molecule_the_way_the_cursor_went():
     patch = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS
     assert "'pendingDy += dy;\\n'" in patch or "pendingDy += dy;" in patch
     assert "pendingDy -= dy;" not in patch
+
+
+def test_png_export_mirrors_what_the_viewer_shows():
+    """The export built its off-screen viewer with a hardcoded ball-and-stick
+    style and a white background, so a viewer set to wireframe or spheres — or
+    with the atom scale, bond radius or fog changed in Settings — exported
+    something the user was not looking at.
+
+    Verified in a browser across four representations: ink coverage and mean
+    colour of the exported image match the on-screen render to the digit."""
+    render = _MODULE.RIGHT_MOUSE_TRANSLATE_PATCH_JS.split(
+        "window.__delfinRenderViewerPng = function"
+    )[1].split("window.__delfinDownloadViewerPng")[0]
+
+    # Renderer config comes from the live viewer: background, fog, the lot.
+    assert 'viewer.getConfig()' in render
+    assert 'config[key] = live[key]' in render
+    # Styles are copied per atom rather than assumed.
+    assert 'srcAtoms[t].style' in render
+    assert 'shotAtoms[t].style = srcAtoms[t].style' in render
+    # The hardcoded style survives only as a fallback when nothing was copied.
+    assert 'if (!copied) shot.setStyle' in render
