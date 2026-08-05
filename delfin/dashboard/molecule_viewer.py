@@ -855,6 +855,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     var UNDO_LIMIT = 50;
     var ROT_RAD_PER_PX = 0.01;
     var DRAG_THRESHOLD_PX = 3;
+    var PICK_RADIUS_PX = 14;
 
     function getViewer(scopeKey) {
         return (window._submitMolViewerByScope || {})[scopeKey] || null;
@@ -1051,9 +1052,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
     function pushXyzToPython(scopeKey) {
         var viewer = getViewer(scopeKey);
-        if (!viewer) { try { console.log('delfin push: no viewer'); } catch (e) {} return; }
+        if (!viewer) return;
         var input = getSyncInput(scopeKey);
-        if (!input) { try { console.log('delfin push: no sync input'); } catch (e) {} return; }
+        if (!input) return;
         var xyz = serializeXyz(viewer);
         var proto = (input.tagName === 'TEXTAREA')
             ? window.HTMLTextAreaElement.prototype
@@ -1063,10 +1064,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         else input.value = xyz;
         input.dispatchEvent(new Event('input', {bubbles: true}));
         input.dispatchEvent(new Event('change', {bubbles: true}));
-        try {
-            console.log('delfin push: sync input', input.tagName,
-                'len=', xyz.length, 'firstLine=', xyz.split('\n')[0]);
-        } catch (e) {}
     }
 
     // Force 3Dmol to rebuild atom/bond geometry after we mutated atom.x/y/z
@@ -1281,30 +1278,26 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         redrawHighlights(scopeKey);
     }
 
-    // --- 3Dmol-native atom picking ---
+    // --- Atom picking ---
+    // 3Dmol's own picker and our projection-based one used to run as two
+    // independent click handlers that each called togglePick, so a click on an
+    // atom selected and immediately deselected it — the most basic operation in
+    // the editor did nothing whenever 3Dmol's picker worked. There is now a
+    // single resolution path: 3Dmol only *records* what it hit, and one
+    // deferred handler decides and toggles exactly once.
     function attachClickable(scopeKey) {
         var viewer = getViewer(scopeKey);
-        if (!viewer) {
-            try { console.log('delfin attachClickable: no viewer for', scopeKey); } catch (e) {}
-            return;
-        }
-        try { console.log('delfin attachClickable:', scopeKey,
-            'hasSetClickable=', typeof viewer.setClickable); } catch (e) {}
+        if (!viewer) return;
         try {
-            viewer.setClickable({}, true, function(atom, v, ev, container) {
-                try { console.log('delfin setClickable fired:', atom && atom.serial); } catch (e) {}
+            viewer.setClickable({}, true, function(atom) {
                 var state = getState(scopeKey);
                 if (state.mode !== 'select') return;
-                if (state.drag && state.drag.movedEnough) return;
                 if (!atom || atom.serial === undefined) return;
-                var additive = !!(ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey));
-                togglePick(scopeKey, atom, additive);
+                state._nativeHit = {serial: atom.serial, elem: atom.elem || 'X'};
             });
             // Force 3Dmol to rebuild any internal pick buffers.
             try { viewer.render(); } catch (e) {}
-        } catch (e) {
-            try { console.log('delfin setClickable error:', e.message); } catch (_) {}
-        }
+        } catch (e) {}
         installCanvasClickFallback(scopeKey);
     }
     function detachClickable(scopeKey) {
@@ -1314,69 +1307,43 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         uninstallCanvasClickFallback(scopeKey);
     }
 
-    // Dispatch a single synthetic click at (clientX, clientY), collect the atom
-    // that 3Dmol's setClickable reports. Restores any prior callback afterwards.
+    // Resolve the atom under a viewport position. Depth-aware, no synthetic
+    // events: the old implementation dispatched a mousedown/mouseup/click
+    // triple at the canvas and swapped 3Dmol's click callback around it just to
+    // read back one atom.
     function probeClickAtom(scopeKey, clientX, clientY) {
-        var viewer = getViewer(scopeKey);
-        var state = getState(scopeKey);
-        if (!viewer || !state.canvas) return null;
-        var hit = null;
-        try {
-            viewer.setClickable({}, true, function(atom) {
-                if (atom && atom.serial !== undefined) {
-                    hit = {serial: atom.serial, elem: atom.elem || 'X'};
-                }
-            });
-            try { viewer.render(); } catch (e) {}
-            var opts = {
-                bubbles: true, cancelable: true,
-                clientX: clientX, clientY: clientY, button: 0, buttons: 1
-            };
-            state.canvas.dispatchEvent(new MouseEvent('mousedown', opts));
-            opts.buttons = 0;
-            state.canvas.dispatchEvent(new MouseEvent('mouseup', opts));
-            state.canvas.dispatchEvent(new MouseEvent('click', opts));
-        } catch (e) {
-            try { console.log('delfin probeClickAtom error:', e.message); } catch (_) {}
-        }
-        // Restore the select-mode callback (even in manipulate, harmless)
-        if (state.mode === 'select') {
-            attachClickable(scopeKey);
-        } else {
-            try { viewer.setClickable({}, false, function(){}); } catch (e) {}
-        }
-        try { console.log('delfin probeClickAtom @', clientX, clientY, '→', hit && hit.serial); } catch (e) {}
-        return hit;
+        var atom = raycastAtom(scopeKey, clientX, clientY);
+        if (!atom) return null;
+        return {serial: atom.serial, elem: atom.elem || 'X'};
     }
 
-    // Fallback: direct click listener on canvas that uses raycastAtom.
-    // Runs in addition to 3Dmol's setClickable so we pick atoms even if
-    // 3Dmol's internal click detection is broken in this build.
+    // The single click-resolution path. Runs deferred so 3Dmol's own picker has
+    // already recorded its hit (it is depth-exact where it works); we fall back
+    // to our projection when it reports nothing.
     function installCanvasClickFallback(scopeKey) {
         var state = getState(scopeKey);
         var canvas = state.canvas;
-        if (!canvas) {
-            try { console.log('delfin: no canvas for fallback'); } catch (e) {}
-            return;
-        }
+        if (!canvas) return;
         if (state._canvasClickHandler) {
             try { canvas.removeEventListener('click', state._canvasClickHandler, true); } catch (e) {}
         }
         var handler = function(e) {
-            try { console.log('delfin canvas click @', e.clientX, e.clientY); } catch (_) {}
             if (state.mode !== 'select') return;
-            if (state.shiftHeld) return; // shift+drag path handles rect
+            if (state.shiftHeld) return; // shift+drag path handles the rubber band
             if (state.drag && state.drag.movedEnough) return;
-            var atom = raycastAtom(scopeKey, e.clientX, e.clientY);
-            try { console.log('delfin raycast hit:', atom && atom.serial); } catch (_) {}
-            if (atom) {
-                var additive = !!(e.shiftKey || e.ctrlKey || e.metaKey);
-                togglePick(scopeKey, atom, additive);
-            }
+            var additive = !!(e.shiftKey || e.ctrlKey || e.metaKey);
+            var cx = e.clientX, cy = e.clientY;
+            state._nativeHit = null;
+            window.setTimeout(function() {
+                var hit = state._nativeHit;
+                state._nativeHit = null;
+                var atom = hit ? getAtomBySerial(getViewer(scopeKey), hit.serial) : null;
+                if (!atom) atom = raycastAtom(scopeKey, cx, cy);
+                if (atom) togglePick(scopeKey, atom, additive);
+            }, 0);
         };
         canvas.addEventListener('click', handler, true);
         state._canvasClickHandler = handler;
-        try { console.log('delfin canvas click fallback installed'); } catch (e) {}
     }
     function uninstallCanvasClickFallback(scopeKey) {
         var state = getState(scopeKey);
@@ -1410,21 +1377,72 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return ov;
     }
 
-    function raycastAtom(scopeKey, clientX, clientY) {
+    // Project one model point to canvas pixels *and* normalised device depth.
+    // Depth is what lets picking prefer the atom in front, which plain
+    // screen-distance picking cannot do: in a fused ring or a crowded metal
+    // coordination sphere the nearest atom on screen is regularly the one
+    // hidden behind the structure.
+    function projectWithDepth(viewer, canvas, p) {
+        try {
+            if (viewer.modelGroup && viewer.modelGroup.updateMatrixWorld) {
+                viewer.modelGroup.updateMatrixWorld(true);
+            }
+            if (viewer.camera && viewer.camera.updateMatrixWorld) {
+                viewer.camera.updateMatrixWorld(true);
+            }
+            var mgMat = viewer.modelGroup && viewer.modelGroup.matrixWorld;
+            var camInv = viewer.camera && viewer.camera.matrixWorldInverse;
+            var proj = viewer.camera && viewer.camera.projectionMatrix;
+            if (!mgMat || !camInv || !proj) return null;
+            var world = mat4Apply(mgMat, p.x, p.y, p.z, 1);
+            var cam = mat4Apply(camInv, world.x, world.y, world.z, world.w);
+            var clip = mat4Apply(proj, cam.x, cam.y, cam.z, cam.w);
+            if (!isFinite(clip.w) || Math.abs(clip.w) < 1e-9) return null;
+            var w = canvas.clientWidth || canvas.width || 600;
+            var h = canvas.clientHeight || canvas.height || 600;
+            var sx = (clip.x / clip.w + 1) * w / 2;
+            var sy = (-clip.y / clip.w + 1) * h / 2;
+            if (!isFinite(sx) || !isFinite(sy)) return null;
+            return {x: sx, y: sy, depth: clip.z / clip.w};
+        } catch (e) { return null; }
+    }
+
+    // Screen positions of every atom, in canvas pixels, with depth. One pass,
+    // reused by picking and by rubber-band selection.
+    function projectAllAtoms(scopeKey) {
         var viewer = getViewer(scopeKey);
         var state = getState(scopeKey);
-        if (!viewer || !state.canvas) return null;
+        if (!viewer || !state.canvas) return [];
+        var atoms = getAtoms(viewer);
+        var out = [];
+        for (var i = 0; i < atoms.length; i++) {
+            var p = projectWithDepth(viewer, state.canvas, atoms[i]);
+            if (!p) continue;
+            out.push({atom: atoms[i], x: p.x, y: p.y, depth: p.depth});
+        }
+        return out;
+    }
+
+    function raycastAtom(scopeKey, clientX, clientY) {
+        var state = getState(scopeKey);
+        if (!state.canvas) return null;
         var rect = state.canvas.getBoundingClientRect();
         var sx = clientX - rect.left;
         var sy = clientY - rect.top;
-        var atoms = getAtoms(viewer);
-        var best = null, bestDist = 22*22; // 22 px pick radius
-        for (var i = 0; i < atoms.length; i++) {
-            var p = modelToScreen(viewer, state.canvas, atoms[i]);
-            if (!p) continue;
-            var dx = p.x - sx, dy = p.y - sy;
+        var projected = projectAllAtoms(scopeKey);
+        var best = null, bestDepth = Infinity, bestDist = Infinity;
+        var radius2 = PICK_RADIUS_PX * PICK_RADIUS_PX;
+        for (var i = 0; i < projected.length; i++) {
+            var q = projected[i];
+            var dx = q.x - sx, dy = q.y - sy;
             var d2 = dx*dx + dy*dy;
-            if (d2 < bestDist) { bestDist = d2; best = atoms[i]; }
+            if (d2 > radius2) continue;
+            // Nearest to the camera wins; screen distance only breaks ties
+            // between atoms at effectively the same depth.
+            if (q.depth < bestDepth - 1e-6 ||
+                (Math.abs(q.depth - bestDepth) <= 1e-6 && d2 < bestDist)) {
+                best = q.atom; bestDepth = q.depth; bestDist = d2;
+            }
         }
         return best;
     }
@@ -1453,99 +1471,54 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.rect.style.width = Math.abs(x1 - x0) + 'px';
         state.rect.style.height = Math.abs(y1 - y0) + 'px';
     }
-    // Rect selection by probing: dispatch synthetic click events at a grid of
-    // points inside the rect. 3Dmol's setClickable callback fires for each hit
-    // atom. This bypasses 3D→2D projection entirely and uses 3Dmol's own
-    // internal pick buffer, which we know works (individual clicks pick atoms).
+    // Rubber-band selection: project every atom once and keep those inside the
+    // band. The previous implementation dispatched a synthetic mousedown /
+    // mouseup / click triple at every 7 px of the rectangle — thousands of
+    // events for a band over a medium molecule, which froze the tab and, if
+    // Shift came up before the mouse button, re-entered the toggle path and
+    // scrambled the selection.
+    // ``additive`` unions with the current picks (Shift/Ctrl held); otherwise
+    // the band replaces the selection, which is what every other editor does.
     function finishRect(scopeKey, x0, y0, x1, y1, additive) {
         var state = getState(scopeKey);
         if (state.rect) { try { state.overlay.removeChild(state.rect); } catch(e) {} state.rect = null; }
-        var viewer = getViewer(scopeKey);
-        if (!viewer || !state.canvas) return;
-        var canvas = state.canvas;
+        if (!state.canvas) return;
 
-        var minX = Math.min(x0, x1), maxX = Math.max(x0, x1);
-        var minY = Math.min(y0, y1), maxY = Math.max(y0, y1);
+        var rect = state.canvas.getBoundingClientRect();
+        var minX = Math.min(x0, x1) - rect.left, maxX = Math.max(x0, x1) - rect.left;
+        var minY = Math.min(y0, y1) - rect.top,  maxY = Math.max(y0, y1) - rect.top;
         if (maxX - minX < 3 || maxY - minY < 3) return;
 
         if (!additive) state.picks = [];
 
-        // Swap setClickable callback to a collector.
-        var collected = {};
-        try {
-            viewer.setClickable({}, true, function(atom) {
-                if (atom && atom.serial !== undefined) {
-                    collected[atom.serial] = {
-                        serial: atom.serial, elem: atom.elem || 'X'
-                    };
-                }
-            });
-            try { viewer.render(); } catch (e) {}
-        } catch (e) {
-            try { console.log('delfin rect: setClickable swap failed:', e.message); } catch (_) {}
-            return;
+        var projected = projectAllAtoms(scopeKey);
+        for (var i = 0; i < projected.length; i++) {
+            var q = projected[i];
+            if (q.x < minX || q.x > maxX || q.y < minY || q.y > maxY) continue;
+            // Behind the camera / outside the frustum in depth.
+            if (q.depth < -1 || q.depth > 1) continue;
+            var serial = q.atom.serial;
+            var exists = state.picks.some(function(p) { return p.serial === serial; });
+            if (!exists) state.picks.push({serial: serial, elem: q.atom.elem || 'X'});
         }
-
-        // Step = ~half of a small atom radius on screen. 6–8px works for most
-        // zoom levels; trade-off between completeness and speed.
-        var step = 7;
-        var points = 0;
-        function dispatchClick(x, y) {
-            var md = new MouseEvent('mousedown', {
-                bubbles: true, cancelable: true,
-                clientX: x, clientY: y, button: 0, buttons: 1
-            });
-            var mu = new MouseEvent('mouseup', {
-                bubbles: true, cancelable: true,
-                clientX: x, clientY: y, button: 0, buttons: 0
-            });
-            var cl = new MouseEvent('click', {
-                bubbles: true, cancelable: true,
-                clientX: x, clientY: y, button: 0
-            });
-            canvas.dispatchEvent(md);
-            canvas.dispatchEvent(mu);
-            canvas.dispatchEvent(cl);
-        }
-        for (var y = minY; y <= maxY; y += step) {
-            for (var x = minX; x <= maxX; x += step) {
-                points++;
-                dispatchClick(x, y);
-            }
-        }
-
-        // Restore normal callback
-        attachClickable(scopeKey);
-
-        // Merge collected atoms into picks
-        var added = 0;
-        Object.keys(collected).forEach(function(s) {
-            var serial = +s;
-            var exists = state.picks.some(function(q) { return q.serial === serial; });
-            if (!exists) {
-                state.picks.push(collected[s]);
-                added++;
-            }
-        });
-
-        try {
-            console.log('delfin rect probe:',
-                'points=', points,
-                'hits=', Object.keys(collected).length,
-                'added=', added);
-        } catch (e) {}
+        updateStatus(scopeKey);
         redrawHighlights(scopeKey);
     }
 
-    function applyTranslate(scopeKey, deltaWorld) {
+    // ``serials`` is the set of atoms this drag owns — the current selection
+    // when the user grabbed a selected atom, a single atom when they grabbed an
+    // unselected one. Falls back to the selection so callers without a drag
+    // context keep working.
+    function applyTranslate(scopeKey, deltaWorld, serials) {
         var viewer = getViewer(scopeKey);
         var state = getState(scopeKey);
         if (!viewer) return;
+        var targets = serials || state.picks.map(function(p) { return p.serial; });
         var atoms = getAtoms(viewer);
         var byS = {};
         for (var i = 0; i < atoms.length; i++) byS[atoms[i].serial] = atoms[i];
-        state.picks.forEach(function(p) {
-            var a = byS[p.serial];
+        targets.forEach(function(serial) {
+            var a = byS[serial];
             if (!a) return;
             a.x += deltaWorld.x;
             a.y += deltaWorld.y;
@@ -1575,12 +1548,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         var state = getState(scopeKey);
         if (!viewer || !state.pivot) {
-            try { console.log('delfin rotate: no viewer/pivot'); } catch (_) {}
             return;
         }
         var pivotAtom = getAtomBySerial(viewer, state.pivot.serial);
         if (!pivotAtom) {
-            try { console.log('delfin rotate: pivot atom serial', state.pivot.serial, 'not found'); } catch (_) {}
             return;
         }
         var pivot = {x: pivotAtom.x, y: pivotAtom.y, z: pivotAtom.z};
@@ -1602,7 +1573,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             a.x = np.x; a.y = np.y; a.z = np.z;
             moved++;
         });
-        try { console.log('delfin rotate: moved', moved, 'yaw=', yaw.toFixed(3), 'pitch=', pitch.toFixed(3)); } catch (_) {}
         redrawHighlights(scopeKey);
     }
 
@@ -1622,12 +1592,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var atom = raycastAtom(scopeKey, e.clientX, e.clientY);
 
             if (state.mode === 'manipulate') {
-                e.preventDefault(); e.stopPropagation();
-                try { console.log('delfin manip mousedown button=', e.button, 'picks=', state.picks.length); } catch (_) {}
                 if (e.button === 2) {
-                    // Right mouse always tries to pick pivot atom under cursor.
+                    // Right mouse always tries to pick a pivot atom under the cursor.
+                    e.preventDefault(); e.stopPropagation();
                     var picked = probeClickAtom(scopeKey, e.clientX, e.clientY);
-                    try { console.log('delfin pivot probe →', picked && picked.serial); } catch (_) {}
                     if (picked) {
                         state.pivot = {serial: picked.serial, elem: picked.elem || 'X'};
                         redrawHighlights(scopeKey);
@@ -1640,14 +1608,53 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                             lastX: e.clientX, lastY: e.clientY,
                             movedEnough: false, snapshotted: false
                         };
-                        try { console.log('delfin rotate drag started, pivot=', state.pivot.serial); } catch (_) {}
                     }
                     return;
                 }
-                if (state.picks.length === 0) return;
-                if (e.button === 0) {
+                if (e.button !== 0) return;
+
+                // Avogadro's manipulate gesture: press on an atom and drag it.
+                // Grabbing an atom that is part of the selection moves the whole
+                // selection; grabbing any other atom moves just that atom,
+                // without disturbing the selection.
+                if (atom) {
+                    e.preventDefault(); e.stopPropagation();
+                    var inSelection = state.picks.some(function(p) {
+                        return p.serial === atom.serial;
+                    });
                     state.drag = {
                         kind: 'translate',
+                        targets: inSelection
+                            ? state.picks.map(function(p) { return p.serial; })
+                            : [atom.serial],
+                        grabbed: atom.serial,
+                        startX: e.clientX, startY: e.clientY,
+                        lastX: e.clientX, lastY: e.clientY,
+                        movedEnough: false, snapshotted: false
+                    };
+                    return;
+                }
+
+                // Empty space: hand the press to 3Dmol so the camera turns.
+                // Manipulate mode used to swallow every left press, so the
+                // molecule could not be reoriented without leaving the mode and
+                // losing the pivot workflow. Bubbling cannot do this for us —
+                // 3Dmol binds its mouse handlers on the canvas, and the overlay
+                // is the canvas's sibling, not its ancestor.
+                if (!(e.shiftKey || e.ctrlKey || e.metaKey)) {
+                    var v = getViewer(scopeKey);
+                    if (v && typeof v._handleMouseDown === 'function') {
+                        try { v._handleMouseDown(e); } catch (_e) {}
+                    }
+                    return;
+                }
+                if (state.picks.length > 0) {
+                    // Modifier on empty space keeps the old behaviour: drag the
+                    // whole selection from anywhere in the viewport.
+                    e.preventDefault(); e.stopPropagation();
+                    state.drag = {
+                        kind: 'translate',
+                        targets: state.picks.map(function(p) { return p.serial; }),
                         startX: e.clientX, startY: e.clientY,
                         lastX: e.clientX, lastY: e.clientY,
                         movedEnough: false, snapshotted: false
@@ -1656,7 +1663,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 return;
             }
 
-            // Select mode — we fully capture the mouse so 3Dmol doesn't rotate.
+            // Select mode — the overlay is only interactive while Shift is
+            // held, so reaching here means the user asked for a rubber band.
             if (e.button === 0) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1664,9 +1672,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     kind: 'maybe-rect',
                     startX: e.clientX, startY: e.clientY,
                     origX: x, origY: y,
-                    additive: !!(e.shiftKey || e.ctrlKey || e.metaKey),
+                    additive: !!(e.ctrlKey || e.metaKey),
                     movedEnough: false,
-                    hitAtom: !!atom,
                     atomRef: atom
                 };
             }
@@ -1700,12 +1707,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     y: basis.right.y * dx * s - basis.up.y * dy * s,
                     z: basis.right.z * dx * s - basis.up.z * dy * s
                 };
-                applyTranslate(scopeKey, delta);
+                applyTranslate(scopeKey, delta, d.targets);
             } else if (d.kind === 'rotate' && d.movedEnough) {
                 e.preventDefault();
                 if (!d.snapshotted) { snapshotForUndo(scopeKey); d.snapshotted = true; }
                 applyRotate(scopeKey, dx, dy);
-            } else if (d.kind === 'maybe-rect' && d.movedEnough && !d.hitAtom) {
+            } else if (d.kind === 'maybe-rect' && d.movedEnough) {
                 // Lazily begin rect
                 if (!state2.rect) beginRectDraw(scopeKey, d.origX, d.origY);
                 var rect = state2.overlay.getBoundingClientRect();
@@ -1753,8 +1760,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             state.overlay.style.pointerEvents = active ? 'auto' : 'none';
             state.overlay.style.cursor = active ? 'crosshair' : '';
         } else if (state.mode === 'manipulate') {
+            // Always interactive: any atom can be grabbed directly, and a press
+            // on empty space is forwarded so the camera still turns.
             state.overlay.style.pointerEvents = 'auto';
-            state.overlay.style.cursor = state.picks.length ? 'move' : 'not-allowed';
+            state.overlay.style.cursor = 'move';
         }
     }
 
@@ -1843,7 +1852,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                             lastX: e.clientX, lastY: e.clientY,
                             movedEnough: false, snapshotted: false
                         };
-                        try { console.log('delfin window-level rotate drag, pivot=', s.pivot.serial); } catch (_) {}
                     }
                 } catch (_) {}
                 return;

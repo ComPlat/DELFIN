@@ -3023,14 +3023,6 @@ def create_tab(ctx):
         if change.get('name') != 'value':
             return
         new_xyz = submit_manip_sync.value
-        try:
-            ctx.run_js(
-                'console.log("delfin sync observer fired, len=",'
-                + str(len(new_xyz or ''))
-                + ');'
-            )
-        except Exception:
-            pass
         if not new_xyz or not new_xyz.strip():
             return
         # Extract only the new coordinate lines; drop JS-side count + comment.
@@ -3054,8 +3046,17 @@ def create_tab(ctx):
                 header = f'{old_lines[0]}\n{old_lines[1]}\n'
             except ValueError:
                 pass
+        payload = header + coord_body
+        # The guard is cleared by update_molecule_view, which traitlets only
+        # calls when the value actually changes. Dragging an atom out and back,
+        # or any edit that lands on the same coordinates, would otherwise leave
+        # the flag set for the rest of the session and swallow the user's next
+        # genuine edit of the coordinate box.
+        if coords_widget.value == payload:
+            state['manip_inflight'] = False
+            return
         state['manip_inflight'] = True
-        coords_widget.value = header + coord_body
+        coords_widget.value = payload
 
     # -- wiring ---------------------------------------------------------
     xyz_copy_btn.on_click(on_xyz_copy)
