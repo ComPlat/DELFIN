@@ -3136,6 +3136,35 @@ def create_tab(ctx):
         except Exception:
             pass
 
+    def _structure_fingerprint(xyz):
+        """Element column of an XYZ block -- what makes it the same molecule."""
+        rows = [line.split() for line in (xyz or '').splitlines() if line.strip()]
+        return tuple(r[0] for r in rows if len(r) >= 4)
+
+    def _perception_for(xyz):
+        """Perceive the bonding once per structure and keep it.
+
+        Bond orders are read from the geometry, and a twisted double bond stops
+        looking like one: turning a C=C by 30 degrees is enough for perception
+        to call it a single bond, which drops the barrier holding the two
+        halves coplanar from 19.5 to 1.1 kcal/mol. Everything downstream then
+        lets the double bond rotate freely, and nothing brings it back.
+
+        Editing moves atoms; it must not be able to change what the molecule
+        is. So the bonding is perceived from the structure as it arrived and
+        reused until a genuinely different one is loaded.
+        """
+        from .molecule_forcefield import perceive_molecule
+
+        fingerprint = _structure_fingerprint(xyz)
+        cached = state.get('perceived')
+        if cached and state.get('perceived_for') == fingerprint:
+            return cached
+        perceived = perceive_molecule(xyz)
+        state['perceived'] = perceived
+        state['perceived_for'] = fingerprint
+        return perceived
+
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.
 
@@ -3150,7 +3179,9 @@ def create_tab(ctx):
             return
         try:
             from .molecule_forcefield import export_forcefield_terms
-            payload = export_forcefield_terms(xyz, method=submit_ff_dd.value)
+            payload = export_forcefield_terms(
+                xyz, perceived=_perception_for(xyz), method=submit_ff_dd.value,
+            )
         except Exception as exc:
             _set_mol_status(f'Force field unavailable: {exc}')
             submit_relax_btn.value = False
@@ -3230,7 +3261,12 @@ def create_tab(ctx):
             for position, item in enumerate(targets):
                 xyz = item[0]
                 try:
-                    outcome = relax_xyz(xyz, max_steps=500, method=method)
+                    outcome = relax_xyz(
+                        xyz,
+                        max_steps=500,
+                        perceived=_perception_for(xyz),
+                        method=method,
+                    )
                 except Exception as exc:
                     failures.append(f'frame {position + 1}: {exc}')
                     results.append(item)

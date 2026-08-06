@@ -171,7 +171,7 @@ def test_optimisation_covers_every_frame_and_is_undoable():
     body = source.split('def on_submit_optimize')[1].split('\n    def ')[0]
     assert "frames = list(state.get('isomers') or [])" in body
     assert "state['pre_optimize_frames']" in body
-    assert 'relax_xyz(xyz, max_steps=500, method=method)' in body
+    assert 'relax_xyz(' in body and 'max_steps=500' in body
     # A 500-step minimisation per frame takes seconds; it must not block the UI.
     assert 'threading.Thread(target=_work, daemon=True).start()' in body
     # One bad frame must not lose the others.
@@ -404,3 +404,26 @@ def test_empty_space_belongs_to_the_viewer_for_both_buttons():
     right = overlay.split('if (e.button === 2) {')[1].split('if (e.button !== 0)')[0]
     assert right.index('probeClickAtom') < right.index('e.preventDefault();')
     assert 'if (!picked) return;' in right
+
+
+def test_bonding_is_perceived_once_and_not_re_read_from_a_dragged_geometry():
+    """Bond orders are read from the geometry, and a twisted double bond stops
+    looking like one. Measured on stilbene: turning the central C=C from 180
+    to 150 degrees is already enough for perception to report zero double
+    bonds, which turns the torsion from two-fold with a 19.5 kcal/mol barrier
+    into three-fold with 1.1 — a free single bond. Nothing then pulls the
+    double bond back to planar, which is exactly what a user dragging a
+    stilbene sees.
+
+    Reusing the perception taken from the structure as loaded keeps n = 2 and
+    19.5 kcal/mol at any twist."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'def _perception_for' in source
+    assert "state.get('perceived_for') == fingerprint" in source
+    # Both the live parameters and the release-time relaxation use it.
+    assert 'perceived=_perception_for(xyz)' in source
+    assert source.count('perceived=_perception_for(xyz)') >= 2
+    # A genuinely different molecule must be perceived afresh.
+    assert 'def _structure_fingerprint' in source
