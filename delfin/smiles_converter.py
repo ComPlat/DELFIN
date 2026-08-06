@@ -22177,6 +22177,40 @@ def _enumerate_orbits_topo(
                     "Chirality enumerator no-op (orbit, %s, perm=%s): %s",
                     geom_name, perm, _ce_exc,
                 )
+        # ===== THEOREM-D fuer ASYMMETRISCHE Zweizaehner (2026-08-06 verdrahtet) =====
+        # _theorem_d_asymmetric_bidentate.py (327 Zeilen) lag seit dem 18.05. geschrieben,
+        # dokumentiert und mit eigenem Env-Schalter im Baum -- und war NIE IMPORTIERT.
+        # Null Importstellen, keine dynamischen Importe; einer von acht solchen Modulen.
+        #
+        # WAS ES LOEST.  Der vorhandene universelle Klassifikator sortiert die Chelat-Vektoren
+        # nach DONOR-LISTENINDEX.  Bei einem asymmetrischen (A,B)-Chelat ist sein Vorzeichen
+        # damit bedeutungslos: ein (A,B)- und ein (B,A)-Chelat liefern entgegengesetzte
+        # Vorzeichen fuer dieselbe Stereochemie, die Summe hebt sich auf, und die Helizitaet
+        # kollabiert zu ''.  Folge, im Modul an X10-YIVROM belegt: Fe(III) mit drei
+        # asymmetrischen (O,S)-Chelaten hat nach Polya VIER Stereoisomere
+        # (fac-Delta, fac-Lambda, mer-Delta, mer-Lambda) -- gebaut werden DREI.
+        #
+        # Theorem-D stellt eine chemisch sinnvolle Orientierung her und haengt ein EIGENES Tag
+        # ('chir_td') an, nicht 'chir'.  Dadurch dienen beide als unabhaengige Split-Keys, wenn
+        # eine Permutation zugleich Lambda-nach-Legacy und Delta-nach-Theorem-D ist.
+        #
+        # BAUFORM: rein ADDITIV.  Der Wrapper gibt cf unveraendert zurueck, wenn ein Argument
+        # fehlt, der Chelatsatz das Asymmetrie-Tor nicht besteht, oder der Klassifikator ''
+        # liefert.  Er kann also nur eine bisher VERSCHMOLZENE Permutation aufspalten, nie eine
+        # bestehende entfernen -- dieselbe Bauform wie die vier Flags, die je gelandet sind.
+        # Nicht an `chiral` gekoppelt: der Legacy-Pfad kollabiert gerade auf diesen Faellen,
+        # das eigene Tor des Moduls (is_asymmetric_bidentate_set) ist der richtige Filter.
+        # Default OFF -> byte-identisch.
+        if _delfin_env_int("DELFIN_5L_T62_THEOREM_D_ASYM_BIDENTATE", 0):
+            try:
+                from delfin.manta._theorem_d_asymmetric_bidentate import (
+                    theorem_d_aware_pairs as _td_pairs)
+                cf = _td_pairs(cf, perm, chelate_pairs, donor_labels, geom_name)
+            except Exception as _td_exc:
+                logger.debug(
+                    "Theorem-D no-op (orbit, %s, perm=%s): %s",
+                    geom_name, perm, _td_exc,
+                )
         # (orbit_key, cf, perm): orbit_key = the proper-rotation orbit
         # representative ``best``.  One entry per rotation orbit → the
         # complete Cauchy-Frobenius count (e.g. CN9 TTP N5O4 → 24).
