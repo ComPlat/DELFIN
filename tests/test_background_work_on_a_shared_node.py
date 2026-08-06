@@ -185,8 +185,15 @@ def test_the_wake_up_records_the_agents_workspace(tmp_path, monkeypatch):
             "the scheduler recorded the process cwd again; the daemon "
             "disables entries whose path does not match, so the wake-up "
             "would silently never fire")
-        assert not (pathlib.Path.home() / ".delfin" / "cron.json").samefile(
-            sched.get_scheduler().path), "the test wrote to the real store"
+        # Compare the PATHS, not the files. samefile() stats both, so it
+        # raises FileNotFoundError when the real store does not exist --
+        # which is exactly the healthy case, and is what a clean CI
+        # runner looks like. An assertion that only works when the thing
+        # it is guarding against has already happened is not an
+        # assertion.
+        assert (sched.get_scheduler().path.resolve()
+                != (pathlib.Path.home() / ".delfin" / "cron.json").resolve()), (
+            "the test wrote to the real store")
     finally:
         sched.reset_scheduler()
 
