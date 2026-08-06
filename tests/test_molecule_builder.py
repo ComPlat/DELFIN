@@ -295,3 +295,44 @@ def test_tapping_an_atom_fills_a_valence_that_is_short():
     assert _formula(structure) == {'C': 1, 'H': 4}
     # And a second tap on a full one changes nothing.
     assert B.set_element(structure, 0, 'C') is False
+
+
+def test_joining_does_not_leave_atoms_on_top_of_each_other():
+    """Bringing two fragments together along the bond axis is right for the
+    bond and says nothing about anything else: the hydrogens on either side
+    arrive wherever the rotation about that axis happens to leave them.
+
+    Two propanes joined end to end left a pair of hydrogens 0.61 A apart, and
+    perception then read one of them as bonded to two atoms -- the doubly
+    bonded hydrogen that was reported. Only hydrogens are pushed apart: after
+    the join both fragments are one connected thing, so moving a heavy atom
+    moved the whole molecule and separated nothing."""
+    import itertools
+
+    def propane_pair(separation):
+        structure = _empty()
+        B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+        B.grow_from(structure, 0, 'C')
+        B.grow_from(structure, _carbons(structure)[-1], 'C')
+        anchor = len(structure)
+        B.place_atom(structure, 'C', (separation, 0.3, 0.2))
+        B.grow_from(structure, anchor, 'C')
+        B.grow_from(structure, _carbons(structure)[-1], 'C')
+        return structure
+
+    for separation in (6.0, 3.0, 2.2):
+        structure = propane_pair(separation)
+        carbons = _carbons(structure)
+        assert B.join(structure, carbons[0], carbons[3]) is True
+
+        perceived = mff.perceive_molecule(B.to_xyz(structure))
+        adjacency = perceived.neighbours()
+        stray = [i for i, s in enumerate(perceived.symbols)
+                 if s == 'H' and len(adjacency[i]) != 1]
+        assert not stray, (separation, stray)
+        closest = min(
+            math.dist(structure.coords[i], structure.coords[j])
+            for i, j in itertools.combinations(range(len(structure)), 2)
+            if not structure.order(i, j)
+        )
+        assert closest > 0.55, (separation, closest)

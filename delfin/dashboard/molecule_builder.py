@@ -616,9 +616,63 @@ def join(structure: Structure, first: int, second: int, order: int = 1) -> bool:
             structure.coords[index] = _sub(structure.coords[index], shift)
     structure.set_bond(first, second, order)
     mapping = adjust_hydrogens(structure, [first, second])
+    first = mapping.get(first, first) if mapping else first
+    second = mapping.get(second, second) if mapping else second
     for index in (first, second):
-        rearrange_hydrogens(structure, mapping.get(index, index) if mapping else index)
+        rearrange_hydrogens(structure, index)
+    relieve_clashes(structure, keep=(first, second))
     return True
+
+
+def relieve_clashes(structure: Structure, keep=(), threshold: float = 1.4) -> int:
+    """Push apart atoms that a rigid move left sitting on top of each other.
+
+    Bringing two fragments together along the bond axis is the right thing for
+    the bond and says nothing about everything else: the hydrogens on either
+    side arrive wherever the rotation about that axis happens to leave them.
+    Two of them at half a bond length apart is not a clash the force field
+    should be asked to fix -- its r^-12 term there is enormous, and the first
+    step throws the structure apart. It is a placement problem, so it is
+    solved by placement.
+
+    Atoms in ``keep`` are not moved: they are the bond that was just made.
+    """
+    keep = {int(i) for i in keep}
+    moved = 0
+    for _sweep in range(60):
+        worst = None
+        for i in range(len(structure)):
+            for j in range(i + 1, len(structure)):
+                if structure.order(i, j):
+                    continue
+                gap = _norm(_sub(structure.coords[i], structure.coords[j]))
+                want = 0.75 * (covalent_radius(structure.symbols[i])
+                               + covalent_radius(structure.symbols[j])) * threshold
+                if gap >= want:
+                    continue
+                if worst is None or gap - want < worst[0]:
+                    worst = (gap - want, i, j, gap, want)
+        if worst is None:
+            break
+        _slack, i, j, gap, want = worst
+        axis = _sub(structure.coords[j], structure.coords[i])
+        if _norm(axis) < 1e-6:
+            axis = (0.0, 0.0, 1.0)
+        push = _scale(_unit(axis), (want - gap) / 2.0 + 1e-3)
+        for index, sign in ((i, -1.0), (j, 1.0)):
+            if index in keep:
+                continue
+            # Only hydrogens are moved. A heavy atom carries its whole branch,
+            # and after the join both fragments are one connected thing, so
+            # moving it moved the entire molecule and separated nothing.
+            if structure.symbols[index] != 'H':
+                continue
+            group = {index}
+            for member in group:
+                structure.coords[member] = _add(
+                    structure.coords[member], _scale(push, sign))
+        moved += 1
+    return moved
 
 
 def set_bond_order(structure: Structure, first: int, second: int,

@@ -4003,6 +4003,26 @@ def create_tab(ctx):
         }
         state['perceived'] = None
         state['perceived_for'] = None
+        # Types, derived and held, after every build step -- which is what
+        # pressing the button by hand after one was doing. Perception reads
+        # bond orders off the geometry, and a structure that has just been
+        # built is exactly where that geometry is least settled: a centre
+        # comes back sp3 and its angles at 109.5 where they should be 120, so
+        # the field pulls the new part into the wrong shape. The number of
+        # partners says it outright and does not depend on the geometry at
+        # all, which is why doing it by hand fixed things.
+        try:
+            from .molecule_forcefield import hybridisation_from_connectivity
+            derived = hybridisation_from_connectivity(_perception_for(
+                (state.get('current_xyz_for_copy') or {}).get('content') or ''))
+        except Exception:
+            derived = {}
+        if derived:
+            overrides = dict(state.get('hyb_overrides') or {})
+            overrides.update(derived)
+            state['hyb_overrides'] = overrides
+            state['perceived'] = None
+            state['perceived_for'] = None
         _set_mol_status(note)
         _push_bond_orders(structure.bonds)
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
