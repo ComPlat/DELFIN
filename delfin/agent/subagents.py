@@ -911,6 +911,69 @@ _BASH_WRITE_RE = re.compile(
     r"\bgit\s+(?:commit|checkout|restore|revert)\b|\bmv\b|\bcp\b|\btouch\b|"
     r"\bmkdir\b|\brm\b|\bcat\s+>|\btruncate\b)")
 
+# A redirect whose target is a discard sink changes nothing. The write
+# pattern above matches any redirect, so `pytest -q > /dev/null` -- a
+# command whose entire purpose is to throw the output away -- registered as
+# file-writing evidence and backed a claim of having changed something.
+_EPHEMERAL_SINK_RE = re.compile(r">>?\s*/dev/(?:null|stdout|stderr)\b")
+
+
+def _writes_anything(cmd: str) -> bool:
+    """Whether a shell command is write evidence at all.
+
+    Only the redirect is discounted, and only when every redirect in the
+    command goes to a discard sink: `echo a > /dev/null; echo b > real.txt`
+    still writes."""
+    if not _BASH_WRITE_RE.search(cmd or ""):
+        return False
+    stripped = _EPHEMERAL_SINK_RE.sub(" ", cmd or "")
+    return bool(_BASH_WRITE_RE.search(stripped))
+
+
+# Test output that contradicts a success claim. Anchored on the counted
+# forms a runner prints, so "0 failed" and prose containing the word are
+# not mistaken for a failing run.
+_TEST_FAILURE_RE = re.compile(
+    r"(?:^|[\s,=])(?!0\s)(\d+)\s+(?:failed|failures?|errors?)\b"
+    r"|^FAILED\b|\bFAILED\s+\S+::"
+    r"|(?:^|[\s,=])(?!0\s)(\d+)\s+error\b",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def _output_shows_failures(output: str) -> bool:
+    """Whether recorded test output contradicts a claim that all passed."""
+    return bool(_TEST_FAILURE_RE.search(output or ""))
+
+
+# A read that returned an error, or nothing, is not an observation. Paths
+# are taken from a call's INPUT, so a refused or empty read still put the
+# file in the observed set -- grounding the delegate's own citations and,
+# because delegate evidence is merged upward, telling the PARENT it had
+# seen a file nobody read.
+_FAILED_READ_MARKERS = (
+    "(file not found)", "(empty file)", "(no matches)", "(binary file)",
+    "file not found", "no such file", "permission denied",
+)
+
+
+def _output_saw_content(output) -> bool:
+    """Whether a call's recorded output shows it actually read something.
+
+    ``None`` means no output was recorded — the payload trace carries
+    inputs without outputs — and returns True. Missing bookkeeping is never
+    treated as evidence of fabrication; concluding failure from an absent
+    record would discard every path on that whole path."""
+    if output is None:
+        return True
+    text = output if isinstance(output, str) else str(output)
+    low = text.strip().lower()
+    if not low:
+        return False
+    if low.startswith("{") and '"error"' in low:
+        return False
+    return not any(low.startswith(m) or low == m
+                   for m in _FAILED_READ_MARKERS)
+
 # --- new claim classes ------------------------------------------------------
 #
 # Test-result claims: a report asserting the suite is fine. Every pattern
@@ -1132,9 +1195,10 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 ev["tools"].append(name)
             raw_in = call.get("input")
             args = _tool_args(raw_in)
-            for p in _paths_from_call(args, raw_in):
-                if p not in ev["files"]:
-                    ev["files"].append(p)
+            if _output_saw_content(call.get("output")):
+                for p in _paths_from_call(args, raw_in):
+                    if p not in ev["files"]:
+                        ev["files"].append(p)
             cmd = ""
             if vg is not None:
                 try:
@@ -1150,7 +1214,7 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 out = call.get("output")
                 if out is not None:
                     outs.append(out if isinstance(out, str) else str(out))
-            if name in _WRITE_TOOL_NAMES or (cmd and _BASH_WRITE_RE.search(cmd)):
+            if name in _WRITE_TOOL_NAMES or (cmd and _writes_anything(cmd)):
                 ev["writes"].append(cmd or name)
         # An isolated worktree reports WHAT it changed; those paths are write
         # evidence even though the edits happened inside the child.
@@ -1453,6 +1517,15 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
                 _add(False, "test_result", claim.text,
                      "no test-running tool call in this sub-agent's trace",
                      "run the tests yourself before relying on this")
+                continue
+            if _output_shows_failures(ev["test_output"]):
+                # The trace was consulted only for a claimed NUMBER, so a
+                # delegate that ran the suite, saw failures and reported
+                # success came back supported -- the check endorsing the
+                # exact claim it exists to catch.
+                _add(False, "test_result", claim.text,
+                     "the test output recorded in this run reports failures",
+                     "read the actual test output yourself")
                 continue
             if (claim.subject and ev["test_output"]
                     and not re.search(rf"\b{re.escape(claim.subject)}\b",
