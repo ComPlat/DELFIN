@@ -1324,7 +1324,12 @@ def _verification_notice(verdict: dict) -> str:
     checked = int(verdict.get("claims_checked") or 0)
     if not unsupported:
         if not checked:
-            return prefix.strip()
+            # Silence read as approval. Saying nothing after a check that
+            # ruled on nothing left the parent to assume the report had been
+            # cleared, which is the opposite of what happened.
+            return (prefix + "[subagent-verify] this report contains nothing "
+                    "that can be cross-checked against the sub-agent's trace "
+                    "— no claim was ruled on either way.")
         return (prefix + f"[subagent-verify] {checked} claim(s) cross-checked "
                 f"against this sub-agent's own tool trace "
                 f"({verdict.get('evidence', {}).get('tool_calls', 0)} tool "
@@ -1550,11 +1555,31 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
         verdict["supported"] = supported
         verdict["unsupported"] = unsupported
         verdict["claims_checked"] = len(supported) + len(unsupported)
+        if not verdict["claims_checked"]:
+            # "checked" was assigned before any claim was evaluated. Leaving
+            # it here would tell the parent the delegate's work was checked
+            # and found sound, when in fact the report contained nothing this
+            # check can rule on. That is the one thing a verifier must never
+            # say: it would manufacture the confidence it exists to withhold.
+            verdict["status"] = "no_claims"
         verdict["notice"] = _verification_notice(verdict)
         return verdict
     except Exception:
         # Degraded but well-formed: the parent still gets its delegate's work.
-        verdict["notice"] = ""
+        #
+        # The status has to be reset. By the time a scanner can raise, it is
+        # already "checked", and returning that with zero claims and a blank
+        # notice made a crash in the verifier indistinguishable from a clean
+        # bill of health -- silently, because the notice is the only part the
+        # parent reads and this path used to delete it.
+        verdict["status"] = "unavailable"
+        verdict["supported"] = []
+        verdict["unsupported"] = []
+        verdict["claims_checked"] = 0
+        verdict["notice"] = (
+            "[subagent-verify] the cross-check could not be completed, so "
+            "none of this sub-agent's claims were checked — treat the report "
+            "as unverified.")
         return verdict
 
 

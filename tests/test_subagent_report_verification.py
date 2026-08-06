@@ -215,8 +215,11 @@ def test_garbage_payloads_never_raise():
                 {"result": "x", "worktree": "not a dict"}):
         verdict = SA.verify_subagent_report(bad)
         assert isinstance(verdict, dict)
-        assert verdict["status"] in ("checked", "no_report", "no_trace",
-                                     "unavailable")
+        # "no_claims" joined the set: a report that yielded nothing to rule
+        # on used to come back as "checked", which reads as a clean bill of
+        # health for work that was never examined.
+        assert verdict["status"] in ("checked", "no_claims", "no_report",
+                                     "no_trace", "unavailable")
         assert isinstance(SA.collect_report_evidence(bad), dict)
         # Annotation degrades to returning the input untouched.
         SA.attach_verification(bad)
