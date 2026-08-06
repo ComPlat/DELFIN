@@ -888,8 +888,26 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         return true;
     }
 
+    //: A frame that moves the energy less than this has stopped achieving
+    //: anything, whatever the gradient still says.
+    var ENERGY_TOL = 1e-4;          // kcal/mol per frame
+    var QUIET_FRAMES = 5;           // how many in a row before we believe it
+
     // ------------------------------------------------------------------
     // steepest descent with a gradient-capped, backtracking step
+    //
+    // Convergence is judged on progress, not on the gradient alone. Measured
+    // on three molecules, the gradient test never once fired: cholesterol
+    // reached 115.193 kcal/mol by frame 200 and spent the next 1300 frames
+    // gaining 0.006 while having 54,000 steps rejected -- about forty per
+    // frame, for ever. A strained ring did worse: it stopped improving at
+    // frame 50 and then rejected 107,000 steps without moving at all, because
+    // a failed step resets the length and the next frame tries the same thing
+    // again. Meanwhile a real metal complex was still descending at frame 700
+    // and had every right to go on.
+    //
+    // Energy change per frame tells those three apart, and the gradient
+    // cannot: it stops the two that are finished and lets the third run.
     // ------------------------------------------------------------------
     function relax(st, k) {
         var n3 = 3 * st.n, i;
@@ -899,6 +917,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         }
         st.converged = false;
         st.stalled = false;
+        var startEnergy = st.energyValue;
         var taken = 0;
         for (var s = 0; s < k; s++) {
             if (!isFinite(st.energyValue)) { rollback(st, 'non-finite energy'); break; }
@@ -938,6 +957,20 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
                     break;
                 }
             }
+        }
+        // Did this frame achieve anything? A stall counts as no, which is
+        // what turns endless retrying into an answer.
+        var moved = Math.abs(st.energyValue - startEnergy);
+        if (st.converged) {
+            st.quietFrames = QUIET_FRAMES;
+        } else if (isFinite(moved) && moved < ENERGY_TOL) {
+            st.quietFrames = (st.quietFrames || 0) + 1;
+            if (st.quietFrames >= QUIET_FRAMES) {
+                st.converged = true;
+                st.stalled = false;
+            }
+        } else {
+            st.quietFrames = 0;
         }
         st.totalSteps += taken;
         return taken;
@@ -1045,6 +1078,8 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         st.haveEnergy = false;
         st.sinceRebuild = PAIR_REBUILD_FRAMES;
         st.stalled = false;
+        st.quietFrames = 0;
+        st.converged = false;
         st.lastError = null;
         return true;
     }
@@ -1056,6 +1091,8 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         for (var i = 0; i < n3; i++) st.mask[i] = 1.0;
         st.frozen = [];
         st.haveEnergy = false;
+        st.quietFrames = 0;
+        st.converged = false;
         st.lambda = INITIAL_LAMBDA;
         return true;
     }
@@ -1086,6 +1123,10 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
                     return st.havePos ? st.pos : null;
                 }
                 st.pos.set(st.probe);
+                // Someone moved the atoms: whatever was converged is not any
+                // more, and the count of quiet frames means nothing now.
+                st.quietFrames = 0;
+                st.converged = false;
                 st.haveEnergy = false;
                 st.havePos = true;
             } else if (!st.havePos) {

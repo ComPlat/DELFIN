@@ -472,3 +472,33 @@ def test_restraint_gradients_match_finite_differences():
     assert 100.0 <= mff.RESTRAINT_FORCE_CONSTANTS['distance'] <= 800.0
     assert 50.0 <= mff.RESTRAINT_FORCE_CONSTANTS['angle'] <= 400.0
     assert mff.RESTRAINT_FORCE_CONSTANTS['dihedral'] <= 200.0
+
+
+def test_convergence_is_judged_on_progress_not_on_the_gradient():
+    """The gradient test never once fired. Measured on three molecules,
+    cholesterol reached 115.193 kcal/mol by frame 200 and spent the next 1300
+    frames gaining 0.006 while having 54,000 steps rejected -- about forty per
+    frame, for ever. A strained ring did worse: it stopped improving at frame
+    50 and then rejected 107,000 steps without moving at all, because a failed
+    step resets the length and the next frame tries the same thing again.
+    Meanwhile a real metal complex was still descending at frame 700 and had
+    every right to go on.
+
+    Energy change per frame tells those three apart and the gradient cannot.
+    With it: cholesterol converges at frame 120 with 3,780 rejections, the Re
+    complex at 320, the Pt complex at 402, and the strained ring at 32 --
+    each at the same energy it used to grind towards."""
+    source = _MODULE_PATH.read_text(encoding='utf-8')
+    assert 'var ENERGY_TOL = 1e-4;' in source
+    assert 'var QUIET_FRAMES = 5;' in source
+    # Judged on what the frame achieved, not on where the gradient stands.
+    assert 'var moved = Math.abs(st.energyValue - startEnergy);' in source
+    assert 'st.quietFrames = (st.quietFrames || 0) + 1;' in source
+    assert 'st.converged = true;' in source
+    # A stall counts as no progress, which is what turns endless retrying
+    # into an answer.
+    assert 'st.stalled = false;' in source
+    # And anything that moves the atoms starts the count again.
+    staged = source.split('st.pos.set(st.probe);')[1][:400]
+    assert 'st.quietFrames = 0;' in staged
+    assert 'st.converged = false;' in staged
