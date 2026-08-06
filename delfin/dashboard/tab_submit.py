@@ -760,6 +760,19 @@ def create_tab(ctx):
         layout=widgets.Layout(width='190px', display='none'),
         disabled=True,
     )
+    submit_hyb_auto_btn = widgets.Button(
+        description='Types', icon='magic', button_style='',
+        tooltip=(
+            'Read each carbon\'s hybridisation off how many partners it is '
+            'bonded to: four is tetrahedral, three trigonal planar, two '
+            'linear. Stronger than perception, which goes through bond '
+            'orders and misses a double bond it cannot see in the geometry. '
+            'Applies to the selection, or to every carbon when nothing is '
+            'selected.'
+        ),
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
     submit_settle_btn = widgets.ToggleButton(
         value=True, description='Settle', icon='level-down',
         button_style='info',
@@ -839,7 +852,8 @@ def create_tab(ctx):
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
-            submit_poly_dd, submit_hyb_dd, submit_internal_group,
+            submit_poly_dd, submit_hyb_dd, submit_hyb_auto_btn,
+            submit_internal_group,
             submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync, submit_cmd_sync,
@@ -1136,6 +1150,7 @@ def create_tab(ctx):
         submit_settle_btn.disabled = not enabled
         submit_bond_btn.disabled = not enabled
         submit_unbond_btn.disabled = not enabled
+        submit_hyb_auto_btn.disabled = not enabled
         submit_ff_dd.disabled = not enabled
         submit_optimize_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
@@ -3658,6 +3673,49 @@ def create_tab(ctx):
             _set_mol_status(f'{named} back to the perceived type.')
         _clear_selection()
 
+    def on_submit_hyb_auto(_button=None):
+        """Derive the carbon types from the connectivity and hold them."""
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            _set_mol_status('Load a structure first.')
+            return
+        try:
+            from .molecule_forcefield import hybridisation_from_connectivity
+            perceived = _perception_for(xyz)
+            picked = list(state.get('picked') or [])
+            derived = hybridisation_from_connectivity(perceived, picked or None)
+        except Exception as exc:
+            _set_mol_status(f'Could not read the types: {exc}')
+            return
+        if not derived:
+            _set_mol_status(
+                'No carbon in the selection — the count only fixes the shape '
+                'for carbon, which has no lone pair.'
+            )
+            return
+        changed = [
+            i for i, name in derived.items()
+            if (state.get('hyb_overrides') or {}).get(i) != name
+        ]
+        overrides = dict(state.get('hyb_overrides') or {})
+        overrides.update(derived)
+        state['hyb_overrides'] = overrides
+        state['perceived'] = None
+        state['perceived_for'] = None
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        where = f'{len(picked)} selected' if picked else 'the whole structure'
+        counts = ', '.join(
+            f'{sum(1 for v in derived.values() if v == name)}x {name}'
+            for name in ('sp', 'sp2', 'sp3')
+            if any(v == name for v in derived.values())
+        )
+        _set_mol_status(
+            f'{len(derived)} carbons typed from their partners in {where} '
+            f'({counts}); {len(changed)} changed.'
+        )
+        _clear_selection()
+
     _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
 
     def _describe_constraint(entry):
@@ -4028,6 +4086,7 @@ def create_tab(ctx):
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
+    submit_hyb_auto_btn.on_click(on_submit_hyb_auto)
     submit_cmd_sync.observe(on_submit_cmd, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)

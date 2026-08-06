@@ -840,6 +840,64 @@ def _build_typing_mol(
     return None, False
 
 
+def _drop_impossible_metal_contacts(
+    mol: Any,
+    metal_indices: Sequence[int],
+    symbols: Sequence[str],
+    coords: Sequence[Sequence[float]],
+    warnings: List[str],
+) -> Any:
+    """Return ``mol`` with any metal contact that gave a carbon a fifth bond cut.
+
+    ``DetermineConnectivity`` is purely geometric, and a metal's covalent
+    radius is large: on a scandium complex the cutoff reaches past 2.9 A, so
+    the backbone carbons of a triazacyclononane -- held near the metal by
+    their own chelate rings, bonded to nothing but their nitrogen -- were
+    counted as donors.  The coordination number came out as 9 instead of 6,
+    and only a nine-vertex polyhedron was offered for what is an octahedron.
+
+    Carbon is the one element where this is unambiguous.  Every real carbon
+    donor stays within four bonds: an alkyl has M and three substituents, an
+    N-heterocyclic carbene M and two nitrogens, a side-on alkene carbon M, its
+    partner and two hydrogens.  Five means the geometry was over-read.  The
+    longest offending contact goes first, and only far enough to bring the
+    carbon back to four.
+
+    Deliberately carbon only.  Oxygen would be the obvious next candidate and
+    is exactly wrong: a coordinated ether or a bridging alkoxide is
+    three-connected on purpose.
+    """
+    metals = set(int(m) for m in metal_indices)
+    if not metals:
+        return mol
+    removed = 0
+    editable = Chem.RWMol(mol)
+    for atom in list(editable.GetAtoms()):
+        index = atom.GetIdx()
+        if symbols[index] != 'C':
+            continue
+        neighbours = [n.GetIdx() for n in atom.GetNeighbors()]
+        surplus = len(neighbours) - 4
+        if surplus <= 0:
+            continue
+        attached = [n for n in neighbours if n in metals]
+        if not attached:
+            continue
+        attached.sort(key=lambda m: -_distance(coords[index], coords[m]))
+        for metal in attached[:surplus]:
+            editable.RemoveBond(index, metal)
+            removed += 1
+    if not removed:
+        return mol
+    warnings.append(
+        f'{removed} metal-carbon contact(s) were dropped: they would have '
+        'given a carbon five bonds, which the geometric perception reaches '
+        'only because a metal has a large covalent radius. Use Bond if one '
+        'of them was real.'
+    )
+    return editable.GetMol()
+
+
 def perceive_molecule(xyz_text: str) -> Optional[PerceivedMolecule]:
     """Parse an XYZ block and perceive connectivity, bond orders and metals.
 
@@ -889,6 +947,10 @@ def perceive_molecule(xyz_text: str) -> Optional[PerceivedMolecule]:
     except Exception as exc:
         logger.debug('DetermineConnectivity failed: %s', exc)
         warnings.append('Connectivity perception failed; no bonded terms could be built.')
+
+    mol = _drop_impossible_metal_contacts(
+        mol, metal_indices, symbols, coords, warnings
+    )
 
     bonds = sorted(
         (min(b.GetBeginAtomIdx(), b.GetEndAtomIdx()), max(b.GetBeginAtomIdx(), b.GetEndAtomIdx()))
@@ -1123,6 +1185,75 @@ def perceived_hybridisation_of(perceived: Any, index: int) -> Optional[str]:
     if recorded is not None:
         return recorded
     return _hybridisation(perceived.typing_mol, index)
+
+
+def hybridisation_from_connectivity(
+    perceived: Any, indices: Optional[Iterable[int]] = None
+) -> Dict[int, str]:
+    """Read each carbon's hybridisation off how many partners it is bonded to.
+
+    A carbon has no lone pair, so its sigma count fixes its shape outright:
+    four partners is tetrahedral, three is trigonal planar, two is linear.
+    That is a stronger statement than perception can make, because perception
+    goes through bond *orders* -- and those are read from the geometry, so a
+    double bond twisted out of plane, or one at an unusual length, is simply
+    not seen and its carbon comes back sp3.
+
+    Deliberately carbon only.  Everywhere else a lone pair decides and the
+    count cannot see it: nitrogen with three partners is pyramidal in an amine
+    and planar in an amide, oxygen with two is bent either way but at quite
+    different angles.  Guessing there would trade one wrong answer for another.
+
+    **A coordinated atom raises the obvious question -- does the metal count
+    as a partner?**  For carbon it almost always does, and for a reason that
+    does not hold for the other donors: carbon has no lone pair to give away
+    unless it is a carbene, so an M-C bond is a real sigma bond.  A methyl
+    ligand is C plus three substituents and the metal, four, tetrahedral.  An
+    N-heterocyclic carbene donates from an sp2 orbital and is two nitrogens
+    plus the metal, three, trigonal planar -- both right only *because* the
+    metal is counted.  That is exactly the judgement that cannot be made for
+    N, O or P, where a dative bond and a covalent one look the same to a
+    counter and the lone pair changes the answer; those are left alone.
+
+    The one genuine exception is a side-on alkene, where both carbons are
+    bonded to the same metal.  That is a three-membered M-C-C ring and is
+    visible without touching bond orders, so it is checked for: the metal is
+    then *not* counted, and the carbons come back sp2.  Reality sits between
+    the free alkene (sp2) and the metallacyclopropane (sp3), and for the
+    weakly bound alkenes this normally means, sp2 is the closer of the two.
+
+    Args:
+        perceived: A :class:`PerceivedMolecule`.
+        indices: Restrict to these atoms; all of them when omitted.
+
+    Returns:
+        Atom index to ``'sp'``/``'sp2'``/``'sp3'``, ready for
+        :func:`apply_hybridisation_overrides`.
+    """
+    if perceived is None:
+        return {}
+    by_count = {2: 'sp', 3: 'sp2', 4: 'sp3'}
+    adjacency = perceived.neighbours()
+    wanted = (range(perceived.n_atoms) if indices is None
+              else [int(i) for i in indices])
+    metals = set(perceived.metal_indices or ())
+    derived: Dict[int, str] = {}
+    for index in wanted:
+        if not 0 <= index < perceived.n_atoms:
+            continue
+        if index in metals or perceived.symbols[index] != 'C':
+            continue
+        partners = list(adjacency[index])
+        side_on = [
+            m for m in partners if m in metals
+            and any(other in adjacency[m] for other in partners
+                    if other not in metals and perceived.symbols[other] == 'C')
+        ]
+        count = len(partners) - len(side_on)
+        name = by_count.get(count)
+        if name is not None:
+            derived[index] = name
+    return derived
 
 
 def apply_hybridisation_overrides(perceived: Any, overrides: Any) -> int:

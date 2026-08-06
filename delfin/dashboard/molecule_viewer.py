@@ -2035,6 +2035,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var minY = Math.min(y0, y1) - rect.top,  maxY = Math.max(y0, y1) - rect.top;
         if (maxX - minX < 3 || maxY - minY < 3) return;
 
+        // A band adds to what is already picked. It used to replace unless
+        // Ctrl was held as well -- but the band already needs Shift, and a
+        // plain click on an atom has always accumulated, so the band was the
+        // one gesture that threw the selection away. Drawing a second box
+        // around the next part of the molecule now does what it looks like.
+        // Clear is how you start over.
         if (!additive) state.picks = [];
 
         var projected = projectAllAtoms(scopeKey);
@@ -2999,7 +3005,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     kind: 'maybe-rect',
                     startX: e.clientX, startY: e.clientY,
                     origX: x, origY: y,
-                    additive: !!(e.ctrlKey || e.metaKey),
+                    additive: true,
                     movedEnough: false,
                     atomRef: atom
                 };

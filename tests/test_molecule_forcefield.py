@@ -861,3 +861,93 @@ def test_a_forced_sp_centre_uses_the_linear_angle_form():
     for angle in at_donor:
         assert abs(angle['theta0'] - 180.0) < 0.01, angle
         assert angle['n'] == 1, angle
+
+
+def _sc_amine_arm_xyz():
+    """A scandium with one amine donor whose backbone carbon sits 2.895 A away.
+
+    That is the geometry that made a nine-coordinate scandium out of a
+    six-coordinate one: the carbon is bonded to nothing but its nitrogen and
+    its own chain, and only looks like a donor because a metal's covalent
+    radius is large enough for the geometric cutoff to reach it.
+    """
+    rows = [
+        'Sc   0.0000    0.0000    0.0000',
+        'N    0.0000    0.0000    2.1470',
+        'C    1.4213    0.0000    2.5221',   # 2.895 A from Sc, four bonds already
+        'C    2.2825    0.0000    1.2574',
+        'H    1.6416   -0.8900    3.1116',
+        'H    1.6416    0.8900    3.1116',
+        'H   -0.4808   -0.8328    2.4870',
+        'H   -0.4808    0.8328    2.4870',
+        'H    1.6376    0.0000    0.3787',
+        'H    2.9117   -0.8900    1.2463',
+        'H    2.9117    0.8900    1.2463',
+    ]
+    return f'{len(rows)}\nSc amine arm\n' + '\n'.join(rows) + '\n'
+
+
+def test_a_metal_contact_that_would_give_carbon_five_bonds_is_dropped():
+    """Geometric perception reaches past 2.9 A at a scandium, so the backbone
+    carbons of a triazacyclononane were counted as donors: coordination number
+    9 for what is an octahedron, and only nine-vertex polyhedra offered.
+
+    Carbon is the one element where this is unambiguous -- every real carbon
+    donor stays within four bonds -- so a metal contact that would be its
+    fifth is dropped. Measured on the user's Sc complex: 9 donors become the
+    six that are really there (three O at 2.048 A, three N at 2.147 A), while
+    the three carbons at 2.895-2.898 A go. The Re and Pt structures are
+    untouched."""
+    perceived = mff.perceive_molecule(_sc_amine_arm_xyz())
+    metal = perceived.metal_indices[0]
+    donors = perceived.neighbours()[metal]
+
+    assert donors == [1], 'only the nitrogen is a donor'
+    assert any('five bonds' in w for w in perceived.warnings)
+
+
+def test_the_metal_counts_as_a_partner_for_carbon_except_side_on():
+    """Whether the metal counts as a bonding partner is a real question, and
+    for carbon it has an answer: carbon has no lone pair to donate unless it
+    is a carbene, so an M-C bond is a genuine sigma bond and the metal counts.
+    A methyl ligand is tetrahedral, an N-heterocyclic carbene trigonal planar
+    -- both only because it is counted.
+
+    The exception is a side-on alkene, where both carbons hang off the same
+    metal. That is a three-membered M-C-C ring, visible without touching bond
+    orders, and there the metal is not counted: the carbons come back sp2.
+    """
+    methyl = mff.perceive_molecule(
+        '8\nmethyl\n'
+        'Pt  0.000  0.000  0.000\nCl  2.310  0.000  0.000\n'
+        'Cl -1.155  2.001  0.000\nCl -1.155 -2.001  0.000\n'
+        'C   0.000  0.000  2.080\nH   1.030  0.000  2.440\n'
+        'H  -0.515  0.892  2.440\nH  -0.515 -0.892  2.440\n')
+    assert mff.hybridisation_from_connectivity(methyl)[4] == 'sp3'
+
+    zeise = mff.perceive_molecule(
+        '10\nzeise\n'
+        'Pt  0.000  0.000  0.000\nCl  2.310  0.000  0.000\n'
+        'Cl -1.155  2.001  0.000\nCl -1.155 -2.001  0.000\n'
+        'C   0.000  0.688  2.030\nC   0.000 -0.688  2.030\n'
+        'H   0.930  1.230  2.300\nH  -0.930  1.230  2.300\n'
+        'H   0.930 -1.230  2.300\nH  -0.930 -1.230  2.300\n')
+    derived = mff.hybridisation_from_connectivity(zeise)
+    assert derived[4] == 'sp2' and derived[5] == 'sp2', derived
+
+
+def test_types_are_only_derived_for_carbon():
+    """Everywhere else a lone pair decides and the count cannot see it: N with
+    three partners is pyramidal in an amine and planar in an amide. Guessing
+    there would trade one wrong answer for another."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    derived = mff.hybridisation_from_connectivity(perceived)
+    assert all(perceived.symbols[i] == 'C' for i in derived), derived
+
+    benzene = mff.perceive_molecule(_two_benzenes_xyz())
+    derived = mff.hybridisation_from_connectivity(benzene)
+    assert set(derived.values()) == {'sp2'}
+    assert len(derived) == 12
+    # And it can be narrowed to a selection.
+    assert set(mff.hybridisation_from_connectivity(benzene, [0, 1, 99])) == {0, 1}

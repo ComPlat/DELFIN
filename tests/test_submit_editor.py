@@ -1141,6 +1141,38 @@ def test_a_hybridisation_can_be_forced_on_a_whole_selection():
     assert sync.index('_perception_for(xyz)') < sync.index('polyhedron_options(')
 
 
+def test_a_second_rubber_band_adds_to_the_selection():
+    """Drawing a new box threw away everything the last one had picked, so a
+    molecule could only ever be selected in one rectangle.
+
+    The band already needs Shift, and a plain click on an atom has always
+    accumulated -- the band was the one gesture that cleared. It used to add
+    only when Ctrl was held on top of Shift, which is two modifiers for what
+    the gesture already means."""
+    editor = EDITOR
+    band = editor.split("kind: 'maybe-rect',")[1][:400]
+    assert 'additive: true,' in band
+    assert 'ctrlKey' not in band
+
+
+def test_carbon_types_can_be_read_off_the_connectivity():
+    """Perception goes through bond orders, and those are read from the
+    geometry -- a double bond twisted out of plane, or at an unusual length,
+    is simply not seen and its carbon comes back sp3. The number of partners
+    says it outright, because carbon has no lone pair."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_hyb_auto_btn' in source
+    assert 'submit_hyb_auto_btn.on_click(on_submit_hyb_auto)' in source
+    handler = source.split('def on_submit_hyb_auto')[1].split('\n    def ')[0]
+    assert 'hybridisation_from_connectivity' in handler
+    # The selection when there is one, the whole structure when there is not.
+    assert 'picked or None' in handler
+    assert "state['perceived'] = None" in handler
+    assert '_enable_live_forcefield()' in handler
+
+
 def test_a_polyhedron_held_on_one_metal_is_not_offered_for_the_next():
     """The dropdown is rebuilt from whichever metal is picked, and its value
     was then set to whatever polyhedron happened to be applied -- even when
