@@ -22216,6 +22216,50 @@ def _enumerate_orbits_topo(
         # complete Cauchy-Frobenius count (e.g. CN9 TTP N5O4 → 24).
         results.append((best, cf, list(perm)))
 
+    # ===== REALISIERBARKEIT: was chemisch nicht baubar ist, gar nicht erst enumerieren =====
+    # (2026-08-06 verdrahtet.  _realisability.py, 513 Zeilen, seit Welle-3 im Baum, NIE importiert.)
+    #
+    # DAS ZIEL, in den Worten des Users: alle chemisch realisierbaren Frames -- also die, die
+    # sich OHNE Anomalie bauen lassen.  Isomere und Konformere, die nur mit chemisch
+    # unrealistischen Defekten baubar sind, brauchen wir nicht.
+    #
+    # Polya/Burnside erzeugt ALLE orbit-verschiedenen Faerbungen unter der Punktgruppe.  Viele
+    # davon sind kombinatorisch gueltig und chemisch UNMOEGLICH: ein Fuenfring-Chelat kann kein
+    # 180-Grad-trans-Paar spannen; zwei grosse Sigma-Donoren (P, As, Sb, weitkegeliges NHC)
+    # passen nicht auf benachbarte Vertices, ohne unter 2 x r_vdW zu geraten; ein anellierter
+    # aromatischer Donor kann zwei Vertices nicht spannen, deren Winkel weit vom planaren
+    # Aryl-Ideal abweicht; d-Elektronenzahl und Donor-Sigma-Paare koennen unvereinbar sein.
+    #
+    # Der Bauer versucht sie heute trotzdem und liefert defekte Frames.  Die zaehlen dann
+    # doppelt schaedlich: sie ziehen jeden Qualitaetsterm (worst_sev liest den SCHLECHTESTEN
+    # Frame ueber den Manifold) UND sie blaehen den Nenner der Isomer-Abdeckung.  Sie hier
+    # wegzulassen senkt also die Defektzahl und macht zugleich die Vollstaendigkeitszahl ehrlich.
+    #
+    # DAS TOR IST DAFUER SCHON GEBAUT (loop.py:1541, User 2026-07-19): quality-weighted
+    # completeness -- "all REALISTIC frames AT quality, ANCHORED by the CCDC isomer, NOT every
+    # Polya isomer".  Der generische isomers_lost-Boden ist deshalb weich; alle CCDC-verankerten
+    # Boeden bleiben HART.  Wer hier ein Orbit entfernt, das der Kristall tatsaechlich ist,
+    # faellt an ccdc_isomer_lost durch -- genau die richtige Sperre.
+    #
+    # Default OFF (DELFIN_REALISABILITY=0) -> bit-exakt HEAD.
+    if _delfin_env_int("DELFIN_REALISABILITY", 0) and results:
+        try:
+            from delfin.manta import _realisability as _realis
+            _verts = _TOPO_GEOMETRY_VECTORS.get(geom_name)
+            if _verts:
+                _rep = _realis.filter_isomer_labels(
+                    [(cf, perm) for _ok, cf, perm in results],
+                    geom_name, _verts, donor_labels, n_coord, chelate_pairs)
+                _kept_perms = {tuple(p) for _c, p in getattr(_rep, "kept", [])}
+                _before = len(results)
+                _filtered = [t for t in results if tuple(t[2]) in _kept_perms]
+                if _filtered:                      # nie den ganzen Manifold ausloeschen
+                    results = _filtered
+                if len(results) != _before:
+                    logger.debug("Realisability: %d von %d Orbits behalten (%s)",
+                                 len(results), _before, geom_name)
+        except Exception as _rl_exc:
+            logger.debug("Realisability no-op (%s): %s", geom_name, _rl_exc)
     return results
 
 
