@@ -801,3 +801,63 @@ def test_an_override_outlives_a_bond_edit_only_if_it_is_applied_after_one():
     mff.apply_bond_edits(right, {(0, 12): True})
     mff.apply_hybridisation_overrides(right, {3: 'sp3'})
     assert mff._hybridisation(right.typing_mol, 3) == 'sp3'
+
+
+def test_a_forced_hybridisation_reaches_the_angles_at_a_metal_too():
+    """Forcing the hybridisation of the atom that coordinates changed nothing.
+
+    Two reasons, both measured. RDKit picks the UFF type of phosphorus and
+    silicon from valence and charge rather than hybridisation -- P stays at
+    93.8 degrees and Si at 109.5 whatever it is set to, while C, N, O and S
+    all follow. And no angle that touches a metal is typed by RDKit at all;
+    those are restrained to the input geometry. At a donor atom that is every
+    angle holding the ligand against its metal, so on a real Re complex all
+    six angles at the coordinating phosphorus came back byte-identical.
+
+    The angles at an atom whose hybridisation was forced are therefore built
+    from that choice directly. On the same complex the nitrosyl nitrogen,
+    bent at 120.2 degrees, relaxes to 179.4 degrees when forced to sp and
+    stays at 120.6 when forced to sp2 -- driven through the shipped browser
+    engine."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    donor = sorted(j for pair in perceived.bonds for j in pair
+                   if metal in pair and j != metal)[0]
+
+    auto = mff.export_forcefield_terms(xyz, perceived=perceived)
+    at_donor = [a for a in auto['angles'] if a['j'] == donor]
+    assert any(metal in (a['i'], a['k']) for a in at_donor), 'no angle at the metal'
+
+    forced = mff.perceive_molecule(xyz)
+    assert mff.apply_hybridisation_overrides(forced, {donor: 'sp2'}) == 1
+    assert forced.forced_hybridisation == {donor: 'sp2'}
+    payload = mff.export_forcefield_terms(xyz, perceived=forced)
+
+    # Every angle at that atom, including the ones to the metal.
+    for angle in payload['angles']:
+        if angle['j'] == donor:
+            assert abs(angle['theta0'] - 120.0) < 0.01, angle
+    # And nothing anywhere else moved.
+    others = lambda p: [a for a in p['angles'] if a['j'] != donor]
+    assert others(auto) == others(payload)
+    # The force-field notes say so rather than leaving it to be discovered.
+    assert any('Hybridisation forced by hand' in w for w in payload['warnings'])
+
+
+def test_a_forced_sp_centre_uses_the_linear_angle_form():
+    """The general cosine expansion diverges as theta0 approaches 180 degrees
+    (C2 = 1/(4 sin^2 theta0)), so a forced sp centre has to take UFF's n = 1
+    form -- which is the whole point of forcing it on a nitrosyl."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    donor = sorted(j for pair in perceived.bonds for j in pair
+                   if perceived.metal_indices[0] in pair
+                   and j != perceived.metal_indices[0])[0]
+    mff.apply_hybridisation_overrides(perceived, {donor: 'sp'})
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived)
+    at_donor = [a for a in payload['angles'] if a['j'] == donor]
+    assert at_donor
+    for angle in at_donor:
+        assert abs(angle['theta0'] - 180.0) < 0.01, angle
+        assert angle['n'] == 1, angle

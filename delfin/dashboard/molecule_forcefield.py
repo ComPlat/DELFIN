@@ -533,6 +533,8 @@ class PerceivedMolecule:
         warnings: Human-readable notes about approximations made.
         auto_hybridisation: What perception said about an atom, recorded before
             an override replaced it, so the offer can still name it.
+        forced_hybridisation: Atom index to the hybridisation the user forced.
+            The angles at such an atom are built from it directly.
     """
 
     symbols: List[str]
@@ -547,6 +549,7 @@ class PerceivedMolecule:
     had_header: bool = True
     warnings: List[str] = field(default_factory=list)
     auto_hybridisation: Dict[int, str] = field(default_factory=dict)
+    forced_hybridisation: Dict[int, str] = field(default_factory=dict)
 
     def neighbours(self) -> List[List[int]]:
         """Return the adjacency list implied by :attr:`bonds`."""
@@ -1081,9 +1084,18 @@ def apply_bond_edits(perceived: Any, edits: Any) -> bool:
     return True
 
 
-#: The hybridisations a user may force on an atom.  UFF types main-group
-#: elements by hybridisation, so these are the states that change anything.
+#: The hybridisations a user may force on an atom.
 HYBRIDISATION_CHOICES: Tuple[str, ...] = ('sp', 'sp2', 'sp3')
+
+#: The angle each one means at that centre.  Needed because setting the
+#: hybridisation is not always enough on its own: RDKit picks the UFF type of
+#: phosphorus and silicon from valence and charge rather than hybridisation
+#: (P stays at 93.8 degrees and Si at 109.5 whatever it is set to), and no
+#: angle that touches a metal is typed by RDKit at all -- which is every angle
+#: that orients a ligand against its metal.
+HYBRIDISATION_ANGLES: Dict[str, float] = {
+    'sp': 180.0, 'sp2': 120.0, 'sp3': 109.471,
+}
 
 _HYBRIDISATION_TYPES: Dict[str, Any] = {}
 
@@ -1121,11 +1133,22 @@ def apply_hybridisation_overrides(perceived: Any, overrides: Any) -> int:
     double bond went unperceived comes out sp3, so its three angles are typed
     at 109.5 degrees and the centre puckers where it should stay flat.
 
-    RDKit's UFF typer reads the atom's hybridisation directly, so setting it
-    is enough -- forcing a carbon to sp2 types it ``C_2``, and its angles come
-    back at 120 degrees.  Three angles of 120 degrees at a three-coordinate
-    centre *is* trigonal planar, which is what makes this work without an
-    inversion term.
+    RDKit's UFF typer reads the atom's hybridisation for most main-group
+    elements, so setting it is usually enough -- forcing a carbon to sp2 types
+    it ``C_2`` and its angles come back at 120 degrees.  Three angles of 120
+    degrees at a three-coordinate centre *is* trigonal planar, which is what
+    makes this work without an inversion term.
+
+    Two places where setting it is *not* enough, so the choice is recorded in
+    ``forced_hybridisation`` and the exporter builds the angles at that centre
+    from it directly:
+
+    * RDKit picks the UFF type of phosphorus and silicon from valence and
+      charge, not hybridisation.  Measured: P stays at 93.8 degrees and Si at
+      109.5 whatever it is set to, while C, N, O and S all follow.
+    * No angle that touches a metal is typed by RDKit at all -- those are
+      restrained to the input geometry.  At a donor atom that is every angle
+      holding the ligand against its metal, so the shape would not move.
 
     Must run after :func:`apply_bond_edits`: rebuilding the typing molecule
     sanitizes it, and sanitisation re-perceives hybridisation.
@@ -1151,6 +1174,15 @@ def apply_hybridisation_overrides(perceived: Any, overrides: Any) -> int:
         target = _hybridisation_type(name)
         if target is None:
             continue
+        # Recorded whether or not a molecule can carry it: the exporter builds
+        # the angles at this centre from the choice directly, and that is the
+        # half that works for phosphorus, silicon and every angle at a metal.
+        if index not in perceived.auto_hybridisation:
+            was = _hybridisation(perceived.typing_mol, index)
+            if was is not None:
+                perceived.auto_hybridisation[index] = was
+        perceived.forced_hybridisation[index] = name
+        applied += 1
         for molecule in (perceived.typing_mol, perceived.mol):
             if molecule is None:
                 continue
@@ -1158,12 +1190,6 @@ def apply_hybridisation_overrides(perceived: Any, overrides: Any) -> int:
                 atom = molecule.GetAtomWithIdx(index)
             except Exception:
                 continue
-            if molecule is perceived.typing_mol:
-                if index not in perceived.auto_hybridisation:
-                    was = _hybridisation(molecule, index)
-                    if was is not None:
-                        perceived.auto_hybridisation[index] = was
-                applied += 1
             # An aromatic flag reads as sp2 wherever it is checked, so a ring
             # carbon forced to sp3 or sp would otherwise ignore the override.
             if name != 'sp2':
@@ -1656,6 +1682,24 @@ def export_forcefield_terms(
     typing_mol = perceived.typing_mol
     adjacency = perceived.neighbours()
 
+    # An atom whose hybridisation the user forced takes its angles from that
+    # choice, not from RDKit.  Setting the hybridisation alone reaches neither
+    # phosphorus nor silicon -- RDKit types those from valence and charge, so
+    # P stays at 93.8 degrees and Si at 109.5 whatever it is set to -- nor any
+    # angle that touches a metal, which is never typed at all.  At a donor
+    # atom that is every angle holding the ligand against its metal, so
+    # forcing a hybridisation there did nothing whatsoever.
+    forced_hyb = dict(getattr(perceived, 'forced_hybridisation', None) or {})
+    if forced_hyb:
+        listed = ', '.join(
+            f'{symbols[i]}{i} as {forced_hyb[i]}' for i in sorted(forced_hyb)
+        )
+        warnings.append(
+            f'Hybridisation forced by hand: {listed}. Every angle at those '
+            'atoms is built from that choice rather than from perception, so '
+            'it also holds where the atom is bonded to a metal.'
+        )
+
     if perceived.has_metal:
         named = ', '.join(
             f'{symbols[i]} (atom {i})' for i in sorted(metals)
@@ -1739,11 +1783,12 @@ def export_forcefield_terms(
 
         for centre in range(n_atoms):
             neighbours = adjacency[centre]
+            forced_theta = HYBRIDISATION_ANGLES.get(forced_hyb.get(centre, ''))
             for a in range(len(neighbours)):
                 for b in range(a + 1, len(neighbours)):
                     i, k = neighbours[a], neighbours[b]
                     params = None
-                    if (typing_mol is not None
+                    if (forced_theta is None and typing_mol is not None
                             and centre not in metals and i not in metals and k not in metals):
                         try:
                             params = _uff_helpers.GetUFFAngleBendParams(typing_mol, i, centre, k)
@@ -1753,12 +1798,16 @@ def export_forcefield_terms(
                         k_theta, theta0 = float(params[0]), float(params[1])
                         periodicity = _angle_periodicity(theta0)
                     else:
-                        used_fallback = True
-                        if not ({i, centre, k} & metals):
-                            fallback_elements.update(
-                                (symbols[i], symbols[centre], symbols[k])
-                            )
-                        theta0 = _angle_degrees(coords[i], coords[centre], coords[k])
+                        if forced_theta is None:
+                            used_fallback = True
+                            if not ({i, centre, k} & metals):
+                                fallback_elements.update(
+                                    (symbols[i], symbols[centre], symbols[k])
+                                )
+                        theta0 = (
+                            forced_theta if forced_theta is not None
+                            else _angle_degrees(coords[i], coords[centre], coords[k])
+                        )
                         if centre == forced_centre:
                             theta0 = forced_angles.get(
                                 (min(i, k), max(i, k)), theta0,
