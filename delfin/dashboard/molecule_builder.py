@@ -610,69 +610,88 @@ def join(structure: Structure, first: int, second: int, order: int = 1) -> bool:
     wanted = bond_length(structure.symbols[first], structure.symbols[second], order)
     offset = _sub(structure.coords[second], structure.coords[first])
     distance = _norm(offset)
-    if distance > 1e-6 and second not in _component(structure, first):
+    anchored = _component(structure, first)
+    moving = _component(structure, second)
+    separate = second not in anchored
+    if distance > 1e-6 and separate:
         shift = _scale(_unit(offset), distance - wanted)
-        for index in _component(structure, second):
+        for index in moving:
             structure.coords[index] = _sub(structure.coords[index], shift)
     structure.set_bond(first, second, order)
     mapping = adjust_hydrogens(structure, [first, second])
-    first = mapping.get(first, first) if mapping else first
-    second = mapping.get(second, second) if mapping else second
+    if mapping:
+        first, second = mapping.get(first, first), mapping.get(second, second)
+        anchored = {mapping[i] for i in anchored if i in mapping}
+        moving = {mapping[i] for i in moving if i in mapping}
     for index in (first, second):
         rearrange_hydrogens(structure, index)
-    relieve_clashes(structure, keep=(first, second))
+    if separate:
+        turn_about_bond(structure, first, second, moving - {second})
     return True
 
 
-def relieve_clashes(structure: Structure, keep=(), threshold: float = 1.4) -> int:
-    """Push apart atoms that a rigid move left sitting on top of each other.
+def turn_about_bond(structure: Structure, anchor: int, pivot: int,
+                    movers, steps: int = 36) -> float:
+    """Spin one fragment about a new bond until it stops sitting in the other.
 
-    Bringing two fragments together along the bond axis is the right thing for
-    the bond and says nothing about everything else: the hydrogens on either
-    side arrive wherever the rotation about that axis happens to leave them.
-    Two of them at half a bond length apart is not a clash the force field
-    should be asked to fix -- its r^-12 term there is enormous, and the first
-    step throws the structure apart. It is a placement problem, so it is
-    solved by placement.
+    Bringing two fragments together along the bond axis is right for the bond
+    and says nothing about the rotation about it: the hydrogens on either side
+    arrive wherever they happen to. Two propanes joined end to end left a pair
+    of them 0.61 A apart, and perception then read one as bonded to two atoms.
 
-    Atoms in ``keep`` are not moved: they are the bond that was just made.
+    Pushing atoms out of the way is the wrong remedy -- it strains geometries
+    that were correct. Turning is the free coordinate here: both fragments
+    stay rigid and internally perfect, and the only thing that changes is the
+    one thing nothing had decided. This is the torsion the force field would
+    have to find anyway, found before it is handed a structure to tear.
+
+    Returns the closest contact between the two fragments afterwards.
     """
-    keep = {int(i) for i in keep}
-    moved = 0
-    for _sweep in range(60):
-        worst = None
-        for i in range(len(structure)):
-            for j in range(i + 1, len(structure)):
-                if structure.order(i, j):
+    movers = {int(i) for i in movers if 0 <= int(i) < len(structure)}
+    others = [i for i in range(len(structure)) if i not in movers and i != pivot]
+    if not movers or not others:
+        return float('inf')
+    axis = _unit(_sub(structure.coords[pivot], structure.coords[anchor]))
+    centre = structure.coords[pivot]
+    ordered = sorted(movers)
+    start = [_sub(structure.coords[i], centre) for i in ordered]
+
+    def _rotated(angle):
+        cos, sin = math.cos(angle), math.sin(angle)
+        out = []
+        for v in start:
+            # Rodrigues: v cos + (axis x v) sin + axis (axis . v)(1 - cos)
+            cross = _cross(axis, v)
+            dot = _dot(axis, v)
+            out.append(_add(_add(_scale(v, cos), _scale(cross, sin)),
+                            _scale(axis, dot * (1.0 - cos))))
+        return out
+
+    def _closest(offsets):
+        worst = float('inf')
+        for index, offset in zip(ordered, offsets):
+            here = _add(centre, offset)
+            radius = covalent_radius(structure.symbols[index])
+            for other in others:
+                if structure.order(index, other):
                     continue
-                gap = _norm(_sub(structure.coords[i], structure.coords[j]))
-                want = 0.75 * (covalent_radius(structure.symbols[i])
-                               + covalent_radius(structure.symbols[j])) * threshold
-                if gap >= want:
-                    continue
-                if worst is None or gap - want < worst[0]:
-                    worst = (gap - want, i, j, gap, want)
-        if worst is None:
-            break
-        _slack, i, j, gap, want = worst
-        axis = _sub(structure.coords[j], structure.coords[i])
-        if _norm(axis) < 1e-6:
-            axis = (0.0, 0.0, 1.0)
-        push = _scale(_unit(axis), (want - gap) / 2.0 + 1e-3)
-        for index, sign in ((i, -1.0), (j, 1.0)):
-            if index in keep:
-                continue
-            # Only hydrogens are moved. A heavy atom carries its whole branch,
-            # and after the join both fragments are one connected thing, so
-            # moving it moved the entire molecule and separated nothing.
-            if structure.symbols[index] != 'H':
-                continue
-            group = {index}
-            for member in group:
-                structure.coords[member] = _add(
-                    structure.coords[member], _scale(push, sign))
-        moved += 1
-    return moved
+                gap = _norm(_sub(here, structure.coords[other]))
+                # Scaled by size, so a hydrogen pair and a carbon pair are
+                # judged on the same footing.
+                worst = min(worst, gap / (radius + covalent_radius(
+                    structure.symbols[other])))
+        return worst
+
+    best_angle, best_score = 0.0, _closest(start)
+    for step in range(1, steps):
+        angle = 2.0 * math.pi * step / steps
+        score = _closest(_rotated(angle))
+        if score > best_score:
+            best_angle, best_score = angle, score
+    if best_angle:
+        for index, offset in zip(ordered, _rotated(best_angle)):
+            structure.coords[index] = _add(centre, offset)
+    return best_score
 
 
 def set_bond_order(structure: Structure, first: int, second: int,

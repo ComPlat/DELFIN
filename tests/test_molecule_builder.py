@@ -304,9 +304,13 @@ def test_joining_does_not_leave_atoms_on_top_of_each_other():
 
     Two propanes joined end to end left a pair of hydrogens 0.61 A apart, and
     perception then read one of them as bonded to two atoms -- the doubly
-    bonded hydrogen that was reported. Only hydrogens are pushed apart: after
-    the join both fragments are one connected thing, so moving a heavy atom
-    moved the whole molecule and separated nothing."""
+    bonded hydrogen that was reported.
+
+    Pushing atoms out of the way is the wrong remedy, because it strains
+    geometries that were correct. Turning is the free coordinate: both
+    fragments stay rigid and internally perfect, and the only thing that
+    changes is the one thing nothing had decided. The closest contact goes
+    from 0.61 A to about 1.3."""
     import itertools
 
     def propane_pair(separation):
@@ -335,4 +339,5 @@ def test_joining_does_not_leave_atoms_on_top_of_each_other():
             for i, j in itertools.combinations(range(len(structure)), 2)
             if not structure.order(i, j)
         )
-        assert closest > 0.55, (separation, closest)
+        assert closest > 1.1, (separation, closest)
+        assert mff.relax_xyz(B.to_xyz(structure), method='uff')['ok']
