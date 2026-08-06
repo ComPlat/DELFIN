@@ -2954,6 +2954,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 state.drag = {
                     kind: 'draw',
                     anchor: atom ? atom.serial : null,
+                    // A tap on a stick retypes that bond, which is how the
+                    // hydrogens and the length follow from single, double or
+                    // triple without having to redraw anything.
+                    bond: atom ? null : raycastBond(scopeKey, e.clientX, e.clientY),
                     startX: e.clientX, startY: e.clientY,
                     lastX: e.clientX, lastY: e.clientY,
                     movedEnough: false
@@ -3297,6 +3301,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var anchorAtom = drag.anchor != null
             ? getAtomBySerial(viewer, drag.anchor) : null;
 
+        if (!anchorAtom && drag.bond && !drag.movedEnough) {
+            pushCommandToPython(scopeKey, 'bondorder',
+                drag.bond[0] + ',' + drag.bond[1] + ',' + order);
+            return;
+        }
         if (!anchorAtom) {
             // Empty space: put an atom down where the cursor is.
             var at = screenToWorld(scopeKey, clientX, clientY, null);
@@ -3642,6 +3651,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.ffActive = !!(result && result.ok);
         state.ffInfo = result;
+        // Drawing while the field runs re-renders, and a re-render stops the
+        // loop. The parameters have just been re-assigned for the structure
+        // that includes the new atom, so this is the moment to pick it up
+        // again -- otherwise every atom placed silently switched Dynamik off.
+        if (state.ffActive && window.__delfinResumeAutoOpt) {
+            window.__delfinResumeAutoOpt = false;
+            try { startAutoOptimize(scopeKey); } catch (e) {}
+        }
         updateEnergyBadge(scopeKey);
         if (state.ffActive && state.ffStrength) {
             setOptimizerStrength(scopeKey, state.ffStrength);

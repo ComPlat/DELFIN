@@ -1131,8 +1131,13 @@ def create_tab(ctx):
             '      var count = model && model.selectedAtoms\n'
             '        ? model.selectedAtoms({}).length : -1;\n'
             # Same structure, just moved -- keep the view. A different one
-            # deserves a fresh look at it.
-            '      if (saved && saved.view && saved.atoms === count) {\n'
+            # deserves a fresh look at it. An edit that adds or removes an
+            # atom is neither: the count changes but it is still the molecule
+            # being worked on, so the camera stays put rather than snapping
+            # back to the default every time something is drawn.
+            '      var edited = !!window.__delfinStructureEdit;\n'
+            '      window.__delfinStructureEdit = false;\n'
+            '      if (saved && saved.view && (edited || saved.atoms === count)) {\n'
             '        viewer_UNIQUEID.setView(saved.view);\n'
             '        viewer_UNIQUEID.__delfinUserInteracted = true;\n'
             '        viewer_UNIQUEID.render();\n'
@@ -3984,6 +3989,7 @@ def create_tab(ctx):
         # clears the history a new structure invalidates. This is not a new
         # structure, it is a step in the one being edited.
         state['structure_edit_inflight'] = True
+        _mark_structure_edit()
         try:
             coords_widget.value = f'{len(lines)}\n{note}\n' + '\n'.join(lines)
         finally:
@@ -4012,6 +4018,7 @@ def create_tab(ctx):
             return
         snapshot = history.pop()
         state['structure_edit_inflight'] = True
+        _mark_structure_edit()
         try:
             coords_widget.value = snapshot['coords']
         finally:
@@ -4023,6 +4030,20 @@ def create_tab(ctx):
         _set_mol_status('Took back the last structural edit.')
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
+
+    def _mark_structure_edit():
+        """Tell the re-render that this is an edit, not a different molecule.
+
+        Two things follow from it: the camera stays where the user put it, and
+        the continuous relaxation picks up again with the atom that was just
+        drawn in it -- which is the point of being able to draw while it runs.
+        """
+        _ensure_manip_bootstrap()
+        running = bool(submit_relax_btn.value)
+        _run_manip_js(
+            'window.__delfinStructureEdit = true;'
+            + ('window.__delfinResumeAutoOpt = true;' if running else '')
+        )
 
     def _structure_now():
         from .molecule_builder import structure_from_xyz
@@ -4097,10 +4118,17 @@ def create_tab(ctx):
                     _apply_structure(structure, f'{was}{index} is now {element}.')
             elif verb == 'bondorder' and len(fields) == 3:
                 first, second, order = (int(v) for v in fields)
+                named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
+                ends = [structure.symbols[i] for i in (first, second)]
                 if set_bond_order(structure, first, second, order):
-                    named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
                     _apply_structure(
-                        structure, f'Bond {first}-{second} is now {named}.')
+                        structure,
+                        f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')
+                else:
+                    _set_mol_status(
+                        f'{ends[0]}{first}-{ends[1]}{second} cannot be '
+                        f'{named}: one of them has no valence left for it.'
+                    )
             elif verb == 'delatoms':
                 doomed = [int(p) for p in fields if p.strip().lstrip('-').isdigit()]
                 gone = delete_atoms(structure, doomed)

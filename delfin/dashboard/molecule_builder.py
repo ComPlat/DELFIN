@@ -517,6 +517,14 @@ def set_bond_order(structure: Structure, first: int, second: int,
     if first == second:
         return False
     order = max(0, min(3, int(order)))
+    # No end can carry more than its own valence: a hydrogen has one, so a
+    # tap asking for a double bond to it has to be refused rather than
+    # producing a C=H that nothing downstream can type.
+    if order:
+        for index in (first, second):
+            limit = default_valence(structure.symbols[index])
+            if limit is not None and order > limit:
+                return False
     if structure.order(first, second) == order:
         return False
     structure.set_bond(first, second, order)

@@ -1306,3 +1306,40 @@ def test_undo_reaches_structural_edits_too():
     assert "state['structure_edit_inflight'] = True" in apply_
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "if not state.get('structure_edit_inflight'):" in view
+
+
+def test_drawing_does_not_reset_the_camera_or_stop_the_field():
+    """Two things used to happen on every atom placed: the view snapped back
+    to the default, and the continuous relaxation stopped.
+
+    Both follow from the re-render. The camera was kept only when the atom
+    count matched, which a structural edit by definition breaks -- but an edit
+    is not a different molecule, it is the one being worked on. And
+    onViewerReady clears the running loop, so drawing while Dynamik Opt ran
+    silently switched it off; the parameters are re-assigned for the structure
+    that includes the new atom, which is the moment to pick it up again."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'var edited = !!window.__delfinStructureEdit;' in source
+    assert '(edited || saved.atoms === count)' in source
+    mark = source.split('def _mark_structure_edit')[1].split('\n    def ')[0]
+    assert '__delfinStructureEdit = true' in mark
+    assert '__delfinResumeAutoOpt = true' in mark
+    assert 'submit_relax_btn.value' in mark
+
+    field = _body('setForceField')
+    assert 'window.__delfinResumeAutoOpt' in field
+    assert 'startAutoOptimize(scopeKey)' in field
+
+
+def test_tapping_a_bond_in_draw_mode_retypes_it():
+    """Which is how the hydrogens and the length follow from single, double or
+    triple without redrawing anything. Verified in a browser: a tap on the
+    middle of a stick with the order set to double sends bondorder:6:0,1,2."""
+    finish = _body('finishDraw')
+    assert 'drag.bond' in finish
+    assert 'drag.bond[0]' in finish and 'drag.bond[1]' in finish
+    # Only a tap, never the end of a drag -- that gesture already means grow.
+    assert '!drag.movedEnough' in finish
+    assert 'raycastBond(scopeKey, e.clientX, e.clientY)' in EDITOR

@@ -168,3 +168,26 @@ def test_elements_offered_are_real_and_metals_take_no_hydrogens():
         assert B.normalise_element(bad) is None
     assert B.default_valence('C') == 4
     assert B.default_valence('Fe') is None
+
+
+def test_a_bond_cannot_be_given_an_order_its_ends_cannot_carry():
+    """A tap on a C-H bond asking for a double bond has to be refused rather
+    than producing a C=H that nothing downstream can type."""
+    structure = _empty()
+    B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+    assert B.set_bond_order(structure, 0, 1, 2) is False
+    assert _formula(structure) == {'C': 1, 'H': 4}
+
+
+def test_raising_a_bond_keeps_the_octet():
+    """Methanol becomes formaldehyde and methanethiol thioformaldehyde: the
+    hydrogens that no longer fit come off both ends, not just the carbon."""
+    for element, formula in (('O', {'C': 1, 'H': 2, 'O': 1}),
+                             ('S', {'C': 1, 'H': 2, 'S': 1}),
+                             ('N', {'C': 1, 'H': 3, 'N': 1})):
+        structure = _empty()
+        B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+        B.grow_from(structure, 0, element)
+        partner = structure.symbols.index(element)
+        assert B.set_bond_order(structure, 0, partner, 2) is True, element
+        assert _formula(structure) == formula, element
