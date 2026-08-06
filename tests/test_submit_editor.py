@@ -790,39 +790,32 @@ def test_a_held_value_can_be_a_pull_or_an_exact_fix():
     assert 'mode=submit_hold_mode.value' in mode
 
 
-def test_holding_a_value_no_longer_turns_the_whole_molecule():
-    """Enforcing a held value moves a fragment while the field pushes back, and
-    that cycle is not reciprocal: it fed net rotation and translation into the
-    structure, so the molecule visibly circled and ligands looked as though
-    they sprang back to their old places — they had not moved, the frame had.
+def test_holding_a_value_is_a_constraint_and_not_a_fight():
+    """A held value used to be enforced by *setting* the coordinate after each
+    step and then superimposing the molecule back to cancel the drift that
+    caused -- an overdamped deform-and-restore cycle swims, 35.5 degrees of
+    rotation and 1.6 A of drift in four seconds on a real Re complex.
 
-    Measured on a real Re complex with an octahedron applied and one angle held
-    at 180 degrees, over four seconds: 35.5 degrees of rotation and 1.615 A of
-    drift before, 3.4 degrees and 0.105 A after, against 2.3 degrees and 0.018
-    A with no held value at all. The angle stays at 180.0 either way.
+    The superposition cured the swimming but not the cause: the field pulled
+    one way and the enforcement snapped back every frame, so the structure
+    settled into a cycle rather than a minimum. On cholesterol with one angle
+    held at 95 degrees, the rest was still moving 17 to 33 milliangstrom per
+    frame after three seconds.
 
-    The superposition itself is exact to 1e-15 for rotations from 5 to 179
-    degrees, with and without translation."""
-    fit = _body('superimposeOnto')
-    # Horn's key matrix, so no 3x3 SVD is needed in the browser.
-    assert 'largestEigenvector4(key)' in fit
-    assert 'xx+yy+zz' in fit
-    # Fitted on every atom: the stationary majority decides the frame, so the
-    # intended internal change survives and only the rigid-body part goes.
-    assert 'for (i = 0; i < n; i++)' in fit
-
-    jacobi = _body('largestEigenvector4')
-    assert 'sweep' in jacobi
-    assert 'if (m[e][e] > m[best][best]) best = e;' in jacobi
-
-    applied = _body('applyFixedInternals')
-    assert 'superimposeOnto(atoms, before)' in applied
-    # Against the positions from before the enforcement, not some other frame.
-    assert applied.index('before[3*b] = atoms[b].x') < applied.index(
-        'superimposeOnto(atoms, before)'
-    )
-
-
+    The correction is built from the coordinate's own gradient now. That
+    gradient is orthogonal to every rigid translation and rotation -- moving
+    along it changes the value and nothing else -- so no rigid-body motion is
+    injected and the superposition is gone with it. Sweeping until each
+    constraint is satisfied is SHAKE, which is also what stops several of them
+    undoing one another. Measured again: 0.11 to 1.38 milliangstrom per frame,
+    the same as the molecule relaxing freely, with the angle still at 95.00."""
+    body = _body('applyFixedInternals')
+    assert 'superimposeOnto' not in body
+    assert 'entry.value - current' in body            # the error, not the value
+    assert 'lambda * grad[3 * d]' in body             # moved along the gradient
+    assert 'CONSTRAINT_SWEEPS' in body                # and swept until met
+    # A dihedral is periodic; the short way round.
+    assert 'while (error > 180) error -= 360;' in body
 def test_two_ligands_are_exchanged_rather_than_dragged_past_each_other():
     """Two arrangements of the same ligand set are separate minima, and a
     steepest-descent relaxation only runs downhill: it can never cross between

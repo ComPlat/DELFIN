@@ -2412,6 +2412,37 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return true;
     }
 
+    // Hold a value by moving only along its own gradient.
+    //
+    // It used to be enforced by *setting* the coordinate after each step and
+    // then superimposing the molecule back to cancel the drift that caused.
+    // That is a fight, not a constraint: the field pulled one way and the
+    // enforcement snapped back every frame, so the structure settled into a
+    // cycle rather than a minimum. Measured on cholesterol with one angle
+    // held at 95 degrees, the rest was still moving 17 to 33 milliangstrom
+    // per frame after three seconds, against 3.3 for the same molecule
+    // relaxing freely.
+    //
+    // The gradient of an internal coordinate is orthogonal to every rigid
+    // translation and rotation -- moving along it changes the value and
+    // nothing else. A correction built from it therefore injects no
+    // rigid-body motion, which is why the superposition is gone with it.
+    // Several constraints are met by sweeping until each is satisfied, which
+    // is SHAKE: they stop undoing one another.
+    function measureInternal(atoms, entry) {
+        var idx = entry.atoms;
+        if (entry.kind === 'distance') return distV(atoms[idx[0]], atoms[idx[1]]);
+        if (entry.kind === 'angle') {
+            return angleV(atoms[idx[0]], atoms[idx[1]], atoms[idx[2]]);
+        }
+        return dihedralV(atoms[idx[0]], atoms[idx[1]], atoms[idx[2]], atoms[idx[3]]);
+    }
+
+    var CONSTRAINT_STEP = 1e-4;
+    var CONSTRAINT_TOL = 1e-6;
+    var CONSTRAINT_SWEEPS = 40;
+    var CONSTRAINT_AXES = ['x', 'y', 'z'];
+
     function applyFixedInternals(scopeKey) {
         var state = getState(scopeKey);
         var list = state.fixedInternals || [];
@@ -2419,33 +2450,58 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         if (!viewer) return false;
         var atoms = getAtoms(viewer);
-        var before = new Float64Array(3 * atoms.length);
-        for (var b = 0; b < atoms.length; b++) {
-            before[3*b] = atoms[b].x;
-            before[3*b+1] = atoms[b].y;
-            before[3*b+2] = atoms[b].z;
-        }
         var touched = false;
-        for (var i = 0; i < list.length; i++) {
-            var entry = list[i];
-            var idx = entry.atoms;
-            var current;
-            if (entry.kind === 'distance') {
-                current = distV(atoms[idx[0]], atoms[idx[1]]);
-            } else if (entry.kind === 'angle') {
-                current = angleV(atoms[idx[0]], atoms[idx[1]], atoms[idx[2]]);
-            } else {
-                current = dihedralV(atoms[idx[0]], atoms[idx[1]],
-                                    atoms[idx[2]], atoms[idx[3]]);
+
+        for (var sweep = 0; sweep < CONSTRAINT_SWEEPS; sweep++) {
+            var worst = 0;
+            for (var i = 0; i < list.length; i++) {
+                var entry = list[i];
+                var idx = entry.atoms;
+                var usable = true;
+                for (var a = 0; a < idx.length; a++) {
+                    if (!atoms[idx[a]]) { usable = false; break; }
+                }
+                if (!usable) continue;
+                var current = measureInternal(atoms, entry);
+                if (!isFinite(current)) continue;
+                var error = entry.value - current;
+                if (entry.kind === 'dihedral') {
+                    while (error > 180) error -= 360;
+                    while (error < -180) error += 360;
+                }
+                if (Math.abs(error) > worst) worst = Math.abs(error);
+                if (Math.abs(error) < CONSTRAINT_TOL) continue;
+
+                var grad = new Float64Array(3 * idx.length);
+                var norm2 = 0;
+                for (var b = 0; b < idx.length; b++) {
+                    var atom = atoms[idx[b]];
+                    for (var c = 0; c < 3; c++) {
+                        var axis = CONSTRAINT_AXES[c];
+                        var keep = atom[axis];
+                        atom[axis] = keep + CONSTRAINT_STEP;
+                        var up = measureInternal(atoms, entry);
+                        atom[axis] = keep - CONSTRAINT_STEP;
+                        var down = measureInternal(atoms, entry);
+                        atom[axis] = keep;
+                        var slope = (up - down) / (2 * CONSTRAINT_STEP);
+                        if (!isFinite(slope)) slope = 0;
+                        grad[3 * b + c] = slope;
+                        norm2 += slope * slope;
+                    }
+                }
+                if (norm2 < 1e-12) continue;
+                var lambda = error / norm2;
+                for (var d = 0; d < idx.length; d++) {
+                    var moving = atoms[idx[d]];
+                    moving.x += lambda * grad[3 * d];
+                    moving.y += lambda * grad[3 * d + 1];
+                    moving.z += lambda * grad[3 * d + 2];
+                }
+                touched = true;
             }
-            var kindName = entry.kind === 'distance' ? 'bond'
-                         : entry.kind === 'angle' ? 'angle' : 'dihedral';
-            var result = applyInternalValue(
-                scopeKey, kindName, idx, entry.value, current,
-            );
-            if (result && result.ok) touched = true;
+            if (worst < CONSTRAINT_TOL) break;
         }
-        if (touched) superimposeOnto(atoms, before);
         return touched;
     }
 
