@@ -1271,3 +1271,38 @@ def test_draw_mode_hands_every_gesture_to_python():
     apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
     assert "state['bond_edits'] = {" in apply_
     assert 'coords_widget.value' in apply_
+
+
+def test_undo_reaches_structural_edits_too():
+    """A snapshot of coordinates cannot bring back an atom that was deleted or
+    take away one that was placed, so structural edits keep their own stack on
+    the Python side.
+
+    The order stays right without either side keeping a clock: every
+    structural edit re-renders, and a re-render clears the browser's stack --
+    so an empty stack there means the next thing to undo is a structural edit.
+    Verified through the real tab: two grows and then Undo walks back
+    C3NH8O to C3NH7 to C2NH5, and going on undoes the whole session's edits
+    back to the methane it started from. In a browser, Undo with an empty
+    stack sends ``undo:6:structure`` rather than doing nothing."""
+    body = _body('undo')
+    assert 'if (!state.undo.length) {' in body
+    assert "pushCommandToPython(scopeKey, 'undo', 'structure')" in body
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
+    assert "if verb == 'undo':" in handler
+
+    step = source.split('def _undo_structure')[1].split('\n    def ')[0]
+    assert "state['structure_undo']" in step
+    assert 'coords_widget.value = snapshot' in step
+
+    apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
+    # The previous structure is remembered before the new one is written, and
+    # the write must not be mistaken for a different molecule arriving.
+    assert "state['structure_undo'] = history[-_STRUCTURE_UNDO_LIMIT:]" in apply_
+    assert "state['structure_edit_inflight'] = True" in apply_
+    view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
+    assert "if not state.get('structure_edit_inflight'):" in view

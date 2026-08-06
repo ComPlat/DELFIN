@@ -1325,6 +1325,8 @@ def create_tab(ctx):
         state['constraints'] = []
         state['bond_edits'] = {}
         state['hyb_overrides'] = {}
+        if not state.get('structure_edit_inflight'):
+            state['structure_undo'] = []
         state['poly_applied'] = None
         state['poly_metal'] = None
         state['poly_assignment'] = None
@@ -3859,6 +3861,10 @@ def create_tab(ctx):
         )
         _clear_selection()
 
+    #: How many structural edits can be taken back.  The browser keeps 50
+    #: coordinate snapshots; there is no reason for this to be shorter.
+    _STRUCTURE_UNDO_LIMIT = 50
+
     _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
 
     def _describe_constraint(entry):
@@ -3963,9 +3969,25 @@ def create_tab(ctx):
         """
         from .molecule_builder import to_xyz
 
+        # Remember what it looked like first: a structural edit changes the
+        # atom count, which the browser's coordinate snapshots cannot express.
+        history = list(state.get('structure_undo') or [])
+        history.append({
+            'coords': coords_widget.value,
+            'bond_edits': dict(state.get('bond_edits') or {}),
+        })
+        state['structure_undo'] = history[-_STRUCTURE_UNDO_LIMIT:]
+
         xyz = to_xyz(structure, note)
         lines = [line for line in xyz.splitlines()[2:] if line.strip()]
-        coords_widget.value = f'{len(lines)}\n{note}\n' + '\n'.join(lines)
+        # The write below re-renders through update_molecule_view, which
+        # clears the history a new structure invalidates. This is not a new
+        # structure, it is a step in the one being edited.
+        state['structure_edit_inflight'] = True
+        try:
+            coords_widget.value = f'{len(lines)}\n{note}\n' + '\n'.join(lines)
+        finally:
+            state['structure_edit_inflight'] = False
         # After update_molecule_view, which clears them.
         state['bond_edits'] = {
             (int(i), int(j)): int(order)
@@ -3974,6 +3996,31 @@ def create_tab(ctx):
         state['perceived'] = None
         state['perceived_for'] = None
         _set_mol_status(note)
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+
+    def _undo_structure():
+        """Take back the last structural edit.
+
+        Reached when the browser's own stack is empty, which after any
+        structural edit it always is: the re-render clears it. So the two
+        stacks stay in order without either side keeping a clock.
+        """
+        history = list(state.get('structure_undo') or [])
+        if not history:
+            _set_mol_status('Nothing left to undo.')
+            return
+        snapshot = history.pop()
+        state['structure_edit_inflight'] = True
+        try:
+            coords_widget.value = snapshot['coords']
+        finally:
+            state['structure_edit_inflight'] = False
+        state['structure_undo'] = history
+        state['bond_edits'] = dict(snapshot.get('bond_edits') or {})
+        state['perceived'] = None
+        state['perceived_for'] = None
+        _set_mol_status('Took back the last structural edit.')
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
 
@@ -3999,6 +4046,10 @@ def create_tab(ctx):
         if len(parts) != 3:
             return
         verb, payload = parts[0], parts[2]
+
+        if verb == 'undo':
+            _undo_structure()
+            return
 
         if verb == 'unbond':
             indices = [int(p) for p in payload.split(',') if p.strip().isdigit()]

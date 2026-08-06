@@ -3355,7 +3355,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
     function undo(scopeKey) {
         var state = getState(scopeKey);
-        if (!state.undo.length) return;
+        if (!state.undo.length) {
+            // A snapshot of coordinates cannot bring back an atom that was
+            // deleted or take away one that was placed, so structural edits
+            // keep their own stack on the Python side. Every one of them
+            // re-renders, which clears this stack -- so an empty stack here
+            // means the next thing to undo is a structural edit, and the
+            // order stays right without either side having to keep a clock.
+            pushCommandToPython(scopeKey, 'undo', 'structure');
+            return;
+        }
         var snap = state.undo.pop();
         restoreFromSnapshot(scopeKey, snap);
         redrawHighlights(scopeKey);
