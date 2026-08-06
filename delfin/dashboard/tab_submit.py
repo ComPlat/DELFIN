@@ -750,6 +750,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='190px', display='none'),
         disabled=True,
     )
+    submit_hyb_dd = widgets.Dropdown(
+        options=[('— hybridisation —', '')], value='',
+        layout=widgets.Layout(width='190px', display='none'),
+        disabled=True,
+    )
     submit_settle_btn = widgets.ToggleButton(
         value=True, description='Settle', icon='level-down',
         button_style='info',
@@ -829,7 +834,7 @@ def create_tab(ctx):
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
-            submit_poly_dd, submit_internal_group,
+            submit_poly_dd, submit_hyb_dd, submit_internal_group,
             submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync,
@@ -1258,6 +1263,7 @@ def create_tab(ctx):
         # different molecule.
         state['constraints'] = []
         state['bond_edits'] = {}
+        state['hyb_overrides'] = {}
         state['poly_applied'] = None
         state['poly_metal'] = None
         state['poly_assignment'] = None
@@ -3274,6 +3280,9 @@ def create_tab(ctx):
             return cached
         perceived = perceive_molecule(xyz)
         _apply_bond_edits(perceived)
+        # After the bond edits, never before: rebuilding the typing molecule
+        # sanitizes it, and sanitisation re-perceives hybridisation.
+        _apply_hyb_overrides(perceived)
         state['perceived'] = perceived
         state['perceived_for'] = fingerprint
         return perceived
@@ -3288,6 +3297,17 @@ def create_tab(ctx):
         from .molecule_forcefield import apply_bond_edits
 
         apply_bond_edits(perceived, state.get('bond_edits') or {})
+
+    def _apply_hyb_overrides(perceived):
+        """Force the hybridisations the user has chosen by hand.
+
+        Bond orders are perceived from the geometry, and a double bond that is
+        not seen leaves its carbon typed sp3: angles at 109.5 degrees, and a
+        centre that puckers where it should stay flat.
+        """
+        from .molecule_forcefield import apply_hybridisation_overrides
+
+        apply_hybridisation_overrides(perceived, state.get('hyb_overrides') or {})
 
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.
@@ -3502,6 +3522,7 @@ def create_tab(ctx):
                 options = polyhedron_options(perceived, indices[0])
             except Exception:
                 options = None
+        _refresh_hybridisation(indices, perceived)
         if not options:
             # Only the offer follows the selection. The applied polyhedron
             # stays: clearing it here meant that selecting three ligand atoms
@@ -3545,6 +3566,70 @@ def create_tab(ctx):
             state['poly_quiet'] = False
         submit_poly_dd.disabled = False
         submit_poly_dd.layout.display = ''
+
+    def _refresh_hybridisation(indices, perceived):
+        """Offer to overrule the hybridisation of a single picked atom.
+
+        Only for main-group atoms: RDKit's UFF has no types for a metal at
+        all, so its bonds and angles come from the geometry either way and
+        forcing a hybridisation on it would change nothing.
+        """
+        index = indices[0] if len(indices) == 1 else None
+        if perceived is None or index is None or index in set(
+                perceived.metal_indices or ()):
+            submit_hyb_dd.layout.display = 'none'
+            submit_hyb_dd.disabled = True
+            state['hyb_offer_atom'] = None
+            return
+
+        from .molecule_forcefield import (
+            HYBRIDISATION_CHOICES, perceived_hybridisation_of,
+        )
+
+        auto = perceived_hybridisation_of(perceived, index)
+        symbol = perceived.symbols[index]
+        entries = [(f'{symbol}{index} · {auto or "no type"} (automatic)', '')]
+        for name in HYBRIDISATION_CHOICES:
+            entries.append((f'force {name}', name))
+        state['hyb_offer_atom'] = index
+        state['hyb_quiet'] = True
+        try:
+            submit_hyb_dd.options = entries
+            submit_hyb_dd.value = (state.get('hyb_overrides') or {}).get(index, '')
+        finally:
+            state['hyb_quiet'] = False
+        submit_hyb_dd.disabled = False
+        submit_hyb_dd.layout.display = ''
+
+    def on_submit_hyb_changed(change):
+        if change.get('name') != 'value' or state.get('hyb_quiet'):
+            return
+        index = state.get('hyb_offer_atom')
+        if index is None:
+            return
+        overrides = dict(state.get('hyb_overrides') or {})
+        chosen = submit_hyb_dd.value or ''
+        if chosen:
+            overrides[index] = chosen
+        else:
+            overrides.pop(index, None)
+        state['hyb_overrides'] = overrides
+        # Perception is cached by element sequence, which this does not
+        # change, so the cache has to be dropped or the override never reaches
+        # the force field.
+        state['perceived'] = None
+        state['perceived_for'] = None
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        perceived = state.get('perceived')
+        symbol = perceived.symbols[index] if perceived else '?'
+        if chosen:
+            shape = {'sp': 'linear', 'sp2': 'trigonal planar',
+                     'sp3': 'tetrahedral'}[chosen]
+            _set_mol_status(f'{symbol}{index} typed as {chosen}: {shape}.')
+        else:
+            _set_mol_status(f'{symbol}{index} back to the perceived type.')
+        _clear_selection()
 
     _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
 
@@ -3898,6 +3983,7 @@ def create_tab(ctx):
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
+    submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')

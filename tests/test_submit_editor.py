@@ -1011,6 +1011,40 @@ def test_undo_answers_for_operations_not_for_relaxation_frames():
         assert 'snapshotForUndo(scopeKey);' in _body(name), name
 
 
+def test_the_hybridisation_of_a_picked_atom_can_be_overruled():
+    """Perception reads bond orders off the geometry, and carbons that should
+    be sp2 come back sp3 -- so their angles are typed at 109.5 degrees and the
+    centre puckers instead of staying trigonal planar.
+
+    The offer follows a single picked atom, like the polyhedron does, and is
+    withheld for metals: RDKit's UFF has no types for one at all, so its bonds
+    and angles come from the geometry either way."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_hyb_dd' in source
+    assert 'submit_hyb_dd.observe(on_submit_hyb_changed' in source
+
+    offer = source.split('def _refresh_hybridisation')[1].split('\n    def ')[0]
+    assert 'len(indices) == 1' in offer
+    assert 'perceived.metal_indices' in offer          # not for a metal
+    assert 'perceived_hybridisation_of' in offer       # names what automatic means
+
+    handler = source.split('def on_submit_hyb_changed')[1].split('\n    def ')[0]
+    # The cache is keyed by element sequence, which this does not change.
+    assert "state['perceived'] = None" in handler
+    assert '_enable_live_forcefield()' in handler
+    assert '_clear_selection()' in handler
+
+    # Applied after the bond edits, because rebuilding the typing molecule
+    # sanitizes it and sanitisation re-perceives hybridisation.
+    perception = source.split('def _perception_for')[1].split('\n    def ')[0]
+    assert perception.index('_apply_bond_edits') < perception.index('_apply_hyb_overrides')
+    # And dropped when a different structure arrives.
+    view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
+    assert "state['hyb_overrides'] = {}" in view
+
+
 def test_a_polyhedron_held_on_one_metal_is_not_offered_for_the_next():
     """The dropdown is rebuilt from whichever metal is picked, and its value
     was then set to whatever polyhedron happened to be applied -- even when

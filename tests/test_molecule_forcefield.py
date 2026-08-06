@@ -729,3 +729,75 @@ def test_an_unedited_molecule_is_left_exactly_as_perceived():
     assert before['angles'] == after['angles']
     assert before['torsions'] == after['torsions']
     assert before['vdw'] == after['vdw']
+
+
+def _pyramidal_methyl_xyz():
+    """A three-coordinate carbon sitting 107 deg off its own C3 axis."""
+    ang, r = math.radians(107.0), 1.09
+    rows = ['C 0.000000 0.000000 0.000000']
+    for k in range(3):
+        phi = 2 * math.pi * k / 3
+        rows.append('H %.6f %.6f %.6f' % (
+            r * math.sin(ang) * math.cos(phi),
+            r * math.sin(ang) * math.sin(phi),
+            r * math.cos(ang)))
+    return '4\npyramidal CH3\n' + '\n'.join(rows) + '\n'
+
+
+def test_a_forced_hybridisation_reaches_the_angles_and_the_shape():
+    """Bond orders are perceived from the geometry, and a double bond that is
+    not seen leaves its carbon typed sp3 -- angles at 109.5 degrees, and a
+    centre that puckers where it should stay flat.
+
+    RDKit's UFF typer reads the atom's hybridisation directly, so setting it
+    is enough. Three angles of 120 degrees at a three-coordinate centre *is*
+    trigonal planar, which is what makes this work without an inversion term:
+    driven through the shipped browser engine, the same carbon relaxes to
+    60.0 degrees out of plane when typed automatically and 0.4 degrees when
+    forced to sp2."""
+    xyz = _pyramidal_methyl_xyz()
+
+    perceived = mff.perceive_molecule(xyz)
+    auto = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+    assert mff.perceived_hybridisation_of(perceived, 0) == 'sp3'
+    assert [round(a['theta0'], 1) for a in auto['angles']] == [109.5] * 3
+
+    forced = mff.perceive_molecule(xyz)
+    assert mff.apply_hybridisation_overrides(forced, {0: 'sp2'}) == 1
+    payload = mff.export_forcefield_terms(xyz, perceived=forced, method='uff')
+    assert [round(a['theta0'], 1) for a in payload['angles']] == [120.0] * 3
+    # The C-H bond takes the sp2 length too, not only the angles.
+    assert payload['bonds'][0]['r0'] < auto['bonds'][0]['r0']
+    # And the offer can still say what 'automatic' would have meant.
+    assert mff.perceived_hybridisation_of(forced, 0) == 'sp3'
+
+
+def test_forcing_a_hybridisation_is_bounded_by_what_it_can_mean():
+    """Nonsense must be ignored rather than raise: the index comes from a
+    picked atom and the name from a dropdown, but neither is worth trusting
+    once a structure has been reloaded underneath them."""
+    xyz = _pyramidal_methyl_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    assert mff.apply_hybridisation_overrides(perceived, {}) == 0
+    assert mff.apply_hybridisation_overrides(perceived, {99: 'sp2'}) == 0
+    assert mff.apply_hybridisation_overrides(perceived, {0: 'sp4'}) == 0
+    assert mff.apply_hybridisation_overrides(perceived, {'x': 'sp2'}) == 0
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+    assert [round(a['theta0'], 1) for a in payload['angles']] == [109.5] * 3
+
+
+def test_an_override_outlives_a_bond_edit_only_if_it_is_applied_after_one():
+    """Rebuilding the typing molecule sanitizes it, and sanitisation
+    re-perceives hybridisation -- so a bond edit silently wipes an override
+    applied before it. The order the tab uses is the only correct one."""
+    xyz = _two_benzenes_xyz()
+
+    wrong = mff.perceive_molecule(xyz)
+    mff.apply_hybridisation_overrides(wrong, {3: 'sp3'})
+    mff.apply_bond_edits(wrong, {(0, 12): True})
+    assert mff._hybridisation(wrong.typing_mol, 3) != 'sp3'
+
+    right = mff.perceive_molecule(xyz)
+    mff.apply_bond_edits(right, {(0, 12): True})
+    mff.apply_hybridisation_overrides(right, {3: 'sp3'})
+    assert mff._hybridisation(right.typing_mol, 3) == 'sp3'

@@ -531,6 +531,8 @@ class PerceivedMolecule:
             bond is treated as single (hybridisation is then unreliable).
         had_header: True when the input carried the standard XYZ count line.
         warnings: Human-readable notes about approximations made.
+        auto_hybridisation: What perception said about an atom, recorded before
+            an override replaced it, so the offer can still name it.
     """
 
     symbols: List[str]
@@ -544,6 +546,7 @@ class PerceivedMolecule:
     bond_orders_known: bool = True
     had_header: bool = True
     warnings: List[str] = field(default_factory=list)
+    auto_hybridisation: Dict[int, str] = field(default_factory=dict)
 
     def neighbours(self) -> List[List[int]]:
         """Return the adjacency list implied by :attr:`bonds`."""
@@ -1076,6 +1079,97 @@ def apply_bond_edits(perceived: Any, edits: Any) -> bool:
             if message not in perceived.warnings:
                 perceived.warnings.append(message)
     return True
+
+
+#: The hybridisations a user may force on an atom.  UFF types main-group
+#: elements by hybridisation, so these are the states that change anything.
+HYBRIDISATION_CHOICES: Tuple[str, ...] = ('sp', 'sp2', 'sp3')
+
+_HYBRIDISATION_TYPES: Dict[str, Any] = {}
+
+
+def _hybridisation_type(name: str) -> Any:
+    """Map ``'sp2'`` to RDKit's enum member, once."""
+    if not _HYBRIDISATION_TYPES and RDKIT_AVAILABLE:
+        _HYBRIDISATION_TYPES.update({
+            'sp': Chem.HybridizationType.SP,
+            'sp2': Chem.HybridizationType.SP2,
+            'sp3': Chem.HybridizationType.SP3,
+        })
+    return _HYBRIDISATION_TYPES.get(name)
+
+
+def perceived_hybridisation_of(perceived: Any, index: int) -> Optional[str]:
+    """What perception made of an atom, whether or not an override replaced it.
+
+    The offer has to be able to say what ``automatic`` would mean, and once an
+    override is in place the molecule itself no longer knows.
+    """
+    if perceived is None:
+        return None
+    recorded = (perceived.auto_hybridisation or {}).get(int(index))
+    if recorded is not None:
+        return recorded
+    return _hybridisation(perceived.typing_mol, index)
+
+
+def apply_hybridisation_overrides(perceived: Any, overrides: Any) -> int:
+    """Force the hybridisation of individual atoms.
+
+    Hybridisation is perceived from the bond orders, and those are read from
+    the geometry, which gets it wrong often enough to matter: a carbon whose
+    double bond went unperceived comes out sp3, so its three angles are typed
+    at 109.5 degrees and the centre puckers where it should stay flat.
+
+    RDKit's UFF typer reads the atom's hybridisation directly, so setting it
+    is enough -- forcing a carbon to sp2 types it ``C_2``, and its angles come
+    back at 120 degrees.  Three angles of 120 degrees at a three-coordinate
+    centre *is* trigonal planar, which is what makes this work without an
+    inversion term.
+
+    Must run after :func:`apply_bond_edits`: rebuilding the typing molecule
+    sanitizes it, and sanitisation re-perceives hybridisation.
+
+    Args:
+        perceived: A :class:`PerceivedMolecule`, mutated in place.
+        overrides: Mapping of atom index to ``'sp'``, ``'sp2'`` or ``'sp3'``.
+
+    Returns:
+        How many atoms were actually changed.
+    """
+    if perceived is None or not overrides or not RDKIT_AVAILABLE:
+        return 0
+    applied = 0
+    for raw_index, raw_name in dict(overrides).items():
+        try:
+            index = int(raw_index)
+        except Exception:
+            continue
+        name = str(raw_name or '').strip().lower()
+        if not 0 <= index < perceived.n_atoms or name not in HYBRIDISATION_CHOICES:
+            continue
+        target = _hybridisation_type(name)
+        if target is None:
+            continue
+        for molecule in (perceived.typing_mol, perceived.mol):
+            if molecule is None:
+                continue
+            try:
+                atom = molecule.GetAtomWithIdx(index)
+            except Exception:
+                continue
+            if molecule is perceived.typing_mol:
+                if index not in perceived.auto_hybridisation:
+                    was = _hybridisation(molecule, index)
+                    if was is not None:
+                        perceived.auto_hybridisation[index] = was
+                applied += 1
+            # An aromatic flag reads as sp2 wherever it is checked, so a ring
+            # carbon forced to sp3 or sp would otherwise ignore the override.
+            if name != 'sp2':
+                atom.SetIsAromatic(False)
+            atom.SetHybridization(target)
+    return applied
 
 
 # --------------------------------------------------------------------------
