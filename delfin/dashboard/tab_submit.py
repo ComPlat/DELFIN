@@ -3450,7 +3450,13 @@ def create_tab(ctx):
         _ensure_manip_bootstrap()
         _ensure_ff_bootstrap()
         _push_bond_orders()
+        # The resume flag is set here, in the same script that hands over the
+        # parameters, and not earlier: setting it before the re-render meant
+        # it could be consumed against the viewer that was going away, and the
+        # relaxation came back stuck until the toggle was cycled by hand.
+        resume = 'true' if submit_relax_btn.value else 'false'
         _run_manip_js(
+            f'window.__delfinResumeAutoOpt = {resume};'
             'if(window.__delfinSubmitManip){'
             'window.__delfinSubmitManip.setForceField('
             f'{json.dumps(submit_scope_id)},{json.dumps(payload)});'
@@ -4070,11 +4076,7 @@ def create_tab(ctx):
         drawn in it -- which is the point of being able to draw while it runs.
         """
         _ensure_manip_bootstrap()
-        running = bool(submit_relax_btn.value)
-        _run_manip_js(
-            'window.__delfinStructureEdit = true;'
-            + ('window.__delfinResumeAutoOpt = true;' if running else '')
-        )
+        _run_manip_js('window.__delfinStructureEdit = true;')
 
     def _structure_now():
         from .molecule_builder import structure_from_xyz
@@ -4111,7 +4113,7 @@ def create_tab(ctx):
             return
 
         from .molecule_builder import (
-            delete_atoms, grow_from, normalise_element, place_atom,
+            delete_atoms, grow_from, join, normalise_element, place_atom,
             set_bond_order, set_element,
         )
 
@@ -4173,7 +4175,18 @@ def create_tab(ctx):
                 first, second, order = (int(v) for v in fields)
                 named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
                 ends = [structure.symbols[i] for i in (first, second)]
-                if set_bond_order(structure, first, second, order):
+                if not structure.order(first, second):
+                    # A new bond, possibly across the whole viewer: bring the
+                    # fragments together before the field sees it.
+                    if join(structure, first, second, order):
+                        _apply_structure(
+                            structure,
+                            f'Bonded {ends[0]}{first} to {ends[1]}{second}.')
+                    else:
+                        _set_mol_status(
+                            f'{ends[0]}{first} and {ends[1]}{second} cannot be '
+                            'bonded like that.')
+                elif set_bond_order(structure, first, second, order):
                     _apply_structure(
                         structure,
                         f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')

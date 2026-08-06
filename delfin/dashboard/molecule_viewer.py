@@ -2984,8 +2984,28 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var atom = raycastAtom(scopeKey, e.clientX, e.clientY);
 
             if (state.mode === 'draw') {
-                // The right button still belongs to the viewer, so the scene
-                // can be turned and panned without leaving the mode.
+                if (e.button === 2) {
+                    // The right button takes things away: an atom, or the
+                    // bond under the cursor. On empty space it still belongs
+                    // to the viewer, so the scene can be turned and panned
+                    // without leaving the mode.
+                    var view = getViewer(scopeKey);
+                    if (!view) return;
+                    var all = getAtoms(view);
+                    if (atom) {
+                        var which = all.indexOf(atom);
+                        if (which < 0) return;
+                        e.preventDefault(); e.stopPropagation();
+                        pushCommandToPython(scopeKey, 'delatoms', String(which));
+                        return;
+                    }
+                    var stick = raycastBond(scopeKey, e.clientX, e.clientY);
+                    if (!stick) return;
+                    e.preventDefault(); e.stopPropagation();
+                    pushCommandToPython(scopeKey, 'unbond',
+                        stick[0] + ',' + stick[1]);
+                    return;
+                }
                 if (e.button !== 0) return;
                 e.preventDefault(); e.stopPropagation();
                 state.drag = {

@@ -242,3 +242,56 @@ def test_a_deleted_hydrogen_stays_deleted():
     assert _formula(structure) == {'C': 1, 'H': 3}
     B.delete_atoms(structure, [1])
     assert _formula(structure) == {'C': 1, 'H': 2}
+
+
+def test_joining_two_fragments_brings_them_together_first():
+    """Dragging one atom onto another across the viewer can ask for a bond
+    between things six Angstrom apart. Handing that to the force field as a
+    bond whose equilibrium is 1.5 A is a very large force on two atoms, and it
+    tears the structure on the way in.
+
+    So one fragment is moved as a rigid body until the bond is at its
+    equilibrium length -- nothing inside either is strained. Two methanes six
+    Angstrom apart become ethane at 1.520 A with the moved fragment's C-H
+    bonds still at 1.07."""
+    structure = _empty()
+    B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+    B.place_atom(structure, 'C', (6.0, 0.0, 0.0))
+    first, second = _carbons(structure)
+    assert B.join(structure, first, second) is True
+
+    first, second = _carbons(structure)
+    joined = math.dist(structure.coords[first], structure.coords[second])
+    assert abs(joined - 1.52) < 0.05, joined
+    assert _formula(structure) == {'C': 2, 'H': 6}
+    for hydrogen in structure.hydrogens_on(second):
+        length = math.dist(structure.coords[second], structure.coords[hydrogen])
+        assert abs(length - 1.07) < 0.02, length
+    assert mff.relax_xyz(B.to_xyz(structure), method='uff')['ok']
+
+
+def test_closing_a_ring_moves_nothing():
+    """The two ends are already connected, so there is no fragment to move
+    without breaking what holds them. The field closes it instead."""
+    structure = _empty()
+    B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+    for _ in range(3):
+        B.grow_from(structure, _carbons(structure)[-1], 'C')
+    ends = (_carbons(structure)[0], _carbons(structure)[-1])
+    carbons_before = [structure.coords[i] for i in _carbons(structure)]
+    assert B.join(structure, *ends) is True
+    carbons_after = [structure.coords[i] for i in _carbons(structure)]
+    for before, after in zip(carbons_before, carbons_after):
+        assert math.dist(before, after) < 1e-9
+    assert _formula(structure) == {'C': 4, 'H': 8}
+
+
+def test_tapping_an_atom_fills_a_valence_that_is_short():
+    """A tap is also how a half-built centre gets finished. Returning early
+    when the element was unchanged meant tapping a carbon with C selected did
+    nothing at all."""
+    structure = B.Structure(['C'], [(0.0, 0.0, 0.0)], {})
+    assert B.set_element(structure, 0, 'C') is True
+    assert _formula(structure) == {'C': 1, 'H': 4}
+    # And a second tap on a full one changes nothing.
+    assert B.set_element(structure, 0, 'C') is False

@@ -425,7 +425,10 @@ def test_empty_space_belongs_to_the_viewer_for_both_buttons():
     assert 'if (!picked) continue;' in window_steal
 
     overlay = EDITOR.split("ov.addEventListener('mousedown'")[1]
-    right = overlay.split('if (e.button === 2) {')[1].split('if (e.button !== 0)')[0]
+    # The manipulate branch specifically: draw mode has its own right button
+    # now, and it means something else there.
+    manipulate = overlay.split("if (state.mode === 'manipulate') {")[1]
+    right = manipulate.split('if (e.button === 2) {')[1][:900]
     assert right.index('probeClickAtom') < right.index('e.preventDefault();')
     assert 'if (!picked) return;' in right
 
@@ -1333,8 +1336,14 @@ def test_drawing_does_not_reset_the_camera_or_stop_the_field():
     assert '(edited || saved.atoms === count)' in source
     mark = source.split('def _mark_structure_edit')[1].split('\n    def ')[0]
     assert '__delfinStructureEdit = true' in mark
-    assert '__delfinResumeAutoOpt = true' in mark
-    assert 'submit_relax_btn.value' in mark
+    # The resume flag is set with the parameters, not before the re-render:
+    # setting it earlier meant it could be consumed against the viewer that
+    # was going away, and the relaxation came back stuck until the toggle was
+    # cycled by hand.
+    enable = source.split('def _enable_live_forcefield')[1].split('\n    def ')[0]
+    assert '__delfinResumeAutoOpt = {resume}' in enable
+    assert 'submit_relax_btn.value' in enable
+    assert enable.index('__delfinResumeAutoOpt') < enable.index('setForceField')
 
     field = _body('setForceField')
     assert 'window.__delfinResumeAutoOpt' in field
@@ -1415,3 +1424,18 @@ def test_the_editor_version_is_its_own_content():
     import hashlib
     assert match.group(1) == hashlib.sha256(
         SUBMIT_MANIP_BOOTSTRAP_JS.encode('utf-8')).hexdigest()[:12]
+
+
+def test_the_right_button_takes_things_away_in_draw_mode():
+    """An atom under it goes, a stick under it loses its bond. On empty space
+    it still belongs to the viewer, so the scene can be turned and panned
+    without leaving the mode -- which is the only way to see what was built."""
+    overlay = EDITOR.split("ov.addEventListener('mousedown'")[1]
+    draw = overlay.split("if (state.mode === 'draw') {")[1].split(
+        "if (state.mode === 'manipulate')")[0]
+    right = draw.split('if (e.button === 2) {')[1]
+    assert "pushCommandToPython(scopeKey, 'delatoms'" in right
+    assert "pushCommandToPython(scopeKey, 'unbond'" in right
+    assert 'raycastBond(scopeKey, e.clientX, e.clientY)' in right
+    # Nothing under the cursor: the press is left alone.
+    assert 'if (!stick) return;' in right

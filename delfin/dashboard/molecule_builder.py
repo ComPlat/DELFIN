@@ -473,8 +473,11 @@ def set_element(structure: Structure, index: int, element: str) -> bool:
     if not 0 <= int(index) < len(structure):
         return False
     index = int(index)
-    if structure.symbols[index] == element:
-        return False
+    # The same element is not a no-op: a tap on an atom is also how a valence
+    # that is short gets filled, so it falls through to the adjustment below.
+    # Returning early here meant tapping a carbon with C selected did nothing
+    # at all, and a half-built centre stayed half-built.
+    same = structure.symbols[index] == element
     structure.symbols[index] = element
     # The bond it sits on wants a different length now.
     for neighbour in structure.neighbours(index):
@@ -485,8 +488,12 @@ def set_element(structure: Structure, index: int, element: str) -> bool:
         if length > 1e-6 and structure.symbols[neighbour] == 'H':
             structure.coords[neighbour] = _add(
                 structure.coords[index], _scale(offset, wanted / length))
+    before = len(structure)
     mapping = adjust_hydrogens(structure, [index])
-    rearrange_hydrogens(structure, mapping.get(index, index) if mapping else index)
+    moved = mapping.get(index, index) if mapping else index
+    rearrange_hydrogens(structure, moved)
+    if same and len(structure) == before:
+        return False        # nothing was missing and nothing changed
     return True
 
 
@@ -558,6 +565,60 @@ def rearrange_hydrogens(structure: Structure, index: int) -> int:
     for hydrogen, direction in zip(hydrogens, directions):
         structure.coords[hydrogen] = _add(centre, _scale(_unit(direction), distance))
     return len(hydrogens)
+
+
+def _component(structure: Structure, seed: int, blocked=()):
+    """Every atom reachable from ``seed`` without crossing a blocked bond."""
+    blocked = {tuple(sorted(pair)) for pair in blocked}
+    seen, stack = {int(seed)}, [int(seed)]
+    while stack:
+        here = stack.pop()
+        for other in structure.neighbours(here):
+            if tuple(sorted((here, other))) in blocked:
+                continue
+            if other not in seen:
+                seen.add(other)
+                stack.append(other)
+    return seen
+
+
+def join(structure: Structure, first: int, second: int, order: int = 1) -> bool:
+    """Bond two atoms, bringing their fragments to a sensible distance first.
+
+    Dragging one atom onto another across the viewer can ask for a bond
+    between things five Angstrom apart. Handing that to the force field as a
+    bond whose equilibrium is 1.5 A is a very large force on two atoms, and it
+    tears the structure on the way in.
+
+    So the geometry is made reasonable before the field ever sees it: when the
+    two are in separate fragments, one fragment is moved as a rigid body until
+    the bond is at its equilibrium length -- nothing inside either is
+    strained. When they are already connected, closing a ring, nothing is
+    moved: there is no fragment to move without breaking what holds them.
+    """
+    if not (0 <= int(first) < len(structure) and 0 <= int(second) < len(structure)):
+        return False
+    first, second = int(first), int(second)
+    if first == second or structure.order(first, second):
+        return False
+    order = max(1, min(3, int(order)))
+    for index in (first, second):
+        limit = default_valence(structure.symbols[index])
+        if limit is not None and order > limit:
+            return False
+
+    wanted = bond_length(structure.symbols[first], structure.symbols[second], order)
+    offset = _sub(structure.coords[second], structure.coords[first])
+    distance = _norm(offset)
+    if distance > 1e-6 and second not in _component(structure, first):
+        shift = _scale(_unit(offset), distance - wanted)
+        for index in _component(structure, second):
+            structure.coords[index] = _sub(structure.coords[index], shift)
+    structure.set_bond(first, second, order)
+    mapping = adjust_hydrogens(structure, [first, second])
+    for index in (first, second):
+        rearrange_hydrogens(structure, mapping.get(index, index) if mapping else index)
+    return True
 
 
 def set_bond_order(structure: Structure, first: int, second: int,
