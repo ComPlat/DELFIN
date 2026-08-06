@@ -945,8 +945,11 @@ class AgentEngine:
             return ""
         events: list[str] = []
         try:
-            from delfin.agent.bash_jobs import drain_finished_events
-            for ev in drain_finished_events(ws) or []:
+            # The sweep, not the single-folder drain: a job belongs to the
+            # workspace it was started in, which is not always the one the
+            # session is in now.
+            from delfin.agent.bash_jobs import drain_all_finished_events
+            for ev in drain_all_finished_events(ws) or []:
                 rc = ev.get("exit_code")
                 state = "ok" if rc == 0 else (
                     f"exit {rc}" if rc is not None else "finished (exit unknown)")

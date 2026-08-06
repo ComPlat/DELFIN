@@ -10252,6 +10252,10 @@ def create_tab(ctx):
                             _mem_root = _office_root
                     fpath, slug, mem_type = save_typed_memory(
                         text_to_save, repo_root=_mem_root,
+                        # The user typed this line, so a leading "global:"
+                        # is their decision to make it cross repositories.
+                        # The same prefix coming from the model is refused.
+                        allow_scope_prefix=True,
                     )
                     # Self-limit on every write path — auto-memory distill
                     # is opt-in, so /remember alone must not grow the store

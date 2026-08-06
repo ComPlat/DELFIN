@@ -21,17 +21,27 @@ from . import hooks as _hooks
 
 
 _USER_SETTINGS = Path.home() / ".delfin" / "settings.json"
+
+# Resolved on CALL, not bound as a default argument. A module-level default
+# is evaluated once at definition time, so pointing `_USER_SETTINGS`
+# elsewhere -- a caller with its own config root, or a test -- left every
+# function still writing the original file. The user's real settings held
+# allow_patterns ["^.*$"] and default_mode "bypassPermissions" for exactly
+# this reason: a test persisted an approval rule that could not be
+# redirected, and this file decides which commands run without asking.
 _VALID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop")
 
 
-def _read_settings(path: Path = _USER_SETTINGS) -> dict[str, Any]:
+def _read_settings(path: Path | None = None) -> dict[str, Any]:
+    path = _USER_SETTINGS if path is None else path
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
 
-def _write_settings(data: dict[str, Any], path: Path = _USER_SETTINGS) -> None:
+def _write_settings(data: dict[str, Any], path: Path | None = None) -> None:
+    path = _USER_SETTINGS if path is None else path
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False),
@@ -67,7 +77,7 @@ def add_hook(
     command: str,
     *,
     timeout_s: float | None = None,
-    settings_path: Path = _USER_SETTINGS,
+    settings_path: Path | None = None,
 ) -> dict:
     """Append a hook to the user-global settings.json. Returns the
     persisted record so the caller can echo it back to the user."""
@@ -77,6 +87,8 @@ def add_hook(
         )
     if not (command or "").strip():
         raise ValueError("command must be non-empty")
+    settings_path = (_USER_SETTINGS if settings_path is None
+                     else settings_path)
     data = _read_settings(settings_path)
     hooks_obj = data.setdefault("hooks", {})
     bucket = hooks_obj.setdefault(event, [])
@@ -101,7 +113,7 @@ def remove_hook(
     event: str,
     index: int,
     *,
-    settings_path: Path = _USER_SETTINGS,
+    settings_path: Path | None = None,
 ) -> dict | None:
     """Remove the ``index``-th hook entry for ``event`` from the user
     settings file. Returns the removed entry or ``None`` if no such
@@ -110,6 +122,8 @@ def remove_hook(
         raise ValueError(
             f"unknown event {event!r}; valid: {list(_VALID_EVENTS)}"
         )
+    settings_path = (_USER_SETTINGS if settings_path is None
+                     else settings_path)
     data = _read_settings(settings_path)
     hooks_obj = data.get("hooks") or {}
     bucket = hooks_obj.get(event) or []

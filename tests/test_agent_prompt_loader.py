@@ -1001,7 +1001,8 @@ def test_recall_merges_global_store_first(agent_tree, tmp_path, monkeypatch):
     loader = PromptLoader(agent_tree)
     ms.save_typed_memory(
         "global: user: Max prefers concise German answers",
-        repo_root=agent_tree)
+        repo_root=agent_tree,
+        allow_scope_prefix=True)
     ms.save_typed_memory(
         "project: dashboard websocket runs on port 8050",
         repo_root=agent_tree)
@@ -1029,7 +1030,8 @@ def test_recall_global_floor_survives_fat_project_store(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     loader = PromptLoader(agent_tree)
     ms.save_typed_memory(
-        "global: user: identity anchor phrase zeta", repo_root=agent_tree)
+        "global: user: identity anchor phrase zeta", repo_root=agent_tree,
+        allow_scope_prefix=True)
     ms.save_typed_memory(
         "project: giant context dump " + "verbose " * 1500,
         repo_root=agent_tree)

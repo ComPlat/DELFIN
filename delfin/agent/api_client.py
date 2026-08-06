@@ -8172,7 +8172,14 @@ class _DocToolExecutor:
         try:
             from .memory_store import save_typed_memory
             path, slug, mtype = save_typed_memory(
-                text, repo_root=root, memory_type=memory_type, title=title)
+                text, repo_root=root, memory_type=memory_type, title=title,
+                # Written by the model, and marked as such on the file: it
+                # decays when it stops being recalled instead of joining the
+                # user's own corrections, which never expire. The scope
+                # prefix stays refused (the default) -- this tool's schema
+                # offers no scope, so text asking for one is the model
+                # widening its own reach.
+                source="agent")
         except Exception as exc:
             return json.dumps({"error": f"could not save memory: {exc}"})
         # Self-limit the store on every write path — auto-memory distill is
@@ -11013,6 +11020,16 @@ class _DocToolExecutor:
         if bool(arguments.get("background")):
             import threading as _th
             import uuid as _uuid
+            # A background writer edits the tree while the parent is editing
+            # it — the case auto-isolation exists for, and the one it did not
+            # cover: the rule lived in the parallel fan-out, which needs two
+            # subagent calls in one turn to fire.
+            try:
+                from . import subagents as _sa_bg
+                isolation = _sa_bg.auto_isolation_for(
+                    sa_type, isolation, background=True)
+            except Exception:
+                pass
             # Bound the number of concurrent background sub-agents so a session
             # can't leak unbounded daemon threads + worktrees. Saturated → tell
             # the model to wait or run in the foreground instead of spawning.
@@ -11057,9 +11074,18 @@ class _DocToolExecutor:
 
             _th.Thread(target=_bg_run, daemon=True,
                        name=f"subagent-bg-{sa_type}").start()
+            # A resumed run keeps the id it is resuming, so the reserved one
+            # would never resolve — the parent would poll it forever for work
+            # that had finished under a different name.
+            try:
+                from . import subagents as _sa_id_mod
+                _collect_id = _sa_id_mod.collectable_sa_id(
+                    reserved=_bg_sa_id, resume_from=str(resume_id or ""))
+            except Exception:
+                _collect_id = _bg_sa_id
             return json.dumps({
                 "status": "started_in_background",
-                "sa_id": _bg_sa_id,
+                "sa_id": _collect_id,
                 "subagent_type": sa_type,
                 "description": description,
                 "note": ("Running in the background. Collect the result later "

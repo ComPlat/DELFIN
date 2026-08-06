@@ -667,8 +667,22 @@ def _is_hedged(text: str, start: int, end: int) -> bool:
 
 # Path token with a code-file extension. Reuses the citation extension set
 # so dotted module names and version strings never match.
+#
+# The component repetitions are LENGTH-BOUNDED, and that is what keeps this
+# cheap. Written unbounded, the final component is greedy and then has to
+# find the extension dot, so a long run of word characters containing no
+# dot makes the engine give back one character at a time from every
+# starting position -- quadratic. Measured on one unbroken 20 kB line: 2.2s
+# per pattern, six patterns, on every answer and every delegate report.
+# Ordinary multi-line text of the same size costs 16ms, so it only ever bit
+# on a pasted blob or a minified dump. That is precisely the input nobody
+# anticipates, and the symptom is a turn that stops responding.
+#
+# 200 characters per component is far past any real path and bounds the
+# work per position at a constant.
+_LOC_COMPONENT = r"[\w\-][\w.\-]{0,200}"
 _LOC_PATH = (
-    r"(?:[\w\-][\w.\-]*/)*[\w\-][\w.\-]*"
+    r"(?:" + _LOC_COMPONENT + r"/){0,20}" + _LOC_COMPONENT +
     r"\.(?:" + "|".join(sorted(_CODE_FILE_EXTS)) + r")\b"
 )
 

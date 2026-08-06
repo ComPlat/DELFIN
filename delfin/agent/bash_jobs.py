@@ -716,6 +716,58 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
     return events
 
 
+def _known_workspaces() -> list[str]:
+    """Every workspace the locator index has seen a job started in.
+
+    Best-effort and already bounded: the index is pruned to the same
+    ~7-day horizon as the registries themselves."""
+    try:
+        data = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(jobs, dict):
+            return []
+        seen: list[str] = []
+        for entry in jobs.values():
+            ws = str((entry or {}).get("workspace") or "")
+            if ws and ws not in seen:
+                seen.append(ws)
+        return seen
+    except Exception:
+        return []
+
+
+def drain_all_finished_events(workspace: str | Path) -> list[dict]:
+    """Completion events from ``workspace`` AND every other workspace a job
+    was started in. Same exactly-once contract as ``drain_finished_events``.
+
+    A job belongs to the workspace it was STARTED in, while the engine only
+    knew the workspace the session is in NOW. A subagent working in an
+    isolated worktree, a switched office folder, a resumed session with a
+    different root -- in each case the job finished and nobody ever drained
+    it, so the one event that tells the agent a long calculation is done
+    never arrived.
+
+    Ordering: the current workspace first, so its events lead the block.
+    The acknowledged flag lives in each record, so a job already drained
+    from its own workspace is not repeated here."""
+    events = list(drain_finished_events(workspace) or [])
+    try:
+        primary = Path(workspace).expanduser().resolve()
+    except (OSError, ValueError):
+        primary = None
+    for ws in _known_workspaces():
+        try:
+            candidate = Path(ws).expanduser().resolve()
+        except (OSError, ValueError):
+            continue
+        if primary is not None and candidate == primary:
+            continue
+        if not candidate.is_dir():
+            continue          # the folder is gone; its registry with it
+        events.extend(drain_finished_events(candidate) or [])
+    return events
+
+
 def read_output(
     job: BashJob,
     head_lines: int = _OUTPUT_HEAD_DEFAULT,

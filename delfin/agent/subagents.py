@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -284,6 +285,39 @@ def _format_action(name: str, tool_input) -> str:
     return name
 
 
+def _owner_stamp() -> dict:
+    """Identify the process that owns a live registry entry.
+
+    The entry file is removed in a ``finally``, which covers every way the
+    RUN can end and none of the ways the PROCESS can end. Without an owner,
+    a killed dashboard left the file behind and the subagent showed as
+    working forever -- in the panel, and to a parent agent polling for a
+    report that could no longer arrive.
+
+    The start ticks come along because a pid alone is not an identity: the
+    number is recycled, and a recycled pid would keep a dead entry alive.
+    Same stamp the background-job registry already uses."""
+    from .bash_jobs import _proc_start_ticks
+    pid = os.getpid()
+    return {"owner_pid": pid, "owner_start_ticks": _proc_start_ticks(pid)}
+
+
+def _entry_owner_alive(entry: dict) -> bool:
+    """Whether the process that wrote this entry is still around.
+
+    An entry with no owner recorded was written before the field existed;
+    an unknown owner is not evidence of a dead one, so it counts as alive.
+    Those disappear on their own as soon as the run that owns them ends."""
+    try:
+        pid = int((entry or {}).get("owner_pid") or 0)
+    except (TypeError, ValueError):
+        return True
+    if not pid:
+        return True
+    from .bash_jobs import _pid_alive
+    return _pid_alive(pid, (entry or {}).get("owner_start_ticks"))
+
+
 def _running_update(sa_id: str, entry: dict | None) -> None:
     """Maintain the live per-subagent status file (entry=None removes).
 
@@ -299,23 +333,62 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
             except FileNotFoundError:
                 pass
         else:
-            f.write_text(json.dumps(entry), encoding="utf-8")
+            if not f.exists():
+                # Starting an entry is the one moment guaranteed to happen
+                # and cheap enough to carry the cleanup of what an earlier
+                # crash left behind.
+                reap_dead_running()
+            f.write_text(
+                json.dumps({**entry, **_owner_stamp()}), encoding="utf-8")
     except Exception:
         pass
 
 
-def read_running() -> dict:
-    """Live registry: {id: {type, description, started_at, actions, last_action}}."""
+def read_running(*, include_dead: bool = False) -> dict:
+    """Live registry: {id: {type, description, started_at, actions, last_action}}.
+
+    Entries whose owning process is gone are left out: they are leftovers
+    from a killed or crashed session, not work in flight. Pass
+    ``include_dead=True`` to see them, marked with ``dead: True``."""
     out: dict = {}
     try:
         for f in _RUNNING_DIR.glob("*.json"):
             try:
-                out[f.stem] = json.loads(f.read_text(encoding="utf-8"))
+                entry = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
                 continue
+            if _entry_owner_alive(entry):
+                out[f.stem] = entry
+            elif include_dead:
+                out[f.stem] = {**entry, "dead": True}
     except Exception:
         pass
     return out
+
+
+def reap_dead_running() -> list[str]:
+    """Delete registry entries whose owning process is gone. Returns the ids.
+
+    Without this the files accumulate: nothing else ever removes an entry
+    whose ``finally`` did not run, so every crash leaves one behind for
+    good."""
+    removed: list[str] = []
+    try:
+        for f in sorted(_RUNNING_DIR.glob("*.json")):
+            try:
+                entry = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if _entry_owner_alive(entry):
+                continue
+            try:
+                f.unlink()
+                removed.append(f.stem)
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return removed
 
 
 # Finished-subagent sessions (resume-by-id): each run
@@ -338,6 +411,26 @@ def _trim_for_store(text: str, limit: int = 2000) -> str:
 
 
 _MAX_STORED_INTERACTIONS = 60
+
+# The final report is stored separately from the trimmed conversation.
+# The trim (head 1200 + tail 400) is right for the resume recap it was
+# written for, and wrong for the report: the session store is the ONLY
+# route by which a BACKGROUND report reaches its parent, so a long one
+# came back as a stub with a trim marker where the findings had been.
+# Bounded, because a runaway report must not be able to fill the disk --
+# but at a size a report actually fits in, and it says so when it cuts.
+_MAX_STORED_REPORT_CHARS = 200_000
+
+
+def collectable_sa_id(*, reserved: str, resume_from: str) -> str:
+    """The id a finished run will be stored under.
+
+    Backgrounding reserves an id up front and tells the parent to collect
+    with it, but a resumed run keeps the id it is resuming -- correctly,
+    so one session accumulates under one id. The two disagreed, and the
+    parent was handed the reserved one: it polled an id that never existed
+    and was told "unknown" forever, for work that had finished."""
+    return (resume_from or "").strip() or (reserved or "").strip()
 
 
 def _save_subagent_session(
@@ -378,6 +471,16 @@ def _save_subagent_session(
             ],
             "error": error or "",
         }
+        # The report, whole. Taken before the trim above touches it.
+        for m in reversed(messages or []):
+            if m.get("role") == "assistant" and str(m.get("content", "")):
+                full = str(m["content"])
+                if len(full) > _MAX_STORED_REPORT_CHARS:
+                    full = (full[:_MAX_STORED_REPORT_CHARS]
+                            + "\n\n[report truncated at "
+                            + f"{_MAX_STORED_REPORT_CHARS} characters]")
+                record["final_report"] = full
+                break
         _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = _SESSIONS_DIR / f"{sa_id}.json"
         path.write_text(json.dumps(record, ensure_ascii=False),
@@ -838,6 +941,69 @@ _BASH_WRITE_RE = re.compile(
     r"\bgit\s+(?:commit|checkout|restore|revert)\b|\bmv\b|\bcp\b|\btouch\b|"
     r"\bmkdir\b|\brm\b|\bcat\s+>|\btruncate\b)")
 
+# A redirect whose target is a discard sink changes nothing. The write
+# pattern above matches any redirect, so `pytest -q > /dev/null` -- a
+# command whose entire purpose is to throw the output away -- registered as
+# file-writing evidence and backed a claim of having changed something.
+_EPHEMERAL_SINK_RE = re.compile(r">>?\s*/dev/(?:null|stdout|stderr)\b")
+
+
+def _writes_anything(cmd: str) -> bool:
+    """Whether a shell command is write evidence at all.
+
+    Only the redirect is discounted, and only when every redirect in the
+    command goes to a discard sink: `echo a > /dev/null; echo b > real.txt`
+    still writes."""
+    if not _BASH_WRITE_RE.search(cmd or ""):
+        return False
+    stripped = _EPHEMERAL_SINK_RE.sub(" ", cmd or "")
+    return bool(_BASH_WRITE_RE.search(stripped))
+
+
+# Test output that contradicts a success claim. Anchored on the counted
+# forms a runner prints, so "0 failed" and prose containing the word are
+# not mistaken for a failing run.
+_TEST_FAILURE_RE = re.compile(
+    r"(?:^|[\s,=])(?!0\s)(\d+)\s+(?:failed|failures?|errors?)\b"
+    r"|^FAILED\b|\bFAILED\s+\S+::"
+    r"|(?:^|[\s,=])(?!0\s)(\d+)\s+error\b",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def _output_shows_failures(output: str) -> bool:
+    """Whether recorded test output contradicts a claim that all passed."""
+    return bool(_TEST_FAILURE_RE.search(output or ""))
+
+
+# A read that returned an error, or nothing, is not an observation. Paths
+# are taken from a call's INPUT, so a refused or empty read still put the
+# file in the observed set -- grounding the delegate's own citations and,
+# because delegate evidence is merged upward, telling the PARENT it had
+# seen a file nobody read.
+_FAILED_READ_MARKERS = (
+    "(file not found)", "(empty file)", "(no matches)", "(binary file)",
+    "file not found", "no such file", "permission denied",
+)
+
+
+def _output_saw_content(output) -> bool:
+    """Whether a call's recorded output shows it actually read something.
+
+    ``None`` means no output was recorded — the payload trace carries
+    inputs without outputs — and returns True. Missing bookkeeping is never
+    treated as evidence of fabrication; concluding failure from an absent
+    record would discard every path on that whole path."""
+    if output is None:
+        return True
+    text = output if isinstance(output, str) else str(output)
+    low = text.strip().lower()
+    if not low:
+        return False
+    if low.startswith("{") and '"error"' in low:
+        return False
+    return not any(low.startswith(m) or low == m
+                   for m in _FAILED_READ_MARKERS)
+
 # --- new claim classes ------------------------------------------------------
 #
 # Test-result claims: a report asserting the suite is fine. Every pattern
@@ -1059,9 +1225,10 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 ev["tools"].append(name)
             raw_in = call.get("input")
             args = _tool_args(raw_in)
-            for p in _paths_from_call(args, raw_in):
-                if p not in ev["files"]:
-                    ev["files"].append(p)
+            if _output_saw_content(call.get("output")):
+                for p in _paths_from_call(args, raw_in):
+                    if p not in ev["files"]:
+                        ev["files"].append(p)
             cmd = ""
             if vg is not None:
                 try:
@@ -1077,7 +1244,7 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 out = call.get("output")
                 if out is not None:
                     outs.append(out if isinstance(out, str) else str(out))
-            if name in _WRITE_TOOL_NAMES or (cmd and _BASH_WRITE_RE.search(cmd)):
+            if name in _WRITE_TOOL_NAMES or (cmd and _writes_anything(cmd)):
                 ev["writes"].append(cmd or name)
         # An isolated worktree reports WHAT it changed; those paths are write
         # evidence even though the edits happened inside the child.
@@ -1251,7 +1418,12 @@ def _verification_notice(verdict: dict) -> str:
     checked = int(verdict.get("claims_checked") or 0)
     if not unsupported:
         if not checked:
-            return prefix.strip()
+            # Silence read as approval. Saying nothing after a check that
+            # ruled on nothing left the parent to assume the report had been
+            # cleared, which is the opposite of what happened.
+            return (prefix + "[subagent-verify] this report contains nothing "
+                    "that can be cross-checked against the sub-agent's trace "
+                    "— no claim was ruled on either way.")
         return (prefix + f"[subagent-verify] {checked} claim(s) cross-checked "
                 f"against this sub-agent's own tool trace "
                 f"({verdict.get('evidence', {}).get('tool_calls', 0)} tool "
@@ -1329,7 +1501,13 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
         "notice": "",
     }
     try:
-        text = _report_text(payload)
+        # One cap for every scanner. The local ones already stopped at
+        # _VERIFY_MAX_TEXT while the shared ones got the whole report, and
+        # one of those is quadratic in the length of a single LINE: a report
+        # arriving as one long unbroken line (a pasted blob, a minified
+        # dump) took 7s at 20 kB and 47s at 50 kB, on the parent's turn.
+        # Ordinary multi-line text of the same size costs 16ms.
+        text = _report_text(payload)[:_VERIFY_MAX_TEXT]
         if isinstance(payload, dict):
             err = str(payload.get("error") or "").strip()
             if err:
@@ -1375,6 +1553,15 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
                 _add(False, "test_result", claim.text,
                      "no test-running tool call in this sub-agent's trace",
                      "run the tests yourself before relying on this")
+                continue
+            if _output_shows_failures(ev["test_output"]):
+                # The trace was consulted only for a claimed NUMBER, so a
+                # delegate that ran the suite, saw failures and reported
+                # success came back supported -- the check endorsing the
+                # exact claim it exists to catch.
+                _add(False, "test_result", claim.text,
+                     "the test output recorded in this run reports failures",
+                     "read the actual test output yourself")
                 continue
             if (claim.subject and ev["test_output"]
                     and not re.search(rf"\b{re.escape(claim.subject)}\b",
@@ -1477,11 +1664,31 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
         verdict["supported"] = supported
         verdict["unsupported"] = unsupported
         verdict["claims_checked"] = len(supported) + len(unsupported)
+        if not verdict["claims_checked"]:
+            # "checked" was assigned before any claim was evaluated. Leaving
+            # it here would tell the parent the delegate's work was checked
+            # and found sound, when in fact the report contained nothing this
+            # check can rule on. That is the one thing a verifier must never
+            # say: it would manufacture the confidence it exists to withhold.
+            verdict["status"] = "no_claims"
         verdict["notice"] = _verification_notice(verdict)
         return verdict
     except Exception:
         # Degraded but well-formed: the parent still gets its delegate's work.
-        verdict["notice"] = ""
+        #
+        # The status has to be reset. By the time a scanner can raise, it is
+        # already "checked", and returning that with zero claims and a blank
+        # notice made a crash in the verifier indistinguishable from a clean
+        # bill of health -- silently, because the notice is the only part the
+        # parent reads and this path used to delete it.
+        verdict["status"] = "unavailable"
+        verdict["supported"] = []
+        verdict["unsupported"] = []
+        verdict["claims_checked"] = 0
+        verdict["notice"] = (
+            "[subagent-verify] the cross-check could not be completed, so "
+            "none of this sub-agent's claims were checked — treat the report "
+            "as unverified.")
         return verdict
 
 
@@ -1756,6 +1963,12 @@ def run_subagent(
     isolation = (isolation or "").strip().lower()
     worktree_info = None
     isolation_warning = ""
+    if (isolation == "worktree" and parent_perms is not None
+            and _worktree_would_be_voided(parent_perms)):
+        # Do not create what the permission layer is about to discard, and
+        # do not let the payload claim an isolation that did not happen.
+        isolation = ""
+        isolation_warning = _ISOLATION_VOIDED_BY_LOCK
     if isolation == "worktree" and parent_perms is not None:
         try:
             from .worktree import enter_worktree as _enter_wt
@@ -2101,6 +2314,47 @@ def run_subagent(
     )
 
 
+def auto_isolation_for(
+    subagent_type: str, requested: str, *, background: bool,
+) -> str:
+    """The isolation a subagent should get when the call did not pin one.
+
+    Auto-isolation for writers lived only in the parallel fan-out, which
+    triggers at two or more subagent calls in one turn. A background writer
+    is a single call and got none -- and it is the case that needs it most:
+    fan-out siblings at least finish before the turn ends, while a
+    background writer edits the tree while the parent is editing it, with
+    no lock and no shared stale-write baseline between them.
+
+    A single FOREGROUND writer is left alone on purpose: it has the tree to
+    itself, so a worktree would only add a merge step nobody asked for.
+    """
+    requested = (requested or "").strip()
+    if requested:
+        return requested
+    if background and is_writer_preset(subagent_type):
+        return "worktree"
+    return ""
+
+
+# Stated, not implied: the caller asked for isolation and is not getting it.
+_ISOLATION_VOIDED_BY_LOCK = (
+    "worktree isolation was not applied: this session is confined to one "
+    "folder, and moving the sub-agent into a worktree would move that "
+    "boundary. The sub-agent ran in the parent workspace and is NOT "
+    "isolated from it."
+)
+
+
+def _worktree_would_be_voided(parent_perms) -> bool:
+    """Whether ``_derive_perms`` will drop a workspace override anyway.
+
+    Checked BEFORE the worktree is created. It used to be created, left
+    unused because the lock dropped the override, and torn down again --
+    while the result still reported ``isolation: "worktree"``."""
+    return bool(getattr(parent_perms, "scope_locked", False))
+
+
 def is_writer_preset(subagent_type: str) -> bool:
     """True if a subagent type can WRITE (mutate the workspace) — i.e. its
     preset is NOT the read-only 'plan' permission profile. Used to auto-isolate
@@ -2436,13 +2690,29 @@ def get_subagent_result(sa_id: str) -> dict:
                 "started_at": ent.get("started_at", 0)}
     sess = load_subagent_session(sa_id)
     if not sess:
+        # Distinguish "never existed" from "was running when its process
+        # died". The caller is usually a parent waiting for a report: told
+        # "running" it waits forever, told "unknown" it assumes it made the
+        # id up. Only "died" lets it start the work again.
+        dead = read_running(include_dead=True).get(sa_id)
+        if dead:
+            return {"sa_id": sa_id, "status": "died",
+                    "subagent_type": dead.get("type", ""),
+                    "description": dead.get("description", ""),
+                    "started_at": dead.get("started_at", 0),
+                    "error": ("the process running this subagent is no "
+                              "longer running, and it wrote no report — "
+                              "the work has to be started again")}
         return {"sa_id": sa_id, "status": "unknown",
                 "error": "no running or finished subagent with this id"}
-    final = ""
-    for m in reversed(sess.get("messages") or []):
-        if m.get("role") == "assistant" and m.get("content"):
-            final = m.get("content", "")
-            break
+    # The untrimmed report when it was stored; the conversation is the
+    # fallback for sessions written before the field existed.
+    final = str(sess.get("final_report") or "")
+    if not final:
+        for m in reversed(sess.get("messages") or []):
+            if m.get("role") == "assistant" and m.get("content"):
+                final = m.get("content", "")
+                break
     out = {"sa_id": sa_id, "status": "finished",
            "subagent_type": sess.get("subagent_type", ""),
            "description": sess.get("description", ""),
