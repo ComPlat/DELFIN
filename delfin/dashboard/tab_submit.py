@@ -4011,12 +4011,27 @@ def create_tab(ctx):
         # the field pulls the new part into the wrong shape. The number of
         # partners says it outright and does not depend on the geometry at
         # all, which is why doing it by hand fixed things.
-        try:
-            from .molecule_forcefield import hybridisation_from_connectivity
-            derived = hybridisation_from_connectivity(_perception_for(
-                (state.get('current_xyz_for_copy') or {}).get('content') or ''))
-        except Exception:
-            derived = {}
+        # Straight off the structure that was just built, not off a fresh
+        # perception of it: perception can fail or come back empty at exactly
+        # this moment, and then nothing was derived at all -- which is why the
+        # button still had to be pressed by hand. The builder knows every bond
+        # it made, so the count is certain.
+        by_count = {2: 'sp', 3: 'sp2', 4: 'sp3'}
+        derived = {}
+        for index, symbol in enumerate(structure.symbols):
+            if symbol != 'C':
+                continue
+            partners = structure.neighbours(index)
+            # A side-on alkene is the one case where the metal does not count.
+            side_on = [
+                m for m in partners
+                if structure.symbols[m] not in ('H', 'C', 'N', 'O', 'S', 'P')
+                and any(o in structure.neighbours(m) for o in partners
+                        if structure.symbols[o] == 'C')
+            ]
+            name = by_count.get(len(partners) - len(side_on))
+            if name:
+                derived[index] = name
         if derived:
             overrides = dict(state.get('hyb_overrides') or {})
             overrides.update(derived)
@@ -4133,7 +4148,7 @@ def create_tab(ctx):
             return
 
         from .molecule_builder import (
-            delete_atoms, grow_from, join, normalise_element, place_atom,
+            delete_atoms, grow_from, normalise_element, place_atom,
             set_bond_order, set_element,
         )
 
@@ -4196,16 +4211,14 @@ def create_tab(ctx):
                 named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
                 ends = [structure.symbols[i] for i in (first, second)]
                 if not structure.order(first, second):
-                    # A new bond, possibly across the whole viewer: bring the
-                    # fragments together before the field sees it.
-                    if join(structure, first, second, order):
-                        _apply_structure(
-                            structure,
-                            f'Bonded {ends[0]}{first} to {ends[1]}{second}.')
-                    else:
-                        _set_mol_status(
-                            f'{ends[0]}{first} and {ends[1]}{second} cannot be '
-                            'bonded like that.')
+                    # A bond that is not there yet is made the way the Bond
+                    # button makes one: the topology changes and nothing else.
+                    # Moving fragments and re-placing hydrogens to go with it
+                    # was more than was asked for, and it wrecked the molecule
+                    # on the way -- while Bond, which does none of that, has
+                    # always worked.
+                    state['picked'] = [first, second]
+                    _edit_bond(True)
                 elif set_bond_order(structure, first, second, order):
                     _apply_structure(
                         structure,
