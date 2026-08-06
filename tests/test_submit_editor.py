@@ -1091,21 +1091,24 @@ def test_delete_removes_the_selected_bond_and_nothing_else():
     is built from -- so the browser cannot carry it out alone and asks through
     a hidden widget.
 
-    Verified in a browser: Delete with a bond selected sends
-    ``unbond:1:0,1``; Delete on two atoms that are not bonded sends nothing,
-    because reporting an unbonding that never happened would be a lie; and
-    Delete while the caret is in a text field sends nothing either."""
+    Verified in a browser, all in select mode: one atom picked sends
+    ``delatoms:1:0``, three send ``delatoms:2:0,5,9``, two bonded atoms picked
+    one at a time send ``delatoms:3:0,1`` -- and the stick between those same
+    two, tapped, sends ``unbond:4:0,1``. Delete while the caret is in a text
+    field sends nothing at all."""
     editor = EDITOR
     assert "key === 'Delete' || key === 'Backspace'" in editor
     guard = editor.split("key === 'Delete' || key === 'Backspace'")[1][:2200]
     assert 'typingInAField()' in guard
-    assert 'scope.picks.length !== 2' in guard
     assert 'bondsOf(' in guard                      # only a bond that is there
     assert "pushCommandToPython(names[s], 'unbond'" in guard
-    # In draw mode the same key removes atoms, which is what that mode is for;
-    # the two readings would otherwise compete for one key on one selection.
-    assert "scope.mode === 'draw'" in guard
+    # What the key means follows from how the selection was made, not from the
+    # mode: a stick that was tapped comes off as a bond, atoms picked one at a
+    # time are deleted. So it reads the same wherever the user is.
+    assert 'scope.pickedAsBond' in guard
     assert "pushCommandToPython(names[s], 'delatoms'" in guard
+    assert 'state.pickedAsBond = false;' in _body('togglePick')
+    assert 'state.pickedAsBond = !isExactly;' in _body('pickBond')
 
     push = _body('pushCommandToPython')
     assert '.submit-cmd-sync' in push

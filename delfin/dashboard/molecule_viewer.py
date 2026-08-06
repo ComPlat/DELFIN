@@ -1639,6 +1639,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function togglePick(scopeKey, atom, additive) {
         var state = getState(scopeKey);
         if (!atom || atom.serial === undefined) return;
+        state.pickedAsBond = false;
         var found = -1;
         for (var i = 0; i < state.picks.length; i++) {
             if (state.picks[i].serial === atom.serial) { found = i; break; }
@@ -1954,6 +1955,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var isExactly = state.picks.length === 2
             && serials.indexOf(state.picks[0].serial) >= 0
             && serials.indexOf(state.picks[1].serial) >= 0;
+        // What Delete means depends on what was selected, not on the mode:
+        // a stick that was tapped is a bond and comes off as one, two atoms
+        // picked one at a time are atoms and are deleted.
+        state.pickedAsBond = !isExactly;
         if (!additive) {
             // Clicking the same stick again takes it back, the way clicking
             // the same atom again does.
@@ -2069,6 +2074,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // around the next part of the molecule now does what it looks like.
         // Clear is how you start over.
         if (!additive) state.picks = [];
+        state.pickedAsBond = false;
 
         var projected = projectAllAtoms(scopeKey);
         for (var i = 0; i < projected.length; i++) {
@@ -3379,6 +3385,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function clearSelection(scopeKey) {
         var state = getState(scopeKey);
         if (!state.picks.length) return false;
+        state.pickedAsBond = false;
         state.picks = [];
         redrawHighlights(scopeKey);
         return true;
@@ -3387,6 +3394,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function clearPicks(scopeKey) {
         var state = getState(scopeKey);
         state.picks = [];
+        state.pickedAsBond = false;
         state.pivot = null;
         unpinAll(scopeKey);
         redrawHighlights(scopeKey);
@@ -3512,20 +3520,20 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     }
                     var view = getViewer(names[s]);
                     if (!view) continue;
-                    if (scope.mode === 'draw') {
-                        // In draw mode Delete removes atoms, which is what the
-                        // mode is for; elsewhere it removes the bond that is
-                        // selected, and the two readings would otherwise
-                        // compete for the same key on the same selection.
-                        if (!scope.picks.length) continue;
-                        var serials = scope.picks.map(function(p) { return p.serial; });
-                        var doomed = ffIndicesOf(view, serials);
-                        if (!doomed.length) continue;
+                    if (!scope.picks.length) continue;
+                    var serials = scope.picks.map(function(p) { return p.serial; });
+                    var chosen = ffIndicesOf(view, serials);
+                    if (!chosen.length) continue;
+                    // A stick that was tapped comes off as a bond; atoms
+                    // picked one at a time are deleted. The distinction is how
+                    // the selection was made, not which mode is on, so the key
+                    // means the same thing wherever the user is.
+                    if (!(scope.pickedAsBond && chosen.length === 2
+                          && bondsOf(names[s], chosen[0]).indexOf(chosen[1]) >= 0)) {
                         e.preventDefault();
-                        pushCommandToPython(names[s], 'delatoms', doomed.join(','));
+                        pushCommandToPython(names[s], 'delatoms', chosen.join(','));
                         break;
                     }
-                    if (scope.picks.length !== 2) continue;
                     var pair = ffIndicesOf(
                         view, [scope.picks[0].serial, scope.picks[1].serial]);
                     if (pair.length !== 2) continue;
