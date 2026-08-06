@@ -608,3 +608,22 @@ def test_values_can_be_held_and_dropped_again():
     assert "state['poly_applied'] = None" in drop
     assert 'held.pop(position)' in drop
     assert 'restraints=state.get(\'constraints\')' in source
+
+
+def test_two_ligands_can_be_exchanged_on_the_polyhedron():
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_swap_btn' in source
+    # The assignment is held from the moment a polyhedron is chosen, or the
+    # next re-assignment would simply undo the swap.
+    assert "state['poly_assignment'] = polyhedron_assignment(" in source
+    assert "'assignment': state.get('poly_assignment')," in source
+
+    swap = source.split('def on_submit_swap')[1].split('\n    def ')[0]
+    assert 'assignment[first], assignment[second] = assignment[second], assignment[first]' in swap
+    assert '_enable_live_forcefield()' in swap
+    # Offered only when exactly two donors of the forced metal are selected.
+    refresh = source.split('def _refresh_swap')[1].split('\n    def ')[0]
+    assert 'len(indices) == 2' in refresh
+    assert 'all(i in assignment for i in indices)' in refresh

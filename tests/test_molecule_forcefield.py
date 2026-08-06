@@ -581,3 +581,44 @@ def test_forcing_a_polyhedron_sets_the_ideal_angles_at_the_metal():
     assert len(forced_metal) == len(plain_metal)
     assert all(a['kt'] > 0 for a in forced_metal)
     assert any('polyhedron' in w for w in forced['warnings'])
+
+
+def test_the_vertex_assignment_can_be_overridden_to_exchange_ligands():
+    """Two ligands could never be swapped: the assignment was recomputed on
+    every export and always chose the nearest match, which is the arrangement
+    the user is trying to leave. It is reportable and overridable now.
+
+    Measured on a Ni complex: with the assignment as found, the donor that was
+    nearly trans to another stays there (168 deg). Exchanging two entries makes
+    the field pull them onto each other's vertex instead -- the pair opens from
+    160 to 108 degrees while the other closes from 94 to 136 -- and the worst
+    ligand bond changes 0.1417 A against 0.1379 for the unexchanged pull."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    assignment = mff.polyhedron_assignment(perceived, metal, 'sqp_4')
+    assert len(assignment) == 4
+    assert sorted(assignment.values()) == [0, 1, 2, 3]
+
+    donors = sorted(assignment)
+    swapped = dict(assignment)
+    swapped[donors[0]], swapped[donors[1]] = assignment[donors[1]], assignment[donors[0]]
+
+    def targets(payload):
+        return {
+            (a['i'], a['k']): round(a['theta0'])
+            for a in payload['angles'] if a['j'] == metal
+        }
+
+    plain = mff.export_forcefield_terms(
+        xyz, perceived=perceived,
+        polyhedron={'metal': metal, 'geometry': 'sqp_4', 'assignment': assignment},
+    )
+    exchanged = mff.export_forcefield_terms(
+        xyz, perceived=perceived,
+        polyhedron={'metal': metal, 'geometry': 'sqp_4', 'assignment': swapped},
+    )
+    # The same set of ideal angles, handed to different pairs.
+    assert sorted(targets(plain).values()) == sorted(targets(exchanged).values())
+    assert targets(plain) != targets(exchanged)

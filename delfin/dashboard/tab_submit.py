@@ -761,6 +761,15 @@ def create_tab(ctx):
         layout=widgets.Layout(width='92px', height='30px'),
         disabled=True,
     )
+    submit_swap_btn = widgets.Button(
+        description='Swap', button_style='', icon='exchange',
+        tooltip=(
+            'Exchange the two selected ligands on the polyhedron: they are '
+            'pulled onto each other\'s vertex instead of back to their own.'
+        ),
+        layout=widgets.Layout(width='78px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_hold_btn = widgets.Button(
         description='Hold', button_style='warning', icon='thumb-tack',
         tooltip=(
@@ -799,7 +808,8 @@ def create_tab(ctx):
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_internal_group,
-            submit_constraint_dd, submit_constraint_del, submit_pick_sync,
+            submit_swap_btn, submit_constraint_dd, submit_constraint_del,
+            submit_pick_sync,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -3235,6 +3245,7 @@ def create_tab(ctx):
                 polyhedron = {
                     'metal': state['poly_metal'],
                     'geometry': state['poly_applied'],
+                    'assignment': state.get('poly_assignment'),
                 }
             payload = export_forcefield_terms(
                 xyz,
@@ -3391,6 +3402,7 @@ def create_tab(ctx):
         raw = (submit_pick_sync.value or '').strip()
         indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
         state['picked'] = indices
+        _refresh_swap(indices)
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
         options = None
         perceived = None
@@ -3470,6 +3482,31 @@ def create_tab(ctx):
         ] + [(label, key) for key, label in entries[1:]]
         submit_constraint_dd.value = entries[0][0]
 
+    def _refresh_swap(indices):
+        """Offer a swap when two ligands of the forced metal are selected."""
+        assignment = state.get('poly_assignment') or {}
+        ready = (
+            len(indices) == 2
+            and state.get('poly_applied')
+            and all(i in assignment for i in indices)
+        )
+        submit_swap_btn.layout.display = '' if ready else 'none'
+        submit_swap_btn.disabled = not ready
+
+    def on_submit_swap(_button=None):
+        indices = list(state.get('picked') or [])
+        assignment = dict(state.get('poly_assignment') or {})
+        if len(indices) != 2 or not all(i in assignment for i in indices):
+            return
+        first, second = indices
+        assignment[first], assignment[second] = assignment[second], assignment[first]
+        state['poly_assignment'] = assignment
+        _set_mol_status(
+            'Exchanged the two ligands on the polyhedron; the field is now '
+            'pulling them onto each other\'s vertex.'
+        )
+        _enable_live_forcefield()
+
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
         indices = list(state.get('picked') or [])
@@ -3514,6 +3551,15 @@ def create_tab(ctx):
         if change.get('name') != 'value' or state.get('poly_quiet'):
             return
         state['poly_applied'] = submit_poly_dd.value or None
+        state['poly_assignment'] = None
+        if state['poly_applied'] and state.get('poly_metal') is not None:
+            try:
+                from .molecule_forcefield import polyhedron_assignment
+                state['poly_assignment'] = polyhedron_assignment(
+                    state['perceived'], state['poly_metal'], state['poly_applied'],
+                )
+            except Exception:
+                state['poly_assignment'] = None
         _refresh_constraints()
         # Re-assigning the parameters is what makes the pull start; with the
         # field running the complex visibly moves into the polyhedron.
@@ -3626,6 +3672,7 @@ def create_tab(ctx):
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_hold_btn.on_click(on_submit_hold)
+    submit_swap_btn.on_click(on_submit_swap)
     submit_constraint_del.on_click(on_submit_constraint_del)
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)

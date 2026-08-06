@@ -1122,18 +1122,24 @@ def _closest_polyhedron(perceived, donors, metal_index, candidates):
     return best
 
 
-def _polyhedron_target_angles(perceived, coords, metal_index, geometry):
-    """Ideal L-M-L angles for one metal forced onto a polyhedron.
+def polyhedron_assignment(perceived, metal_index, geometry, coords=None):
+    """Which donor currently sits on which vertex of the chosen polyhedron.
 
-    The donors are matched to the polyhedron's vertices with the Hungarian
-    algorithm, so the complex is drawn onto the target the shortest way round
-    instead of being scrambled into it.
-
-    These become the equilibrium values of ordinary harmonic angle terms with
-    UFF force constants -- a pull, not a constraint. A chelate whose bite angle
-    cannot reach the ideal vertex separation settles at a compromise between
-    ligand and polyhedron rather than being torn apart.
+    Returned as ``{donor_index: vertex_number}``. Swapping two entries and
+    handing the result back as ``polyhedron['assignment']`` is what lets a user
+    exchange two ligands: without it the assignment is recomputed on every
+    export and always picks the nearest match, which is exactly the
+    arrangement they are trying to leave.
     """
+    _targets, assigned = _assign_donors_to_vertices(
+        perceived, coords if coords is not None else perceived.coords,
+        metal_index, geometry, None,
+    )
+    return assigned
+
+
+def _assign_donors_to_vertices(perceived, coords, metal_index, geometry, fixed):
+    """Match donors to polyhedron vertices, honouring a caller's swap."""
     import numpy as np
 
     from delfin.manta import _polyhedron_targets as targets
@@ -1143,50 +1149,78 @@ def _polyhedron_target_angles(perceived, coords, metal_index, geometry):
         if metal_index in pair and j != metal_index
     )
     cn = len(donors)
-    ideal = targets.get_ideal_donor_vectors(cn, geometry)
-    centre = np.asarray(coords[metal_index], dtype=float)
-    observed = np.asarray([coords[j] for j in donors], dtype=float) - centre
-    lengths = np.linalg.norm(observed, axis=1)
-    lengths[lengths < 1e-9] = 1.0
-    observed = observed / lengths[:, None]
+    ideal = np.asarray(
+        targets.get_ideal_donor_vectors(cn, geometry), dtype=float,
+    )
+    observed = _unit_donor_vectors(perceived, donors, metal_index, coords)
+    if observed is None:
+        return {}, {}
 
-    # Cost is angular distance, so the assignment minimises how far the
-    # complex has to move.
-    ideal = np.asarray(ideal, dtype=float)
-    try:
-        from scipy.optimize import linear_sum_assignment
-    except Exception:
-        linear_sum_assignment = None
-
-    rows, cols = list(range(cn)), list(range(cn))
-    for _pass in range(3):
-        cost = 1.0 - observed @ ideal.T
-        if linear_sum_assignment is not None:
-            rows, cols = linear_sum_assignment(cost)
-        # Kabsch: rotate the polyhedron onto the donors it was just matched to,
-        # then match again. Without this the vertices are handed out in the
-        # table's own frame and the complex is dragged the long way round.
-        matched = ideal[np.asarray(cols)]
-        target = observed[np.asarray(rows)]
-        u, _sv, vt = np.linalg.svd(matched.T @ target)
-        rotation = u @ vt
-        if np.linalg.det(rotation) < 0:
-            u[:, -1] *= -1.0
+    if fixed:
+        # The caller says which donor belongs on which vertex; only the
+        # orientation of the polyhedron still has to be found.
+        pairs = [
+            (donors.index(int(d)), int(v))
+            for d, v in fixed.items()
+            if int(d) in donors and 0 <= int(v) < cn
+        ]
+        if len(pairs) == cn:
+            rows = [r for r, _c in pairs]
+            cols = [c for _r, c in pairs]
+        else:
+            fixed = None
+    if not fixed:
+        try:
+            from scipy.optimize import linear_sum_assignment
+        except Exception:
+            linear_sum_assignment = None
+        rows, cols = list(range(cn)), list(range(cn))
+        for _pass in range(3):
+            cost = 1.0 - observed @ ideal.T
+            if linear_sum_assignment is not None:
+                rows, cols = linear_sum_assignment(cost)
+            matched = ideal[np.asarray(cols)]
+            target = observed[np.asarray(rows)]
+            u, _sv, vt = np.linalg.svd(matched.T @ target)
             rotation = u @ vt
-        ideal = ideal @ rotation
+            if np.linalg.det(rotation) < 0:
+                u[:, -1] *= -1.0
+                rotation = u @ vt
+            ideal = ideal @ rotation
 
-    assigned = {}
+    assigned_vec = {}
+    assigned_vertex = {}
     for row, col in zip(rows, cols):
-        assigned[donors[int(row)]] = np.asarray(ideal[int(col)], dtype=float)
+        assigned_vec[donors[int(row)]] = np.asarray(ideal[int(col)], dtype=float)
+        assigned_vertex[donors[int(row)]] = int(col)
 
     wanted = {}
     for a in range(cn):
         for b in range(a + 1, cn):
             i, k = donors[a], donors[b]
-            if i not in assigned or k not in assigned:
+            if i not in assigned_vec or k not in assigned_vec:
                 continue
-            cosine = float(np.clip(np.dot(assigned[i], assigned[k]), -1.0, 1.0))
+            cosine = float(np.clip(np.dot(assigned_vec[i], assigned_vec[k]), -1.0, 1.0))
             wanted[(min(i, k), max(i, k))] = math.degrees(math.acos(cosine))
+    return wanted, assigned_vertex
+
+
+def _polyhedron_target_angles(perceived, coords, metal_index, geometry, fixed=None):
+    """Ideal L-M-L angles for one metal forced onto a polyhedron.
+
+    The donors are matched to the polyhedron's vertices -- by Hungarian
+    assignment after the polyhedron has been rotated onto them, so the complex
+    is drawn onto the target the shortest way round, or by the caller's own
+    mapping when two ligands are being exchanged.
+
+    These become the equilibrium values of ordinary harmonic angle terms with
+    UFF force constants -- a pull, not a constraint. A chelate whose bite angle
+    cannot reach the ideal vertex separation settles at a compromise between
+    ligand and polyhedron rather than being torn apart.
+    """
+    wanted, _assigned = _assign_donors_to_vertices(
+        perceived, coords, metal_index, geometry, fixed,
+    )
     return wanted
 
 
@@ -1364,6 +1398,7 @@ def export_forcefield_terms(
                 forced_angles = _polyhedron_target_angles(
                     perceived, coords, forced_centre,
                     str(polyhedron.get('geometry')),
+                    polyhedron.get('assignment'),
                 )
             except Exception as exc:
                 warnings.append(f'Could not apply the polyhedron: {exc}')
