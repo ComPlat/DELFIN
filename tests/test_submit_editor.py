@@ -667,3 +667,20 @@ def test_dragging_a_ligand_hands_it_the_vertex_it_lands_on():
     sync = source.split('def on_submit_manip_sync')[1].split('\n    def ')[0]
     assert "state['poly_assignment'] = None" in sync
     assert '_schedule_ui_update(_enable_live_forcefield)' in sync
+
+
+def test_a_typed_value_is_not_overwritten_by_the_running_field():
+    """The value box refreshed on every status update, and the continuous
+    optimiser triggers one per frame. So a value typed in was replaced by the
+    current measured one within a frame, and Set or Hold then acted on the
+    geometry instead of on what was asked for — which looked exactly like the
+    buttons doing nothing at all in dynamic mode.
+
+    Verified in a browser: 180 typed into the box is still 180 after 2.5
+    seconds of relaxation, and changing the selection gives a fresh reading."""
+    readout = _body('updateInternalReadout')
+    assert 'state.readoutFor' in readout
+    assert 'selectionChanged' in readout
+    assert 'selectionChanged && document.activeElement !== box' in readout
+    # A re-render must not make the next selection look unchanged.
+    assert 'state.readoutFor = null;' in _body('onViewerReady')

@@ -1488,6 +1488,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // and say which quantity that is. Without this the box was an unlabelled
     // number field and nothing told the user it wanted a bond length.
     function updateInternalReadout(scopeKey) {
+        var state = getState(scopeKey);
         var label = findInScope(scopeKey, '.submit-internal-label');
         var box = findInScope(scopeKey, '.submit-internal-value input');
         var info = null;
@@ -1498,7 +1499,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                    (info.unit === 'A' ? '\u00c5' : '\u00b0') + ')')
                 : 'pick 2-4 atoms';
         }
-        if (box && info && document.activeElement !== box) {
+        // The box is a snapshot taken when the selection changes, not a live
+        // meter. While the field runs this function is called every frame, and
+        // refreshing then overwrote whatever the user had just typed: they
+        // entered 180, and Set or Hold acted on the current measured value
+        // instead, which looked as though neither button worked at all.
+        var signature = info
+            ? info.kind + ':' + info.idx.join(',')
+            : '';
+        var selectionChanged = signature !== state.readoutFor;
+        state.readoutFor = signature;
+        if (box && info && selectionChanged && document.activeElement !== box) {
             var rounded = info.unit === 'A'
                 ? info.value.toFixed(3) : info.value.toFixed(1);
             if (box.value !== rounded) {
@@ -2621,6 +2632,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // Overlay is attached fresh per render (old one is gone with the HTML)
         state.overlay = null;
         state.energyBadge = null;
+        state.readoutFor = null;
         state.rect = null;
         state.drag = null;
         // The parameters were assigned for the geometry that just went away.
