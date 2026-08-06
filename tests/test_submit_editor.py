@@ -316,16 +316,6 @@ def test_relaxation_strength_is_adjustable():
     assert 'opts.maxChunk' in engine
 
 
-def test_undo_steps_back_through_a_running_relaxation():
-    """Switching the field on was the only snapshot taken, so after a spell of
-    continuous relaxation the first Undo jumped to the geometry from before it
-    was switched on."""
-    tick = _body('autoOptimizeTick')
-    assert 'state.autoSnapshot' in tick
-    assert 'snapshotForUndo(scopeKey)' in tick
-    assert '> 2000' in tick
-
-
 def test_camera_survives_a_rebuild_of_the_same_structure():
     """Optimising or stepping to another isomer rebuilds the viewer, and the
     view snapped back to the default orientation every time."""
@@ -991,6 +981,48 @@ def test_the_selection_is_released_once_a_value_has_been_set():
 
     source = open(tab_submit.__file__, encoding='utf-8').read()
     assert 'def _clear_selection' in source
-    for handler in ('on_submit_set_internal', 'on_submit_hold', '_edit_bond'):
+    # Choosing a polyhedron is the same kind of act: the metal has done its
+    # job, and leaving it picked meant the next atom clicked joined it.
+    for handler in ('on_submit_set_internal', 'on_submit_hold', '_edit_bond',
+                    'on_submit_poly_changed'):
         body = source.split(f'def {handler}')[1].split('\n    def ')[0]
         assert '_clear_selection()' in body, handler
+
+
+def test_undo_answers_for_operations_not_for_relaxation_frames():
+    """The dynamic optimiser used to push an undo snapshot every two seconds.
+
+    The stack holds 50, so a minute and forty seconds of it evicted every real
+    operation: Undo then stepped back one relaxation frame at a time instead of
+    taking back the angle that had just been set. Measured in a browser --
+    9 s of Dynamik Opt after setting an angle left the stack 7 deep, and one
+    Undo landed 0.0022 A from where the optimiser had it, which is nothing at
+    all. Without the periodic snapshot the stack is 2 deep and the same Undo
+    lands exactly on the geometry the Set produced, 0.093 A back.
+
+    Switching the field on still snapshots: that is an operation too, and it is
+    what lets Undo return to the geometry from before the optimiser ran."""
+    body = _body('autoOptimizeTick')
+    assert 'snapshotForUndo' not in body
+    assert 'pushXyzToPython' in body          # the coordinate box still follows
+    assert 'snapshotForUndo(scopeKey);' in _body('startAutoOptimize')
+    # The operations that do answer to Undo.
+    for name in ('setInternal', 'editBond', 'exchangeLigands'):
+        assert 'snapshotForUndo(scopeKey);' in _body(name), name
+
+
+def test_a_polyhedron_held_on_one_metal_is_not_offered_for_the_next():
+    """The dropdown is rebuilt from whichever metal is picked, and its value
+    was then set to whatever polyhedron happened to be applied -- even when
+    that metal does not offer it. Assigning a value the options do not contain
+    raises, so picking a four-coordinate metal while an octahedron was held on
+    another one took the whole handler down.
+
+    Only reachable once the selection is released after applying a polyhedron:
+    before that the second metal made a two-atom pick, which offers nothing."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    body = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
+    assert 'offered = {code for code, _label in choices}' in body
+    assert 'submit_poly_dd.value = applied if applied in offered else \'\'' in body

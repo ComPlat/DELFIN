@@ -3535,7 +3535,12 @@ def create_tab(ctx):
         state['poly_quiet'] = True
         try:
             submit_poly_dd.options = entries
-            submit_poly_dd.value = state.get('poly_applied') or ''
+            # Only a code this metal actually offers. A polyhedron held on one
+            # metal has nothing to say about the next one picked, and assigning
+            # a value the options do not contain raises.
+            applied = state.get('poly_applied')
+            offered = {code for code, _label in choices}
+            submit_poly_dd.value = applied if applied in offered else ''
         finally:
             state['poly_quiet'] = False
         submit_poly_dd.disabled = False
@@ -3755,6 +3760,17 @@ def create_tab(ctx):
         # field running the complex visibly moves into the polyhedron.
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
+        # The metal has done its job once the polyhedron is on, exactly as
+        # after Set or Hold: leaving it picked meant the next atom clicked
+        # joined it, and the highlight sphere read as though something were
+        # still waiting to be chosen. What is held stays in the list below.
+        if state['poly_applied']:
+            _set_mol_status(
+                f'{submit_poly_dd.label}: the donors are pulled onto it.'
+            )
+        else:
+            _set_mol_status('Polyhedron released.')
+        _clear_selection()
 
     def on_submit_settle_toggle(change):
         if change.get('name') != 'value':

@@ -2541,13 +2541,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (ffRelaxFrame(scopeKey)) {
                 redrawHighlights(scopeKey);
                 var now = nowMs();
-                // Take a snapshot every couple of seconds while the field
-                // runs, so Undo steps back through the relaxation instead of
-                // returning to the geometry from before it was switched on.
-                if (now - (state.autoSnapshot || 0) > 2000) {
-                    state.autoSnapshot = now;
-                    snapshotForUndo(scopeKey);
-                }
+                // The relaxation deliberately takes no snapshots. It used to
+                // take one every two seconds, which filled the 50-slot stack
+                // with relaxation frames in a minute and forty seconds and
+                // evicted every real operation from it: Undo then stepped back
+                // through the optimisation instead of taking back the angle
+                // that had just been set. Undo answers for what the user did,
+                // so only operations push -- Set, Hold, a bond edit, a swap, a
+                // drag, and switching the field on.
                 // The coordinate box follows at a readable rate, not per frame:
                 // each push is a widget round trip.
                 if (now - (state.autoPushed || 0) > 500) {
@@ -2567,7 +2568,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         snapshotForUndo(scopeKey);
         state.autoOpt = true;
         state.autoPushed = nowMs();
-        state.autoSnapshot = nowMs();
         autoOptimizeTick(scopeKey);
         updateStatus(scopeKey);
         return true;
