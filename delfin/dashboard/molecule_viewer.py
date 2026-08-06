@@ -2016,6 +2016,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var atoms = getAtoms(viewer);
         var adj = bondAdjacency(viewer);
         var note = '';
+        var d2sign = 1, d3sign = 1;
 
         if (info.kind === 'bond') {
             if (target <= 0) return {ok: false, error: 'a bond must be positive'};
@@ -2024,8 +2025,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (vecLen(u) < 0.5) return {ok: false, error: 'atoms coincide'};
             var frag = fragmentFrom(adj, j, i, j);
             var moving = frag.atoms;
-            if (frag.seen[i]) { moving = [j]; note = 'ring: only the second atom moved'; }
-            translateAtoms(atoms, moving, vecScale(u, target - info.value));
+            var shift = target - info.value;
+            if (frag.seen[i]) {
+                moving = [j]; note = 'ring: only the second atom moved';
+            } else {
+                var otherSide = fragmentFrom(adj, i, i, j);
+                if (!otherSide.seen[j] && otherSide.atoms.length < moving.length) {
+                    moving = otherSide.atoms;
+                    shift = -shift;
+                }
+            }
+            translateAtoms(atoms, moving, vecScale(u, shift));
         } else if (info.kind === 'angle') {
             var i2 = idx[0], j2 = idx[1], k2 = idx[2];
             var axis = vecNorm(crossV(vecSub(atoms[i2], atoms[j2]),
@@ -2035,8 +2045,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
             var frag2 = fragmentFrom(adj, k2, j2, k2);
             var moving2 = frag2.atoms;
-            if (frag2.seen[j2]) { moving2 = [k2]; note = 'ring: only the third atom moved'; }
-            var d2 = (target - info.value) * Math.PI / 180;
+            if (frag2.seen[j2]) {
+                moving2 = [k2]; note = 'ring: only the third atom moved';
+            } else {
+                var other2 = fragmentFrom(adj, i2, j2, k2);
+                if (!other2.seen[k2] && other2.atoms.length < moving2.length) {
+                    // Turn the smaller half and let the larger stand.
+                    moving2 = other2.atoms;
+                    d2sign = -1;
+                }
+            }
+            var d2 = (target - info.value) * Math.PI / 180 * d2sign;
             rotateAtomsAbout(atoms, moving2, atoms[j2], axis, d2);
             if (Math.abs(angleV(atoms[i2], atoms[j2], atoms[k2]) - target) > 1e-3) {
                 rotateAtomsAbout(atoms, moving2, atoms[j2], axis, -2 * d2);
@@ -2049,11 +2068,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
             var frag3 = fragmentFrom(adj, k3, j3, k3);
             var moving3 = frag3.atoms;
+            var other3 = fragmentFrom(adj, j3, j3, k3);
+            if (!frag3.seen[j3] && !other3.seen[k3]
+                    && other3.atoms.length < moving3.length) {
+                moving3 = other3.atoms;
+                d3sign = -1;
+            }
             if (frag3.seen[j3]) {
                 return {ok: false,
                         error: 'that dihedral turns about a ring bond'};
             }
-            var d3 = (target - info.value) * Math.PI / 180;
+            var d3 = (target - info.value) * Math.PI / 180 * d3sign;
             rotateAtomsAbout(atoms, moving3, atoms[j3], axis3, d3);
             var got = dihedralV(atoms[idx[0]], atoms[j3], atoms[k3], atoms[idx[3]]);
             if (Math.abs(((got - target + 540) % 360) - 180) > 1e-3) {
@@ -2106,6 +2131,28 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return list.length;
     }
 
+    // Restoring a held value moves a whole fragment, which shifts and turns the
+    // molecule as a whole. Applied every frame that reads as the structure
+    // drifting and spinning under the cursor, and it makes a ligand that has
+    // been dragged somewhere new look as though it springs back -- it has not
+    // moved, the rest of the world has. Take that rigid-body part back out.
+    function centroidOf(atoms, indices) {
+        var cx = 0, cy = 0, cz = 0, n = indices.length;
+        if (!n) return null;
+        for (var i = 0; i < n; i++) {
+            var a = atoms[indices[i]];
+            cx += a.x; cy += a.y; cz += a.z;
+        }
+        return {x: cx / n, y: cy / n, z: cz / n};
+    }
+    function heavyIndices(atoms) {
+        var out = [];
+        for (var i = 0; i < atoms.length; i++) {
+            if ((atoms[i].elem || '') !== 'H') out.push(i);
+        }
+        return out.length ? out : atoms.map(function(_a, i) { return i; });
+    }
+
     function applyFixedInternals(scopeKey) {
         var state = getState(scopeKey);
         var list = state.fixedInternals || [];
@@ -2113,6 +2160,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         if (!viewer) return false;
         var atoms = getAtoms(viewer);
+        var anchors = heavyIndices(atoms);
+        var before = centroidOf(atoms, anchors);
         var touched = false;
         for (var i = 0; i < list.length; i++) {
             var entry = list[i];
@@ -2132,6 +2181,19 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 scopeKey, kindName, idx, entry.value, current,
             );
             if (result && result.ok) touched = true;
+        }
+        if (touched && before) {
+            var after = centroidOf(atoms, anchors);
+            if (after) {
+                var dx = before.x - after.x,
+                    dy = before.y - after.y,
+                    dz = before.z - after.z;
+                if (dx || dy || dz) {
+                    for (var t = 0; t < atoms.length; t++) {
+                        atoms[t].x += dx; atoms[t].y += dy; atoms[t].z += dz;
+                    }
+                }
+            }
         }
         return touched;
     }
