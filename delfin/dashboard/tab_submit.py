@@ -1228,6 +1228,12 @@ def create_tab(ctx):
         # exactly what keeps a dragged double bond a double bond.
         state['perceived'] = None
         state['perceived_for'] = None
+        # Every constraint names atoms by index, which says nothing about a
+        # different molecule.
+        state['constraints'] = []
+        state['poly_applied'] = None
+        state['poly_metal'] = None
+        state['poly_assignment'] = None
         state['smiles_task_id'] += 1
         _set_smiles_conversion_busy(False)
         # User manually edited coords -> clear isomer navigation and reset convert toggle
@@ -3245,6 +3251,7 @@ def create_tab(ctx):
                 polyhedron = {
                     'metal': state['poly_metal'],
                     'geometry': state['poly_applied'],
+                    # None means: work it out from where the ligands are now.
                     'assignment': state.get('poly_assignment'),
                 }
             payload = export_forcefield_terms(
@@ -3418,9 +3425,13 @@ def create_tab(ctx):
             except Exception:
                 options = None
         if not options:
+            # Only the offer follows the selection. The applied polyhedron
+            # stays: clearing it here meant that selecting three ligand atoms
+            # to hold an angle silently threw the polyhedron away, and the very
+            # next export went out without it.
             submit_poly_dd.layout.display = 'none'
             submit_poly_dd.disabled = True
-            state['poly_metal'] = None
+            state['poly_offer_metal'] = None
             # Say why, when a single atom was picked and could have qualified.
             if perceived is not None and len(indices) == 1:
                 index = indices[0]
@@ -3437,7 +3448,7 @@ def create_tab(ctx):
             return
 
         coordination, current, choices = options
-        state['poly_metal'] = indices[0]
+        state['poly_offer_metal'] = indices[0]
         symbol = perceived.symbols[indices[0]]
         entries = [(f'{symbol} · CN {coordination} · free', '')]
         for code, label in choices:
@@ -3531,6 +3542,8 @@ def create_tab(ctx):
         key = submit_constraint_dd.value or ''
         if key == 'poly':
             state['poly_applied'] = None
+            state['poly_metal'] = None
+            state['poly_assignment'] = None
             state['poly_quiet'] = True
             try:
                 submit_poly_dd.value = ''
@@ -3552,6 +3565,10 @@ def create_tab(ctx):
             return
         state['poly_applied'] = submit_poly_dd.value or None
         state['poly_assignment'] = None
+        if state['poly_applied']:
+            state['poly_metal'] = state.get('poly_offer_metal')
+        else:
+            state['poly_metal'] = None
         if state['poly_applied'] and state.get('poly_metal') is not None:
             try:
                 from .molecule_forcefield import polyhedron_assignment
@@ -3646,6 +3663,16 @@ def create_tab(ctx):
                 header = f'{old_lines[0]}\n{old_lines[1]}\n'
             except ValueError:
                 pass
+        # A drag has just finished. If a polyhedron is being held, work out
+        # again which donor is now nearest which vertex: dragging a ligand
+        # towards another position and having the field haul it straight back
+        # is not an exchange, it is a fight. Recomputing here means the
+        # polyhedron accepts the ligand where it has been put and pulls it the
+        # rest of the way onto the vertex it is now closest to.
+        if state.get('poly_applied') and state.get('poly_metal') is not None:
+            state['poly_assignment'] = None
+            _schedule_ui_update(_enable_live_forcefield)
+
         payload = header + coord_body
         # The guard is cleared by update_molecule_view, which traitlets only
         # calls when the value actually changes. Dragging an atom out and back,

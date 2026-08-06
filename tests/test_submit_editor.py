@@ -627,3 +627,43 @@ def test_two_ligands_can_be_exchanged_on_the_polyhedron():
     refresh = source.split('def _refresh_swap')[1].split('\n    def ')[0]
     assert 'len(indices) == 2' in refresh
     assert 'all(i in assignment for i in indices)' in refresh
+
+
+def test_a_held_polyhedron_survives_selecting_something_else():
+    """The offer follows the selection; what has been applied must not.
+    Clearing the metal whenever the selection was not a single metal meant
+    that picking three ligand atoms to hold an angle silently threw the
+    polyhedron away, and the export that followed went out without it."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    handler = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
+    assert "state['poly_offer_metal'] = None" in handler
+    assert "state['poly_metal'] = None" not in handler
+    # Applying a geometry is what binds it to a metal, and removing it unbinds.
+    changed = source.split('def on_submit_poly_changed')[1].split('\n    def ')[0]
+    assert "state['poly_metal'] = state.get('poly_offer_metal')" in changed
+    drop = source.split('def on_submit_constraint_del')[1].split('\n    def ')[0]
+    assert "state['poly_metal'] = None" in drop
+    # A different structure makes every stored index meaningless.
+    view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
+    assert "state['constraints'] = []" in view
+    assert "state['poly_applied'] = None" in view
+
+
+def test_dragging_a_ligand_hands_it_the_vertex_it_lands_on():
+    """Dragging a ligand towards another position and having the field haul it
+    straight back is not an exchange, it is a fight. The assignment is worked
+    out again when the drag ends, so the polyhedron accepts the ligand where it
+    was put.
+
+    Measured on a Ni complex: dragging two ligands onto each other's side
+    exchanges their vertices (2 to 0 and 0 to 2), and after relaxing the moved
+    ligand sits 0.38 A from where it was dropped rather than the 2.60 A back at
+    its old place."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    sync = source.split('def on_submit_manip_sync')[1].split('\n    def ')[0]
+    assert "state['poly_assignment'] = None" in sync
+    assert '_schedule_ui_update(_enable_live_forcefield)' in sync
