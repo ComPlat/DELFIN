@@ -23,6 +23,51 @@ def _isolate_subagent_state(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_wide_memory(tmp_path, monkeypatch):
+    """Keep the user-scoped stores out of the real ``~/.delfin``.
+
+    ``tmp_path`` bounds the PROJECT store, because that one is derived from
+    the repo root a test passes in. The two USER-scoped stores are not: they
+    resolve through ``Path.home()`` and ignore whatever root the test used.
+
+    Both were observed writing into the real home directory during an
+    ordinary run. The office registry had collected 178 entries, 176 of them
+    reprs of mock objects a test had passed where a path was expected — and
+    that registry is one of the carriers of the folder lock, so its contents
+    decide which directory counts as an office workspace. The repository
+    checkout itself was among them, which made a full-suite run treat DELFIN
+    as an office folder and fail one memory test that passed in isolation.
+
+    The redirect steps aside for a test that has pointed ``Path.home`` at a
+    directory of its own: those tests were already isolated, by the more
+    direct route, and silently overriding them would move the store out from
+    under their assertions.
+    """
+    import pathlib
+
+    from delfin.agent import memory_store as ms
+    real_home = pathlib.Path.home()
+    home = tmp_path / "user_home_delfin"
+
+    def _redirected(name: str) -> pathlib.Path:
+        current = pathlib.Path.home()
+        if current != real_home:
+            return current / ".delfin" / name
+        return home / name
+
+    monkeypatch.setattr(
+        ms, "_delfin_global_memory_dir", lambda: _redirected("memory"))
+    monkeypatch.setattr(
+        ms, "_office_ws_file",
+        lambda: _redirected("office_workspaces.json"))
+    # The registry caches its parsed contents in a module global, so a stale
+    # cache from an earlier test would outlive the redirect.
+    monkeypatch.setattr(ms, "_office_ws_cache", None)
+    yield
+    monkeypatch.setattr(ms, "_office_ws_cache", None)
+
+
 # Secret API keys delfin resolves, each from the env OR ~/.delfin/credentials.json.
 _SECRET_KEY_VARS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
