@@ -2153,6 +2153,94 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return out.length ? out : atoms.map(function(_a, i) { return i; });
     }
 
+    // Put the structure back on the orientation it had before a held value was
+    // enforced. Enforcing moves a fragment while the field pushes back, and
+    // that cycle is not reciprocal: it feeds net rotation and translation into
+    // the molecule, which is why a held value made it circle. Fitting on every
+    // atom means the stationary majority decides the frame, so the intended
+    // internal change survives and only the spurious rigid-body part is taken
+    // out.
+    //
+    // Horn's quaternion method: build the 4x4 key matrix from the correlation
+    // of the two coordinate sets, take its largest eigenvector by Jacobi
+    // sweeps, and read the rotation off that. Avoids needing a 3x3 SVD.
+    function largestEigenvector4(a) {
+        var v = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]];
+        var m = [a[0].slice(), a[1].slice(), a[2].slice(), a[3].slice()];
+        for (var sweep = 0; sweep < 24; sweep++) {
+            var off = 0, p = 0, q = 1;
+            for (var i = 0; i < 4; i++) {
+                for (var j = i + 1; j < 4; j++) {
+                    var mag = Math.abs(m[i][j]);
+                    off += mag * mag;
+                    if (mag > Math.abs(m[p][q])) { p = i; q = j; }
+                }
+            }
+            if (off < 1e-22) break;
+            var theta = (m[q][q] - m[p][p]) / (2 * m[p][q]);
+            var t = (theta >= 0 ? 1 : -1) /
+                    (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+            var c = 1 / Math.sqrt(t * t + 1), sN = t * c;
+            for (var k = 0; k < 4; k++) {
+                var mkp = m[k][p], mkq = m[k][q];
+                m[k][p] = c * mkp - sN * mkq;
+                m[k][q] = sN * mkp + c * mkq;
+            }
+            for (k = 0; k < 4; k++) {
+                var mpk = m[p][k], mqk = m[q][k];
+                m[p][k] = c * mpk - sN * mqk;
+                m[q][k] = sN * mpk + c * mqk;
+                var vkp = v[k][p], vkq = v[k][q];
+                v[k][p] = c * vkp - sN * vkq;
+                v[k][q] = sN * vkp + c * vkq;
+            }
+        }
+        var best = 0;
+        for (var e = 1; e < 4; e++) if (m[e][e] > m[best][best]) best = e;
+        return [v[0][best], v[1][best], v[2][best], v[3][best]];
+    }
+
+    function superimposeOnto(atoms, before) {
+        var n = atoms.length;
+        if (!n || !before || before.length < 3 * n) return false;
+        var cqx = 0, cqy = 0, cqz = 0, cpx = 0, cpy = 0, cpz = 0, i;
+        for (i = 0; i < n; i++) {
+            cqx += atoms[i].x; cqy += atoms[i].y; cqz += atoms[i].z;
+            cpx += before[3*i]; cpy += before[3*i+1]; cpz += before[3*i+2];
+        }
+        cqx /= n; cqy /= n; cqz /= n; cpx /= n; cpy /= n; cpz /= n;
+        var xx=0,xy=0,xz=0,yx=0,yy=0,yz=0,zx=0,zy=0,zz=0;
+        for (i = 0; i < n; i++) {
+            var qx = atoms[i].x - cqx, qy = atoms[i].y - cqy, qz = atoms[i].z - cqz;
+            var px = before[3*i] - cpx, py = before[3*i+1] - cpy,
+                pz = before[3*i+2] - cpz;
+            xx += qx*px; xy += qx*py; xz += qx*pz;
+            yx += qy*px; yy += qy*py; yz += qy*pz;
+            zx += qz*px; zy += qz*py; zz += qz*pz;
+        }
+        var key = [
+            [xx+yy+zz,  yz-zy,      zx-xz,      xy-yx],
+            [yz-zy,     xx-yy-zz,   xy+yx,      zx+xz],
+            [zx-xz,     xy+yx,     -xx+yy-zz,   yz+zy],
+            [xy-yx,     zx+xz,      yz+zy,     -xx-yy+zz]
+        ];
+        var qv = largestEigenvector4(key);
+        var w = qv[0], x = qv[1], y = qv[2], z = qv[3];
+        var norm = Math.sqrt(w*w + x*x + y*y + z*z);
+        if (!(norm > 1e-12)) return false;
+        w /= norm; x /= norm; y /= norm; z /= norm;
+        var r00 = w*w + x*x - y*y - z*z, r01 = 2*(x*y - w*z), r02 = 2*(x*z + w*y);
+        var r10 = 2*(x*y + w*z), r11 = w*w - x*x + y*y - z*z, r12 = 2*(y*z - w*x);
+        var r20 = 2*(x*z - w*y), r21 = 2*(y*z + w*x), r22 = w*w - x*x - y*y + z*z;
+        for (i = 0; i < n; i++) {
+            var ax = atoms[i].x - cqx, ay = atoms[i].y - cqy, az = atoms[i].z - cqz;
+            atoms[i].x = r00*ax + r01*ay + r02*az + cpx;
+            atoms[i].y = r10*ax + r11*ay + r12*az + cpy;
+            atoms[i].z = r20*ax + r21*ay + r22*az + cpz;
+        }
+        return true;
+    }
+
     function applyFixedInternals(scopeKey) {
         var state = getState(scopeKey);
         var list = state.fixedInternals || [];
@@ -2160,8 +2248,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         if (!viewer) return false;
         var atoms = getAtoms(viewer);
-        var anchors = heavyIndices(atoms);
-        var before = centroidOf(atoms, anchors);
+        var before = new Float64Array(3 * atoms.length);
+        for (var b = 0; b < atoms.length; b++) {
+            before[3*b] = atoms[b].x;
+            before[3*b+1] = atoms[b].y;
+            before[3*b+2] = atoms[b].z;
+        }
         var touched = false;
         for (var i = 0; i < list.length; i++) {
             var entry = list[i];
@@ -2182,19 +2274,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             );
             if (result && result.ok) touched = true;
         }
-        if (touched && before) {
-            var after = centroidOf(atoms, anchors);
-            if (after) {
-                var dx = before.x - after.x,
-                    dy = before.y - after.y,
-                    dz = before.z - after.z;
-                if (dx || dy || dz) {
-                    for (var t = 0; t < atoms.length; t++) {
-                        atoms[t].x += dx; atoms[t].y += dy; atoms[t].z += dz;
-                    }
-                }
-            }
-        }
+        if (touched) superimposeOnto(atoms, before);
         return touched;
     }
 
