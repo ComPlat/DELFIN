@@ -743,6 +743,17 @@ def create_tab(ctx):
         layout=widgets.Layout(width='200px'),
         disabled=True,
     )
+    submit_settle_btn = widgets.ToggleButton(
+        value=True, description='Settle', icon='level-down',
+        button_style='info',
+        tooltip=(
+            'When you let go of an atom, let the structure relax around its '
+            'new position instead of keeping the strain of the drag. Switch '
+            'off to leave atoms exactly where you put them.'
+        ),
+        layout=widgets.Layout(width='92px', height='30px'),
+        disabled=True,
+    )
     submit_internal_group = widgets.HBox(
         [submit_internal_label, submit_internal_value, submit_internal_btn],
         layout=widgets.Layout(
@@ -757,7 +768,7 @@ def create_tab(ctx):
             submit_select_btn, submit_manip_btn,
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
-            submit_optimize_btn, submit_relax_btn,
+            submit_optimize_btn, submit_relax_btn, submit_settle_btn,
             submit_internal_group,
             submit_manip_status, submit_manip_sync,
         ],
@@ -1049,6 +1060,7 @@ def create_tab(ctx):
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
+        submit_settle_btn.disabled = not enabled
         submit_ff_dd.disabled = not enabled
         submit_optimize_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
@@ -3206,6 +3218,9 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{json.dumps(payload)});'
             'window.__delfinSubmitManip.setOptimizerStrength('
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
+            'window.__delfinSubmitManip.setSettleOnRelease('
+            f'{json.dumps(submit_scope_id)},'
+            f'{"true" if submit_settle_btn.value else "false"});'
             '}'
         )
         # Terms derived from the input geometry rather than real UFF typing --
@@ -3323,6 +3338,18 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{float(submit_internal_value.value)!r});'
         )
 
+    def on_submit_settle_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_settle_btn.value)
+        submit_settle_btn.button_style = 'info' if active else ''
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setSettleOnRelease('
+            f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
+        )
+
     def on_submit_strength_changed(change):
         if change.get('name') != 'value':
             return
@@ -3413,6 +3440,7 @@ def create_tab(ctx):
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
+    submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')

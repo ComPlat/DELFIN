@@ -1107,6 +1107,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 mode: 'off',
                 scopeKey: scopeKey,
                 ffActive: false,
+                settleOnRelease: true,
                 ffFrameMs: 16,
                 picks: [],
                 pivot: null,
@@ -2174,12 +2175,23 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
         try { window.__delfinFF.release(scopeKey); } catch (e) {}
+        // Off by choice: placing an atom somewhere and having it stay there is
+        // sometimes exactly what is wanted, even though the geometry is then
+        // strained.
+        if (state.settleOnRelease === false) { pushXyzToPython(scopeKey); return; }
         // Letting go frees the atom that was held, and the structure settles
         // around its new position instead of keeping the strain the drag put
         // in. Without this the geometry that reaches the coordinate box -- and
         // from there the calculation -- is wherever the cursor happened to
         // stop: measured 176 kcal/mol above what settling gives.
         settleAfterDrag(scopeKey);
+    }
+
+    function setSettleOnRelease(scopeKey, enabled) {
+        var state = getState(scopeKey);
+        state.settleOnRelease = !!enabled;
+        if (!state.settleOnRelease) stopSettling(scopeKey);
+        return state.settleOnRelease;
     }
 
     function stopSettling(scopeKey) {
@@ -2847,6 +2859,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         readInternal: readInternal,
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
+        setSettleOnRelease: setSettleOnRelease,
         startAutoOptimize: startAutoOptimize,
         stopAutoOptimize: stopAutoOptimize,
         autoOptimizeRunning: autoOptimizeRunning

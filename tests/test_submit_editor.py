@@ -476,3 +476,29 @@ def test_the_viewer_shows_the_energy():
     assert 'pointer-events:none' in ensure
     # A re-render replaces the viewer element, so the badge must be forgotten.
     assert 'state.energyBadge = null;' in _body('onViewerReady')
+
+
+def test_settling_on_release_can_be_switched_off():
+    """Placing an atom somewhere and having it stay there is sometimes exactly
+    what is wanted, strain and all. Measured on cholesterol: with the switch
+    on, 1539 kcal/mol at release settles to 126.5; with it off, 1598.6 stays
+    1598.6."""
+    end = _body('ffEndDrag')
+    assert 'state.settleOnRelease === false' in end
+    # Switching off still pushes the geometry the user placed.
+    assert end.index('settleOnRelease === false') < end.index('settleAfterDrag')
+    assert 'pushXyzToPython(scopeKey); return;' in end
+
+    setter = _body('setSettleOnRelease')
+    assert 'stopSettling(scopeKey)' in setter
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_settle_btn' in source
+    assert 'setSettleOnRelease' in source
+    # On by default: it is what keeps a submitted geometry sane.
+    settle = source.split('submit_settle_btn = widgets.ToggleButton')[1].split(')\n')[0]
+    assert 'value=True' in settle
+    # And the choice survives a re-assignment of the parameters.
+    assert source.count('setSettleOnRelease') >= 2
