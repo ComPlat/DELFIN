@@ -1,5 +1,6 @@
 """3D molecule visualisation helpers using py3Dmol."""
 
+import hashlib
 import json
 
 import py3Dmol
@@ -1089,7 +1090,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // previous one down first -- the window-level handlers are per-scope
     // closures and would otherwise accumulate, which is exactly the class of
     // bug that killed the editor's own drag handlers once already.
-    var MANIP_VERSION = 1;
+    var MANIP_VERSION = '__DELFIN_MANIP_VERSION__';
     if (window.__delfinSubmitManipVersion === MANIP_VERSION) return;
     if (typeof window.__delfinSubmitManipTeardown === 'function') {
         try { window.__delfinSubmitManipTeardown(); } catch (e) {}
@@ -3301,7 +3302,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (!viewer || !state.canvas) return null;
         var rect = state.canvas.getBoundingClientRect();
         var basis = getCameraBasis(viewer);
-        var scale = getPixelToWorld(viewer, state.canvas) || 0.03;
         var centre = anchor;
         if (!centre) {
             var atoms = getAtoms(viewer);
@@ -3317,12 +3317,39 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }
         var here = projectWithDepth(viewer, state.canvas, centre);
-        var px = (clientX - rect.left) - (here ? here.x : rect.width / 2);
-        var py = (clientY - rect.top) - (here ? here.y : rect.height / 2);
+        if (!here) return null;
+
+        // Calibrate against the projection itself rather than working the
+        // scale out from the camera. getPixelToWorld is derived from the
+        // field of view and the camera distance, and it came out 1.254 times
+        // too large here -- the model group carries a scale of its own, so an
+        // atom placed by that arithmetic landed a quarter of the way further
+        // out than the cursor, and further the further from the centre it
+        // was. Projecting one unit along each screen axis measures whatever
+        // the transform actually is, including anything analysis would miss.
+        var probe = function(direction) {
+            var moved = projectWithDepth(viewer, state.canvas, {
+                x: centre.x + direction.x,
+                y: centre.y + direction.y,
+                z: centre.z + direction.z
+            });
+            return moved ? {x: moved.x - here.x, y: moved.y - here.y} : null;
+        };
+        var alongRight = probe(basis.right);
+        var alongUp = probe(basis.up);
+        if (!alongRight || !alongUp) return null;
+        var det = alongRight.x * alongUp.y - alongRight.y * alongUp.x;
+        if (!isFinite(det) || Math.abs(det) < 1e-9) return null;
+
+        var px = (clientX - rect.left) - here.x;
+        var py = (clientY - rect.top) - here.y;
+        // Solve px,py = a * alongRight + b * alongUp for the two world steps.
+        var a = (px * alongUp.y - py * alongUp.x) / det;
+        var b = (alongRight.x * py - alongRight.y * px) / det;
         return {
-            x: centre.x + basis.right.x * px * scale - basis.up.x * py * scale,
-            y: centre.y + basis.right.y * px * scale - basis.up.y * py * scale,
-            z: centre.z + basis.right.z * px * scale - basis.up.z * py * scale
+            x: centre.x + basis.right.x * a + basis.up.x * b,
+            y: centre.y + basis.right.y * a + basis.up.y * b,
+            z: centre.z + basis.right.z * a + basis.up.z * b
         };
     }
 
@@ -3784,8 +3811,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
 
 def submit_manip_bootstrap_js():
-    """Return one-time JS that installs window.__delfinSubmitManip helpers."""
-    return SUBMIT_MANIP_BOOTSTRAP_JS
+    """Return the JS that installs ``window.__delfinSubmitManip``.
+
+    The version stamped into it is a hash of the script itself.  It used to be
+    a number to bump by hand, and it was not bumped once across a day of
+    changes -- so an open dashboard kept running the editor it had loaded and
+    every fix shipped in it was invisible, which is the very thing the version
+    was added to prevent.  Deriving it from the content cannot be forgotten:
+    any change to this script is a new version by construction.
+    """
+    stamp = hashlib.sha256(SUBMIT_MANIP_BOOTSTRAP_JS.encode('utf-8')).hexdigest()[:12]
+    return SUBMIT_MANIP_BOOTSTRAP_JS.replace('__DELFIN_MANIP_VERSION__', stamp)
 
 
 # Shared fullscreen support for the ORCA Builder, Calculations Browser, and

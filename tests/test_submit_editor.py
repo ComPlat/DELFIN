@@ -1377,3 +1377,41 @@ def test_a_double_bond_is_drawn_as_two_sticks():
     assert 'if int(order) > 1' in push
     apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
     assert '_push_bond_orders(structure.bonds)' in apply_
+
+
+def test_a_placed_atom_lands_under_the_cursor():
+    """It landed a quarter of the way further out than the click, and further
+    the further from the centre it was -- a clean scale error of 1.254.
+
+    getPixelToWorld derives its scale from the field of view and the camera
+    distance, and the model group carries a scale of its own on top of that.
+    So the transform is measured instead of worked out: projecting one world
+    unit along each screen axis says what it actually is, whatever else is in
+    the chain. Measured in a browser at five points across the canvas, each
+    now lands 0.0 px from where it was clicked."""
+    world = _body('screenToWorld')
+    assert 'getPixelToWorld(' not in world      # named only in the comment
+    assert 'var alongRight = probe(basis.right);' in world
+    assert 'var alongUp = probe(basis.up);' in world
+    # A 2x2 solve, guarded against a degenerate projection.
+    assert 'Math.abs(det) < 1e-9' in world
+
+
+def test_the_editor_version_is_its_own_content():
+    """It was a number to bump by hand, and it was not bumped once across a
+    day of changes -- so an open dashboard kept running the editor it had
+    loaded and every fix shipped in it was invisible, which is the very thing
+    the version was added to prevent."""
+    import re
+
+    from delfin.dashboard.molecule_viewer import SUBMIT_MANIP_BOOTSTRAP_JS
+
+    assert "var MANIP_VERSION = '__DELFIN_MANIP_VERSION__';" in SUBMIT_MANIP_BOOTSTRAP_JS
+    stamped = submit_manip_bootstrap_js()
+    assert '__DELFIN_MANIP_VERSION__' not in stamped
+    match = re.search(r"var MANIP_VERSION = '([0-9a-f]{12})';", stamped)
+    assert match, 'the version is not stamped in'
+    # And it moves when the script does.
+    import hashlib
+    assert match.group(1) == hashlib.sha256(
+        SUBMIT_MANIP_BOOTSTRAP_JS.encode('utf-8')).hexdigest()[:12]
