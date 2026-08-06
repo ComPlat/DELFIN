@@ -239,3 +239,33 @@ def test_tapping_an_atom_fills_a_valence_that_is_short():
     assert _formula(structure) == {'C': 1, 'H': 4}
     # And a second tap on a full one changes nothing.
     assert B.set_element(structure, 0, 'C') is False
+
+
+def test_growing_does_not_leave_an_atom_inside_a_hydrogen():
+    """The hydrogens already on the anchor stayed where the old shape put
+    them, so the new atom landed among them: growing straight at one left two
+    atoms 0.45 A apart, which the renderer drew as a second bond to that
+    hydrogen -- the doubly bonded hydrogen that was reported.
+
+    Both ends are rearranged after the bond is made now. Aimed at each of
+    methane's four hydrogens in turn, the closest contact is 1.75 A."""
+    import itertools
+
+    for which in range(4):
+        structure = _empty()
+        B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+        hydrogen = structure.hydrogens_on(0)[which]
+        aim = tuple(structure.coords[hydrogen][k] - structure.coords[0][k]
+                    for k in range(3))
+        B.grow_from(structure, 0, 'C', direction=aim)
+
+        closest = min(
+            math.dist(structure.coords[i], structure.coords[j])
+            for i, j in itertools.combinations(range(len(structure)), 2)
+            if not structure.order(i, j)
+        )
+        assert closest > 1.5, (which, closest)
+        perceived = mff.perceive_molecule(B.to_xyz(structure))
+        adjacency = perceived.neighbours()
+        assert not [i for i, s in enumerate(perceived.symbols)
+                    if s == 'H' and len(adjacency[i]) != 1], which

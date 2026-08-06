@@ -430,7 +430,12 @@ def place_atom(structure: Structure, element: str, position: Sequence[float],
         structure.set_bond(int(bonded_to), index, max(1, int(order)))
         touched.append(int(bonded_to))
     mapping = adjust_hydrogens(structure, touched)
-    return mapping.get(index, index) if mapping else index
+    if mapping:
+        touched = [mapping.get(i, i) for i in touched if i in mapping]
+        index = mapping.get(index, index)
+    for atom in touched:
+        rearrange_hydrogens(structure, atom)
+    return index
 
 
 def grow_from(structure: Structure, anchor: int, element: str,
@@ -465,7 +470,15 @@ def grow_from(structure: Structure, anchor: int, element: str,
     index = structure.add_atom(element, position)
     structure.set_bond(anchor, index, max(1, int(order)))
     mapping = adjust_hydrogens(structure, [anchor, index])
-    return mapping.get(index, index) if mapping else index
+    if mapping:
+        anchor, index = mapping.get(anchor, anchor), mapping.get(index, index)
+    # Both ends, or the hydrogens that were already on the anchor stay where
+    # the old shape put them and the new atom lands among them: growing
+    # straight at one of them left two atoms 0.45 A apart, which the renderer
+    # then drew as a second bond to that hydrogen.
+    rearrange_hydrogens(structure, anchor)
+    rearrange_hydrogens(structure, index)
+    return index
 
 
 def set_element(structure: Structure, index: int, element: str) -> bool:
