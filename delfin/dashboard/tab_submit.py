@@ -660,6 +660,31 @@ def create_tab(ctx):
         layout=widgets.Layout(width='112px', height='30px'),
         disabled=True,
     )
+    from .molecule_builder import DRAW_ELEMENTS
+
+    submit_draw_btn = widgets.ToggleButton(
+        value=False, description='Draw', icon='pencil',
+        button_style='',
+        tooltip=(
+            'Click empty space to place an atom of the chosen element, drag '
+            'from an atom to grow a new one bonded to it, drag onto another '
+            'atom to bond them at the chosen order, tap an atom to change its '
+            'element, and press Delete to remove the selection. Free valences '
+            'are filled with hydrogen. The right button still turns the view.'
+        ),
+        layout=widgets.Layout(width='88px', height='30px'),
+        disabled=True,
+    )
+    submit_element_dd = widgets.Dropdown(
+        options=list(DRAW_ELEMENTS), value='C',
+        layout=widgets.Layout(width='78px', display='none'),
+        disabled=True,
+    )
+    submit_order_dd = widgets.Dropdown(
+        options=[('single', 1), ('double', 2), ('triple', 3)], value=1,
+        layout=widgets.Layout(width='96px', display='none'),
+        disabled=True,
+    )
     submit_manip_clear_btn = widgets.Button(
         description='Clear', button_style='warning',
         tooltip='Clear selection & pivot',
@@ -859,7 +884,8 @@ def create_tab(ctx):
     submit_manip_toolbar = widgets.HBox(
         [
             submit_fullscreen_btn,
-            submit_select_btn, submit_manip_btn,
+            submit_select_btn, submit_manip_btn, submit_draw_btn,
+            submit_element_dd, submit_order_dd,
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
@@ -1156,6 +1182,9 @@ def create_tab(ctx):
         submit_fullscreen_btn.disabled = not enabled
         submit_select_btn.disabled = not enabled
         submit_manip_btn.disabled = not enabled
+        submit_draw_btn.disabled = not enabled
+        submit_element_dd.disabled = not enabled
+        submit_order_dd.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
@@ -3240,13 +3269,24 @@ def create_tab(ctx):
             f'{json.dumps(mode)});'
         )
 
+    def _mode_buttons_mutex(keep):
+        """Only one mode at a time; the others switch themselves off."""
+        for button in (submit_select_btn, submit_manip_btn, submit_draw_btn):
+            if button is not keep and button.value:
+                button.value = False
+
+    def _refresh_draw_controls():
+        drawing = bool(submit_draw_btn.value)
+        for widget in (submit_element_dd, submit_order_dd):
+            widget.layout.display = '' if drawing else 'none'
+
     def on_submit_select_toggle(change):
         if change.get('name') != 'value':
             return
         active = bool(submit_select_btn.value)
         submit_select_btn.button_style = 'info' if active else ''
-        if active and submit_manip_btn.value:
-            submit_manip_btn.value = False  # mutex (its observer will send 'off')
+        if active:
+            _mode_buttons_mutex(submit_select_btn)
         _apply_manip_mode_js('select' if active else 'off')
 
     def on_submit_manip_toggle(change):
@@ -3254,9 +3294,33 @@ def create_tab(ctx):
             return
         active = bool(submit_manip_btn.value)
         submit_manip_btn.button_style = 'info' if active else ''
-        if active and submit_select_btn.value:
-            submit_select_btn.value = False  # mutex
+        if active:
+            _mode_buttons_mutex(submit_manip_btn)
         _apply_manip_mode_js('manipulate' if active else 'off')
+
+    def on_submit_draw_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_draw_btn.value)
+        submit_draw_btn.button_style = 'info' if active else ''
+        if active:
+            _mode_buttons_mutex(submit_draw_btn)
+        _refresh_draw_controls()
+        _apply_manip_mode_js('draw' if active else 'off')
+        if active:
+            on_submit_draw_choice(None)
+
+    def on_submit_draw_choice(_change=None):
+        """Hand the element and bond order the browser draws with."""
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip){'
+            'window.__delfinSubmitManip.setDrawElement('
+            f'{json.dumps(submit_scope_id)},{json.dumps(submit_element_dd.value)});'
+            'window.__delfinSubmitManip.setDrawOrder('
+            f'{json.dumps(submit_scope_id)},{int(submit_order_dd.value)});'
+            '}'
+        )
 
     def _set_ff_notes(notes):
         """Show what the force field had to approximate, under the viewer."""
@@ -3885,22 +3949,114 @@ def create_tab(ctx):
         _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.')
         _clear_selection()
 
+    def _apply_structure(structure, note):
+        """Put an edited structure back and let the tab rebuild around it.
+
+        The coordinate box is the tab's single source of truth, so writing to
+        it re-renders the viewer and re-perceives everything. What does *not*
+        survive that is the bond orders: perception reads them off the
+        geometry and does not get them back -- ethene built here came back as
+        a single bond at 1.514 A. So the edited topology is re-seeded as the
+        hand corrections it is, which is exactly what it is: the user built
+        this, and their bonds outrank a distance table until a different
+        structure is loaded.
+        """
+        from .molecule_builder import to_xyz
+
+        xyz = to_xyz(structure, note)
+        lines = [line for line in xyz.splitlines()[2:] if line.strip()]
+        coords_widget.value = f'{len(lines)}\n{note}\n' + '\n'.join(lines)
+        # After update_molecule_view, which clears them.
+        state['bond_edits'] = {
+            (int(i), int(j)): int(order)
+            for (i, j), order in structure.bonds.items()
+        }
+        state['perceived'] = None
+        state['perceived_for'] = None
+        _set_mol_status(note)
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+
+    def _structure_now():
+        from .molecule_builder import structure_from_xyz
+
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            return None
+        return structure_from_xyz(xyz, state.get('bond_edits') or {})
+
     def on_submit_cmd(change):
-        """Carry out a shortcut the browser cannot: it changes the topology.
+        """Carry out a gesture the browser cannot finish on its own.
 
         The value is ``verb:serial:payload``; the serial only exists to make
-        the same command twice in a row read as two changes.
+        the same command twice in a row read as two changes. Placing an atom
+        is cheap, but how many hydrogens it needs and where they go is decided
+        here, where RDKit's valences and covalent radii are.
         """
         if change.get('name') != 'value':
             return
         parts = (submit_cmd_sync.value or '').strip().split(':')
-        if len(parts) != 3 or parts[0] != 'unbond':
+        if len(parts) != 3:
             return
-        indices = [int(p) for p in parts[2].split(',') if p.strip().isdigit()]
-        if len(indices) != 2:
+        verb, payload = parts[0], parts[2]
+
+        if verb == 'unbond':
+            indices = [int(p) for p in payload.split(',') if p.strip().isdigit()]
+            if len(indices) == 2:
+                state['picked'] = sorted(indices)
+                _edit_bond(False)
             return
-        state['picked'] = sorted(indices)
-        _edit_bond(False)
+
+        from .molecule_builder import (
+            delete_atoms, grow_from, normalise_element, place_atom,
+            set_bond_order, set_element,
+        )
+
+        structure = _structure_now()
+        if structure is None:
+            _set_mol_status('Load a structure first.')
+            return
+        fields = payload.split(',')
+        try:
+            if verb == 'addatom' and len(fields) == 4:
+                element = normalise_element(fields[0])
+                if element is None:
+                    _set_mol_status(f'{fields[0]} is not an element.')
+                    return
+                place_atom(structure, element,
+                           [float(v) for v in fields[1:4]])
+                _apply_structure(structure, f'Placed {element}.')
+            elif verb == 'grow' and len(fields) == 6:
+                element = normalise_element(fields[1])
+                if element is None:
+                    _set_mol_status(f'{fields[1]} is not an element.')
+                    return
+                grow_from(structure, int(fields[0]), element,
+                          order=int(fields[2]),
+                          direction=[float(v) for v in fields[3:6]])
+                _apply_structure(structure, f'Grew {element}.')
+            elif verb == 'setelement' and len(fields) == 2:
+                element = normalise_element(fields[1])
+                if element is None:
+                    _set_mol_status(f'{fields[1]} is not an element.')
+                    return
+                index = int(fields[0])
+                was = structure.symbols[index] if index < len(structure) else '?'
+                if set_element(structure, index, element):
+                    _apply_structure(structure, f'{was}{index} is now {element}.')
+            elif verb == 'bondorder' and len(fields) == 3:
+                first, second, order = (int(v) for v in fields)
+                if set_bond_order(structure, first, second, order):
+                    named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
+                    _apply_structure(
+                        structure, f'Bond {first}-{second} is now {named}.')
+            elif verb == 'delatoms':
+                doomed = [int(p) for p in fields if p.strip().lstrip('-').isdigit()]
+                gone = delete_atoms(structure, doomed)
+                if gone:
+                    _apply_structure(structure, f'Deleted {gone} atom(s).')
+        except Exception as exc:
+            _set_mol_status(f'That edit did not work: {exc}')
 
     def on_submit_bond(_button=None):
         _edit_bond(True)
@@ -4175,6 +4331,9 @@ def create_tab(ctx):
     submit_hyb_auto_btn.on_click(on_submit_hyb_auto)
     submit_poly_turn_btn.on_click(on_submit_poly_turn)
     submit_cmd_sync.observe(on_submit_cmd, names='value')
+    submit_draw_btn.observe(on_submit_draw_toggle, names='value')
+    submit_element_dd.observe(on_submit_draw_choice, names='value')
+    submit_order_dd.observe(on_submit_draw_choice, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')

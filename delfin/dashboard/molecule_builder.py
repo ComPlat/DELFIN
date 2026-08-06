@@ -69,9 +69,16 @@ def normalise_element(raw: Any) -> Optional[str]:
         return None
     symbol = text[0].upper() + text[1:].lower()
     if RDKIT_AVAILABLE:
+        # Quietly: RDKit's periodic table does not merely raise for a symbol
+        # it does not know, it prints a post-condition violation and a C++
+        # stack trace to stderr first, which in a notebook lands in the user's
+        # face for what is only a typo in a dropdown.
+        from .molecule_forcefield import _RDKitQuiet
+
         try:
-            if Chem.GetPeriodicTable().GetAtomicNumber(symbol) > 0:
-                return symbol
+            with _RDKitQuiet():
+                if Chem.GetPeriodicTable().GetAtomicNumber(symbol) > 0:
+                    return symbol
         except Exception:
             return None
         return None

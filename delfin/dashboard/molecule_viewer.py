@@ -2946,6 +2946,21 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var x = e.clientX - rect.left, y = e.clientY - rect.top;
             var atom = raycastAtom(scopeKey, e.clientX, e.clientY);
 
+            if (state.mode === 'draw') {
+                // The right button still belongs to the viewer, so the scene
+                // can be turned and panned without leaving the mode.
+                if (e.button !== 0) return;
+                e.preventDefault(); e.stopPropagation();
+                state.drag = {
+                    kind: 'draw',
+                    anchor: atom ? atom.serial : null,
+                    startX: e.clientX, startY: e.clientY,
+                    lastX: e.clientX, lastY: e.clientY,
+                    movedEnough: false
+                };
+                return;
+            }
+
             if (state.mode === 'manipulate') {
                 if (e.button === 2) {
                     // Pivot picking is off while the field runs -- the right
@@ -3094,6 +3109,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 if (d.movedEnough) {
                     pushXyzToPython(scopeKey, 'drag-end');
                 }
+            } else if (d.kind === 'draw') {
+                finishDraw(scopeKey, d, e.clientX, e.clientY);
             } else if (d.kind === 'maybe-rect') {
                 if (d.movedEnough) {
                     // Use client (viewport) coords for hit-test — robust to
@@ -3150,6 +3167,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             // on empty space is forwarded so the camera still turns.
             state.overlay.style.pointerEvents = 'auto';
             state.overlay.style.cursor = 'move';
+        } else if (state.mode === 'draw') {
+            // Every left press is a gesture, including one on empty space --
+            // that is where a new atom goes. The right button is forwarded, so
+            // the scene can still be turned without leaving the mode.
+            state.overlay.style.pointerEvents = 'auto';
+            state.overlay.style.cursor = 'crosshair';
         }
     }
 
@@ -3196,7 +3219,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
     function setMode(scopeKey, mode) {
         var state = getState(scopeKey);
-        state.mode = (mode === 'select' || mode === 'manipulate') ? mode : 'off';
+        state.mode = (mode === 'select' || mode === 'manipulate' || mode === 'draw')
+            ? mode : 'off';
         widenSlabForEditing(scopeKey, state.mode !== 'off');
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
@@ -3206,6 +3230,106 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         } else {
             detachClickable(scopeKey);
         }
+    }
+
+    // --- Draw mode ------------------------------------------------------
+    // What the browser contributes is where the user pointed; what an atom is
+    // and how many hydrogens it needs is decided in Python, where RDKit's
+    // valences and covalent radii are. So every gesture here ends as one
+    // command, and the structure comes back rendered.
+    function setDrawElement(scopeKey, element) {
+        var state = getState(scopeKey);
+        state.drawElement = String(element || 'C');
+        updateStatus(scopeKey);
+        return state.drawElement;
+    }
+    function setDrawOrder(scopeKey, order) {
+        var state = getState(scopeKey);
+        var value = parseInt(order, 10);
+        state.drawOrder = (value >= 1 && value <= 3) ? value : 1;
+        updateStatus(scopeKey);
+        return state.drawOrder;
+    }
+
+    // A world point under the cursor, in the plane through `anchor` (or the
+    // model's centre) that faces the camera. Depth cannot be read back from a
+    // click, so it is borrowed from something already in the scene -- which is
+    // what makes a placed atom land beside the molecule rather than behind it.
+    function screenToWorld(scopeKey, clientX, clientY, anchor) {
+        var viewer = getViewer(scopeKey);
+        var state = getState(scopeKey);
+        if (!viewer || !state.canvas) return null;
+        var rect = state.canvas.getBoundingClientRect();
+        var basis = getCameraBasis(viewer);
+        var scale = getPixelToWorld(viewer, state.canvas) || 0.03;
+        var centre = anchor;
+        if (!centre) {
+            var atoms = getAtoms(viewer);
+            if (atoms.length) {
+                var sx = 0, sy = 0, sz = 0;
+                for (var i = 0; i < atoms.length; i++) {
+                    sx += atoms[i].x; sy += atoms[i].y; sz += atoms[i].z;
+                }
+                centre = {x: sx / atoms.length, y: sy / atoms.length,
+                          z: sz / atoms.length};
+            } else {
+                centre = {x: 0, y: 0, z: 0};
+            }
+        }
+        var here = projectWithDepth(viewer, state.canvas, centre);
+        var px = (clientX - rect.left) - (here ? here.x : rect.width / 2);
+        var py = (clientY - rect.top) - (here ? here.y : rect.height / 2);
+        return {
+            x: centre.x + basis.right.x * px * scale - basis.up.x * py * scale,
+            y: centre.y + basis.right.y * px * scale - basis.up.y * py * scale,
+            z: centre.z + basis.right.z * px * scale - basis.up.z * py * scale
+        };
+    }
+
+    function finishDraw(scopeKey, drag, clientX, clientY) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return;
+        var element = state.drawElement || 'C';
+        var order = state.drawOrder || 1;
+        var target = raycastAtom(scopeKey, clientX, clientY);
+        var atoms = getAtoms(viewer);
+        var anchorAtom = drag.anchor != null
+            ? getAtomBySerial(viewer, drag.anchor) : null;
+
+        if (!anchorAtom) {
+            // Empty space: put an atom down where the cursor is.
+            var at = screenToWorld(scopeKey, clientX, clientY, null);
+            if (!at) return;
+            pushCommandToPython(scopeKey, 'addatom',
+                element + ',' + at.x.toFixed(4) + ',' + at.y.toFixed(4)
+                + ',' + at.z.toFixed(4));
+            return;
+        }
+        var anchorIndex = atoms.indexOf(anchorAtom);
+        if (anchorIndex < 0) return;
+        if (!drag.movedEnough) {
+            // A tap on an atom retypes it.
+            pushCommandToPython(scopeKey, 'setelement',
+                anchorIndex + ',' + element);
+            return;
+        }
+        if (target && target !== anchorAtom) {
+            // Dragged onto another atom: bond the two at the chosen order.
+            var other = atoms.indexOf(target);
+            if (other < 0) return;
+            pushCommandToPython(scopeKey, 'bondorder',
+                anchorIndex + ',' + other + ',' + order);
+            return;
+        }
+        // Dragged into space: grow a new atom that way.
+        var to = screenToWorld(scopeKey, clientX, clientY, anchorAtom);
+        if (!to) return;
+        var dx = to.x - anchorAtom.x, dy = to.y - anchorAtom.y,
+            dz = to.z - anchorAtom.z;
+        pushCommandToPython(scopeKey, 'grow',
+            anchorIndex + ',' + element + ',' + order + ','
+            + dx.toFixed(4) + ',' + dy.toFixed(4) + ',' + dz.toFixed(4));
     }
 
 
@@ -3333,12 +3457,27 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 var names = Object.keys(scopes);
                 for (var s = 0; s < names.length; s++) {
                     var scope = scopes[names[s]];
-                    if (!scope || (scope.mode !== 'select' && scope.mode !== 'manipulate')) {
+                    if (!scope || (scope.mode !== 'select'
+                            && scope.mode !== 'manipulate'
+                            && scope.mode !== 'draw')) {
                         continue;
                     }
-                    if (scope.picks.length !== 2) continue;
                     var view = getViewer(names[s]);
                     if (!view) continue;
+                    if (scope.mode === 'draw') {
+                        // In draw mode Delete removes atoms, which is what the
+                        // mode is for; elsewhere it removes the bond that is
+                        // selected, and the two readings would otherwise
+                        // compete for the same key on the same selection.
+                        if (!scope.picks.length) continue;
+                        var serials = scope.picks.map(function(p) { return p.serial; });
+                        var doomed = ffIndicesOf(view, serials);
+                        if (!doomed.length) continue;
+                        e.preventDefault();
+                        pushCommandToPython(names[s], 'delatoms', doomed.join(','));
+                        break;
+                    }
+                    if (scope.picks.length !== 2) continue;
                     var pair = ffIndicesOf(
                         view, [scope.picks[0].serial, scope.picks[1].serial]);
                     if (pair.length !== 2) continue;
@@ -3539,6 +3678,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     window.__delfinSubmitManip = {
         onViewerReady: onViewerReady,
         setMode: setMode,
+        setDrawElement: setDrawElement,
+        setDrawOrder: setDrawOrder,
         clear: clearPicks,
         clearSelection: clearSelection,
         undo: undo,

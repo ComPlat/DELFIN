@@ -1097,11 +1097,15 @@ def test_delete_removes_the_selected_bond_and_nothing_else():
     Delete while the caret is in a text field sends nothing either."""
     editor = EDITOR
     assert "key === 'Delete' || key === 'Backspace'" in editor
-    guard = editor.split("key === 'Delete' || key === 'Backspace'")[1][:1200]
+    guard = editor.split("key === 'Delete' || key === 'Backspace'")[1][:2200]
     assert 'typingInAField()' in guard
     assert 'scope.picks.length !== 2' in guard
     assert 'bondsOf(' in guard                      # only a bond that is there
     assert "pushCommandToPython(names[s], 'unbond'" in guard
+    # In draw mode the same key removes atoms, which is what that mode is for;
+    # the two readings would otherwise compete for one key on one selection.
+    assert "scope.mode === 'draw'" in guard
+    assert "pushCommandToPython(names[s], 'delatoms'" in guard
 
     push = _body('pushCommandToPython')
     assert '.submit-cmd-sync' in push
@@ -1115,7 +1119,7 @@ def test_delete_removes_the_selected_bond_and_nothing_else():
     assert "submit_cmd_sync.add_class('submit-cmd-sync')" in source
     assert 'submit_cmd_sync.observe(on_submit_cmd' in source
     handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
-    assert "parts[0] != 'unbond'" in handler
+    assert "if verb == 'unbond':" in handler
     assert '_edit_bond(False)' in handler
 
 
@@ -1226,3 +1230,44 @@ def test_turn_is_offered_only_where_the_vertices_differ():
     changed = source.split('def on_submit_poly_changed')[1].split('\n    def ')[0]
     assert "state['poly_arrangement_index'] = 0" in changed
     assert '_refresh_poly_turn()' in changed
+
+
+def test_draw_mode_hands_every_gesture_to_python():
+    """What the browser contributes is where the user pointed. How many
+    hydrogens an atom needs and where they go is decided in Python, where
+    RDKit's valences and covalent radii are -- so each gesture ends as one
+    command and the structure comes back rendered.
+
+    Driven through the real tab from methane: growing a carbon gives ethane,
+    retyping a hydrogen to nitrogen gives C2NH7, placing an oxygen adds a
+    water, raising the C-C bond to double drops two hydrogens, and deleting
+    the oxygen takes its own two with it. A nonsense index or element changes
+    nothing."""
+    assert "mode === 'draw'" in EDITOR
+    finish = _body('finishDraw')
+    # Tap an atom: retype it. Drag onto another: bond them. Drag into space:
+    # grow. Nothing under the press at all: place one where the cursor is.
+    for verb in ('setelement', 'bondorder', 'grow', 'addatom'):
+        assert f"'{verb}'" in finish, verb
+    assert 'drag.movedEnough' in finish
+
+    # Depth cannot be read back from a click, so it is borrowed from something
+    # already in the scene -- otherwise a placed atom lands behind the molecule.
+    world = _body('screenToWorld')
+    assert 'getCameraBasis' in world and 'getPixelToWorld' in world
+    assert 'projectWithDepth' in world
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_draw_btn' in source
+    assert 'submit_element_dd' in source and 'submit_order_dd' in source
+    handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
+    for verb in ('addatom', 'grow', 'setelement', 'bondorder', 'delatoms'):
+        assert f"'{verb}'" in handler, verb
+    # The edited topology is re-seeded, because perception reads bond orders
+    # off the geometry and does not get them back: ethene built by hand came
+    # back as a single bond at 1.514 A.
+    apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
+    assert "state['bond_edits'] = {" in apply_
+    assert 'coords_widget.value' in apply_
