@@ -427,3 +427,18 @@ def test_bonding_is_perceived_once_and_not_re_read_from_a_dragged_geometry():
     assert source.count('perceived=_perception_for(xyz)') >= 2
     # A genuinely different molecule must be perceived afresh.
     assert 'def _structure_fingerprint' in source
+
+
+def test_remembered_bonding_is_dropped_when_the_structure_really_changes():
+    """The element sequence cannot tell two constitutional isomers apart, so
+    the cache must not rest on it alone. Every genuine change — a paste, a
+    conversion, an isomer step, an optimisation result — comes through
+    update_molecule_view, and a drag does not: it takes the manip_inflight
+    branch, which is what keeps a dragged double bond a double bond."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
+    assert "state['perceived'] = None" in view
+    # It must sit after the inflight early return, or a drag would clear it.
+    assert view.index("state.get('manip_inflight')") < view.index("state['perceived'] = None")

@@ -1167,6 +1167,14 @@ def create_tab(ctx):
                     )
             state['manip_inflight'] = False
             return
+        # A genuinely new structure invalidates the remembered bonding. The
+        # element sequence alone cannot tell two constitutional isomers apart,
+        # and this is the path every real change comes through -- a paste, a
+        # conversion, an isomer step, an optimisation result. Drags do not
+        # reach here: they take the manip_inflight branch above, which is
+        # exactly what keeps a dragged double bond a double bond.
+        state['perceived'] = None
+        state['perceived_for'] = None
         state['smiles_task_id'] += 1
         _set_smiles_conversion_busy(False)
         # User manually edited coords -> clear isomer navigation and reset convert toggle
