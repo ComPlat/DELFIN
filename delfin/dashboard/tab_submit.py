@@ -745,6 +745,11 @@ def create_tab(ctx):
     )
     submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
     submit_pick_sync.add_class('submit-pick-sync')
+    # Keyboard shortcuts for things Python owns. Unbond is not a picture edit:
+    # it changes the topology the force field is built from, so the browser
+    # cannot carry it out alone and has to ask through here.
+    submit_cmd_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    submit_cmd_sync.add_class('submit-cmd-sync')
     submit_poly_dd = widgets.Dropdown(
         options=[('— polyhedron —', '')], value='',
         layout=widgets.Layout(width='190px', display='none'),
@@ -837,7 +842,7 @@ def create_tab(ctx):
             submit_poly_dd, submit_hyb_dd, submit_internal_group,
             submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
-            submit_pick_sync,
+            submit_pick_sync, submit_cmd_sync,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -3511,14 +3516,18 @@ def create_tab(ctx):
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
         options = None
         perceived = None
-        if xyz and len(indices) == 1:
+        if xyz and indices:
             # Perceive on demand. Waiting for the cache meant the offer only
             # appeared once the force field had been switched on at least
             # once -- tapping a metal before that did nothing at all, and said
             # nothing either.
             try:
-                from .molecule_forcefield import polyhedron_options
                 perceived = _perception_for(xyz)
+            except Exception:
+                perceived = None
+        if perceived is not None and len(indices) == 1:
+            try:
+                from .molecule_forcefield import polyhedron_options
                 options = polyhedron_options(perceived, indices[0])
             except Exception:
                 options = None
@@ -3568,34 +3577,46 @@ def create_tab(ctx):
         submit_poly_dd.layout.display = ''
 
     def _refresh_hybridisation(indices, perceived):
-        """Offer to overrule the hybridisation of a single picked atom.
+        """Offer to overrule the hybridisation of the picked atoms.
 
-        Only for main-group atoms: RDKit's UFF has no types for a metal at
-        all, so its bonds and angles come from the geometry either way and
-        forcing a hybridisation on it would change nothing.
+        Any number of them: a double bond that went unperceived usually cost
+        both of its carbons their type, and retyping a ring one atom at a time
+        is busywork. Metals are dropped from the selection rather than
+        blocking it -- RDKit's UFF has no types for one at all, so its bonds
+        and angles come from the geometry either way.
         """
-        index = indices[0] if len(indices) == 1 else None
-        if perceived is None or index is None or index in set(
-                perceived.metal_indices or ()):
+        metals = set(perceived.metal_indices or ()) if perceived else set()
+        chosen = [i for i in indices if i not in metals] if perceived else []
+        if not chosen:
             submit_hyb_dd.layout.display = 'none'
             submit_hyb_dd.disabled = True
-            state['hyb_offer_atom'] = None
+            state['hyb_offer_atoms'] = []
             return
 
         from .molecule_forcefield import (
             HYBRIDISATION_CHOICES, perceived_hybridisation_of,
         )
 
-        auto = perceived_hybridisation_of(perceived, index)
-        symbol = perceived.symbols[index]
-        entries = [(f'{symbol}{index} · {auto or "no type"} (automatic)', '')]
+        overrides = state.get('hyb_overrides') or {}
+        auto = {perceived_hybridisation_of(perceived, i) for i in chosen}
+        if len(chosen) == 1:
+            index = chosen[0]
+            head = (f'{perceived.symbols[index]}{index} · '
+                    f'{auto.pop() or "no type"} (automatic)')
+        else:
+            named = ''.join(sorted({perceived.symbols[i] for i in chosen}))
+            found = auto.pop() if len(auto) == 1 else 'mixed'
+            head = f'{len(chosen)} atoms ({named}) · {found or "no type"} (automatic)'
+        entries = [(head, '')]
         for name in HYBRIDISATION_CHOICES:
             entries.append((f'force {name}', name))
-        state['hyb_offer_atom'] = index
+        # Only a value they all already share can be shown as the current one.
+        held = {overrides.get(i, '') for i in chosen}
+        state['hyb_offer_atoms'] = chosen
         state['hyb_quiet'] = True
         try:
             submit_hyb_dd.options = entries
-            submit_hyb_dd.value = (state.get('hyb_overrides') or {}).get(index, '')
+            submit_hyb_dd.value = held.pop() if len(held) == 1 else ''
         finally:
             state['hyb_quiet'] = False
         submit_hyb_dd.disabled = False
@@ -3604,15 +3625,17 @@ def create_tab(ctx):
     def on_submit_hyb_changed(change):
         if change.get('name') != 'value' or state.get('hyb_quiet'):
             return
-        index = state.get('hyb_offer_atom')
-        if index is None:
+        atoms = list(state.get('hyb_offer_atoms') or [])
+        if not atoms:
             return
+        index = atoms[0]
         overrides = dict(state.get('hyb_overrides') or {})
         chosen = submit_hyb_dd.value or ''
-        if chosen:
-            overrides[index] = chosen
-        else:
-            overrides.pop(index, None)
+        for atom in atoms:
+            if chosen:
+                overrides[atom] = chosen
+            else:
+                overrides.pop(atom, None)
         state['hyb_overrides'] = overrides
         # Perception is cached by element sequence, which this does not
         # change, so the cache has to be dropped or the override never reaches
@@ -3622,13 +3645,17 @@ def create_tab(ctx):
         state['poly_assignment'] = None
         _enable_live_forcefield()
         perceived = state.get('perceived')
-        symbol = perceived.symbols[index] if perceived else '?'
+        if len(atoms) == 1:
+            symbol = perceived.symbols[index] if perceived else '?'
+            named = f'{symbol}{index}'
+        else:
+            named = f'{len(atoms)} atoms'
         if chosen:
             shape = {'sp': 'linear', 'sp2': 'trigonal planar',
                      'sp3': 'tetrahedral'}[chosen]
-            _set_mol_status(f'{symbol}{index} typed as {chosen}: {shape}.')
+            _set_mol_status(f'{named} typed as {chosen}: {shape}.')
         else:
-            _set_mol_status(f'{symbol}{index} back to the perceived type.')
+            _set_mol_status(f'{named} back to the perceived type.')
         _clear_selection()
 
     _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
@@ -3720,6 +3747,23 @@ def create_tab(ctx):
         verb = 'Bonded' if connect else 'Unbonded'
         _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.')
         _clear_selection()
+
+    def on_submit_cmd(change):
+        """Carry out a shortcut the browser cannot: it changes the topology.
+
+        The value is ``verb:serial:payload``; the serial only exists to make
+        the same command twice in a row read as two changes.
+        """
+        if change.get('name') != 'value':
+            return
+        parts = (submit_cmd_sync.value or '').strip().split(':')
+        if len(parts) != 3 or parts[0] != 'unbond':
+            return
+        indices = [int(p) for p in parts[2].split(',') if p.strip().isdigit()]
+        if len(indices) != 2:
+            return
+        state['picked'] = sorted(indices)
+        _edit_bond(False)
 
     def on_submit_bond(_button=None):
         _edit_bond(True)
@@ -3984,6 +4028,7 @@ def create_tab(ctx):
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
+    submit_cmd_sync.observe(on_submit_cmd, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')

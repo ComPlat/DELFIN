@@ -1553,6 +1553,38 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         input.dispatchEvent(new Event('change', {bubbles: true}));
     }
 
+    // Keyboard shortcuts for things Python owns. Unbond is not a picture edit:
+    // it changes the topology the force field is built from, so the browser
+    // cannot carry it out alone and has to ask.
+    var commandSerial = 0;
+    function pushCommandToPython(scopeKey, verb, payload) {
+        var wrap = findInScope(scopeKey, '.submit-cmd-sync');
+        var input = wrap ? wrap.querySelector('input, textarea') : null;
+        if (!input) return false;
+        // The counter is what makes the value change: deleting the same bond
+        // twice in a row is two commands, and a widget only reports a change.
+        commandSerial += 1;
+        var text = verb + ':' + commandSerial + ':' + payload;
+        var proto = (input.tagName === 'TEXTAREA')
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (setter && setter.set) setter.set.call(input, text);
+        else input.value = text;
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+        return true;
+    }
+
+    // A shortcut belongs to whatever the user is typing in. Taking one
+    // globally meant that a backspace in the coordinate box cut a bond.
+    function typingInAField() {
+        var focused = document.activeElement;
+        if (!focused) return false;
+        var tag = (focused.tagName || '').toUpperCase();
+        return tag === 'INPUT' || tag === 'TEXTAREA' || !!focused.isContentEditable;
+    }
+
     function updateStatus(scopeKey) {
         updateInternalReadout(scopeKey);
         pushPicksToPython(scopeKey);
@@ -1663,7 +1695,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             window.setTimeout(function() {
                 var hit = state._nativeHit;
                 state._nativeHit = null;
-                var atom = hit ? getAtomBySerial(getViewer(scopeKey), hit.serial) : null;
+                // An atom the cursor is squarely on wins. Only then does the
+                // stick get its turn -- 3Dmol's own picker answers with an
+                // atom for a click in the middle of a bond, and the slack pass
+                // would too, so both have to wait their turn or a bond could
+                // never be clicked at all.
+                var atom = raycastAtom(scopeKey, cx, cy, true);
+                if (!atom && pickBond(scopeKey, raycastBond(scopeKey, cx, cy), additive)) {
+                    return;
+                }
+                if (!atom && hit) atom = getAtomBySerial(getViewer(scopeKey), hit.serial);
                 if (!atom) atom = raycastAtom(scopeKey, cx, cy);
                 if (atom) togglePick(scopeKey, atom, additive);
             }, 0);
@@ -1760,6 +1801,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     };
     var DEFAULT_VDW = 1.70;
     var MIN_PICK_PX = 5;
+    //: How far from the drawn stick a click still counts as hitting the bond.
+    var BOND_PICK_PX = 6;
 
     function elementRadius(atom) {
         var raw = String(atom.elem || atom.atom || '');
@@ -1822,7 +1865,92 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         badge.style.display = '';
     }
 
-    function raycastAtom(scopeKey, clientX, clientY) {
+    // Pick the stick under the cursor rather than the atoms at its ends.
+    // A bond is drawn as the segment between two atom centres, so the test is
+    // the cursor's distance to that segment -- in the same projection the atom
+    // picker uses, so the two always agree about what is where. Depth breaks
+    // ties, so a bond in front shields one behind it.
+    function raycastBond(scopeKey, clientX, clientY) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        if (!state.canvas || !viewer) return null;
+        var rect = state.canvas.getBoundingClientRect();
+        var sx = clientX - rect.left;
+        var sy = clientY - rect.top;
+        var atoms = getAtoms(viewer);
+        // Indexed by atom index, not packed: atoms[i].bonds names indices, and
+        // projectAllAtoms drops whatever it cannot project.
+        var proj = [];
+        for (var i = 0; i < atoms.length; i++) {
+            proj.push(projectWithDepth(viewer, state.canvas, atoms[i]));
+        }
+        var best = null, bestDepth = Infinity, bestDist = Infinity;
+        for (var a = 0; a < atoms.length; a++) {
+            var pa = proj[a];
+            if (!pa) continue;
+            var list = atoms[a].bonds || [];
+            for (var n = 0; n < list.length; n++) {
+                var b = list[n] | 0;
+                if (b <= a) continue;  // every bond is listed at both ends
+                var pb = proj[b];
+                if (!pb) continue;
+                var vx = pb.x - pa.x, vy = pb.y - pa.y;
+                var len2 = vx * vx + vy * vy;
+                var t = len2 > 1e-9
+                    ? ((sx - pa.x) * vx + (sy - pa.y) * vy) / len2 : 0;
+                if (t < 0) t = 0; else if (t > 1) t = 1;
+                var ex = pa.x + vx * t - sx, ey = pa.y + vy * t - sy;
+                var d2 = ex * ex + ey * ey;
+                if (d2 > BOND_PICK_PX * BOND_PICK_PX) continue;
+                var depth = pa.depth + (pb.depth - pa.depth) * t;
+                if (depth < bestDepth - 1e-6 ||
+                    (Math.abs(depth - bestDepth) <= 1e-6 && d2 < bestDist)) {
+                    best = [a, b]; bestDepth = depth; bestDist = d2;
+                }
+            }
+        }
+        return best;
+    }
+
+    // Selecting a bond *is* selecting the two atoms it joins. Everything that
+    // reads the selection -- Unbond, the value box, Set, Hold -- already works
+    // on two atoms, so one click on a stick replaces two on atoms and nothing
+    // downstream has to learn a second kind of pick.
+    function pickBond(scopeKey, pair, additive) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer || !pair) return false;
+        var state = getState(scopeKey);
+        var atoms = getAtoms(viewer);
+        var first = atoms[pair[0]], second = atoms[pair[1]];
+        if (!first || !second) return false;
+        var serials = [first.serial, second.serial];
+        var isExactly = state.picks.length === 2
+            && serials.indexOf(state.picks[0].serial) >= 0
+            && serials.indexOf(state.picks[1].serial) >= 0;
+        if (!additive) {
+            // Clicking the same stick again takes it back, the way clicking
+            // the same atom again does.
+            state.picks = isExactly ? [] : [
+                {serial: first.serial, elem: first.elem || 'X'},
+                {serial: second.serial, elem: second.elem || 'X'}
+            ];
+        } else {
+            for (var i = 0; i < 2; i++) {
+                var atom = i ? second : first;
+                var seen = false;
+                for (var j = 0; j < state.picks.length; j++) {
+                    if (state.picks[j].serial === atom.serial) { seen = true; break; }
+                }
+                if (!seen) {
+                    state.picks.push({serial: atom.serial, elem: atom.elem || 'X'});
+                }
+            }
+        }
+        redrawHighlights(scopeKey);
+        return true;
+    }
+
+    function raycastAtom(scopeKey, clientX, clientY, exactOnly) {
         var state = getState(scopeKey);
         var viewer = getViewer(scopeKey);
         if (!state.canvas || !viewer) return null;
@@ -1855,7 +1983,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
         // Nothing was hit squarely. Allow a small amount of slack so a click
         // just beside a thin stick still picks it, but keep empty space empty
-        // so a press there can still turn the view.
+        // so a press there can still turn the view. Callers that want to give
+        // a bond its chance first ask for the exact pass alone: the slack is
+        // wide enough to swallow a click aimed at the middle of a short bond.
+        if (exactOnly) return null;
         if (nearest && nearestDist <= PICK_RADIUS_PX * PICK_RADIUS_PX) {
             return nearest.atom;
         }
@@ -3151,14 +3282,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 // Ctrl-Z belongs to whatever the user is typing in. Taking it
                 // globally meant that undoing a typo in the coordinate box
                 // silently moved atoms instead.
-                var focused = document.activeElement;
-                if (focused) {
-                    var tag = (focused.tagName || '').toUpperCase();
-                    if (tag === 'INPUT' || tag === 'TEXTAREA' ||
-                        focused.isContentEditable) {
-                        return;
-                    }
-                }
+                if (typingInAField()) return;
                 var states = window._submitManipStateByScope || {};
                 var keys = Object.keys(states);
                 for (var i = 0; i < keys.length; i++) {
@@ -3168,6 +3292,30 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                         undo(keys[i]);
                         break;
                     }
+                }
+            }
+            if (key === 'Delete' || key === 'Backspace') {
+                if (typingInAField()) return;
+                var scopes = window._submitManipStateByScope || {};
+                var names = Object.keys(scopes);
+                for (var s = 0; s < names.length; s++) {
+                    var scope = scopes[names[s]];
+                    if (!scope || (scope.mode !== 'select' && scope.mode !== 'manipulate')) {
+                        continue;
+                    }
+                    if (scope.picks.length !== 2) continue;
+                    var view = getViewer(names[s]);
+                    if (!view) continue;
+                    var pair = ffIndicesOf(
+                        view, [scope.picks[0].serial, scope.picks[1].serial]);
+                    if (pair.length !== 2) continue;
+                    // Only a bond that is there can be removed. Without this,
+                    // Delete on two unbonded atoms would report an unbonding
+                    // that never happened.
+                    if (bondsOf(names[s], pair[0]).indexOf(pair[1]) < 0) continue;
+                    e.preventDefault();
+                    pushCommandToPython(names[s], 'unbond', pair[0] + ',' + pair[1]);
+                    break;
                 }
             }
         }, true);

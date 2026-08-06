@@ -235,12 +235,18 @@ def test_optimize_toggle_runs_the_field_continuously():
 
 def test_ctrl_z_belongs_to_whatever_is_being_typed_in():
     """The editor took Ctrl-Z globally, so undoing a typo while editing the
-    coordinate box silently moved atoms instead."""
+    coordinate box silently moved atoms instead. Delete, added later for
+    Unbond, would have cut a bond on a backspace in the same box."""
+    guard = _body('typingInAField')
+    assert 'document.activeElement' in guard
+    assert "tag === 'INPUT' || tag === 'TEXTAREA'" in guard
+    assert 'focused.isContentEditable' in guard
+
     handler = EDITOR.split("window.addEventListener('keydown'")[1].split('}, true);')[0]
-    assert 'document.activeElement' in handler
-    assert "tag === 'INPUT' || tag === 'TEXTAREA'" in handler
-    assert 'focused.isContentEditable' in handler
-    assert handler.index('activeElement') < handler.index('_submitManipStateByScope')
+    # Every shortcut asks first, before it looks at any molecule.
+    for shortcut in ("key === 'z'", "key === 'Delete'"):
+        after = handler[handler.index(shortcut):]
+        assert after.index('typingInAField()') < after.index('_submitManipStateByScope')
 
 
 def test_value_box_says_what_it_sets_and_shows_the_current_value():
@@ -1026,7 +1032,6 @@ def test_the_hybridisation_of_a_picked_atom_can_be_overruled():
     assert 'submit_hyb_dd.observe(on_submit_hyb_changed' in source
 
     offer = source.split('def _refresh_hybridisation')[1].split('\n    def ')[0]
-    assert 'len(indices) == 1' in offer
     assert 'perceived.metal_indices' in offer          # not for a metal
     assert 'perceived_hybridisation_of' in offer       # names what automatic means
 
@@ -1043,6 +1048,97 @@ def test_the_hybridisation_of_a_picked_atom_can_be_overruled():
     # And dropped when a different structure arrives.
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "state['hyb_overrides'] = {}" in view
+
+
+def test_a_bond_can_be_clicked_instead_of_both_of_its_atoms():
+    """Removing a bond meant picking its two atoms first, which is two clicks
+    for something drawn as one object.
+
+    Clicking a stick selects the two atoms it joins, so everything that reads
+    the selection -- Unbond, the value box, Set, Hold -- keeps working
+    unchanged. Verified in a browser on cholesterol: a click on the middle of
+    a stick picks [0, 1], a click on the atom at its end picks [0] alone, and
+    clicking the same stick twice clears the selection again."""
+    body = _body('raycastBond')
+    # Point-to-segment in the same projection the atom picker uses.
+    assert 'projectWithDepth' in body
+    assert 'if (t < 0) t = 0; else if (t > 1) t = 1;' in body
+    assert 'if (b <= a) continue;' in body          # every bond exactly once
+    assert 'depth < bestDepth' in body              # the near stick shields the far one
+
+    pick = _body('pickBond')
+    assert 'state.picks =' in pick
+    assert 'redrawHighlights(scopeKey)' in pick
+
+    click = _body('installCanvasClickFallback')
+    # An atom squarely under the cursor wins; only then does the stick get its
+    # turn; 3Dmol's own picker and the slack pass both answer with an atom for
+    # a click in the middle of a bond, so both have to wait.
+    assert 'raycastAtom(scopeKey, cx, cy, true)' in click
+    assert click.index('raycastAtom(scopeKey, cx, cy, true)') < click.index('raycastBond')
+    assert click.index('raycastBond') < click.index('getAtomBySerial')
+    assert 'if (exactOnly) return null;' in _body('raycastAtom')
+
+
+def test_delete_removes_the_selected_bond_and_nothing_else():
+    """Unbond is not a picture edit -- it changes the topology the force field
+    is built from -- so the browser cannot carry it out alone and asks through
+    a hidden widget.
+
+    Verified in a browser: Delete with a bond selected sends
+    ``unbond:1:0,1``; Delete on two atoms that are not bonded sends nothing,
+    because reporting an unbonding that never happened would be a lie; and
+    Delete while the caret is in a text field sends nothing either."""
+    editor = EDITOR
+    assert "key === 'Delete' || key === 'Backspace'" in editor
+    guard = editor.split("key === 'Delete' || key === 'Backspace'")[1][:1200]
+    assert 'typingInAField()' in guard
+    assert 'scope.picks.length !== 2' in guard
+    assert 'bondsOf(' in guard                      # only a bond that is there
+    assert "pushCommandToPython(names[s], 'unbond'" in guard
+
+    push = _body('pushCommandToPython')
+    assert '.submit-cmd-sync' in push
+    # The counter is what makes the value change: the same command twice in a
+    # row is two commands, and a widget only reports a change.
+    assert 'commandSerial += 1;' in push
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert "submit_cmd_sync.add_class('submit-cmd-sync')" in source
+    assert 'submit_cmd_sync.observe(on_submit_cmd' in source
+    handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
+    assert "parts[0] != 'unbond'" in handler
+    assert '_edit_bond(False)' in handler
+
+
+def test_a_hybridisation_can_be_forced_on_a_whole_selection():
+    """One unperceived double bond usually costs both of its carbons their
+    type, and retyping a ring one atom at a time is busywork.
+
+    Driven through the real tab: picking C0, C1 and C2 of benzene and choosing
+    sp3 sends a force field whose angles at all three are 109.5 degrees while
+    C4, which was not picked, keeps 120.0 -- and choosing the automatic entry
+    again puts C0 back to 120.0."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    offer = source.split('def _refresh_hybridisation')[1].split('\n    def ')[0]
+    # Every picked atom, metals dropped rather than blocking the offer.
+    assert 'chosen = [i for i in indices if i not in metals]' in offer
+    assert "state['hyb_offer_atoms'] = chosen" in offer
+    # A value can only be shown as current when they all share it.
+    assert 'held.pop() if len(held) == 1' in offer
+
+    handler = source.split('def on_submit_hyb_changed')[1].split('\n    def ')[0]
+    assert 'for atom in atoms:' in handler
+
+    # The perception has to be available for any pick count, not just one --
+    # it used to be fetched only inside the single-atom polyhedron branch.
+    sync = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
+    assert 'if xyz and indices:' in sync
+    assert sync.index('_perception_for(xyz)') < sync.index('polyhedron_options(')
 
 
 def test_a_polyhedron_held_on_one_metal_is_not_offered_for_the_next():
