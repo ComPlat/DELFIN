@@ -11074,9 +11074,18 @@ class _DocToolExecutor:
 
             _th.Thread(target=_bg_run, daemon=True,
                        name=f"subagent-bg-{sa_type}").start()
+            # A resumed run keeps the id it is resuming, so the reserved one
+            # would never resolve — the parent would poll it forever for work
+            # that had finished under a different name.
+            try:
+                from . import subagents as _sa_id_mod
+                _collect_id = _sa_id_mod.collectable_sa_id(
+                    reserved=_bg_sa_id, resume_from=str(resume_id or ""))
+            except Exception:
+                _collect_id = _bg_sa_id
             return json.dumps({
                 "status": "started_in_background",
-                "sa_id": _bg_sa_id,
+                "sa_id": _collect_id,
                 "subagent_type": sa_type,
                 "description": description,
                 "note": ("Running in the background. Collect the result later "

@@ -412,6 +412,26 @@ def _trim_for_store(text: str, limit: int = 2000) -> str:
 
 _MAX_STORED_INTERACTIONS = 60
 
+# The final report is stored separately from the trimmed conversation.
+# The trim (head 1200 + tail 400) is right for the resume recap it was
+# written for, and wrong for the report: the session store is the ONLY
+# route by which a BACKGROUND report reaches its parent, so a long one
+# came back as a stub with a trim marker where the findings had been.
+# Bounded, because a runaway report must not be able to fill the disk --
+# but at a size a report actually fits in, and it says so when it cuts.
+_MAX_STORED_REPORT_CHARS = 200_000
+
+
+def collectable_sa_id(*, reserved: str, resume_from: str) -> str:
+    """The id a finished run will be stored under.
+
+    Backgrounding reserves an id up front and tells the parent to collect
+    with it, but a resumed run keeps the id it is resuming -- correctly,
+    so one session accumulates under one id. The two disagreed, and the
+    parent was handed the reserved one: it polled an id that never existed
+    and was told "unknown" forever, for work that had finished."""
+    return (resume_from or "").strip() or (reserved or "").strip()
+
 
 def _save_subagent_session(
     sa_id: str,
@@ -451,6 +471,16 @@ def _save_subagent_session(
             ],
             "error": error or "",
         }
+        # The report, whole. Taken before the trim above touches it.
+        for m in reversed(messages or []):
+            if m.get("role") == "assistant" and str(m.get("content", "")):
+                full = str(m["content"])
+                if len(full) > _MAX_STORED_REPORT_CHARS:
+                    full = (full[:_MAX_STORED_REPORT_CHARS]
+                            + "\n\n[report truncated at "
+                            + f"{_MAX_STORED_REPORT_CHARS} characters]")
+                record["final_report"] = full
+                break
         _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         path = _SESSIONS_DIR / f"{sa_id}.json"
         path.write_text(json.dumps(record, ensure_ascii=False),
@@ -1471,7 +1501,13 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
         "notice": "",
     }
     try:
-        text = _report_text(payload)
+        # One cap for every scanner. The local ones already stopped at
+        # _VERIFY_MAX_TEXT while the shared ones got the whole report, and
+        # one of those is quadratic in the length of a single LINE: a report
+        # arriving as one long unbroken line (a pasted blob, a minified
+        # dump) took 7s at 20 kB and 47s at 50 kB, on the parent's turn.
+        # Ordinary multi-line text of the same size costs 16ms.
+        text = _report_text(payload)[:_VERIFY_MAX_TEXT]
         if isinstance(payload, dict):
             err = str(payload.get("error") or "").strip()
             if err:
@@ -2669,11 +2705,14 @@ def get_subagent_result(sa_id: str) -> dict:
                               "the work has to be started again")}
         return {"sa_id": sa_id, "status": "unknown",
                 "error": "no running or finished subagent with this id"}
-    final = ""
-    for m in reversed(sess.get("messages") or []):
-        if m.get("role") == "assistant" and m.get("content"):
-            final = m.get("content", "")
-            break
+    # The untrimmed report when it was stored; the conversation is the
+    # fallback for sessions written before the field existed.
+    final = str(sess.get("final_report") or "")
+    if not final:
+        for m in reversed(sess.get("messages") or []):
+            if m.get("role") == "assistant" and m.get("content"):
+                final = m.get("content", "")
+                break
     out = {"sa_id": sa_id, "status": "finished",
            "subagent_type": sess.get("subagent_type", ""),
            "description": sess.get("description", ""),
