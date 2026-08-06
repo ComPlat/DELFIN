@@ -1615,6 +1615,207 @@ def polyhedron_assignment(perceived, metal_index, geometry, coords=None):
     return assigned
 
 
+def polyhedron_vertex_classes(coordination, geometry):
+    """Group a polyhedron's vertices into the kinds that are not equivalent.
+
+    A trigonal bipyramid has two: three equatorial vertices at 120 degrees to
+    each other, and two axial ones facing each other at 180.  Which ligand
+    ends up in which kind is a real chemical choice -- ``PF5`` is one molecule
+    but Berry pseudorotation moves ligands between the two -- and the
+    assignment made by matching the polyhedron onto the geometry as it stands
+    only ever finds the nearest one.
+
+    Vertices are compared through the sorted angles from each one to all the
+    others, which does not depend on how the polyhedron is oriented.
+
+    Returns:
+        ``(classes, labels)``: a class index per vertex, and a readable name
+        per class ordered by how many vertices it holds.  ``None`` when the
+        geometry is not in the catalogue.
+    """
+    import numpy as np
+
+    try:
+        from delfin.manta import _polyhedron_targets as targets
+        ideal = np.asarray(
+            targets.get_ideal_donor_vectors(int(coordination), geometry),
+            dtype=float,
+        )
+    except Exception:
+        return None
+    count = ideal.shape[0]
+    signatures = []
+    for i in range(count):
+        angles = []
+        for j in range(count):
+            if i == j:
+                continue
+            cosine = float(np.clip(float(np.dot(ideal[i], ideal[j])), -1.0, 1.0))
+            angles.append(round(math.degrees(math.acos(cosine)), 1))
+        signatures.append(tuple(sorted(angles)))
+
+    order: List[Any] = []
+    for signature in signatures:
+        if signature not in order:
+            order.append(signature)
+    # Smallest group first, because that is the distinguished one people name:
+    # the two axial vertices of a bipyramid, the single apex of a pyramid.
+    order.sort(key=lambda s: (signatures.count(s), s))
+    classes = [order.index(s) for s in signatures]
+
+    sizes = [signatures.count(s) for s in order]
+    if len(order) == 1:
+        labels = ['all equivalent']
+    elif len(order) == 2 and sorted(sizes) == [1, count - 1]:
+        labels = ['apical', 'basal'] if sizes[0] == 1 else ['basal', 'apical']
+    elif len(order) == 2:
+        labels = ['axial', 'equatorial'] if sizes[0] < sizes[1] \
+            else ['equatorial', 'axial']
+    else:
+        labels = [f'set {n + 1}' for n in range(len(order))]
+    return classes, labels
+
+
+def polyhedron_arrangements(perceived, metal_index, geometry, coords=None):
+    """Every distinct way of spreading the donors over the vertex kinds.
+
+    A trigonal bipyramid with five different ligands can be built ten ways --
+    which two are axial -- and they are different molecules, not different
+    views of one.  This enumerates them, best fit first, each as an
+    ``{donor: vertex}`` mapping ready to hand back as the polyhedron's
+    ``assignment``.
+
+    Only the split between *kinds* is enumerated.  Which of the three
+    equatorial vertices a given ligand takes is left to the usual nearest
+    match, so choosing an arrangement never moves a ligand further than it
+    has to.  On a polyhedron whose vertices are all equivalent -- an
+    octahedron, a tetrahedron -- there is one arrangement and turning it
+    changes nothing; exchanging two ligands there is what Swap is for.
+    """
+    import numpy as np
+    from itertools import combinations
+
+    from delfin.manta import _polyhedron_targets as targets
+
+    if perceived is None:
+        return []
+    metal_index = int(metal_index)
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair
+        if metal_index in pair and j != metal_index
+    )
+    cn = len(donors)
+    grouped = polyhedron_vertex_classes(cn, geometry)
+    if not grouped or cn < 2:
+        return []
+    classes, labels = grouped
+    if len(set(classes)) < 2:
+        return [{}]
+
+    coords = coords if coords is not None else perceived.coords
+    observed = _unit_donor_vectors(perceived, donors, metal_index, coords)
+    if observed is None:
+        return []
+    try:
+        ideal = np.asarray(
+            targets.get_ideal_donor_vectors(cn, geometry), dtype=float)
+    except Exception:
+        return []
+
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except Exception:
+        linear_sum_assignment = None
+
+    by_class: Dict[int, List[int]] = {}
+    for vertex, klass in enumerate(classes):
+        by_class.setdefault(klass, []).append(vertex)
+    ordered_classes = sorted(by_class)
+
+    def _best(fixed_pairs, frame):
+        """Kabsch the polyhedron onto this split, then score it."""
+        rows = [donors.index(d) for d, _v in fixed_pairs]
+        cols = [v for _d, v in fixed_pairs]
+        for _pass in range(3):
+            matched = frame[np.asarray(cols)]
+            target = observed[np.asarray(rows)]
+            u, _sv, vt = np.linalg.svd(matched.T @ target)
+            rotation = u @ vt
+            if np.linalg.det(rotation) < 0:
+                u[:, -1] *= -1.0
+                rotation = u @ vt
+            frame = frame @ rotation
+            # Re-match inside each kind only: the split itself is the choice.
+            cols = list(cols)
+            for klass in ordered_classes:
+                members = by_class[klass]
+                mine = [n for n, v in enumerate(cols) if v in members]
+                if len(mine) < 2:
+                    continue
+                sub = 1.0 - observed[np.asarray([rows[n] for n in mine])] \
+                    @ frame[np.asarray(members)].T
+                if linear_sum_assignment is not None:
+                    r, c = linear_sum_assignment(sub)
+                else:
+                    r, c = range(len(mine)), range(len(mine))
+                for a, b in zip(r, c):
+                    cols[mine[int(a)]] = members[int(b)]
+        score = float(np.sum(1.0 - np.einsum(
+            'ij,ij->i', observed[np.asarray(rows)], frame[np.asarray(cols)])))
+        return score, {donors[rows[n]]: int(cols[n]) for n in range(cn)}
+
+    # Enumerate the splits: choose the members of each kind in turn.
+    splits: List[List[Tuple[int, int]]] = []
+
+    def _walk(remaining, index, chosen):
+        if index == len(ordered_classes):
+            splits.append(list(chosen))
+            return
+        klass = ordered_classes[index]
+        members = by_class[klass]
+        for pick in combinations(remaining, len(members)):
+            rest = [d for d in remaining if d not in pick]
+            _walk(rest, index + 1,
+                  chosen + [(d, v) for d, v in zip(pick, members)])
+
+    _walk(donors, 0, [])
+    scored = []
+    for split in splits:
+        try:
+            scored.append(_best(split, np.array(ideal, copy=True)))
+        except Exception:
+            continue
+    scored.sort(key=lambda pair: pair[0])
+    out, seen = [], set()
+    for _score, mapping in scored:
+        key = tuple(sorted((d, classes[v]) for d, v in mapping.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(mapping)
+    return out
+
+
+def describe_polyhedron_arrangement(perceived, geometry, assignment):
+    """Name an arrangement by which donors sit on the distinguished vertices."""
+    if not assignment:
+        return ''
+    grouped = polyhedron_vertex_classes(len(assignment), geometry)
+    if not grouped:
+        return ''
+    classes, labels = grouped
+    if len(set(classes)) < 2:
+        return 'all vertices equivalent'
+    members: Dict[int, List[int]] = {}
+    for donor, vertex in assignment.items():
+        members.setdefault(classes[int(vertex)], []).append(int(donor))
+    klass = min(members)
+    named = ', '.join(
+        f'{perceived.symbols[d]}{d}' for d in sorted(members[klass])
+    )
+    return f'{labels[klass]}: {named}'
+
+
 def _assign_donors_to_vertices(perceived, coords, metal_index, geometry, fixed):
     """Match donors to polyhedron vertices, honouring a caller's swap."""
     import numpy as np

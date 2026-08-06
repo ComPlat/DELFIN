@@ -1188,3 +1188,35 @@ def test_a_polyhedron_held_on_one_metal_is_not_offered_for_the_next():
     body = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
     assert 'offered = {code for code, _label in choices}' in body
     assert 'submit_poly_dd.value = applied if applied in offered else \'\'' in body
+
+
+def test_turn_is_offered_only_where_the_vertices_differ():
+    """Which ligands take the axial positions of a trigonal bipyramid is a
+    real choice; an octahedron has nothing to turn, because every vertex is
+    the same and exchanging two ligands there is what Swap is for.
+
+    Driven through the real tab: choosing a trigonal bipyramid on a
+    five-coordinate iron shows Turn and ten clicks walk through ten distinct
+    axial pairs before coming back; choosing an octahedron or a trigonal
+    prism on the Re complex leaves it hidden."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_poly_turn_btn' in source
+    assert 'submit_poly_turn_btn.on_click(on_submit_poly_turn)' in source
+
+    offer = source.split('def _refresh_poly_turn')[1].split('\n    def ')[0]
+    assert 'polyhedron_vertex_classes' in offer
+    assert 'len(set(grouped[0])) > 1' in offer
+
+    handler = source.split('def on_submit_poly_turn')[1].split('\n    def ')[0]
+    assert 'polyhedron_arrangements' in handler
+    # The coordinates as they are now: a ligand that has been dragged has to
+    # be scored where it sits, not where it was perceived.
+    assert 'parse_xyz' in handler
+    assert "% len(arrangements)" in handler
+    assert '_enable_live_forcefield()' in handler
+    # Choosing a different polyhedron starts the cycle over.
+    changed = source.split('def on_submit_poly_changed')[1].split('\n    def ')[0]
+    assert "state['poly_arrangement_index'] = 0" in changed
+    assert '_refresh_poly_turn()' in changed

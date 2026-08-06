@@ -755,6 +755,17 @@ def create_tab(ctx):
         layout=widgets.Layout(width='190px', display='none'),
         disabled=True,
     )
+    submit_poly_turn_btn = widgets.Button(
+        description='Turn', icon='refresh', button_style='',
+        tooltip=(
+            'Step to the next distinct arrangement on this polyhedron: which '
+            'ligands take the axial or apical positions. Only shown where the '
+            'vertices are not all alike -- an octahedron has nothing to turn, '
+            'a trigonal bipyramid has ten arrangements.'
+        ),
+        layout=widgets.Layout(width='78px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_hyb_dd = widgets.Dropdown(
         options=[('— hybridisation —', '')], value='',
         layout=widgets.Layout(width='190px', display='none'),
@@ -852,7 +863,8 @@ def create_tab(ctx):
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
-            submit_poly_dd, submit_hyb_dd, submit_hyb_auto_btn,
+            submit_poly_dd, submit_poly_turn_btn,
+            submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
             submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
@@ -3673,6 +3685,73 @@ def create_tab(ctx):
             _set_mol_status(f'{named} back to the perceived type.')
         _clear_selection()
 
+    def _refresh_poly_turn():
+        """Offer Turn only where the vertices are not all alike.
+
+        An octahedron has nothing to turn -- every vertex is the same, and
+        which ligand is trans to which is what Swap is for. A trigonal
+        bipyramid has two kinds, so which pair is axial is a real choice.
+        """
+        geometry = state.get('poly_applied')
+        metal = state.get('poly_metal')
+        perceived = state.get('perceived')
+        turnable = False
+        if geometry and metal is not None and perceived is not None:
+            try:
+                from .molecule_forcefield import polyhedron_vertex_classes
+                donors = len(perceived.neighbours()[int(metal)])
+                grouped = polyhedron_vertex_classes(donors, geometry)
+                turnable = bool(grouped) and len(set(grouped[0])) > 1
+            except Exception:
+                turnable = False
+        submit_poly_turn_btn.layout.display = '' if turnable else 'none'
+        submit_poly_turn_btn.disabled = not turnable
+        if not turnable:
+            state['poly_arrangements'] = []
+            state['poly_arrangement_index'] = 0
+
+    def on_submit_poly_turn(_button=None):
+        """Step to the next way the ligands can sit on this polyhedron."""
+        geometry = state.get('poly_applied')
+        metal = state.get('poly_metal')
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not geometry or metal is None or not xyz:
+            _set_mol_status('Choose a polyhedron for a metal first.')
+            return
+        try:
+            from .molecule_forcefield import (
+                describe_polyhedron_arrangement, parse_xyz,
+                polyhedron_arrangements,
+            )
+            perceived = _perception_for(xyz)
+            # The coordinates as they are now, not as they were perceived: a
+            # ligand that has been dragged has to be scored where it sits.
+            parsed = parse_xyz(xyz)
+            coords = perceived.coords
+            if parsed is not None and list(parsed[0]) == list(perceived.symbols):
+                coords = parsed[1]
+            arrangements = polyhedron_arrangements(
+                perceived, int(metal), geometry, coords)
+        except Exception as exc:
+            _set_mol_status(f'Could not work out the arrangements: {exc}')
+            return
+        if len(arrangements) < 2:
+            _set_mol_status(
+                'Every vertex of this polyhedron is the same, so there is '
+                'nothing to turn. Swap exchanges two ligands.'
+            )
+            return
+        position = (int(state.get('poly_arrangement_index') or 0) + 1) % len(arrangements)
+        state['poly_arrangements'] = arrangements
+        state['poly_arrangement_index'] = position
+        state['poly_assignment'] = arrangements[position]
+        _enable_live_forcefield()
+        described = describe_polyhedron_arrangement(
+            perceived, geometry, arrangements[position])
+        _set_mol_status(
+            f'Arrangement {position + 1} of {len(arrangements)} — {described}.'
+        )
+
     def on_submit_hyb_auto(_button=None):
         """Derive the carbon types from the connectivity and hold them."""
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
@@ -3909,6 +3988,10 @@ def create_tab(ctx):
             state['poly_applied'] = None
             state['poly_metal'] = None
             state['poly_assignment'] = None
+            state['poly_arrangements'] = []
+            state['poly_arrangement_index'] = 0
+            submit_poly_turn_btn.layout.display = 'none'
+            submit_poly_turn_btn.disabled = True
             state['poly_quiet'] = True
             try:
                 submit_poly_dd.value = ''
@@ -3942,6 +4025,9 @@ def create_tab(ctx):
                 )
             except Exception:
                 state['poly_assignment'] = None
+        state['poly_arrangements'] = []
+        state['poly_arrangement_index'] = 0
+        _refresh_poly_turn()
         _refresh_constraints()
         # Re-assigning the parameters is what makes the pull start; with the
         # field running the complex visibly moves into the polyhedron.
@@ -4087,6 +4173,7 @@ def create_tab(ctx):
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
     submit_hyb_auto_btn.on_click(on_submit_hyb_auto)
+    submit_poly_turn_btn.on_click(on_submit_poly_turn)
     submit_cmd_sync.observe(on_submit_cmd, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)

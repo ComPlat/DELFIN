@@ -951,3 +951,85 @@ def test_types_are_only_derived_for_carbon():
     assert len(derived) == 12
     # And it can be narrowed to a selection.
     assert set(mff.hybridisation_from_connectivity(benzene, [0, 1, 99])) == {0, 1}
+
+
+def _tbp_xyz():
+    """An iron on an ideal trigonal bipyramid, five different donors."""
+    r = 2.30
+    rows = [
+        ('Fe', 0.0, 0.0, 0.0),
+        ('Cl', 0.0, 0.0, r), ('Br', 0.0, 0.0, -r),                # axial
+        ('F', r, 0.0, 0.0),                                        # equatorial
+        ('I', -r / 2, r * math.sqrt(3) / 2, 0.0),
+        ('N', -r / 2, -r * math.sqrt(3) / 2, 0.0),
+        ('H', -r / 2 - 1.0, -r * math.sqrt(3) / 2, 0.0),
+        ('H', -r / 2, -r * math.sqrt(3) / 2 - 1.0, 0.0),
+    ]
+    return f'{len(rows)}\ntbp\n' + '\n'.join(
+        f'{s} {x:.4f} {y:.4f} {z:.4f}' for s, x, y, z in rows) + '\n'
+
+
+def test_only_some_polyhedra_have_anything_to_turn():
+    """Vertices are grouped by the sorted angles from each one to all the
+    others, which does not depend on how the polyhedron is oriented.
+
+    An octahedron, a tetrahedron and a square plane come back as one kind:
+    there is nothing to turn, and which ligand is trans to which is what Swap
+    is for. A trigonal bipyramid comes back as two axial and three equatorial,
+    a square pyramid as one apical and four basal."""
+    assert polyhedron_kinds('tbp', 5) == {'axial': 2, 'equatorial': 3}
+    assert polyhedron_kinds('sqp_5', 5) == {'apical': 1, 'basal': 4}
+    assert polyhedron_kinds('pbp', 7) == {'axial': 2, 'equatorial': 5}
+    for code, cn in (('Oh', 6), ('Td', 4), ('sqp_4', 4), ('trig_prism', 6)):
+        assert polyhedron_kinds(code, cn) == {'all equivalent': cn}, code
+
+
+def polyhedron_kinds(geometry, coordination):
+    classes, labels = mff.polyhedron_vertex_classes(coordination, geometry)
+    return {
+        labels[k]: classes.count(k) for k in sorted(set(classes))
+    }
+
+
+def test_a_trigonal_bipyramid_can_be_built_ten_ways():
+    """Which two of five ligands are axial is a real chemical choice -- they
+    are different molecules, not different views of one -- and matching the
+    polyhedron onto the geometry as it stands only ever finds the nearest.
+
+    Five donors give C(5,2) = 10 arrangements. The first is the one the
+    complex is already in, and each really does put 180 degrees across the
+    pair it names."""
+    xyz = _tbp_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    arrangements = mff.polyhedron_arrangements(perceived, metal, 'tbp')
+    assert len(arrangements) == 10, len(arrangements)
+
+    axial_pairs = set()
+    for mapping in arrangements:
+        angles = mff._polyhedron_target_angles(
+            perceived, perceived.coords, metal, 'tbp', mapping)
+        linear = [pair for pair, value in angles.items() if value > 170.0]
+        assert len(linear) == 1, linear
+        axial_pairs.add(linear[0])
+        described = mff.describe_polyhedron_arrangement(
+            perceived, 'tbp', mapping)
+        assert described.startswith('axial: '), described
+        for index in linear[0]:
+            assert f'{perceived.symbols[index]}{index}' in described
+    # Ten different pairs, not the same one ten times.
+    assert len(axial_pairs) == 10
+    # Best fit first: the complex is built with Cl and Br axial.
+    first = mff.describe_polyhedron_arrangement(perceived, 'tbp', arrangements[0])
+    assert 'Cl1' in first and 'Br2' in first, first
+
+
+def test_turning_an_octahedron_is_a_no_op():
+    """Every vertex is the same, so there is one arrangement and stepping
+    through it would only ever hand back what is already there."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    assert len(perceived.neighbours()[metal]) == 4
+    assert mff.polyhedron_arrangements(perceived, metal, 'Td') == [{}]
