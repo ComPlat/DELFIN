@@ -242,7 +242,7 @@ def test_ctrl_z_belongs_to_whatever_is_being_typed_in():
     assert "tag === 'INPUT' || tag === 'TEXTAREA'" in guard
     assert 'focused.isContentEditable' in guard
 
-    handler = EDITOR.split("window.addEventListener('keydown'")[1].split('}, true);')[0]
+    handler = EDITOR.split("on(window, 'keydown'")[1].split('}, true);')[0]
     # Every shortcut asks first, before it looks at any molecule.
     for shortcut in ("key === 'z'", "key === 'Delete'"):
         after = handler[handler.index(shortcut):]
@@ -419,7 +419,7 @@ def test_empty_space_belongs_to_the_viewer_for_both_buttons():
     Measured in a browser: left on empty space rotates and does not pan, right
     on empty space pans and does not rotate, right on an atom sets the pivot
     and moves neither."""
-    window_steal = EDITOR.split("window.addEventListener('mousedown'")[1].split('}, true);')[0]
+    window_steal = EDITOR.split("on(window, 'mousedown'")[1].split('}, true);')[0]
     # The probe has to happen before the event is taken, not after.
     assert window_steal.index('probeClickAtom') < window_steal.index('e.preventDefault()')
     assert 'if (!picked) continue;' in window_steal
@@ -1056,13 +1056,19 @@ def test_a_bond_can_be_clicked_instead_of_both_of_its_atoms():
 
     Clicking a stick selects the two atoms it joins, so everything that reads
     the selection -- Unbond, the value box, Set, Hold -- keeps working
-    unchanged. Verified in a browser on cholesterol: a click on the middle of
-    a stick picks [0, 1], a click on the atom at its end picks [0] alone, and
-    clicking the same stick twice clears the selection again."""
+    unchanged. Only the middle of the stick counts: verified in a browser on
+    cholesterol by walking along one bond, the hit is the atom at 0.00 and
+    0.15, the bond at 0.35, 0.50 and 0.65, and the far atom at 0.85 and 1.00.
+    Clicking the same stick twice clears the selection again."""
     body = _body('raycastBond')
     # Point-to-segment in the same projection the atom picker uses.
     assert 'projectWithDepth' in body
-    assert 'if (t < 0) t = 0; else if (t > 1) t = 1;' in body
+    # Only the middle of the stick belongs to the bond; the ends belong to
+    # the atoms. Without that, a tap aimed at an atom whose drawn disc is
+    # small was answered with the bond, so a three-atom selection for an angle
+    # silently became two and Hold had nothing sensible to hold.
+    assert 'if (t < BOND_PICK_MARGIN || t > 1.0 - BOND_PICK_MARGIN) continue;' in body
+    assert 'var BOND_PICK_MARGIN = 0.3;' in EDITOR
     assert 'if (b <= a) continue;' in body          # every bond exactly once
     assert 'depth < bestDepth' in body              # the near stick shields the far one
 

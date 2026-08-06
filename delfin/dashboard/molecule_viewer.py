@@ -1083,8 +1083,26 @@ def measurement_bootstrap_js():
 
 SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 (function() {
-    if (window.__delfinSubmitManipReady) return;
+    // A version, not a flag. It used to be a boolean, so a dashboard that
+    // was already open never picked up a newer editor: every fix shipped here
+    // was invisible until the page was reloaded. Re-running now tears the
+    // previous one down first -- the window-level handlers are per-scope
+    // closures and would otherwise accumulate, which is exactly the class of
+    // bug that killed the editor's own drag handlers once already.
+    var MANIP_VERSION = 1;
+    if (window.__delfinSubmitManipVersion === MANIP_VERSION) return;
+    if (typeof window.__delfinSubmitManipTeardown === 'function') {
+        try { window.__delfinSubmitManipTeardown(); } catch (e) {}
+    }
+    window.__delfinSubmitManipVersion = MANIP_VERSION;
     window.__delfinSubmitManipReady = true;
+
+    // Every global listener this closure adds, so it can take them all back.
+    var listeners = [];
+    function on(target, type, fn, options) {
+        target.addEventListener(type, fn, options);
+        listeners.push([target, type, fn, options]);
+    }
 
     window._submitMolViewerByScope = window._submitMolViewerByScope || {};
     window._submitManipStateByScope = window._submitManipStateByScope || {};
@@ -1803,6 +1821,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     var MIN_PICK_PX = 5;
     //: How far from the drawn stick a click still counts as hitting the bond.
     var BOND_PICK_PX = 6;
+    //: How much of each end of a stick belongs to its atom rather than to the
+    //: bond.  0.3 leaves the middle 40 per cent as the bond's own target.
+    var BOND_PICK_MARGIN = 0.3;
 
     function elementRadius(atom) {
         var raw = String(atom.elem || atom.atom || '');
@@ -1898,7 +1919,13 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 var len2 = vx * vx + vy * vy;
                 var t = len2 > 1e-9
                     ? ((sx - pa.x) * vx + (sy - pa.y) * vy) / len2 : 0;
-                if (t < 0) t = 0; else if (t > 1) t = 1;
+                // Only the middle of the stick belongs to the bond. The ends
+                // belong to the atoms, which is how it reads on screen -- and
+                // without this a tap aimed at an atom whose drawn disc is
+                // small (a zoomed-out structure, a hydrogen) was answered with
+                // the bond, so a three-atom selection for an angle silently
+                // became two atoms and Hold had nothing sensible to hold.
+                if (t < BOND_PICK_MARGIN || t > 1.0 - BOND_PICK_MARGIN) continue;
                 var ex = pa.x + vx * t - sx, ey = pa.y + vy * t - sy;
                 var d2 = ex * ex + ey * ey;
                 if (d2 > BOND_PICK_PX * BOND_PICK_PX) continue;
@@ -3015,7 +3042,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (state._globalBound) return;
         state._globalBound = true;
 
-        window.addEventListener('mousemove', function(e) {
+        on(window, 'mousemove', function(e) {
             var state2 = window._submitManipStateByScope[scopeKey];
             if (!state2 || !state2.drag) return;
             var d = state2.drag;
@@ -3057,7 +3084,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }, true);
 
-        window.addEventListener('mouseup', function(e) {
+        on(window, 'mouseup', function(e) {
             var state2 = window._submitManipStateByScope[scopeKey];
             if (!state2 || !state2.drag) return;
             var d = state2.drag;
@@ -3217,7 +3244,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // window catches the event earlier and lets us stop the patch.
     if (!window.__delfinSubmitManipWindowBound) {
         window.__delfinSubmitManipWindowBound = true;
-        window.addEventListener('mousedown', function(e) {
+        on(window, 'mousedown', function(e) {
             var states = window._submitManipStateByScope || {};
             for (var k in states) {
                 var s = states[k];
@@ -3254,7 +3281,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }, true);
         // Suppress context menu anywhere inside a manipulate-active viewer.
-        window.addEventListener('contextmenu', function(e) {
+        on(window, 'contextmenu', function(e) {
             var states = window._submitManipStateByScope || {};
             for (var k in states) {
                 var s = states[k];
@@ -3281,7 +3308,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 if (s.mode === 'select') setOverlayInteractive(k);
             });
         }
-        window.addEventListener('keydown', function(e) {
+        on(window, 'keydown', function(e) {
             if (e.key === 'Shift') { propagateShift(true); }
             var key = e.key || '';
             if ((e.ctrlKey || e.metaKey) && (key === 'z' || key === 'Z') && !e.shiftKey) {
@@ -3325,10 +3352,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 }
             }
         }, true);
-        window.addEventListener('keyup', function(e) {
+        on(window, 'keyup', function(e) {
             if (e.key === 'Shift') { propagateShift(false); }
         }, true);
-        window.addEventListener('blur', function() { propagateShift(false); }, true);
+        on(window, 'blur', function() { propagateShift(false); }, true);
     }
 
     // Fullscreen: on toggle, move viewer + toolbar + isomer nav + copy row into
@@ -3421,7 +3448,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             setFsIcon(btn, false);
             resizeScopeViewer(scopeKey);
         }
-        document.addEventListener('click', function(e) {
+        on(document, 'click', function(e) {
             var t = e.target;
             if (!t || !t.closest) return;
             var btn = t.closest('.submit-fullscreen-btn');
@@ -3434,7 +3461,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 enterFullscreen(scopeKey);
             }
         }, true);
-        document.addEventListener('keydown', function(e) {
+        on(document, 'keydown', function(e) {
             if (e.key !== 'Escape') return;
             var keys = Object.keys(window._submitFsByScope || {});
             if (!keys.length) return;
@@ -3475,6 +3502,40 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return result;
     }
 
+    window.__delfinSubmitManipTeardown = function() {
+        for (var i = 0; i < listeners.length; i++) {
+            try {
+                listeners[i][0].removeEventListener(
+                    listeners[i][1], listeners[i][2], listeners[i][3]);
+            } catch (e) {}
+        }
+        listeners.length = 0;
+        var states = window._submitManipStateByScope || {};
+        Object.keys(states).forEach(function(k) {
+            var s = states[k];
+            if (!s) return;
+            if (s.autoRaf) {
+                try { window.cancelAnimationFrame(s.autoRaf); } catch (e) {}
+            }
+            if (s.settleRaf) {
+                try { window.cancelAnimationFrame(s.settleRaf); } catch (e) {}
+            }
+            s.autoOpt = false; s.autoRaf = null; s.settleRaf = null;
+            if (s.canvas && s._canvasClickHandler) {
+                try {
+                    s.canvas.removeEventListener('click', s._canvasClickHandler, true);
+                } catch (e) {}
+            }
+            s._canvasClickHandler = null;
+            // The overlay carries its own listeners; removing the element
+            // takes them with it, and the new closure builds a fresh one.
+            if (s.overlay && s.overlay.parentNode) {
+                try { s.overlay.parentNode.removeChild(s.overlay); } catch (e) {}
+            }
+            s.overlay = null; s.drag = null; s.rect = null; s.energyBadge = null;
+        });
+    };
+
     window.__delfinSubmitManip = {
         onViewerReady: onViewerReady,
         setMode: setMode,
@@ -3495,6 +3556,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         stopAutoOptimize: stopAutoOptimize,
         autoOptimizeRunning: autoOptimizeRunning
     };
+
+    // Pick up where the previous version left off: a scope that already has a
+    // viewer gets its overlay and handlers back without waiting for a render.
+    (function() {
+        var states = window._submitManipStateByScope || {};
+        Object.keys(states).forEach(function(k) {
+            var s = states[k];
+            if (s && s.viewerEl) {
+                try { onViewerReady(k, s.viewerEl); } catch (e) {}
+            }
+        });
+    })();
 })();
 """
 
