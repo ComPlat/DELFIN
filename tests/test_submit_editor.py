@@ -463,7 +463,7 @@ def test_letting_go_settles_the_structure():
     assert 'stats.converged || stats.stalled' in settle
     assert 'SETTLE_MAX_FRAMES' in settle
     # And the settled geometry is what reaches Python.
-    assert 'pushXyzToPython(scopeKey)' in settle
+    assert "pushXyzToPython(scopeKey, 'drag-end')" in settle
     # A new drag takes over from a settle in progress.
     assert 'stopSettling(scopeKey);' in EDITOR
 
@@ -491,7 +491,7 @@ def test_settling_on_release_can_be_switched_off():
     assert 'state.settleOnRelease === false' in end
     # Switching off still pushes the geometry the user placed.
     assert end.index('settleOnRelease === false') < end.index('settleAfterDrag')
-    assert 'pushXyzToPython(scopeKey);' in end
+    assert "pushXyzToPython(scopeKey, 'drag-end');" in end
 
     setter = _body('setSettleOnRelease')
     assert 'stopSettling(scopeKey)' in setter
@@ -684,3 +684,56 @@ def test_a_typed_value_is_not_overwritten_by_the_running_field():
     assert 'selectionChanged && document.activeElement !== box' in readout
     # A re-render must not make the next selection look unchanged.
     assert 'state.readoutFor = null;' in _body('onViewerReady')
+
+
+def test_the_polyhedron_reconsiders_once_per_drag_not_twice_a_second():
+    """Reassigning donors to vertices was hung on the coordinate push, and the
+    running optimiser pushes twice a second as a heartbeat. So the whole field
+    was re-exported and reloaded every 500 ms, and a ligand dragged towards
+    another vertex never got the chance to settle on it.
+
+    Verified in a browser: three seconds of relaxation produce six pushes and
+    no drag-end marker at all, and one drag produces exactly one."""
+    push = _body('pushXyzToPython')
+    assert "serializeXyz(viewer, reason ? ('DELFIN ' + reason) : null)" in push
+    # The heartbeat inside the relaxation loop carries no reason.
+    tick = _body('autoOptimizeTick')
+    assert 'pushXyzToPython(scopeKey);' in tick
+    assert "drag-end" not in tick
+    # A drag that ends does, whether it settles or not.
+    assert "pushXyzToPython(scopeKey, 'drag-end')" in _body('ffEndDrag')
+    assert "pushXyzToPython(scopeKey, 'drag-end')" in _body('settleAfterDrag')
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    sync = source.split('def on_submit_manip_sync')[1].split('\n    def ')[0]
+    assert "lines[1].strip() == 'DELFIN drag-end'" in sync
+    # And it runs after the coordinates have landed, or the assignment would be
+    # worked out from where the ligands used to be.
+    assert sync.index("state['poly_recheck'] = True") < sync.index('coords_widget.value = payload')
+    assert "state.pop('poly_recheck', False)" in sync
+
+
+def test_force_field_notes_sit_under_the_structure_they_describe():
+    """What the field had to approximate — a metal with no RDKit parameters, a
+    polyhedron being forced — was written into the preview's status line, where
+    conversion messages overwrite it and it scrolls away from the structure it
+    is about."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_ff_notes' in source
+    assert "submit_ff_notes.add_class('submit-ff-notes')" in source
+    # Below the copy row, in the panel the viewer lives in.
+    children = source.split('mol_output, isomer_nav_row, xyz_copy_row')[1][:120]
+    assert 'submit_ff_notes' in children
+
+    enable = source.split('def _enable_live_forcefield')[1].split('\n    def ')[0]
+    assert "_set_ff_notes(payload.get('warnings') or [])" in enable
+    assert '_set_mol_status(*warnings' not in enable
+    # Escaped, because these carry element symbols and free text.
+    notes = source.split('def _set_ff_notes')[1].split('\n    def ')[0]
+    assert 'html.escape' in notes
+    # Switching the field off clears them.
+    assert '_set_ff_notes([])' in source

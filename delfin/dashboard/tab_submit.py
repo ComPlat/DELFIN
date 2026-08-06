@@ -3193,6 +3193,24 @@ def create_tab(ctx):
             submit_select_btn.value = False  # mutex
         _apply_manip_mode_js('manipulate' if active else 'off')
 
+    def _set_ff_notes(notes):
+        """Show what the force field had to approximate, under the viewer."""
+        rendered = [html.escape(str(note)) for note in notes if str(note).strip()]
+        if not rendered:
+            submit_ff_notes.value = ''
+            return
+        items = ''.join(
+            f'<li style="margin:0 0 2px 0;">{note}</li>' for note in rendered
+        )
+        submit_ff_notes.value = (
+            "<div style='font-size:12px; line-height:1.4; color:#5a6570; "
+            "background:#f6f7f9; border:1px solid #e0e4e8; border-radius:4px; "
+            "padding:6px 10px;'>"
+            "<b style='color:#455a64;'>Force field notes</b>"
+            f"<ul style='margin:4px 0 0 16px; padding:0;'>{items}</ul>"
+            "</div>"
+        )
+
     def _ensure_ff_bootstrap():
         if state.get('ff_bootstrap_done'):
             return
@@ -3283,10 +3301,10 @@ def create_tab(ctx):
             '}'
         )
         # Terms derived from the input geometry rather than real UFF typing --
-        # the transition-metal case -- are worth saying out loud.
-        warnings = payload.get('warnings') or []
-        if warnings:
-            _set_mol_status(*warnings[:2])
+        # the transition-metal case -- are worth saying out loud, and they
+        # belong under the structure they describe rather than in the preview's
+        # status line, which conversion messages keep overwriting.
+        _set_ff_notes(payload.get('warnings') or [])
 
     def on_submit_relax_toggle(change):
         if change.get('name') != 'value':
@@ -3295,6 +3313,7 @@ def create_tab(ctx):
         submit_relax_btn.button_style = 'info' if active else ''
         if not active:
             _ensure_manip_bootstrap()
+            _set_ff_notes([])
             _run_manip_js(
                 'if(window.__delfinSubmitManip){'
                 'window.__delfinSubmitManip.stopAutoOptimize('
@@ -3669,9 +3688,16 @@ def create_tab(ctx):
         # is not an exchange, it is a fight. Recomputing here means the
         # polyhedron accepts the ligand where it has been put and pulls it the
         # rest of the way onto the vertex it is now closest to.
-        if state.get('poly_applied') and state.get('poly_metal') is not None:
+        lines = new_xyz.splitlines()
+        drag_ended = len(lines) > 1 and lines[1].strip() == 'DELFIN drag-end'
+        if (drag_ended and state.get('poly_applied')
+                and state.get('poly_metal') is not None):
+            # Only a real end of a drag, not the twice-a-second heartbeat the
+            # running optimiser sends: reassigning on every heartbeat reloaded
+            # the whole field twice a second and never let a moved ligand
+            # settle onto its new vertex.
             state['poly_assignment'] = None
-            _schedule_ui_update(_enable_live_forcefield)
+            state['poly_recheck'] = True
 
         payload = header + coord_body
         # The guard is cleared by update_molecule_view, which traitlets only
@@ -3684,6 +3710,10 @@ def create_tab(ctx):
             return
         state['manip_inflight'] = True
         coords_widget.value = payload
+        if state.pop('poly_recheck', False):
+            # After the coordinates have landed, so the assignment is worked
+            # out from where the ligands actually are now.
+            _schedule_ui_update(_enable_live_forcefield)
 
     # -- wiring ---------------------------------------------------------
     xyz_copy_btn.on_click(on_xyz_copy)
@@ -3765,6 +3795,14 @@ def create_tab(ctx):
         layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
     )
     xyz_copy_row.add_class('submit-fs-member-copyrow')
+    # What the force field had to approximate belongs under the structure it
+    # describes, not in the preview's status line where it competes with
+    # conversion messages and scrolls away.
+    submit_ff_notes = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='4px 0 0 0'),
+    )
+    submit_ff_notes.add_class('submit-ff-notes')
     submit_manip_toolbar.add_class('submit-fs-member-toolbar')
     mol_output.add_class('submit-fs-member-viewer')
     isomer_nav_row.add_class('submit-fs-member-isomer')
@@ -3772,6 +3810,7 @@ def create_tab(ctx):
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'), mol_status,
         submit_manip_toolbar, mol_output, isomer_nav_row, xyz_copy_row,
+        submit_ff_notes,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
         widgets.VBox([

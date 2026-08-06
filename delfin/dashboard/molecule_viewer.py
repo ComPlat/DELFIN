@@ -1303,12 +1303,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         try { viewer.render(); } catch (e) {}
     }
 
-    function pushXyzToPython(scopeKey) {
+    // ``reason`` reaches Python in the comment line. It tells a genuine end of
+    // a drag apart from the twice-a-second heartbeat the running optimiser
+    // sends, which matters because only the former should make the polyhedron
+    // reconsider which donor sits on which vertex.
+    function pushXyzToPython(scopeKey, reason) {
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
         var input = getSyncInput(scopeKey);
         if (!input) return;
-        var xyz = serializeXyz(viewer);
+        var xyz = serializeXyz(viewer, reason ? ('DELFIN ' + reason) : null);
         var proto = (input.tagName === 'TEXTAREA')
             ? window.HTMLTextAreaElement.prototype
             : window.HTMLInputElement.prototype;
@@ -2251,7 +2255,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
             ffApplyFrozen(scopeKey, []);
             updateStatus(scopeKey);
-            pushXyzToPython(scopeKey);
+            pushXyzToPython(scopeKey, 'drag-end');
             return;
         }
         ffApplyFrozen(scopeKey, []);
@@ -2293,7 +2297,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.settleFrames = 0;
         var tick = function() {
             state.settleRaf = null;
-            if (!ffEnabled(state) || state.drag) { pushXyzToPython(scopeKey); return; }
+            if (!ffEnabled(state) || state.drag) {
+                pushXyzToPython(scopeKey, 'drag-end');
+                return;
+            }
             var moved = ffRelaxFrame(scopeKey);
             redrawHighlights(scopeKey);
             var stats = null;
@@ -2301,7 +2308,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             state.settleFrames++;
             var done = !moved || (stats && (stats.converged || stats.stalled)) ||
                        state.settleFrames >= SETTLE_MAX_FRAMES;
-            if (done) { pushXyzToPython(scopeKey); return; }
+            if (done) { pushXyzToPython(scopeKey, 'drag-end'); return; }
             state.settleRaf = window.requestAnimationFrame(tick);
         };
         state.settleRaf = window.requestAnimationFrame(tick);
@@ -2554,7 +2561,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (d.kind === 'translate' || d.kind === 'rotate') {
                 ffEndDrag(scopeKey, d.targets);
                 if (d.movedEnough) {
-                    pushXyzToPython(scopeKey);
+                    pushXyzToPython(scopeKey, 'drag-end');
                 }
             } else if (d.kind === 'maybe-rect') {
                 if (d.movedEnough) {
