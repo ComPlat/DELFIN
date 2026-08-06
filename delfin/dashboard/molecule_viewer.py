@@ -2278,6 +2278,56 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return touched;
     }
 
+    // --- drawing and removing bonds ---------------------------------------
+    // The sticks in the viewer are 3Dmol's own bond list, and everything the
+    // editor does about topology -- which fragment turns, which atoms are
+    // donors -- already reads from it. Editing it here therefore changes what
+    // is drawn and what the geometry operations see in one go.
+    function editBond(scopeKey, first, second, connect) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return {ok: false, error: 'no viewer'};
+        var atoms = getAtoms(viewer);
+        var i = first | 0, j = second | 0;
+        if (i === j || !atoms[i] || !atoms[j]) {
+            return {ok: false, error: 'pick two different atoms'};
+        }
+        var linked = (atoms[i].bonds || []).indexOf(j) >= 0;
+        if (connect && linked) return {ok: true, changed: false, bonded: true};
+        if (!connect && !linked) return {ok: true, changed: false, bonded: false};
+
+        function connectOne(a, b) {
+            atoms[a].bonds = atoms[a].bonds || [];
+            atoms[a].bondOrder = atoms[a].bondOrder || [];
+            atoms[a].bonds.push(b);
+            atoms[a].bondOrder.push(1);
+        }
+        function disconnectOne(a, b) {
+            var list = atoms[a].bonds || [];
+            var at = list.indexOf(b);
+            if (at < 0) return;
+            list.splice(at, 1);
+            if (atoms[a].bondOrder) atoms[a].bondOrder.splice(at, 1);
+        }
+        snapshotForUndo(scopeKey);
+        if (connect) { connectOne(i, j); connectOne(j, i); }
+        else { disconnectOne(i, j); disconnectOne(j, i); }
+
+        invalidateGeometry(viewer);
+        try { viewer.render(); } catch (e) {}
+        redrawHighlights(scopeKey);
+        pushXyzToPython(scopeKey, 'drag-end');
+        return {ok: true, changed: true, bonded: !!connect,
+                distance: distV(atoms[i], atoms[j])};
+    }
+
+    function bondsOf(scopeKey, index) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return [];
+        var atoms = getAtoms(viewer);
+        var atom = atoms[index | 0];
+        return atom ? (atom.bonds || []).slice() : [];
+    }
+
     // --- exchanging two ligands -------------------------------------------
     // Two arrangements of the same ligand set are separate minima on the same
     // surface, and a steepest-descent relaxation only ever runs downhill: it
@@ -3270,6 +3320,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setOptimizerStrength: setOptimizerStrength,
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
+        editBond: editBond,
+        bondsOf: bondsOf,
         setSettleOnRelease: setSettleOnRelease,
         unpinAll: unpinAll,
         startAutoOptimize: startAutoOptimize,

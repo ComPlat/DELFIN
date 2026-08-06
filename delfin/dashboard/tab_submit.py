@@ -770,6 +770,23 @@ def create_tab(ctx):
         layout=widgets.Layout(width='78px', height='30px', display='none'),
         disabled=True,
     )
+    submit_bond_btn = widgets.Button(
+        description='Bond', icon='link', button_style='',
+        tooltip=(
+            'Draw a bond between the two selected atoms. Distance-based '
+            'perception is unreliable in a crowded coordination sphere, and '
+            'the coordination number and the force field both follow from '
+            'these bonds.'
+        ),
+        layout=widgets.Layout(width='74px', height='30px'),
+        disabled=True,
+    )
+    submit_unbond_btn = widgets.Button(
+        description='Unbond', icon='unlink', button_style='',
+        tooltip='Remove the bond between the two selected atoms.',
+        layout=widgets.Layout(width='90px', height='30px'),
+        disabled=True,
+    )
     submit_hold_mode = widgets.Dropdown(
         options=[('pull', 'pull'), ('fix', 'fix')], value='pull',
         layout=widgets.Layout(width='78px'),
@@ -813,6 +830,7 @@ def create_tab(ctx):
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_internal_group,
+            submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync,
             submit_manip_status, submit_manip_sync,
@@ -1106,6 +1124,8 @@ def create_tab(ctx):
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
         submit_settle_btn.disabled = not enabled
+        submit_bond_btn.disabled = not enabled
+        submit_unbond_btn.disabled = not enabled
         submit_ff_dd.disabled = not enabled
         submit_optimize_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
@@ -1237,6 +1257,7 @@ def create_tab(ctx):
         # Every constraint names atoms by index, which says nothing about a
         # different molecule.
         state['constraints'] = []
+        state['bond_edits'] = {}
         state['poly_applied'] = None
         state['poly_metal'] = None
         state['poly_assignment'] = None
@@ -3252,9 +3273,26 @@ def create_tab(ctx):
         if cached and state.get('perceived_for') == fingerprint:
             return cached
         perceived = perceive_molecule(xyz)
+        _apply_bond_edits(perceived)
         state['perceived'] = perceived
         state['perceived_for'] = fingerprint
         return perceived
+
+    def _apply_bond_edits(perceived):
+        """Lay the user's bond corrections over what perception found."""
+        edits = state.get('bond_edits') or {}
+        if perceived is None or not edits:
+            return
+        bonds = {tuple(sorted(pair)) for pair in perceived.bonds}
+        for pair, connect in edits.items():
+            key = tuple(sorted(pair))
+            if max(key) >= perceived.n_atoms:
+                continue
+            if connect:
+                bonds.add(key)
+            else:
+                bonds.discard(key)
+        perceived.bonds = sorted(bonds)
 
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.
@@ -3549,6 +3587,41 @@ def create_tab(ctx):
         submit_swap_btn.layout.display = '' if ready else 'none'
         submit_swap_btn.disabled = not ready
 
+    def _edit_bond(connect):
+        """Draw or remove a bond, and remember it.
+
+        Bond perception reads distances, and in a crowded coordination sphere
+        that is simply not reliable: on a real Pt complex it counted two ipso
+        carbons of a phosphine's phenyls as donors, giving CN 6 for a
+        four-coordinate metal, while the viewer's own perception invented a
+        Pt-H bond instead. Neither is trustworthy, so the correction has to be
+        remembered and re-applied -- otherwise the next perception, which runs
+        from the geometry, would quietly undo it.
+        """
+        indices = list(state.get('picked') or [])
+        if len(indices) != 2:
+            _set_mol_status('Select exactly two atoms to change a bond.')
+            return
+        pair = (min(indices), max(indices))
+        edits = {tuple(k): v for k, v in (state.get('bond_edits') or {}).items()}
+        edits[pair] = bool(connect)
+        state['bond_edits'] = edits
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.editBond('
+            f'{json.dumps(submit_scope_id)},{pair[0]},{pair[1]},'
+            f'{"true" if connect else "false"});'
+        )
+        verb = 'Bonded' if connect else 'Unbonded'
+        _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.')
+
+    def on_submit_bond(_button=None):
+        _edit_bond(True)
+
+    def on_submit_unbond(_button=None):
+        _edit_bond(False)
+
     def on_submit_swap(_button=None):
         """Exchange two ligands outright rather than dragging one at another.
 
@@ -3794,6 +3867,8 @@ def create_tab(ctx):
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')
+    submit_bond_btn.on_click(on_submit_bond)
+    submit_unbond_btn.on_click(on_submit_unbond)
     submit_constraint_del.on_click(on_submit_constraint_del)
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)

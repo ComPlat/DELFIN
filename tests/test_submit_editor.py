@@ -844,3 +844,39 @@ def test_two_ligands_are_exchanged_rather_than_dragged_past_each_other():
     refresh = source.split('def _refresh_swap')[1].split('\n    def ')[0]
     assert 'metal_indices' in refresh
     assert "state.get('poly_applied')" not in refresh
+
+
+def test_bonds_can_be_drawn_and_removed_by_hand():
+    """Bond perception reads distances, and in a crowded coordination sphere
+    that is not reliable. On a real Pt complex the two ipso carbons of a
+    phosphine's phenyls sit 2.32 and 2.53 A from the metal, in among the true
+    donors at 2.25 to 2.40, and were counted as donors: CN 6 for a
+    four-coordinate square-planar Pt. The viewer's own perception was no
+    better, inventing a Pt-H bond at 1.88 A instead. Neither can be trusted,
+    so the user has to be able to say what is bonded.
+
+    Removing the two spurious Pt-C bonds takes the complex from CN 6 offering
+    octahedral and trigonal prismatic to CN 4 offering square planar, which is
+    what a Pt(II) complex is."""
+    edit = _body('editBond')
+    # It edits the model's own bond list, which is what the sticks are drawn
+    # from and what every geometry operation here already reads.
+    assert 'atoms[a].bonds.push(b)' in edit
+    assert 'list.splice(at, 1)' in edit
+    assert 'atoms[a].bondOrder' in edit
+    assert 'snapshotForUndo(scopeKey)' in edit
+    assert "pushXyzToPython(scopeKey, 'drag-end')" in edit
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_bond_btn' in source and 'submit_unbond_btn' in source
+    # The correction is remembered and laid over perception, or the next
+    # perception -- which runs from the geometry -- would quietly undo it.
+    apply_edits = source.split('def _apply_bond_edits')[1].split('\n    def ')[0]
+    assert 'perceived.bonds = sorted(bonds)' in apply_edits
+    assert 'bonds.discard(key)' in apply_edits
+    assert '_apply_bond_edits(perceived)' in source
+    # And it is dropped when a different structure arrives.
+    view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
+    assert "state['bond_edits'] = {}" in view
