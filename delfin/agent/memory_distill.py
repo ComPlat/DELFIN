@@ -279,7 +279,13 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
                 # save_typed_memory parses the "global:" prefix itself and
                 # routes to ~/.delfin/memory; the repo_root is only used
                 # for project-scoped facts.
-                save_typed_memory(body, repo_root=repo_root or ".")
+                # Distilled by the model from the conversation, so it is
+                # marked as the model's and decays if it is never recalled.
+                # The "global:" prefix stays honoured here: automatic memory
+                # is opt-in, and crossing repositories with standing facts
+                # is the feature the user switched on.
+                save_typed_memory(body, repo_root=repo_root or ".",
+                                  source="agent", allow_scope_prefix=True)
             else:
                 save_memory(body, source="auto-distill")
             existing.add(body.lower())

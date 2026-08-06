@@ -115,8 +115,34 @@ def _atomic_write(path: Path, text: str) -> None:
 # rewrites unchanged via the ``extras`` mapping.
 _KNOWN_FRONT_FIELDS = frozenset({
     "name", "description", "created_at", "updated_at", "use_count",
-    "superseded", "type", "domain",
+    "superseded", "type", "domain", "source",
 })
+
+
+# Who wrote the memory. A fact the user typed and a fact the model invented
+# mid-turn were byte-identical on disk, which mattered because `feedback`
+# and `user` entries are exempt from age pruning: an invented one was
+# immortal and recalled into every later session. Recorded on the FILE, like
+# the domain, so the decision does not depend on the model remembering it.
+SOURCE_USER = "user"
+SOURCE_AGENT = "agent"
+
+# Model-written memories decay when they stop earning their place. Recall
+# bumps updated_at, so this is disuse, not age: a memory the agent keeps
+# pulling into prompts survives indefinitely.
+_AGENT_MEMORY_MAX_AGE_DAYS = 90
+
+
+def _normalise_source(value: object) -> str:
+    """Anything that is not explicitly the agent counts as the user.
+
+    Files written before this field existed have no `source:` line; reading
+    them as the user's keeps their existing protection rather than silently
+    scheduling the whole legacy store for deletion.
+    """
+    return (SOURCE_AGENT
+            if str(value or "").strip().lower() == SOURCE_AGENT
+            else SOURCE_USER)
 
 
 def _compose_frontmatter(
@@ -130,6 +156,7 @@ def _compose_frontmatter(
     body: str,
     superseded: str = "",
     domain: str = "",
+    source: str = "",
     extras: dict[str, str] | None = None,
 ) -> str:
     """Serialise a typed memory file (frontmatter + body)."""
@@ -143,6 +170,8 @@ def _compose_frontmatter(
     ]
     if domain:
         lines.append(f"domain: {domain}")
+    if source:
+        lines.append(f"source: {_normalise_source(source)}")
     if superseded:
         lines.append(f"superseded: {superseded}")
     for key, value in (extras or {}).items():
@@ -899,15 +928,19 @@ def save_typed_memory(
     title: str | None = None,
     scope: str = "project",
     domain: str | None = None,
+    source: str = SOURCE_USER,
+    allow_scope_prefix: bool = False,
 ) -> tuple[Path, str, str]:
     """Persist a typed memory in the .delfin project-memory layout.
 
     Writes:
     - ``~/.delfin/projects/<slug>/memory/<type>_<kebab-slug>.md`` with
       ``name:``, ``description:`` and ``metadata.type`` frontmatter.
-      ``scope="user"`` (or a leading ``global:`` prefix in the text, which
-      always wins) targets the user-wide ``~/.delfin/memory/`` store
-      instead, so identity/standing-feedback facts cross repos.
+      ``scope="user"`` targets the user-wide ``~/.delfin/memory/`` store
+      instead, so identity/standing-feedback facts cross repos. A leading
+      ``global:`` prefix in the TEXT does the same, but only when the caller
+      passes ``allow_scope_prefix`` — text is the one channel the model
+      controls end to end, and the reach of a memory is not its decision.
     - Prepends a one-line pointer to that file under the matching section
       of ``MEMORY.md``, creating the section if missing.
 
@@ -929,9 +962,21 @@ def save_typed_memory(
     """
     body = (text or "").strip()
     prefix_scope, body = parse_memory_scope(body)
+    if prefix_scope == "user" and not allow_scope_prefix:
+        # A `global:` prefix reaches the user-wide store that EVERY other
+        # workspace reads. The `remember` tool's schema has no scope
+        # parameter and tells the model it is writing project memory, so
+        # honouring the prefix let the one carrier the model fully controls
+        # widen its own reach without the user ever seeing a choice. Callers
+        # acting on text the user typed themselves (/remember) opt in; the
+        # default refuses, so a write path added later fails closed.
+        #
+        # The prefix is still stripped: it was an instruction, not content.
+        prefix_scope = "project"
     if prefix_scope == "user":
         scope = "user"
     scope = "user" if scope == "user" else "project"
+    source = _normalise_source(source)
     resolved_domain = resolve_memory_domain(repo_root, domain)
     if resolved_domain == DOMAIN_OFFICE:
         # An office convention describes one folder's way of working. The
@@ -1027,6 +1072,11 @@ def save_typed_memory(
             name=slug, description=description, created_at=created_at,
             updated_at=now, use_count=use_count, memory_type=memory_type,
             body=body, superseded=superseded, domain=resolved_domain,
+            # The merged file carries the incoming writer's text, so it
+            # carries the incoming writer's trust: the model rewriting the
+            # user's memory drops it to agent-grade, and the user restating
+            # the model's raises it back.
+            source=source,
             extras=extras,
         )
         _atomic_write(fpath, front)
@@ -1057,7 +1107,7 @@ def save_typed_memory(
     front = _compose_frontmatter(
         name=slug, description=description, created_at=now,
         updated_at=now, use_count=1, memory_type=memory_type, body=body,
-        domain=resolved_domain,
+        domain=resolved_domain, source=source,
         extras={"anchors": anchors_json} if anchors_json else None,
     )
     _atomic_write(fpath, front)
@@ -1187,6 +1237,10 @@ def list_typed_memories(
             # Which kind of work this memory came out of. Absent in files
             # written before domains existed -> the legacy default.
             "domain": memory_text_domain(text),
+            # Who wrote it. Legacy files have no `source:` line and read as
+            # the user's, so nothing written before the field existed loses
+            # its protection retroactively.
+            "source": _normalise_source(meta.get("source")),
             "body": body.strip(),
             # Usage/decay metadata. Old files lack these -> fall back to the
             # file mtime so LRU pruning still has a sane ordering signal.
@@ -1281,26 +1335,41 @@ def prune_memories(
     pruning; with ``scope="user"`` (the global store) EVERY type gets that
     protected treatment — global facts are deliberate, identity-grade.
 
+    Neither exemption covers a memory the MODEL wrote (``source: agent``):
+    those expire ``_AGENT_MEMORY_MAX_AGE_DAYS`` after they were last
+    recalled, whatever their type and store, and lose the cap tiebreak to
+    the user's own. The exemptions exist because the user meant it.
+
     Called after every write path (remember tool, /remember, auto-memory
     distill) so the store self-limits instead of growing unbounded and
     drowning BM25 recall in look-alikes. Operates on one store per call.
     """
     scope = "user" if scope == "user" else "project"
+    now = int(time.time())
     cutoff = None
     if max_age_days is not None and max_age_days >= 0:
-        cutoff = int(time.time()) - (max_age_days * 86_400)
+        cutoff = now - (max_age_days * 86_400)
+    # Model-written memories carry their own deadline, independent of the
+    # caller's setting and of the type exemptions: those exemptions exist
+    # because a `feedback` or `user` fact is a deliberate correction from
+    # the user, which is exactly what an invented one is not.
+    agent_cutoff = now - (_AGENT_MEMORY_MAX_AGE_DAYS * 86_400)
 
     by_type: dict[str, list[dict]] = {}
     for rec in list_typed_memories(repo_root, scope=scope):
         by_type.setdefault(rec["type"], []).append(rec)
 
+    def _expired(rec: dict, protected: bool) -> bool:
+        updated = int(rec.get("updated_at", 0))
+        if rec.get("source") == SOURCE_AGENT:
+            return updated < agent_cutoff
+        return cutoff is not None and not protected and updated < cutoff
+
     deleted: list[str] = []
     for mtype, recs in by_type.items():
         protected = scope == "user" or mtype in _PRUNE_PROTECTED
         type_cap = max_per_type * (_PRUNE_PROTECTION_FACTOR if protected else 1)
-        stale = [] if cutoff is None or protected else [
-            rec for rec in recs if int(rec.get("updated_at", 0)) < cutoff
-        ]
+        stale = [rec for rec in recs if _expired(rec, protected)]
         stale_files = {rec["file"] for rec in stale}
         survivors = [rec for rec in recs if rec["file"] not in stale_files]
         survivors.sort(
@@ -1308,6 +1377,9 @@ def prune_memories(
                 int(r.get("updated_at", 0)),
                 int(r.get("use_count", 0)),
                 -int(r.get("stale_hits", 0)),
+                # Last tiebreak: between two memories the store values
+                # equally, the user's own outlives the model's.
+                r.get("source") != SOURCE_AGENT,
             ),
             reverse=True,
         )
@@ -1369,7 +1441,12 @@ def record_memory_recall(
             name=name, description=description, created_at=created_at,
             updated_at=now, use_count=use_count, memory_type=mtype,
             body=body.strip(), superseded=superseded,
-            domain=memory_text_domain(text), extras=meta,
+            domain=memory_text_domain(text),
+            # `source` is a field the composer owns, so `extras` skips it;
+            # without carrying it forward here a single recall would erase
+            # the provenance and hand the memory back its exemption.
+            source=meta.get("source", ""),
+            extras=meta,
         )
         try:
             _atomic_write(p, front)
@@ -1432,6 +1509,7 @@ def record_stale_hits(
             body=body.strip(),
             superseded=" ".join(meta.get("superseded", "").split())[:160],
             domain=memory_text_domain(text),
+            source=meta.get("source", ""),
             extras=extras,
         )
         try:

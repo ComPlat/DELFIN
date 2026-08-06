@@ -151,7 +151,8 @@ def test_an_office_memory_cannot_be_filed_in_the_user_wide_store(office_dir):
     normally routes a fact there."""
     fpath, _slug, _mtype = ms.save_typed_memory(
         "global: feedback: series files are named <Belegnr>_<Nachname>.pdf",
-        repo_root=office_dir)
+        repo_root=office_dir,
+        allow_scope_prefix=True)
     assert ms.list_typed_memories(office_dir, scope="user") == []
     assert fpath.parent == ms._delfin_memory_dir(office_dir)
 
@@ -248,7 +249,8 @@ def test_a_chemistry_memory_does_not_reach_an_office_prompt(
     ms.save_typed_memory(
         "global: feedback: always ground ORCA keywords in the manual before "
         "answering",
-        repo_root=code_dir)
+        repo_root=code_dir,
+        allow_scope_prefix=True)
     # The office folder has one convention of its own.
     ms.save_typed_memory(
         "project: the Kostenstelle is in column D, not column C",
@@ -280,7 +282,8 @@ def test_a_neutral_memory_reaches_both_domains(office_dir, code_dir):
     an office turn does pick up from outside its own folder."""
     ms.save_typed_memory(
         "global: user: answers stay short and end with the open points",
-        repo_root=code_dir, domain=ms.DOMAIN_GENERAL)
+        repo_root=code_dir, domain=ms.DOMAIN_GENERAL,
+        allow_scope_prefix=True)
     loader = PromptLoader()
     office_prompt = _office_prompt(loader, office_dir, "check the list")
     assert "end with the open points" in office_prompt

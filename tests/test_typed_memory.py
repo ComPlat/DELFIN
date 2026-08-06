@@ -369,17 +369,17 @@ def test_rewrites_preserve_hand_added_frontmatter(fake_home, tmp_path):
     p, _slug, _t = ms.save_typed_memory(
         "project: emitters are optimised with CAM-B3LYP", repo_root=repo)
     text = p.read_text(encoding="utf-8")
-    p.write_text(text.replace("metadata:", "source: hand-curated\nmetadata:"),
+    p.write_text(text.replace("metadata:", "curator: a colleague\nmetadata:"),
                  encoding="utf-8")
 
     ms.record_memory_recall(repo, [p.name])
-    assert "source: hand-curated" in p.read_text(encoding="utf-8")
+    assert "curator: a colleague" in p.read_text(encoding="utf-8")
 
     ms.save_typed_memory(
         "project: emitters are optimised with CAM-B3LYP today",
         repo_root=repo)
     after = p.read_text(encoding="utf-8")
-    assert "source: hand-curated" in after
+    assert "curator: a colleague" in after
     assert "superseded:" in after
 
 
@@ -593,7 +593,7 @@ def test_parse_memory_type_global_prefix():
 def test_global_prefix_routes_to_user_store(fake_home, tmp_path):
     repo = tmp_path / "repo"; repo.mkdir()
     fpath, _, mtype = ms.save_typed_memory(
-        "global: feedback: never add attribution trailers", repo_root=repo)
+        "global: feedback: never add attribution trailers", repo_root=repo, allow_scope_prefix=True)
     assert mtype == "feedback"
     gdir = tmp_path / ".delfin" / "memory"
     assert fpath.parent == gdir
@@ -617,7 +617,7 @@ def test_global_memory_skips_anchor_capture(fake_home, tmp_path):
     (repo / "mod.py").write_text("alpha = 1\n", encoding="utf-8")
     fpath, _, _ = ms.save_typed_memory(
         "global: reference: interesting bits in mod.py:1 sometimes",
-        repo_root=repo)
+        repo_root=repo, allow_scope_prefix=True)
     assert "anchors:" not in fpath.read_text(encoding="utf-8")
 
 
@@ -625,7 +625,7 @@ def test_list_typed_memories_scopes(fake_home, tmp_path):
     repo = tmp_path / "repo"; repo.mkdir()
     ms.save_typed_memory("project: repo-local fact alpha", repo_root=repo)
     ms.save_typed_memory("global: user: cross-repo identity beta",
-                         repo_root=repo)
+                         repo_root=repo, allow_scope_prefix=True)
     proj = ms.list_typed_memories(repo)
     assert [r["scope"] for r in proj] == ["project"]
     glob = ms.list_typed_memories(repo, scope="user")
@@ -638,7 +638,7 @@ def test_list_typed_memories_scopes(fake_home, tmp_path):
 def test_delete_typed_memory_user_scope(fake_home, tmp_path):
     repo = tmp_path / "repo"; repo.mkdir()
     fpath, slug, _ = ms.save_typed_memory(
-        "global: user: deletable identity fact", repo_root=repo)
+        "global: user: deletable identity fact", repo_root=repo, allow_scope_prefix=True)
     # The default (project) scope cannot see it ...
     assert ms.delete_typed_memory(repo, slug) is None
     # ... the user scope can, and the global index pointer goes with it.
@@ -652,7 +652,7 @@ def test_delete_typed_memory_user_scope(fake_home, tmp_path):
 def test_delete_typed_memory_scope_all_reaches_both(fake_home, tmp_path):
     repo = tmp_path / "repo"; repo.mkdir()
     gpath, gslug, _ = ms.save_typed_memory(
-        "global: user: reachable via scope all", repo_root=repo)
+        "global: user: reachable via scope all", repo_root=repo, allow_scope_prefix=True)
     assert ms.delete_typed_memory(repo, gslug, scope="all") == gpath
     assert not gpath.exists()
 
@@ -664,7 +664,7 @@ def test_prune_user_store_gets_protected_caps(fake_home, tmp_path):
     for i in range(6):
         ms.save_typed_memory(
             f"global: reference: distinct global source {i} sigma{i}",
-            repo_root=repo)
+            repo_root=repo, allow_scope_prefix=True)
     deleted = ms.prune_memories(repo, max_per_type=1, max_age_days=0,
                                 scope="user")
     assert len(deleted) == 2
@@ -676,7 +676,7 @@ def test_prune_user_store_gets_protected_caps(fake_home, tmp_path):
 def test_record_memory_recall_user_scope(fake_home, tmp_path):
     repo = tmp_path / "repo"; repo.mkdir()
     p, _, _ = ms.save_typed_memory(
-        "global: user: recallable identity fact", repo_root=repo)
+        "global: user: recallable identity fact", repo_root=repo, allow_scope_prefix=True)
     assert ms.record_memory_recall(repo, [p.name], scope="user") == 1
     rec = ms.list_typed_memories(repo, scope="user")[0]
     assert rec["use_count"] == 2

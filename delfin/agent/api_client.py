@@ -8172,7 +8172,14 @@ class _DocToolExecutor:
         try:
             from .memory_store import save_typed_memory
             path, slug, mtype = save_typed_memory(
-                text, repo_root=root, memory_type=memory_type, title=title)
+                text, repo_root=root, memory_type=memory_type, title=title,
+                # Written by the model, and marked as such on the file: it
+                # decays when it stops being recalled instead of joining the
+                # user's own corrections, which never expire. The scope
+                # prefix stays refused (the default) -- this tool's schema
+                # offers no scope, so text asking for one is the model
+                # widening its own reach.
+                source="agent")
         except Exception as exc:
             return json.dumps({"error": f"could not save memory: {exc}"})
         # Self-limit the store on every write path — auto-memory distill is
