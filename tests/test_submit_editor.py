@@ -442,3 +442,37 @@ def test_remembered_bonding_is_dropped_when_the_structure_really_changes():
     assert "state['perceived'] = None" in view
     # It must sit after the inflight early return, or a drag would clear it.
     assert view.index("state.get('manip_inflight')") < view.index("state['perceived'] = None")
+
+
+def test_letting_go_settles_the_structure():
+    """The dragged atom was left wherever the cursor stopped, and the strain
+    the drag put in reached the coordinate box and from there the calculation.
+    Measured on cholesterol at the shipped strength: 176 kcal/mol above what a
+    relaxation gives, and 1447 kcal/mol above after a harder pull."""
+    end = _body('ffEndDrag')
+    assert 'settleAfterDrag(scopeKey)' in end
+
+    settle = _body('settleAfterDrag')
+    # The continuous optimiser is already doing this; do not run both.
+    assert 'if (state.autoOpt) return;' in settle
+    # Stops on convergence, on a stall, or on a bounded number of frames.
+    assert 'stats.converged || stats.stalled' in settle
+    assert 'SETTLE_MAX_FRAMES' in settle
+    # And the settled geometry is what reaches Python.
+    assert 'pushXyzToPython(scopeKey)' in settle
+    # A new drag takes over from a settle in progress.
+    assert 'stopSettling(scopeKey);' in EDITOR
+
+
+def test_the_viewer_shows_the_energy():
+    badge = _body('updateEnergyBadge')
+    assert 'kcal/mol' in badge
+    # Shown from the moment the field is loaded, before anything is relaxed.
+    assert '__delfinFF.energy(scopeKey, ffReadPositions(viewer))' in badge
+    # And it says which parameters produced it.
+    assert 'state.ffInfo' in badge
+    ensure = _body('ensureEnergyBadge')
+    assert "badge.className = 'submit-energy-badge'" in ensure
+    assert 'pointer-events:none' in ensure
+    # A re-render replaces the viewer element, so the badge must be forgotten.
+    assert 'state.energyBadge = null;' in _body('onViewerReady')

@@ -1479,6 +1479,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         try { viewer.render(); } catch (e) {}
         updateStatus(scopeKey);
         updateMeasureBox(scopeKey);
+        updateEnergyBadge(scopeKey);
     }
 
     // Fill the toolbar's value box with what the current selection describes,
@@ -1719,6 +1720,59 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var key = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
         var r = VDW_RADII[key];
         return (typeof r === 'number') ? r : DEFAULT_VDW;
+    }
+
+    function ensureEnergyBadge(scopeKey) {
+        var state = getState(scopeKey);
+        if (state.energyBadge && state.energyBadge.parentNode) return state.energyBadge;
+        var host = state.viewerEl;
+        if (!host) return null;
+        if (window.getComputedStyle(host).position === 'static') {
+            host.style.position = 'relative';
+        }
+        var badge = document.createElement('div');
+        badge.className = 'submit-energy-badge';
+        badge.style.cssText =
+            'position:absolute;left:8px;top:8px;z-index:25;pointer-events:none;' +
+            'font:12px/1.35 monospace;color:#37474f;background:rgba(255,255,255,0.82);' +
+            'border:1px solid #cfd8dc;border-radius:4px;padding:2px 7px;' +
+            'white-space:nowrap;display:none;';
+        host.appendChild(badge);
+        state.energyBadge = badge;
+        return badge;
+    }
+    function updateEnergyBadge(scopeKey) {
+        var state = getState(scopeKey);
+        var badge = ensureEnergyBadge(scopeKey);
+        if (!badge) return;
+        if (!ffEnabled(state)) { badge.style.display = 'none'; return; }
+        var stats = null;
+        try { stats = window.__delfinFF.stats(scopeKey); } catch (e) {}
+        var energy = stats ? stats.energy : null;
+        if (typeof energy !== 'number' || !isFinite(energy)) {
+            // Nothing has been relaxed yet, so the engine holds no energy:
+            // evaluate the geometry as it stands, or the readout would stay
+            // blank until the user touched something.
+            var viewer = getViewer(scopeKey);
+            if (viewer) {
+                try {
+                    energy = window.__delfinFF.energy(scopeKey, ffReadPositions(viewer));
+                } catch (e) { energy = null; }
+            }
+        }
+        if (typeof energy !== 'number' || !isFinite(energy)) {
+            badge.style.display = 'none';
+            return;
+        }
+        var method = (state.ffInfo && state.ffInfo.source) ? state.ffInfo.source : 'uff';
+        var busy = state.autoOpt || state.settleRaf || state.drag;
+        badge.innerHTML =
+            'E = <b>' + energy.toFixed(2) + '</b> kcal/mol' +
+            '<span style="color:#90a4ae;"> · ' +
+            String(method).replace('-uff', ' UFF').replace('geometric-fallback', 'UFF + restraints') +
+            (busy ? ' \u00b7 relaxing' : ((stats && stats.converged) ? ' \u00b7 settled' : '')) +
+            '</span>';
+        badge.style.display = '';
     }
 
     function raycastAtom(scopeKey, clientX, clientY) {
@@ -2120,6 +2174,44 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
         try { window.__delfinFF.release(scopeKey); } catch (e) {}
+        // Letting go frees the atom that was held, and the structure settles
+        // around its new position instead of keeping the strain the drag put
+        // in. Without this the geometry that reaches the coordinate box -- and
+        // from there the calculation -- is wherever the cursor happened to
+        // stop: measured 176 kcal/mol above what settling gives.
+        settleAfterDrag(scopeKey);
+    }
+
+    function stopSettling(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.settleRaf) return;
+        try { window.cancelAnimationFrame(state.settleRaf); } catch (e) {}
+        state.settleRaf = null;
+    }
+
+    var SETTLE_MAX_FRAMES = 240;
+    function settleAfterDrag(scopeKey) {
+        var state = getState(scopeKey);
+        // The continuous optimiser is already doing exactly this.
+        if (state.autoOpt) return;
+        if (state.settleRaf) {
+            try { window.cancelAnimationFrame(state.settleRaf); } catch (e) {}
+        }
+        state.settleFrames = 0;
+        var tick = function() {
+            state.settleRaf = null;
+            if (!ffEnabled(state) || state.drag) { pushXyzToPython(scopeKey); return; }
+            var moved = ffRelaxFrame(scopeKey);
+            redrawHighlights(scopeKey);
+            var stats = null;
+            try { stats = window.__delfinFF.stats(scopeKey); } catch (e) {}
+            state.settleFrames++;
+            var done = !moved || (stats && (stats.converged || stats.stalled)) ||
+                       state.settleFrames >= SETTLE_MAX_FRAMES;
+            if (done) { pushXyzToPython(scopeKey); return; }
+            state.settleRaf = window.requestAnimationFrame(tick);
+        };
+        state.settleRaf = window.requestAnimationFrame(tick);
     }
     function nowMs() {
         return (window.performance && typeof window.performance.now === 'function')
@@ -2266,6 +2358,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                         lastX: e.clientX, lastY: e.clientY,
                         movedEnough: false, snapshotted: false
                     };
+                    stopSettling(scopeKey);
                     ffBeginDrag(scopeKey, state.drag.targets);
                     return;
                 }
@@ -2445,6 +2538,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         // Overlay is attached fresh per render (old one is gone with the HTML)
         state.overlay = null;
+        state.energyBadge = null;
         state.rect = null;
         state.drag = null;
         // The parameters were assigned for the geometry that just went away.
@@ -2453,6 +2547,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.autoOpt = false;
         state.autoRaf = null;
+        if (state.settleRaf) {
+            try { window.cancelAnimationFrame(state.settleRaf); } catch (e) {}
+        }
+        state.settleRaf = null;
         state.ffActive = false;
         state.ffInfo = null;
         state.measureBox = null;
@@ -2732,6 +2830,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.ffActive = !!(result && result.ok);
         state.ffInfo = result;
+        updateEnergyBadge(scopeKey);
         if (state.ffActive && state.ffStrength) {
             setOptimizerStrength(scopeKey, state.ffStrength);
         }
