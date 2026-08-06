@@ -680,11 +680,6 @@ def create_tab(ctx):
         layout=widgets.Layout(width='78px', display='none'),
         disabled=True,
     )
-    submit_order_dd = widgets.Dropdown(
-        options=[('single', 1), ('double', 2), ('triple', 3)], value=1,
-        layout=widgets.Layout(width='96px', display='none'),
-        disabled=True,
-    )
     submit_manip_clear_btn = widgets.Button(
         description='Clear', button_style='warning',
         tooltip='Clear selection & pivot',
@@ -885,7 +880,7 @@ def create_tab(ctx):
         [
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
-            submit_element_dd, submit_order_dd,
+            submit_element_dd,
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
@@ -1189,7 +1184,6 @@ def create_tab(ctx):
         submit_manip_btn.disabled = not enabled
         submit_draw_btn.disabled = not enabled
         submit_element_dd.disabled = not enabled
-        submit_order_dd.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
@@ -3284,8 +3278,7 @@ def create_tab(ctx):
 
     def _refresh_draw_controls():
         drawing = bool(submit_draw_btn.value)
-        for widget in (submit_element_dd, submit_order_dd):
-            widget.layout.display = '' if drawing else 'none'
+        submit_element_dd.layout.display = '' if drawing else 'none'
 
     def on_submit_select_toggle(change):
         if change.get('name') != 'value':
@@ -3318,15 +3311,17 @@ def create_tab(ctx):
             on_submit_draw_choice(None)
 
     def on_submit_draw_choice(_change=None):
-        """Hand the element and bond order the browser draws with."""
+        """Hand over the element the browser draws with.
+
+        Not the bond order: a drawn bond is single, and what it should be is
+        decided afterwards by tapping the stick, where it can be seen. Having
+        to choose in advance was a setting that was almost always wrong.
+        """
         _ensure_manip_bootstrap()
         _run_manip_js(
-            'if(window.__delfinSubmitManip){'
+            'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setDrawElement('
             f'{json.dumps(submit_scope_id)},{json.dumps(submit_element_dd.value)});'
-            'window.__delfinSubmitManip.setDrawOrder('
-            f'{json.dumps(submit_scope_id)},{int(submit_order_dd.value)});'
-            '}'
         )
 
     def _set_ff_notes(notes):
@@ -4152,6 +4147,28 @@ def create_tab(ctx):
                 was = structure.symbols[index] if index < len(structure) else '?'
                 if set_element(structure, index, element):
                     _apply_structure(structure, f'{was}{index} is now {element}.')
+            elif verb == 'bondcycle' and len(fields) == 2:
+                first, second = (int(v) for v in fields)
+                ends = [structure.symbols[i] for i in (first, second)]
+                current = structure.order(first, second)
+                stepped = None
+                for step in (1, 2, 3):
+                    candidate = (current - 1 + step) % 3 + 1
+                    if candidate == current:
+                        break
+                    if set_bond_order(structure, first, second, candidate):
+                        stepped = candidate
+                        break
+                if stepped is None:
+                    _set_mol_status(
+                        f'{ends[0]}{first}-{ends[1]}{second} can only be '
+                        'single: neither end has valence for more.'
+                    )
+                else:
+                    named = {1: 'single', 2: 'double', 3: 'triple'}[stepped]
+                    _apply_structure(
+                        structure,
+                        f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')
             elif verb == 'bondorder' and len(fields) == 3:
                 first, second, order = (int(v) for v in fields)
                 named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
@@ -4448,7 +4465,6 @@ def create_tab(ctx):
     submit_cmd_sync.observe(on_submit_cmd, names='value')
     submit_draw_btn.observe(on_submit_draw_toggle, names='value')
     submit_element_dd.observe(on_submit_draw_choice, names='value')
-    submit_order_dd.observe(on_submit_draw_choice, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')

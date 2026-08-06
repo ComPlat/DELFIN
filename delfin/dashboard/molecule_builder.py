@@ -53,6 +53,18 @@ _VALENCE = {
     'Si': 4, 'P': 3, 'S': 2, 'Cl': 1, 'Br': 1, 'I': 1,
 }
 
+#: Lone pairs on a neutral atom of each element.  The shape at a centre is
+#: set by its steric number -- the number of *partners* plus the lone pairs --
+#: and not by the sum of its bond orders: the carbons of ethene have three
+#: partners and no lone pair, so they are trigonal planar, while the double
+#: bond counts once.  Using the valence sum instead made ethene tetrahedral.
+_LONE_PAIRS = {
+    'H': 0, 'B': 0, 'C': 0, 'Si': 0,
+    'N': 1, 'P': 1,
+    'O': 2, 'S': 2,
+    'F': 3, 'Cl': 3, 'Br': 3, 'I': 3,
+}
+
 #: Covalent radii in Angstrom, used when RDKit cannot supply one.
 _RADII = {
     'H': 0.31, 'B': 0.84, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57,
@@ -389,7 +401,10 @@ def adjust_hydrogens(structure: Structure,
                 _sub(structure.coords[j], centre)
                 for j in structure.neighbours(index) if j not in doomed
             ]
-            total = len(taken) + deficit
+            # Steric number again: the lone pairs take room too, which is why
+            # ammonia is pyramidal and water bent. Without them both came out
+            # of here flat -- three hydrogens at 120 degrees, and two at 180.
+            total = len(taken) + deficit + _LONE_PAIRS.get(symbol, 0)
             distance = bond_length(symbol, 'H')
             for direction in free_directions(taken, deficit, total):
                 new = structure.add_atom(
@@ -470,7 +485,8 @@ def set_element(structure: Structure, index: int, element: str) -> bool:
         if length > 1e-6 and structure.symbols[neighbour] == 'H':
             structure.coords[neighbour] = _add(
                 structure.coords[index], _scale(offset, wanted / length))
-    adjust_hydrogens(structure, [index])
+    mapping = adjust_hydrogens(structure, [index])
+    rearrange_hydrogens(structure, mapping.get(index, index) if mapping else index)
     return True
 
 
@@ -489,13 +505,59 @@ def delete_atoms(structure: Structure, indices: Iterable[int]) -> int:
                 continue
             if all(j in drop for j in structure.neighbours(neighbour)):
                 drop.add(neighbour)
+    # A hydrogen the user deleted stays deleted. Refilling the valence it
+    # freed grew it straight back, so removing one was a no-op: methane came
+    # back as methane. Deleting a heavy atom is different -- there the
+    # neighbour is left with a hole nobody asked for, and it gets a hydrogen.
+    kept_open = {
+        n for i in drop if structure.symbols[i] == 'H'
+        for n in structure.neighbours(i)
+    }
     neighbours = set()
     for index in drop:
+        if structure.symbols[index] == 'H':
+            continue
         neighbours.update(structure.neighbours(index))
-    neighbours -= drop
+    neighbours -= drop | kept_open
     mapping = structure.remove_atoms(drop)
     adjust_hydrogens(structure, [mapping[n] for n in neighbours if n in mapping])
     return len(drop)
+
+
+def rearrange_hydrogens(structure: Structure, index: int) -> int:
+    """Move the hydrogens on one atom to the shape its bonds now imply.
+
+    Raising a bond to double does not only change how many hydrogens fit, it
+    changes where they belong: the carbons of ethene are trigonal planar, not
+    two tetrahedra sharing an edge. Leaving them where they were made a
+    molecule that looked like a twisted ethane and perceived like one -- a
+    double bond read back off that geometry came out single.
+
+    Only hydrogens move. A heavy substituent carries a whole branch with it,
+    and shifting that to satisfy one centre would wreck the rest.
+    """
+    if not 0 <= int(index) < len(structure):
+        return 0
+    index = int(index)
+    symbol = structure.symbols[index]
+    if symbol == 'H' or default_valence(symbol) is None:
+        return 0
+    centre = structure.coords[index]
+    hydrogens = structure.hydrogens_on(index)
+    if not hydrogens:
+        return 0
+    heavy = [j for j in structure.neighbours(index) if structure.symbols[j] != 'H']
+    taken = [_sub(structure.coords[j], centre) for j in heavy]
+    # The steric number: partners plus lone pairs. Counting the sum of the
+    # bond orders instead made ethene's carbons tetrahedral, because the
+    # double bond was counted twice -- they have three partners, so they are
+    # trigonal planar and the hydrogens belong at 120 degrees in that plane.
+    total = len(heavy) + len(hydrogens) + _LONE_PAIRS.get(symbol, 0)
+    distance = bond_length(symbol, 'H')
+    directions = free_directions(taken, len(hydrogens), total)
+    for hydrogen, direction in zip(hydrogens, directions):
+        structure.coords[hydrogen] = _add(centre, _scale(_unit(direction), distance))
+    return len(hydrogens)
 
 
 def set_bond_order(structure: Structure, first: int, second: int,
@@ -535,5 +597,7 @@ def set_bond_order(structure: Structure, first: int, second: int,
         if length > 1e-6:
             structure.coords[second] = _add(
                 structure.coords[first], _scale(offset, wanted / length))
-    adjust_hydrogens(structure, [first, second])
+    mapping = adjust_hydrogens(structure, [first, second])
+    for index in (first, second):
+        rearrange_hydrogens(structure, mapping.get(index, index) if mapping else index)
     return True

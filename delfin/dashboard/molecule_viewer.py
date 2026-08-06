@@ -3331,15 +3331,20 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
         var element = state.drawElement || 'C';
-        var order = state.drawOrder || 1;
+        // Drawing always makes a single bond. Anything else is reached by
+        // tapping the stick afterwards, where it can be seen.
+        var order = 1;
         var target = raycastAtom(scopeKey, clientX, clientY);
         var atoms = getAtoms(viewer);
         var anchorAtom = drag.anchor != null
             ? getAtomBySerial(viewer, drag.anchor) : null;
 
         if (!anchorAtom && drag.bond && !drag.movedEnough) {
-            pushCommandToPython(scopeKey, 'bondorder',
-                drag.bond[0] + ',' + drag.bond[1] + ',' + order);
+            // Tapping a stick steps it on: single, double, triple, single.
+            // There is nothing to choose in advance -- a bond that is drawn is
+            // single, and what it should be is decided by looking at it.
+            pushCommandToPython(scopeKey, 'bondcycle',
+                drag.bond[0] + ',' + drag.bond[1]);
             return;
         }
         if (!anchorAtom) {

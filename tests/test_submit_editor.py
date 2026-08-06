@@ -1264,7 +1264,12 @@ def test_draw_mode_hands_every_gesture_to_python():
 
     source = open(tab_submit.__file__, encoding='utf-8').read()
     assert 'submit_draw_btn' in source
-    assert 'submit_element_dd' in source and 'submit_order_dd' in source
+    # No order to choose in advance: a drawn bond is single, and what it
+    # should be is decided afterwards by tapping the stick, where it can be
+    # seen. Having to set it beforehand was a control that was nearly always
+    # on the wrong value.
+    assert 'submit_element_dd' in source
+    assert 'submit_order_dd' not in source
     handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
     for verb in ('addatom', 'grow', 'setelement', 'bondorder', 'delatoms'):
         assert f"'{verb}'" in handler, verb
@@ -1337,11 +1342,12 @@ def test_drawing_does_not_reset_the_camera_or_stop_the_field():
 
 
 def test_tapping_a_bond_in_draw_mode_retypes_it():
-    """Which is how the hydrogens and the length follow from single, double or
-    triple without redrawing anything. Verified in a browser: a tap on the
-    middle of a stick with the order set to double sends bondorder:6:0,1,2."""
+    """A tap steps it on: single, double, triple, single. The hydrogens and
+    the length follow, and the shape with them -- ethane becomes ethene with
+    its carbons trigonal planar, then ethyne, linear."""
     finish = _body('finishDraw')
     assert 'drag.bond' in finish
+    assert "'bondcycle'" in finish
     assert 'drag.bond[0]' in finish and 'drag.bond[1]' in finish
     # Only a tap, never the end of a drag -- that gesture already means grow.
     assert '!drag.movedEnough' in finish

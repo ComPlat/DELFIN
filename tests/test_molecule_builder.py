@@ -191,3 +191,54 @@ def test_raising_a_bond_keeps_the_octet():
         partner = structure.symbols.index(element)
         assert B.set_bond_order(structure, 0, partner, 2) is True, element
         assert _formula(structure) == formula, element
+
+
+def _angles_at(structure, index):
+    import itertools
+    neighbours = structure.neighbours(index)
+    return sorted(round(mff._angle_degrees(
+        structure.coords[a], structure.coords[index], structure.coords[b]), 1)
+        for a, b in itertools.combinations(neighbours, 2))
+
+
+def test_hydrogens_are_placed_in_the_shape_the_bonds_imply():
+    """The shape at a centre follows from its steric number -- the number of
+    *partners* plus the lone pairs -- not from the sum of its bond orders.
+
+    Counting the orders made ethene's carbons tetrahedral, because the double
+    bond was counted twice; and leaving the lone pairs out made ammonia planar
+    and water linear."""
+    cases = [
+        ('C', 109.5), ('N', 109.5), ('O', 109.5), ('S', 109.5), ('P', 109.5),
+    ]
+    for element, want in cases:
+        structure = _empty()
+        B.place_atom(structure, element, (0.0, 0.0, 0.0))
+        assert abs(_angles_at(structure, 0)[0] - want) < 1.5, element
+
+
+def test_raising_a_bond_moves_the_hydrogens_to_the_new_shape():
+    """Ethene's carbons are trigonal planar, not two tetrahedra sharing an
+    edge. Leaving the hydrogens where they were made a molecule that looked
+    like a twisted ethane and perceived like one."""
+    structure = _empty()
+    B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+    B.grow_from(structure, 0, 'C')
+    assert _angles_at(structure, _carbons(structure)[0])[0] == 109.5
+
+    B.set_bond_order(structure, *_carbons(structure), 2)
+    assert _angles_at(structure, _carbons(structure)[0]) == [120.0, 120.0, 120.0]
+    B.set_bond_order(structure, *_carbons(structure), 3)
+    assert _angles_at(structure, _carbons(structure)[0]) == [180.0]
+
+
+def test_a_deleted_hydrogen_stays_deleted():
+    """Refilling the valence it freed grew it straight back, so removing one
+    was a no-op: methane came back as methane. Deleting a heavy atom is
+    different -- there the neighbour is left with a hole nobody asked for."""
+    structure = _empty()
+    B.place_atom(structure, 'C', (0.0, 0.0, 0.0))
+    B.delete_atoms(structure, [1])
+    assert _formula(structure) == {'C': 1, 'H': 3}
+    B.delete_atoms(structure, [1])
+    assert _formula(structure) == {'C': 1, 'H': 2}
