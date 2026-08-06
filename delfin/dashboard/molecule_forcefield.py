@@ -1004,6 +1004,192 @@ def _empty_payload(source: str, warnings: Sequence[str]) -> Dict[str, Any]:
 METHODS = ('uff', 'mmff94')
 
 
+def polyhedron_options(perceived, metal_index):
+    """Which coordination polyhedra the donors around this metal could take.
+
+    Returns ``(coordination_number, current_geometry, [(code, label), ...])``,
+    or ``None`` when the atom is not a metal or its coordination number is
+    outside the catalogue. The geometry tables come from
+    :mod:`delfin.manta._polyhedron_targets`, the same ones MANTA builds
+    complexes with.
+    """
+    try:
+        from delfin.manta import _polyhedron_targets as targets
+    except Exception:
+        return None
+    if perceived is None:
+        return None
+    metal_index = int(metal_index)
+    if metal_index not in set(perceived.metal_indices or ()):
+        return None
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair
+        if metal_index in pair and j != metal_index
+    )
+    cn = len(donors)
+    if not 2 <= cn <= 9:
+        return None
+
+    available = []
+    for key, vectors in targets._IDEAL_VECTORS.items():
+        if vectors.shape[0] != cn:
+            continue
+        if key not in available:
+            available.append(key)
+    if not available:
+        return None
+
+    # Which polyhedron the complex actually sits closest to. The CN-based
+    # classifier answers what a given coordination number *usually* is, which
+    # for CN=4 is always tetrahedral -- it would have labelled a clearly
+    # square-planar Ni complex 'tetrahedral'. Measure instead.
+    current = _closest_polyhedron(perceived, donors, metal_index, available)
+    labels = {
+        'linear_2': 'linear', 'bent_2': 'bent',
+        'trigonal_planar': 'trigonal planar',
+        'Td': 'tetrahedral', 'sqp_4': 'square planar', 'see_saw': 'see-saw',
+        'tbp': 'trigonal bipyramidal', 'sqp_5': 'square pyramidal',
+        'Oh': 'octahedral', 'trig_prism': 'trigonal prismatic',
+        'pbp': 'pentagonal bipyramidal', 'capped_oct': 'capped octahedral',
+        'sq_antiprism': 'square antiprismatic', 'cube': 'cubic',
+        'dodecahedron': 'dodecahedral',
+        'bicapped_trig_antiprism': 'bicapped trigonal antiprismatic',
+        'capped_sap': 'capped square antiprismatic',
+        'tricapped_tp': 'tricapped trigonal prismatic',
+    }
+    options = sorted(
+        ((key, labels.get(key, key)) for key in available),
+        key=lambda pair: pair[1],
+    )
+    return cn, current, options
+
+
+def _pairwise_angles(vectors):
+    """Sorted L-M-L angles of a set of unit vectors, in degrees.
+
+    Rotation invariant, which is the whole point: a polyhedron has to be
+    recognised whatever way round the molecule happens to lie.
+    """
+    import numpy as np
+
+    out = []
+    for a in range(len(vectors)):
+        for b in range(a + 1, len(vectors)):
+            cosine = float(np.clip(np.dot(vectors[a], vectors[b]), -1.0, 1.0))
+            out.append(math.degrees(math.acos(cosine)))
+    return sorted(out)
+
+
+def _unit_donor_vectors(perceived, donors, metal_index, coords=None):
+    import numpy as np
+
+    coords = coords if coords is not None else perceived.coords
+    centre = np.asarray(coords[metal_index], dtype=float)
+    vectors = np.asarray([coords[j] for j in donors], dtype=float) - centre
+    lengths = np.linalg.norm(vectors, axis=1)
+    if not len(lengths) or float(lengths.min()) < 1e-9:
+        return None
+    return vectors / lengths[:, None]
+
+
+def _closest_polyhedron(perceived, donors, metal_index, candidates):
+    """Name the candidate polyhedron the donors currently sit closest to.
+
+    Compared through the sorted set of L-M-L angles, so the answer does not
+    depend on how the molecule happens to be oriented.
+    """
+    import numpy as np
+
+    from delfin.manta import _polyhedron_targets as targets
+
+    observed = _unit_donor_vectors(perceived, donors, metal_index)
+    if observed is None:
+        return None
+    measured = _pairwise_angles(observed)
+
+    best, best_cost = None, None
+    for key in candidates:
+        try:
+            ideal = np.asarray(
+                targets.get_ideal_donor_vectors(len(donors), key), dtype=float,
+            )
+        except Exception:
+            continue
+        wanted = _pairwise_angles(ideal)
+        cost = float(np.mean(np.abs(np.array(measured) - np.array(wanted))))
+        if best_cost is None or cost < best_cost:
+            best, best_cost = key, cost
+    return best
+
+
+def _polyhedron_target_angles(perceived, coords, metal_index, geometry):
+    """Ideal L-M-L angles for one metal forced onto a polyhedron.
+
+    The donors are matched to the polyhedron's vertices with the Hungarian
+    algorithm, so the complex is drawn onto the target the shortest way round
+    instead of being scrambled into it.
+
+    These become the equilibrium values of ordinary harmonic angle terms with
+    UFF force constants -- a pull, not a constraint. A chelate whose bite angle
+    cannot reach the ideal vertex separation settles at a compromise between
+    ligand and polyhedron rather than being torn apart.
+    """
+    import numpy as np
+
+    from delfin.manta import _polyhedron_targets as targets
+
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair
+        if metal_index in pair and j != metal_index
+    )
+    cn = len(donors)
+    ideal = targets.get_ideal_donor_vectors(cn, geometry)
+    centre = np.asarray(coords[metal_index], dtype=float)
+    observed = np.asarray([coords[j] for j in donors], dtype=float) - centre
+    lengths = np.linalg.norm(observed, axis=1)
+    lengths[lengths < 1e-9] = 1.0
+    observed = observed / lengths[:, None]
+
+    # Cost is angular distance, so the assignment minimises how far the
+    # complex has to move.
+    ideal = np.asarray(ideal, dtype=float)
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except Exception:
+        linear_sum_assignment = None
+
+    rows, cols = list(range(cn)), list(range(cn))
+    for _pass in range(3):
+        cost = 1.0 - observed @ ideal.T
+        if linear_sum_assignment is not None:
+            rows, cols = linear_sum_assignment(cost)
+        # Kabsch: rotate the polyhedron onto the donors it was just matched to,
+        # then match again. Without this the vertices are handed out in the
+        # table's own frame and the complex is dragged the long way round.
+        matched = ideal[np.asarray(cols)]
+        target = observed[np.asarray(rows)]
+        u, _sv, vt = np.linalg.svd(matched.T @ target)
+        rotation = u @ vt
+        if np.linalg.det(rotation) < 0:
+            u[:, -1] *= -1.0
+            rotation = u @ vt
+        ideal = ideal @ rotation
+
+    assigned = {}
+    for row, col in zip(rows, cols):
+        assigned[donors[int(row)]] = np.asarray(ideal[int(col)], dtype=float)
+
+    wanted = {}
+    for a in range(cn):
+        for b in range(a + 1, cn):
+            i, k = donors[a], donors[b]
+            if i not in assigned or k not in assigned:
+                continue
+            cosine = float(np.clip(np.dot(assigned[i], assigned[k]), -1.0, 1.0))
+            wanted[(min(i, k), max(i, k))] = math.degrees(math.acos(cosine))
+    return wanted
+
+
 def normalise_method(method: Optional[str]) -> str:
     """Validate a force-field choice, falling back to UFF."""
     name = str(method or 'uff').strip().lower().replace('-', '').replace('_', '')
@@ -1017,6 +1203,7 @@ def export_forcefield_terms(
     *,
     perceived: Optional[PerceivedMolecule] = None,
     method: Optional[str] = 'uff',
+    polyhedron: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build the JSON payload of force-field terms for the browser engine.
 
@@ -1128,6 +1315,23 @@ def export_forcefield_terms(
             bonds.append({'i': i, 'j': j, 'k': round(k_bond, 4), 'r0': round(r0, 5)})
 
         # ---- angles ---------------------------------------------------
+        # A polyhedron the user asked for replaces the observed angles at that
+        # one metal with the ideal ones. They stay ordinary harmonic terms with
+        # UFF force constants, so the complex is pulled towards the shape and a
+        # chelate that cannot reach it settles at a compromise.
+        forced_angles = {}
+        forced_centre = None
+        if polyhedron:
+            try:
+                forced_centre = int(polyhedron.get('metal'))
+                forced_angles = _polyhedron_target_angles(
+                    perceived, coords, forced_centre,
+                    str(polyhedron.get('geometry')),
+                )
+            except Exception as exc:
+                warnings.append(f'Could not apply the polyhedron: {exc}')
+                forced_angles, forced_centre = {}, None
+
         for centre in range(n_atoms):
             neighbours = adjacency[centre]
             for a in range(len(neighbours)):
@@ -1150,6 +1354,10 @@ def export_forcefield_terms(
                                 (symbols[i], symbols[centre], symbols[k])
                             )
                         theta0 = _angle_degrees(coords[i], coords[centre], coords[k])
+                        if centre == forced_centre:
+                            theta0 = forced_angles.get(
+                                (min(i, k), max(i, k)), theta0,
+                            )
                         r_ij = _distance(coords[i], coords[centre])
                         r_jk = _distance(coords[k], coords[centre])
                         k_theta = _uff_angle_force_constant(
@@ -1259,6 +1467,18 @@ def export_forcefield_terms(
     if not bonds and n_atoms > 1:
         warnings.append('No bonds were perceived; only van-der-Waals terms are exported.')
 
+    if polyhedron and forced_angles:
+        warnings.append(
+            'Atom {} ({}) is being pulled towards a {} polyhedron: the angle '
+            'terms at the metal carry its ideal values instead of the measured '
+            'ones. They stay ordinary harmonic terms, so a ligand that cannot '
+            'reach the ideal settles at a compromise rather than being '
+            'strained apart.'.format(
+                forced_centre, symbols[forced_centre],
+                str(polyhedron.get('geometry')),
+            )
+        )
+
     chosen = normalise_method(method)
     if chosen == 'mmff94':
         # MMFF94 is not a drop-in for UFF here. Its bond stretch is quartic,
@@ -1277,6 +1497,10 @@ def export_forcefield_terms(
         'ok': True,
         'source': source,
         'method': chosen,
+        'polyhedron': (
+            {'metal': forced_centre, 'geometry': str(polyhedron.get('geometry'))}
+            if (polyhedron and forced_angles) else None
+        ),
         'n_atoms': n_atoms,
         'elements': list(symbols),
         'bonds': bonds,

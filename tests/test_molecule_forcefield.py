@@ -498,3 +498,86 @@ def test_uff_force_constant_formulas_reproduce_rdkit():
     assert mff._uff_bond_force_constant(carbon['Z1'], carbon['Z1'], r0) == pytest.approx(
         k_bond, rel=1e-3
     )
+
+
+# --------------------------------------------------------------------------
+# coordination polyhedra
+# --------------------------------------------------------------------------
+
+def test_polyhedron_options_follow_the_coordination_number():
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    result = mff.polyhedron_options(perceived, metal)
+    assert result is not None
+    coordination, current, choices = result
+    assert coordination == 4
+    codes = {code for code, _label in choices}
+    assert codes == {'Td', 'sqp_4', 'see_saw'}
+    assert current in codes
+    # Every entry carries a human label, not the internal code.
+    assert all(label and label != code for code, label in choices)
+
+    # A ligand atom is not a metal, and CN outside the catalogue yields nothing.
+    assert mff.polyhedron_options(perceived, 1) is None
+
+
+def test_closest_polyhedron_is_measured_not_assumed():
+    """The CN-based classifier answers what a coordination number *usually* is
+    -- always tetrahedral for CN=4 -- so a square-planar complex was labelled
+    tetrahedral. The answer has to come from the angles, and must not depend on
+    which way round the molecule happens to lie."""
+    import numpy as np
+
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair if metal in pair and j != metal
+    )
+    candidates = ['Td', 'sqp_4', 'see_saw']
+    upright = mff._closest_polyhedron(perceived, donors, metal, candidates)
+    assert upright == 'Td'   # the test complex is built tetrahedral
+
+    # Same molecule, rotated: the answer may not change.
+    angle = 0.7
+    rotation = np.array([
+        [math.cos(angle), -math.sin(angle), 0.0],
+        [math.sin(angle), math.cos(angle), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    spun = mff.perceive_molecule(xyz)
+    spun.coords = [tuple(rotation @ np.array(c)) for c in spun.coords]
+    assert mff._closest_polyhedron(spun, donors, metal, candidates) == upright
+
+
+def test_forcing_a_polyhedron_sets_the_ideal_angles_at_the_metal():
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    plain = mff.export_forcefield_terms(xyz, perceived=perceived)
+    forced = mff.export_forcefield_terms(
+        xyz, perceived=perceived, polyhedron={'metal': metal, 'geometry': 'sqp_4'},
+    )
+    assert plain['polyhedron'] is None
+    assert forced['polyhedron'] == {'metal': metal, 'geometry': 'sqp_4'}
+
+    def metal_angles(payload):
+        return sorted(
+            round(a['theta0'])
+            for a in payload['angles'] if a['j'] == metal
+        )
+
+    # Square planar means four 90 deg and two 180 deg, whatever the input was.
+    assert metal_angles(forced) == [90, 90, 90, 90, 180, 180]
+    assert metal_angles(plain) != metal_angles(forced)
+
+    # It stays a pull: ordinary harmonic terms with the same force constants,
+    # so a chelate that cannot reach the ideal settles at a compromise.
+    forced_metal = [a for a in forced['angles'] if a['j'] == metal]
+    plain_metal = [a for a in plain['angles'] if a['j'] == metal]
+    assert len(forced_metal) == len(plain_metal)
+    assert all(a['kt'] > 0 for a in forced_metal)
+    assert any('polyhedron' in w for w in forced['warnings'])

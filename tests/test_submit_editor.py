@@ -536,3 +536,29 @@ def test_placed_atoms_are_held_against_the_running_field():
     assert 'state.pinned = [];' in _body('onViewerReady')
     # And the count is visible, or the mode is invisible.
     assert "'</b> held'" in _body('updateStatus')
+
+
+def test_tapping_a_metal_offers_its_coordination_polyhedra():
+    """The editor reports the selection to Python as model indices, so a metal
+    tapped in Select mode can be offered the polyhedra its coordination number
+    allows -- from MANTA's own ideal-donor tables."""
+    push = _body('pushPicksToPython')
+    assert '.submit-pick-sync' in push
+    # Model indices, not 3Dmol serials: the payload is indexed the same way.
+    assert 'ffIndicesOf(viewer, serials)' in push
+    # Sent through the native setter, the way ipywidgets notices a change.
+    assert "dispatchEvent(new Event('input', {bubbles: true}))" in push
+    assert 'pushPicksToPython(scopeKey);' in _body('updateStatus')
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_pick_sync' in source
+    assert 'polyhedron_options(perceived, indices[0])' in source
+    # Only for a single selected atom, and only when it is a metal.
+    assert 'len(indices) == 1' in source
+    # Choosing one re-assigns the parameters, which is what starts the pull.
+    changed = source.split('def on_submit_poly_changed')[1].split('\n    def ')[0]
+    assert '_enable_live_forcefield()' in changed
+    # Repopulating the list must not look like a user choice.
+    assert "state.get('poly_quiet')" in changed

@@ -743,6 +743,13 @@ def create_tab(ctx):
         layout=widgets.Layout(width='200px'),
         disabled=True,
     )
+    submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    submit_pick_sync.add_class('submit-pick-sync')
+    submit_poly_dd = widgets.Dropdown(
+        options=[('— polyhedron —', '')], value='',
+        layout=widgets.Layout(width='190px', display='none'),
+        disabled=True,
+    )
     submit_settle_btn = widgets.ToggleButton(
         value=True, description='Settle', icon='level-down',
         button_style='info',
@@ -769,7 +776,7 @@ def create_tab(ctx):
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
-            submit_internal_group,
+            submit_poly_dd, submit_internal_group, submit_pick_sync,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -3199,8 +3206,17 @@ def create_tab(ctx):
             return
         try:
             from .molecule_forcefield import export_forcefield_terms
+            polyhedron = None
+            if state.get('poly_applied') and state.get('poly_metal') is not None:
+                polyhedron = {
+                    'metal': state['poly_metal'],
+                    'geometry': state['poly_applied'],
+                }
             payload = export_forcefield_terms(
-                xyz, perceived=_perception_for(xyz), method=submit_ff_dd.value,
+                xyz,
+                perceived=_perception_for(xyz),
+                method=submit_ff_dd.value,
+                polyhedron=polyhedron,
             )
         except Exception as exc:
             _set_mol_status(f'Force field unavailable: {exc}')
@@ -3338,6 +3354,56 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{float(submit_internal_value.value)!r});'
         )
 
+    def on_submit_pick_sync(change):
+        """Offer the coordination polyhedra of a metal the moment it is picked.
+
+        Which ones are possible follows from its coordination number, and the
+        tables are MANTA's own -- the same ideal donor vectors it builds
+        complexes with.
+        """
+        if change.get('name') != 'value':
+            return
+        raw = (submit_pick_sync.value or '').strip()
+        indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
+        perceived = state.get('perceived')
+        options = None
+        if perceived is not None and len(indices) == 1:
+            try:
+                from .molecule_forcefield import polyhedron_options
+                options = polyhedron_options(perceived, indices[0])
+            except Exception:
+                options = None
+        if not options:
+            submit_poly_dd.layout.display = 'none'
+            submit_poly_dd.disabled = True
+            state['poly_metal'] = None
+            return
+
+        coordination, current, choices = options
+        state['poly_metal'] = indices[0]
+        symbol = perceived.symbols[indices[0]]
+        entries = [(f'{symbol} · CN {coordination} · free', '')]
+        for code, label in choices:
+            mark = ' (current)' if code == current else ''
+            entries.append((f'{label}{mark}', code))
+        state['poly_quiet'] = True
+        try:
+            submit_poly_dd.options = entries
+            submit_poly_dd.value = state.get('poly_applied') or ''
+        finally:
+            state['poly_quiet'] = False
+        submit_poly_dd.disabled = False
+        submit_poly_dd.layout.display = ''
+
+    def on_submit_poly_changed(change):
+        if change.get('name') != 'value' or state.get('poly_quiet'):
+            return
+        state['poly_applied'] = submit_poly_dd.value or None
+        # Re-assigning the parameters is what makes the pull start; with the
+        # field running the complex visibly moves into the polyhedron.
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+
     def on_submit_settle_toggle(change):
         if change.get('name') != 'value':
             return
@@ -3441,6 +3507,8 @@ def create_tab(ctx):
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
+    submit_pick_sync.observe(on_submit_pick_sync, names='value')
+    submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')

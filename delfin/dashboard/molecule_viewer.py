@@ -1512,8 +1512,35 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
     }
 
+    // Report the selection to Python, as model indices rather than serials so
+    // it lines up with the force-field payload. Used to offer the coordination
+    // polyhedra of a selected metal.
+    function pushPicksToPython(scopeKey) {
+        var input = null;
+        var wrap = findInScope(scopeKey, '.submit-pick-sync');
+        if (wrap) input = wrap.querySelector('input, textarea');
+        if (!input) return;
+        var viewer = getViewer(scopeKey);
+        var state = getState(scopeKey);
+        var text = '';
+        if (viewer) {
+            var serials = state.picks.map(function(p) { return p.serial; });
+            text = ffIndicesOf(viewer, serials).join(',');
+        }
+        if (input.value === text) return;
+        var proto = (input.tagName === 'TEXTAREA')
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (setter && setter.set) setter.set.call(input, text);
+        else input.value = text;
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
     function updateStatus(scopeKey) {
         updateInternalReadout(scopeKey);
+        pushPicksToPython(scopeKey);
         var el = getStatusEl(scopeKey);
         if (!el) return;
         var state = getState(scopeKey);
