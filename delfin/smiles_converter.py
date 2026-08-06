@@ -35040,6 +35040,41 @@ def _smiles_to_xyz_isomers_impl(
             # laesst, wird VERWORFEN (fail-closed) -- der Zweck ist, keine Defekte zu
             # importieren.  Der Fehlerfall ist pro Frame begrenzt, kann also nicht wie der
             # Dedup-Fehler die ganze Liste leerlaufen lassen.
+            # ===== NUR DIE FEHLENDEN ISOMERE (DELFIN_FFFREE_UNION_ISOMERS, default OFF) =====
+            # GEMESSEN 2026-08-06 an union180b, 180 Systeme:
+            #   FF-frei allein            2346 Frames
+            #   Union roh                 9829 Frames   -> 7483 importiert
+            #   davon conf-Kopien         4763           -> 64 % des Imports ist Konformer-Spruehnebel
+            # Der Schaden der Union kam NICHT von legacys Isomeren, sondern von dieser Menge:
+            # smiles_ccdc_regressed und pyramid_frame_regressed ZAEHLEN DEFEKTE FRAMES, und
+            # legacy liefert 6,9 % saubere Manifolds.  Wer seinen Spruehnebel uebernimmt,
+            # uebernimmt diese Quote tausendfach.
+            #
+            # Was legacy wirklich beitraegt, ist ISOMER-ABDECKUNG (71,5 % gegen 49,5 %).  Also
+            # genau das uebernehmen und sonst nichts: pro ARRANGEMENT (der Schluessel von
+            # _arrangement_key faltet Konformere und beide Haende zusammen) hoechstens EINEN
+            # Vertreter, und nur wenn FF-frei dieses Arrangement NICHT ohnehin schon hat.
+            #
+            # Das ist die Bauform, die der User vorgibt: Vollstaendigkeit ist heilig, aber
+            # "auf Krampf alle" zaehlt nicht, und Konformere gehen nach ENERGIE, nicht nach
+            # Menge.  legacys conf-Spruehnebel ist weder das eine noch das andere.
+            if _extra and _delfin_env_int("DELFIN_FFFREE_UNION_ISOMERS", 0):
+                _have = set()
+                for _x, _l in _ffree_union:
+                    try: _have.add(_arrangement_key(_l))
+                    except Exception: pass
+                _pick, _order = {}, []
+                for _x, _l in _extra:
+                    try: _k = _arrangement_key(_l)
+                    except Exception: _k = str(_l)
+                    if _k in _have or _k in _pick:
+                        continue          # FF-frei hat es schon, oder schon einen Vertreter
+                    _pick[_k] = (_x, _l)
+                    _order.append(_k)
+                _n_before = len(_extra)
+                _extra = [_pick[_k] for _k in _order]
+                _trace_seating("UNION_ISOMERS kept %d of %d legacy frames (%d arrangements already in ffree)"
+                               % (len(_extra), _n_before, len(_have)))
             if _extra and _delfin_env_int("DELFIN_FFFREE_UNION_CLEAN", 0):
                 from delfin.manta.converter_backend import _build_is_clean as _uc_gate
                 import numpy as _uc_np
