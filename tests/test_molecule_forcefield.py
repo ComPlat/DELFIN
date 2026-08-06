@@ -668,3 +668,64 @@ def test_the_exporter_reads_coordinates_from_the_text_it_is_given():
     # The bonding still comes from the cache, not from the dragged geometry.
     assert mff.export_forcefield_terms(moved, perceived=perceived)['n_atoms'] == \
         perceived.n_atoms
+
+
+def _two_benzenes_xyz():
+    """Two benzene rings 5 A apart, so nothing bonds them yet."""
+    ring = [
+        ('C', 1.3970, 0.0000), ('C', 0.6985, 1.2098), ('C', -0.6985, 1.2098),
+        ('C', -1.3970, 0.0000), ('C', -0.6985, -1.2098), ('C', 0.6985, -1.2098),
+        ('H', 2.4810, 0.0000), ('H', 1.2405, 2.1486), ('H', -1.2405, 2.1486),
+        ('H', -2.4810, 0.0000), ('H', -1.2405, -2.1486), ('H', 1.2405, -2.1486),
+    ]
+    rows = [f'{s} {x:.4f} {y:.4f} {z:.4f}'
+            for z in (0.0, 5.0) for s, x, y in ring]
+    return '24\ntwo rings\n' + '\n'.join(rows) + '\n'
+
+
+def test_a_drawn_bond_costs_only_the_atoms_it_touches_their_double_bond():
+    """Repairing the valence locally, instead of dropping every bond order.
+
+    Drawing a bond onto an aromatic carbon takes it to five bonds, which RDKit
+    rejects outright. The only repair available used to be treating *every*
+    bond in the molecule as single, so one drawn bond cost every other atom its
+    hybridisation: a ring at the far end of the molecule, which the edit never
+    touched, came back sp3 with 1.514 A bonds.
+
+    Now the multiple bond at the over-valent atom alone is lowered. The ring
+    that was not touched keeps its own double bonds."""
+    xyz = _two_benzenes_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    assert mff.apply_bond_edits(perceived, {(0, 12): True}) is True
+
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+    terms = {(b['i'], b['j']): b for b in payload['bonds']}
+
+    # The drawn bond is an sp3 C-C bond, not the 5.0 A it was drawn at.
+    assert 1.45 < terms[(0, 12)]['r0'] < 1.58, terms[(0, 12)]
+    # And the second ring is still made of sp2 carbons: a conjugated single
+    # bond at 1.486 A or a double bond at 1.33 A, never the 1.514 A that an
+    # all-single fallback would have given it.
+    for pair in ((13, 14), (14, 15), (15, 16)):
+        assert terms[pair]['r0'] < 1.50, (pair, terms[pair])
+
+
+def test_an_unedited_molecule_is_left_exactly_as_perceived():
+    """The rebuild must be reachable only by an edit that changes something.
+
+    A partly rebuilt typing molecule would hand back silently wrong parameters
+    for every atom, which is worse than the defect it fixes -- so an empty edit
+    set, or one that asks for bonds that are already there, must be a no-op."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    before = mff.export_forcefield_terms(xyz, perceived=perceived)
+
+    assert mff.apply_bond_edits(perceived, {}) is False
+    existing = dict.fromkeys(perceived.bonds, True)
+    assert mff.apply_bond_edits(perceived, existing) is False
+
+    after = mff.export_forcefield_terms(xyz, perceived=perceived)
+    assert before['bonds'] == after['bonds']
+    assert before['angles'] == after['angles']
+    assert before['torsions'] == after['torsions']
+    assert before['vdw'] == after['vdw']

@@ -7,9 +7,30 @@ that can still be turned while manipulating.
 """
 import re
 
+import pytest
+
 from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
 EDITOR = submit_manip_bootstrap_js()
+
+#: Planar benzene, atom order C0..C5 then the hydrogens.  C0 and C3 sit across
+#: the ring from each other, 2.795 A apart -- far enough that a bond drawn
+#: between them is unmistakably not at its equilibrium length.
+_BENZENE = """12
+benzene
+C  1.3970  0.0000  0.0000
+C  0.6985  1.2098  0.0000
+C -0.6985  1.2098  0.0000
+C -1.3970  0.0000  0.0000
+C -0.6985 -1.2098  0.0000
+C  0.6985 -1.2098  0.0000
+H  2.4810  0.0000  0.0000
+H  1.2405  2.1486  0.0000
+H -1.2405  2.1486  0.0000
+H -2.4810  0.0000  0.0000
+H -1.2405 -2.1486  0.0000
+H  1.2405 -2.1486  0.0000
+"""
 
 
 def _body(name):
@@ -874,12 +895,59 @@ def test_bonds_can_be_drawn_and_removed_by_hand():
     # The correction is remembered and laid over perception, or the next
     # perception -- which runs from the geometry -- would quietly undo it.
     apply_edits = source.split('def _apply_bond_edits')[1].split('\n    def ')[0]
-    assert 'perceived.bonds = sorted(bonds)' in apply_edits
-    assert 'bonds.discard(key)' in apply_edits
+    assert 'apply_bond_edits(perceived, state.get(\'bond_edits\') or {})' in apply_edits
     assert '_apply_bond_edits(perceived)' in source
     # And it is dropped when a different structure arrives.
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "state['bond_edits'] = {}" in view
+
+    pytest.importorskip('rdkit')
+    from delfin.dashboard.molecule_forcefield import apply_bond_edits, perceive_molecule
+
+    perceived = perceive_molecule(_BENZENE)
+    assert (0, 3) not in perceived.bonds and (0, 1) in perceived.bonds
+    assert apply_bond_edits(perceived, {(0, 3): True, (0, 1): False}) is True
+    assert (0, 3) in perceived.bonds and (0, 1) not in perceived.bonds
+    # Out-of-range pairs are ignored rather than raising.
+    assert apply_bond_edits(perceived, {(0, 99): True}) is False
+
+
+def test_a_drawn_bond_is_parameterised_as_a_bond_not_as_a_distance():
+    """A hand-drawn bond used to keep the length it was drawn at.
+
+    Only the bond *list* was corrected; the molecule the UFF parameters are
+    read from still had the original connectivity, so RDKit had no entry for
+    the new bond and the exporter fell back to its geometric estimate --
+    equilibrium = the distance it happened to be drawn at. Joining two carbons
+    across a benzene ring gave r0 = 2.798 A with k = 111 instead of 1.514 A
+    with k = 700, so the bond never contracted and neither carbon changed
+    hybridisation.
+
+    The typing molecule is rebuilt from the corrected bonds now, so RDKit
+    re-perceives the chemistry: both carbons go sp3, and the two neighbours
+    they took a double bond from pair up again -- Dewar benzene, whose
+    remaining C=C are real double bonds rather than adjacent radicals."""
+    pytest.importorskip('rdkit')
+    from delfin.dashboard.molecule_forcefield import (
+        apply_bond_edits, export_forcefield_terms, perceive_molecule,
+    )
+
+    perceived = perceive_molecule(_BENZENE)
+    apply_bond_edits(perceived, {(0, 3): True})
+    payload = export_forcefield_terms(_BENZENE, perceived=perceived, method='uff')
+    terms = {(b['i'], b['j']): b for b in payload['bonds']}
+
+    drawn = terms[(0, 3)]
+    assert 1.45 < drawn['r0'] < 1.58, drawn      # an sp3 C-C bond, not 2.798
+    assert drawn['k'] > 600, drawn               # and a real force constant
+    # The carbons it joined are 2.795 A apart in the ring, so the field now
+    # pulls them together instead of holding them where they were drawn.
+    assert drawn['r0'] < 2.0
+
+    # What the edit did not touch keeps its own chemistry: C1=C2 is the double
+    # bond of Dewar benzene, well short of the 1.514 A an all-single fallback
+    # would have given every bond in the molecule.
+    assert terms[(1, 2)]['r0'] < 1.40, terms[(1, 2)]
 
 
 def test_a_bond_edit_actually_reaches_the_force_field():

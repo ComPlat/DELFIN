@@ -3279,20 +3279,15 @@ def create_tab(ctx):
         return perceived
 
     def _apply_bond_edits(perceived):
-        """Lay the user's bond corrections over what perception found."""
-        edits = state.get('bond_edits') or {}
-        if perceived is None or not edits:
-            return
-        bonds = {tuple(sorted(pair)) for pair in perceived.bonds}
-        for pair, connect in edits.items():
-            key = tuple(sorted(pair))
-            if max(key) >= perceived.n_atoms:
-                continue
-            if connect:
-                bonds.add(key)
-            else:
-                bonds.discard(key)
-        perceived.bonds = sorted(bonds)
+        """Lay the user's bond corrections over what perception found.
+
+        The correction has to reach the molecules the force-field parameters
+        are read from, not only the bond list -- otherwise a drawn bond keeps
+        the length it was drawn at instead of contracting.
+        """
+        from .molecule_forcefield import apply_bond_edits
+
+        apply_bond_edits(perceived, state.get('bond_edits') or {})
 
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.

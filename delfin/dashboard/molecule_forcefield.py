@@ -596,12 +596,15 @@ def _build_typing_mol(
     donor atoms get their implicit-hydrogen ban lifted so the free ligand
     perceives as the neutral, aromatic species it normally is.
 
-    Three assemblies are tried in order: perceived bond orders with a strict
-    sanitisation, then all-single bonds with a strict sanitisation, then a
-    lenient sanitisation.  A strained geometry (which is what a drag hands
-    over) can make a perceived Kekule pattern over-fill an atom's valence;
-    keeping such a molecule would only defer the exception to the moment the
-    force field is built, so the bond orders are dropped instead.
+    Assemblies are tried in order of how much they give up.  A strained
+    geometry -- which is what a drag hands over -- and a bond the user drew
+    can both over-fill an atom's valence; keeping such a molecule would only
+    defer the exception to the moment the force field is built.  So the
+    perceived Kekule pattern is first repaired *locally*, by lowering the
+    order of a multiple bond at the offending atom, and only if that still
+    fails are the bond orders dropped wholesale.  The difference matters: a
+    single drawn bond used to cost every other atom in the molecule its
+    hybridisation.
     """
     bond_types = {
         1: Chem.BondType.SINGLE,
@@ -643,6 +646,91 @@ def _build_typing_mol(
                 removed += 1
         return removed
 
+    def _reduce_overvalence(editable) -> int:
+        """Lower a multiple bond at every atom that carries too much valence.
+
+        Drawing a bond onto an aromatic carbon takes it to five bonds, which
+        RDKit rejects.  The chemically honest reading is that the carbon gave
+        up its double bond, so that is what happens here: the longest multiple
+        bond at the atom drops one order, the partner keeps a radical electron
+        and stays sp2, and every ring the edit did not touch keeps its own
+        double bonds.  Bonds are only lowered, never removed -- the exported
+        topology is unchanged.
+        """
+        try:
+            positions = mol.GetConformer().GetPositions()
+        except Exception:
+            positions = None
+        table = Chem.GetPeriodicTable()
+        lowered = 0
+        # Atoms left one bond short by a lowering.  Only these may be paired
+        # up again below: every other under-valent atom was already like that
+        # in the perceived molecule and is not this function's business.
+        orphaned: set = set()
+
+        def _capacity(atom) -> int:
+            """Valence still free at this atom; negative when it is over-full."""
+            try:
+                default = table.GetDefaultValence(atom.GetAtomicNum())
+            except Exception:
+                return 0
+            if default <= 0:
+                return 0
+            used = sum(
+                int(round(b.GetBondTypeAsDouble())) for b in atom.GetBonds()
+            ) + atom.GetNumExplicitHs()
+            return default - used
+
+        # Lowering a bond can push its partner over the edge in turn, so this
+        # sweeps until the molecule stops changing.  The bound is a guard
+        # against a pathological structure, not an expected exit.
+        for _sweep in range(8):
+            busy = False
+            for atom in editable.GetAtoms():
+                surplus = -_capacity(atom)
+                if surplus <= 0:
+                    continue
+                bonds = list(atom.GetBonds())
+                multiples = [b for b in bonds if b.GetBondTypeAsDouble() > 1.5]
+                if not multiples:
+                    continue  # too many single bonds: _prune_overbonded's job
+                if positions is not None:
+                    multiples.sort(key=lambda b: -float(
+                        ((positions[b.GetBeginAtomIdx()]
+                          - positions[b.GetEndAtomIdx()]) ** 2).sum()
+                    ))
+                victim = multiples[0]
+                order = int(round(victim.GetBondTypeAsDouble()))
+                victim.SetBondType(bond_types[max(1, order - surplus)])
+                idx = atom.GetIdx()
+                partner = (victim.GetEndAtomIdx() if victim.GetBeginAtomIdx() == idx
+                           else victim.GetBeginAtomIdx())
+                orphaned.add(partner)
+                lowered += 1
+                busy = True
+            if not busy:
+                break
+
+        # Two neighbours that both lost a partner pair up again, because that
+        # is what the chemistry does: joining two carbons across a benzene
+        # ring gives Dewar benzene, whose remaining double bonds are real, not
+        # a pair of radicals sitting next to each other.
+        for a in sorted(orphaned):
+            atom_a = editable.GetAtomWithIdx(a)
+            if _capacity(atom_a) < 1:
+                continue
+            for neighbour in atom_a.GetNeighbors():
+                b = neighbour.GetIdx()
+                if b not in orphaned or _capacity(neighbour) < 1:
+                    continue
+                bond = editable.GetBondBetweenAtoms(a, b)
+                order = int(round(bond.GetBondTypeAsDouble())) if bond else 0
+                if not 1 <= order <= 2:
+                    continue
+                bond.SetBondType(bond_types[order + 1])
+                break
+        return lowered
+
     def _repair_charges(editable) -> None:
         """Give over-valent main-group atoms the formal charge they imply.
 
@@ -665,7 +753,7 @@ def _build_typing_mol(
             if 0 < default < valence:
                 atom.SetFormalCharge(valence - default)
 
-    def _assemble(with_orders: bool, prune: bool = False):
+    def _assemble(with_orders: bool, prune: bool = False, reduce_valence: bool = False):
         editable = Chem.RWMol(mol)
         if prune:
             _prune_overbonded(editable)
@@ -689,16 +777,21 @@ def _build_typing_mol(
             atom = editable.GetAtomWithIdx(idx)
             atom.SetNoImplicit(False)
             atom.SetNumRadicalElectrons(0)
+        # After the metal bonds are gone, so a donor is not counted as
+        # over-valent for coordinating.
+        if reduce_valence:
+            _reduce_overvalence(editable)
         return editable.GetMol()
 
     attempts = (
-        ('perceived bond orders', True, False, True),
-        ('single bonds', False, False, True),
-        ('single bonds, over-bonded atoms pruned and charges repaired', False, True, True),
-        ('single bonds, lenient', False, True, False),
+        ('perceived bond orders', True, False, False, True),
+        ('perceived bond orders, over-valence lowered', True, False, True, True),
+        ('single bonds', False, False, False, True),
+        ('single bonds, over-bonded atoms pruned and charges repaired', False, True, False, True),
+        ('single bonds, lenient', False, True, False, False),
     )
-    for label, with_orders, prune, strict in attempts:
-        candidate = Chem.Mol(_assemble(with_orders, prune))
+    for label, with_orders, prune, reduce_valence, strict in attempts:
+        candidate = Chem.Mol(_assemble(with_orders, prune, reduce_valence))
         try:
             candidate.UpdatePropertyCache(strict=False)
             if strict:
@@ -709,6 +802,13 @@ def _build_typing_mol(
                     Chem.SanitizeFlags.SANITIZE_ALL
                     ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
                     ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE,
+                )
+            if reduce_valence:
+                warnings.append(
+                    'An atom carried more bonds than its valence allows; a '
+                    'multiple bond at each such atom was lowered by one order '
+                    'when assigning force-field types, which is what drawing '
+                    'a bond onto it implies.'
                 )
             if not with_orders and orders:
                 warnings.append(
@@ -850,6 +950,132 @@ def perceive_molecule(xyz_text: str) -> Optional[PerceivedMolecule]:
         had_header=had_header,
         warnings=warnings,
     )
+
+
+def _orders_from_mol(mol: Any) -> Dict[Tuple[int, int], int]:
+    """Read integer Kekule bond orders out of a molecule, keyed by index pair.
+
+    Aromatic flags are resolved first: RDKit re-perceives aromaticity when it
+    sanitizes, and would refuse to kekulize a ring it did not choose itself,
+    so only whole orders are ever passed on.
+    """
+    if mol is None:
+        return {}
+    try:
+        kekulized = Chem.Mol(mol)
+        Chem.Kekulize(kekulized, clearAromaticFlags=True)
+    except Exception as exc:
+        logger.debug('Kekulisation for order transfer failed: %s', exc)
+        kekulized = mol
+    orders: Dict[Tuple[int, int], int] = {}
+    for bond in kekulized.GetBonds():
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        order = int(round(bond.GetBondTypeAsDouble()))
+        if order >= 1:
+            orders[(min(i, j), max(i, j))] = order
+    return orders
+
+
+def apply_bond_edits(perceived: Any, edits: Any) -> bool:
+    """Lay hand-drawn bond corrections onto a perceived molecule.
+
+    ``edits`` maps an ``(i, j)`` atom pair to True (this bond exists) or False
+    (it does not).  Distance-based perception is not reliable in a crowded
+    coordination sphere, so the user can overrule it -- and the correction has
+    to reach the *parameters*, not only the bond list.
+
+    Correcting the list alone left the typing molecule without the drawn bond.
+    RDKit then had no entry for it and the exporter fell back to its geometric
+    estimate, whose equilibrium is whatever distance the bond happened to be
+    drawn at: joining two carbons across a benzene ring gave r0 = 2.798 A with
+    k = 111 instead of 1.514 A with k = 700, so the bond never contracted and
+    neither carbon changed hybridisation.  Both molecules are therefore
+    rebuilt here, and RDKit re-perceives the chemistry from the corrected
+    connectivity.
+
+    Args:
+        perceived: A :class:`PerceivedMolecule`, mutated in place.
+        edits: Mapping of atom-index pairs to whether they are bonded.
+
+    Returns:
+        True when the bond list changed.
+    """
+    if perceived is None or not edits:
+        return False
+
+    wanted: Dict[Tuple[int, int], bool] = {}
+    for pair, connect in dict(edits).items():
+        try:
+            i, j = (int(x) for x in pair)
+        except Exception:
+            continue
+        if i == j or min(i, j) < 0 or max(i, j) >= perceived.n_atoms:
+            continue
+        wanted[(min(i, j), max(i, j))] = bool(connect)
+
+    current = {(min(i, j), max(i, j)) for i, j in perceived.bonds}
+    target = set(current)
+    for key, connect in wanted.items():
+        if connect:
+            target.add(key)
+        else:
+            target.discard(key)
+    if target == current:
+        return False
+
+    perceived.bonds = sorted(target)
+    if not RDKIT_AVAILABLE or perceived.mol is None:
+        return True
+
+    added = sorted(target - current)
+    removed = sorted(current - target)
+    orders = _orders_from_mol(perceived.typing_mol)
+    for key in removed:
+        orders.pop(key, None)
+    for key in added:
+        # A drawn bond is a single bond.  Nothing in a click says otherwise,
+        # and the relaxation is free to shorten it from there.
+        orders[key] = 1
+
+    try:
+        with _RDKitQuiet():
+            editable = Chem.RWMol(perceived.mol)
+            for i, j in removed:
+                if editable.GetBondBetweenAtoms(i, j) is not None:
+                    editable.RemoveBond(i, j)
+            for i, j in added:
+                if editable.GetBondBetweenAtoms(i, j) is None:
+                    editable.AddBond(i, j, Chem.BondType.SINGLE)
+            rebuilt = editable.GetMol()
+            rebuilt.UpdatePropertyCache(strict=False)
+            fresh: List[str] = []
+            typing_mol, _ok = _build_typing_mol(
+                rebuilt, perceived.metal_indices, orders, fresh
+            )
+    except Exception as exc:
+        logger.debug('Rebuilding the molecule after a bond edit failed: %s', exc)
+        perceived.warnings.append(
+            'The edited bond could not be applied to the force-field types; '
+            'it is parameterised from the geometry instead.'
+        )
+        return True
+
+    perceived.mol = rebuilt
+    if typing_mol is None and perceived.typing_mol is not None:
+        # Keeping the molecule that was typed before the edit is worth more
+        # than the edit itself: without one, *every* atom falls back to
+        # geometric parameters, while the stale one still types everything
+        # the edit did not touch.
+        perceived.warnings.append(
+            'The edited connectivity could not be sanitized; the changed '
+            'bonds are parameterised from the geometry.'
+        )
+    else:
+        perceived.typing_mol = typing_mol
+        for message in fresh:
+            if message not in perceived.warnings:
+                perceived.warnings.append(message)
+    return True
 
 
 # --------------------------------------------------------------------------
