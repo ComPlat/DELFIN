@@ -1215,6 +1215,33 @@ class AgentEngine:
         except Exception:
             return ""
 
+    def _build_machine_grant_block(self) -> str:
+        """What this machine actually granted the session, measured.
+
+        Machine facts used to be written down once, on one host, and then
+        recalled everywhere -- wrong the moment the session moved. The cap
+        on background jobs already derives from the real grant, so the
+        MECHANISM was honest; the model just never saw the number, so
+        anything it sizes itself (``pytest -n``, a PAL value, an sbatch
+        header) was a guess against the machine's total.
+
+        First turn only. A grant does not change while a session runs, and
+        the per-turn steering budget belongs to blocks that do.
+        """
+        try:
+            if len(self.messages) > 1:
+                return ""
+            from .bash_jobs import _affinity_cpus, _available_cpus
+            cpus = int(_available_cpus())
+            if cpus < 1:
+                return ""
+            allocated = cpus < int(_affinity_cpus())
+        except Exception:
+            return ""
+        where = " (SLURM allocation)" if allocated else ""
+        return (f"This session may use {cpus} CPU(s){where}. Size -j / -n / "
+                f"PAL to that, not to the machine's total.")
+
     def _steering_blocks(self, role: str) -> list[tuple[str, str]]:
         """The per-turn steering blocks for an interactive role, in prompt
         order, as ``(key, text)`` with empty blocks dropped.
@@ -1232,6 +1259,7 @@ class AgentEngine:
         if role == "solo_agent":
             pairs.append(("project_dir", self._build_project_dir_block()))
             pairs.append(("context_status", self._build_context_status_block()))
+        pairs.append(("machine_grant", self._build_machine_grant_block()))
         pairs.append(("open_tasks", self._build_open_tasks_block()))
         pairs.append(("foreign_tasks", self._build_open_foreign_tasks_block()))
         pairs.append(("unmet_delegation", self._build_unmet_delegation_block()))
