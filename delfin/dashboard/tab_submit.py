@@ -3606,6 +3606,11 @@ def create_tab(ctx):
         edits = {tuple(k): v for k, v in (state.get('bond_edits') or {}).items()}
         edits[pair] = bool(connect)
         state['bond_edits'] = edits
+        # The perception is cached by element sequence, which a bond edit does
+        # not change -- so the cache has to be dropped explicitly, or the
+        # correction would never reach the force field at all.
+        state['perceived'] = None
+        state['perceived_for'] = None
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
@@ -3613,6 +3618,11 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{pair[0]},{pair[1]},'
             f'{"true" if connect else "false"});'
         )
+        # Re-assign the parameters straight away: the topology decides the
+        # bonds, angles and torsions the field works with, and until it is
+        # rebuilt the relaxation is still holding the bond that was just cut.
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
         verb = 'Bonded' if connect else 'Unbonded'
         _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.')
 

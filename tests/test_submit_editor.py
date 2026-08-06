@@ -880,3 +880,24 @@ def test_bonds_can_be_drawn_and_removed_by_hand():
     # And it is dropped when a different structure arrives.
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "state['bond_edits'] = {}" in view
+
+
+def test_a_bond_edit_actually_reaches_the_force_field():
+    """Cutting a bond changed the picture and the coordination number but not
+    what the relaxation was doing: the perception is cached by element
+    sequence, which a bond edit does not alter, so the cached one came back
+    unchanged and no re-export was triggered at all. The field went on holding
+    the bond that had just been cut.
+
+    On the Pt complex, removing the two spurious Pt-C bonds takes the terms at
+    the metal from 6 bonds and 15 angles to 4 and 6."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    edit = source.split('def _edit_bond')[1].split('\n    def ')[0]
+    # The cache has to be dropped, or the correction never leaves the picture.
+    assert "state['perceived'] = None" in edit
+    assert "state['perceived_for'] = None" in edit
+    # And the parameters are rebuilt at once.
+    assert '_enable_live_forcefield()' in edit
+    assert edit.index("state['perceived'] = None") < edit.index('_enable_live_forcefield()')
