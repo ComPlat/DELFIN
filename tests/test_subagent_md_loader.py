@@ -21,8 +21,16 @@ from delfin.agent import subagents as sa
 def fake_home(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     yield tmp_path
-    # Restore the global preset registry so leaked fixtures from this
-    # test file don't bleed into other tests that import subagents.
+    # Restore the global preset registry so presets written by this file
+    # don't bleed into other tests that import subagents.
+    #
+    # The undo has to come first. Fixture teardown runs before monkeypatch
+    # reverts its own patches, so reloading here still saw the fake home --
+    # and the loader reads the preset directory, which means the restore
+    # re-read exactly the files it was meant to drop. A preset called
+    # "noframe" survived into the rest of the session that way and failed
+    # an unrelated tool-schema test, whichever test happened to run after.
+    monkeypatch.undo()
     sa.reload_subagent_presets()
 
 
@@ -109,3 +117,15 @@ def test_md_file_without_frontmatter_skipped(fake_home, tmp_path):
     p = sa.SUBAGENT_PRESETS.get("noframe")
     if p is not None:
         assert p.name == "noframe"
+
+
+def test_the_registry_is_left_as_it_was_found():
+    """Runs after the fixture-using tests above and must see no trace of
+    them: the preset registry is a module global, so a leaked entry shows
+    up in the tool schema of every session started later in the run."""
+    leaked = set(sa.subagent_type_names()) - {
+        "explore", "plan", "code-reviewer", "general-purpose",
+        "chemistry-researcher", "code-writer", "test-writer",
+    }
+    assert not {"chem-audit", "noframe", "x-agent"} & set(
+        sa.subagent_type_names()), f"leaked presets: {sorted(leaked)}"
