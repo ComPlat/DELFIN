@@ -134,9 +134,12 @@ def test_internal_coordinates_move_the_far_fragment():
     assert 'cutA' in frag and 'cutB' in frag
 
     body = _body('setInternal')
-    # Every edit is undoable and reaches the coordinate box.
+    # Every edit is undoable and reaches the coordinate box; the geometry work
+    # itself lives in applyInternalValue, shared with a fixed constraint.
     assert 'snapshotForUndo(scopeKey)' in body
-    assert 'pushXyzToPython(scopeKey)' in body
+    assert "pushXyzToPython(scopeKey, 'drag-end')" in body
+    assert 'applyInternalValue(' in body
+    body = _body('applyInternalValue')
     # A ring keeps both halves attached, so the caller is told rather than
     # silently tearing the ring open.
     assert 'ring: only the second atom moved' in body
@@ -607,7 +610,7 @@ def test_values_can_be_held_and_dropped_again():
     drop = source.split('def on_submit_constraint_del')[1].split('\n    def ')[0]
     assert "state['poly_applied'] = None" in drop
     assert 'held.pop(position)' in drop
-    assert 'restraints=state.get(\'constraints\')' in source
+    assert 'restraints=[' in source
 
 
 def test_two_ligands_can_be_exchanged_on_the_polyhedron():
@@ -737,3 +740,35 @@ def test_force_field_notes_sit_under_the_structure_they_describe():
     assert 'html.escape' in notes
     # Switching the field off clears them.
     assert '_set_ff_notes([])' in source
+
+
+def test_a_held_value_can_be_a_pull_or_an_exact_fix():
+    """A pull negotiates with the chemistry and settles at a compromise; a fix
+    is restored after every relaxation step, so the value is met exactly and
+    the rest of the molecule arranges itself around it.
+
+    Measured on cholesterol, the same angle asked for 180 degrees: pull settles
+    at 137.4 with the field at 206 kcal/mol, fix reaches 180.0 at 2091 -- the
+    strain an exact value costs, which the energy readout shows."""
+    assert 'function setFixedInternals' in EDITOR
+    assert 'function applyFixedInternals' in EDITOR
+    # The exact value is restored after the field has had its say, not before.
+    relax = _body('ffRelaxFrame')
+    assert relax.index('ffWritePositions(viewer, out)') < relax.index(
+        'applyFixedInternals(scopeKey)'
+    )
+    # Set and a fix share one geometry routine, which does no bookkeeping.
+    core = _body('applyInternalValue')
+    assert 'snapshotForUndo' not in core
+    assert 'pushXyzToPython' not in core
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_hold_mode' in source
+    # Only pulls become force-field terms; fixes are re-imposed in the browser.
+    assert "if c.get('mode', 'pull') == 'pull'" in source
+    assert "if c.get('mode') == 'fix'" in source
+    # A mode can be changed without setting the constraint again.
+    mode = source.split('def on_submit_hold_mode')[1].split('\n    def ')[0]
+    assert 'mode=submit_hold_mode.value' in mode

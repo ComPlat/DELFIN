@@ -770,6 +770,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='78px', height='30px', display='none'),
         disabled=True,
     )
+    submit_hold_mode = widgets.Dropdown(
+        options=[('pull', 'pull'), ('fix', 'fix')], value='pull',
+        layout=widgets.Layout(width='78px'),
+        disabled=True,
+    )
     submit_hold_btn = widgets.Button(
         description='Hold', button_style='warning', icon='thumb-tack',
         tooltip=(
@@ -793,7 +798,7 @@ def create_tab(ctx):
     )
     submit_internal_group = widgets.HBox(
         [submit_internal_label, submit_internal_value,
-         submit_internal_btn, submit_hold_btn],
+         submit_internal_btn, submit_hold_btn, submit_hold_mode],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -1106,6 +1111,7 @@ def create_tab(ctx):
         submit_internal_value.disabled = not enabled
         submit_internal_btn.disabled = not enabled
         submit_hold_btn.disabled = not enabled
+        submit_hold_mode.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
         if not enabled:
@@ -3277,7 +3283,10 @@ def create_tab(ctx):
                 perceived=_perception_for(xyz),
                 method=submit_ff_dd.value,
                 polyhedron=polyhedron,
-                restraints=state.get('constraints'),
+                restraints=[
+                    c for c in (state.get('constraints') or [])
+                    if c.get('mode', 'pull') == 'pull'
+                ],
             )
         except Exception as exc:
             _set_mol_status(f'Force field unavailable: {exc}')
@@ -3298,6 +3307,14 @@ def create_tab(ctx):
             'window.__delfinSubmitManip.setSettleOnRelease('
             f'{json.dumps(submit_scope_id)},'
             f'{"true" if submit_settle_btn.value else "false"});'
+            'window.__delfinSubmitManip.setFixedInternals('
+            f'{json.dumps(submit_scope_id)},'
+            + json.dumps([
+                {'kind': c['kind'], 'atoms': c['atoms'], 'value': c['value']}
+                for c in (state.get('constraints') or [])
+                if c.get('mode') == 'fix'
+            ])
+            + ');'
             '}'
         )
         # Terms derived from the input geometry rather than real UFF typing --
@@ -3491,7 +3508,8 @@ def create_tab(ctx):
             symbol = perceived.symbols[index] if perceived else '?'
             symbols.append(f'{symbol}{index}')
         unit = 'A' if entry['kind'] == 'distance' else 'deg'
-        return f"{'-'.join(symbols)} = {entry['value']:.3g} {unit}"
+        mode = entry.get('mode', 'pull')
+        return f"{'-'.join(symbols)} = {entry['value']:.3g} {unit} ({mode})"
 
     def _refresh_constraints():
         """Show what the field is currently being held to."""
@@ -3548,6 +3566,10 @@ def create_tab(ctx):
             'kind': kind,
             'atoms': indices,
             'value': float(submit_internal_value.value),
+            # 'pull' negotiates with the chemistry and settles at a compromise;
+            # 'fix' is restored after every relaxation step, so the value is met
+            # exactly and the rest of the molecule arranges itself around it.
+            'mode': submit_hold_mode.value,
         }
         held = list(state.get('constraints') or [])
         held = [c for c in held if c['atoms'] != indices]
@@ -3555,6 +3577,23 @@ def create_tab(ctx):
         state['constraints'] = held
         _refresh_constraints()
         _set_mol_status(f'Holding {_describe_constraint(entry)}.')
+        _enable_live_forcefield()
+
+    def on_submit_hold_mode(change):
+        """Retune the selected constraint, so a mode can be changed without
+        having to select the atoms and set the value again."""
+        if change.get('name') != 'value':
+            return
+        key = submit_constraint_dd.value or ''
+        if not key.startswith('c'):
+            return
+        held = list(state.get('constraints') or [])
+        position = int(key[1:])
+        if not (0 <= position < len(held)):
+            return
+        held[position] = dict(held[position], mode=submit_hold_mode.value)
+        state['constraints'] = held
+        _refresh_constraints()
         _enable_live_forcefield()
 
     def on_submit_constraint_del(_button=None):
@@ -3730,6 +3769,7 @@ def create_tab(ctx):
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_swap_btn.on_click(on_submit_swap)
+    submit_hold_mode.observe(on_submit_hold_mode, names='value')
     submit_constraint_del.on_click(on_submit_constraint_del)
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)

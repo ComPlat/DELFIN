@@ -622,3 +622,49 @@ def test_the_vertex_assignment_can_be_overridden_to_exchange_ligands():
     # The same set of ideal angles, handed to different pairs.
     assert sorted(targets(plain).values()) == sorted(targets(exchanged).values())
     assert targets(plain) != targets(exchanged)
+
+
+def test_the_exporter_reads_coordinates_from_the_text_it_is_given():
+    """A perception handed in is cached deliberately: the bonding must not be
+    re-read from a geometry the user has been dragging, or a twisted double
+    bond stops being one. Its coordinates are another matter — taking those
+    from the cache meant every geometry-derived value came from the structure
+    as it was when the field was first switched on, so a ligand dragged to
+    another vertex was assigned the vertex it used to be nearest. That is why
+    exchanging two ligands by dragging never took."""
+    import numpy as np
+
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair if metal in pair and j != metal
+    )
+
+    coords = [list(c) for c in perceived.coords]
+    first, second = np.array(coords[donors[0]]), np.array(coords[donors[1]])
+    coords[donors[0]] = list(first + (second - first) * 0.85)
+    coords[donors[1]] = list(second + (first - second) * 0.85)
+    moved = '\n'.join(
+        [str(perceived.n_atoms), 'moved']
+        + [
+            f'{s} {c[0]:.6f} {c[1]:.6f} {c[2]:.6f}'
+            for s, c in zip(perceived.symbols, coords)
+        ]
+    )
+
+    def targets(text):
+        payload = mff.export_forcefield_terms(
+            text, perceived=perceived,
+            polyhedron={'metal': metal, 'geometry': 'sqp_4'},
+        )
+        return {
+            (a['i'], a['k']): round(a['theta0'])
+            for a in payload['angles'] if a['j'] == metal
+        }
+
+    # Same cached perception, different coordinates: the vertices must follow.
+    assert targets(xyz) != targets(moved)
+    # The bonding still comes from the cache, not from the dragged geometry.
+    assert mff.export_forcefield_terms(moved, perceived=perceived)['n_atoms'] == \
+        perceived.n_atoms

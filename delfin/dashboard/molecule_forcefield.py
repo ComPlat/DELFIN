@@ -1318,6 +1318,19 @@ def export_forcefield_terms(
     warnings: List[str] = list(perceived.warnings)
     symbols = perceived.symbols
     coords = perceived.coords
+    # A perception handed in by the caller is cached deliberately -- the
+    # bonding must not be re-read from a geometry the user has been dragging,
+    # or a twisted double bond stops being one. Its *coordinates* are another
+    # matter: taking those from the cache too meant every geometry-derived
+    # value was computed from the structure as it was when the field was first
+    # switched on. A ligand dragged to another vertex was therefore assigned
+    # the vertex it used to be nearest, which is why exchanging two of them by
+    # dragging never took.
+    parsed = parse_xyz(xyz_text)
+    if parsed is not None:
+        fresh_symbols, fresh_coords, _had_header = parsed
+        if list(fresh_symbols) == list(symbols):
+            coords = fresh_coords
     n_atoms = perceived.n_atoms
     metals = set(perceived.metal_indices)
     typing_mol = perceived.typing_mol

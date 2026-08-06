@@ -2006,20 +2006,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             at.x = np.x; at.y = np.y; at.z = np.z;
         }
     }
-    function setInternal(scopeKey, target) {
+    // Move the geometry so one internal coordinate takes a value. Used both by
+    // Set, once, and by a fixed constraint, after every relaxation step -- so
+    // it does no bookkeeping of its own: no undo snapshot, no push, no redraw.
+    function applyInternalValue(scopeKey, kind, idx, target, currentValue) {
         var viewer = getViewer(scopeKey);
-        var info = readInternal(scopeKey);
-        if (!viewer || !info) {
-            return {ok: false, error: 'pick 2, 3 or 4 atoms first'};
-        }
-        if (typeof target !== 'number' || !isFinite(target)) {
-            return {ok: false, error: 'not a number'};
-        }
+        if (!viewer) return {ok: false, error: 'no viewer'};
+        var info = {kind: kind, idx: idx, value: currentValue};
         var atoms = getAtoms(viewer);
         var adj = bondAdjacency(viewer);
-        var idx = info.idx;
         var note = '';
-        snapshotForUndo(scopeKey);
 
         if (info.kind === 'bond') {
             if (target <= 0) return {ok: false, error: 'a bond must be positive'};
@@ -2065,13 +2061,79 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }
 
+        return {ok: true, kind: info.kind, was: info.value, note: note};
+    }
+
+    function setInternal(scopeKey, target) {
+        var viewer = getViewer(scopeKey);
+        var info = readInternal(scopeKey);
+        if (!viewer || !info) {
+            return {ok: false, error: 'pick 2, 3 or 4 atoms first'};
+        }
+        if (typeof target !== 'number' || !isFinite(target)) {
+            return {ok: false, error: 'not a number'};
+        }
+        snapshotForUndo(scopeKey);
+        var result = applyInternalValue(
+            scopeKey, info.kind, info.idx, target, info.value,
+        );
+        if (!result.ok) return result;
         invalidateGeometry(viewer);
         try { viewer.render(); } catch (e) {}
         redrawHighlights(scopeKey);
-        pushXyzToPython(scopeKey);
+        pushXyzToPython(scopeKey, 'drag-end');
         var after = readInternal(scopeKey);
-        return {ok: true, kind: info.kind, was: info.value,
-                now: after ? after.value : target, note: note};
+        result.now = after ? after.value : target;
+        return result;
+    }
+
+    // Constraints the user asked to hold exactly. The field relaxes freely and
+    // the value is restored afterwards, so the coordinate is met to the digit
+    // and the rest of the molecule arranges itself around it -- unlike a pull,
+    // which negotiates with the chemistry and settles at a compromise.
+    function setFixedInternals(scopeKey, entries) {
+        var state = getState(scopeKey);
+        var list = [];
+        (entries || []).forEach(function(entry) {
+            var atoms = (entry && entry.atoms) || [];
+            var kind = entry && entry.kind;
+            var need = kind === 'distance' ? 2 : (kind === 'angle' ? 3 : 4);
+            if (atoms.length !== need) return;
+            if (typeof entry.value !== 'number' || !isFinite(entry.value)) return;
+            list.push({kind: kind, atoms: atoms.slice(), value: entry.value});
+        });
+        state.fixedInternals = list;
+        return list.length;
+    }
+
+    function applyFixedInternals(scopeKey) {
+        var state = getState(scopeKey);
+        var list = state.fixedInternals || [];
+        if (!list.length) return false;
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return false;
+        var atoms = getAtoms(viewer);
+        var touched = false;
+        for (var i = 0; i < list.length; i++) {
+            var entry = list[i];
+            var idx = entry.atoms;
+            var current;
+            if (entry.kind === 'distance') {
+                current = distV(atoms[idx[0]], atoms[idx[1]]);
+            } else if (entry.kind === 'angle') {
+                current = angleV(atoms[idx[0]], atoms[idx[1]], atoms[idx[2]]);
+            } else {
+                current = dihedralV(atoms[idx[0]], atoms[idx[1]],
+                                    atoms[idx[2]], atoms[idx[3]]);
+            }
+            var kindName = entry.kind === 'distance' ? 'bond'
+                         : entry.kind === 'angle' ? 'angle' : 'dihedral';
+            var result = applyInternalValue(
+                scopeKey, kindName, idx, entry.value, current,
+            );
+            if (result && result.ok) touched = true;
+        }
+        return touched;
     }
 
     // --- live force field -------------------------------------------------
@@ -2147,6 +2209,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 scopeKey, ffReadPositions(viewer), state.ffFrameMs || 16);
             if (!out) return false;
             ffWritePositions(viewer, out);
+            // Values held exactly are restored after the field has had its
+            // say, so the coordinate is met to the digit while everything
+            // else arranges itself around it.
+            applyFixedInternals(scopeKey);
         } catch (e) { return false; }
         // The budget the engine adapts to is a *full frame*: 3Dmol's own
         // geometry rebuild costs up to 12 ms at 400 atoms and comes out of the
@@ -2653,6 +2719,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.settleRaf = null;
         state.pinned = [];
+        state.fixedInternals = [];
         state.ffActive = false;
         state.ffInfo = null;
         state.measureBox = null;
@@ -2950,6 +3017,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         readInternal: readInternal,
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
+        setFixedInternals: setFixedInternals,
         setSettleOnRelease: setSettleOnRelease,
         unpinAll: unpinAll,
         startAutoOptimize: startAutoOptimize,
