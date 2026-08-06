@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -284,6 +285,39 @@ def _format_action(name: str, tool_input) -> str:
     return name
 
 
+def _owner_stamp() -> dict:
+    """Identify the process that owns a live registry entry.
+
+    The entry file is removed in a ``finally``, which covers every way the
+    RUN can end and none of the ways the PROCESS can end. Without an owner,
+    a killed dashboard left the file behind and the subagent showed as
+    working forever -- in the panel, and to a parent agent polling for a
+    report that could no longer arrive.
+
+    The start ticks come along because a pid alone is not an identity: the
+    number is recycled, and a recycled pid would keep a dead entry alive.
+    Same stamp the background-job registry already uses."""
+    from .bash_jobs import _proc_start_ticks
+    pid = os.getpid()
+    return {"owner_pid": pid, "owner_start_ticks": _proc_start_ticks(pid)}
+
+
+def _entry_owner_alive(entry: dict) -> bool:
+    """Whether the process that wrote this entry is still around.
+
+    An entry with no owner recorded was written before the field existed;
+    an unknown owner is not evidence of a dead one, so it counts as alive.
+    Those disappear on their own as soon as the run that owns them ends."""
+    try:
+        pid = int((entry or {}).get("owner_pid") or 0)
+    except (TypeError, ValueError):
+        return True
+    if not pid:
+        return True
+    from .bash_jobs import _pid_alive
+    return _pid_alive(pid, (entry or {}).get("owner_start_ticks"))
+
+
 def _running_update(sa_id: str, entry: dict | None) -> None:
     """Maintain the live per-subagent status file (entry=None removes).
 
@@ -299,23 +333,62 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
             except FileNotFoundError:
                 pass
         else:
-            f.write_text(json.dumps(entry), encoding="utf-8")
+            if not f.exists():
+                # Starting an entry is the one moment guaranteed to happen
+                # and cheap enough to carry the cleanup of what an earlier
+                # crash left behind.
+                reap_dead_running()
+            f.write_text(
+                json.dumps({**entry, **_owner_stamp()}), encoding="utf-8")
     except Exception:
         pass
 
 
-def read_running() -> dict:
-    """Live registry: {id: {type, description, started_at, actions, last_action}}."""
+def read_running(*, include_dead: bool = False) -> dict:
+    """Live registry: {id: {type, description, started_at, actions, last_action}}.
+
+    Entries whose owning process is gone are left out: they are leftovers
+    from a killed or crashed session, not work in flight. Pass
+    ``include_dead=True`` to see them, marked with ``dead: True``."""
     out: dict = {}
     try:
         for f in _RUNNING_DIR.glob("*.json"):
             try:
-                out[f.stem] = json.loads(f.read_text(encoding="utf-8"))
+                entry = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
                 continue
+            if _entry_owner_alive(entry):
+                out[f.stem] = entry
+            elif include_dead:
+                out[f.stem] = {**entry, "dead": True}
     except Exception:
         pass
     return out
+
+
+def reap_dead_running() -> list[str]:
+    """Delete registry entries whose owning process is gone. Returns the ids.
+
+    Without this the files accumulate: nothing else ever removes an entry
+    whose ``finally`` did not run, so every crash leaves one behind for
+    good."""
+    removed: list[str] = []
+    try:
+        for f in sorted(_RUNNING_DIR.glob("*.json")):
+            try:
+                entry = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if _entry_owner_alive(entry):
+                continue
+            try:
+                f.unlink()
+                removed.append(f.stem)
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return removed
 
 
 # Finished-subagent sessions (resume-by-id): each run
@@ -2436,6 +2509,19 @@ def get_subagent_result(sa_id: str) -> dict:
                 "started_at": ent.get("started_at", 0)}
     sess = load_subagent_session(sa_id)
     if not sess:
+        # Distinguish "never existed" from "was running when its process
+        # died". The caller is usually a parent waiting for a report: told
+        # "running" it waits forever, told "unknown" it assumes it made the
+        # id up. Only "died" lets it start the work again.
+        dead = read_running(include_dead=True).get(sa_id)
+        if dead:
+            return {"sa_id": sa_id, "status": "died",
+                    "subagent_type": dead.get("type", ""),
+                    "description": dead.get("description", ""),
+                    "started_at": dead.get("started_at", 0),
+                    "error": ("the process running this subagent is no "
+                              "longer running, and it wrote no report — "
+                              "the work has to be started again")}
         return {"sa_id": sa_id, "status": "unknown",
                 "error": "no running or finished subagent with this id"}
     final = ""
