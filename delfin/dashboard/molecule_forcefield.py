@@ -1071,7 +1071,11 @@ def apply_bond_edits(perceived: Any, edits: Any) -> bool:
     if perceived is None or not edits:
         return False
 
-    wanted: Dict[Tuple[int, int], bool] = {}
+    # A value is the bond order the user asked for: 0 removes the bond, 1 to 3
+    # draw it.  True and False are still accepted, because a click that only
+    # says "bond these" means a single bond.
+    wanted: Dict[Tuple[int, int], int] = {}
+    asked: Dict[Tuple[int, int], int] = {}
     for pair, connect in dict(edits).items():
         try:
             i, j = (int(x) for x in pair)
@@ -1079,16 +1083,38 @@ def apply_bond_edits(perceived: Any, edits: Any) -> bool:
             continue
         if i == j or min(i, j) < 0 or max(i, j) >= perceived.n_atoms:
             continue
-        wanted[(min(i, j), max(i, j))] = bool(connect)
+        if isinstance(connect, bool):
+            # A plain True says the bond exists and nothing about its order:
+            # a drawn one is single, an existing one keeps whatever it had.
+            order = 1 if connect else 0
+            explicit = False
+        else:
+            try:
+                order = max(0, min(3, int(connect)))
+            except Exception:
+                continue
+            explicit = order > 0
+        key = (min(i, j), max(i, j))
+        wanted[key] = order
+        if explicit:
+            asked[key] = order
 
     current = {(min(i, j), max(i, j)) for i, j in perceived.bonds}
     target = set(current)
-    for key, connect in wanted.items():
-        if connect:
+    for key, order in wanted.items():
+        if order:
             target.add(key)
         else:
             target.discard(key)
-    if target == current:
+    retyped = {k: v for k, v in asked.items() if k in target}
+    # A bond that is already there but at a different order still counts as
+    # a change: retyping one is the whole point of being able to say double.
+    known = _orders_from_mol(perceived.typing_mol) if retyped else {}
+    order_changed = any(
+        key in current and known.get(key, order) != order
+        for key, order in retyped.items()
+    )
+    if target == current and not order_changed:
         return False
 
     perceived.bonds = sorted(target)
@@ -1101,9 +1127,12 @@ def apply_bond_edits(perceived: Any, edits: Any) -> bool:
     for key in removed:
         orders.pop(key, None)
     for key in added:
-        # A drawn bond is a single bond.  Nothing in a click says otherwise,
-        # and the relaxation is free to shorten it from there.
+        # A drawn bond is single unless the user said otherwise.
         orders[key] = 1
+    # Whatever order was asked for, on a new bond or an existing one.
+    for key, order in retyped.items():
+        if key in target:
+            orders[key] = order
 
     try:
         with _RDKitQuiet():
