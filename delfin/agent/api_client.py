@@ -11020,6 +11020,16 @@ class _DocToolExecutor:
         if bool(arguments.get("background")):
             import threading as _th
             import uuid as _uuid
+            # A background writer edits the tree while the parent is editing
+            # it — the case auto-isolation exists for, and the one it did not
+            # cover: the rule lived in the parallel fan-out, which needs two
+            # subagent calls in one turn to fire.
+            try:
+                from . import subagents as _sa_bg
+                isolation = _sa_bg.auto_isolation_for(
+                    sa_type, isolation, background=True)
+            except Exception:
+                pass
             # Bound the number of concurrent background sub-agents so a session
             # can't leak unbounded daemon threads + worktrees. Saturated → tell
             # the model to wait or run in the foreground instead of spawning.

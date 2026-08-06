@@ -1854,6 +1854,12 @@ def run_subagent(
     isolation = (isolation or "").strip().lower()
     worktree_info = None
     isolation_warning = ""
+    if (isolation == "worktree" and parent_perms is not None
+            and _worktree_would_be_voided(parent_perms)):
+        # Do not create what the permission layer is about to discard, and
+        # do not let the payload claim an isolation that did not happen.
+        isolation = ""
+        isolation_warning = _ISOLATION_VOIDED_BY_LOCK
     if isolation == "worktree" and parent_perms is not None:
         try:
             from .worktree import enter_worktree as _enter_wt
@@ -2197,6 +2203,47 @@ def run_subagent(
         structured_output=structured_output,
         schema_error=schema_error,
     )
+
+
+def auto_isolation_for(
+    subagent_type: str, requested: str, *, background: bool,
+) -> str:
+    """The isolation a subagent should get when the call did not pin one.
+
+    Auto-isolation for writers lived only in the parallel fan-out, which
+    triggers at two or more subagent calls in one turn. A background writer
+    is a single call and got none -- and it is the case that needs it most:
+    fan-out siblings at least finish before the turn ends, while a
+    background writer edits the tree while the parent is editing it, with
+    no lock and no shared stale-write baseline between them.
+
+    A single FOREGROUND writer is left alone on purpose: it has the tree to
+    itself, so a worktree would only add a merge step nobody asked for.
+    """
+    requested = (requested or "").strip()
+    if requested:
+        return requested
+    if background and is_writer_preset(subagent_type):
+        return "worktree"
+    return ""
+
+
+# Stated, not implied: the caller asked for isolation and is not getting it.
+_ISOLATION_VOIDED_BY_LOCK = (
+    "worktree isolation was not applied: this session is confined to one "
+    "folder, and moving the sub-agent into a worktree would move that "
+    "boundary. The sub-agent ran in the parent workspace and is NOT "
+    "isolated from it."
+)
+
+
+def _worktree_would_be_voided(parent_perms) -> bool:
+    """Whether ``_derive_perms`` will drop a workspace override anyway.
+
+    Checked BEFORE the worktree is created. It used to be created, left
+    unused because the lock dropped the override, and torn down again --
+    while the result still reported ``isolation: "worktree"``."""
+    return bool(getattr(parent_perms, "scope_locked", False))
 
 
 def is_writer_preset(subagent_type: str) -> bool:
