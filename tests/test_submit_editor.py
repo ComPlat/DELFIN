@@ -562,3 +562,18 @@ def test_tapping_a_metal_offers_its_coordination_polyhedra():
     assert '_enable_live_forcefield()' in changed
     # Repopulating the list must not look like a user choice.
     assert "state.get('poly_quiet')" in changed
+
+
+def test_polyhedra_are_offered_without_the_force_field_being_on_first():
+    """The offer hung on the cached perception, which only exists once the
+    force field has been switched on. Tapping a metal before that did nothing
+    at all — and said nothing either."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    handler = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
+    assert '_perception_for(xyz)' in handler
+    assert "state.get('perceived')" not in handler
+    # And when nothing can be offered for a metal, the reason is shown.
+    assert 'no ' in handler and 'polyhedron table' in handler
+    assert 'coordination number' in handler

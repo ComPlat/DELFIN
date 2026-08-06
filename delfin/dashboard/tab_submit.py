@@ -3365,11 +3365,17 @@ def create_tab(ctx):
             return
         raw = (submit_pick_sync.value or '').strip()
         indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
-        perceived = state.get('perceived')
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
         options = None
-        if perceived is not None and len(indices) == 1:
+        perceived = None
+        if xyz and len(indices) == 1:
+            # Perceive on demand. Waiting for the cache meant the offer only
+            # appeared once the force field had been switched on at least
+            # once -- tapping a metal before that did nothing at all, and said
+            # nothing either.
             try:
                 from .molecule_forcefield import polyhedron_options
+                perceived = _perception_for(xyz)
                 options = polyhedron_options(perceived, indices[0])
             except Exception:
                 options = None
@@ -3377,6 +3383,19 @@ def create_tab(ctx):
             submit_poly_dd.layout.display = 'none'
             submit_poly_dd.disabled = True
             state['poly_metal'] = None
+            # Say why, when a single atom was picked and could have qualified.
+            if perceived is not None and len(indices) == 1:
+                index = indices[0]
+                symbol = perceived.symbols[index]
+                if index in set(perceived.metal_indices or ()):
+                    donors = sorted(
+                        j for pair in perceived.bonds for j in pair
+                        if index in pair and j != index
+                    )
+                    _set_mol_status(
+                        f'{symbol}: coordination number {len(donors)} — no '
+                        'polyhedron table for that (2 to 9 are covered).'
+                    )
             return
 
         coordination, current, choices = options
