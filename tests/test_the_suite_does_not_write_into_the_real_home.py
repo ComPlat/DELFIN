@@ -115,3 +115,78 @@ def test_a_file_is_not_an_office_folder(tmp_path):
     before = set(ms._load_office_workspaces())
     ms.register_office_workspace(f)
     assert set(ms._load_office_workspaces()) == before
+
+
+# ---------------------------------------------------------------------------
+# ...and neither does anything else the suite writes to
+# ---------------------------------------------------------------------------
+
+def test_every_writable_user_state_sink_is_redirected(_user_state_targets):
+    """The sink table is resolved once per session; this asserts the running
+    process actually points every one of them somewhere disposable."""
+    assert _user_state_targets, "the sink table resolved to nothing"
+    leaked = [
+        f"{mod.__name__}.{attr}"
+        for mod, attr, _rel in _user_state_targets
+        if _under_real_home(getattr(mod, attr))
+    ]
+    assert not leaked, f"still writing into the user's home: {leaked}"
+
+
+def test_the_locator_index_is_redirected():
+    """203 job records had accumulated here, 141 naming pytest tmp dirs."""
+    from delfin.agent import bash_jobs as bj
+    assert not _under_real_home(bj._INDEX_PATH)
+
+
+def test_a_started_job_does_not_reach_the_real_index(tmp_path):
+    from delfin.agent import bash_jobs as bj
+    real = _REAL_HOME / "bash_jobs_index.json"
+    stamp = real.stat().st_mtime if real.exists() else None
+    bj._note_job_workspace("test-job", str(tmp_path))
+    after = real.stat().st_mtime if real.exists() else None
+    assert after == stamp
+    assert bj._lookup_job_workspace("test-job") == str(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The sinks resolved per call, including the one that matters most
+# ---------------------------------------------------------------------------
+
+def test_every_per_call_sink_is_redirected(_user_state_resolvers, tmp_path):
+    assert _user_state_resolvers, "the resolver table resolved to nothing"
+    leaked = []
+    for mod, attr, _rel in _user_state_resolvers:
+        fn = getattr(mod, attr)
+        try:
+            p = fn(tmp_path)
+        except TypeError:
+            p = fn()
+        if _under_real_home(p):
+            leaked.append(f"{mod.__name__}.{attr}")
+    assert not leaked, f"still writing into the user's home: {leaked}"
+
+
+def test_the_project_memory_store_is_not_in_the_users_home(tmp_path):
+    """Its path is ~/.delfin/projects/<slug>/memory, and the slug comes from
+    the repo root -- so passing tmp_path only changed the NAME of the
+    directory it created in the user's home, it did not move it."""
+    p, _, _ = ms.save_typed_memory("project: x", repo_root=tmp_path)
+    assert not _under_real_home(p)
+
+
+def test_the_users_permission_settings_are_not_the_real_file():
+    """A test persisting an allow-rule edited the user's real settings: the
+    file was found holding allow_patterns ["^.*$"] and default_mode
+    "bypassPermissions" -- every command auto-approved, from a fixture."""
+    from delfin.agent import kit_settings as ks
+    assert not _under_real_home(ks.USER_SETTINGS_PATH)
+
+
+def test_persisting_an_allow_rule_does_not_reach_the_real_settings():
+    from delfin.agent import hooks_editor as he
+    real = _REAL_HOME / "settings.json"
+    stamp = real.stat().st_mtime if real.exists() else None
+    he._write_settings({"kit": {"allow_patterns": ["^.*$"]}})
+    after = real.stat().st_mtime if real.exists() else None
+    assert after == stamp

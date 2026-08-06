@@ -68,6 +68,141 @@ def _isolate_user_wide_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(ms, "_office_ws_cache", None)
 
 
+# Every module-level sink under the user's ~/.delfin that a test can write to.
+# These are resolved at IMPORT time, so a test pointing Path.home elsewhere
+# never redirected them -- which is why an ordinary run left 203 job records,
+# 141 of them naming pytest tmp directories, in the user's real locator index.
+#
+# Read-mostly stores are deliberately absent: the documentation index, the
+# model-capability cache, credentials (isolated separately) and the settings
+# files. Redirecting those would not stop a write, it would only hide the
+# real content from tests that legitimately read it.
+_USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
+    ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
+    ("delfin.agent.provider_profile", "_LOCAL_STATE_PATH",
+     "provider_profile_state.json"),
+    ("delfin.agent.job_fix", "_ATTEMPTS_PATH", "fix_attempts.json"),
+    ("delfin.agent.session_store", "_SESSIONS_DIR", "agent_sessions"),
+    ("delfin.agent.outcome_tracker", "_DEFAULT_PATH", "outcome_history.jsonl"),
+    ("delfin.agent.agent_metrics", "_LOG_PATH", "agent_metrics.jsonl"),
+    ("delfin.agent.context_tracker", "_DEFAULT_PATH", "context_usage.jsonl"),
+    ("delfin.agent.eval_loop", "_REPORTS_DIR", "eval_reports"),
+    ("delfin.agent.eval_loop", "_TASK_DRAFTS_DIR", "bug_tasks"),
+    ("delfin.agent.bug_report", "_FALLBACK_DIR", "agent_bugs"),
+    ("delfin.agent.bug_report", "_TASK_DRAFTS_DIR", "bug_tasks"),
+    ("delfin.agent.benchmark", "_DEFAULT_RUNS_DIR", "benchmark_runs"),
+    ("delfin.agent.scheduler", "_DEFAULT_PATH", "cron.json"),
+    ("delfin.dashboard.schedules", "_DEFAULT_PATH", "schedules.json"),
+    ("delfin.agent.memory_store", "_DEFAULT_PATH", "agent_memory.json"),
+    ("delfin.agent.skill_registry", "_LOCAL_SKILLS_DIR", "skills"),
+    ("delfin.agent.job_monitor", "_WATCHED_PATH", "watched_jobs.json"),
+    ("delfin.agent.job_monitor", "_FINDINGS_PATH", "monitor_findings.jsonl"),
+    ("delfin.agent.job_monitor", "_PID_PATH", "job_monitor.pid"),
+    ("delfin.agent.bug_watcher", "_PID_PATH", "bug_watcher.pid"),
+    ("delfin.agent.scheduler_daemon", "_PID_PATH", "scheduler_daemon.pid"),
+    # The user's own settings file. A permission rule the agent persists on
+    # approval is written here, so a test exercising that path edited the
+    # real file -- and permission rules are exactly what must not be granted
+    # by accident.
+    ("delfin.agent.hooks_editor", "_USER_SETTINGS", "settings.json"),
+    ("delfin.agent.kit_settings", "USER_SETTINGS_PATH", "settings.json"),
+)
+
+
+@pytest.fixture(scope="session")
+def _user_state_targets():
+    """Resolve the sink table once. A module that cannot be imported (an
+    optional dependency is missing) simply drops out."""
+    import importlib
+    out = []
+    for mod_name, attr, rel in _USER_STATE_SINKS:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        if hasattr(mod, attr):
+            out.append((mod, attr, rel))
+    return tuple(out)
+
+
+# The sinks that are resolved per call rather than at import. Redirecting
+# these one by one, rather than swapping Path.home for the whole suite: that
+# was measured, and it breaks 357 tests that legitimately read the real home.
+_USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
+    ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
+    ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    ("delfin.agent.change_journal", "_undo_root", "undo"),
+    ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
+    ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
+)
+
+
+@pytest.fixture(scope="session")
+def _user_state_resolvers():
+    import importlib
+    out = []
+    for mod_name, attr, rel in _USER_STATE_RESOLVERS:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        if callable(getattr(mod, attr, None)):
+            out.append((mod, attr, rel))
+    return tuple(out)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
+                        _user_state_resolvers):
+    """Point every writable user-state sink into the test's own directory.
+
+    The per-project memory store belongs here too, and is the one that was
+    least obvious: its path is ``~/.delfin/projects/<slug>/memory``, where
+    the slug is derived from the repo root. Passing ``tmp_path`` as the repo
+    root therefore did NOT bound it -- it only changed the slug, and every
+    test that saved a memory left a directory named after itself in the
+    user's real home.
+
+    A test that patches one of these itself still wins: its ``setattr`` runs
+    after this fixture's."""
+    import pathlib
+
+    real_home = pathlib.Path.home()
+    fallback = tmp_path / "user_home"
+
+    def _already_isolated() -> bool:
+        """A test that has pointed ``Path.home`` somewhere of its own.
+
+        Those were isolated by the more direct route, many of them assert on
+        the resulting path, and some rely on side effects of the original
+        resolver (the legacy-store migration). For them the fixture steps
+        aside entirely and calls the original.
+        """
+        return pathlib.Path.home() != real_home
+
+    for mod, attr, rel in _user_state_targets:
+        monkeypatch.setattr(mod, attr, fallback / ".delfin" / rel)
+
+    _PROJECT_LEAF = {"_delfin_memory_dir": "memory",
+                     "_delfin_plans_dir": "plans"}
+    for mod, attr, rel in _user_state_resolvers:
+        original = getattr(mod, attr)
+        leaf = _PROJECT_LEAF.get(attr)
+        if leaf is not None:
+            def _resolve(repo_root, _o=original, _leaf=leaf):
+                if _already_isolated():
+                    return _o(repo_root)
+                from delfin.agent.memory_store import _project_slug
+                return (fallback / ".delfin" / "projects"
+                        / _project_slug(repo_root) / _leaf)
+        else:
+            def _resolve(_o=original, _rel=rel):
+                if _already_isolated():
+                    return _o()
+                return fallback / ".delfin" / _rel
+        monkeypatch.setattr(mod, attr, _resolve)
+
+
 # Secret API keys delfin resolves, each from the env OR ~/.delfin/credentials.json.
 _SECRET_KEY_VARS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
