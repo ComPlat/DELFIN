@@ -1108,6 +1108,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 scopeKey: scopeKey,
                 ffActive: false,
                 settleOnRelease: true,
+                pinned: [],
                 ffFrameMs: 16,
                 picks: [],
                 pivot: null,
@@ -1522,6 +1523,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             pivotTxt = ' · pivot: <b>' +
                 (state.pivot.elem || '?') + state.pivot.serial + '</b>';
         }
+        var pinnedTxt = (state.pinned && state.pinned.length)
+            ? ' · <b>' + state.pinned.length + '</b> held'
+            : '';
         var undoTxt = state.undo.length
             ? ' · <span style="color:#888;">' + state.undo.length + ' undo</span>'
             : '';
@@ -1536,7 +1540,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var hint = '';
         el.innerHTML = modeBadge +
             '<b>' + n + '</b> atom' + (n === 1 ? '' : 's') + ' selected' +
-            pivotTxt + undoTxt + hint;
+            pivotTxt + pinnedTxt + undoTxt + hint;
     }
 
     // --- Pick toggle ---
@@ -2063,15 +2067,32 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return !!(state.ffActive && window.__delfinFF &&
                   window._delfinFFByScope && window._delfinFFByScope[state.scopeKey]);
     }
+    function ffApplyFrozen(scopeKey, extraIndices) {
+        var state = getState(scopeKey);
+        if (!ffEnabled(state)) return;
+        var seen = {}, list = [];
+        (state.pinned || []).concat(extraIndices || []).forEach(function(index) {
+            if (seen[index]) return;
+            seen[index] = true;
+            list.push(index);
+        });
+        try { window.__delfinFF.grab(scopeKey, list); } catch (e) {}
+    }
     function ffBeginDrag(scopeKey, targets) {
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
-        try {
-            window.__delfinFF.grab(scopeKey, ffIndicesOf(viewer, targets));
-            state.ffFrameMs = 16;
-        } catch (e) {}
+        ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets));
+        state.ffFrameMs = 16;
+    }
+    function unpinAll(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.pinned || !state.pinned.length) return false;
+        state.pinned = [];
+        ffApplyFrozen(scopeKey, []);
+        updateStatus(scopeKey);
+        return true;
     }
     function ffRelaxFrame(scopeKey) {
         var state = getState(scopeKey);
@@ -2171,14 +2192,31 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return state.ffStrength;
     }
 
-    function ffEndDrag(scopeKey) {
+    function ffEndDrag(scopeKey, heldSerials) {
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
-        try { window.__delfinFF.release(scopeKey); } catch (e) {}
         // Off by choice: placing an atom somewhere and having it stay there is
         // sometimes exactly what is wanted, even though the geometry is then
-        // strained.
-        if (state.settleOnRelease === false) { pushXyzToPython(scopeKey); return; }
+        // strained. Releasing the atom would not be enough -- with the field
+        // running, it would simply be relaxed back, which made the switch look
+        // like it did nothing. The placed atoms stay frozen instead, and the
+        // rest of the molecule goes on settling around them.
+        if (state.settleOnRelease === false) {
+            var viewer = getViewer(scopeKey);
+            var held = heldSerials || [];
+            if (viewer && held.length) {
+                var pinned = state.pinned || [];
+                ffIndicesOf(viewer, held).forEach(function(index) {
+                    if (pinned.indexOf(index) < 0) pinned.push(index);
+                });
+                state.pinned = pinned;
+            }
+            ffApplyFrozen(scopeKey, []);
+            updateStatus(scopeKey);
+            pushXyzToPython(scopeKey);
+            return;
+        }
+        ffApplyFrozen(scopeKey, []);
         // Letting go frees the atom that was held, and the structure settles
         // around its new position instead of keeping the strain the drag put
         // in. Without this the geometry that reaches the coordinate box -- and
@@ -2190,7 +2228,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function setSettleOnRelease(scopeKey, enabled) {
         var state = getState(scopeKey);
         state.settleOnRelease = !!enabled;
-        if (!state.settleOnRelease) stopSettling(scopeKey);
+        if (!state.settleOnRelease) {
+            stopSettling(scopeKey);
+        } else {
+            // Switching settling back on means nothing is being held any more.
+            unpinAll(scopeKey);
+        }
         return state.settleOnRelease;
     }
 
@@ -2471,7 +2514,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var d = state2.drag;
             state2.drag = null;
             if (d.kind === 'translate' || d.kind === 'rotate') {
-                ffEndDrag(scopeKey);
+                ffEndDrag(scopeKey, d.targets);
                 if (d.movedEnough) {
                     pushXyzToPython(scopeKey);
                 }
@@ -2563,6 +2606,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             try { window.cancelAnimationFrame(state.settleRaf); } catch (e) {}
         }
         state.settleRaf = null;
+        state.pinned = [];
         state.ffActive = false;
         state.ffInfo = null;
         state.measureBox = null;
@@ -2591,6 +2635,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var state = getState(scopeKey);
         state.picks = [];
         state.pivot = null;
+        unpinAll(scopeKey);
         redrawHighlights(scopeKey);
     }
 
@@ -2860,6 +2905,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
         setSettleOnRelease: setSettleOnRelease,
+        unpinAll: unpinAll,
         startAutoOptimize: startAutoOptimize,
         stopAutoOptimize: stopAutoOptimize,
         autoOptimizeRunning: autoOptimizeRunning

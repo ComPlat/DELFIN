@@ -95,11 +95,13 @@ def test_dragging_an_atom_relaxes_the_rest_through_the_force_field():
     a per-frame round trip to the kernel costs 45 ms."""
     # Frozen atoms are a gradient mask on the engine side, set once per drag.
     assert 'ffBeginDrag(scopeKey, state.drag.targets)' in EDITOR
-    assert 'window.__delfinFF.grab(scopeKey, ffIndicesOf(viewer, targets))' in EDITOR
+    assert 'ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets))' in EDITOR
     # The relaxation runs after the grabbed atoms are placed, not before.
     grab_then_relax = EDITOR.index('applyTranslate(scopeKey, delta, d.targets)')
     assert EDITOR.index('ffRelaxFrame(scopeKey)', grab_then_relax) > grab_then_relax
-    assert 'window.__delfinFF.release(scopeKey)' in EDITOR
+    # Releasing is now expressed as re-applying the frozen set with nothing
+    # extra held, so a drag and a pinned atom go through one code path.
+    assert 'ffApplyFrozen(scopeKey, [])' in _body('ffEndDrag')
 
     # The engine adapts its batch to a full-frame budget, so the time it is
     # given has to include the renderer's share of the frame.
@@ -487,7 +489,7 @@ def test_settling_on_release_can_be_switched_off():
     assert 'state.settleOnRelease === false' in end
     # Switching off still pushes the geometry the user placed.
     assert end.index('settleOnRelease === false') < end.index('settleAfterDrag')
-    assert 'pushXyzToPython(scopeKey); return;' in end
+    assert 'pushXyzToPython(scopeKey);' in end
 
     setter = _body('setSettleOnRelease')
     assert 'stopSettling(scopeKey)' in setter
@@ -502,3 +504,35 @@ def test_settling_on_release_can_be_switched_off():
     assert 'value=True' in settle
     # And the choice survives a re-assignment of the parameters.
     assert source.count('setSettleOnRelease') >= 2
+
+
+def test_placed_atoms_are_held_against_the_running_field():
+    """With settling off, releasing the atom was not enough: the continuous
+    field simply relaxed it back, so the switch did nothing whenever the field
+    was on — the combination a user is most likely to have. Placed atoms stay
+    frozen in the gradient mask instead, and the rest of the molecule goes on
+    settling around them.
+
+    Measured on cholesterol with the field running: the held atom moves
+    0.0000 A while the rest moves up to 5.41 A. With settling on, the same
+    gesture moves it 3.28 A."""
+    end = _body('ffEndDrag')
+    assert 'state.settleOnRelease === false' in end
+    # The mouseup handler clears state.drag before ending the drag, so the
+    # held atoms have to be handed over rather than read back.
+    assert 'ffEndDrag(scopeKey, d.targets)' in EDITOR
+    assert 'heldSerials' in end
+    assert 'state.pinned = pinned;' in end
+
+    apply_frozen = _body('ffApplyFrozen')
+    assert 'state.pinned' in apply_frozen
+    assert '__delfinFF.grab(scopeKey, list)' in apply_frozen
+    # A drag freezes what it holds on top of what is already held.
+    assert 'ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets))' in EDITOR
+
+    # Three ways to let go again: Clear, switching settling back on, a re-render.
+    assert 'unpinAll(scopeKey);' in _body('clearPicks')
+    assert 'unpinAll(scopeKey);' in _body('setSettleOnRelease')
+    assert 'state.pinned = [];' in _body('onViewerReady')
+    # And the count is visible, or the mode is invisible.
+    assert "'</b> held'" in _body('updateStatus')
