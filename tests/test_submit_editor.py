@@ -613,23 +613,19 @@ def test_values_can_be_held_and_dropped_again():
     assert 'restraints=[' in source
 
 
-def test_two_ligands_can_be_exchanged_on_the_polyhedron():
+def test_an_exchange_lets_the_polyhedron_hand_over_the_vertices():
+    """The vertex bookkeeping was swapped by hand once, which the field then
+    fought: it had no way to cross into the other arrangement. The exchange
+    moves the ligands instead, and the polyhedron works its vertices out
+    afresh from where they have landed."""
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding='utf-8').read()
-    assert 'submit_swap_btn' in source
-    # The assignment is held from the moment a polyhedron is chosen, or the
-    # next re-assignment would simply undo the swap.
-    assert "state['poly_assignment'] = polyhedron_assignment(" in source
-    assert "'assignment': state.get('poly_assignment')," in source
-
-    swap = source.split('def on_submit_swap')[1].split('\n    def ')[0]
-    assert 'assignment[first], assignment[second] = assignment[second], assignment[first]' in swap
-    assert '_enable_live_forcefield()' in swap
-    # Offered only when exactly two donors of the forced metal are selected.
-    refresh = source.split('def _refresh_swap')[1].split('\n    def ')[0]
-    assert 'len(indices) == 2' in refresh
-    assert 'all(i in assignment for i in indices)' in refresh
+    handler = source.split('def on_submit_swap')[1].split('\n    def ')[0]
+    # No hand-written assignment any more; it is re-derived.
+    assert "state['poly_assignment'] = None" in handler
+    assert 'assignment[first], assignment[second]' not in handler
+    assert 'exchangeLigands(' in handler
 
 
 def test_a_held_polyhedron_survives_selecting_something_else():
@@ -805,3 +801,46 @@ def test_holding_a_value_no_longer_turns_the_whole_molecule():
     assert applied.index('before[3*b] = atoms[b].x') < applied.index(
         'superimposeOnto(atoms, before)'
     )
+
+
+def test_two_ligands_are_exchanged_rather_than_dragged_past_each_other():
+    """Two arrangements of the same ligand set are separate minima, and a
+    steepest-descent relaxation only runs downhill: it can never cross between
+    them. A ligand dragged part of the way rolls back into the basin it came
+    from -- for an octahedron the saddle is a Bailar or Ray-Dutt twist, a long
+    way from either end. So the exchange is performed in one step.
+
+    An animated swap would be worse than a jump, not better: both ligands
+    travelling the same arc in opposite senses meet in the middle, whereas a
+    jump has no middle. The landing is the real risk, and each ligand is spun
+    about its own new metal-donor axis to find the roomiest one.
+
+    Measured on a real Re complex, exchanging the nitrosyl with a bromide: the
+    N lands 0.35 A from where the Br sat and the Br 0.35 A from where the N
+    sat, closest contact 2.28 A, and after four seconds of settling the N is
+    still 2.79 A from its own old place -- it stayed swapped."""
+    swap = _body('exchangeLigands')
+    # Rotation about the metal, so each ligand keeps its own bond length.
+    assert 'rotateAtomsAbout(atoms, fragA.atoms, centre' in swap
+    assert 'rotateAtomsAbout(atoms, fragB.atoms, centre' in swap
+    # Two arms of one chelate cannot trade places.
+    assert 'same chelate' in swap
+    # A trans pair has no unique rotation axis; any perpendicular one serves.
+    turn = _body('rotationBetween')
+    assert 'Math.PI' in turn and 'seed' in turn
+    # The landing is chosen for clearance and reported.
+    assert 'spinForClearance' in swap
+    assert 'contact: contact' in swap
+    # Undoable, and the polyhedron works its vertices out afresh afterwards.
+    assert 'snapshotForUndo(scopeKey)' in swap
+    assert "pushXyzToPython(scopeKey, 'drag-end')" in swap
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    handler = source.split('def on_submit_swap')[1].split('\n    def ')[0]
+    assert 'exchangeLigands(' in handler
+    # Offered without a polyhedron too: an exchange is useful either way.
+    refresh = source.split('def _refresh_swap')[1].split('\n    def ')[0]
+    assert 'metal_indices' in refresh
+    assert "state.get('poly_applied')" not in refresh

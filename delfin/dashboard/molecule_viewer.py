@@ -2278,6 +2278,115 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return touched;
     }
 
+    // --- exchanging two ligands -------------------------------------------
+    // Two arrangements of the same ligand set are separate minima on the same
+    // surface, and a steepest-descent relaxation only ever runs downhill: it
+    // cannot cross the barrier between them. Dragging a ligand towards another
+    // vertex and letting go therefore rolls it straight back into the basin it
+    // came from -- for an octahedron the saddle is a Bailar or Ray-Dutt twist,
+    // a long way from either end. So the exchange is performed rather than
+    // attempted: each ligand is rotated about the metal onto the other's
+    // direction, which lands the structure in the other minimum, and the field
+    // is then left to tidy up.
+    function rotationBetween(from, to) {
+        var a = vecNorm(from), b = vecNorm(to);
+        var axis = crossV(a, b);
+        var sine = vecLen(axis);
+        var cosine = a.x*b.x + a.y*b.y + a.z*b.z;
+        if (sine < 1e-8) {
+            if (cosine > 0) return null;              // already aligned
+            // Opposite directions: any perpendicular axis turns one onto the
+            // other, and trans ligands are exactly this case.
+            var seed = Math.abs(a.x) < 0.9 ? {x:1,y:0,z:0} : {x:0,y:1,z:0};
+            axis = vecNorm(crossV(a, seed));
+            return {axis: axis, angle: Math.PI};
+        }
+        return {axis: vecScale(axis, 1 / sine), angle: Math.atan2(sine, cosine)};
+    }
+
+    function exchangeLigands(scopeKey, metalIndex, donorA, donorB) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return {ok: false, error: 'no viewer'};
+        var atoms = getAtoms(viewer);
+        var metal = metalIndex | 0, a = donorA | 0, b = donorB | 0;
+        if (a === b || !atoms[metal] || !atoms[a] || !atoms[b]) {
+            return {ok: false, error: 'pick two ligands of the same metal'};
+        }
+        var adj = bondAdjacency(viewer);
+        var fragA = fragmentFrom(adj, a, metal, a);
+        var fragB = fragmentFrom(adj, b, metal, b);
+        if (fragA.seen[metal] || fragB.seen[metal]) {
+            return {ok: false, error: 'that ligand is part of a ring through the metal'};
+        }
+        if (fragA.seen[b] || fragB.seen[a]) {
+            return {ok: false,
+                    error: 'both donors belong to the same chelate; its arms cannot trade places'};
+        }
+        var centre = {x: atoms[metal].x, y: atoms[metal].y, z: atoms[metal].z};
+        var toA = vecSub(atoms[a], centre);
+        var toB = vecSub(atoms[b], centre);
+        var turnA = rotationBetween(toA, toB);
+        var turnB = rotationBetween(toB, toA);
+        snapshotForUndo(scopeKey);
+        // Rotation about the metal, so each ligand keeps its own bond length
+        // and internal geometry and only changes which direction it points.
+        if (turnA) rotateAtomsAbout(atoms, fragA.atoms, centre, turnA.axis, turnA.angle);
+        if (turnB) rotateAtomsAbout(atoms, fragB.atoms, centre, turnB.axis, turnB.angle);
+
+        // Each ligand keeps the orientation it had about its own bond, which
+        // is the wrong one for its new neighbours -- a bulky ligand landing
+        // where a halide sat can arrive with a substituent inside somebody.
+        // Spinning it about its new metal-donor axis costs nothing chemically
+        // and is the cheapest way to find a landing that is not on top of
+        // anything. An animated swap would be worse than either: both ligands
+        // travelling the same arc in opposite senses collide halfway, whereas
+        // a jump has no half-way at all.
+        var movedSet = {};
+        fragA.atoms.concat(fragB.atoms).forEach(function(i) { movedSet[i] = true; });
+        var others = [];
+        for (var o = 0; o < atoms.length; o++) if (!movedSet[o]) others.push(o);
+
+        function closestContact(indices) {
+            var worst = Infinity;
+            for (var i = 0; i < indices.length; i++) {
+                var p = atoms[indices[i]];
+                for (var j = 0; j < others.length; j++) {
+                    var q = atoms[others[j]];
+                    if (q === atoms[metal]) continue;
+                    var d = distV(p, q);
+                    if (d < worst) worst = d;
+                }
+            }
+            return worst;
+        }
+        function spinForClearance(frag, donor) {
+            var axis = vecNorm(vecSub(atoms[donor], centre));
+            if (vecLen(axis) < 0.5 || frag.length < 2) return;
+            var best = closestContact(frag), bestTurn = 0;
+            var step = Math.PI / 9;   // 20 degrees
+            for (var turn = step; turn < 2 * Math.PI - 1e-9; turn += step) {
+                rotateAtomsAbout(atoms, frag, centre, axis, step);
+                var got = closestContact(frag);
+                if (got > best) { best = got; bestTurn = turn; }
+            }
+            // Back to the start, then on to the best orientation found.
+            rotateAtomsAbout(atoms, frag, centre, axis, step);
+            if (bestTurn) rotateAtomsAbout(atoms, frag, centre, axis, bestTurn);
+        }
+        spinForClearance(fragA.atoms, a);
+        spinForClearance(fragB.atoms, b);
+        var contact = Math.min(closestContact(fragA.atoms), closestContact(fragB.atoms));
+
+        invalidateGeometry(viewer);
+        try { viewer.render(); } catch (e) {}
+        redrawHighlights(scopeKey);
+        // 'drag-end' so the polyhedron works out the vertices afresh from where
+        // the ligands now are.
+        pushXyzToPython(scopeKey, 'drag-end');
+        return {ok: true, moved: fragA.atoms.length + fragB.atoms.length,
+                contact: contact};
+    }
+
     // --- live force field -------------------------------------------------
     // Avogadro relaxes the molecule while you drag: the grabbed atom follows
     // the cursor exactly and everything else settles around it. The relaxation
@@ -3160,6 +3269,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
         setFixedInternals: setFixedInternals,
+        exchangeLigands: exchangeLigands,
         setSettleOnRelease: setSettleOnRelease,
         unpinAll: unpinAll,
         startAutoOptimize: startAutoOptimize,

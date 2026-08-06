@@ -3531,29 +3531,53 @@ def create_tab(ctx):
         submit_constraint_dd.value = entries[0][0]
 
     def _refresh_swap(indices):
-        """Offer a swap when two ligands of the forced metal are selected."""
-        assignment = state.get('poly_assignment') or {}
-        ready = (
-            len(indices) == 2
-            and state.get('poly_applied')
-            and all(i in assignment for i in indices)
-        )
+        """Offer an exchange whenever two donors of one metal are selected.
+
+        It does not need a polyhedron: exchanging two ligands is a move across
+        a barrier, which is useful with or without a target shape.
+        """
+        perceived = state.get('perceived')
+        metals = set(getattr(perceived, 'metal_indices', ()) or ())
+        donors = set()
+        if perceived is not None and len(metals) == 1:
+            metal = next(iter(metals))
+            donors = {
+                j for pair in perceived.bonds for j in pair
+                if metal in pair and j != metal
+            }
+        ready = len(indices) == 2 and donors and all(i in donors for i in indices)
         submit_swap_btn.layout.display = '' if ready else 'none'
         submit_swap_btn.disabled = not ready
 
     def on_submit_swap(_button=None):
+        """Exchange two ligands outright rather than dragging one at another.
+
+        The two arrangements are separate minima and the relaxation only runs
+        downhill, so it can never cross between them: a ligand dragged part of
+        the way simply rolls back. The exchange is therefore performed in one
+        step and the field is left to tidy up afterwards.
+        """
         indices = list(state.get('picked') or [])
-        assignment = dict(state.get('poly_assignment') or {})
-        if len(indices) != 2 or not all(i in assignment for i in indices):
+        metal = state.get('poly_metal')
+        if metal is None:
+            perceived = state.get('perceived')
+            metals = list(getattr(perceived, 'metal_indices', ()) or ())
+            metal = metals[0] if len(metals) == 1 else None
+        if len(indices) != 2 or metal is None:
+            _set_mol_status('Select two ligands of one metal to exchange them.')
             return
-        first, second = indices
-        assignment[first], assignment[second] = assignment[second], assignment[first]
-        state['poly_assignment'] = assignment
-        _set_mol_status(
-            'Exchanged the two ligands on the polyhedron; the field is now '
-            'pulling them onto each other\'s vertex.'
+        state['poly_assignment'] = None
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.exchangeLigands('
+            f'{json.dumps(submit_scope_id)},{int(metal)},'
+            f'{int(indices[0])},{int(indices[1])});'
         )
-        _enable_live_forcefield()
+        _set_mol_status(
+            'Exchanged the two ligands. The field is settling the result; '
+            'Undo puts them back.'
+        )
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
