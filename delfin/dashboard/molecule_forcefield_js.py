@@ -378,6 +378,9 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         st.grad = new Float64Array(n3);
         st.trial = new Float64Array(n3);
         st.tgrad = new Float64Array(n3);
+        st.dir = new Float64Array(n3);
+        st.prevGrad = new Float64Array(n3);
+        st.havePrevGrad = false;
         st.probe = new Float64Array(n3);
         st.pgrad = new Float64Array(n3);
         st.lastGood = new Float64Array(n3);
@@ -893,8 +896,64 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
     var ENERGY_TOL = 1e-4;          // kcal/mol per frame
     var QUIET_FRAMES = 5;           // how many in a row before we believe it
 
+    var WOLFE_C1 = 1e-4;        // sufficient decrease
+    var WOLFE_C2 = 0.4;         // curvature; loose, as fits an inexact search
+    var LINE_TRIES = 8;
+    //: Steps of plain descent before the conjugate memory is engaged. Which
+    //: basin a local optimiser lands in depends on the path it takes, and a
+    //: conjugate direction commits to one earlier than the gradient does. On
+    //: a badly strained start that was the wrong one: a ring drawn shut
+    //: settled 60 kcal/mol above where descent got to. Letting the worst of
+    //: the strain out first costs a few frames and removes the only case
+    //: where this was worse than what it replaces.
+    var CG_WARMUP_STEPS = 200;
+
+    // The direction: Polak-Ribiere, restarted whenever it would point uphill.
+    // Steepest descent goes downhill, which is not the same as going towards
+    // the minimum -- in a long narrow valley, and every stiff bond against
+    // every soft torsion is one, it crosses back and forth and creeps along.
+    function searchDirection(st, n3) {
+        var i, beta = 0.0;
+        st.cgWarmup = (st.cgWarmup || 0) + 1;
+        if (st.cgWarmup <= CG_WARMUP_STEPS) st.havePrevGrad = false;
+        if (st.havePrevGrad) {
+            var num = 0.0, den = 0.0;
+            for (i = 0; i < n3; i++) {
+                num += st.grad[i] * (st.grad[i] - st.prevGrad[i]);
+                den += st.prevGrad[i] * st.prevGrad[i];
+            }
+            if (den > 1e-16) beta = num / den;
+            if (!isFinite(beta) || beta < 0) beta = 0.0;
+        }
+        var slope = 0.0;
+        for (i = 0; i < n3; i++) {
+            st.dir[i] = -st.grad[i] + beta * st.dir[i];
+            slope += st.dir[i] * st.grad[i];
+        }
+        if (!(slope < 0)) {
+            slope = 0.0;
+            for (i = 0; i < n3; i++) {
+                st.dir[i] = -st.grad[i];
+                slope += st.dir[i] * st.grad[i];
+            }
+        }
+        for (i = 0; i < n3; i++) st.prevGrad[i] = st.grad[i];
+        st.havePrevGrad = true;
+        return slope;
+    }
+
     // ------------------------------------------------------------------
-    // steepest descent with a gradient-capped, backtracking step
+    // conjugate gradient with a Wolfe line search
+    //
+    // The direction alone is not enough: a first attempt that changed only
+    // that measured worse than plain descent, because the old step control
+    // accepted any step that lowered the energy at all -- for a conjugate
+    // direction usually a very short one -- and every rejection threw the
+    // memory away. So the step comes from a Wolfe line search. Sufficient
+    // decrease decides whether a step is good enough to take; the curvature
+    // along the direction decides whether it was too short, which is what
+    // lets the length grow into the valley instead of being tuned against
+    // the size of the gradient.
     //
     // Convergence is judged on progress, not on the gradient alone. Measured
     // on three molecules, the gradient test never once fired: cholesterol
@@ -936,26 +995,54 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
                 st.converged = true;
                 break;
             }
+            var slope0 = searchDirection(st, n3);
+            var dmax = 0.0;
+            for (i = 0; i < n3; i++) {
+                var dv = st.dir[i] < 0 ? -st.dir[i] : st.dir[i];
+                if (dv > dmax) dmax = dv;
+            }
+            if (!isFinite(dmax) || dmax < 1e-16) { st.converged = true; break; }
             var lam = st.lambda;
-            if (lam * gmax > MAX_DISPLACEMENT) lam = MAX_DISPLACEMENT / gmax;
-            for (i = 0; i < n3; i++) st.trial[i] = st.pos[i] - lam * st.grad[i];
-            var e1 = evalMasked(st, st.trial, st.tgrad, T_ALL);
-            if (isFinite(e1) && e1 <= st.energyValue) {
+            if (lam * dmax > MAX_DISPLACEMENT) lam = MAX_DISPLACEMENT / dmax;
+            var accepted = false, e1 = 0.0, slope1 = 0.0;
+            for (var attempt = 0; attempt < LINE_TRIES; attempt++) {
+                for (i = 0; i < n3; i++) st.trial[i] = st.pos[i] + lam * st.dir[i];
+                e1 = evalMasked(st, st.trial, st.tgrad, T_ALL);
+                if (isFinite(e1) && e1 <= st.energyValue + WOLFE_C1 * lam * slope0) {
+                    slope1 = 0.0;
+                    for (i = 0; i < n3; i++) slope1 += st.dir[i] * st.tgrad[i];
+                    accepted = true;
+                    break;
+                }
+                st.rejects++;
+                lam *= SHRINK;
+                if (lam * dmax < MIN_LAMBDA) break;
+            }
+            if (accepted) {
                 var swap = st.pos; st.pos = st.trial; st.trial = swap;
                 swap = st.grad; st.grad = st.tgrad; st.tgrad = swap;
                 st.energyValue = e1;
-                st.lambda = Math.min(lam * GROW, MAX_LAMBDA);
-                taken++;
-            } else {
-                st.rejects++;
-                st.lambda = lam * SHRINK;
-                if (st.lambda < MIN_LAMBDA) {
-                    // The geometry cannot be improved along -grad at any step
-                    // length we are willing to take; stop rather than thrash.
-                    st.lambda = INITIAL_LAMBDA;
-                    st.stalled = true;
-                    break;
+                // The curvature half of Wolfe: a step that left the slope
+                // still steeply downhill was too short and the next may be
+                // longer; one that overshot into a rising slope was too long.
+                if (slope1 < WOLFE_C2 * slope0) {
+                    st.lambda = Math.min(lam * GROW, MAX_LAMBDA);
+                } else if (slope1 > -WOLFE_C2 * slope0) {
+                    st.lambda = Math.max(lam * SHRINK, MIN_LAMBDA);
+                } else {
+                    st.lambda = lam;
                 }
+                taken++;
+            } else if (st.havePrevGrad) {
+                // Nothing along the conjugate direction helps. Forget it and
+                // try the plain gradient before giving up on the geometry.
+                st.havePrevGrad = false;
+                st.lambda = INITIAL_LAMBDA;
+                continue;
+            } else {
+                st.lambda = INITIAL_LAMBDA;
+                st.stalled = true;
+                break;
             }
         }
         // Did this frame achieve anything? A stall counts as no, which is
@@ -1092,6 +1179,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         st.frozen = [];
         st.haveEnergy = false;
         st.quietFrames = 0;
+        st.havePrevGrad = false;
         st.converged = false;
         st.lambda = INITIAL_LAMBDA;
         return true;
