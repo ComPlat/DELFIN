@@ -35007,7 +35007,15 @@ def _smiles_to_xyz_isomers_impl(
     # directions: neither constructor's frames are altered or dropped.
     if _ffree_union:
         try:
-            _seen_x = {x for x, _l in results}
+            # ⚠ 2026-08-06: _seen_x kam aus `results` -- also aus DERSELBEN Liste, die danach
+            # gefiltert wurde.  `x not in _seen_x` war damit fuer JEDES Element falsch, die
+            # Liste lief restlos leer, und uebrig blieb exakt list(_ffree_union) -- byte-
+            # identisch mit dem OFF-Arm an :31914.  Der Hebel hat die komplette legacy-Pipeline
+            # gefahren (gemessen: 1,76 h gegen 0,05 h auf 24 Systemen, 35x) und ihr Ergebnis
+            # dann verworfen.  Die Reichweiten-Sonde hat es gefangen: 0/24 geaendert.
+            # Der Dedup-Satz muss aus den FF-freien Frames kommen -- das sind die, die
+            # vorangestellt werden, also die, gegen die legacy entdoppelt werden muss.
+            _seen_x = {x for x, _l in _ffree_union}
             results = list(_ffree_union) + [(x, l) for x, l in results if x not in _seen_x]
         except Exception:
             results = list(_ffree_union) + list(results)
