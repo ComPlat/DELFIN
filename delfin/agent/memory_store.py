@@ -463,9 +463,22 @@ def register_office_workspace(path: Path | str) -> None:
     """
     global _office_ws_cache
     try:
-        resolved = str(Path(path).expanduser().resolve())
+        candidate = Path(path).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        return
+    # It has to be a real directory. Without this check anything whose
+    # str() looked path-shaped was persisted: a run of the suite left 176
+    # entries of the form ".../MagicMock/mock._permissions.workspace/1234"
+    # in the user's registry, because a mocked permissions object's repr
+    # was taken as a workspace. The registry is one of the three carriers
+    # of the office folder lock, so filling it with noise is not merely
+    # untidy -- it decides which folder counts as an office folder.
+    try:
+        if not candidate.is_dir():
+            return
     except OSError:
         return
+    resolved = str(candidate)
     if not resolved:
         return
     with _OFFICE_WS_LOCK:
