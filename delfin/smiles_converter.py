@@ -35016,7 +35016,51 @@ def _smiles_to_xyz_isomers_impl(
             # Der Dedup-Satz muss aus den FF-freien Frames kommen -- das sind die, die
             # vorangestellt werden, also die, gegen die legacy entdoppelt werden muss.
             _seen_x = {x for x, _l in _ffree_union}
-            results = list(_ffree_union) + [(x, l) for x, l in results if x not in _seen_x]
+            _extra = [(x, l) for x, l in results if x not in _seen_x]
+            # ===== NUR SAUBERE FRAMES UEBERNEHMEN (DELFIN_FFFREE_UNION_CLEAN, default OFF) =====
+            # GEMESSEN 2026-08-06 (union180b, 180 Systeme): die rohe Union ist auf der
+            # FAEHIGKEIT genau so additiv wie behauptet -- cap_lost 0, cap_gained 20, gegen den
+            # 01.07.-Stand sogar +26 bei cap_LOST 0.  Sie importiert aber legacys DEFEKTE mit:
+            # 2269 -> 9752 Frames (4,3x), und dadurch smiles_ccdc_regressed 77,
+            # pyramid_frame_regressed 46, tier2_regressed 11.
+            #
+            # Der Kommentar oben ("adding legacy's frames next to ours can only raise them")
+            # gilt fuer die BESTWERT-Terme des Auges -- nicht fuer die Terme, die DEFEKTE
+            # FRAMES ZAEHLEN.  legacy liefert 6,9 % saubere Manifolds gegen 57,2 % FF-frei;
+            # wer seine Frames ungefiltert uebernimmt, uebernimmt diese Quote mit.
+            #
+            # Entscheidend: JEDER dieser Regressionsterme ist im Tor auf
+            # `B[rc].topo_correct_frame` gegated -- er kann per Konstruktion nur auf Systemen
+            # feuern, die im Grundarm SCHON einen gueltigen Frame hatten.  Die 20 Rettungen
+            # sind definitionsgemaess die anderen.  Ein Filter, der nur SAUBERE legacy-Frames
+            # uebernimmt, behaelt also die Rettungen und laesst die Defekte draussen.
+            #
+            # Gefiltert wird pro FRAME, nicht pro System: derselbe Selbst-Gate, den der
+            # FF-freie Bauer auf sich selbst anwendet.  Ein Frame, der sich nicht beurteilen
+            # laesst, wird VERWORFEN (fail-closed) -- der Zweck ist, keine Defekte zu
+            # importieren.  Der Fehlerfall ist pro Frame begrenzt, kann also nicht wie der
+            # Dedup-Fehler die ganze Liste leerlaufen lassen.
+            if _extra and _delfin_env_int("DELFIN_FFFREE_UNION_CLEAN", 0):
+                from delfin.manta.converter_backend import _build_is_clean as _uc_gate
+                import numpy as _uc_np
+
+                def _uc_ok(_xyz):
+                    try:
+                        _sy, _co = [], []
+                        for _ln in _xyz.strip().splitlines():
+                            _p = _ln.split()
+                            if len(_p) >= 4:
+                                _sy.append(_p[0])
+                                _co.append([float(_p[1]), float(_p[2]), float(_p[3])])
+                        if not _sy:
+                            return False
+                        return bool(_uc_gate(_sy, _uc_np.array(_co, dtype=float)))
+                    except Exception:
+                        return False          # nicht beurteilbar -> nicht uebernehmen
+                _n_before = len(_extra)
+                _extra = [t for t in _extra if _uc_ok(t[0])]
+                _trace_seating("UNION_CLEAN kept %d of %d legacy frames" % (len(_extra), _n_before))
+            results = list(_ffree_union) + _extra
         except Exception:
             results = list(_ffree_union) + list(results)
 
