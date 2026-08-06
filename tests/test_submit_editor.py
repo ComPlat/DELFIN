@@ -1432,3 +1432,39 @@ def test_the_right_button_takes_things_away_in_draw_mode():
     assert 'raycastBond(scopeKey, e.clientX, e.clientY)' in right
     # Nothing under the cursor: the press is left alone.
     assert 'if (!stick) return;' in right
+
+
+def test_a_held_value_follows_the_atoms_through_an_edit():
+    """Constraints name atoms by index, and drawing renumbers: a deleted
+    hydrogen moves every atom after it. A held value that quietly pointed at
+    different atoms afterwards, or vanished without a word, is worse than one
+    that is dropped and said so.
+
+    The builder records where every atom came from, so everything the tab
+    holds by index -- constraints, forced types, the metal a polyhedron sits
+    on -- is carried across. Driven through the real tab: an angle held on
+    three carbons survives saturating one of them, and is dropped with a note
+    when the atom it names is deleted."""
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.molecule_builder import Structure
+
+    structure = Structure(['C', 'C', 'C'],
+                          [(0, 0, 0), (1.54, 0, 0), (3.08, 0, 0)], {})
+    assert structure.renumbering() == {0: 0, 1: 1, 2: 2}
+    structure.remove_atoms([0])
+    assert structure.renumbering() == {1: 0, 2: 1}
+    structure.add_atom('H', (0.0, 0.0, 1.0))
+    assert structure.renumbering() == {1: 0, 2: 1}   # a new atom came from nowhere
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
+    assert 'renumber = structure.renumbering()' in apply_
+    assert "state['constraints'] = kept" in apply_
+    assert "state['hyb_overrides'] = {" in apply_
+    assert "state['poly_metal'] = renumber[metal]" in apply_
+    assert 'lost' in apply_                       # and it says so
+    # An edit is not a different molecule, so none of this is thrown away
+    # underneath it.
+    view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
+    assert "if not state.get('structure_edit_inflight'):" in view
+    assert view.index("structure_edit_inflight") < view.index("state['constraints'] = []")

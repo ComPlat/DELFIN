@@ -1320,15 +1320,18 @@ def create_tab(ctx):
         state['perceived'] = None
         state['perceived_for'] = None
         # Every constraint names atoms by index, which says nothing about a
-        # different molecule.
-        state['constraints'] = []
-        state['bond_edits'] = {}
-        state['hyb_overrides'] = {}
+        # different molecule. An edit is not a different molecule though: it
+        # renumbers the one being worked on, and _apply_structure carries
+        # everything across that itself, so none of this may be thrown away
+        # underneath it.
         if not state.get('structure_edit_inflight'):
+            state['constraints'] = []
+            state['bond_edits'] = {}
+            state['hyb_overrides'] = {}
             state['structure_undo'] = []
-        state['poly_applied'] = None
-        state['poly_metal'] = None
-        state['poly_assignment'] = None
+            state['poly_applied'] = None
+            state['poly_metal'] = None
+            state['poly_assignment'] = None
         state['smiles_task_id'] += 1
         _set_smiles_conversion_busy(False)
         # User manually edited coords -> clear isomer navigation and reset convert toggle
@@ -3897,6 +3900,16 @@ def create_tab(ctx):
         submit_constraint_dd.disabled = not visible
         submit_constraint_del.disabled = not visible
         if not visible:
+            # Leave nothing behind: a hidden dropdown that still holds the
+            # last constraint shows it again the moment another one is set.
+            state['constraint_quiet'] = True
+            try:
+                submit_constraint_dd.options = [('no constraints', '')]
+                submit_constraint_dd.value = ''
+            except Exception:
+                pass
+            finally:
+                state['constraint_quiet'] = False
             return
         submit_constraint_dd.options = [
             (f'{len(entries)} held · {label}', key) for key, label in entries[:1]
@@ -4011,6 +4024,45 @@ def create_tab(ctx):
         # the field pulls the new part into the wrong shape. The number of
         # partners says it outright and does not depend on the geometry at
         # all, which is why doing it by hand fixed things.
+        # Everything the tab holds by index has to follow the renumbering an
+        # edit causes -- a deleted hydrogen moves every atom after it. A held
+        # value that quietly pointed at different atoms, or vanished, is worse
+        # than one that is dropped and said so.
+        renumber = structure.renumbering()
+
+        def _follow(indices):
+            moved = [renumber.get(int(i)) for i in indices]
+            return None if any(x is None for x in moved) else moved
+
+        kept, lost = [], 0
+        for entry in (state.get('constraints') or []):
+            moved = _follow(entry.get('atoms') or [])
+            if moved is None:
+                lost += 1
+                continue
+            kept.append(dict(entry, atoms=moved))
+        state['constraints'] = kept
+
+        state['hyb_overrides'] = {
+            renumber[i]: name
+            for i, name in (state.get('hyb_overrides') or {}).items()
+            if i in renumber
+        }
+        metal = state.get('poly_metal')
+        if metal is not None:
+            if metal in renumber:
+                state['poly_metal'] = renumber[metal]
+                assignment = state.get('poly_assignment') or {}
+                followed = {
+                    renumber[d]: v for d, v in assignment.items() if d in renumber
+                }
+                state['poly_assignment'] = (
+                    followed if len(followed) == len(assignment) else None)
+            else:
+                state['poly_applied'] = None
+                state['poly_metal'] = None
+                state['poly_assignment'] = None
+
         # Straight off the structure that was just built, not off a fresh
         # perception of it: perception can fail or come back empty at exactly
         # this moment, and then nothing was derived at all -- which is why the
@@ -4038,7 +4090,10 @@ def create_tab(ctx):
             state['hyb_overrides'] = overrides
             state['perceived'] = None
             state['perceived_for'] = None
+        if lost:
+            note = f'{note} {lost} held value(s) lost their atoms and were dropped.'
         _set_mol_status(note)
+        _refresh_constraints()
         _push_bond_orders(structure.bonds)
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()

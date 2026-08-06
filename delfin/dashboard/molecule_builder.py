@@ -261,6 +261,11 @@ class Structure:
             (float(c[0]), float(c[1]), float(c[2])) for c in coords
         ]
         self.bonds: Dict[Tuple[int, int], int] = dict(bonds or {})
+        # Where each atom came from, so anything the tab holds by index --
+        # a constraint, a forced type, the metal a polyhedron is on -- can
+        # follow an edit that renumbers the structure. -1 means the atom was
+        # created here and had no index before.
+        self.origin: List[int] = list(range(len(self.symbols)))
 
     # -- queries ---------------------------------------------------------
     def __len__(self) -> int:
@@ -289,6 +294,7 @@ class Structure:
         self.symbols.append(element)
         self.coords.append((float(position[0]), float(position[1]),
                             float(position[2])))
+        self.origin.append(-1)
         return len(self.symbols) - 1
 
     def set_bond(self, first: int, second: int, order: int) -> None:
@@ -306,20 +312,28 @@ class Structure:
         if not drop:
             return {i: i for i in range(len(self.symbols))}
         mapping: Dict[int, int] = {}
-        symbols, coords = [], []
+        symbols, coords, origin = [], [], []
         for old in range(len(self.symbols)):
             if old in drop:
                 continue
             mapping[old] = len(symbols)
             symbols.append(self.symbols[old])
             coords.append(self.coords[old])
+            origin.append(self.origin[old])
         bonds = {}
         for (i, j), order in self.bonds.items():
             if i in drop or j in drop:
                 continue
             bonds[(mapping[i], mapping[j])] = order
         self.symbols, self.coords, self.bonds = symbols, coords, bonds
+        self.origin = origin
         return mapping
+
+    def renumbering(self) -> Dict[int, int]:
+        """Where each atom of the structure this was built from ended up."""
+        return {
+            was: now for now, was in enumerate(self.origin) if was >= 0
+        }
 
 
 def structure_from_xyz(xyz_text: str,
