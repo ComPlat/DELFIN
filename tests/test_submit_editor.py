@@ -901,3 +901,28 @@ def test_a_bond_edit_actually_reaches_the_force_field():
     # And the parameters are rebuilt at once.
     assert '_enable_live_forcefield()' in edit
     assert edit.index("state['perceived'] = None") < edit.index('_enable_live_forcefield()')
+
+
+def test_the_selection_is_released_once_a_value_has_been_set():
+    """Picks accumulate, so leaving them standing after Set or Hold meant the
+    next atom clicked joined them: three atoms became four and the next
+    constraint was built from the wrong set. That is why several values could
+    not be held at once. The highlight spheres stayed on the molecule too,
+    reading as though something were still selected.
+
+    Verified in a browser: after clearing, picks and highlight spheres both go
+    to zero while the pivot and any held atoms stay."""
+    body = _body('clearSelection')
+    assert 'state.picks = [];' in body
+    assert 'redrawHighlights(scopeKey)' in body
+    # Narrower than Clear: the pivot and the held atoms are not touched.
+    assert 'unpinAll' not in body
+    assert 'state.pivot' not in body
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'def _clear_selection' in source
+    for handler in ('on_submit_set_internal', 'on_submit_hold', '_edit_bond'):
+        body = source.split(f'def {handler}')[1].split('\n    def ')[0]
+        assert '_clear_selection()' in body, handler

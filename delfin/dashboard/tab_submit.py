@@ -3462,6 +3462,14 @@ def create_tab(ctx):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def _clear_selection():
+        """Drop the picks so the next constraint starts from a clean set."""
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.clearSelection('
+            f'{json.dumps(submit_scope_id)});'
+        )
+
     def on_submit_set_internal(_button=None):
         """Set the bond, angle or dihedral the current selection describes."""
         _ensure_manip_bootstrap()
@@ -3470,6 +3478,7 @@ def create_tab(ctx):
             'window.__delfinSubmitManip.setInternal('
             f'{json.dumps(submit_scope_id)},{float(submit_internal_value.value)!r});'
         )
+        _clear_selection()
 
     def on_submit_pick_sync(change):
         """Offer the coordination polyhedra of a metal the moment it is picked.
@@ -3625,6 +3634,7 @@ def create_tab(ctx):
         _enable_live_forcefield()
         verb = 'Bonded' if connect else 'Unbonded'
         _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.')
+        _clear_selection()
 
     def on_submit_bond(_button=None):
         _edit_bond(True)
@@ -3685,6 +3695,9 @@ def create_tab(ctx):
         _refresh_constraints()
         _set_mol_status(f'Holding {_describe_constraint(entry)}.')
         _enable_live_forcefield()
+        # A fresh set for the next one: several values can then be held at
+        # once, which is the whole point of a list.
+        _clear_selection()
 
     def on_submit_hold_mode(change):
         """Retune the selected constraint, so a mode can be changed without

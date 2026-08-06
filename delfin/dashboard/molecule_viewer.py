@@ -3045,6 +3045,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     }
 
 
+    // Drop the selection but keep pivot and held atoms. Used after a value has
+    // been set: leaving the picks standing meant the next atom clicked was
+    // added to them, so three atoms became four and the next constraint was
+    // built from the wrong set instead of a fresh one.
+    function clearSelection(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.picks.length) return false;
+        state.picks = [];
+        redrawHighlights(scopeKey);
+        return true;
+    }
+
     function clearPicks(scopeKey) {
         var state = getState(scopeKey);
         state.picks = [];
@@ -3313,6 +3325,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         onViewerReady: onViewerReady,
         setMode: setMode,
         clear: clearPicks,
+        clearSelection: clearSelection,
         undo: undo,
         setForceField: setForceField,
         readInternal: readInternal,
