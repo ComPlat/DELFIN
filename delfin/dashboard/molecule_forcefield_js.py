@@ -141,7 +141,8 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
     // Term selectors, so the drag loop can run everything while the tests and
     // the diagnostics panel can isolate one term at a time.
     var T_BOND = 1, T_ANGLE = 2, T_TORSION = 4, T_VDW = 8, T_RESTRAINT = 16;
-    var T_ALL = 31;
+    var T_INVERSION = 32;
+    var T_ALL = 63;
     // Restraint kinds, as sent in the payload.
     var R_DISTANCE = 0, R_ANGLE = 1, R_DIHEDRAL = 2;
 
@@ -389,6 +390,30 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         st.pairI = null; st.pairJ = null;
         st.pairX = null; st.pairD = null; st.pairShift = null;
 
+        // -- inversions --------------------------------------------------
+        // UFF's out-of-plane term. Without it, planarity at a three-coordinate
+        // centre came only from three angles wanting 120 degrees, and that is
+        // a quartic penalty, not a quadratic one: lifting a carbon one degree
+        // out of its own plane cost 0.002 kcal/mol, which is nothing. It also
+        // did not reach a donor at a metal at all, because those angles are
+        // not typed. One entry per apex, three per centre.
+        src = terms.inversions || [];
+        var ni = 0;
+        var invI = new Int32Array(src.length), invJ = new Int32Array(src.length),
+            invK = new Int32Array(src.length), invL = new Int32Array(src.length);
+        var invW = new Float64Array(src.length);
+        for (t = 0; t < src.length; t++) {
+            var iv = src[t];
+            var ii = iv.i | 0, ij = iv.j | 0, ik = iv.k | 0, il = iv.l | 0;
+            if (ii < 0 || ii >= n || ij < 0 || ij >= n ||
+                ik < 0 || ik >= n || il < 0 || il >= n) {
+                warnings.push('inversion index out of range'); continue;
+            }
+            if (!isNum(iv.k_inv) || iv.k_inv < 0) continue;
+            invI[ni] = ii; invJ[ni] = ij; invK[ni] = ik; invL[ni] = il;
+            invW[ni] = iv.k_inv; ni++;
+        }
+
         // -- restraints --------------------------------------------------
         // Values the user asked to hold while everything else relaxes. Kept as
         // ordinary harmonic terms, so a set of restraints that cannot all be
@@ -431,6 +456,9 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
             rT[nr] = kind === R_DISTANCE ? r.value : r.value * DEG2RAD;
             nr++;
         }
+        st.nInversions = ni;
+        st.invI = invI; st.invJ = invJ; st.invK = invK; st.invL = invL;
+        st.invW = invW;
         st.nRestraints = nr;
         st.resKind = rKind; st.resA = rA; st.resB = rB; st.resC = rC; st.resD = rD;
         st.resK = rK; st.resTarget = rT;
@@ -642,6 +670,56 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         // in the coordinate itself -- unlike the cosine torsion above, which
         // has its minima fixed by the periodicity and cannot hold an arbitrary
         // dihedral.
+        if (which & T_INVERSION) {
+            // E = k (1 - cos w), w the angle between the bond to the apex and
+            // the plane of the other two. Zero and flat at planarity, and
+            // quadratic in w just off it, which is the whole point: the angle
+            // terms alone are quartic there and hold almost nothing.
+            var nInv = st.nInversions;
+            for (i = 0; i < nInv; i++) {
+                var oc = 3 * st.invI[i], oj = 3 * st.invJ[i],
+                    ok2 = 3 * st.invK[i], ol = 3 * st.invL[i];
+                var okw = st.invW[i];
+                // Closed form for the energy; the gradient is a central
+                // difference over the twelve components involved. There are
+                // only three entries per planar centre, so the cost is small
+                // and the derivative cannot be got subtly wrong by hand.
+                var oidx = [oc, oj, ok2, ol];
+                var invEnergy = function() {
+                    var ax = pos[oj] - pos[oc], ay = pos[oj + 1] - pos[oc + 1],
+                        az = pos[oj + 2] - pos[oc + 2];
+                    var bx = pos[ok2] - pos[oc], by = pos[ok2 + 1] - pos[oc + 1],
+                        bz = pos[ok2 + 2] - pos[oc + 2];
+                    var cx = pos[ol] - pos[oc], cy = pos[ol + 1] - pos[oc + 1],
+                        cz = pos[ol + 2] - pos[oc + 2];
+                    var nx = ay * bz - az * by, ny = az * bx - ax * bz,
+                        nz = ax * by - ay * bx;
+                    var nn = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    var cc = Math.sqrt(cx * cx + cy * cy + cz * cz);
+                    if (nn < 1e-9 || cc < 1e-9) return 0.0;
+                    var sn = (nx * cx + ny * cy + nz * cz) / (nn * cc);
+                    if (sn > 1.0) sn = 1.0; else if (sn < -1.0) sn = -1.0;
+                    return okw * (1.0 - Math.sqrt(1.0 - sn * sn));
+                };
+                e += invEnergy();
+                if (grad) {
+                    var h = 1e-5;
+                    for (var oa = 0; oa < 4; oa++) {
+                        for (var ob = 0; ob < 3; ob++) {
+                            var slot = oidx[oa] + ob;
+                            var keep = pos[slot];
+                            pos[slot] = keep + h;
+                            var eUp = invEnergy();
+                            pos[slot] = keep - h;
+                            var eDown = invEnergy();
+                            pos[slot] = keep;
+                            grad[slot] += (eUp - eDown) / (2 * h);
+                        }
+                    }
+                }
+            }
+        }
+
         if (which & T_RESTRAINT) {
             var nres = st.nRestraints;
             for (i = 0; i < nres; i++) {
@@ -1133,6 +1211,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         if (term === 'torsion') return T_TORSION;
         if (term === 'vdw') return T_VDW;
         if (term === 'restraints' || term === 'restraint') return T_RESTRAINT;
+        if (term === 'inversion' || term === 'inversions') return T_INVERSION;
         return T_ALL;
     }
     function debugEnergy(scopeKey, positions, term) {

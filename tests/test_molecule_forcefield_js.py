@@ -450,7 +450,7 @@ def test_restraint_gradients_match_finite_differences():
     179 degrees from the wrap: 2.5e-8, 3.9e-9, 9.4e-10 and 2.2e-8."""
     js = _JS
     assert 'T_RESTRAINT = 16' in js
-    assert 'var T_ALL = 31;' in js
+    assert 'var T_ALL = 63;' in js
     assert 'R_DISTANCE = 0, R_ANGLE = 1, R_DIHEDRAL = 2' in js
 
     block = js.split('// -- user restraints')[1].split('// -- Lennard-Jones')[0]

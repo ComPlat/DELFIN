@@ -1033,3 +1033,46 @@ def test_turning_an_octahedron_is_a_no_op():
     metal = perceived.metal_indices[0]
     assert len(perceived.neighbours()[metal]) == 4
     assert mff.polyhedron_arrangements(perceived, metal, 'Td') == [{}]
+
+
+def test_a_flat_centre_is_held_flat_by_a_term_of_its_own():
+    """Planarity used to come only from three angles wanting 120 degrees, and
+    that is a quartic penalty rather than a quadratic one: lifting a carbon
+    one degree out of its own plane cost 0.002 kcal/mol, which is nothing. It
+    also never reached a donor at a metal, whose angles are not typed at all.
+
+    With UFF's inversion term the cost at one degree is 0.010 and the ratio
+    E/w^2 is flat between one and two degrees -- harmonic where it matters --
+    against a tenfold rise before. Three entries per centre, each a third of
+    its force constant, which is UFF's own arrangement."""
+    xyz = _pyramidal_methyl_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    mff.apply_hybridisation_overrides(perceived, {0: 'sp2'})
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+
+    inversions = payload['inversions']
+    assert len(inversions) == 3, inversions
+    assert {entry['i'] for entry in inversions} == {0}
+    assert {entry['l'] for entry in inversions} == {1, 2, 3}
+    assert all(abs(entry['k_inv'] - 2.0) < 1e-6 for entry in inversions)
+
+    # A four-coordinate centre has no such term, and neither has an sp3 one.
+    plain = mff.perceive_molecule(xyz)
+    assert mff.export_forcefield_terms(xyz, perceived=plain)['inversions'] == []
+
+
+def test_a_carbonyl_carbon_is_stiffer_out_of_plane():
+    """Which is the difference the term exists to express: UFF gives a
+    carbonyl carbon 50 kcal/mol against 6 for a general sp2 one."""
+    xyz = (
+        '4\nformaldehyde\n'
+        'C  0.000000  0.000000  0.000000\n'
+        'O  0.000000  0.000000  1.210000\n'
+        'H  0.943000  0.000000 -0.588000\n'
+        'H -0.943000  0.000000 -0.588000\n'
+    )
+    perceived = mff.perceive_molecule(xyz)
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+    assert len(payload['inversions']) == 3, payload['inversions']
+    for entry in payload['inversions']:
+        assert abs(entry['k_inv'] - 50.0 / 3.0) < 1e-3, entry

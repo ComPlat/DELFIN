@@ -173,6 +173,14 @@ _ANGLE_IDEAL_TOL = 0.5
 #: expansion (C2 diverges as sin(theta0) -> 0); it gets the n = 1 form.
 _LINEAR_ANGLE_CUTOFF = 175.0
 
+#: UFF inversion force constants, kcal/mol per centre, shared over the three
+#: apex choices.  Only the elements UFF defines the term for, and only where
+#: the centre is three-coordinate and meant to be flat.
+_INVERSION_CENTRES = {'C': 6.0, 'N': 6.0, 'O': 6.0}
+
+#: A carbonyl carbon is far stiffer out of plane than a general sp2 one.
+_CARBONYL_INVERSION = 50.0
+
 #: Highest coordination number a light element can reach.  Used only to prune
 #: bonds that purely geometric perception invented on a strained structure.
 _MAX_COORDINATION = {
@@ -2191,6 +2199,44 @@ def export_forcefield_terms(
                         'n': periodicity,
                     })
 
+        # ---- inversions -----------------------------------------------
+        # UFF's out-of-plane term, for the three-coordinate centres that are
+        # meant to be flat.  Without it planarity came only from three angles
+        # wanting 120 degrees, and that is a quartic penalty rather than a
+        # quadratic one: lifting a carbon one degree out of its own plane cost
+        # 0.002 kcal/mol, which is nothing.  It also never reached a donor at
+        # a metal, whose angles are not typed at all.
+        #
+        # One entry per apex, three per centre, each carrying a third of the
+        # centre's force constant -- UFF's own arrangement (Rappe 1992, eq.
+        # 19).  A carbonyl carbon is much stiffer than a general sp2 one, and
+        # that difference is the reason the term is worth having at all.
+        inversions: List[Dict[str, Any]] = []
+        for centre in range(n_atoms):
+            if centre in metals or symbols[centre] not in _INVERSION_CENTRES:
+                continue
+            neighbours = adjacency[centre]
+            if len(neighbours) != 3:
+                continue
+            shape = forced_hyb.get(centre) or _hybridisation(typing_mol, centre)
+            if shape != 'sp2':
+                continue
+            strength = _INVERSION_CENTRES[symbols[centre]]
+            if symbols[centre] == 'C':
+                for other in neighbours:
+                    if symbols[other] != 'O' or len(adjacency[other]) != 1:
+                        continue
+                    strength = _CARBONYL_INVERSION      # a much stiffer centre
+                    break
+            per_apex = strength / 3.0
+            for position in range(3):
+                apex = neighbours[position]
+                plane = [neighbours[(position + 1) % 3], neighbours[(position + 2) % 3]]
+                inversions.append({
+                    'i': centre, 'j': plane[0], 'k': plane[1], 'l': apex,
+                    'k_inv': round(per_apex, 5),
+                })
+
         # ---- torsions -------------------------------------------------
         # UFF assigns no torsional barrier to coordination bonds, and RDKit
         # cannot type a metal in any case, so every torsion that touches a
@@ -2321,6 +2367,7 @@ def export_forcefield_terms(
         'elements': list(symbols),
         'bonds': bonds,
         'angles': angles,
+        'inversions': inversions,
         'torsions': torsions,
         'vdw': vdw,
         'metals': [{'index': i, 'element': symbols[i]} for i in sorted(metals)],
