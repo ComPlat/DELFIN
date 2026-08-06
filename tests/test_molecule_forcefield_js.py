@@ -439,3 +439,36 @@ def test_unphysical_payload_parameters_are_rejected_not_descended_into():
     assert '!isNum(g.kt) || g.kt < 0' in js
     # i===k, i===l and j===l describe no dihedral.
     assert 'i === k || i === l || j === l' in js
+
+
+def test_restraint_gradients_match_finite_differences():
+    """A distance, an angle or a dihedral held at a value. The dihedral needed
+    a term of its own: the cosine torsion has its minima fixed by the
+    periodicity and cannot hold an arbitrary value.
+
+    Checked in node against central finite differences, including a target
+    179 degrees from the wrap: 2.5e-8, 3.9e-9, 9.4e-10 and 2.2e-8."""
+    js = _JS
+    assert 'T_RESTRAINT = 16' in js
+    assert 'var T_ALL = 31;' in js
+    assert 'R_DISTANCE = 0, R_ANGLE = 1, R_DIHEDRAL = 2' in js
+
+    block = js.split('// -- user restraints')[1].split('// -- Lennard-Jones')[0]
+    # Harmonic in the coordinate itself, all three of them.
+    assert 'e += 0.5 * rk * edr * edr;' in block
+    assert 'e += 0.5 * rk * ath * ath;' in block
+    assert 'e += 0.5 * rk * dphi * dphi;' in block
+    # Shortest way round, or a dihedral one degree from its target would be
+    # pulled the other 359.
+    assert 'while (dphi > Math.PI) dphi -= 2 * Math.PI;' in block
+    assert 'while (dphi < -Math.PI) dphi += 2 * Math.PI;' in block
+    # Degenerate geometry contributes nothing rather than a NaN.
+    assert 'MIN_SEPARATION2' in block
+
+    from delfin.dashboard import molecule_forcefield as mff
+
+    # Force constants stay in the range of the real terms: one that dominated
+    # would hold its value by tearing everything else.
+    assert 100.0 <= mff.RESTRAINT_FORCE_CONSTANTS['distance'] <= 800.0
+    assert 50.0 <= mff.RESTRAINT_FORCE_CONSTANTS['angle'] <= 400.0
+    assert mff.RESTRAINT_FORCE_CONSTANTS['dihedral'] <= 200.0

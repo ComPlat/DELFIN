@@ -531,6 +531,10 @@ class PerceivedMolecule:
             bond is treated as single (hybridisation is then unreliable).
         had_header: True when the input carried the standard XYZ count line.
         warnings: Human-readable notes about approximations made.
+        auto_hybridisation: What perception said about an atom, recorded before
+            an override replaced it, so the offer can still name it.
+        forced_hybridisation: Atom index to the hybridisation the user forced.
+            The angles at such an atom are built from it directly.
     """
 
     symbols: List[str]
@@ -544,6 +548,8 @@ class PerceivedMolecule:
     bond_orders_known: bool = True
     had_header: bool = True
     warnings: List[str] = field(default_factory=list)
+    auto_hybridisation: Dict[int, str] = field(default_factory=dict)
+    forced_hybridisation: Dict[int, str] = field(default_factory=dict)
 
     def neighbours(self) -> List[List[int]]:
         """Return the adjacency list implied by :attr:`bonds`."""
@@ -596,12 +602,15 @@ def _build_typing_mol(
     donor atoms get their implicit-hydrogen ban lifted so the free ligand
     perceives as the neutral, aromatic species it normally is.
 
-    Three assemblies are tried in order: perceived bond orders with a strict
-    sanitisation, then all-single bonds with a strict sanitisation, then a
-    lenient sanitisation.  A strained geometry (which is what a drag hands
-    over) can make a perceived Kekule pattern over-fill an atom's valence;
-    keeping such a molecule would only defer the exception to the moment the
-    force field is built, so the bond orders are dropped instead.
+    Assemblies are tried in order of how much they give up.  A strained
+    geometry -- which is what a drag hands over -- and a bond the user drew
+    can both over-fill an atom's valence; keeping such a molecule would only
+    defer the exception to the moment the force field is built.  So the
+    perceived Kekule pattern is first repaired *locally*, by lowering the
+    order of a multiple bond at the offending atom, and only if that still
+    fails are the bond orders dropped wholesale.  The difference matters: a
+    single drawn bond used to cost every other atom in the molecule its
+    hybridisation.
     """
     bond_types = {
         1: Chem.BondType.SINGLE,
@@ -643,6 +652,91 @@ def _build_typing_mol(
                 removed += 1
         return removed
 
+    def _reduce_overvalence(editable) -> int:
+        """Lower a multiple bond at every atom that carries too much valence.
+
+        Drawing a bond onto an aromatic carbon takes it to five bonds, which
+        RDKit rejects.  The chemically honest reading is that the carbon gave
+        up its double bond, so that is what happens here: the longest multiple
+        bond at the atom drops one order, the partner keeps a radical electron
+        and stays sp2, and every ring the edit did not touch keeps its own
+        double bonds.  Bonds are only lowered, never removed -- the exported
+        topology is unchanged.
+        """
+        try:
+            positions = mol.GetConformer().GetPositions()
+        except Exception:
+            positions = None
+        table = Chem.GetPeriodicTable()
+        lowered = 0
+        # Atoms left one bond short by a lowering.  Only these may be paired
+        # up again below: every other under-valent atom was already like that
+        # in the perceived molecule and is not this function's business.
+        orphaned: set = set()
+
+        def _capacity(atom) -> int:
+            """Valence still free at this atom; negative when it is over-full."""
+            try:
+                default = table.GetDefaultValence(atom.GetAtomicNum())
+            except Exception:
+                return 0
+            if default <= 0:
+                return 0
+            used = sum(
+                int(round(b.GetBondTypeAsDouble())) for b in atom.GetBonds()
+            ) + atom.GetNumExplicitHs()
+            return default - used
+
+        # Lowering a bond can push its partner over the edge in turn, so this
+        # sweeps until the molecule stops changing.  The bound is a guard
+        # against a pathological structure, not an expected exit.
+        for _sweep in range(8):
+            busy = False
+            for atom in editable.GetAtoms():
+                surplus = -_capacity(atom)
+                if surplus <= 0:
+                    continue
+                bonds = list(atom.GetBonds())
+                multiples = [b for b in bonds if b.GetBondTypeAsDouble() > 1.5]
+                if not multiples:
+                    continue  # too many single bonds: _prune_overbonded's job
+                if positions is not None:
+                    multiples.sort(key=lambda b: -float(
+                        ((positions[b.GetBeginAtomIdx()]
+                          - positions[b.GetEndAtomIdx()]) ** 2).sum()
+                    ))
+                victim = multiples[0]
+                order = int(round(victim.GetBondTypeAsDouble()))
+                victim.SetBondType(bond_types[max(1, order - surplus)])
+                idx = atom.GetIdx()
+                partner = (victim.GetEndAtomIdx() if victim.GetBeginAtomIdx() == idx
+                           else victim.GetBeginAtomIdx())
+                orphaned.add(partner)
+                lowered += 1
+                busy = True
+            if not busy:
+                break
+
+        # Two neighbours that both lost a partner pair up again, because that
+        # is what the chemistry does: joining two carbons across a benzene
+        # ring gives Dewar benzene, whose remaining double bonds are real, not
+        # a pair of radicals sitting next to each other.
+        for a in sorted(orphaned):
+            atom_a = editable.GetAtomWithIdx(a)
+            if _capacity(atom_a) < 1:
+                continue
+            for neighbour in atom_a.GetNeighbors():
+                b = neighbour.GetIdx()
+                if b not in orphaned or _capacity(neighbour) < 1:
+                    continue
+                bond = editable.GetBondBetweenAtoms(a, b)
+                order = int(round(bond.GetBondTypeAsDouble())) if bond else 0
+                if not 1 <= order <= 2:
+                    continue
+                bond.SetBondType(bond_types[order + 1])
+                break
+        return lowered
+
     def _repair_charges(editable) -> None:
         """Give over-valent main-group atoms the formal charge they imply.
 
@@ -665,7 +759,7 @@ def _build_typing_mol(
             if 0 < default < valence:
                 atom.SetFormalCharge(valence - default)
 
-    def _assemble(with_orders: bool, prune: bool = False):
+    def _assemble(with_orders: bool, prune: bool = False, reduce_valence: bool = False):
         editable = Chem.RWMol(mol)
         if prune:
             _prune_overbonded(editable)
@@ -689,16 +783,21 @@ def _build_typing_mol(
             atom = editable.GetAtomWithIdx(idx)
             atom.SetNoImplicit(False)
             atom.SetNumRadicalElectrons(0)
+        # After the metal bonds are gone, so a donor is not counted as
+        # over-valent for coordinating.
+        if reduce_valence:
+            _reduce_overvalence(editable)
         return editable.GetMol()
 
     attempts = (
-        ('perceived bond orders', True, False, True),
-        ('single bonds', False, False, True),
-        ('single bonds, over-bonded atoms pruned and charges repaired', False, True, True),
-        ('single bonds, lenient', False, True, False),
+        ('perceived bond orders', True, False, False, True),
+        ('perceived bond orders, over-valence lowered', True, False, True, True),
+        ('single bonds', False, False, False, True),
+        ('single bonds, over-bonded atoms pruned and charges repaired', False, True, False, True),
+        ('single bonds, lenient', False, True, False, False),
     )
-    for label, with_orders, prune, strict in attempts:
-        candidate = Chem.Mol(_assemble(with_orders, prune))
+    for label, with_orders, prune, reduce_valence, strict in attempts:
+        candidate = Chem.Mol(_assemble(with_orders, prune, reduce_valence))
         try:
             candidate.UpdatePropertyCache(strict=False)
             if strict:
@@ -709,6 +808,13 @@ def _build_typing_mol(
                     Chem.SanitizeFlags.SANITIZE_ALL
                     ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
                     ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE,
+                )
+            if reduce_valence:
+                warnings.append(
+                    'An atom carried more bonds than its valence allows; a '
+                    'multiple bond at each such atom was lowered by one order '
+                    'when assigning force-field types, which is what drawing '
+                    'a bond onto it implies.'
                 )
             if not with_orders and orders:
                 warnings.append(
@@ -732,6 +838,64 @@ def _build_typing_mol(
         'were derived from the geometry alone.'
     )
     return None, False
+
+
+def _drop_impossible_metal_contacts(
+    mol: Any,
+    metal_indices: Sequence[int],
+    symbols: Sequence[str],
+    coords: Sequence[Sequence[float]],
+    warnings: List[str],
+) -> Any:
+    """Return ``mol`` with any metal contact that gave a carbon a fifth bond cut.
+
+    ``DetermineConnectivity`` is purely geometric, and a metal's covalent
+    radius is large: on a scandium complex the cutoff reaches past 2.9 A, so
+    the backbone carbons of a triazacyclononane -- held near the metal by
+    their own chelate rings, bonded to nothing but their nitrogen -- were
+    counted as donors.  The coordination number came out as 9 instead of 6,
+    and only a nine-vertex polyhedron was offered for what is an octahedron.
+
+    Carbon is the one element where this is unambiguous.  Every real carbon
+    donor stays within four bonds: an alkyl has M and three substituents, an
+    N-heterocyclic carbene M and two nitrogens, a side-on alkene carbon M, its
+    partner and two hydrogens.  Five means the geometry was over-read.  The
+    longest offending contact goes first, and only far enough to bring the
+    carbon back to four.
+
+    Deliberately carbon only.  Oxygen would be the obvious next candidate and
+    is exactly wrong: a coordinated ether or a bridging alkoxide is
+    three-connected on purpose.
+    """
+    metals = set(int(m) for m in metal_indices)
+    if not metals:
+        return mol
+    removed = 0
+    editable = Chem.RWMol(mol)
+    for atom in list(editable.GetAtoms()):
+        index = atom.GetIdx()
+        if symbols[index] != 'C':
+            continue
+        neighbours = [n.GetIdx() for n in atom.GetNeighbors()]
+        surplus = len(neighbours) - 4
+        if surplus <= 0:
+            continue
+        attached = [n for n in neighbours if n in metals]
+        if not attached:
+            continue
+        attached.sort(key=lambda m: -_distance(coords[index], coords[m]))
+        for metal in attached[:surplus]:
+            editable.RemoveBond(index, metal)
+            removed += 1
+    if not removed:
+        return mol
+    warnings.append(
+        f'{removed} metal-carbon contact(s) were dropped: they would have '
+        'given a carbon five bonds, which the geometric perception reaches '
+        'only because a metal has a large covalent radius. Use Bond if one '
+        'of them was real.'
+    )
+    return editable.GetMol()
 
 
 def perceive_molecule(xyz_text: str) -> Optional[PerceivedMolecule]:
@@ -783,6 +947,10 @@ def perceive_molecule(xyz_text: str) -> Optional[PerceivedMolecule]:
     except Exception as exc:
         logger.debug('DetermineConnectivity failed: %s', exc)
         warnings.append('Connectivity perception failed; no bonded terms could be built.')
+
+    mol = _drop_impossible_metal_contacts(
+        mol, metal_indices, symbols, coords, warnings
+    )
 
     bonds = sorted(
         (min(b.GetBeginAtomIdx(), b.GetEndAtomIdx()), max(b.GetBeginAtomIdx(), b.GetEndAtomIdx()))
@@ -850,6 +1018,344 @@ def perceive_molecule(xyz_text: str) -> Optional[PerceivedMolecule]:
         had_header=had_header,
         warnings=warnings,
     )
+
+
+def _orders_from_mol(mol: Any) -> Dict[Tuple[int, int], int]:
+    """Read integer Kekule bond orders out of a molecule, keyed by index pair.
+
+    Aromatic flags are resolved first: RDKit re-perceives aromaticity when it
+    sanitizes, and would refuse to kekulize a ring it did not choose itself,
+    so only whole orders are ever passed on.
+    """
+    if mol is None:
+        return {}
+    try:
+        kekulized = Chem.Mol(mol)
+        Chem.Kekulize(kekulized, clearAromaticFlags=True)
+    except Exception as exc:
+        logger.debug('Kekulisation for order transfer failed: %s', exc)
+        kekulized = mol
+    orders: Dict[Tuple[int, int], int] = {}
+    for bond in kekulized.GetBonds():
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        order = int(round(bond.GetBondTypeAsDouble()))
+        if order >= 1:
+            orders[(min(i, j), max(i, j))] = order
+    return orders
+
+
+def apply_bond_edits(perceived: Any, edits: Any) -> bool:
+    """Lay hand-drawn bond corrections onto a perceived molecule.
+
+    ``edits`` maps an ``(i, j)`` atom pair to True (this bond exists) or False
+    (it does not).  Distance-based perception is not reliable in a crowded
+    coordination sphere, so the user can overrule it -- and the correction has
+    to reach the *parameters*, not only the bond list.
+
+    Correcting the list alone left the typing molecule without the drawn bond.
+    RDKit then had no entry for it and the exporter fell back to its geometric
+    estimate, whose equilibrium is whatever distance the bond happened to be
+    drawn at: joining two carbons across a benzene ring gave r0 = 2.798 A with
+    k = 111 instead of 1.514 A with k = 700, so the bond never contracted and
+    neither carbon changed hybridisation.  Both molecules are therefore
+    rebuilt here, and RDKit re-perceives the chemistry from the corrected
+    connectivity.
+
+    Args:
+        perceived: A :class:`PerceivedMolecule`, mutated in place.
+        edits: Mapping of atom-index pairs to whether they are bonded.
+
+    Returns:
+        True when the bond list changed.
+    """
+    if perceived is None or not edits:
+        return False
+
+    # A value is the bond order the user asked for: 0 removes the bond, 1 to 3
+    # draw it.  True and False are still accepted, because a click that only
+    # says "bond these" means a single bond.
+    wanted: Dict[Tuple[int, int], int] = {}
+    asked: Dict[Tuple[int, int], int] = {}
+    for pair, connect in dict(edits).items():
+        try:
+            i, j = (int(x) for x in pair)
+        except Exception:
+            continue
+        if i == j or min(i, j) < 0 or max(i, j) >= perceived.n_atoms:
+            continue
+        if isinstance(connect, bool):
+            # A plain True says the bond exists and nothing about its order:
+            # a drawn one is single, an existing one keeps whatever it had.
+            order = 1 if connect else 0
+            explicit = False
+        else:
+            try:
+                order = max(0, min(3, int(connect)))
+            except Exception:
+                continue
+            explicit = order > 0
+        key = (min(i, j), max(i, j))
+        wanted[key] = order
+        if explicit:
+            asked[key] = order
+
+    current = {(min(i, j), max(i, j)) for i, j in perceived.bonds}
+    target = set(current)
+    for key, order in wanted.items():
+        if order:
+            target.add(key)
+        else:
+            target.discard(key)
+    retyped = {k: v for k, v in asked.items() if k in target}
+    # A bond that is already there but at a different order still counts as
+    # a change: retyping one is the whole point of being able to say double.
+    known = _orders_from_mol(perceived.typing_mol) if retyped else {}
+    order_changed = any(
+        key in current and known.get(key, order) != order
+        for key, order in retyped.items()
+    )
+    if target == current and not order_changed:
+        return False
+
+    perceived.bonds = sorted(target)
+    if not RDKIT_AVAILABLE or perceived.mol is None:
+        return True
+
+    added = sorted(target - current)
+    removed = sorted(current - target)
+    orders = _orders_from_mol(perceived.typing_mol)
+    for key in removed:
+        orders.pop(key, None)
+    for key in added:
+        # A drawn bond is single unless the user said otherwise.
+        orders[key] = 1
+    # Whatever order was asked for, on a new bond or an existing one.
+    for key, order in retyped.items():
+        if key in target:
+            orders[key] = order
+
+    try:
+        with _RDKitQuiet():
+            editable = Chem.RWMol(perceived.mol)
+            for i, j in removed:
+                if editable.GetBondBetweenAtoms(i, j) is not None:
+                    editable.RemoveBond(i, j)
+            for i, j in added:
+                if editable.GetBondBetweenAtoms(i, j) is None:
+                    editable.AddBond(i, j, Chem.BondType.SINGLE)
+            rebuilt = editable.GetMol()
+            rebuilt.UpdatePropertyCache(strict=False)
+            fresh: List[str] = []
+            typing_mol, _ok = _build_typing_mol(
+                rebuilt, perceived.metal_indices, orders, fresh
+            )
+    except Exception as exc:
+        logger.debug('Rebuilding the molecule after a bond edit failed: %s', exc)
+        perceived.warnings.append(
+            'The edited bond could not be applied to the force-field types; '
+            'it is parameterised from the geometry instead.'
+        )
+        return True
+
+    perceived.mol = rebuilt
+    if typing_mol is None and perceived.typing_mol is not None:
+        # Keeping the molecule that was typed before the edit is worth more
+        # than the edit itself: without one, *every* atom falls back to
+        # geometric parameters, while the stale one still types everything
+        # the edit did not touch.
+        perceived.warnings.append(
+            'The edited connectivity could not be sanitized; the changed '
+            'bonds are parameterised from the geometry.'
+        )
+    else:
+        perceived.typing_mol = typing_mol
+        for message in fresh:
+            if message not in perceived.warnings:
+                perceived.warnings.append(message)
+    return True
+
+
+#: The hybridisations a user may force on an atom.
+HYBRIDISATION_CHOICES: Tuple[str, ...] = ('sp', 'sp2', 'sp3')
+
+#: The angle each one means at that centre.  Needed because setting the
+#: hybridisation is not always enough on its own: RDKit picks the UFF type of
+#: phosphorus and silicon from valence and charge rather than hybridisation
+#: (P stays at 93.8 degrees and Si at 109.5 whatever it is set to), and no
+#: angle that touches a metal is typed by RDKit at all -- which is every angle
+#: that orients a ligand against its metal.
+HYBRIDISATION_ANGLES: Dict[str, float] = {
+    'sp': 180.0, 'sp2': 120.0, 'sp3': 109.471,
+}
+
+_HYBRIDISATION_TYPES: Dict[str, Any] = {}
+
+
+def _hybridisation_type(name: str) -> Any:
+    """Map ``'sp2'`` to RDKit's enum member, once."""
+    if not _HYBRIDISATION_TYPES and RDKIT_AVAILABLE:
+        _HYBRIDISATION_TYPES.update({
+            'sp': Chem.HybridizationType.SP,
+            'sp2': Chem.HybridizationType.SP2,
+            'sp3': Chem.HybridizationType.SP3,
+        })
+    return _HYBRIDISATION_TYPES.get(name)
+
+
+def perceived_hybridisation_of(perceived: Any, index: int) -> Optional[str]:
+    """What perception made of an atom, whether or not an override replaced it.
+
+    The offer has to be able to say what ``automatic`` would mean, and once an
+    override is in place the molecule itself no longer knows.
+    """
+    if perceived is None:
+        return None
+    recorded = (perceived.auto_hybridisation or {}).get(int(index))
+    if recorded is not None:
+        return recorded
+    return _hybridisation(perceived.typing_mol, index)
+
+
+def hybridisation_from_connectivity(
+    perceived: Any, indices: Optional[Iterable[int]] = None
+) -> Dict[int, str]:
+    """Read each carbon's hybridisation off how many partners it is bonded to.
+
+    A carbon has no lone pair, so its sigma count fixes its shape outright:
+    four partners is tetrahedral, three is trigonal planar, two is linear.
+    That is a stronger statement than perception can make, because perception
+    goes through bond *orders* -- and those are read from the geometry, so a
+    double bond twisted out of plane, or one at an unusual length, is simply
+    not seen and its carbon comes back sp3.
+
+    Deliberately carbon only.  Everywhere else a lone pair decides and the
+    count cannot see it: nitrogen with three partners is pyramidal in an amine
+    and planar in an amide, oxygen with two is bent either way but at quite
+    different angles.  Guessing there would trade one wrong answer for another.
+
+    **A coordinated atom raises the obvious question -- does the metal count
+    as a partner?**  For carbon it almost always does, and for a reason that
+    does not hold for the other donors: carbon has no lone pair to give away
+    unless it is a carbene, so an M-C bond is a real sigma bond.  A methyl
+    ligand is C plus three substituents and the metal, four, tetrahedral.  An
+    N-heterocyclic carbene donates from an sp2 orbital and is two nitrogens
+    plus the metal, three, trigonal planar -- both right only *because* the
+    metal is counted.  That is exactly the judgement that cannot be made for
+    N, O or P, where a dative bond and a covalent one look the same to a
+    counter and the lone pair changes the answer; those are left alone.
+
+    The one genuine exception is a side-on alkene, where both carbons are
+    bonded to the same metal.  That is a three-membered M-C-C ring and is
+    visible without touching bond orders, so it is checked for: the metal is
+    then *not* counted, and the carbons come back sp2.  Reality sits between
+    the free alkene (sp2) and the metallacyclopropane (sp3), and for the
+    weakly bound alkenes this normally means, sp2 is the closer of the two.
+
+    Args:
+        perceived: A :class:`PerceivedMolecule`.
+        indices: Restrict to these atoms; all of them when omitted.
+
+    Returns:
+        Atom index to ``'sp'``/``'sp2'``/``'sp3'``, ready for
+        :func:`apply_hybridisation_overrides`.
+    """
+    if perceived is None:
+        return {}
+    by_count = {2: 'sp', 3: 'sp2', 4: 'sp3'}
+    adjacency = perceived.neighbours()
+    wanted = (range(perceived.n_atoms) if indices is None
+              else [int(i) for i in indices])
+    metals = set(perceived.metal_indices or ())
+    derived: Dict[int, str] = {}
+    for index in wanted:
+        if not 0 <= index < perceived.n_atoms:
+            continue
+        if index in metals or perceived.symbols[index] != 'C':
+            continue
+        partners = list(adjacency[index])
+        side_on = [
+            m for m in partners if m in metals
+            and any(other in adjacency[m] for other in partners
+                    if other not in metals and perceived.symbols[other] == 'C')
+        ]
+        count = len(partners) - len(side_on)
+        name = by_count.get(count)
+        if name is not None:
+            derived[index] = name
+    return derived
+
+
+def apply_hybridisation_overrides(perceived: Any, overrides: Any) -> int:
+    """Force the hybridisation of individual atoms.
+
+    Hybridisation is perceived from the bond orders, and those are read from
+    the geometry, which gets it wrong often enough to matter: a carbon whose
+    double bond went unperceived comes out sp3, so its three angles are typed
+    at 109.5 degrees and the centre puckers where it should stay flat.
+
+    RDKit's UFF typer reads the atom's hybridisation for most main-group
+    elements, so setting it is usually enough -- forcing a carbon to sp2 types
+    it ``C_2`` and its angles come back at 120 degrees.  Three angles of 120
+    degrees at a three-coordinate centre *is* trigonal planar, which is what
+    makes this work without an inversion term.
+
+    Two places where setting it is *not* enough, so the choice is recorded in
+    ``forced_hybridisation`` and the exporter builds the angles at that centre
+    from it directly:
+
+    * RDKit picks the UFF type of phosphorus and silicon from valence and
+      charge, not hybridisation.  Measured: P stays at 93.8 degrees and Si at
+      109.5 whatever it is set to, while C, N, O and S all follow.
+    * No angle that touches a metal is typed by RDKit at all -- those are
+      restrained to the input geometry.  At a donor atom that is every angle
+      holding the ligand against its metal, so the shape would not move.
+
+    Must run after :func:`apply_bond_edits`: rebuilding the typing molecule
+    sanitizes it, and sanitisation re-perceives hybridisation.
+
+    Args:
+        perceived: A :class:`PerceivedMolecule`, mutated in place.
+        overrides: Mapping of atom index to ``'sp'``, ``'sp2'`` or ``'sp3'``.
+
+    Returns:
+        How many atoms were actually changed.
+    """
+    if perceived is None or not overrides or not RDKIT_AVAILABLE:
+        return 0
+    applied = 0
+    for raw_index, raw_name in dict(overrides).items():
+        try:
+            index = int(raw_index)
+        except Exception:
+            continue
+        name = str(raw_name or '').strip().lower()
+        if not 0 <= index < perceived.n_atoms or name not in HYBRIDISATION_CHOICES:
+            continue
+        target = _hybridisation_type(name)
+        if target is None:
+            continue
+        # Recorded whether or not a molecule can carry it: the exporter builds
+        # the angles at this centre from the choice directly, and that is the
+        # half that works for phosphorus, silicon and every angle at a metal.
+        if index not in perceived.auto_hybridisation:
+            was = _hybridisation(perceived.typing_mol, index)
+            if was is not None:
+                perceived.auto_hybridisation[index] = was
+        perceived.forced_hybridisation[index] = name
+        applied += 1
+        for molecule in (perceived.typing_mol, perceived.mol):
+            if molecule is None:
+                continue
+            try:
+                atom = molecule.GetAtomWithIdx(index)
+            except Exception:
+                continue
+            # An aromatic flag reads as sp2 wherever it is checked, so a ring
+            # carbon forced to sp3 or sp would otherwise ignore the override.
+            if name != 'sp2':
+                atom.SetIsAromatic(False)
+            atom.SetHybridization(target)
+    return applied
 
 
 # --------------------------------------------------------------------------
@@ -1004,6 +1510,427 @@ def _empty_payload(source: str, warnings: Sequence[str]) -> Dict[str, Any]:
 METHODS = ('uff', 'mmff94')
 
 
+def polyhedron_options(perceived, metal_index):
+    """Which coordination polyhedra the donors around this metal could take.
+
+    Returns ``(coordination_number, current_geometry, [(code, label), ...])``,
+    or ``None`` when the atom is not a metal or its coordination number is
+    outside the catalogue. The geometry tables come from
+    :mod:`delfin.manta._polyhedron_targets`, the same ones MANTA builds
+    complexes with.
+    """
+    try:
+        from delfin.manta import _polyhedron_targets as targets
+    except Exception:
+        return None
+    if perceived is None:
+        return None
+    metal_index = int(metal_index)
+    if metal_index not in set(perceived.metal_indices or ()):
+        return None
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair
+        if metal_index in pair and j != metal_index
+    )
+    cn = len(donors)
+    if not 2 <= cn <= 9:
+        return None
+
+    available = []
+    for key, vectors in targets._IDEAL_VECTORS.items():
+        if vectors.shape[0] != cn:
+            continue
+        if key not in available:
+            available.append(key)
+    if not available:
+        return None
+
+    # Which polyhedron the complex actually sits closest to. The CN-based
+    # classifier answers what a given coordination number *usually* is, which
+    # for CN=4 is always tetrahedral -- it would have labelled a clearly
+    # square-planar Ni complex 'tetrahedral'. Measure instead.
+    current = _closest_polyhedron(perceived, donors, metal_index, available)
+    labels = {
+        'linear_2': 'linear', 'bent_2': 'bent',
+        'trigonal_planar': 'trigonal planar',
+        'Td': 'tetrahedral', 'sqp_4': 'square planar', 'see_saw': 'see-saw',
+        'tbp': 'trigonal bipyramidal', 'sqp_5': 'square pyramidal',
+        'Oh': 'octahedral', 'trig_prism': 'trigonal prismatic',
+        'pbp': 'pentagonal bipyramidal', 'capped_oct': 'capped octahedral',
+        'sq_antiprism': 'square antiprismatic', 'cube': 'cubic',
+        'dodecahedron': 'dodecahedral',
+        'bicapped_trig_antiprism': 'bicapped trigonal antiprismatic',
+        'capped_sap': 'capped square antiprismatic',
+        'tricapped_tp': 'tricapped trigonal prismatic',
+    }
+    options = sorted(
+        ((key, labels.get(key, key)) for key in available),
+        key=lambda pair: pair[1],
+    )
+    return cn, current, options
+
+
+def _pairwise_angles(vectors):
+    """Sorted L-M-L angles of a set of unit vectors, in degrees.
+
+    Rotation invariant, which is the whole point: a polyhedron has to be
+    recognised whatever way round the molecule happens to lie.
+    """
+    import numpy as np
+
+    out = []
+    for a in range(len(vectors)):
+        for b in range(a + 1, len(vectors)):
+            cosine = float(np.clip(np.dot(vectors[a], vectors[b]), -1.0, 1.0))
+            out.append(math.degrees(math.acos(cosine)))
+    return sorted(out)
+
+
+def _unit_donor_vectors(perceived, donors, metal_index, coords=None):
+    import numpy as np
+
+    coords = coords if coords is not None else perceived.coords
+    centre = np.asarray(coords[metal_index], dtype=float)
+    vectors = np.asarray([coords[j] for j in donors], dtype=float) - centre
+    lengths = np.linalg.norm(vectors, axis=1)
+    if not len(lengths) or float(lengths.min()) < 1e-9:
+        return None
+    return vectors / lengths[:, None]
+
+
+def _closest_polyhedron(perceived, donors, metal_index, candidates):
+    """Name the candidate polyhedron the donors currently sit closest to.
+
+    Compared through the sorted set of L-M-L angles, so the answer does not
+    depend on how the molecule happens to be oriented.
+    """
+    import numpy as np
+
+    from delfin.manta import _polyhedron_targets as targets
+
+    observed = _unit_donor_vectors(perceived, donors, metal_index)
+    if observed is None:
+        return None
+    measured = _pairwise_angles(observed)
+
+    best, best_cost = None, None
+    for key in candidates:
+        try:
+            ideal = np.asarray(
+                targets.get_ideal_donor_vectors(len(donors), key), dtype=float,
+            )
+        except Exception:
+            continue
+        wanted = _pairwise_angles(ideal)
+        cost = float(np.mean(np.abs(np.array(measured) - np.array(wanted))))
+        if best_cost is None or cost < best_cost:
+            best, best_cost = key, cost
+    return best
+
+
+def polyhedron_assignment(perceived, metal_index, geometry, coords=None):
+    """Which donor currently sits on which vertex of the chosen polyhedron.
+
+    Returned as ``{donor_index: vertex_number}``. Swapping two entries and
+    handing the result back as ``polyhedron['assignment']`` is what lets a user
+    exchange two ligands: without it the assignment is recomputed on every
+    export and always picks the nearest match, which is exactly the
+    arrangement they are trying to leave.
+    """
+    _targets, assigned = _assign_donors_to_vertices(
+        perceived, coords if coords is not None else perceived.coords,
+        metal_index, geometry, None,
+    )
+    return assigned
+
+
+def polyhedron_vertex_classes(coordination, geometry):
+    """Group a polyhedron's vertices into the kinds that are not equivalent.
+
+    A trigonal bipyramid has two: three equatorial vertices at 120 degrees to
+    each other, and two axial ones facing each other at 180.  Which ligand
+    ends up in which kind is a real chemical choice -- ``PF5`` is one molecule
+    but Berry pseudorotation moves ligands between the two -- and the
+    assignment made by matching the polyhedron onto the geometry as it stands
+    only ever finds the nearest one.
+
+    Vertices are compared through the sorted angles from each one to all the
+    others, which does not depend on how the polyhedron is oriented.
+
+    Returns:
+        ``(classes, labels)``: a class index per vertex, and a readable name
+        per class ordered by how many vertices it holds.  ``None`` when the
+        geometry is not in the catalogue.
+    """
+    import numpy as np
+
+    try:
+        from delfin.manta import _polyhedron_targets as targets
+        ideal = np.asarray(
+            targets.get_ideal_donor_vectors(int(coordination), geometry),
+            dtype=float,
+        )
+    except Exception:
+        return None
+    count = ideal.shape[0]
+    signatures = []
+    for i in range(count):
+        angles = []
+        for j in range(count):
+            if i == j:
+                continue
+            cosine = float(np.clip(float(np.dot(ideal[i], ideal[j])), -1.0, 1.0))
+            angles.append(round(math.degrees(math.acos(cosine)), 1))
+        signatures.append(tuple(sorted(angles)))
+
+    order: List[Any] = []
+    for signature in signatures:
+        if signature not in order:
+            order.append(signature)
+    # Smallest group first, because that is the distinguished one people name:
+    # the two axial vertices of a bipyramid, the single apex of a pyramid.
+    order.sort(key=lambda s: (signatures.count(s), s))
+    classes = [order.index(s) for s in signatures]
+
+    sizes = [signatures.count(s) for s in order]
+    if len(order) == 1:
+        labels = ['all equivalent']
+    elif len(order) == 2 and sorted(sizes) == [1, count - 1]:
+        labels = ['apical', 'basal'] if sizes[0] == 1 else ['basal', 'apical']
+    elif len(order) == 2:
+        labels = ['axial', 'equatorial'] if sizes[0] < sizes[1] \
+            else ['equatorial', 'axial']
+    else:
+        labels = [f'set {n + 1}' for n in range(len(order))]
+    return classes, labels
+
+
+def polyhedron_arrangements(perceived, metal_index, geometry, coords=None):
+    """Every distinct way of spreading the donors over the vertex kinds.
+
+    A trigonal bipyramid with five different ligands can be built ten ways --
+    which two are axial -- and they are different molecules, not different
+    views of one.  This enumerates them, best fit first, each as an
+    ``{donor: vertex}`` mapping ready to hand back as the polyhedron's
+    ``assignment``.
+
+    Only the split between *kinds* is enumerated.  Which of the three
+    equatorial vertices a given ligand takes is left to the usual nearest
+    match, so choosing an arrangement never moves a ligand further than it
+    has to.  On a polyhedron whose vertices are all equivalent -- an
+    octahedron, a tetrahedron -- there is one arrangement and turning it
+    changes nothing; exchanging two ligands there is what Swap is for.
+    """
+    import numpy as np
+    from itertools import combinations
+
+    from delfin.manta import _polyhedron_targets as targets
+
+    if perceived is None:
+        return []
+    metal_index = int(metal_index)
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair
+        if metal_index in pair and j != metal_index
+    )
+    cn = len(donors)
+    grouped = polyhedron_vertex_classes(cn, geometry)
+    if not grouped or cn < 2:
+        return []
+    classes, labels = grouped
+    if len(set(classes)) < 2:
+        return [{}]
+
+    coords = coords if coords is not None else perceived.coords
+    observed = _unit_donor_vectors(perceived, donors, metal_index, coords)
+    if observed is None:
+        return []
+    try:
+        ideal = np.asarray(
+            targets.get_ideal_donor_vectors(cn, geometry), dtype=float)
+    except Exception:
+        return []
+
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except Exception:
+        linear_sum_assignment = None
+
+    by_class: Dict[int, List[int]] = {}
+    for vertex, klass in enumerate(classes):
+        by_class.setdefault(klass, []).append(vertex)
+    ordered_classes = sorted(by_class)
+
+    def _best(fixed_pairs, frame):
+        """Kabsch the polyhedron onto this split, then score it."""
+        rows = [donors.index(d) for d, _v in fixed_pairs]
+        cols = [v for _d, v in fixed_pairs]
+        for _pass in range(3):
+            matched = frame[np.asarray(cols)]
+            target = observed[np.asarray(rows)]
+            u, _sv, vt = np.linalg.svd(matched.T @ target)
+            rotation = u @ vt
+            if np.linalg.det(rotation) < 0:
+                u[:, -1] *= -1.0
+                rotation = u @ vt
+            frame = frame @ rotation
+            # Re-match inside each kind only: the split itself is the choice.
+            cols = list(cols)
+            for klass in ordered_classes:
+                members = by_class[klass]
+                mine = [n for n, v in enumerate(cols) if v in members]
+                if len(mine) < 2:
+                    continue
+                sub = 1.0 - observed[np.asarray([rows[n] for n in mine])] \
+                    @ frame[np.asarray(members)].T
+                if linear_sum_assignment is not None:
+                    r, c = linear_sum_assignment(sub)
+                else:
+                    r, c = range(len(mine)), range(len(mine))
+                for a, b in zip(r, c):
+                    cols[mine[int(a)]] = members[int(b)]
+        score = float(np.sum(1.0 - np.einsum(
+            'ij,ij->i', observed[np.asarray(rows)], frame[np.asarray(cols)])))
+        return score, {donors[rows[n]]: int(cols[n]) for n in range(cn)}
+
+    # Enumerate the splits: choose the members of each kind in turn.
+    splits: List[List[Tuple[int, int]]] = []
+
+    def _walk(remaining, index, chosen):
+        if index == len(ordered_classes):
+            splits.append(list(chosen))
+            return
+        klass = ordered_classes[index]
+        members = by_class[klass]
+        for pick in combinations(remaining, len(members)):
+            rest = [d for d in remaining if d not in pick]
+            _walk(rest, index + 1,
+                  chosen + [(d, v) for d, v in zip(pick, members)])
+
+    _walk(donors, 0, [])
+    scored = []
+    for split in splits:
+        try:
+            scored.append(_best(split, np.array(ideal, copy=True)))
+        except Exception:
+            continue
+    scored.sort(key=lambda pair: pair[0])
+    out, seen = [], set()
+    for _score, mapping in scored:
+        key = tuple(sorted((d, classes[v]) for d, v in mapping.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(mapping)
+    return out
+
+
+def describe_polyhedron_arrangement(perceived, geometry, assignment):
+    """Name an arrangement by which donors sit on the distinguished vertices."""
+    if not assignment:
+        return ''
+    grouped = polyhedron_vertex_classes(len(assignment), geometry)
+    if not grouped:
+        return ''
+    classes, labels = grouped
+    if len(set(classes)) < 2:
+        return 'all vertices equivalent'
+    members: Dict[int, List[int]] = {}
+    for donor, vertex in assignment.items():
+        members.setdefault(classes[int(vertex)], []).append(int(donor))
+    klass = min(members)
+    named = ', '.join(
+        f'{perceived.symbols[d]}{d}' for d in sorted(members[klass])
+    )
+    return f'{labels[klass]}: {named}'
+
+
+def _assign_donors_to_vertices(perceived, coords, metal_index, geometry, fixed):
+    """Match donors to polyhedron vertices, honouring a caller's swap."""
+    import numpy as np
+
+    from delfin.manta import _polyhedron_targets as targets
+
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair
+        if metal_index in pair and j != metal_index
+    )
+    cn = len(donors)
+    ideal = np.asarray(
+        targets.get_ideal_donor_vectors(cn, geometry), dtype=float,
+    )
+    observed = _unit_donor_vectors(perceived, donors, metal_index, coords)
+    if observed is None:
+        return {}, {}
+
+    if fixed:
+        # The caller says which donor belongs on which vertex; only the
+        # orientation of the polyhedron still has to be found.
+        pairs = [
+            (donors.index(int(d)), int(v))
+            for d, v in fixed.items()
+            if int(d) in donors and 0 <= int(v) < cn
+        ]
+        if len(pairs) == cn:
+            rows = [r for r, _c in pairs]
+            cols = [c for _r, c in pairs]
+        else:
+            fixed = None
+    if not fixed:
+        try:
+            from scipy.optimize import linear_sum_assignment
+        except Exception:
+            linear_sum_assignment = None
+        rows, cols = list(range(cn)), list(range(cn))
+        for _pass in range(3):
+            cost = 1.0 - observed @ ideal.T
+            if linear_sum_assignment is not None:
+                rows, cols = linear_sum_assignment(cost)
+            matched = ideal[np.asarray(cols)]
+            target = observed[np.asarray(rows)]
+            u, _sv, vt = np.linalg.svd(matched.T @ target)
+            rotation = u @ vt
+            if np.linalg.det(rotation) < 0:
+                u[:, -1] *= -1.0
+                rotation = u @ vt
+            ideal = ideal @ rotation
+
+    assigned_vec = {}
+    assigned_vertex = {}
+    for row, col in zip(rows, cols):
+        assigned_vec[donors[int(row)]] = np.asarray(ideal[int(col)], dtype=float)
+        assigned_vertex[donors[int(row)]] = int(col)
+
+    wanted = {}
+    for a in range(cn):
+        for b in range(a + 1, cn):
+            i, k = donors[a], donors[b]
+            if i not in assigned_vec or k not in assigned_vec:
+                continue
+            cosine = float(np.clip(np.dot(assigned_vec[i], assigned_vec[k]), -1.0, 1.0))
+            wanted[(min(i, k), max(i, k))] = math.degrees(math.acos(cosine))
+    return wanted, assigned_vertex
+
+
+def _polyhedron_target_angles(perceived, coords, metal_index, geometry, fixed=None):
+    """Ideal L-M-L angles for one metal forced onto a polyhedron.
+
+    The donors are matched to the polyhedron's vertices -- by Hungarian
+    assignment after the polyhedron has been rotated onto them, so the complex
+    is drawn onto the target the shortest way round, or by the caller's own
+    mapping when two ligands are being exchanged.
+
+    These become the equilibrium values of ordinary harmonic angle terms with
+    UFF force constants -- a pull, not a constraint. A chelate whose bite angle
+    cannot reach the ideal vertex separation settles at a compromise between
+    ligand and polyhedron rather than being torn apart.
+    """
+    wanted, _assigned = _assign_donors_to_vertices(
+        perceived, coords, metal_index, geometry, fixed,
+    )
+    return wanted
+
+
 def normalise_method(method: Optional[str]) -> str:
     """Validate a force-field choice, falling back to UFF."""
     name = str(method or 'uff').strip().lower().replace('-', '').replace('_', '')
@@ -1012,11 +1939,49 @@ def normalise_method(method: Optional[str]) -> str:
     return 'uff'
 
 
+#: Force constants for user restraints, chosen to sit in the same range as the
+#: real UFF terms (a C-C stretch is around 700 kcal/mol/A^2, an angle bend
+#: 100-300 kcal/mol/rad^2).  A restraint that dominated everything would hold
+#: its value by tearing the rest of the structure, which is the opposite of
+#: what a constraint is for.
+RESTRAINT_FORCE_CONSTANTS = {
+    'distance': 500.0,
+    'angle': 200.0,
+    'dihedral': 50.0,
+}
+
+
+def build_restraints(entries) -> List[Dict[str, Any]]:
+    """Turn the user's held values into force-field restraint terms."""
+    out: List[Dict[str, Any]] = []
+    for entry in entries or ():
+        kind = str(entry.get('kind') or '')
+        if kind not in RESTRAINT_FORCE_CONSTANTS:
+            continue
+        atoms = [int(a) for a in entry.get('atoms') or ()]
+        needed = {'distance': 2, 'angle': 3, 'dihedral': 4}[kind]
+        if len(atoms) != needed or len(set(atoms)) != needed:
+            continue
+        try:
+            value = float(entry.get('value'))
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            'kind': kind,
+            'atoms': atoms,
+            'value': value,
+            'k': float(entry.get('k') or RESTRAINT_FORCE_CONSTANTS[kind]),
+        })
+    return out
+
+
 def export_forcefield_terms(
     xyz_text: str,
     *,
     perceived: Optional[PerceivedMolecule] = None,
     method: Optional[str] = 'uff',
+    polyhedron: Optional[Dict[str, Any]] = None,
+    restraints=None,
 ) -> Dict[str, Any]:
     """Build the JSON payload of force-field terms for the browser engine.
 
@@ -1060,10 +2025,41 @@ def export_forcefield_terms(
     warnings: List[str] = list(perceived.warnings)
     symbols = perceived.symbols
     coords = perceived.coords
+    # A perception handed in by the caller is cached deliberately -- the
+    # bonding must not be re-read from a geometry the user has been dragging,
+    # or a twisted double bond stops being one. Its *coordinates* are another
+    # matter: taking those from the cache too meant every geometry-derived
+    # value was computed from the structure as it was when the field was first
+    # switched on. A ligand dragged to another vertex was therefore assigned
+    # the vertex it used to be nearest, which is why exchanging two of them by
+    # dragging never took.
+    parsed = parse_xyz(xyz_text)
+    if parsed is not None:
+        fresh_symbols, fresh_coords, _had_header = parsed
+        if list(fresh_symbols) == list(symbols):
+            coords = fresh_coords
     n_atoms = perceived.n_atoms
     metals = set(perceived.metal_indices)
     typing_mol = perceived.typing_mol
     adjacency = perceived.neighbours()
+
+    # An atom whose hybridisation the user forced takes its angles from that
+    # choice, not from RDKit.  Setting the hybridisation alone reaches neither
+    # phosphorus nor silicon -- RDKit types those from valence and charge, so
+    # P stays at 93.8 degrees and Si at 109.5 whatever it is set to -- nor any
+    # angle that touches a metal, which is never typed at all.  At a donor
+    # atom that is every angle holding the ligand against its metal, so
+    # forcing a hybridisation there did nothing whatsoever.
+    forced_hyb = dict(getattr(perceived, 'forced_hybridisation', None) or {})
+    if forced_hyb:
+        listed = ', '.join(
+            f'{symbols[i]}{i} as {forced_hyb[i]}' for i in sorted(forced_hyb)
+        )
+        warnings.append(
+            f'Hybridisation forced by hand: {listed}. Every angle at those '
+            'atoms is built from that choice rather than from perception, so '
+            'it also holds where the atom is bonded to a metal.'
+        )
 
     if perceived.has_metal:
         named = ', '.join(
@@ -1128,13 +2124,32 @@ def export_forcefield_terms(
             bonds.append({'i': i, 'j': j, 'k': round(k_bond, 4), 'r0': round(r0, 5)})
 
         # ---- angles ---------------------------------------------------
+        # A polyhedron the user asked for replaces the observed angles at that
+        # one metal with the ideal ones. They stay ordinary harmonic terms with
+        # UFF force constants, so the complex is pulled towards the shape and a
+        # chelate that cannot reach it settles at a compromise.
+        forced_angles = {}
+        forced_centre = None
+        if polyhedron:
+            try:
+                forced_centre = int(polyhedron.get('metal'))
+                forced_angles = _polyhedron_target_angles(
+                    perceived, coords, forced_centre,
+                    str(polyhedron.get('geometry')),
+                    polyhedron.get('assignment'),
+                )
+            except Exception as exc:
+                warnings.append(f'Could not apply the polyhedron: {exc}')
+                forced_angles, forced_centre = {}, None
+
         for centre in range(n_atoms):
             neighbours = adjacency[centre]
+            forced_theta = HYBRIDISATION_ANGLES.get(forced_hyb.get(centre, ''))
             for a in range(len(neighbours)):
                 for b in range(a + 1, len(neighbours)):
                     i, k = neighbours[a], neighbours[b]
                     params = None
-                    if (typing_mol is not None
+                    if (forced_theta is None and typing_mol is not None
                             and centre not in metals and i not in metals and k not in metals):
                         try:
                             params = _uff_helpers.GetUFFAngleBendParams(typing_mol, i, centre, k)
@@ -1144,12 +2159,20 @@ def export_forcefield_terms(
                         k_theta, theta0 = float(params[0]), float(params[1])
                         periodicity = _angle_periodicity(theta0)
                     else:
-                        used_fallback = True
-                        if not ({i, centre, k} & metals):
-                            fallback_elements.update(
-                                (symbols[i], symbols[centre], symbols[k])
+                        if forced_theta is None:
+                            used_fallback = True
+                            if not ({i, centre, k} & metals):
+                                fallback_elements.update(
+                                    (symbols[i], symbols[centre], symbols[k])
+                                )
+                        theta0 = (
+                            forced_theta if forced_theta is not None
+                            else _angle_degrees(coords[i], coords[centre], coords[k])
+                        )
+                        if centre == forced_centre:
+                            theta0 = forced_angles.get(
+                                (min(i, k), max(i, k)), theta0,
                             )
-                        theta0 = _angle_degrees(coords[i], coords[centre], coords[k])
                         r_ij = _distance(coords[i], coords[centre])
                         r_jk = _distance(coords[k], coords[centre])
                         k_theta = _uff_angle_force_constant(
@@ -1259,6 +2282,18 @@ def export_forcefield_terms(
     if not bonds and n_atoms > 1:
         warnings.append('No bonds were perceived; only van-der-Waals terms are exported.')
 
+    if polyhedron and forced_angles:
+        warnings.append(
+            'Atom {} ({}) is being pulled towards a {} polyhedron: the angle '
+            'terms at the metal carry its ideal values instead of the measured '
+            'ones. They stay ordinary harmonic terms, so a ligand that cannot '
+            'reach the ideal settles at a compromise rather than being '
+            'strained apart.'.format(
+                forced_centre, symbols[forced_centre],
+                str(polyhedron.get('geometry')),
+            )
+        )
+
     chosen = normalise_method(method)
     if chosen == 'mmff94':
         # MMFF94 is not a drop-in for UFF here. Its bond stretch is quartic,
@@ -1277,6 +2312,11 @@ def export_forcefield_terms(
         'ok': True,
         'source': source,
         'method': chosen,
+        'restraints': build_restraints(restraints),
+        'polyhedron': (
+            {'metal': forced_centre, 'geometry': str(polyhedron.get('geometry'))}
+            if (polyhedron and forced_angles) else None
+        ),
         'n_atoms': n_atoms,
         'elements': list(symbols),
         'bonds': bonds,

@@ -1,5 +1,6 @@
 """3D molecule visualisation helpers using py3Dmol."""
 
+import hashlib
 import json
 
 import py3Dmol
@@ -1083,8 +1084,26 @@ def measurement_bootstrap_js():
 
 SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 (function() {
-    if (window.__delfinSubmitManipReady) return;
+    // A version, not a flag. It used to be a boolean, so a dashboard that
+    // was already open never picked up a newer editor: every fix shipped here
+    // was invisible until the page was reloaded. Re-running now tears the
+    // previous one down first -- the window-level handlers are per-scope
+    // closures and would otherwise accumulate, which is exactly the class of
+    // bug that killed the editor's own drag handlers once already.
+    var MANIP_VERSION = '__DELFIN_MANIP_VERSION__';
+    if (window.__delfinSubmitManipVersion === MANIP_VERSION) return;
+    if (typeof window.__delfinSubmitManipTeardown === 'function') {
+        try { window.__delfinSubmitManipTeardown(); } catch (e) {}
+    }
+    window.__delfinSubmitManipVersion = MANIP_VERSION;
     window.__delfinSubmitManipReady = true;
+
+    // Every global listener this closure adds, so it can take them all back.
+    var listeners = [];
+    function on(target, type, fn, options) {
+        target.addEventListener(type, fn, options);
+        listeners.push([target, type, fn, options]);
+    }
 
     window._submitMolViewerByScope = window._submitMolViewerByScope || {};
     window._submitManipStateByScope = window._submitManipStateByScope || {};
@@ -1107,6 +1126,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 mode: 'off',
                 scopeKey: scopeKey,
                 ffActive: false,
+                settleOnRelease: true,
+                pinned: [],
                 ffFrameMs: 16,
                 picks: [],
                 pivot: null,
@@ -1301,12 +1322,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         try { viewer.render(); } catch (e) {}
     }
 
-    function pushXyzToPython(scopeKey) {
+    // ``reason`` reaches Python in the comment line. It tells a genuine end of
+    // a drag apart from the twice-a-second heartbeat the running optimiser
+    // sends, which matters because only the former should make the polyhedron
+    // reconsider which donor sits on which vertex.
+    function pushXyzToPython(scopeKey, reason) {
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
         var input = getSyncInput(scopeKey);
         if (!input) return;
-        var xyz = serializeXyz(viewer);
+        var xyz = serializeXyz(viewer, reason ? ('DELFIN ' + reason) : null);
         var proto = (input.tagName === 'TEXTAREA')
             ? window.HTMLTextAreaElement.prototype
             : window.HTMLInputElement.prototype;
@@ -1479,12 +1504,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         try { viewer.render(); } catch (e) {}
         updateStatus(scopeKey);
         updateMeasureBox(scopeKey);
+        updateEnergyBadge(scopeKey);
     }
 
     // Fill the toolbar's value box with what the current selection describes,
     // and say which quantity that is. Without this the box was an unlabelled
     // number field and nothing told the user it wanted a bond length.
     function updateInternalReadout(scopeKey) {
+        var state = getState(scopeKey);
         var label = findInScope(scopeKey, '.submit-internal-label');
         var box = findInScope(scopeKey, '.submit-internal-value input');
         var info = null;
@@ -1495,7 +1522,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                    (info.unit === 'A' ? '\u00c5' : '\u00b0') + ')')
                 : 'pick 2-4 atoms';
         }
-        if (box && info && document.activeElement !== box) {
+        // The box is a snapshot taken when the selection changes, not a live
+        // meter. While the field runs this function is called every frame, and
+        // refreshing then overwrote whatever the user had just typed: they
+        // entered 180, and Set or Hold acted on the current measured value
+        // instead, which looked as though neither button worked at all.
+        var signature = info
+            ? info.kind + ':' + info.idx.join(',')
+            : '';
+        var selectionChanged = signature !== state.readoutFor;
+        state.readoutFor = signature;
+        if (box && info && selectionChanged && document.activeElement !== box) {
             var rounded = info.unit === 'A'
                 ? info.value.toFixed(3) : info.value.toFixed(1);
             if (box.value !== rounded) {
@@ -1509,8 +1546,67 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
     }
 
+    // Report the selection to Python, as model indices rather than serials so
+    // it lines up with the force-field payload. Used to offer the coordination
+    // polyhedra of a selected metal.
+    function pushPicksToPython(scopeKey) {
+        var input = null;
+        var wrap = findInScope(scopeKey, '.submit-pick-sync');
+        if (wrap) input = wrap.querySelector('input, textarea');
+        if (!input) return;
+        var viewer = getViewer(scopeKey);
+        var state = getState(scopeKey);
+        var text = '';
+        if (viewer) {
+            var serials = state.picks.map(function(p) { return p.serial; });
+            text = ffIndicesOf(viewer, serials).join(',');
+        }
+        if (input.value === text) return;
+        var proto = (input.tagName === 'TEXTAREA')
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (setter && setter.set) setter.set.call(input, text);
+        else input.value = text;
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
+    // Keyboard shortcuts for things Python owns. Unbond is not a picture edit:
+    // it changes the topology the force field is built from, so the browser
+    // cannot carry it out alone and has to ask.
+    var commandSerial = 0;
+    function pushCommandToPython(scopeKey, verb, payload) {
+        var wrap = findInScope(scopeKey, '.submit-cmd-sync');
+        var input = wrap ? wrap.querySelector('input, textarea') : null;
+        if (!input) return false;
+        // The counter is what makes the value change: deleting the same bond
+        // twice in a row is two commands, and a widget only reports a change.
+        commandSerial += 1;
+        var text = verb + ':' + commandSerial + ':' + payload;
+        var proto = (input.tagName === 'TEXTAREA')
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (setter && setter.set) setter.set.call(input, text);
+        else input.value = text;
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+        return true;
+    }
+
+    // A shortcut belongs to whatever the user is typing in. Taking one
+    // globally meant that a backspace in the coordinate box cut a bond.
+    function typingInAField() {
+        var focused = document.activeElement;
+        if (!focused) return false;
+        var tag = (focused.tagName || '').toUpperCase();
+        return tag === 'INPUT' || tag === 'TEXTAREA' || !!focused.isContentEditable;
+    }
+
     function updateStatus(scopeKey) {
         updateInternalReadout(scopeKey);
+        pushPicksToPython(scopeKey);
         var el = getStatusEl(scopeKey);
         if (!el) return;
         var state = getState(scopeKey);
@@ -1520,6 +1616,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             pivotTxt = ' · pivot: <b>' +
                 (state.pivot.elem || '?') + state.pivot.serial + '</b>';
         }
+        var pinnedTxt = (state.pinned && state.pinned.length)
+            ? ' · <b>' + state.pinned.length + '</b> held'
+            : '';
         var undoTxt = state.undo.length
             ? ' · <span style="color:#888;">' + state.undo.length + ' undo</span>'
             : '';
@@ -1534,13 +1633,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var hint = '';
         el.innerHTML = modeBadge +
             '<b>' + n + '</b> atom' + (n === 1 ? '' : 's') + ' selected' +
-            pivotTxt + undoTxt + hint;
+            pivotTxt + pinnedTxt + undoTxt + hint;
     }
 
     // --- Pick toggle ---
     function togglePick(scopeKey, atom, additive) {
         var state = getState(scopeKey);
         if (!atom || atom.serial === undefined) return;
+        state.pickedAsBond = false;
         var found = -1;
         for (var i = 0; i < state.picks.length; i++) {
             if (state.picks[i].serial === atom.serial) { found = i; break; }
@@ -1615,7 +1715,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             window.setTimeout(function() {
                 var hit = state._nativeHit;
                 state._nativeHit = null;
-                var atom = hit ? getAtomBySerial(getViewer(scopeKey), hit.serial) : null;
+                // An atom the cursor is squarely on wins. Only then does the
+                // stick get its turn -- 3Dmol's own picker answers with an
+                // atom for a click in the middle of a bond, and the slack pass
+                // would too, so both have to wait their turn or a bond could
+                // never be clicked at all.
+                var atom = raycastAtom(scopeKey, cx, cy, true);
+                if (!atom && pickBond(scopeKey, raycastBond(scopeKey, cx, cy), additive)) {
+                    return;
+                }
+                if (!atom && hit) atom = getAtomBySerial(getViewer(scopeKey), hit.serial);
                 if (!atom) atom = raycastAtom(scopeKey, cx, cy);
                 if (atom) togglePick(scopeKey, atom, additive);
             }, 0);
@@ -1712,6 +1821,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     };
     var DEFAULT_VDW = 1.70;
     var MIN_PICK_PX = 5;
+    //: How far from the drawn stick a click still counts as hitting the bond.
+    var BOND_PICK_PX = 6;
+    //: How much of each end of a stick belongs to its atom rather than to the
+    //: bond.  0.3 leaves the middle 40 per cent as the bond's own target.
+    var BOND_PICK_MARGIN = 0.3;
 
     function elementRadius(atom) {
         var raw = String(atom.elem || atom.atom || '');
@@ -1721,7 +1835,155 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return (typeof r === 'number') ? r : DEFAULT_VDW;
     }
 
-    function raycastAtom(scopeKey, clientX, clientY) {
+    function ensureEnergyBadge(scopeKey) {
+        var state = getState(scopeKey);
+        if (state.energyBadge && state.energyBadge.parentNode) return state.energyBadge;
+        var host = state.viewerEl;
+        if (!host) return null;
+        if (window.getComputedStyle(host).position === 'static') {
+            host.style.position = 'relative';
+        }
+        var badge = document.createElement('div');
+        badge.className = 'submit-energy-badge';
+        badge.style.cssText =
+            'position:absolute;left:8px;top:8px;z-index:25;pointer-events:none;' +
+            'font:12px/1.35 monospace;color:#37474f;background:rgba(255,255,255,0.82);' +
+            'border:1px solid #cfd8dc;border-radius:4px;padding:2px 7px;' +
+            'white-space:nowrap;display:none;';
+        host.appendChild(badge);
+        state.energyBadge = badge;
+        return badge;
+    }
+    function updateEnergyBadge(scopeKey) {
+        var state = getState(scopeKey);
+        var badge = ensureEnergyBadge(scopeKey);
+        if (!badge) return;
+        if (!ffEnabled(state)) { badge.style.display = 'none'; return; }
+        var stats = null;
+        try { stats = window.__delfinFF.stats(scopeKey); } catch (e) {}
+        var energy = stats ? stats.energy : null;
+        if (typeof energy !== 'number' || !isFinite(energy)) {
+            // Nothing has been relaxed yet, so the engine holds no energy:
+            // evaluate the geometry as it stands, or the readout would stay
+            // blank until the user touched something.
+            var viewer = getViewer(scopeKey);
+            if (viewer) {
+                try {
+                    energy = window.__delfinFF.energy(scopeKey, ffReadPositions(viewer));
+                } catch (e) { energy = null; }
+            }
+        }
+        if (typeof energy !== 'number' || !isFinite(energy)) {
+            badge.style.display = 'none';
+            return;
+        }
+        var method = (state.ffInfo && state.ffInfo.source) ? state.ffInfo.source : 'uff';
+        var busy = state.autoOpt || state.settleRaf || state.drag;
+        badge.innerHTML =
+            'E = <b>' + energy.toFixed(2) + '</b> kcal/mol' +
+            '<span style="color:#90a4ae;"> · ' +
+            String(method).replace('-uff', ' UFF').replace('geometric-fallback', 'UFF + restraints') +
+            (busy ? ' \u00b7 relaxing' : ((stats && stats.converged) ? ' \u00b7 settled' : '')) +
+            '</span>';
+        badge.style.display = '';
+    }
+
+    // Pick the stick under the cursor rather than the atoms at its ends.
+    // A bond is drawn as the segment between two atom centres, so the test is
+    // the cursor's distance to that segment -- in the same projection the atom
+    // picker uses, so the two always agree about what is where. Depth breaks
+    // ties, so a bond in front shields one behind it.
+    function raycastBond(scopeKey, clientX, clientY) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        if (!state.canvas || !viewer) return null;
+        var rect = state.canvas.getBoundingClientRect();
+        var sx = clientX - rect.left;
+        var sy = clientY - rect.top;
+        var atoms = getAtoms(viewer);
+        // Indexed by atom index, not packed: atoms[i].bonds names indices, and
+        // projectAllAtoms drops whatever it cannot project.
+        var proj = [];
+        for (var i = 0; i < atoms.length; i++) {
+            proj.push(projectWithDepth(viewer, state.canvas, atoms[i]));
+        }
+        var best = null, bestDepth = Infinity, bestDist = Infinity;
+        for (var a = 0; a < atoms.length; a++) {
+            var pa = proj[a];
+            if (!pa) continue;
+            var list = atoms[a].bonds || [];
+            for (var n = 0; n < list.length; n++) {
+                var b = list[n] | 0;
+                if (b <= a) continue;  // every bond is listed at both ends
+                var pb = proj[b];
+                if (!pb) continue;
+                var vx = pb.x - pa.x, vy = pb.y - pa.y;
+                var len2 = vx * vx + vy * vy;
+                var t = len2 > 1e-9
+                    ? ((sx - pa.x) * vx + (sy - pa.y) * vy) / len2 : 0;
+                // Only the middle of the stick belongs to the bond. The ends
+                // belong to the atoms, which is how it reads on screen -- and
+                // without this a tap aimed at an atom whose drawn disc is
+                // small (a zoomed-out structure, a hydrogen) was answered with
+                // the bond, so a three-atom selection for an angle silently
+                // became two atoms and Hold had nothing sensible to hold.
+                if (t < BOND_PICK_MARGIN || t > 1.0 - BOND_PICK_MARGIN) continue;
+                var ex = pa.x + vx * t - sx, ey = pa.y + vy * t - sy;
+                var d2 = ex * ex + ey * ey;
+                if (d2 > BOND_PICK_PX * BOND_PICK_PX) continue;
+                var depth = pa.depth + (pb.depth - pa.depth) * t;
+                if (depth < bestDepth - 1e-6 ||
+                    (Math.abs(depth - bestDepth) <= 1e-6 && d2 < bestDist)) {
+                    best = [a, b]; bestDepth = depth; bestDist = d2;
+                }
+            }
+        }
+        return best;
+    }
+
+    // Selecting a bond *is* selecting the two atoms it joins. Everything that
+    // reads the selection -- Unbond, the value box, Set, Hold -- already works
+    // on two atoms, so one click on a stick replaces two on atoms and nothing
+    // downstream has to learn a second kind of pick.
+    function pickBond(scopeKey, pair, additive) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer || !pair) return false;
+        var state = getState(scopeKey);
+        var atoms = getAtoms(viewer);
+        var first = atoms[pair[0]], second = atoms[pair[1]];
+        if (!first || !second) return false;
+        var serials = [first.serial, second.serial];
+        var isExactly = state.picks.length === 2
+            && serials.indexOf(state.picks[0].serial) >= 0
+            && serials.indexOf(state.picks[1].serial) >= 0;
+        // What Delete means depends on what was selected, not on the mode:
+        // a stick that was tapped is a bond and comes off as one, two atoms
+        // picked one at a time are atoms and are deleted.
+        state.pickedAsBond = !isExactly;
+        if (!additive) {
+            // Clicking the same stick again takes it back, the way clicking
+            // the same atom again does.
+            state.picks = isExactly ? [] : [
+                {serial: first.serial, elem: first.elem || 'X'},
+                {serial: second.serial, elem: second.elem || 'X'}
+            ];
+        } else {
+            for (var i = 0; i < 2; i++) {
+                var atom = i ? second : first;
+                var seen = false;
+                for (var j = 0; j < state.picks.length; j++) {
+                    if (state.picks[j].serial === atom.serial) { seen = true; break; }
+                }
+                if (!seen) {
+                    state.picks.push({serial: atom.serial, elem: atom.elem || 'X'});
+                }
+            }
+        }
+        redrawHighlights(scopeKey);
+        return true;
+    }
+
+    function raycastAtom(scopeKey, clientX, clientY, exactOnly) {
         var state = getState(scopeKey);
         var viewer = getViewer(scopeKey);
         if (!state.canvas || !viewer) return null;
@@ -1754,7 +2016,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
         // Nothing was hit squarely. Allow a small amount of slack so a click
         // just beside a thin stick still picks it, but keep empty space empty
-        // so a press there can still turn the view.
+        // so a press there can still turn the view. Callers that want to give
+        // a bond its chance first ask for the exact pass alone: the slack is
+        // wide enough to swallow a click aimed at the middle of a short bond.
+        if (exactOnly) return null;
         if (nearest && nearestDist <= PICK_RADIUS_PX * PICK_RADIUS_PX) {
             return nearest.atom;
         }
@@ -1803,7 +2068,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var minY = Math.min(y0, y1) - rect.top,  maxY = Math.max(y0, y1) - rect.top;
         if (maxX - minX < 3 || maxY - minY < 3) return;
 
+        // A band adds to what is already picked. It used to replace unless
+        // Ctrl was held as well -- but the band already needs Shift, and a
+        // plain click on an atom has always accumulated, so the band was the
+        // one gesture that threw the selection away. Drawing a second box
+        // around the next part of the molecule now does what it looks like.
+        // Clear is how you start over.
         if (!additive) state.picks = [];
+        state.pickedAsBond = false;
 
         var projected = projectAllAtoms(scopeKey);
         for (var i = 0; i < projected.length; i++) {
@@ -1905,20 +2177,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             at.x = np.x; at.y = np.y; at.z = np.z;
         }
     }
-    function setInternal(scopeKey, target) {
+    // Move the geometry so one internal coordinate takes a value. Used both by
+    // Set, once, and by a fixed constraint, after every relaxation step -- so
+    // it does no bookkeeping of its own: no undo snapshot, no push, no redraw.
+    function applyInternalValue(scopeKey, kind, idx, target, currentValue) {
         var viewer = getViewer(scopeKey);
-        var info = readInternal(scopeKey);
-        if (!viewer || !info) {
-            return {ok: false, error: 'pick 2, 3 or 4 atoms first'};
-        }
-        if (typeof target !== 'number' || !isFinite(target)) {
-            return {ok: false, error: 'not a number'};
-        }
+        if (!viewer) return {ok: false, error: 'no viewer'};
+        var info = {kind: kind, idx: idx, value: currentValue};
         var atoms = getAtoms(viewer);
         var adj = bondAdjacency(viewer);
-        var idx = info.idx;
         var note = '';
-        snapshotForUndo(scopeKey);
+        var d2sign = 1, d3sign = 1;
 
         if (info.kind === 'bond') {
             if (target <= 0) return {ok: false, error: 'a bond must be positive'};
@@ -1927,8 +2196,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (vecLen(u) < 0.5) return {ok: false, error: 'atoms coincide'};
             var frag = fragmentFrom(adj, j, i, j);
             var moving = frag.atoms;
-            if (frag.seen[i]) { moving = [j]; note = 'ring: only the second atom moved'; }
-            translateAtoms(atoms, moving, vecScale(u, target - info.value));
+            var shift = target - info.value;
+            if (frag.seen[i]) {
+                moving = [j]; note = 'ring: only the second atom moved';
+            } else {
+                var otherSide = fragmentFrom(adj, i, i, j);
+                if (!otherSide.seen[j] && otherSide.atoms.length < moving.length) {
+                    moving = otherSide.atoms;
+                    shift = -shift;
+                }
+            }
+            translateAtoms(atoms, moving, vecScale(u, shift));
         } else if (info.kind === 'angle') {
             var i2 = idx[0], j2 = idx[1], k2 = idx[2];
             var axis = vecNorm(crossV(vecSub(atoms[i2], atoms[j2]),
@@ -1938,8 +2216,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
             var frag2 = fragmentFrom(adj, k2, j2, k2);
             var moving2 = frag2.atoms;
-            if (frag2.seen[j2]) { moving2 = [k2]; note = 'ring: only the third atom moved'; }
-            var d2 = (target - info.value) * Math.PI / 180;
+            if (frag2.seen[j2]) {
+                moving2 = [k2]; note = 'ring: only the third atom moved';
+            } else {
+                var other2 = fragmentFrom(adj, i2, j2, k2);
+                if (!other2.seen[k2] && other2.atoms.length < moving2.length) {
+                    // Turn the smaller half and let the larger stand.
+                    moving2 = other2.atoms;
+                    d2sign = -1;
+                }
+            }
+            var d2 = (target - info.value) * Math.PI / 180 * d2sign;
             rotateAtomsAbout(atoms, moving2, atoms[j2], axis, d2);
             if (Math.abs(angleV(atoms[i2], atoms[j2], atoms[k2]) - target) > 1e-3) {
                 rotateAtomsAbout(atoms, moving2, atoms[j2], axis, -2 * d2);
@@ -1952,11 +2239,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
             var frag3 = fragmentFrom(adj, k3, j3, k3);
             var moving3 = frag3.atoms;
+            var other3 = fragmentFrom(adj, j3, j3, k3);
+            if (!frag3.seen[j3] && !other3.seen[k3]
+                    && other3.atoms.length < moving3.length) {
+                moving3 = other3.atoms;
+                d3sign = -1;
+            }
             if (frag3.seen[j3]) {
                 return {ok: false,
                         error: 'that dihedral turns about a ring bond'};
             }
-            var d3 = (target - info.value) * Math.PI / 180;
+            var d3 = (target - info.value) * Math.PI / 180 * d3sign;
             rotateAtomsAbout(atoms, moving3, atoms[j3], axis3, d3);
             var got = dihedralV(atoms[idx[0]], atoms[j3], atoms[k3], atoms[idx[3]]);
             if (Math.abs(((got - target + 540) % 360) - 180) > 1e-3) {
@@ -1964,13 +2257,385 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }
 
+        return {ok: true, kind: info.kind, was: info.value, note: note};
+    }
+
+    function setInternal(scopeKey, target) {
+        var viewer = getViewer(scopeKey);
+        var info = readInternal(scopeKey);
+        if (!viewer || !info) {
+            return {ok: false, error: 'pick 2, 3 or 4 atoms first'};
+        }
+        if (typeof target !== 'number' || !isFinite(target)) {
+            return {ok: false, error: 'not a number'};
+        }
+        snapshotForUndo(scopeKey);
+        var result = applyInternalValue(
+            scopeKey, info.kind, info.idx, target, info.value,
+        );
+        if (!result.ok) return result;
         invalidateGeometry(viewer);
         try { viewer.render(); } catch (e) {}
         redrawHighlights(scopeKey);
-        pushXyzToPython(scopeKey);
+        pushXyzToPython(scopeKey, 'drag-end');
         var after = readInternal(scopeKey);
-        return {ok: true, kind: info.kind, was: info.value,
-                now: after ? after.value : target, note: note};
+        result.now = after ? after.value : target;
+        return result;
+    }
+
+    // Constraints the user asked to hold exactly. The field relaxes freely and
+    // the value is restored afterwards, so the coordinate is met to the digit
+    // and the rest of the molecule arranges itself around it -- unlike a pull,
+    // which negotiates with the chemistry and settles at a compromise.
+    function setFixedInternals(scopeKey, entries) {
+        var state = getState(scopeKey);
+        var list = [];
+        (entries || []).forEach(function(entry) {
+            var atoms = (entry && entry.atoms) || [];
+            var kind = entry && entry.kind;
+            var need = kind === 'distance' ? 2 : (kind === 'angle' ? 3 : 4);
+            if (atoms.length !== need) return;
+            if (typeof entry.value !== 'number' || !isFinite(entry.value)) return;
+            list.push({kind: kind, atoms: atoms.slice(), value: entry.value});
+        });
+        state.fixedInternals = list;
+        return list.length;
+    }
+
+    // Restoring a held value moves a whole fragment, which shifts and turns the
+    // molecule as a whole. Applied every frame that reads as the structure
+    // drifting and spinning under the cursor, and it makes a ligand that has
+    // been dragged somewhere new look as though it springs back -- it has not
+    // moved, the rest of the world has. Take that rigid-body part back out.
+    function centroidOf(atoms, indices) {
+        var cx = 0, cy = 0, cz = 0, n = indices.length;
+        if (!n) return null;
+        for (var i = 0; i < n; i++) {
+            var a = atoms[indices[i]];
+            cx += a.x; cy += a.y; cz += a.z;
+        }
+        return {x: cx / n, y: cy / n, z: cz / n};
+    }
+    function heavyIndices(atoms) {
+        var out = [];
+        for (var i = 0; i < atoms.length; i++) {
+            if ((atoms[i].elem || '') !== 'H') out.push(i);
+        }
+        return out.length ? out : atoms.map(function(_a, i) { return i; });
+    }
+
+    // Put the structure back on the orientation it had before a held value was
+    // enforced. Enforcing moves a fragment while the field pushes back, and
+    // that cycle is not reciprocal: it feeds net rotation and translation into
+    // the molecule, which is why a held value made it circle. Fitting on every
+    // atom means the stationary majority decides the frame, so the intended
+    // internal change survives and only the spurious rigid-body part is taken
+    // out.
+    //
+    // Horn's quaternion method: build the 4x4 key matrix from the correlation
+    // of the two coordinate sets, take its largest eigenvector by Jacobi
+    // sweeps, and read the rotation off that. Avoids needing a 3x3 SVD.
+    function largestEigenvector4(a) {
+        var v = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]];
+        var m = [a[0].slice(), a[1].slice(), a[2].slice(), a[3].slice()];
+        for (var sweep = 0; sweep < 24; sweep++) {
+            var off = 0, p = 0, q = 1;
+            for (var i = 0; i < 4; i++) {
+                for (var j = i + 1; j < 4; j++) {
+                    var mag = Math.abs(m[i][j]);
+                    off += mag * mag;
+                    if (mag > Math.abs(m[p][q])) { p = i; q = j; }
+                }
+            }
+            if (off < 1e-22) break;
+            var theta = (m[q][q] - m[p][p]) / (2 * m[p][q]);
+            var t = (theta >= 0 ? 1 : -1) /
+                    (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+            var c = 1 / Math.sqrt(t * t + 1), sN = t * c;
+            for (var k = 0; k < 4; k++) {
+                var mkp = m[k][p], mkq = m[k][q];
+                m[k][p] = c * mkp - sN * mkq;
+                m[k][q] = sN * mkp + c * mkq;
+            }
+            for (k = 0; k < 4; k++) {
+                var mpk = m[p][k], mqk = m[q][k];
+                m[p][k] = c * mpk - sN * mqk;
+                m[q][k] = sN * mpk + c * mqk;
+                var vkp = v[k][p], vkq = v[k][q];
+                v[k][p] = c * vkp - sN * vkq;
+                v[k][q] = sN * vkp + c * vkq;
+            }
+        }
+        var best = 0;
+        for (var e = 1; e < 4; e++) if (m[e][e] > m[best][best]) best = e;
+        return [v[0][best], v[1][best], v[2][best], v[3][best]];
+    }
+
+    function superimposeOnto(atoms, before) {
+        var n = atoms.length;
+        if (!n || !before || before.length < 3 * n) return false;
+        var cqx = 0, cqy = 0, cqz = 0, cpx = 0, cpy = 0, cpz = 0, i;
+        for (i = 0; i < n; i++) {
+            cqx += atoms[i].x; cqy += atoms[i].y; cqz += atoms[i].z;
+            cpx += before[3*i]; cpy += before[3*i+1]; cpz += before[3*i+2];
+        }
+        cqx /= n; cqy /= n; cqz /= n; cpx /= n; cpy /= n; cpz /= n;
+        var xx=0,xy=0,xz=0,yx=0,yy=0,yz=0,zx=0,zy=0,zz=0;
+        for (i = 0; i < n; i++) {
+            var qx = atoms[i].x - cqx, qy = atoms[i].y - cqy, qz = atoms[i].z - cqz;
+            var px = before[3*i] - cpx, py = before[3*i+1] - cpy,
+                pz = before[3*i+2] - cpz;
+            xx += qx*px; xy += qx*py; xz += qx*pz;
+            yx += qy*px; yy += qy*py; yz += qy*pz;
+            zx += qz*px; zy += qz*py; zz += qz*pz;
+        }
+        var key = [
+            [xx+yy+zz,  yz-zy,      zx-xz,      xy-yx],
+            [yz-zy,     xx-yy-zz,   xy+yx,      zx+xz],
+            [zx-xz,     xy+yx,     -xx+yy-zz,   yz+zy],
+            [xy-yx,     zx+xz,      yz+zy,     -xx-yy+zz]
+        ];
+        var qv = largestEigenvector4(key);
+        var w = qv[0], x = qv[1], y = qv[2], z = qv[3];
+        var norm = Math.sqrt(w*w + x*x + y*y + z*z);
+        if (!(norm > 1e-12)) return false;
+        w /= norm; x /= norm; y /= norm; z /= norm;
+        var r00 = w*w + x*x - y*y - z*z, r01 = 2*(x*y - w*z), r02 = 2*(x*z + w*y);
+        var r10 = 2*(x*y + w*z), r11 = w*w - x*x + y*y - z*z, r12 = 2*(y*z - w*x);
+        var r20 = 2*(x*z - w*y), r21 = 2*(y*z + w*x), r22 = w*w - x*x - y*y + z*z;
+        for (i = 0; i < n; i++) {
+            var ax = atoms[i].x - cqx, ay = atoms[i].y - cqy, az = atoms[i].z - cqz;
+            atoms[i].x = r00*ax + r01*ay + r02*az + cpx;
+            atoms[i].y = r10*ax + r11*ay + r12*az + cpy;
+            atoms[i].z = r20*ax + r21*ay + r22*az + cpz;
+        }
+        return true;
+    }
+
+    function applyFixedInternals(scopeKey) {
+        var state = getState(scopeKey);
+        var list = state.fixedInternals || [];
+        if (!list.length) return false;
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return false;
+        var atoms = getAtoms(viewer);
+        var before = new Float64Array(3 * atoms.length);
+        for (var b = 0; b < atoms.length; b++) {
+            before[3*b] = atoms[b].x;
+            before[3*b+1] = atoms[b].y;
+            before[3*b+2] = atoms[b].z;
+        }
+        var touched = false;
+        for (var i = 0; i < list.length; i++) {
+            var entry = list[i];
+            var idx = entry.atoms;
+            var current;
+            if (entry.kind === 'distance') {
+                current = distV(atoms[idx[0]], atoms[idx[1]]);
+            } else if (entry.kind === 'angle') {
+                current = angleV(atoms[idx[0]], atoms[idx[1]], atoms[idx[2]]);
+            } else {
+                current = dihedralV(atoms[idx[0]], atoms[idx[1]],
+                                    atoms[idx[2]], atoms[idx[3]]);
+            }
+            var kindName = entry.kind === 'distance' ? 'bond'
+                         : entry.kind === 'angle' ? 'angle' : 'dihedral';
+            var result = applyInternalValue(
+                scopeKey, kindName, idx, entry.value, current,
+            );
+            if (result && result.ok) touched = true;
+        }
+        if (touched) superimposeOnto(atoms, before);
+        return touched;
+    }
+
+    // --- drawing and removing bonds ---------------------------------------
+    // The sticks in the viewer are 3Dmol's own bond list, and everything the
+    // editor does about topology -- which fragment turns, which atoms are
+    // donors -- already reads from it. Editing it here therefore changes what
+    // is drawn and what the geometry operations see in one go.
+    // 3Dmol draws a double bond as two cylinders and a triple as three, but
+    // only if the model knows the order -- and a model read from an XYZ block
+    // cannot, because the format has no orders in it. So they are handed over
+    // separately, after every render that changes them.
+    function setBondOrders(scopeKey, triples) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return 0;
+        var atoms = getAtoms(viewer);
+        var changed = 0;
+        for (var n = 0; n < (triples || []).length; n++) {
+            var i = triples[n][0] | 0, j = triples[n][1] | 0;
+            var order = triples[n][2] | 0;
+            if (order < 1 || order > 3) continue;
+            if (!atoms[i] || !atoms[j]) continue;
+            var at = (atoms[i].bonds || []).indexOf(j);
+            var back = (atoms[j].bonds || []).indexOf(i);
+            if (at < 0 || back < 0) continue;
+            atoms[i].bondOrder = atoms[i].bondOrder || [];
+            atoms[j].bondOrder = atoms[j].bondOrder || [];
+            if (atoms[i].bondOrder[at] !== order) changed++;
+            atoms[i].bondOrder[at] = order;
+            atoms[j].bondOrder[back] = order;
+        }
+        if (changed) {
+            invalidateGeometry(viewer);
+            try { viewer.render(); } catch (e) {}
+        }
+        return changed;
+    }
+
+    function editBond(scopeKey, first, second, connect) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return {ok: false, error: 'no viewer'};
+        var atoms = getAtoms(viewer);
+        var i = first | 0, j = second | 0;
+        if (i === j || !atoms[i] || !atoms[j]) {
+            return {ok: false, error: 'pick two different atoms'};
+        }
+        var linked = (atoms[i].bonds || []).indexOf(j) >= 0;
+        if (connect && linked) return {ok: true, changed: false, bonded: true};
+        if (!connect && !linked) return {ok: true, changed: false, bonded: false};
+
+        function connectOne(a, b) {
+            atoms[a].bonds = atoms[a].bonds || [];
+            atoms[a].bondOrder = atoms[a].bondOrder || [];
+            atoms[a].bonds.push(b);
+            atoms[a].bondOrder.push(1);
+        }
+        function disconnectOne(a, b) {
+            var list = atoms[a].bonds || [];
+            var at = list.indexOf(b);
+            if (at < 0) return;
+            list.splice(at, 1);
+            if (atoms[a].bondOrder) atoms[a].bondOrder.splice(at, 1);
+        }
+        snapshotForUndo(scopeKey);
+        if (connect) { connectOne(i, j); connectOne(j, i); }
+        else { disconnectOne(i, j); disconnectOne(j, i); }
+
+        invalidateGeometry(viewer);
+        try { viewer.render(); } catch (e) {}
+        redrawHighlights(scopeKey);
+        pushXyzToPython(scopeKey, 'drag-end');
+        return {ok: true, changed: true, bonded: !!connect,
+                distance: distV(atoms[i], atoms[j])};
+    }
+
+    function bondsOf(scopeKey, index) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return [];
+        var atoms = getAtoms(viewer);
+        var atom = atoms[index | 0];
+        return atom ? (atom.bonds || []).slice() : [];
+    }
+
+    // --- exchanging two ligands -------------------------------------------
+    // Two arrangements of the same ligand set are separate minima on the same
+    // surface, and a steepest-descent relaxation only ever runs downhill: it
+    // cannot cross the barrier between them. Dragging a ligand towards another
+    // vertex and letting go therefore rolls it straight back into the basin it
+    // came from -- for an octahedron the saddle is a Bailar or Ray-Dutt twist,
+    // a long way from either end. So the exchange is performed rather than
+    // attempted: each ligand is rotated about the metal onto the other's
+    // direction, which lands the structure in the other minimum, and the field
+    // is then left to tidy up.
+    function rotationBetween(from, to) {
+        var a = vecNorm(from), b = vecNorm(to);
+        var axis = crossV(a, b);
+        var sine = vecLen(axis);
+        var cosine = a.x*b.x + a.y*b.y + a.z*b.z;
+        if (sine < 1e-8) {
+            if (cosine > 0) return null;              // already aligned
+            // Opposite directions: any perpendicular axis turns one onto the
+            // other, and trans ligands are exactly this case.
+            var seed = Math.abs(a.x) < 0.9 ? {x:1,y:0,z:0} : {x:0,y:1,z:0};
+            axis = vecNorm(crossV(a, seed));
+            return {axis: axis, angle: Math.PI};
+        }
+        return {axis: vecScale(axis, 1 / sine), angle: Math.atan2(sine, cosine)};
+    }
+
+    function exchangeLigands(scopeKey, metalIndex, donorA, donorB) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return {ok: false, error: 'no viewer'};
+        var atoms = getAtoms(viewer);
+        var metal = metalIndex | 0, a = donorA | 0, b = donorB | 0;
+        if (a === b || !atoms[metal] || !atoms[a] || !atoms[b]) {
+            return {ok: false, error: 'pick two ligands of the same metal'};
+        }
+        var adj = bondAdjacency(viewer);
+        var fragA = fragmentFrom(adj, a, metal, a);
+        var fragB = fragmentFrom(adj, b, metal, b);
+        if (fragA.seen[metal] || fragB.seen[metal]) {
+            return {ok: false, error: 'that ligand is part of a ring through the metal'};
+        }
+        if (fragA.seen[b] || fragB.seen[a]) {
+            return {ok: false,
+                    error: 'both donors belong to the same chelate; its arms cannot trade places'};
+        }
+        var centre = {x: atoms[metal].x, y: atoms[metal].y, z: atoms[metal].z};
+        var toA = vecSub(atoms[a], centre);
+        var toB = vecSub(atoms[b], centre);
+        var turnA = rotationBetween(toA, toB);
+        var turnB = rotationBetween(toB, toA);
+        snapshotForUndo(scopeKey);
+        // Rotation about the metal, so each ligand keeps its own bond length
+        // and internal geometry and only changes which direction it points.
+        if (turnA) rotateAtomsAbout(atoms, fragA.atoms, centre, turnA.axis, turnA.angle);
+        if (turnB) rotateAtomsAbout(atoms, fragB.atoms, centre, turnB.axis, turnB.angle);
+
+        // Each ligand keeps the orientation it had about its own bond, which
+        // is the wrong one for its new neighbours -- a bulky ligand landing
+        // where a halide sat can arrive with a substituent inside somebody.
+        // Spinning it about its new metal-donor axis costs nothing chemically
+        // and is the cheapest way to find a landing that is not on top of
+        // anything. An animated swap would be worse than either: both ligands
+        // travelling the same arc in opposite senses collide halfway, whereas
+        // a jump has no half-way at all.
+        var movedSet = {};
+        fragA.atoms.concat(fragB.atoms).forEach(function(i) { movedSet[i] = true; });
+        var others = [];
+        for (var o = 0; o < atoms.length; o++) if (!movedSet[o]) others.push(o);
+
+        function closestContact(indices) {
+            var worst = Infinity;
+            for (var i = 0; i < indices.length; i++) {
+                var p = atoms[indices[i]];
+                for (var j = 0; j < others.length; j++) {
+                    var q = atoms[others[j]];
+                    if (q === atoms[metal]) continue;
+                    var d = distV(p, q);
+                    if (d < worst) worst = d;
+                }
+            }
+            return worst;
+        }
+        function spinForClearance(frag, donor) {
+            var axis = vecNorm(vecSub(atoms[donor], centre));
+            if (vecLen(axis) < 0.5 || frag.length < 2) return;
+            var best = closestContact(frag), bestTurn = 0;
+            var step = Math.PI / 9;   // 20 degrees
+            for (var turn = step; turn < 2 * Math.PI - 1e-9; turn += step) {
+                rotateAtomsAbout(atoms, frag, centre, axis, step);
+                var got = closestContact(frag);
+                if (got > best) { best = got; bestTurn = turn; }
+            }
+            // Back to the start, then on to the best orientation found.
+            rotateAtomsAbout(atoms, frag, centre, axis, step);
+            if (bestTurn) rotateAtomsAbout(atoms, frag, centre, axis, bestTurn);
+        }
+        spinForClearance(fragA.atoms, a);
+        spinForClearance(fragB.atoms, b);
+        var contact = Math.min(closestContact(fragA.atoms), closestContact(fragB.atoms));
+
+        invalidateGeometry(viewer);
+        try { viewer.render(); } catch (e) {}
+        redrawHighlights(scopeKey);
+        // 'drag-end' so the polyhedron works out the vertices afresh from where
+        // the ligands now are.
+        pushXyzToPython(scopeKey, 'drag-end');
+        return {ok: true, moved: fragA.atoms.length + fragB.atoms.length,
+                contact: contact};
     }
 
     // --- live force field -------------------------------------------------
@@ -2008,15 +2673,32 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return !!(state.ffActive && window.__delfinFF &&
                   window._delfinFFByScope && window._delfinFFByScope[state.scopeKey]);
     }
+    function ffApplyFrozen(scopeKey, extraIndices) {
+        var state = getState(scopeKey);
+        if (!ffEnabled(state)) return;
+        var seen = {}, list = [];
+        (state.pinned || []).concat(extraIndices || []).forEach(function(index) {
+            if (seen[index]) return;
+            seen[index] = true;
+            list.push(index);
+        });
+        try { window.__delfinFF.grab(scopeKey, list); } catch (e) {}
+    }
     function ffBeginDrag(scopeKey, targets) {
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
-        try {
-            window.__delfinFF.grab(scopeKey, ffIndicesOf(viewer, targets));
-            state.ffFrameMs = 16;
-        } catch (e) {}
+        ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets));
+        state.ffFrameMs = 16;
+    }
+    function unpinAll(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.pinned || !state.pinned.length) return false;
+        state.pinned = [];
+        ffApplyFrozen(scopeKey, []);
+        updateStatus(scopeKey);
+        return true;
     }
     function ffRelaxFrame(scopeKey) {
         var state = getState(scopeKey);
@@ -2029,6 +2711,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 scopeKey, ffReadPositions(viewer), state.ffFrameMs || 16);
             if (!out) return false;
             ffWritePositions(viewer, out);
+            // Values held exactly are restored after the field has had its
+            // say, so the coordinate is met to the digit while everything
+            // else arranges itself around it.
+            applyFixedInternals(scopeKey);
         } catch (e) { return false; }
         // The budget the engine adapts to is a *full frame*: 3Dmol's own
         // geometry rebuild costs up to 12 ms at 400 atoms and comes out of the
@@ -2056,13 +2742,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (ffRelaxFrame(scopeKey)) {
                 redrawHighlights(scopeKey);
                 var now = nowMs();
-                // Take a snapshot every couple of seconds while the field
-                // runs, so Undo steps back through the relaxation instead of
-                // returning to the geometry from before it was switched on.
-                if (now - (state.autoSnapshot || 0) > 2000) {
-                    state.autoSnapshot = now;
-                    snapshotForUndo(scopeKey);
-                }
+                // The relaxation deliberately takes no snapshots. It used to
+                // take one every two seconds, which filled the 50-slot stack
+                // with relaxation frames in a minute and forty seconds and
+                // evicted every real operation from it: Undo then stepped back
+                // through the optimisation instead of taking back the angle
+                // that had just been set. Undo answers for what the user did,
+                // so only operations push -- Set, Hold, a bond edit, a swap, a
+                // drag, and switching the field on.
                 // The coordinate box follows at a readable rate, not per frame:
                 // each push is a widget round trip.
                 if (now - (state.autoPushed || 0) > 500) {
@@ -2082,7 +2769,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         snapshotForUndo(scopeKey);
         state.autoOpt = true;
         state.autoPushed = nowMs();
-        state.autoSnapshot = nowMs();
         autoOptimizeTick(scopeKey);
         updateStatus(scopeKey);
         return true;
@@ -2116,10 +2802,84 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return state.ffStrength;
     }
 
-    function ffEndDrag(scopeKey) {
+    function ffEndDrag(scopeKey, heldSerials) {
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
-        try { window.__delfinFF.release(scopeKey); } catch (e) {}
+        // Off by choice: placing an atom somewhere and having it stay there is
+        // sometimes exactly what is wanted, even though the geometry is then
+        // strained. Releasing the atom would not be enough -- with the field
+        // running, it would simply be relaxed back, which made the switch look
+        // like it did nothing. The placed atoms stay frozen instead, and the
+        // rest of the molecule goes on settling around them.
+        if (state.settleOnRelease === false) {
+            var viewer = getViewer(scopeKey);
+            var held = heldSerials || [];
+            if (viewer && held.length) {
+                var pinned = state.pinned || [];
+                ffIndicesOf(viewer, held).forEach(function(index) {
+                    if (pinned.indexOf(index) < 0) pinned.push(index);
+                });
+                state.pinned = pinned;
+            }
+            ffApplyFrozen(scopeKey, []);
+            updateStatus(scopeKey);
+            pushXyzToPython(scopeKey, 'drag-end');
+            return;
+        }
+        ffApplyFrozen(scopeKey, []);
+        // Letting go frees the atom that was held, and the structure settles
+        // around its new position instead of keeping the strain the drag put
+        // in. Without this the geometry that reaches the coordinate box -- and
+        // from there the calculation -- is wherever the cursor happened to
+        // stop: measured 176 kcal/mol above what settling gives.
+        settleAfterDrag(scopeKey);
+    }
+
+    function setSettleOnRelease(scopeKey, enabled) {
+        var state = getState(scopeKey);
+        state.settleOnRelease = !!enabled;
+        if (!state.settleOnRelease) {
+            stopSettling(scopeKey);
+        } else {
+            // Switching settling back on means nothing is being held any more.
+            unpinAll(scopeKey);
+        }
+        return state.settleOnRelease;
+    }
+
+    function stopSettling(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.settleRaf) return;
+        try { window.cancelAnimationFrame(state.settleRaf); } catch (e) {}
+        state.settleRaf = null;
+    }
+
+    var SETTLE_MAX_FRAMES = 240;
+    function settleAfterDrag(scopeKey) {
+        var state = getState(scopeKey);
+        // The continuous optimiser is already doing exactly this.
+        if (state.autoOpt) return;
+        if (state.settleRaf) {
+            try { window.cancelAnimationFrame(state.settleRaf); } catch (e) {}
+        }
+        state.settleFrames = 0;
+        var tick = function() {
+            state.settleRaf = null;
+            if (!ffEnabled(state) || state.drag) {
+                pushXyzToPython(scopeKey, 'drag-end');
+                return;
+            }
+            var moved = ffRelaxFrame(scopeKey);
+            redrawHighlights(scopeKey);
+            var stats = null;
+            try { stats = window.__delfinFF.stats(scopeKey); } catch (e) {}
+            state.settleFrames++;
+            var done = !moved || (stats && (stats.converged || stats.stalled)) ||
+                       state.settleFrames >= SETTLE_MAX_FRAMES;
+            if (done) { pushXyzToPython(scopeKey, 'drag-end'); return; }
+            state.settleRaf = window.requestAnimationFrame(tick);
+        };
+        state.settleRaf = window.requestAnimationFrame(tick);
     }
     function nowMs() {
         return (window.performance && typeof window.performance.now === 'function')
@@ -2223,6 +2983,45 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var x = e.clientX - rect.left, y = e.clientY - rect.top;
             var atom = raycastAtom(scopeKey, e.clientX, e.clientY);
 
+            if (state.mode === 'draw') {
+                if (e.button === 2) {
+                    // The right button takes things away: an atom, or the
+                    // bond under the cursor. On empty space it still belongs
+                    // to the viewer, so the scene can be turned and panned
+                    // without leaving the mode.
+                    var view = getViewer(scopeKey);
+                    if (!view) return;
+                    var all = getAtoms(view);
+                    if (atom) {
+                        var which = all.indexOf(atom);
+                        if (which < 0) return;
+                        e.preventDefault(); e.stopPropagation();
+                        pushCommandToPython(scopeKey, 'delatoms', String(which));
+                        return;
+                    }
+                    var stick = raycastBond(scopeKey, e.clientX, e.clientY);
+                    if (!stick) return;
+                    e.preventDefault(); e.stopPropagation();
+                    pushCommandToPython(scopeKey, 'unbond',
+                        stick[0] + ',' + stick[1]);
+                    return;
+                }
+                if (e.button !== 0) return;
+                e.preventDefault(); e.stopPropagation();
+                state.drag = {
+                    kind: 'draw',
+                    anchor: atom ? atom.serial : null,
+                    // A tap on a stick retypes that bond, which is how the
+                    // hydrogens and the length follow from single, double or
+                    // triple without having to redraw anything.
+                    bond: atom ? null : raycastBond(scopeKey, e.clientX, e.clientY),
+                    startX: e.clientX, startY: e.clientY,
+                    lastX: e.clientX, lastY: e.clientY,
+                    movedEnough: false
+                };
+                return;
+            }
+
             if (state.mode === 'manipulate') {
                 if (e.button === 2) {
                     // Pivot picking is off while the field runs -- the right
@@ -2266,6 +3065,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                         lastX: e.clientX, lastY: e.clientY,
                         movedEnough: false, snapshotted: false
                     };
+                    stopSettling(scopeKey);
                     ffBeginDrag(scopeKey, state.drag.targets);
                     return;
                 }
@@ -2308,7 +3108,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     kind: 'maybe-rect',
                     startX: e.clientX, startY: e.clientY,
                     origX: x, origY: y,
-                    additive: !!(e.ctrlKey || e.metaKey),
+                    additive: true,
                     movedEnough: false,
                     atomRef: atom
                 };
@@ -2318,7 +3118,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (state._globalBound) return;
         state._globalBound = true;
 
-        window.addEventListener('mousemove', function(e) {
+        on(window, 'mousemove', function(e) {
             var state2 = window._submitManipStateByScope[scopeKey];
             if (!state2 || !state2.drag) return;
             var d = state2.drag;
@@ -2360,16 +3160,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }, true);
 
-        window.addEventListener('mouseup', function(e) {
+        on(window, 'mouseup', function(e) {
             var state2 = window._submitManipStateByScope[scopeKey];
             if (!state2 || !state2.drag) return;
             var d = state2.drag;
             state2.drag = null;
             if (d.kind === 'translate' || d.kind === 'rotate') {
-                ffEndDrag(scopeKey);
+                ffEndDrag(scopeKey, d.targets);
                 if (d.movedEnough) {
-                    pushXyzToPython(scopeKey);
+                    pushXyzToPython(scopeKey, 'drag-end');
                 }
+            } else if (d.kind === 'draw') {
+                finishDraw(scopeKey, d, e.clientX, e.clientY);
             } else if (d.kind === 'maybe-rect') {
                 if (d.movedEnough) {
                     // Use client (viewport) coords for hit-test — robust to
@@ -2426,6 +3228,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             // on empty space is forwarded so the camera still turns.
             state.overlay.style.pointerEvents = 'auto';
             state.overlay.style.cursor = 'move';
+        } else if (state.mode === 'draw') {
+            // Every left press is a gesture, including one on empty space --
+            // that is where a new atom goes. The right button is forwarded, so
+            // the scene can still be turned without leaving the mode.
+            state.overlay.style.pointerEvents = 'auto';
+            state.overlay.style.cursor = 'crosshair';
         }
     }
 
@@ -2445,6 +3253,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         // Overlay is attached fresh per render (old one is gone with the HTML)
         state.overlay = null;
+        state.energyBadge = null;
+        state.readoutFor = null;
         state.rect = null;
         state.drag = null;
         // The parameters were assigned for the geometry that just went away.
@@ -2453,6 +3263,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.autoOpt = false;
         state.autoRaf = null;
+        if (state.settleRaf) {
+            try { window.cancelAnimationFrame(state.settleRaf); } catch (e) {}
+        }
+        state.settleRaf = null;
+        state.pinned = [];
+        state.fixedInternals = [];
         state.ffActive = false;
         state.ffInfo = null;
         state.measureBox = null;
@@ -2464,7 +3280,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
     function setMode(scopeKey, mode) {
         var state = getState(scopeKey);
-        state.mode = (mode === 'select' || mode === 'manipulate') ? mode : 'off';
+        state.mode = (mode === 'select' || mode === 'manipulate' || mode === 'draw')
+            ? mode : 'off';
         widenSlabForEditing(scopeKey, state.mode !== 'off');
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
@@ -2476,17 +3293,177 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
     }
 
+    // --- Draw mode ------------------------------------------------------
+    // What the browser contributes is where the user pointed; what an atom is
+    // and how many hydrogens it needs is decided in Python, where RDKit's
+    // valences and covalent radii are. So every gesture here ends as one
+    // command, and the structure comes back rendered.
+    function setDrawElement(scopeKey, element) {
+        var state = getState(scopeKey);
+        state.drawElement = String(element || 'C');
+        updateStatus(scopeKey);
+        return state.drawElement;
+    }
+    function setDrawOrder(scopeKey, order) {
+        var state = getState(scopeKey);
+        var value = parseInt(order, 10);
+        state.drawOrder = (value >= 1 && value <= 3) ? value : 1;
+        updateStatus(scopeKey);
+        return state.drawOrder;
+    }
+
+    // A world point under the cursor, in the plane through `anchor` (or the
+    // model's centre) that faces the camera. Depth cannot be read back from a
+    // click, so it is borrowed from something already in the scene -- which is
+    // what makes a placed atom land beside the molecule rather than behind it.
+    function screenToWorld(scopeKey, clientX, clientY, anchor) {
+        var viewer = getViewer(scopeKey);
+        var state = getState(scopeKey);
+        if (!viewer || !state.canvas) return null;
+        var rect = state.canvas.getBoundingClientRect();
+        var basis = getCameraBasis(viewer);
+        var centre = anchor;
+        if (!centre) {
+            var atoms = getAtoms(viewer);
+            if (atoms.length) {
+                var sx = 0, sy = 0, sz = 0;
+                for (var i = 0; i < atoms.length; i++) {
+                    sx += atoms[i].x; sy += atoms[i].y; sz += atoms[i].z;
+                }
+                centre = {x: sx / atoms.length, y: sy / atoms.length,
+                          z: sz / atoms.length};
+            } else {
+                centre = {x: 0, y: 0, z: 0};
+            }
+        }
+        var here = projectWithDepth(viewer, state.canvas, centre);
+        if (!here) return null;
+
+        // Calibrate against the projection itself rather than working the
+        // scale out from the camera. getPixelToWorld is derived from the
+        // field of view and the camera distance, and it came out 1.254 times
+        // too large here -- the model group carries a scale of its own, so an
+        // atom placed by that arithmetic landed a quarter of the way further
+        // out than the cursor, and further the further from the centre it
+        // was. Projecting one unit along each screen axis measures whatever
+        // the transform actually is, including anything analysis would miss.
+        var probe = function(direction) {
+            var moved = projectWithDepth(viewer, state.canvas, {
+                x: centre.x + direction.x,
+                y: centre.y + direction.y,
+                z: centre.z + direction.z
+            });
+            return moved ? {x: moved.x - here.x, y: moved.y - here.y} : null;
+        };
+        var alongRight = probe(basis.right);
+        var alongUp = probe(basis.up);
+        if (!alongRight || !alongUp) return null;
+        var det = alongRight.x * alongUp.y - alongRight.y * alongUp.x;
+        if (!isFinite(det) || Math.abs(det) < 1e-9) return null;
+
+        var px = (clientX - rect.left) - here.x;
+        var py = (clientY - rect.top) - here.y;
+        // Solve px,py = a * alongRight + b * alongUp for the two world steps.
+        var a = (px * alongUp.y - py * alongUp.x) / det;
+        var b = (alongRight.x * py - alongRight.y * px) / det;
+        return {
+            x: centre.x + basis.right.x * a + basis.up.x * b,
+            y: centre.y + basis.right.y * a + basis.up.y * b,
+            z: centre.z + basis.right.z * a + basis.up.z * b
+        };
+    }
+
+    function finishDraw(scopeKey, drag, clientX, clientY) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return;
+        var element = state.drawElement || 'C';
+        // Drawing always makes a single bond. Anything else is reached by
+        // tapping the stick afterwards, where it can be seen.
+        var order = 1;
+        var target = raycastAtom(scopeKey, clientX, clientY);
+        var atoms = getAtoms(viewer);
+        var anchorAtom = drag.anchor != null
+            ? getAtomBySerial(viewer, drag.anchor) : null;
+
+        if (!anchorAtom && drag.bond && !drag.movedEnough) {
+            // Tapping a stick steps it on: single, double, triple, single.
+            // There is nothing to choose in advance -- a bond that is drawn is
+            // single, and what it should be is decided by looking at it.
+            pushCommandToPython(scopeKey, 'bondcycle',
+                drag.bond[0] + ',' + drag.bond[1]);
+            return;
+        }
+        if (!anchorAtom) {
+            // Empty space: put an atom down where the cursor is.
+            var at = screenToWorld(scopeKey, clientX, clientY, null);
+            if (!at) return;
+            pushCommandToPython(scopeKey, 'addatom',
+                element + ',' + at.x.toFixed(4) + ',' + at.y.toFixed(4)
+                + ',' + at.z.toFixed(4));
+            return;
+        }
+        var anchorIndex = atoms.indexOf(anchorAtom);
+        if (anchorIndex < 0) return;
+        if (!drag.movedEnough) {
+            // A tap on an atom retypes it.
+            pushCommandToPython(scopeKey, 'setelement',
+                anchorIndex + ',' + element);
+            return;
+        }
+        if (target && target !== anchorAtom) {
+            // Dragged onto another atom: bond the two at the chosen order.
+            var other = atoms.indexOf(target);
+            if (other < 0) return;
+            pushCommandToPython(scopeKey, 'bondorder',
+                anchorIndex + ',' + other + ',' + order);
+            return;
+        }
+        // Dragged into space: grow a new atom that way.
+        var to = screenToWorld(scopeKey, clientX, clientY, anchorAtom);
+        if (!to) return;
+        var dx = to.x - anchorAtom.x, dy = to.y - anchorAtom.y,
+            dz = to.z - anchorAtom.z;
+        pushCommandToPython(scopeKey, 'grow',
+            anchorIndex + ',' + element + ',' + order + ','
+            + dx.toFixed(4) + ',' + dy.toFixed(4) + ',' + dz.toFixed(4));
+    }
+
+
+    // Drop the selection but keep pivot and held atoms. Used after a value has
+    // been set: leaving the picks standing meant the next atom clicked was
+    // added to them, so three atoms became four and the next constraint was
+    // built from the wrong set instead of a fresh one.
+    function clearSelection(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.picks.length) return false;
+        state.pickedAsBond = false;
+        state.picks = [];
+        redrawHighlights(scopeKey);
+        return true;
+    }
 
     function clearPicks(scopeKey) {
         var state = getState(scopeKey);
         state.picks = [];
+        state.pickedAsBond = false;
         state.pivot = null;
+        unpinAll(scopeKey);
         redrawHighlights(scopeKey);
     }
 
     function undo(scopeKey) {
         var state = getState(scopeKey);
-        if (!state.undo.length) return;
+        if (!state.undo.length) {
+            // A snapshot of coordinates cannot bring back an atom that was
+            // deleted or take away one that was placed, so structural edits
+            // keep their own stack on the Python side. Every one of them
+            // re-renders, which clears this stack -- so an empty stack here
+            // means the next thing to undo is a structural edit, and the
+            // order stays right without either side having to keep a clock.
+            pushCommandToPython(scopeKey, 'undo', 'structure');
+            return;
+        }
         var snap = state.undo.pop();
         restoreFromSnapshot(scopeKey, snap);
         redrawHighlights(scopeKey);
@@ -2499,7 +3476,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // window catches the event earlier and lets us stop the patch.
     if (!window.__delfinSubmitManipWindowBound) {
         window.__delfinSubmitManipWindowBound = true;
-        window.addEventListener('mousedown', function(e) {
+        on(window, 'mousedown', function(e) {
             var states = window._submitManipStateByScope || {};
             for (var k in states) {
                 var s = states[k];
@@ -2536,7 +3513,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }, true);
         // Suppress context menu anywhere inside a manipulate-active viewer.
-        window.addEventListener('contextmenu', function(e) {
+        on(window, 'contextmenu', function(e) {
             var states = window._submitManipStateByScope || {};
             for (var k in states) {
                 var s = states[k];
@@ -2563,21 +3540,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 if (s.mode === 'select') setOverlayInteractive(k);
             });
         }
-        window.addEventListener('keydown', function(e) {
+        on(window, 'keydown', function(e) {
             if (e.key === 'Shift') { propagateShift(true); }
             var key = e.key || '';
             if ((e.ctrlKey || e.metaKey) && (key === 'z' || key === 'Z') && !e.shiftKey) {
                 // Ctrl-Z belongs to whatever the user is typing in. Taking it
                 // globally meant that undoing a typo in the coordinate box
                 // silently moved atoms instead.
-                var focused = document.activeElement;
-                if (focused) {
-                    var tag = (focused.tagName || '').toUpperCase();
-                    if (tag === 'INPUT' || tag === 'TEXTAREA' ||
-                        focused.isContentEditable) {
-                        return;
-                    }
-                }
+                if (typingInAField()) return;
                 var states = window._submitManipStateByScope || {};
                 var keys = Object.keys(states);
                 for (var i = 0; i < keys.length; i++) {
@@ -2589,11 +3559,50 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     }
                 }
             }
+            if (key === 'Delete' || key === 'Backspace') {
+                if (typingInAField()) return;
+                var scopes = window._submitManipStateByScope || {};
+                var names = Object.keys(scopes);
+                for (var s = 0; s < names.length; s++) {
+                    var scope = scopes[names[s]];
+                    if (!scope || (scope.mode !== 'select'
+                            && scope.mode !== 'manipulate'
+                            && scope.mode !== 'draw')) {
+                        continue;
+                    }
+                    var view = getViewer(names[s]);
+                    if (!view) continue;
+                    if (!scope.picks.length) continue;
+                    var serials = scope.picks.map(function(p) { return p.serial; });
+                    var chosen = ffIndicesOf(view, serials);
+                    if (!chosen.length) continue;
+                    // A stick that was tapped comes off as a bond; atoms
+                    // picked one at a time are deleted. The distinction is how
+                    // the selection was made, not which mode is on, so the key
+                    // means the same thing wherever the user is.
+                    if (!(scope.pickedAsBond && chosen.length === 2
+                          && bondsOf(names[s], chosen[0]).indexOf(chosen[1]) >= 0)) {
+                        e.preventDefault();
+                        pushCommandToPython(names[s], 'delatoms', chosen.join(','));
+                        break;
+                    }
+                    var pair = ffIndicesOf(
+                        view, [scope.picks[0].serial, scope.picks[1].serial]);
+                    if (pair.length !== 2) continue;
+                    // Only a bond that is there can be removed. Without this,
+                    // Delete on two unbonded atoms would report an unbonding
+                    // that never happened.
+                    if (bondsOf(names[s], pair[0]).indexOf(pair[1]) < 0) continue;
+                    e.preventDefault();
+                    pushCommandToPython(names[s], 'unbond', pair[0] + ',' + pair[1]);
+                    break;
+                }
+            }
         }, true);
-        window.addEventListener('keyup', function(e) {
+        on(window, 'keyup', function(e) {
             if (e.key === 'Shift') { propagateShift(false); }
         }, true);
-        window.addEventListener('blur', function() { propagateShift(false); }, true);
+        on(window, 'blur', function() { propagateShift(false); }, true);
     }
 
     // Fullscreen: on toggle, move viewer + toolbar + isomer nav + copy row into
@@ -2686,7 +3695,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             setFsIcon(btn, false);
             resizeScopeViewer(scopeKey);
         }
-        document.addEventListener('click', function(e) {
+        on(document, 'click', function(e) {
             var t = e.target;
             if (!t || !t.closest) return;
             var btn = t.closest('.submit-fullscreen-btn');
@@ -2699,7 +3708,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 enterFullscreen(scopeKey);
             }
         }, true);
-        document.addEventListener('keydown', function(e) {
+        on(document, 'keydown', function(e) {
             if (e.key !== 'Escape') return;
             var keys = Object.keys(window._submitFsByScope || {});
             if (!keys.length) return;
@@ -2732,6 +3741,15 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.ffActive = !!(result && result.ok);
         state.ffInfo = result;
+        // Drawing while the field runs re-renders, and a re-render stops the
+        // loop. The parameters have just been re-assigned for the structure
+        // that includes the new atom, so this is the moment to pick it up
+        // again -- otherwise every atom placed silently switched Dynamik off.
+        if (state.ffActive && window.__delfinResumeAutoOpt) {
+            window.__delfinResumeAutoOpt = false;
+            try { startAutoOptimize(scopeKey); } catch (e) {}
+        }
+        updateEnergyBadge(scopeKey);
         if (state.ffActive && state.ffStrength) {
             setOptimizerStrength(scopeKey, state.ffStrength);
         }
@@ -2739,26 +3757,91 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return result;
     }
 
+    window.__delfinSubmitManipTeardown = function() {
+        for (var i = 0; i < listeners.length; i++) {
+            try {
+                listeners[i][0].removeEventListener(
+                    listeners[i][1], listeners[i][2], listeners[i][3]);
+            } catch (e) {}
+        }
+        listeners.length = 0;
+        var states = window._submitManipStateByScope || {};
+        Object.keys(states).forEach(function(k) {
+            var s = states[k];
+            if (!s) return;
+            if (s.autoRaf) {
+                try { window.cancelAnimationFrame(s.autoRaf); } catch (e) {}
+            }
+            if (s.settleRaf) {
+                try { window.cancelAnimationFrame(s.settleRaf); } catch (e) {}
+            }
+            s.autoOpt = false; s.autoRaf = null; s.settleRaf = null;
+            if (s.canvas && s._canvasClickHandler) {
+                try {
+                    s.canvas.removeEventListener('click', s._canvasClickHandler, true);
+                } catch (e) {}
+            }
+            s._canvasClickHandler = null;
+            // The overlay carries its own listeners; removing the element
+            // takes them with it, and the new closure builds a fresh one.
+            if (s.overlay && s.overlay.parentNode) {
+                try { s.overlay.parentNode.removeChild(s.overlay); } catch (e) {}
+            }
+            s.overlay = null; s.drag = null; s.rect = null; s.energyBadge = null;
+        });
+    };
+
     window.__delfinSubmitManip = {
         onViewerReady: onViewerReady,
         setMode: setMode,
+        setDrawElement: setDrawElement,
+        setDrawOrder: setDrawOrder,
         clear: clearPicks,
+        clearSelection: clearSelection,
         undo: undo,
         setForceField: setForceField,
         readInternal: readInternal,
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
+        setFixedInternals: setFixedInternals,
+        exchangeLigands: exchangeLigands,
+        editBond: editBond,
+        setBondOrders: setBondOrders,
+        bondsOf: bondsOf,
+        setSettleOnRelease: setSettleOnRelease,
+        unpinAll: unpinAll,
         startAutoOptimize: startAutoOptimize,
         stopAutoOptimize: stopAutoOptimize,
         autoOptimizeRunning: autoOptimizeRunning
     };
+
+    // Pick up where the previous version left off: a scope that already has a
+    // viewer gets its overlay and handlers back without waiting for a render.
+    (function() {
+        var states = window._submitManipStateByScope || {};
+        Object.keys(states).forEach(function(k) {
+            var s = states[k];
+            if (s && s.viewerEl) {
+                try { onViewerReady(k, s.viewerEl); } catch (e) {}
+            }
+        });
+    })();
 })();
 """
 
 
 def submit_manip_bootstrap_js():
-    """Return one-time JS that installs window.__delfinSubmitManip helpers."""
-    return SUBMIT_MANIP_BOOTSTRAP_JS
+    """Return the JS that installs ``window.__delfinSubmitManip``.
+
+    The version stamped into it is a hash of the script itself.  It used to be
+    a number to bump by hand, and it was not bumped once across a day of
+    changes -- so an open dashboard kept running the editor it had loaded and
+    every fix shipped in it was invisible, which is the very thing the version
+    was added to prevent.  Deriving it from the content cannot be forgotten:
+    any change to this script is a new version by construction.
+    """
+    stamp = hashlib.sha256(SUBMIT_MANIP_BOOTSTRAP_JS.encode('utf-8')).hexdigest()[:12]
+    return SUBMIT_MANIP_BOOTSTRAP_JS.replace('__DELFIN_MANIP_VERSION__', stamp)
 
 
 # Shared fullscreen support for the ORCA Builder, Calculations Browser, and

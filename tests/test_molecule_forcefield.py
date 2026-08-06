@@ -498,3 +498,538 @@ def test_uff_force_constant_formulas_reproduce_rdkit():
     assert mff._uff_bond_force_constant(carbon['Z1'], carbon['Z1'], r0) == pytest.approx(
         k_bond, rel=1e-3
     )
+
+
+# --------------------------------------------------------------------------
+# coordination polyhedra
+# --------------------------------------------------------------------------
+
+def test_polyhedron_options_follow_the_coordination_number():
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    result = mff.polyhedron_options(perceived, metal)
+    assert result is not None
+    coordination, current, choices = result
+    assert coordination == 4
+    codes = {code for code, _label in choices}
+    assert codes == {'Td', 'sqp_4', 'see_saw'}
+    assert current in codes
+    # Every entry carries a human label, not the internal code.
+    assert all(label and label != code for code, label in choices)
+
+    # A ligand atom is not a metal, and CN outside the catalogue yields nothing.
+    assert mff.polyhedron_options(perceived, 1) is None
+
+
+def test_closest_polyhedron_is_measured_not_assumed():
+    """The CN-based classifier answers what a coordination number *usually* is
+    -- always tetrahedral for CN=4 -- so a square-planar complex was labelled
+    tetrahedral. The answer has to come from the angles, and must not depend on
+    which way round the molecule happens to lie."""
+    import numpy as np
+
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair if metal in pair and j != metal
+    )
+    candidates = ['Td', 'sqp_4', 'see_saw']
+    upright = mff._closest_polyhedron(perceived, donors, metal, candidates)
+    assert upright == 'Td'   # the test complex is built tetrahedral
+
+    # Same molecule, rotated: the answer may not change.
+    angle = 0.7
+    rotation = np.array([
+        [math.cos(angle), -math.sin(angle), 0.0],
+        [math.sin(angle), math.cos(angle), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    spun = mff.perceive_molecule(xyz)
+    spun.coords = [tuple(rotation @ np.array(c)) for c in spun.coords]
+    assert mff._closest_polyhedron(spun, donors, metal, candidates) == upright
+
+
+def test_forcing_a_polyhedron_sets_the_ideal_angles_at_the_metal():
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    plain = mff.export_forcefield_terms(xyz, perceived=perceived)
+    forced = mff.export_forcefield_terms(
+        xyz, perceived=perceived, polyhedron={'metal': metal, 'geometry': 'sqp_4'},
+    )
+    assert plain['polyhedron'] is None
+    assert forced['polyhedron'] == {'metal': metal, 'geometry': 'sqp_4'}
+
+    def metal_angles(payload):
+        return sorted(
+            round(a['theta0'])
+            for a in payload['angles'] if a['j'] == metal
+        )
+
+    # Square planar means four 90 deg and two 180 deg, whatever the input was.
+    assert metal_angles(forced) == [90, 90, 90, 90, 180, 180]
+    assert metal_angles(plain) != metal_angles(forced)
+
+    # It stays a pull: ordinary harmonic terms with the same force constants,
+    # so a chelate that cannot reach the ideal settles at a compromise.
+    forced_metal = [a for a in forced['angles'] if a['j'] == metal]
+    plain_metal = [a for a in plain['angles'] if a['j'] == metal]
+    assert len(forced_metal) == len(plain_metal)
+    assert all(a['kt'] > 0 for a in forced_metal)
+    assert any('polyhedron' in w for w in forced['warnings'])
+
+
+def test_the_vertex_assignment_can_be_overridden_to_exchange_ligands():
+    """Two ligands could never be swapped: the assignment was recomputed on
+    every export and always chose the nearest match, which is the arrangement
+    the user is trying to leave. It is reportable and overridable now.
+
+    Measured on a Ni complex: with the assignment as found, the donor that was
+    nearly trans to another stays there (168 deg). Exchanging two entries makes
+    the field pull them onto each other's vertex instead -- the pair opens from
+    160 to 108 degrees while the other closes from 94 to 136 -- and the worst
+    ligand bond changes 0.1417 A against 0.1379 for the unexchanged pull."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    assignment = mff.polyhedron_assignment(perceived, metal, 'sqp_4')
+    assert len(assignment) == 4
+    assert sorted(assignment.values()) == [0, 1, 2, 3]
+
+    donors = sorted(assignment)
+    swapped = dict(assignment)
+    swapped[donors[0]], swapped[donors[1]] = assignment[donors[1]], assignment[donors[0]]
+
+    def targets(payload):
+        return {
+            (a['i'], a['k']): round(a['theta0'])
+            for a in payload['angles'] if a['j'] == metal
+        }
+
+    plain = mff.export_forcefield_terms(
+        xyz, perceived=perceived,
+        polyhedron={'metal': metal, 'geometry': 'sqp_4', 'assignment': assignment},
+    )
+    exchanged = mff.export_forcefield_terms(
+        xyz, perceived=perceived,
+        polyhedron={'metal': metal, 'geometry': 'sqp_4', 'assignment': swapped},
+    )
+    # The same set of ideal angles, handed to different pairs.
+    assert sorted(targets(plain).values()) == sorted(targets(exchanged).values())
+    assert targets(plain) != targets(exchanged)
+
+
+def test_the_exporter_reads_coordinates_from_the_text_it_is_given():
+    """A perception handed in is cached deliberately: the bonding must not be
+    re-read from a geometry the user has been dragging, or a twisted double
+    bond stops being one. Its coordinates are another matter — taking those
+    from the cache meant every geometry-derived value came from the structure
+    as it was when the field was first switched on, so a ligand dragged to
+    another vertex was assigned the vertex it used to be nearest. That is why
+    exchanging two ligands by dragging never took."""
+    import numpy as np
+
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    donors = sorted(
+        j for pair in perceived.bonds for j in pair if metal in pair and j != metal
+    )
+
+    coords = [list(c) for c in perceived.coords]
+    first, second = np.array(coords[donors[0]]), np.array(coords[donors[1]])
+    coords[donors[0]] = list(first + (second - first) * 0.85)
+    coords[donors[1]] = list(second + (first - second) * 0.85)
+    moved = '\n'.join(
+        [str(perceived.n_atoms), 'moved']
+        + [
+            f'{s} {c[0]:.6f} {c[1]:.6f} {c[2]:.6f}'
+            for s, c in zip(perceived.symbols, coords)
+        ]
+    )
+
+    def targets(text):
+        payload = mff.export_forcefield_terms(
+            text, perceived=perceived,
+            polyhedron={'metal': metal, 'geometry': 'sqp_4'},
+        )
+        return {
+            (a['i'], a['k']): round(a['theta0'])
+            for a in payload['angles'] if a['j'] == metal
+        }
+
+    # Same cached perception, different coordinates: the vertices must follow.
+    assert targets(xyz) != targets(moved)
+    # The bonding still comes from the cache, not from the dragged geometry.
+    assert mff.export_forcefield_terms(moved, perceived=perceived)['n_atoms'] == \
+        perceived.n_atoms
+
+
+def _two_benzenes_xyz():
+    """Two benzene rings 5 A apart, so nothing bonds them yet."""
+    ring = [
+        ('C', 1.3970, 0.0000), ('C', 0.6985, 1.2098), ('C', -0.6985, 1.2098),
+        ('C', -1.3970, 0.0000), ('C', -0.6985, -1.2098), ('C', 0.6985, -1.2098),
+        ('H', 2.4810, 0.0000), ('H', 1.2405, 2.1486), ('H', -1.2405, 2.1486),
+        ('H', -2.4810, 0.0000), ('H', -1.2405, -2.1486), ('H', 1.2405, -2.1486),
+    ]
+    rows = [f'{s} {x:.4f} {y:.4f} {z:.4f}'
+            for z in (0.0, 5.0) for s, x, y in ring]
+    return '24\ntwo rings\n' + '\n'.join(rows) + '\n'
+
+
+def test_a_drawn_bond_costs_only_the_atoms_it_touches_their_double_bond():
+    """Repairing the valence locally, instead of dropping every bond order.
+
+    Drawing a bond onto an aromatic carbon takes it to five bonds, which RDKit
+    rejects outright. The only repair available used to be treating *every*
+    bond in the molecule as single, so one drawn bond cost every other atom its
+    hybridisation: a ring at the far end of the molecule, which the edit never
+    touched, came back sp3 with 1.514 A bonds.
+
+    Now the multiple bond at the over-valent atom alone is lowered. The ring
+    that was not touched keeps its own double bonds."""
+    xyz = _two_benzenes_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    assert mff.apply_bond_edits(perceived, {(0, 12): True}) is True
+
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+    terms = {(b['i'], b['j']): b for b in payload['bonds']}
+
+    # The drawn bond is an sp3 C-C bond, not the 5.0 A it was drawn at.
+    assert 1.45 < terms[(0, 12)]['r0'] < 1.58, terms[(0, 12)]
+    # And the second ring is still made of sp2 carbons: a conjugated single
+    # bond at 1.486 A or a double bond at 1.33 A, never the 1.514 A that an
+    # all-single fallback would have given it.
+    for pair in ((13, 14), (14, 15), (15, 16)):
+        assert terms[pair]['r0'] < 1.50, (pair, terms[pair])
+
+
+def test_an_unedited_molecule_is_left_exactly_as_perceived():
+    """The rebuild must be reachable only by an edit that changes something.
+
+    A partly rebuilt typing molecule would hand back silently wrong parameters
+    for every atom, which is worse than the defect it fixes -- so an empty edit
+    set, or one that asks for bonds that are already there, must be a no-op."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    before = mff.export_forcefield_terms(xyz, perceived=perceived)
+
+    assert mff.apply_bond_edits(perceived, {}) is False
+    existing = dict.fromkeys(perceived.bonds, True)
+    assert mff.apply_bond_edits(perceived, existing) is False
+
+    after = mff.export_forcefield_terms(xyz, perceived=perceived)
+    assert before['bonds'] == after['bonds']
+    assert before['angles'] == after['angles']
+    assert before['torsions'] == after['torsions']
+    assert before['vdw'] == after['vdw']
+
+
+def _pyramidal_methyl_xyz():
+    """A three-coordinate carbon sitting 107 deg off its own C3 axis."""
+    ang, r = math.radians(107.0), 1.09
+    rows = ['C 0.000000 0.000000 0.000000']
+    for k in range(3):
+        phi = 2 * math.pi * k / 3
+        rows.append('H %.6f %.6f %.6f' % (
+            r * math.sin(ang) * math.cos(phi),
+            r * math.sin(ang) * math.sin(phi),
+            r * math.cos(ang)))
+    return '4\npyramidal CH3\n' + '\n'.join(rows) + '\n'
+
+
+def test_a_forced_hybridisation_reaches_the_angles_and_the_shape():
+    """Bond orders are perceived from the geometry, and a double bond that is
+    not seen leaves its carbon typed sp3 -- angles at 109.5 degrees, and a
+    centre that puckers where it should stay flat.
+
+    RDKit's UFF typer reads the atom's hybridisation directly, so setting it
+    is enough. Three angles of 120 degrees at a three-coordinate centre *is*
+    trigonal planar, which is what makes this work without an inversion term:
+    driven through the shipped browser engine, the same carbon relaxes to
+    60.0 degrees out of plane when typed automatically and 0.4 degrees when
+    forced to sp2."""
+    xyz = _pyramidal_methyl_xyz()
+
+    perceived = mff.perceive_molecule(xyz)
+    auto = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+    assert mff.perceived_hybridisation_of(perceived, 0) == 'sp3'
+    assert [round(a['theta0'], 1) for a in auto['angles']] == [109.5] * 3
+
+    forced = mff.perceive_molecule(xyz)
+    assert mff.apply_hybridisation_overrides(forced, {0: 'sp2'}) == 1
+    payload = mff.export_forcefield_terms(xyz, perceived=forced, method='uff')
+    assert [round(a['theta0'], 1) for a in payload['angles']] == [120.0] * 3
+    # The C-H bond takes the sp2 length too, not only the angles.
+    assert payload['bonds'][0]['r0'] < auto['bonds'][0]['r0']
+    # And the offer can still say what 'automatic' would have meant.
+    assert mff.perceived_hybridisation_of(forced, 0) == 'sp3'
+
+
+def test_forcing_a_hybridisation_is_bounded_by_what_it_can_mean():
+    """Nonsense must be ignored rather than raise: the index comes from a
+    picked atom and the name from a dropdown, but neither is worth trusting
+    once a structure has been reloaded underneath them."""
+    xyz = _pyramidal_methyl_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    assert mff.apply_hybridisation_overrides(perceived, {}) == 0
+    assert mff.apply_hybridisation_overrides(perceived, {99: 'sp2'}) == 0
+    assert mff.apply_hybridisation_overrides(perceived, {0: 'sp4'}) == 0
+    assert mff.apply_hybridisation_overrides(perceived, {'x': 'sp2'}) == 0
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived, method='uff')
+    assert [round(a['theta0'], 1) for a in payload['angles']] == [109.5] * 3
+
+
+def test_an_override_outlives_a_bond_edit_only_if_it_is_applied_after_one():
+    """Rebuilding the typing molecule sanitizes it, and sanitisation
+    re-perceives hybridisation -- so a bond edit silently wipes an override
+    applied before it. The order the tab uses is the only correct one."""
+    xyz = _two_benzenes_xyz()
+
+    wrong = mff.perceive_molecule(xyz)
+    mff.apply_hybridisation_overrides(wrong, {3: 'sp3'})
+    mff.apply_bond_edits(wrong, {(0, 12): True})
+    assert mff._hybridisation(wrong.typing_mol, 3) != 'sp3'
+
+    right = mff.perceive_molecule(xyz)
+    mff.apply_bond_edits(right, {(0, 12): True})
+    mff.apply_hybridisation_overrides(right, {3: 'sp3'})
+    assert mff._hybridisation(right.typing_mol, 3) == 'sp3'
+
+
+def test_a_forced_hybridisation_reaches_the_angles_at_a_metal_too():
+    """Forcing the hybridisation of the atom that coordinates changed nothing.
+
+    Two reasons, both measured. RDKit picks the UFF type of phosphorus and
+    silicon from valence and charge rather than hybridisation -- P stays at
+    93.8 degrees and Si at 109.5 whatever it is set to, while C, N, O and S
+    all follow. And no angle that touches a metal is typed by RDKit at all;
+    those are restrained to the input geometry. At a donor atom that is every
+    angle holding the ligand against its metal, so on a real Re complex all
+    six angles at the coordinating phosphorus came back byte-identical.
+
+    The angles at an atom whose hybridisation was forced are therefore built
+    from that choice directly. On the same complex the nitrosyl nitrogen,
+    bent at 120.2 degrees, relaxes to 179.4 degrees when forced to sp and
+    stays at 120.6 when forced to sp2 -- driven through the shipped browser
+    engine."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    donor = sorted(j for pair in perceived.bonds for j in pair
+                   if metal in pair and j != metal)[0]
+
+    auto = mff.export_forcefield_terms(xyz, perceived=perceived)
+    at_donor = [a for a in auto['angles'] if a['j'] == donor]
+    assert any(metal in (a['i'], a['k']) for a in at_donor), 'no angle at the metal'
+
+    forced = mff.perceive_molecule(xyz)
+    assert mff.apply_hybridisation_overrides(forced, {donor: 'sp2'}) == 1
+    assert forced.forced_hybridisation == {donor: 'sp2'}
+    payload = mff.export_forcefield_terms(xyz, perceived=forced)
+
+    # Every angle at that atom, including the ones to the metal.
+    for angle in payload['angles']:
+        if angle['j'] == donor:
+            assert abs(angle['theta0'] - 120.0) < 0.01, angle
+    # And nothing anywhere else moved.
+    others = lambda p: [a for a in p['angles'] if a['j'] != donor]
+    assert others(auto) == others(payload)
+    # The force-field notes say so rather than leaving it to be discovered.
+    assert any('Hybridisation forced by hand' in w for w in payload['warnings'])
+
+
+def test_a_forced_sp_centre_uses_the_linear_angle_form():
+    """The general cosine expansion diverges as theta0 approaches 180 degrees
+    (C2 = 1/(4 sin^2 theta0)), so a forced sp centre has to take UFF's n = 1
+    form -- which is the whole point of forcing it on a nitrosyl."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    donor = sorted(j for pair in perceived.bonds for j in pair
+                   if perceived.metal_indices[0] in pair
+                   and j != perceived.metal_indices[0])[0]
+    mff.apply_hybridisation_overrides(perceived, {donor: 'sp'})
+    payload = mff.export_forcefield_terms(xyz, perceived=perceived)
+    at_donor = [a for a in payload['angles'] if a['j'] == donor]
+    assert at_donor
+    for angle in at_donor:
+        assert abs(angle['theta0'] - 180.0) < 0.01, angle
+        assert angle['n'] == 1, angle
+
+
+def _sc_amine_arm_xyz():
+    """A scandium with one amine donor whose backbone carbon sits 2.895 A away.
+
+    That is the geometry that made a nine-coordinate scandium out of a
+    six-coordinate one: the carbon is bonded to nothing but its nitrogen and
+    its own chain, and only looks like a donor because a metal's covalent
+    radius is large enough for the geometric cutoff to reach it.
+    """
+    rows = [
+        'Sc   0.0000    0.0000    0.0000',
+        'N    0.0000    0.0000    2.1470',
+        'C    1.4213    0.0000    2.5221',   # 2.895 A from Sc, four bonds already
+        'C    2.2825    0.0000    1.2574',
+        'H    1.6416   -0.8900    3.1116',
+        'H    1.6416    0.8900    3.1116',
+        'H   -0.4808   -0.8328    2.4870',
+        'H   -0.4808    0.8328    2.4870',
+        'H    1.6376    0.0000    0.3787',
+        'H    2.9117   -0.8900    1.2463',
+        'H    2.9117    0.8900    1.2463',
+    ]
+    return f'{len(rows)}\nSc amine arm\n' + '\n'.join(rows) + '\n'
+
+
+def test_a_metal_contact_that_would_give_carbon_five_bonds_is_dropped():
+    """Geometric perception reaches past 2.9 A at a scandium, so the backbone
+    carbons of a triazacyclononane were counted as donors: coordination number
+    9 for what is an octahedron, and only nine-vertex polyhedra offered.
+
+    Carbon is the one element where this is unambiguous -- every real carbon
+    donor stays within four bonds -- so a metal contact that would be its
+    fifth is dropped. Measured on the user's Sc complex: 9 donors become the
+    six that are really there (three O at 2.048 A, three N at 2.147 A), while
+    the three carbons at 2.895-2.898 A go. The Re and Pt structures are
+    untouched."""
+    perceived = mff.perceive_molecule(_sc_amine_arm_xyz())
+    metal = perceived.metal_indices[0]
+    donors = perceived.neighbours()[metal]
+
+    assert donors == [1], 'only the nitrogen is a donor'
+    assert any('five bonds' in w for w in perceived.warnings)
+
+
+def test_the_metal_counts_as_a_partner_for_carbon_except_side_on():
+    """Whether the metal counts as a bonding partner is a real question, and
+    for carbon it has an answer: carbon has no lone pair to donate unless it
+    is a carbene, so an M-C bond is a genuine sigma bond and the metal counts.
+    A methyl ligand is tetrahedral, an N-heterocyclic carbene trigonal planar
+    -- both only because it is counted.
+
+    The exception is a side-on alkene, where both carbons hang off the same
+    metal. That is a three-membered M-C-C ring, visible without touching bond
+    orders, and there the metal is not counted: the carbons come back sp2.
+    """
+    methyl = mff.perceive_molecule(
+        '8\nmethyl\n'
+        'Pt  0.000  0.000  0.000\nCl  2.310  0.000  0.000\n'
+        'Cl -1.155  2.001  0.000\nCl -1.155 -2.001  0.000\n'
+        'C   0.000  0.000  2.080\nH   1.030  0.000  2.440\n'
+        'H  -0.515  0.892  2.440\nH  -0.515 -0.892  2.440\n')
+    assert mff.hybridisation_from_connectivity(methyl)[4] == 'sp3'
+
+    zeise = mff.perceive_molecule(
+        '10\nzeise\n'
+        'Pt  0.000  0.000  0.000\nCl  2.310  0.000  0.000\n'
+        'Cl -1.155  2.001  0.000\nCl -1.155 -2.001  0.000\n'
+        'C   0.000  0.688  2.030\nC   0.000 -0.688  2.030\n'
+        'H   0.930  1.230  2.300\nH  -0.930  1.230  2.300\n'
+        'H   0.930 -1.230  2.300\nH  -0.930 -1.230  2.300\n')
+    derived = mff.hybridisation_from_connectivity(zeise)
+    assert derived[4] == 'sp2' and derived[5] == 'sp2', derived
+
+
+def test_types_are_only_derived_for_carbon():
+    """Everywhere else a lone pair decides and the count cannot see it: N with
+    three partners is pyramidal in an amine and planar in an amide. Guessing
+    there would trade one wrong answer for another."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    derived = mff.hybridisation_from_connectivity(perceived)
+    assert all(perceived.symbols[i] == 'C' for i in derived), derived
+
+    benzene = mff.perceive_molecule(_two_benzenes_xyz())
+    derived = mff.hybridisation_from_connectivity(benzene)
+    assert set(derived.values()) == {'sp2'}
+    assert len(derived) == 12
+    # And it can be narrowed to a selection.
+    assert set(mff.hybridisation_from_connectivity(benzene, [0, 1, 99])) == {0, 1}
+
+
+def _tbp_xyz():
+    """An iron on an ideal trigonal bipyramid, five different donors."""
+    r = 2.30
+    rows = [
+        ('Fe', 0.0, 0.0, 0.0),
+        ('Cl', 0.0, 0.0, r), ('Br', 0.0, 0.0, -r),                # axial
+        ('F', r, 0.0, 0.0),                                        # equatorial
+        ('I', -r / 2, r * math.sqrt(3) / 2, 0.0),
+        ('N', -r / 2, -r * math.sqrt(3) / 2, 0.0),
+        ('H', -r / 2 - 1.0, -r * math.sqrt(3) / 2, 0.0),
+        ('H', -r / 2, -r * math.sqrt(3) / 2 - 1.0, 0.0),
+    ]
+    return f'{len(rows)}\ntbp\n' + '\n'.join(
+        f'{s} {x:.4f} {y:.4f} {z:.4f}' for s, x, y, z in rows) + '\n'
+
+
+def test_only_some_polyhedra_have_anything_to_turn():
+    """Vertices are grouped by the sorted angles from each one to all the
+    others, which does not depend on how the polyhedron is oriented.
+
+    An octahedron, a tetrahedron and a square plane come back as one kind:
+    there is nothing to turn, and which ligand is trans to which is what Swap
+    is for. A trigonal bipyramid comes back as two axial and three equatorial,
+    a square pyramid as one apical and four basal."""
+    assert polyhedron_kinds('tbp', 5) == {'axial': 2, 'equatorial': 3}
+    assert polyhedron_kinds('sqp_5', 5) == {'apical': 1, 'basal': 4}
+    assert polyhedron_kinds('pbp', 7) == {'axial': 2, 'equatorial': 5}
+    for code, cn in (('Oh', 6), ('Td', 4), ('sqp_4', 4), ('trig_prism', 6)):
+        assert polyhedron_kinds(code, cn) == {'all equivalent': cn}, code
+
+
+def polyhedron_kinds(geometry, coordination):
+    classes, labels = mff.polyhedron_vertex_classes(coordination, geometry)
+    return {
+        labels[k]: classes.count(k) for k in sorted(set(classes))
+    }
+
+
+def test_a_trigonal_bipyramid_can_be_built_ten_ways():
+    """Which two of five ligands are axial is a real chemical choice -- they
+    are different molecules, not different views of one -- and matching the
+    polyhedron onto the geometry as it stands only ever finds the nearest.
+
+    Five donors give C(5,2) = 10 arrangements. The first is the one the
+    complex is already in, and each really does put 180 degrees across the
+    pair it names."""
+    xyz = _tbp_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+
+    arrangements = mff.polyhedron_arrangements(perceived, metal, 'tbp')
+    assert len(arrangements) == 10, len(arrangements)
+
+    axial_pairs = set()
+    for mapping in arrangements:
+        angles = mff._polyhedron_target_angles(
+            perceived, perceived.coords, metal, 'tbp', mapping)
+        linear = [pair for pair, value in angles.items() if value > 170.0]
+        assert len(linear) == 1, linear
+        axial_pairs.add(linear[0])
+        described = mff.describe_polyhedron_arrangement(
+            perceived, 'tbp', mapping)
+        assert described.startswith('axial: '), described
+        for index in linear[0]:
+            assert f'{perceived.symbols[index]}{index}' in described
+    # Ten different pairs, not the same one ten times.
+    assert len(axial_pairs) == 10
+    # Best fit first: the complex is built with Cl and Br axial.
+    first = mff.describe_polyhedron_arrangement(perceived, 'tbp', arrangements[0])
+    assert 'Cl1' in first and 'Br2' in first, first
+
+
+def test_turning_an_octahedron_is_a_no_op():
+    """Every vertex is the same, so there is one arrangement and stepping
+    through it would only ever hand back what is already there."""
+    xyz = _zn_ammine_xyz()
+    perceived = mff.perceive_molecule(xyz)
+    metal = perceived.metal_indices[0]
+    assert len(perceived.neighbours()[metal]) == 4
+    assert mff.polyhedron_arrangements(perceived, metal, 'Td') == [{}]

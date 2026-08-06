@@ -660,6 +660,26 @@ def create_tab(ctx):
         layout=widgets.Layout(width='112px', height='30px'),
         disabled=True,
     )
+    from .molecule_builder import DRAW_ELEMENTS
+
+    submit_draw_btn = widgets.ToggleButton(
+        value=False, description='Draw', icon='pencil',
+        button_style='',
+        tooltip=(
+            'Click empty space to place an atom of the chosen element, drag '
+            'from an atom to grow a new one bonded to it, drag onto another '
+            'atom to bond them at the chosen order, tap an atom to change its '
+            'element, and press Delete to remove the selection. Free valences '
+            'are filled with hydrogen. The right button still turns the view.'
+        ),
+        layout=widgets.Layout(width='88px', height='30px'),
+        disabled=True,
+    )
+    submit_element_dd = widgets.Dropdown(
+        options=list(DRAW_ELEMENTS), value='C',
+        layout=widgets.Layout(width='78px', display='none'),
+        disabled=True,
+    )
     submit_manip_clear_btn = widgets.Button(
         description='Clear', button_style='warning',
         tooltip='Clear selection & pivot',
@@ -743,8 +763,113 @@ def create_tab(ctx):
         layout=widgets.Layout(width='200px'),
         disabled=True,
     )
+    submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    submit_pick_sync.add_class('submit-pick-sync')
+    # Keyboard shortcuts for things Python owns. Unbond is not a picture edit:
+    # it changes the topology the force field is built from, so the browser
+    # cannot carry it out alone and has to ask through here.
+    submit_cmd_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    submit_cmd_sync.add_class('submit-cmd-sync')
+    submit_poly_dd = widgets.Dropdown(
+        options=[('— polyhedron —', '')], value='',
+        layout=widgets.Layout(width='190px', display='none'),
+        disabled=True,
+    )
+    submit_poly_turn_btn = widgets.Button(
+        description='Turn', icon='refresh', button_style='',
+        tooltip=(
+            'Step to the next distinct arrangement on this polyhedron: which '
+            'ligands take the axial or apical positions. Only shown where the '
+            'vertices are not all alike -- an octahedron has nothing to turn, '
+            'a trigonal bipyramid has ten arrangements.'
+        ),
+        layout=widgets.Layout(width='78px', height='30px', display='none'),
+        disabled=True,
+    )
+    submit_hyb_dd = widgets.Dropdown(
+        options=[('— hybridisation —', '')], value='',
+        layout=widgets.Layout(width='190px', display='none'),
+        disabled=True,
+    )
+    submit_hyb_auto_btn = widgets.Button(
+        description='Types', icon='magic', button_style='',
+        tooltip=(
+            'Read each carbon\'s hybridisation off how many partners it is '
+            'bonded to: four is tetrahedral, three trigonal planar, two '
+            'linear. Stronger than perception, which goes through bond '
+            'orders and misses a double bond it cannot see in the geometry. '
+            'Applies to the selection, or to every carbon when nothing is '
+            'selected.'
+        ),
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
+    submit_settle_btn = widgets.ToggleButton(
+        value=True, description='Settle', icon='level-down',
+        button_style='info',
+        tooltip=(
+            'When you let go of an atom, let the structure relax around its '
+            'new position instead of keeping the strain of the drag. Switch '
+            'off to leave atoms exactly where you put them.'
+        ),
+        layout=widgets.Layout(width='92px', height='30px'),
+        disabled=True,
+    )
+    submit_swap_btn = widgets.Button(
+        description='Swap', button_style='', icon='exchange',
+        tooltip=(
+            'Exchange the two selected ligands on the polyhedron: they are '
+            'pulled onto each other\'s vertex instead of back to their own.'
+        ),
+        layout=widgets.Layout(width='78px', height='30px', display='none'),
+        disabled=True,
+    )
+    submit_bond_btn = widgets.Button(
+        description='Bond', icon='link', button_style='',
+        tooltip=(
+            'Draw a bond between the two selected atoms. Distance-based '
+            'perception is unreliable in a crowded coordination sphere, and '
+            'the coordination number and the force field both follow from '
+            'these bonds.'
+        ),
+        layout=widgets.Layout(width='74px', height='30px'),
+        disabled=True,
+    )
+    submit_unbond_btn = widgets.Button(
+        description='Unbond', icon='unlink', button_style='',
+        tooltip='Remove the bond between the two selected atoms.',
+        layout=widgets.Layout(width='90px', height='30px'),
+        disabled=True,
+    )
+    submit_hold_mode = widgets.Dropdown(
+        options=[('pull', 'pull'), ('fix', 'fix')], value='pull',
+        layout=widgets.Layout(width='78px'),
+        disabled=True,
+    )
+    submit_hold_btn = widgets.Button(
+        description='Hold', button_style='warning', icon='thumb-tack',
+        tooltip=(
+            'Hold the value the selection describes while the field runs, '
+            'instead of only setting it once. Held values appear in the list '
+            'beside this button and can be dropped again there.'
+        ),
+        layout=widgets.Layout(width='72px', height='30px'),
+        disabled=True,
+    )
+    submit_constraint_dd = widgets.Dropdown(
+        options=[('no constraints', '')], value='',
+        layout=widgets.Layout(width='210px', display='none'),
+        disabled=True,
+    )
+    submit_constraint_del = widgets.Button(
+        description='', icon='times', button_style='danger',
+        tooltip='Drop the selected constraint',
+        layout=widgets.Layout(width='40px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_internal_group = widgets.HBox(
-        [submit_internal_label, submit_internal_value, submit_internal_btn],
+        [submit_internal_label, submit_internal_value,
+         submit_internal_btn, submit_hold_btn, submit_hold_mode],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -754,11 +879,17 @@ def create_tab(ctx):
     submit_manip_toolbar = widgets.HBox(
         [
             submit_fullscreen_btn,
-            submit_select_btn, submit_manip_btn,
+            submit_select_btn, submit_manip_btn, submit_draw_btn,
+            submit_element_dd,
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
-            submit_optimize_btn, submit_relax_btn,
+            submit_optimize_btn, submit_relax_btn, submit_settle_btn,
+            submit_poly_dd, submit_poly_turn_btn,
+            submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
+            submit_bond_btn, submit_unbond_btn,
+            submit_swap_btn, submit_constraint_dd, submit_constraint_del,
+            submit_pick_sync, submit_cmd_sync,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -995,8 +1126,13 @@ def create_tab(ctx):
             '      var count = model && model.selectedAtoms\n'
             '        ? model.selectedAtoms({}).length : -1;\n'
             # Same structure, just moved -- keep the view. A different one
-            # deserves a fresh look at it.
-            '      if (saved && saved.view && saved.atoms === count) {\n'
+            # deserves a fresh look at it. An edit that adds or removes an
+            # atom is neither: the count changes but it is still the molecule
+            # being worked on, so the camera stays put rather than snapping
+            # back to the default every time something is drawn.
+            '      var edited = !!window.__delfinStructureEdit;\n'
+            '      window.__delfinStructureEdit = false;\n'
+            '      if (saved && saved.view && (edited || saved.atoms === count)) {\n'
             '        viewer_UNIQUEID.setView(saved.view);\n'
             '        viewer_UNIQUEID.__delfinUserInteracted = true;\n'
             '        viewer_UNIQUEID.render();\n'
@@ -1046,13 +1182,21 @@ def create_tab(ctx):
         submit_fullscreen_btn.disabled = not enabled
         submit_select_btn.disabled = not enabled
         submit_manip_btn.disabled = not enabled
+        submit_draw_btn.disabled = not enabled
+        submit_element_dd.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
+        submit_settle_btn.disabled = not enabled
+        submit_bond_btn.disabled = not enabled
+        submit_unbond_btn.disabled = not enabled
+        submit_hyb_auto_btn.disabled = not enabled
         submit_ff_dd.disabled = not enabled
         submit_optimize_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
         submit_internal_btn.disabled = not enabled
+        submit_hold_btn.disabled = not enabled
+        submit_hold_mode.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
         if not enabled:
@@ -1167,6 +1311,24 @@ def create_tab(ctx):
                     )
             state['manip_inflight'] = False
             return
+        # A genuinely new structure invalidates the remembered bonding. The
+        # element sequence alone cannot tell two constitutional isomers apart,
+        # and this is the path every real change comes through -- a paste, a
+        # conversion, an isomer step, an optimisation result. Drags do not
+        # reach here: they take the manip_inflight branch above, which is
+        # exactly what keeps a dragged double bond a double bond.
+        state['perceived'] = None
+        state['perceived_for'] = None
+        # Every constraint names atoms by index, which says nothing about a
+        # different molecule.
+        state['constraints'] = []
+        state['bond_edits'] = {}
+        state['hyb_overrides'] = {}
+        if not state.get('structure_edit_inflight'):
+            state['structure_undo'] = []
+        state['poly_applied'] = None
+        state['poly_metal'] = None
+        state['poly_assignment'] = None
         state['smiles_task_id'] += 1
         _set_smiles_conversion_busy(False)
         # User manually edited coords -> clear isomer navigation and reset convert toggle
@@ -3108,13 +3270,23 @@ def create_tab(ctx):
             f'{json.dumps(mode)});'
         )
 
+    def _mode_buttons_mutex(keep):
+        """Only one mode at a time; the others switch themselves off."""
+        for button in (submit_select_btn, submit_manip_btn, submit_draw_btn):
+            if button is not keep and button.value:
+                button.value = False
+
+    def _refresh_draw_controls():
+        drawing = bool(submit_draw_btn.value)
+        submit_element_dd.layout.display = '' if drawing else 'none'
+
     def on_submit_select_toggle(change):
         if change.get('name') != 'value':
             return
         active = bool(submit_select_btn.value)
         submit_select_btn.button_style = 'info' if active else ''
-        if active and submit_manip_btn.value:
-            submit_manip_btn.value = False  # mutex (its observer will send 'off')
+        if active:
+            _mode_buttons_mutex(submit_select_btn)
         _apply_manip_mode_js('select' if active else 'off')
 
     def on_submit_manip_toggle(change):
@@ -3122,9 +3294,53 @@ def create_tab(ctx):
             return
         active = bool(submit_manip_btn.value)
         submit_manip_btn.button_style = 'info' if active else ''
-        if active and submit_select_btn.value:
-            submit_select_btn.value = False  # mutex
+        if active:
+            _mode_buttons_mutex(submit_manip_btn)
         _apply_manip_mode_js('manipulate' if active else 'off')
+
+    def on_submit_draw_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_draw_btn.value)
+        submit_draw_btn.button_style = 'info' if active else ''
+        if active:
+            _mode_buttons_mutex(submit_draw_btn)
+        _refresh_draw_controls()
+        _apply_manip_mode_js('draw' if active else 'off')
+        if active:
+            on_submit_draw_choice(None)
+
+    def on_submit_draw_choice(_change=None):
+        """Hand over the element the browser draws with.
+
+        Not the bond order: a drawn bond is single, and what it should be is
+        decided afterwards by tapping the stick, where it can be seen. Having
+        to choose in advance was a setting that was almost always wrong.
+        """
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setDrawElement('
+            f'{json.dumps(submit_scope_id)},{json.dumps(submit_element_dd.value)});'
+        )
+
+    def _set_ff_notes(notes):
+        """Show what the force field had to approximate, under the viewer."""
+        rendered = [html.escape(str(note)) for note in notes if str(note).strip()]
+        if not rendered:
+            submit_ff_notes.value = ''
+            return
+        items = ''.join(
+            f'<li style="margin:0 0 2px 0;">{note}</li>' for note in rendered
+        )
+        submit_ff_notes.value = (
+            "<div style='font-size:12px; line-height:1.4; color:#5a6570; "
+            "background:#f6f7f9; border:1px solid #e0e4e8; border-radius:4px; "
+            "padding:6px 10px;'>"
+            "<b style='color:#455a64;'>Force field notes</b>"
+            f"<ul style='margin:4px 0 0 16px; padding:0;'>{items}</ul>"
+            "</div>"
+        )
 
     def _ensure_ff_bootstrap():
         if state.get('ff_bootstrap_done'):
@@ -3135,6 +3351,61 @@ def create_tab(ctx):
             state['ff_bootstrap_done'] = True
         except Exception:
             pass
+
+    def _structure_fingerprint(xyz):
+        """Element column of an XYZ block -- what makes it the same molecule."""
+        rows = [line.split() for line in (xyz or '').splitlines() if line.strip()]
+        return tuple(r[0] for r in rows if len(r) >= 4)
+
+    def _perception_for(xyz):
+        """Perceive the bonding once per structure and keep it.
+
+        Bond orders are read from the geometry, and a twisted double bond stops
+        looking like one: turning a C=C by 30 degrees is enough for perception
+        to call it a single bond, which drops the barrier holding the two
+        halves coplanar from 19.5 to 1.1 kcal/mol. Everything downstream then
+        lets the double bond rotate freely, and nothing brings it back.
+
+        Editing moves atoms; it must not be able to change what the molecule
+        is. So the bonding is perceived from the structure as it arrived and
+        reused until a genuinely different one is loaded.
+        """
+        from .molecule_forcefield import perceive_molecule
+
+        fingerprint = _structure_fingerprint(xyz)
+        cached = state.get('perceived')
+        if cached and state.get('perceived_for') == fingerprint:
+            return cached
+        perceived = perceive_molecule(xyz)
+        _apply_bond_edits(perceived)
+        # After the bond edits, never before: rebuilding the typing molecule
+        # sanitizes it, and sanitisation re-perceives hybridisation.
+        _apply_hyb_overrides(perceived)
+        state['perceived'] = perceived
+        state['perceived_for'] = fingerprint
+        return perceived
+
+    def _apply_bond_edits(perceived):
+        """Lay the user's bond corrections over what perception found.
+
+        The correction has to reach the molecules the force-field parameters
+        are read from, not only the bond list -- otherwise a drawn bond keeps
+        the length it was drawn at instead of contracting.
+        """
+        from .molecule_forcefield import apply_bond_edits
+
+        apply_bond_edits(perceived, state.get('bond_edits') or {})
+
+    def _apply_hyb_overrides(perceived):
+        """Force the hybridisations the user has chosen by hand.
+
+        Bond orders are perceived from the geometry, and a double bond that is
+        not seen leaves its carbon typed sp3: angles at 109.5 degrees, and a
+        centre that puckers where it should stay flat.
+        """
+        from .molecule_forcefield import apply_hybridisation_overrides
+
+        apply_hybridisation_overrides(perceived, state.get('hyb_overrides') or {})
 
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.
@@ -3150,7 +3421,24 @@ def create_tab(ctx):
             return
         try:
             from .molecule_forcefield import export_forcefield_terms
-            payload = export_forcefield_terms(xyz, method=submit_ff_dd.value)
+            polyhedron = None
+            if state.get('poly_applied') and state.get('poly_metal') is not None:
+                polyhedron = {
+                    'metal': state['poly_metal'],
+                    'geometry': state['poly_applied'],
+                    # None means: work it out from where the ligands are now.
+                    'assignment': state.get('poly_assignment'),
+                }
+            payload = export_forcefield_terms(
+                xyz,
+                perceived=_perception_for(xyz),
+                method=submit_ff_dd.value,
+                polyhedron=polyhedron,
+                restraints=[
+                    c for c in (state.get('constraints') or [])
+                    if c.get('mode', 'pull') == 'pull'
+                ],
+            )
         except Exception as exc:
             _set_mol_status(f'Force field unavailable: {exc}')
             submit_relax_btn.value = False
@@ -3161,19 +3449,37 @@ def create_tab(ctx):
             return
         _ensure_manip_bootstrap()
         _ensure_ff_bootstrap()
+        _push_bond_orders()
+        # The resume flag is set here, in the same script that hands over the
+        # parameters, and not earlier: setting it before the re-render meant
+        # it could be consumed against the viewer that was going away, and the
+        # relaxation came back stuck until the toggle was cycled by hand.
+        resume = 'true' if submit_relax_btn.value else 'false'
         _run_manip_js(
+            f'window.__delfinResumeAutoOpt = {resume};'
             'if(window.__delfinSubmitManip){'
             'window.__delfinSubmitManip.setForceField('
             f'{json.dumps(submit_scope_id)},{json.dumps(payload)});'
             'window.__delfinSubmitManip.setOptimizerStrength('
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
+            'window.__delfinSubmitManip.setSettleOnRelease('
+            f'{json.dumps(submit_scope_id)},'
+            f'{"true" if submit_settle_btn.value else "false"});'
+            'window.__delfinSubmitManip.setFixedInternals('
+            f'{json.dumps(submit_scope_id)},'
+            + json.dumps([
+                {'kind': c['kind'], 'atoms': c['atoms'], 'value': c['value']}
+                for c in (state.get('constraints') or [])
+                if c.get('mode') == 'fix'
+            ])
+            + ');'
             '}'
         )
         # Terms derived from the input geometry rather than real UFF typing --
-        # the transition-metal case -- are worth saying out loud.
-        warnings = payload.get('warnings') or []
-        if warnings:
-            _set_mol_status(*warnings[:2])
+        # the transition-metal case -- are worth saying out loud, and they
+        # belong under the structure they describe rather than in the preview's
+        # status line, which conversion messages keep overwriting.
+        _set_ff_notes(payload.get('warnings') or [])
 
     def on_submit_relax_toggle(change):
         if change.get('name') != 'value':
@@ -3182,6 +3488,7 @@ def create_tab(ctx):
         submit_relax_btn.button_style = 'info' if active else ''
         if not active:
             _ensure_manip_bootstrap()
+            _set_ff_notes([])
             _run_manip_js(
                 'if(window.__delfinSubmitManip){'
                 'window.__delfinSubmitManip.stopAutoOptimize('
@@ -3230,7 +3537,12 @@ def create_tab(ctx):
             for position, item in enumerate(targets):
                 xyz = item[0]
                 try:
-                    outcome = relax_xyz(xyz, max_steps=500, method=method)
+                    outcome = relax_xyz(
+                        xyz,
+                        max_steps=500,
+                        perceived=_perception_for(xyz),
+                        method=method,
+                    )
                 except Exception as exc:
                     failures.append(f'frame {position + 1}: {exc}')
                     results.append(item)
@@ -3270,6 +3582,14 @@ def create_tab(ctx):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def _clear_selection():
+        """Drop the picks so the next constraint starts from a clean set."""
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.clearSelection('
+            f'{json.dumps(submit_scope_id)});'
+        )
+
     def on_submit_set_internal(_button=None):
         """Set the bond, angle or dihedral the current selection describes."""
         _ensure_manip_bootstrap()
@@ -3277,6 +3597,798 @@ def create_tab(ctx):
             'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setInternal('
             f'{json.dumps(submit_scope_id)},{float(submit_internal_value.value)!r});'
+        )
+        _clear_selection()
+
+    def on_submit_pick_sync(change):
+        """Offer the coordination polyhedra of a metal the moment it is picked.
+
+        Which ones are possible follows from its coordination number, and the
+        tables are MANTA's own -- the same ideal donor vectors it builds
+        complexes with.
+        """
+        if change.get('name') != 'value':
+            return
+        raw = (submit_pick_sync.value or '').strip()
+        indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
+        state['picked'] = indices
+        _refresh_swap(indices)
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        options = None
+        perceived = None
+        if xyz and indices:
+            # Perceive on demand. Waiting for the cache meant the offer only
+            # appeared once the force field had been switched on at least
+            # once -- tapping a metal before that did nothing at all, and said
+            # nothing either.
+            try:
+                perceived = _perception_for(xyz)
+            except Exception:
+                perceived = None
+        if perceived is not None and len(indices) == 1:
+            try:
+                from .molecule_forcefield import polyhedron_options
+                options = polyhedron_options(perceived, indices[0])
+            except Exception:
+                options = None
+        _refresh_hybridisation(indices, perceived)
+        if not options:
+            # Only the offer follows the selection. The applied polyhedron
+            # stays: clearing it here meant that selecting three ligand atoms
+            # to hold an angle silently threw the polyhedron away, and the very
+            # next export went out without it.
+            submit_poly_dd.layout.display = 'none'
+            submit_poly_dd.disabled = True
+            state['poly_offer_metal'] = None
+            # Say why, when a single atom was picked and could have qualified.
+            if perceived is not None and len(indices) == 1:
+                index = indices[0]
+                symbol = perceived.symbols[index]
+                if index in set(perceived.metal_indices or ()):
+                    donors = sorted(
+                        j for pair in perceived.bonds for j in pair
+                        if index in pair and j != index
+                    )
+                    _set_mol_status(
+                        f'{symbol}: coordination number {len(donors)} — no '
+                        'polyhedron table for that (2 to 9 are covered).'
+                    )
+            return
+
+        coordination, current, choices = options
+        state['poly_offer_metal'] = indices[0]
+        symbol = perceived.symbols[indices[0]]
+        entries = [(f'{symbol} · CN {coordination} · free', '')]
+        for code, label in choices:
+            mark = ' (current)' if code == current else ''
+            entries.append((f'{label}{mark}', code))
+        state['poly_quiet'] = True
+        try:
+            submit_poly_dd.options = entries
+            # Only a code this metal actually offers. A polyhedron held on one
+            # metal has nothing to say about the next one picked, and assigning
+            # a value the options do not contain raises.
+            applied = state.get('poly_applied')
+            offered = {code for code, _label in choices}
+            submit_poly_dd.value = applied if applied in offered else ''
+        finally:
+            state['poly_quiet'] = False
+        submit_poly_dd.disabled = False
+        submit_poly_dd.layout.display = ''
+
+    def _refresh_hybridisation(indices, perceived):
+        """Offer to overrule the hybridisation of the picked atoms.
+
+        Any number of them: a double bond that went unperceived usually cost
+        both of its carbons their type, and retyping a ring one atom at a time
+        is busywork. Metals are dropped from the selection rather than
+        blocking it -- RDKit's UFF has no types for one at all, so its bonds
+        and angles come from the geometry either way.
+        """
+        metals = set(perceived.metal_indices or ()) if perceived else set()
+        chosen = [i for i in indices if i not in metals] if perceived else []
+        if not chosen:
+            submit_hyb_dd.layout.display = 'none'
+            submit_hyb_dd.disabled = True
+            state['hyb_offer_atoms'] = []
+            return
+
+        from .molecule_forcefield import (
+            HYBRIDISATION_CHOICES, perceived_hybridisation_of,
+        )
+
+        overrides = state.get('hyb_overrides') or {}
+        auto = {perceived_hybridisation_of(perceived, i) for i in chosen}
+        if len(chosen) == 1:
+            index = chosen[0]
+            head = (f'{perceived.symbols[index]}{index} · '
+                    f'{auto.pop() or "no type"} (automatic)')
+        else:
+            named = ''.join(sorted({perceived.symbols[i] for i in chosen}))
+            found = auto.pop() if len(auto) == 1 else 'mixed'
+            head = f'{len(chosen)} atoms ({named}) · {found or "no type"} (automatic)'
+        entries = [(head, '')]
+        for name in HYBRIDISATION_CHOICES:
+            entries.append((f'force {name}', name))
+        # Only a value they all already share can be shown as the current one.
+        held = {overrides.get(i, '') for i in chosen}
+        state['hyb_offer_atoms'] = chosen
+        state['hyb_quiet'] = True
+        try:
+            submit_hyb_dd.options = entries
+            submit_hyb_dd.value = held.pop() if len(held) == 1 else ''
+        finally:
+            state['hyb_quiet'] = False
+        submit_hyb_dd.disabled = False
+        submit_hyb_dd.layout.display = ''
+
+    def on_submit_hyb_changed(change):
+        if change.get('name') != 'value' or state.get('hyb_quiet'):
+            return
+        atoms = list(state.get('hyb_offer_atoms') or [])
+        if not atoms:
+            return
+        index = atoms[0]
+        overrides = dict(state.get('hyb_overrides') or {})
+        chosen = submit_hyb_dd.value or ''
+        for atom in atoms:
+            if chosen:
+                overrides[atom] = chosen
+            else:
+                overrides.pop(atom, None)
+        state['hyb_overrides'] = overrides
+        # Perception is cached by element sequence, which this does not
+        # change, so the cache has to be dropped or the override never reaches
+        # the force field.
+        state['perceived'] = None
+        state['perceived_for'] = None
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        perceived = state.get('perceived')
+        if len(atoms) == 1:
+            symbol = perceived.symbols[index] if perceived else '?'
+            named = f'{symbol}{index}'
+        else:
+            named = f'{len(atoms)} atoms'
+        if chosen:
+            shape = {'sp': 'linear', 'sp2': 'trigonal planar',
+                     'sp3': 'tetrahedral'}[chosen]
+            _set_mol_status(f'{named} typed as {chosen}: {shape}.')
+        else:
+            _set_mol_status(f'{named} back to the perceived type.')
+        _clear_selection()
+
+    def _refresh_poly_turn():
+        """Offer Turn only where the vertices are not all alike.
+
+        An octahedron has nothing to turn -- every vertex is the same, and
+        which ligand is trans to which is what Swap is for. A trigonal
+        bipyramid has two kinds, so which pair is axial is a real choice.
+        """
+        geometry = state.get('poly_applied')
+        metal = state.get('poly_metal')
+        perceived = state.get('perceived')
+        turnable = False
+        if geometry and metal is not None and perceived is not None:
+            try:
+                from .molecule_forcefield import polyhedron_vertex_classes
+                donors = len(perceived.neighbours()[int(metal)])
+                grouped = polyhedron_vertex_classes(donors, geometry)
+                turnable = bool(grouped) and len(set(grouped[0])) > 1
+            except Exception:
+                turnable = False
+        submit_poly_turn_btn.layout.display = '' if turnable else 'none'
+        submit_poly_turn_btn.disabled = not turnable
+        if not turnable:
+            state['poly_arrangements'] = []
+            state['poly_arrangement_index'] = 0
+
+    def on_submit_poly_turn(_button=None):
+        """Step to the next way the ligands can sit on this polyhedron."""
+        geometry = state.get('poly_applied')
+        metal = state.get('poly_metal')
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not geometry or metal is None or not xyz:
+            _set_mol_status('Choose a polyhedron for a metal first.')
+            return
+        try:
+            from .molecule_forcefield import (
+                describe_polyhedron_arrangement, parse_xyz,
+                polyhedron_arrangements,
+            )
+            perceived = _perception_for(xyz)
+            # The coordinates as they are now, not as they were perceived: a
+            # ligand that has been dragged has to be scored where it sits.
+            parsed = parse_xyz(xyz)
+            coords = perceived.coords
+            if parsed is not None and list(parsed[0]) == list(perceived.symbols):
+                coords = parsed[1]
+            arrangements = polyhedron_arrangements(
+                perceived, int(metal), geometry, coords)
+        except Exception as exc:
+            _set_mol_status(f'Could not work out the arrangements: {exc}')
+            return
+        if len(arrangements) < 2:
+            _set_mol_status(
+                'Every vertex of this polyhedron is the same, so there is '
+                'nothing to turn. Swap exchanges two ligands.'
+            )
+            return
+        position = (int(state.get('poly_arrangement_index') or 0) + 1) % len(arrangements)
+        state['poly_arrangements'] = arrangements
+        state['poly_arrangement_index'] = position
+        state['poly_assignment'] = arrangements[position]
+        _enable_live_forcefield()
+        described = describe_polyhedron_arrangement(
+            perceived, geometry, arrangements[position])
+        _set_mol_status(
+            f'Arrangement {position + 1} of {len(arrangements)} — {described}.'
+        )
+
+    def on_submit_hyb_auto(_button=None):
+        """Derive the carbon types from the connectivity and hold them."""
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            _set_mol_status('Load a structure first.')
+            return
+        try:
+            from .molecule_forcefield import hybridisation_from_connectivity
+            perceived = _perception_for(xyz)
+            picked = list(state.get('picked') or [])
+            derived = hybridisation_from_connectivity(perceived, picked or None)
+        except Exception as exc:
+            _set_mol_status(f'Could not read the types: {exc}')
+            return
+        if not derived:
+            _set_mol_status(
+                'No carbon in the selection — the count only fixes the shape '
+                'for carbon, which has no lone pair.'
+            )
+            return
+        changed = [
+            i for i, name in derived.items()
+            if (state.get('hyb_overrides') or {}).get(i) != name
+        ]
+        overrides = dict(state.get('hyb_overrides') or {})
+        overrides.update(derived)
+        state['hyb_overrides'] = overrides
+        state['perceived'] = None
+        state['perceived_for'] = None
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        where = f'{len(picked)} selected' if picked else 'the whole structure'
+        counts = ', '.join(
+            f'{sum(1 for v in derived.values() if v == name)}x {name}'
+            for name in ('sp', 'sp2', 'sp3')
+            if any(v == name for v in derived.values())
+        )
+        _set_mol_status(
+            f'{len(derived)} carbons typed from their partners in {where} '
+            f'({counts}); {len(changed)} changed.'
+        )
+        _clear_selection()
+
+    #: How many structural edits can be taken back.  The browser keeps 50
+    #: coordinate snapshots; there is no reason for this to be shorter.
+    _STRUCTURE_UNDO_LIMIT = 50
+
+    _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
+
+    def _describe_constraint(entry):
+        symbols = []
+        perceived = state.get('perceived')
+        for index in entry['atoms']:
+            symbol = perceived.symbols[index] if perceived else '?'
+            symbols.append(f'{symbol}{index}')
+        unit = 'A' if entry['kind'] == 'distance' else 'deg'
+        mode = entry.get('mode', 'pull')
+        return f"{'-'.join(symbols)} = {entry['value']:.3g} {unit} ({mode})"
+
+    def _refresh_constraints():
+        """Show what the field is currently being held to."""
+        entries = []
+        if state.get('poly_applied') and state.get('poly_metal') is not None:
+            entries.append(('poly', f"polyhedron: {state['poly_applied']}"))
+        for position, entry in enumerate(state.get('constraints') or []):
+            entries.append((f'c{position}', _describe_constraint(entry)))
+        visible = bool(entries)
+        submit_constraint_dd.layout.display = '' if visible else 'none'
+        submit_constraint_del.layout.display = '' if visible else 'none'
+        submit_constraint_dd.disabled = not visible
+        submit_constraint_del.disabled = not visible
+        if not visible:
+            return
+        submit_constraint_dd.options = [
+            (f'{len(entries)} held · {label}', key) for key, label in entries[:1]
+        ] + [(label, key) for key, label in entries[1:]]
+        submit_constraint_dd.value = entries[0][0]
+
+    def _refresh_swap(indices):
+        """Offer an exchange whenever two donors of one metal are selected.
+
+        It does not need a polyhedron: exchanging two ligands is a move across
+        a barrier, which is useful with or without a target shape.
+        """
+        perceived = state.get('perceived')
+        metals = set(getattr(perceived, 'metal_indices', ()) or ())
+        donors = set()
+        if perceived is not None and len(metals) == 1:
+            metal = next(iter(metals))
+            donors = {
+                j for pair in perceived.bonds for j in pair
+                if metal in pair and j != metal
+            }
+        ready = len(indices) == 2 and donors and all(i in donors for i in indices)
+        submit_swap_btn.layout.display = '' if ready else 'none'
+        submit_swap_btn.disabled = not ready
+
+    def _edit_bond(connect):
+        """Draw or remove a bond, and remember it.
+
+        Bond perception reads distances, and in a crowded coordination sphere
+        that is simply not reliable: on a real Pt complex it counted two ipso
+        carbons of a phosphine's phenyls as donors, giving CN 6 for a
+        four-coordinate metal, while the viewer's own perception invented a
+        Pt-H bond instead. Neither is trustworthy, so the correction has to be
+        remembered and re-applied -- otherwise the next perception, which runs
+        from the geometry, would quietly undo it.
+        """
+        indices = list(state.get('picked') or [])
+        if len(indices) != 2:
+            _set_mol_status('Select exactly two atoms to change a bond.')
+            return
+        pair = (min(indices), max(indices))
+        edits = {tuple(k): v for k, v in (state.get('bond_edits') or {}).items()}
+        edits[pair] = bool(connect)
+        state['bond_edits'] = edits
+        # The perception is cached by element sequence, which a bond edit does
+        # not change -- so the cache has to be dropped explicitly, or the
+        # correction would never reach the force field at all.
+        state['perceived'] = None
+        state['perceived_for'] = None
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.editBond('
+            f'{json.dumps(submit_scope_id)},{pair[0]},{pair[1]},'
+            f'{"true" if connect else "false"});'
+        )
+        # Re-assign the parameters straight away: the topology decides the
+        # bonds, angles and torsions the field works with, and until it is
+        # rebuilt the relaxation is still holding the bond that was just cut.
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        verb = 'Bonded' if connect else 'Unbonded'
+        _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.')
+        _clear_selection()
+
+    def _apply_structure(structure, note):
+        """Put an edited structure back and let the tab rebuild around it.
+
+        The coordinate box is the tab's single source of truth, so writing to
+        it re-renders the viewer and re-perceives everything. What does *not*
+        survive that is the bond orders: perception reads them off the
+        geometry and does not get them back -- ethene built here came back as
+        a single bond at 1.514 A. So the edited topology is re-seeded as the
+        hand corrections it is, which is exactly what it is: the user built
+        this, and their bonds outrank a distance table until a different
+        structure is loaded.
+        """
+        from .molecule_builder import to_xyz
+
+        # Remember what it looked like first: a structural edit changes the
+        # atom count, which the browser's coordinate snapshots cannot express.
+        history = list(state.get('structure_undo') or [])
+        history.append({
+            'coords': coords_widget.value,
+            'bond_edits': dict(state.get('bond_edits') or {}),
+        })
+        state['structure_undo'] = history[-_STRUCTURE_UNDO_LIMIT:]
+
+        xyz = to_xyz(structure, note)
+        lines = [line for line in xyz.splitlines()[2:] if line.strip()]
+        # The write below re-renders through update_molecule_view, which
+        # clears the history a new structure invalidates. This is not a new
+        # structure, it is a step in the one being edited.
+        state['structure_edit_inflight'] = True
+        _mark_structure_edit()
+        try:
+            coords_widget.value = f'{len(lines)}\n{note}\n' + '\n'.join(lines)
+        finally:
+            state['structure_edit_inflight'] = False
+        # After update_molecule_view, which clears them.
+        state['bond_edits'] = {
+            (int(i), int(j)): int(order)
+            for (i, j), order in structure.bonds.items()
+        }
+        state['perceived'] = None
+        state['perceived_for'] = None
+        # Types, derived and held, after every build step -- which is what
+        # pressing the button by hand after one was doing. Perception reads
+        # bond orders off the geometry, and a structure that has just been
+        # built is exactly where that geometry is least settled: a centre
+        # comes back sp3 and its angles at 109.5 where they should be 120, so
+        # the field pulls the new part into the wrong shape. The number of
+        # partners says it outright and does not depend on the geometry at
+        # all, which is why doing it by hand fixed things.
+        # Straight off the structure that was just built, not off a fresh
+        # perception of it: perception can fail or come back empty at exactly
+        # this moment, and then nothing was derived at all -- which is why the
+        # button still had to be pressed by hand. The builder knows every bond
+        # it made, so the count is certain.
+        by_count = {2: 'sp', 3: 'sp2', 4: 'sp3'}
+        derived = {}
+        for index, symbol in enumerate(structure.symbols):
+            if symbol != 'C':
+                continue
+            partners = structure.neighbours(index)
+            # A side-on alkene is the one case where the metal does not count.
+            side_on = [
+                m for m in partners
+                if structure.symbols[m] not in ('H', 'C', 'N', 'O', 'S', 'P')
+                and any(o in structure.neighbours(m) for o in partners
+                        if structure.symbols[o] == 'C')
+            ]
+            name = by_count.get(len(partners) - len(side_on))
+            if name:
+                derived[index] = name
+        if derived:
+            overrides = dict(state.get('hyb_overrides') or {})
+            overrides.update(derived)
+            state['hyb_overrides'] = overrides
+            state['perceived'] = None
+            state['perceived_for'] = None
+        _set_mol_status(note)
+        _push_bond_orders(structure.bonds)
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+
+    def _undo_structure():
+        """Take back the last structural edit.
+
+        Reached when the browser's own stack is empty, which after any
+        structural edit it always is: the re-render clears it. So the two
+        stacks stay in order without either side keeping a clock.
+        """
+        history = list(state.get('structure_undo') or [])
+        if not history:
+            _set_mol_status('Nothing left to undo.')
+            return
+        snapshot = history.pop()
+        state['structure_edit_inflight'] = True
+        _mark_structure_edit()
+        try:
+            coords_widget.value = snapshot['coords']
+        finally:
+            state['structure_edit_inflight'] = False
+        state['structure_undo'] = history
+        state['bond_edits'] = dict(snapshot.get('bond_edits') or {})
+        state['perceived'] = None
+        state['perceived_for'] = None
+        _set_mol_status('Took back the last structural edit.')
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+
+    def _push_bond_orders(bonds=None):
+        """Let the picture show what the bonds are.
+
+        A model read from an XYZ block has no orders in it -- the format
+        carries none -- so every bond was drawn as one stick whatever it was.
+        3Dmol draws a double as two cylinders and a triple as three once the
+        model knows, so the orders are handed over after every render.
+        """
+        if bonds is None:
+            xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+            if not xyz:
+                return
+            try:
+                perceived = _perception_for(xyz)
+                from .molecule_forcefield import _orders_from_mol
+                known = _orders_from_mol(perceived.typing_mol)
+                bonds = {
+                    pair: int(known.get(pair, 1)) for pair in perceived.bonds
+                }
+            except Exception:
+                return
+        triples = [
+            [int(i), int(j), int(order)]
+            for (i, j), order in dict(bonds).items() if int(order) > 1
+        ]
+        if not triples:
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setBondOrders('
+            f'{json.dumps(submit_scope_id)},{json.dumps(triples)});'
+        )
+
+    def _mark_structure_edit():
+        """Tell the re-render that this is an edit, not a different molecule.
+
+        Two things follow from it: the camera stays where the user put it, and
+        the continuous relaxation picks up again with the atom that was just
+        drawn in it -- which is the point of being able to draw while it runs.
+        """
+        _ensure_manip_bootstrap()
+        _run_manip_js('window.__delfinStructureEdit = true;')
+
+    def _structure_now():
+        from .molecule_builder import structure_from_xyz
+
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            return None
+        return structure_from_xyz(xyz, state.get('bond_edits') or {})
+
+    def on_submit_cmd(change):
+        """Carry out a gesture the browser cannot finish on its own.
+
+        The value is ``verb:serial:payload``; the serial only exists to make
+        the same command twice in a row read as two changes. Placing an atom
+        is cheap, but how many hydrogens it needs and where they go is decided
+        here, where RDKit's valences and covalent radii are.
+        """
+        if change.get('name') != 'value':
+            return
+        parts = (submit_cmd_sync.value or '').strip().split(':')
+        if len(parts) != 3:
+            return
+        verb, payload = parts[0], parts[2]
+
+        if verb == 'undo':
+            _undo_structure()
+            return
+
+        if verb == 'unbond':
+            indices = [int(p) for p in payload.split(',') if p.strip().isdigit()]
+            if len(indices) == 2:
+                state['picked'] = sorted(indices)
+                _edit_bond(False)
+            return
+
+        from .molecule_builder import (
+            delete_atoms, grow_from, normalise_element, place_atom,
+            set_bond_order, set_element,
+        )
+
+        structure = _structure_now()
+        if structure is None:
+            _set_mol_status('Load a structure first.')
+            return
+        fields = payload.split(',')
+        try:
+            if verb == 'addatom' and len(fields) == 4:
+                element = normalise_element(fields[0])
+                if element is None:
+                    _set_mol_status(f'{fields[0]} is not an element.')
+                    return
+                place_atom(structure, element,
+                           [float(v) for v in fields[1:4]])
+                _apply_structure(structure, f'Placed {element}.')
+            elif verb == 'grow' and len(fields) == 6:
+                element = normalise_element(fields[1])
+                if element is None:
+                    _set_mol_status(f'{fields[1]} is not an element.')
+                    return
+                grow_from(structure, int(fields[0]), element,
+                          order=int(fields[2]),
+                          direction=[float(v) for v in fields[3:6]])
+                _apply_structure(structure, f'Grew {element}.')
+            elif verb == 'setelement' and len(fields) == 2:
+                element = normalise_element(fields[1])
+                if element is None:
+                    _set_mol_status(f'{fields[1]} is not an element.')
+                    return
+                index = int(fields[0])
+                was = structure.symbols[index] if index < len(structure) else '?'
+                if set_element(structure, index, element):
+                    _apply_structure(structure, f'{was}{index} is now {element}.')
+            elif verb == 'bondcycle' and len(fields) == 2:
+                first, second = (int(v) for v in fields)
+                ends = [structure.symbols[i] for i in (first, second)]
+                current = structure.order(first, second)
+                stepped = None
+                for step in (1, 2, 3):
+                    candidate = (current - 1 + step) % 3 + 1
+                    if candidate == current:
+                        break
+                    if set_bond_order(structure, first, second, candidate):
+                        stepped = candidate
+                        break
+                if stepped is None:
+                    _set_mol_status(
+                        f'{ends[0]}{first}-{ends[1]}{second} can only be '
+                        'single: neither end has valence for more.'
+                    )
+                else:
+                    named = {1: 'single', 2: 'double', 3: 'triple'}[stepped]
+                    _apply_structure(
+                        structure,
+                        f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')
+            elif verb == 'bondorder' and len(fields) == 3:
+                first, second, order = (int(v) for v in fields)
+                named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
+                ends = [structure.symbols[i] for i in (first, second)]
+                if not structure.order(first, second):
+                    # A bond that is not there yet is made the way the Bond
+                    # button makes one: the topology changes and nothing else.
+                    # Moving fragments and re-placing hydrogens to go with it
+                    # was more than was asked for, and it wrecked the molecule
+                    # on the way -- while Bond, which does none of that, has
+                    # always worked.
+                    state['picked'] = [first, second]
+                    _edit_bond(True)
+                elif set_bond_order(structure, first, second, order):
+                    _apply_structure(
+                        structure,
+                        f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')
+                else:
+                    _set_mol_status(
+                        f'{ends[0]}{first}-{ends[1]}{second} cannot be '
+                        f'{named}: one of them has no valence left for it.'
+                    )
+            elif verb == 'delatoms':
+                doomed = [int(p) for p in fields if p.strip().lstrip('-').isdigit()]
+                gone = delete_atoms(structure, doomed)
+                if gone:
+                    _apply_structure(structure, f'Deleted {gone} atom(s).')
+        except Exception as exc:
+            _set_mol_status(f'That edit did not work: {exc}')
+
+    def on_submit_bond(_button=None):
+        _edit_bond(True)
+
+    def on_submit_unbond(_button=None):
+        _edit_bond(False)
+
+    def on_submit_swap(_button=None):
+        """Exchange two ligands outright rather than dragging one at another.
+
+        The two arrangements are separate minima and the relaxation only runs
+        downhill, so it can never cross between them: a ligand dragged part of
+        the way simply rolls back. The exchange is therefore performed in one
+        step and the field is left to tidy up afterwards.
+        """
+        indices = list(state.get('picked') or [])
+        metal = state.get('poly_metal')
+        if metal is None:
+            perceived = state.get('perceived')
+            metals = list(getattr(perceived, 'metal_indices', ()) or ())
+            metal = metals[0] if len(metals) == 1 else None
+        if len(indices) != 2 or metal is None:
+            _set_mol_status('Select two ligands of one metal to exchange them.')
+            return
+        state['poly_assignment'] = None
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.exchangeLigands('
+            f'{json.dumps(submit_scope_id)},{int(metal)},'
+            f'{int(indices[0])},{int(indices[1])});'
+        )
+        _set_mol_status(
+            'Exchanged the two ligands. The field is settling the result; '
+            'Undo puts them back.'
+        )
+
+    def on_submit_hold(_button=None):
+        """Hold the value the selection describes while the field runs."""
+        indices = list(state.get('picked') or [])
+        kind = _CONSTRAINT_KINDS.get(len(indices))
+        if not kind:
+            _set_mol_status('Pick 2, 3 or 4 atoms before holding a value.')
+            return
+        entry = {
+            'kind': kind,
+            'atoms': indices,
+            'value': float(submit_internal_value.value),
+            # 'pull' negotiates with the chemistry and settles at a compromise;
+            # 'fix' is restored after every relaxation step, so the value is met
+            # exactly and the rest of the molecule arranges itself around it.
+            'mode': submit_hold_mode.value,
+        }
+        held = list(state.get('constraints') or [])
+        held = [c for c in held if c['atoms'] != indices]
+        held.append(entry)
+        state['constraints'] = held
+        _refresh_constraints()
+        _set_mol_status(f'Holding {_describe_constraint(entry)}.')
+        _enable_live_forcefield()
+        # A fresh set for the next one: several values can then be held at
+        # once, which is the whole point of a list.
+        _clear_selection()
+
+    def on_submit_hold_mode(change):
+        """Retune the selected constraint, so a mode can be changed without
+        having to select the atoms and set the value again."""
+        if change.get('name') != 'value':
+            return
+        key = submit_constraint_dd.value or ''
+        if not key.startswith('c'):
+            return
+        held = list(state.get('constraints') or [])
+        position = int(key[1:])
+        if not (0 <= position < len(held)):
+            return
+        held[position] = dict(held[position], mode=submit_hold_mode.value)
+        state['constraints'] = held
+        _refresh_constraints()
+        _enable_live_forcefield()
+
+    def on_submit_constraint_del(_button=None):
+        key = submit_constraint_dd.value or ''
+        if key == 'poly':
+            state['poly_applied'] = None
+            state['poly_metal'] = None
+            state['poly_assignment'] = None
+            state['poly_arrangements'] = []
+            state['poly_arrangement_index'] = 0
+            submit_poly_turn_btn.layout.display = 'none'
+            submit_poly_turn_btn.disabled = True
+            state['poly_quiet'] = True
+            try:
+                submit_poly_dd.value = ''
+            except Exception:
+                pass
+            finally:
+                state['poly_quiet'] = False
+        elif key.startswith('c'):
+            held = list(state.get('constraints') or [])
+            position = int(key[1:])
+            if 0 <= position < len(held):
+                held.pop(position)
+            state['constraints'] = held
+        _refresh_constraints()
+        _enable_live_forcefield()
+
+    def on_submit_poly_changed(change):
+        if change.get('name') != 'value' or state.get('poly_quiet'):
+            return
+        state['poly_applied'] = submit_poly_dd.value or None
+        state['poly_assignment'] = None
+        if state['poly_applied']:
+            state['poly_metal'] = state.get('poly_offer_metal')
+        else:
+            state['poly_metal'] = None
+        if state['poly_applied'] and state.get('poly_metal') is not None:
+            try:
+                from .molecule_forcefield import polyhedron_assignment
+                state['poly_assignment'] = polyhedron_assignment(
+                    state['perceived'], state['poly_metal'], state['poly_applied'],
+                )
+            except Exception:
+                state['poly_assignment'] = None
+        state['poly_arrangements'] = []
+        state['poly_arrangement_index'] = 0
+        _refresh_poly_turn()
+        _refresh_constraints()
+        # Re-assigning the parameters is what makes the pull start; with the
+        # field running the complex visibly moves into the polyhedron.
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+        # The metal has done its job once the polyhedron is on, exactly as
+        # after Set or Hold: leaving it picked meant the next atom clicked
+        # joined it, and the highlight sphere read as though something were
+        # still waiting to be chosen. What is held stays in the list below.
+        if state['poly_applied']:
+            _set_mol_status(
+                f'{submit_poly_dd.label}: the donors are pulled onto it.'
+            )
+        else:
+            _set_mol_status('Polyhedron released.')
+        _clear_selection()
+
+    def on_submit_settle_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_settle_btn.value)
+        submit_settle_btn.button_style = 'info' if active else ''
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setSettleOnRelease('
+            f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
         )
 
     def on_submit_strength_changed(change):
@@ -3347,6 +4459,23 @@ def create_tab(ctx):
                 header = f'{old_lines[0]}\n{old_lines[1]}\n'
             except ValueError:
                 pass
+        # A drag has just finished. If a polyhedron is being held, work out
+        # again which donor is now nearest which vertex: dragging a ligand
+        # towards another position and having the field haul it straight back
+        # is not an exchange, it is a fight. Recomputing here means the
+        # polyhedron accepts the ligand where it has been put and pulls it the
+        # rest of the way onto the vertex it is now closest to.
+        lines = new_xyz.splitlines()
+        drag_ended = len(lines) > 1 and lines[1].strip() == 'DELFIN drag-end'
+        if (drag_ended and state.get('poly_applied')
+                and state.get('poly_metal') is not None):
+            # Only a real end of a drag, not the twice-a-second heartbeat the
+            # running optimiser sends: reassigning on every heartbeat reloaded
+            # the whole field twice a second and never let a moved ligand
+            # settle onto its new vertex.
+            state['poly_assignment'] = None
+            state['poly_recheck'] = True
+
         payload = header + coord_body
         # The guard is cleared by update_molecule_view, which traitlets only
         # calls when the value actually changes. Dragging an atom out and back,
@@ -3358,6 +4487,10 @@ def create_tab(ctx):
             return
         state['manip_inflight'] = True
         coords_widget.value = payload
+        if state.pop('poly_recheck', False):
+            # After the coordinates have landed, so the assignment is worked
+            # out from where the ligands actually are now.
+            _schedule_ui_update(_enable_live_forcefield)
 
     # -- wiring ---------------------------------------------------------
     xyz_copy_btn.on_click(on_xyz_copy)
@@ -3369,6 +4502,21 @@ def create_tab(ctx):
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
+    submit_settle_btn.observe(on_submit_settle_toggle, names='value')
+    submit_pick_sync.observe(on_submit_pick_sync, names='value')
+    submit_poly_dd.observe(on_submit_poly_changed, names='value')
+    submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
+    submit_hyb_auto_btn.on_click(on_submit_hyb_auto)
+    submit_poly_turn_btn.on_click(on_submit_poly_turn)
+    submit_cmd_sync.observe(on_submit_cmd, names='value')
+    submit_draw_btn.observe(on_submit_draw_toggle, names='value')
+    submit_element_dd.observe(on_submit_draw_choice, names='value')
+    submit_hold_btn.on_click(on_submit_hold)
+    submit_swap_btn.on_click(on_submit_swap)
+    submit_hold_mode.observe(on_submit_hold_mode, names='value')
+    submit_bond_btn.on_click(on_submit_bond)
+    submit_unbond_btn.on_click(on_submit_unbond)
+    submit_constraint_del.on_click(on_submit_constraint_del)
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
@@ -3433,6 +4581,14 @@ def create_tab(ctx):
         layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
     )
     xyz_copy_row.add_class('submit-fs-member-copyrow')
+    # What the force field had to approximate belongs under the structure it
+    # describes, not in the preview's status line where it competes with
+    # conversion messages and scrolls away.
+    submit_ff_notes = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='4px 0 0 0'),
+    )
+    submit_ff_notes.add_class('submit-ff-notes')
     submit_manip_toolbar.add_class('submit-fs-member-toolbar')
     mol_output.add_class('submit-fs-member-viewer')
     isomer_nav_row.add_class('submit-fs-member-isomer')
@@ -3440,6 +4596,7 @@ def create_tab(ctx):
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'), mol_status,
         submit_manip_toolbar, mol_output, isomer_nav_row, xyz_copy_row,
+        submit_ff_notes,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
         widgets.VBox([
