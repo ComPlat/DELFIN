@@ -1343,3 +1343,28 @@ def test_tapping_a_bond_in_draw_mode_retypes_it():
     # Only a tap, never the end of a drag -- that gesture already means grow.
     assert '!drag.movedEnough' in finish
     assert 'raycastBond(scopeKey, e.clientX, e.clientY)' in EDITOR
+
+
+def test_a_double_bond_is_drawn_as_two_sticks():
+    """A model read from an XYZ block has no bond orders in it -- the format
+    carries none -- so every bond was drawn as one stick whatever it was.
+
+    3Dmol draws a double as two cylinders and a triple as three once the model
+    knows, so the orders are handed over after every render that changes them.
+    Measured in a browser on ethene: the C-C order goes 1, 2, 3 and the
+    geometry built for it goes 36, 40, 44 vertices."""
+    body = _body('setBondOrders')
+    assert 'atoms[i].bondOrder[at] = order;' in body
+    assert 'atoms[j].bondOrder[back] = order;' in body   # both ends
+    assert 'invalidateGeometry(viewer)' in body
+    assert 'if (order < 1 || order > 3) continue;' in body
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    push = source.split('def _push_bond_orders')[1].split('\n    def ')[0]
+    assert 'setBondOrders(' in push
+    # Only what differs from a plain stick needs sending.
+    assert 'if int(order) > 1' in push
+    apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
+    assert '_push_bond_orders(structure.bonds)' in apply_

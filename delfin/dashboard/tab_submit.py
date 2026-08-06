@@ -3454,6 +3454,7 @@ def create_tab(ctx):
             return
         _ensure_manip_bootstrap()
         _ensure_ff_bootstrap()
+        _push_bond_orders()
         _run_manip_js(
             'if(window.__delfinSubmitManip){'
             'window.__delfinSubmitManip.setForceField('
@@ -4002,6 +4003,7 @@ def create_tab(ctx):
         state['perceived'] = None
         state['perceived_for'] = None
         _set_mol_status(note)
+        _push_bond_orders(structure.bonds)
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
 
@@ -4030,6 +4032,40 @@ def create_tab(ctx):
         _set_mol_status('Took back the last structural edit.')
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
+
+    def _push_bond_orders(bonds=None):
+        """Let the picture show what the bonds are.
+
+        A model read from an XYZ block has no orders in it -- the format
+        carries none -- so every bond was drawn as one stick whatever it was.
+        3Dmol draws a double as two cylinders and a triple as three once the
+        model knows, so the orders are handed over after every render.
+        """
+        if bonds is None:
+            xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+            if not xyz:
+                return
+            try:
+                perceived = _perception_for(xyz)
+                from .molecule_forcefield import _orders_from_mol
+                known = _orders_from_mol(perceived.typing_mol)
+                bonds = {
+                    pair: int(known.get(pair, 1)) for pair in perceived.bonds
+                }
+            except Exception:
+                return
+        triples = [
+            [int(i), int(j), int(order)]
+            for (i, j), order in dict(bonds).items() if int(order) > 1
+        ]
+        if not triples:
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setBondOrders('
+            f'{json.dumps(submit_scope_id)},{json.dumps(triples)});'
+        )
 
     def _mark_structure_edit():
         """Tell the re-render that this is an edit, not a different molecule.

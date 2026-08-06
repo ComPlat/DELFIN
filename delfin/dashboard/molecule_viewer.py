@@ -2447,6 +2447,36 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // editor does about topology -- which fragment turns, which atoms are
     // donors -- already reads from it. Editing it here therefore changes what
     // is drawn and what the geometry operations see in one go.
+    // 3Dmol draws a double bond as two cylinders and a triple as three, but
+    // only if the model knows the order -- and a model read from an XYZ block
+    // cannot, because the format has no orders in it. So they are handed over
+    // separately, after every render that changes them.
+    function setBondOrders(scopeKey, triples) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return 0;
+        var atoms = getAtoms(viewer);
+        var changed = 0;
+        for (var n = 0; n < (triples || []).length; n++) {
+            var i = triples[n][0] | 0, j = triples[n][1] | 0;
+            var order = triples[n][2] | 0;
+            if (order < 1 || order > 3) continue;
+            if (!atoms[i] || !atoms[j]) continue;
+            var at = (atoms[i].bonds || []).indexOf(j);
+            var back = (atoms[j].bonds || []).indexOf(i);
+            if (at < 0 || back < 0) continue;
+            atoms[i].bondOrder = atoms[i].bondOrder || [];
+            atoms[j].bondOrder = atoms[j].bondOrder || [];
+            if (atoms[i].bondOrder[at] !== order) changed++;
+            atoms[i].bondOrder[at] = order;
+            atoms[j].bondOrder[back] = order;
+        }
+        if (changed) {
+            invalidateGeometry(viewer);
+            try { viewer.render(); } catch (e) {}
+        }
+        return changed;
+    }
+
     function editBond(scopeKey, first, second, connect) {
         var viewer = getViewer(scopeKey);
         if (!viewer) return {ok: false, error: 'no viewer'};
@@ -3716,6 +3746,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
         editBond: editBond,
+        setBondOrders: setBondOrders,
         bondsOf: bondsOf,
         setSettleOnRelease: setSettleOnRelease,
         unpinAll: unpinAll,
