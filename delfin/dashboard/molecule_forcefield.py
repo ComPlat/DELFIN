@@ -1198,12 +1198,49 @@ def normalise_method(method: Optional[str]) -> str:
     return 'uff'
 
 
+#: Force constants for user restraints, chosen to sit in the same range as the
+#: real UFF terms (a C-C stretch is around 700 kcal/mol/A^2, an angle bend
+#: 100-300 kcal/mol/rad^2).  A restraint that dominated everything would hold
+#: its value by tearing the rest of the structure, which is the opposite of
+#: what a constraint is for.
+RESTRAINT_FORCE_CONSTANTS = {
+    'distance': 500.0,
+    'angle': 200.0,
+    'dihedral': 50.0,
+}
+
+
+def build_restraints(entries) -> List[Dict[str, Any]]:
+    """Turn the user's held values into force-field restraint terms."""
+    out: List[Dict[str, Any]] = []
+    for entry in entries or ():
+        kind = str(entry.get('kind') or '')
+        if kind not in RESTRAINT_FORCE_CONSTANTS:
+            continue
+        atoms = [int(a) for a in entry.get('atoms') or ()]
+        needed = {'distance': 2, 'angle': 3, 'dihedral': 4}[kind]
+        if len(atoms) != needed or len(set(atoms)) != needed:
+            continue
+        try:
+            value = float(entry.get('value'))
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            'kind': kind,
+            'atoms': atoms,
+            'value': value,
+            'k': float(entry.get('k') or RESTRAINT_FORCE_CONSTANTS[kind]),
+        })
+    return out
+
+
 def export_forcefield_terms(
     xyz_text: str,
     *,
     perceived: Optional[PerceivedMolecule] = None,
     method: Optional[str] = 'uff',
     polyhedron: Optional[Dict[str, Any]] = None,
+    restraints=None,
 ) -> Dict[str, Any]:
     """Build the JSON payload of force-field terms for the browser engine.
 
@@ -1497,6 +1534,7 @@ def export_forcefield_terms(
         'ok': True,
         'source': source,
         'method': chosen,
+        'restraints': build_restraints(restraints),
         'polyhedron': (
             {'metal': forced_centre, 'geometry': str(polyhedron.get('geometry'))}
             if (polyhedron and forced_angles) else None

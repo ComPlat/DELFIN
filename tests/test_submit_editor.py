@@ -256,7 +256,9 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     # The label, the value box and Set are one wrapping unit: a label that
     # lands on a different row from its field explains nothing.
     group = source.split('submit_internal_group = widgets.HBox')[1].split(')\n')[0]
-    assert 'submit_internal_label, submit_internal_value, submit_internal_btn' in group
+    for name in ('submit_internal_label', 'submit_internal_value',
+                 'submit_internal_btn', 'submit_hold_btn'):
+        assert name in group, name
     assert "flex_flow='row nowrap'" in group
 
     # Force field, then its strength, then the one-shot run, then the
@@ -577,3 +579,32 @@ def test_polyhedra_are_offered_without_the_force_field_being_on_first():
     # And when nothing can be offered for a metal, the reason is shown.
     assert 'no ' in handler and 'polyhedron table' in handler
     assert 'coordination number' in handler
+
+
+def test_values_can_be_held_and_dropped_again():
+    """Set was a one-off edit. Holding a value means the field works against it
+    for as long as it is listed, alongside a polyhedron if one is set.
+
+    Measured on a Ni complex: square planar alone reaches 3.7 degrees of
+    deviation, a ligand angle held alone pulls 126.6 to 111.9 degrees, and both
+    together give 3.3 degrees and 111.8 -- with the worst ligand bond changing
+    0.1377 A against 0.1344 for a plain relaxation."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    assert 'submit_hold_btn' in source
+    hold = source.split('def on_submit_hold')[1].split('\n    def ')[0]
+    assert "_CONSTRAINT_KINDS.get(len(indices))" in hold
+    # Re-holding the same atoms replaces rather than stacks.
+    assert "held = [c for c in held if c['atoms'] != indices]" in hold
+    assert '_enable_live_forcefield()' in hold
+
+    # Everything the field is being held to is listed, the polyhedron included.
+    refresh = source.split('def _refresh_constraints')[1].split('\n    def ')[0]
+    assert "state.get('poly_applied')" in refresh
+    assert "state.get('constraints')" in refresh
+    # And each entry can be dropped again.
+    drop = source.split('def on_submit_constraint_del')[1].split('\n    def ')[0]
+    assert "state['poly_applied'] = None" in drop
+    assert 'held.pop(position)' in drop
+    assert 'restraints=state.get(\'constraints\')' in source

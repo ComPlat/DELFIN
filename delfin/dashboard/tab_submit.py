@@ -761,8 +761,30 @@ def create_tab(ctx):
         layout=widgets.Layout(width='92px', height='30px'),
         disabled=True,
     )
+    submit_hold_btn = widgets.Button(
+        description='Hold', button_style='warning', icon='thumb-tack',
+        tooltip=(
+            'Hold the value the selection describes while the field runs, '
+            'instead of only setting it once. Held values appear in the list '
+            'beside this button and can be dropped again there.'
+        ),
+        layout=widgets.Layout(width='72px', height='30px'),
+        disabled=True,
+    )
+    submit_constraint_dd = widgets.Dropdown(
+        options=[('no constraints', '')], value='',
+        layout=widgets.Layout(width='210px', display='none'),
+        disabled=True,
+    )
+    submit_constraint_del = widgets.Button(
+        description='', icon='times', button_style='danger',
+        tooltip='Drop the selected constraint',
+        layout=widgets.Layout(width='40px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_internal_group = widgets.HBox(
-        [submit_internal_label, submit_internal_value, submit_internal_btn],
+        [submit_internal_label, submit_internal_value,
+         submit_internal_btn, submit_hold_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -776,7 +798,8 @@ def create_tab(ctx):
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
-            submit_poly_dd, submit_internal_group, submit_pick_sync,
+            submit_poly_dd, submit_internal_group,
+            submit_constraint_dd, submit_constraint_del, submit_pick_sync,
             submit_manip_status, submit_manip_sync,
         ],
         layout=widgets.Layout(
@@ -1072,6 +1095,7 @@ def create_tab(ctx):
         submit_optimize_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
         submit_internal_btn.disabled = not enabled
+        submit_hold_btn.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
         if not enabled:
@@ -3217,6 +3241,7 @@ def create_tab(ctx):
                 perceived=_perception_for(xyz),
                 method=submit_ff_dd.value,
                 polyhedron=polyhedron,
+                restraints=state.get('constraints'),
             )
         except Exception as exc:
             _set_mol_status(f'Force field unavailable: {exc}')
@@ -3365,6 +3390,7 @@ def create_tab(ctx):
             return
         raw = (submit_pick_sync.value or '').strip()
         indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
+        state['picked'] = indices
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
         options = None
         perceived = None
@@ -3414,10 +3440,81 @@ def create_tab(ctx):
         submit_poly_dd.disabled = False
         submit_poly_dd.layout.display = ''
 
+    _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
+
+    def _describe_constraint(entry):
+        symbols = []
+        perceived = state.get('perceived')
+        for index in entry['atoms']:
+            symbol = perceived.symbols[index] if perceived else '?'
+            symbols.append(f'{symbol}{index}')
+        unit = 'A' if entry['kind'] == 'distance' else 'deg'
+        return f"{'-'.join(symbols)} = {entry['value']:.3g} {unit}"
+
+    def _refresh_constraints():
+        """Show what the field is currently being held to."""
+        entries = []
+        if state.get('poly_applied') and state.get('poly_metal') is not None:
+            entries.append(('poly', f"polyhedron: {state['poly_applied']}"))
+        for position, entry in enumerate(state.get('constraints') or []):
+            entries.append((f'c{position}', _describe_constraint(entry)))
+        visible = bool(entries)
+        submit_constraint_dd.layout.display = '' if visible else 'none'
+        submit_constraint_del.layout.display = '' if visible else 'none'
+        submit_constraint_dd.disabled = not visible
+        submit_constraint_del.disabled = not visible
+        if not visible:
+            return
+        submit_constraint_dd.options = [
+            (f'{len(entries)} held · {label}', key) for key, label in entries[:1]
+        ] + [(label, key) for key, label in entries[1:]]
+        submit_constraint_dd.value = entries[0][0]
+
+    def on_submit_hold(_button=None):
+        """Hold the value the selection describes while the field runs."""
+        indices = list(state.get('picked') or [])
+        kind = _CONSTRAINT_KINDS.get(len(indices))
+        if not kind:
+            _set_mol_status('Pick 2, 3 or 4 atoms before holding a value.')
+            return
+        entry = {
+            'kind': kind,
+            'atoms': indices,
+            'value': float(submit_internal_value.value),
+        }
+        held = list(state.get('constraints') or [])
+        held = [c for c in held if c['atoms'] != indices]
+        held.append(entry)
+        state['constraints'] = held
+        _refresh_constraints()
+        _set_mol_status(f'Holding {_describe_constraint(entry)}.')
+        _enable_live_forcefield()
+
+    def on_submit_constraint_del(_button=None):
+        key = submit_constraint_dd.value or ''
+        if key == 'poly':
+            state['poly_applied'] = None
+            state['poly_quiet'] = True
+            try:
+                submit_poly_dd.value = ''
+            except Exception:
+                pass
+            finally:
+                state['poly_quiet'] = False
+        elif key.startswith('c'):
+            held = list(state.get('constraints') or [])
+            position = int(key[1:])
+            if 0 <= position < len(held):
+                held.pop(position)
+            state['constraints'] = held
+        _refresh_constraints()
+        _enable_live_forcefield()
+
     def on_submit_poly_changed(change):
         if change.get('name') != 'value' or state.get('poly_quiet'):
             return
         state['poly_applied'] = submit_poly_dd.value or None
+        _refresh_constraints()
         # Re-assigning the parameters is what makes the pull start; with the
         # field running the complex visibly moves into the polyhedron.
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
@@ -3528,6 +3625,8 @@ def create_tab(ctx):
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
+    submit_hold_btn.on_click(on_submit_hold)
+    submit_constraint_del.on_click(on_submit_constraint_del)
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')

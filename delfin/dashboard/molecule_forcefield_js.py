@@ -140,7 +140,10 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
 
     // Term selectors, so the drag loop can run everything while the tests and
     // the diagnostics panel can isolate one term at a time.
-    var T_BOND = 1, T_ANGLE = 2, T_TORSION = 4, T_VDW = 8, T_ALL = 15;
+    var T_BOND = 1, T_ANGLE = 2, T_TORSION = 4, T_VDW = 8, T_RESTRAINT = 16;
+    var T_ALL = 31;
+    // Restraint kinds, as sent in the payload.
+    var R_DISTANCE = 0, R_ANGLE = 1, R_DIHEDRAL = 2;
 
     var CLOCK = (typeof performance !== 'undefined' && performance &&
                  typeof performance.now === 'function') ? performance : null;
@@ -386,6 +389,52 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         st.pairI = null; st.pairJ = null;
         st.pairX = null; st.pairD = null; st.pairShift = null;
 
+        // -- restraints --------------------------------------------------
+        // Values the user asked to hold while everything else relaxes. Kept as
+        // ordinary harmonic terms, so a set of restraints that cannot all be
+        // satisfied at once settles at a compromise instead of tearing the
+        // structure apart.
+        src = terms.restraints || [];
+        var nr = 0;
+        var rKind = new Int32Array(src.length);
+        var rA = new Int32Array(src.length), rB = new Int32Array(src.length),
+            rC = new Int32Array(src.length), rD = new Int32Array(src.length);
+        var rK = new Float64Array(src.length), rT = new Float64Array(src.length);
+        for (t = 0; t < src.length; t++) {
+            var r = src[t];
+            var kindName = String(r.kind || '');
+            var kind = kindName === 'angle' ? R_ANGLE
+                     : kindName === 'dihedral' ? R_DIHEDRAL
+                     : kindName === 'distance' ? R_DISTANCE : -1;
+            if (kind < 0) { warnings.push('unknown restraint kind'); continue; }
+            var need = kind === R_DISTANCE ? 2 : (kind === R_ANGLE ? 3 : 4);
+            var list = r.atoms || [];
+            if (list.length !== need) { warnings.push('bad restraint atoms'); continue; }
+            var ok = true, idx = [];
+            for (var q = 0; q < need; q++) {
+                var one = list[q] | 0;
+                if (one < 0 || one >= n || idx.indexOf(one) >= 0) { ok = false; break; }
+                idx.push(one);
+            }
+            if (!ok) { warnings.push('bad restraint atoms'); continue; }
+            if (!isNum(r.value) || !isNum(r.k) || r.k < 0) {
+                warnings.push('bad restraint params'); continue;
+            }
+            if (kind === R_DISTANCE && r.value <= 0) {
+                warnings.push('bad restraint params'); continue;
+            }
+            rKind[nr] = kind;
+            rA[nr] = idx[0]; rB[nr] = idx[1];
+            rC[nr] = need > 2 ? idx[2] : 0;
+            rD[nr] = need > 3 ? idx[3] : 0;
+            rK[nr] = r.k;
+            rT[nr] = kind === R_DISTANCE ? r.value : r.value * DEG2RAD;
+            nr++;
+        }
+        st.nRestraints = nr;
+        st.resKind = rKind; st.resA = rA; st.resB = rB; st.resC = rC; st.resD = rD;
+        st.resK = rK; st.resTarget = rT;
+
         buildExclusions(st, terms.bonds || []);
         return {state: st};
     }
@@ -584,6 +633,119 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
                     grad[k0 + 2] += dEdphi * dkz;
                     grad[l0] += dEdphi * dlx; grad[l0 + 1] += dEdphi * dly;
                     grad[l0 + 2] += dEdphi * dlz;
+                }
+            }
+        }
+
+        // -- user restraints --------------------------------------------
+        // A distance, an angle or a dihedral the user asked to hold. Harmonic
+        // in the coordinate itself -- unlike the cosine torsion above, which
+        // has its minima fixed by the periodicity and cannot hold an arbitrary
+        // dihedral.
+        if (which & T_RESTRAINT) {
+            var nres = st.nRestraints;
+            for (i = 0; i < nres; i++) {
+                var rk = st.resK[i], rt = st.resTarget[i];
+                var ra = 3 * st.resA[i], rb = 3 * st.resB[i];
+                var rc = 3 * st.resC[i], rd = 3 * st.resD[i];
+                var kind = st.resKind[i];
+
+                if (kind === R_DISTANCE) {
+                    var ex = pos[rb] - pos[ra], ey = pos[rb + 1] - pos[ra + 1],
+                        ez = pos[rb + 2] - pos[ra + 2];
+                    var er2 = ex * ex + ey * ey + ez * ez;
+                    var er;
+                    if (er2 < MIN_SEPARATION2) {
+                        st.collapsed = true;
+                        er = MIN_SEPARATION; ex = MIN_SEPARATION; ey = 0.0; ez = 0.0;
+                    } else {
+                        er = Math.sqrt(er2);
+                    }
+                    var edr = er - rt;
+                    e += 0.5 * rk * edr * edr;
+                    if (grad) {
+                        var ef = rk * edr / er;
+                        grad[ra] -= ef * ex; grad[ra + 1] -= ef * ey; grad[ra + 2] -= ef * ez;
+                        grad[rb] += ef * ex; grad[rb + 1] += ef * ey; grad[rb + 2] += ef * ez;
+                    }
+                } else if (kind === R_ANGLE) {
+                    var aux = pos[ra] - pos[rb], auy = pos[ra + 1] - pos[rb + 1],
+                        auz = pos[ra + 2] - pos[rb + 2];
+                    var avx = pos[rc] - pos[rb], avy = pos[rc + 1] - pos[rb + 1],
+                        avz = pos[rc + 2] - pos[rb + 2];
+                    var au2 = aux * aux + auy * auy + auz * auz;
+                    var av2 = avx * avx + avy * avy + avz * avz;
+                    if (au2 < 1e-16 || av2 < 1e-16) continue;
+                    var au = Math.sqrt(au2), av = Math.sqrt(av2);
+                    var ac = (aux * avx + auy * avy + auz * avz) / (au * av);
+                    if (ac > 1.0) ac = 1.0; else if (ac < -1.0) ac = -1.0;
+                    var ath = Math.acos(ac) - rt;
+                    e += 0.5 * rk * ath * ath;
+                    if (grad) {
+                        var asn = Math.sqrt(1.0 - ac * ac);
+                        if (asn < 1e-8) continue;
+                        var apref = -rk * ath / asn;
+                        var ainv = 1.0 / (au * av);
+                        var agix = apref * (avx * ainv - ac * aux / au2);
+                        var agiy = apref * (avy * ainv - ac * auy / au2);
+                        var agiz = apref * (avz * ainv - ac * auz / au2);
+                        var agkx = apref * (aux * ainv - ac * avx / av2);
+                        var agky = apref * (auy * ainv - ac * avy / av2);
+                        var agkz = apref * (auz * ainv - ac * avz / av2);
+                        grad[ra] += agix; grad[ra + 1] += agiy; grad[ra + 2] += agiz;
+                        grad[rc] += agkx; grad[rc + 1] += agky; grad[rc + 2] += agkz;
+                        grad[rb] -= agix + agkx; grad[rb + 1] -= agiy + agky;
+                        grad[rb + 2] -= agiz + agkz;
+                    }
+                } else {
+                    var tb1x = pos[rb] - pos[ra], tb1y = pos[rb + 1] - pos[ra + 1],
+                        tb1z = pos[rb + 2] - pos[ra + 2];
+                    var tb2x = pos[rc] - pos[rb], tb2y = pos[rc + 1] - pos[rb + 1],
+                        tb2z = pos[rc + 2] - pos[rb + 2];
+                    var tb3x = pos[rd] - pos[rc], tb3y = pos[rd + 1] - pos[rc + 1],
+                        tb3z = pos[rd + 2] - pos[rc + 2];
+                    var tax = tb1y * tb2z - tb1z * tb2y,
+                        tay = tb1z * tb2x - tb1x * tb2z,
+                        taz = tb1x * tb2y - tb1y * tb2x;
+                    var tbx = tb2y * tb3z - tb2z * tb3y,
+                        tby = tb2z * tb3x - tb2x * tb3z,
+                        tbz = tb2x * tb3y - tb2y * tb3x;
+                    var ta2 = tax * tax + tay * tay + taz * taz;
+                    var tbb2 = tbx * tbx + tby * tby + tbz * tbz;
+                    var tc2 = tb2x * tb2x + tb2y * tb2y + tb2z * tb2z;
+                    if (ta2 < 1e-12 || tbb2 < 1e-12 || tc2 < 1e-12) continue;
+                    var trb2 = Math.sqrt(tc2);
+                    var txd = tax * tbx + tay * tby + taz * tbz;
+                    var tyd = trb2 * (tb1x * tbx + tb1y * tby + tb1z * tbz);
+                    var tphi = Math.atan2(tyd, txd);
+                    // Shortest way round: a dihedral 179 deg from its target is
+                    // 1 deg away, not 359.
+                    var dphi = tphi - rt;
+                    while (dphi > Math.PI) dphi -= 2 * Math.PI;
+                    while (dphi < -Math.PI) dphi += 2 * Math.PI;
+                    e += 0.5 * rk * dphi * dphi;
+                    if (grad) {
+                        var tdE = rk * dphi;
+                        var tfi = -trb2 / ta2, tfl = trb2 / tbb2;
+                        var tdix = tfi * tax, tdiy = tfi * tay, tdiz = tfi * taz;
+                        var tdlx = tfl * tbx, tdly = tfl * tby, tdlz = tfl * tbz;
+                        var tp = (tb1x * tb2x + tb1y * tb2y + tb1z * tb2z) / tc2;
+                        var tq = (tb3x * tb2x + tb3y * tb2y + tb3z * tb2z) / tc2;
+                        var tdjx = -(1.0 + tp) * tdix + tq * tdlx;
+                        var tdjy = -(1.0 + tp) * tdiy + tq * tdly;
+                        var tdjz = -(1.0 + tp) * tdiz + tq * tdlz;
+                        var tdkx = tp * tdix - (1.0 + tq) * tdlx;
+                        var tdky = tp * tdiy - (1.0 + tq) * tdly;
+                        var tdkz = tp * tdiz - (1.0 + tq) * tdlz;
+                        grad[ra] += tdE * tdix; grad[ra + 1] += tdE * tdiy;
+                        grad[ra + 2] += tdE * tdiz;
+                        grad[rb] += tdE * tdjx; grad[rb + 1] += tdE * tdjy;
+                        grad[rb + 2] += tdE * tdjz;
+                        grad[rc] += tdE * tdkx; grad[rc + 1] += tdE * tdky;
+                        grad[rc + 2] += tdE * tdkz;
+                        grad[rd] += tdE * tdlx; grad[rd + 1] += tdE * tdly;
+                        grad[rd + 2] += tdE * tdlz;
+                    }
                 }
             }
         }
@@ -970,6 +1132,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         if (term === 'angle') return T_ANGLE;
         if (term === 'torsion') return T_TORSION;
         if (term === 'vdw') return T_VDW;
+        if (term === 'restraints' || term === 'restraint') return T_RESTRAINT;
         return T_ALL;
     }
     function debugEnergy(scopeKey, positions, term) {
