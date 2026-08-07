@@ -453,6 +453,17 @@ def create_tab(ctx):
         layout=widgets.Layout(width='1px', height='1px', display='none'),
     )
     calc_keyboard_action_input.add_class('calc-cmd-keyboard-action')
+    # Open bridge: a plain click on a file reports the click itself, not the
+    # selection it produces.  Clicking a file that is already selected does not
+    # change the selection, so an observer on the list's value never hears about
+    # it -- which is why a file sometimes only loaded after deselecting and
+    # selecting it again.  The browser appends a counter so every click is a new
+    # value and none of them is swallowed.
+    calc_open_input = widgets.Text(
+        value='',
+        layout=widgets.Layout(width='1px', height='1px', display='none'),
+    )
+    calc_open_input.add_class('calc-cmd-open')
     # Spreadsheet grid bridge: the browser writes a JSON payload, then clicks
     # the trigger button. Both messages travel the same comm channel in order,
     # so the handler always reads the payload that belongs to its click.
@@ -12696,18 +12707,43 @@ def create_tab(ctx):
             _calc_open_item(chosen_label)
 
     # -- selection-change handler (show file content on single-click) --------
+    def _calc_open_file_label(label):
+        """Open *label* if it names a file, and remember that we did."""
+        name = _calc_label_to_name(label)
+        full_path = (
+            (_calc_dir() / state['current_path'] / name)
+            if state['current_path']
+            else (_calc_dir() / name)
+        )
+        if not full_path.is_file():
+            return
+        # keyed by folder, so the same name in another directory still opens
+        state['last_opened_label'] = (state['current_path'], label)
+        _calc_open_item(label)
+
+    def calc_on_open_request(change):
+        """A plain click on a file in the list, reported by the browser.
+
+        Arrives before the selection change the same click produces, so the
+        selection handler can tell that this file has just been opened.
+        """
+        raw = change['new'] or ''
+        calc_open_input.value = ''            # re-arm for the next click
+        label = raw.split('\x1f', 1)[0]
+        if not label or label.startswith('('):
+            return
+        _calc_open_file_label(label)
+
     def calc_on_selection_change(change):
         _calc_update_explorer_action_state()
         labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
         if len(labels) == 1:
-            name = _calc_label_to_name(labels[0])
-            full_path = (
-                (_calc_dir() / state['current_path'] / name)
-                if state['current_path']
-                else (_calc_dir() / name)
-            )
-            if full_path.is_file():
-                _calc_open_item(labels[0])
+            # The click bridge above has usually opened this one already.  This
+            # path still serves keyboard navigation, and stands in whenever the
+            # bridge is not installed.
+            if (state['current_path'], labels[0]) == state.get('last_opened_label'):
+                return
+            _calc_open_file_label(labels[0])
 
     # -- keyboard action handler (from JS bridge) ----------------------------
     def calc_on_keyboard_action(change):
@@ -12842,6 +12878,7 @@ def create_tab(ctx):
         calc_table_preset_save_btn.on_click(calc_on_table_preset_save)
     calc_file_list.observe(calc_on_selection_change, names='value')
     calc_dblclick_input.observe(calc_on_dblclick, names='value')
+    calc_open_input.observe(calc_on_open_request, names='value')
     calc_xyz_batch_dblclick_input.observe(calc_on_xyz_batch_dblclick, names='value')
     calc_xyz_batch_toggle_input.observe(calc_on_xyz_batch_toggle, names='value')
     calc_keyboard_action_input.observe(calc_on_keyboard_action, names='value')
@@ -13621,6 +13658,20 @@ def create_tab(ctx):
                 _armExplorerDblClick(opt, e);
                 _rememberExplorerScroll();
 
+                /* A plain click asks for the file to be opened, whether or not
+                 * it changes the selection.  Clicking an already-selected file
+                 * changes nothing, so the change event below carries no news
+                 * and the file would never load.  The counter keeps every click
+                 * distinct so none of them is dropped as "same value". */
+                if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                    var openLabel = _labelText(opt);
+                    if (openLabel && openLabel.charAt(0) !== '(') {
+                        root._openSeq = (Number(root._openSeq) || 0) + 1;
+                        _setWidgetInput(root, 'calc-cmd-open',
+                                        openLabel + '\x1f' + root._openSeq);
+                    }
+                }
+
                 selectEl.dispatchEvent(new Event('change', { bubbles: true }));
                 selectEl.focus();
                 _restoreExplorerScroll();
@@ -14082,7 +14133,7 @@ def create_tab(ctx):
              calc_upload_seq_input, calc_upload_ack_input,
              calc_upload_trigger_btn, calc_upload_ack_label,
              calc_dblclick_input, calc_xyz_batch_dblclick_input, calc_xyz_batch_toggle_input,
-             calc_keyboard_action_input,
+             calc_keyboard_action_input, calc_open_input,
              calc_sheet_payload_input, calc_sheet_action_btn],
             layout=widgets.Layout(display='none'),
         ),
@@ -14728,6 +14779,8 @@ def create_tab(ctx):
         'calc_override_btn': calc_override_btn,
         # File browser selection
         'calc_file_list': calc_file_list,
+        # the browser's "this file was clicked" bridge (see calc_on_open_request)
+        'calc_open_input': calc_open_input,
         'calc_update_options_dropdown': calc_update_options_dropdown,
         # Delete (exposed for blocking only — agent must NOT click)
         'calc_delete_btn': calc_delete_btn,
