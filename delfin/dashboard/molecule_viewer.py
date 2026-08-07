@@ -3499,6 +3499,45 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return true;
     }
 
+    // Pick a set of atoms from Python, by force-field index.  Selecting a held
+    // value in the list shows which atoms it holds, and that only means
+    // anything if the picture can be told what to mark.
+    function setPicks(scopeKey, indices, heldValue, heldLabel) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return false;
+        var atoms = getAtoms(viewer);
+        state.pickedAsBond = false;
+        state.picks = [];
+        (indices || []).forEach(function(i) {
+            var atom = atoms[i];
+            if (!atom) return;
+            state.picks.push({serial: atom.serial, elem: atom.elem || 'X'});
+        });
+        redrawHighlights(scopeKey);
+        pushPicksToPython(scopeKey);
+        /* The readout above filled the box with what the atoms measure right
+         * now.  A held value is not that: it is what they are being pulled to,
+         * and it is the number the user came to edit.  Written after the
+         * readout, with the signature it just recorded, so the next frame
+         * leaves it alone. */
+        if (heldValue !== null && heldValue !== undefined) {
+            var box = findInScope(scopeKey, '.submit-internal-value input');
+            if (box) {
+                var text = String(heldValue);
+                var setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value');
+                if (setter && setter.set) setter.set.call(box, text);
+                else box.value = text;
+                box.dispatchEvent(new Event('input', {bubbles: true}));
+                box.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+            var label = findInScope(scopeKey, '.submit-internal-label');
+            if (label && heldLabel) label.innerHTML = heldLabel;
+        }
+        return true;
+    }
+
     function clearPicks(scopeKey) {
         var state = getState(scopeKey);
         state.picks = [];
@@ -3854,6 +3893,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setDrawOrder: setDrawOrder,
         clear: clearPicks,
         clearSelection: clearSelection,
+        setPicks: setPicks,
         undo: undo,
         setForceField: setForceField,
         readInternal: readInternal,

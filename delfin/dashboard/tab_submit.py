@@ -861,6 +861,16 @@ def create_tab(ctx):
         layout=widgets.Layout(width='210px', display='none'),
         disabled=True,
     )
+    submit_reset_btn = widgets.Button(
+        description='Reset', icon='undo', button_style='danger',
+        tooltip=(
+            'Back to the structure as it was loaded, and drop everything set '
+            'on it since: held values, polyhedron, hand-made bonds, '
+            'hybridisation overrides and the edit history.'
+        ),
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
     submit_constraint_del = widgets.Button(
         description='', icon='times', button_style='danger',
         tooltip='Drop the selected constraint',
@@ -881,7 +891,7 @@ def create_tab(ctx):
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
             submit_element_dd,
-            submit_manip_clear_btn, submit_manip_undo_btn,
+            submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_poly_turn_btn,
@@ -1198,6 +1208,7 @@ def create_tab(ctx):
         submit_hold_btn.disabled = not enabled
         submit_hold_mode.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
+        submit_reset_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
         if not enabled:
             if submit_select_btn.value:
@@ -1332,6 +1343,10 @@ def create_tab(ctx):
             state['poly_applied'] = None
             state['poly_metal'] = None
             state['poly_assignment'] = None
+            # What Reset goes back to.  This is the one moment a structure is
+            # the one that arrived rather than one the viewer has been working
+            # on, so it is the only place worth remembering.
+            state['pristine_coords'] = coords_widget.value
         state['smiles_task_id'] += 1
         _set_smiles_conversion_busy(False)
         # User manually edited coords -> clear isomer navigation and reset convert toggle
@@ -3887,6 +3902,70 @@ def create_tab(ctx):
         mode = entry.get('mode', 'pull')
         return f"{'-'.join(symbols)} = {entry['value']:.3g} {unit} ({mode})"
 
+    def _selected_constraint():
+        """The held entry the list is pointing at, or (None, None)."""
+        key = submit_constraint_dd.value or ''
+        if not key.startswith('c'):
+            return None, None
+        held = list(state.get('constraints') or [])
+        position = int(key[1:])
+        if not (0 <= position < len(held)):
+            return None, None
+        return position, held[position]
+
+    def _sync_constraint_selection():
+        """Mark the atoms of the selected entry and offer its value for editing.
+
+        With nothing selected the picture keeps whatever the user picked and the
+        value box goes back to serving the selection, which is what it does when
+        no held value is being looked at.
+        """
+        _position, entry = _selected_constraint()
+        if entry is None:
+            return
+        state['hold_mode_quiet'] = True
+        try:
+            submit_hold_mode.value = entry.get('mode', 'pull')
+        finally:
+            state['hold_mode_quiet'] = False
+        unit = 'Å' if entry['kind'] == 'distance' else '°'
+        value = (
+            f'{float(entry["value"]):.3f}' if entry['kind'] == 'distance'
+            else f'{float(entry["value"]):.1f}'
+        )
+        _run_manip_js(
+            'if(window.__delfinSubmitManip&&window.__delfinSubmitManip.setPicks)'
+            'window.__delfinSubmitManip.setPicks('
+            f'{json.dumps(submit_scope_id)},'
+            f'{json.dumps([int(i) for i in entry["atoms"]])},'
+            f'{json.dumps(value)},'
+            f'{json.dumps(f"held <b>{entry["kind"]}</b> ({unit})")});'
+        )
+
+    def on_submit_constraint_selected(change):
+        if change.get('name') != 'value' or state.get('constraint_quiet'):
+            return
+        if not (submit_constraint_dd.value or ''):
+            _clear_selection()
+            return
+        _sync_constraint_selection()
+
+    def on_submit_constraint_retune(change):
+        """Editing the value while a held entry is selected retunes that entry."""
+        if change.get('name') != 'value':
+            return
+        position, entry = _selected_constraint()
+        if entry is None:
+            return
+        if abs(float(submit_internal_value.value) - float(entry['value'])) < 1e-9:
+            return  # the box was filled with the held value, not edited
+        held = list(state.get('constraints') or [])
+        held[position] = dict(entry, value=float(submit_internal_value.value))
+        state['constraints'] = held
+        _refresh_constraints()
+        _enable_live_forcefield()
+        _set_mol_status(f'Holding {_describe_constraint(held[position])}.')
+
     def _refresh_constraints():
         """Show what the field is currently being held to."""
         entries = []
@@ -3911,10 +3990,22 @@ def create_tab(ctx):
             finally:
                 state['constraint_quiet'] = False
             return
-        submit_constraint_dd.options = [
-            (f'{len(entries)} held · {label}', key) for key, label in entries[:1]
-        ] + [(label, key) for key, label in entries[1:]]
-        submit_constraint_dd.value = entries[0][0]
+        # Nothing is selected to begin with.  Selecting an entry marks the atoms
+        # it holds, so a preselected one would mean the picture always shows a
+        # marked set nobody asked for.
+        previous = submit_constraint_dd.value
+        state['constraint_quiet'] = True
+        try:
+            submit_constraint_dd.options = (
+                [(f'{len(entries)} held · show which', '')]
+                + [(label, key) for key, label in entries]
+            )
+            submit_constraint_dd.value = (
+                previous if previous in dict(submit_constraint_dd.options).values() else ''
+            )
+        finally:
+            state['constraint_quiet'] = False
+        _sync_constraint_selection()
 
     def _refresh_swap(indices):
         """Offer an exchange whenever two donors of one metal are selected.
@@ -4359,17 +4450,66 @@ def create_tab(ctx):
         having to select the atoms and set the value again."""
         if change.get('name') != 'value':
             return
-        key = submit_constraint_dd.value or ''
-        if not key.startswith('c'):
+        if state.get('hold_mode_quiet'):
+            return
+        position, entry = _selected_constraint()
+        if entry is None:
             return
         held = list(state.get('constraints') or [])
-        position = int(key[1:])
-        if not (0 <= position < len(held)):
-            return
-        held[position] = dict(held[position], mode=submit_hold_mode.value)
+        held[position] = dict(entry, mode=submit_hold_mode.value)
         state['constraints'] = held
         _refresh_constraints()
         _enable_live_forcefield()
+
+    def on_submit_reset(_button=None):
+        """Back to the structure that was loaded, with nothing set on it.
+
+        Editing in the viewer is a one-way street otherwise: undo takes back
+        one step at a time, and a structure that has been pulled apart over
+        twenty of them has no way home short of pasting the coordinates again.
+        """
+        pristine = state.get('pristine_coords')
+        if not pristine:
+            _set_mol_status('Nothing to go back to yet.')
+            return
+        state['constraints'] = []
+        state['bond_edits'] = {}
+        state['hyb_overrides'] = {}
+        state['structure_undo'] = []
+        state['poly_applied'] = None
+        state['poly_metal'] = None
+        state['poly_assignment'] = None
+        state['poly_arrangements'] = []
+        state['poly_arrangement_index'] = 0
+        submit_poly_turn_btn.layout.display = 'none'
+        submit_poly_turn_btn.disabled = True
+        state['poly_quiet'] = True
+        try:
+            submit_poly_dd.value = ''
+        except Exception:
+            pass
+        finally:
+            state['poly_quiet'] = False
+        state['hold_mode_quiet'] = True
+        try:
+            submit_hold_mode.value = 'pull'
+        except Exception:
+            pass
+        finally:
+            state['hold_mode_quiet'] = False
+        submit_internal_value.value = 0.0
+        _clear_selection()
+        # Writing the coordinates is what re-renders and re-perceives; it also
+        # clears everything above a second time, which is the point.
+        if coords_widget.value == pristine:
+            # Same text, so the write would be a no-op and nothing would be
+            # redrawn -- the whole reason the viewer looks destroyed is that
+            # the *coordinates* changed underneath it.
+            update_molecule_view()
+        else:
+            coords_widget.value = pristine
+        _refresh_constraints()
+        _set_mol_status('Back to the structure as it was loaded.')
 
     def on_submit_constraint_del(_button=None):
         key = submit_constraint_dd.value or ''
@@ -4572,6 +4712,9 @@ def create_tab(ctx):
     submit_bond_btn.on_click(on_submit_bond)
     submit_unbond_btn.on_click(on_submit_unbond)
     submit_constraint_del.on_click(on_submit_constraint_del)
+    submit_constraint_dd.observe(on_submit_constraint_selected, names='value')
+    submit_internal_value.observe(on_submit_constraint_retune, names='value')
+    submit_reset_btn.on_click(on_submit_reset)
     submit_internal_btn.on_click(on_submit_set_internal)
     submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
@@ -4823,4 +4966,10 @@ def create_tab(ctx):
         'custom_time_widget': custom_time_widget,
         'handle_submit': handle_submit,
         'handle_validate_control': handle_validate_control,
+        # editor state, for the held-value list and Reset
+        'submit_constraint_dd': submit_constraint_dd,
+        'submit_internal_value': submit_internal_value,
+        'submit_reset_btn': submit_reset_btn,
+        'editor_state': state,
+        'refresh_constraints': _refresh_constraints,
     }
