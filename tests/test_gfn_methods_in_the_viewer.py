@@ -332,6 +332,29 @@ def test_the_loop_really_sends_coordinates_to_the_page(editor, monkeypatch):
     assert state.get("gfn_loop") is None, "the loop did not end by itself"
 
 
+def test_the_frames_go_through_a_widget_not_through_run_js(editor):
+    """run_js writes into one Output and clears it first.
+
+    Twenty scripts a second overwrite each other before the page has rendered
+    them: the relaxation ran, the last structure appeared, and nothing in
+    between did.  A widget value is ordered, survives a background thread, and
+    cannot be clobbered by the next one.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
+    assert "submit_gfn_frame" in loop, "the frames do not go through the field"
+    assert "setPositions" not in loop, "a per-frame run_js is what failed"
+
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    # ipywidgets writes the DOM value without firing an event, so it is read
+    # on a timer rather than listened for
+    assert "setTimeout(tick" in watcher
+    assert "setPositions" in watcher
+    assert "gfn_watcher_installed" in watcher, "it must be installed once"
+
+
 def test_the_loop_starts_the_bootstrap_before_it_pushes(editor):
     """Without it there is no __delfinSubmitManip, and every push is a no-op."""
     from delfin.dashboard import tab_submit
@@ -339,7 +362,7 @@ def test_the_loop_starts_the_bootstrap_before_it_pushes(editor):
     source = open(tab_submit.__file__, encoding="utf-8").read()
     loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
     assert "_ensure_manip_bootstrap()" in loop
-    assert loop.index("_ensure_manip_bootstrap()") < loop.index("setPositions")
+    assert loop.index("_ensure_manip_bootstrap()") < loop.index("submit_gfn_frame")
 
 
 def test_the_relaxed_structure_lands_even_if_the_pushes_do_not(editor):

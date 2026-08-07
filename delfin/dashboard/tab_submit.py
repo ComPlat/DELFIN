@@ -790,6 +790,14 @@ def create_tab(ctx):
     )
     submit_manip_sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
     submit_manip_sync.add_class('submit-manip-sync')
+    # Coordinates from the kernel, one frame at a time.  Not through run_js:
+    # that writes into a single Output and clears it first, so twenty scripts a
+    # second overwrite each other before the page has rendered them -- the
+    # relaxation ran, the last structure appeared, and nothing in between did.
+    # A widget value is ordered, survives a background thread, and cannot be
+    # clobbered by the next one.
+    submit_gfn_frame = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
+    submit_gfn_frame.add_class('submit-gfn-frame')
 
     submit_strength_slider = widgets.IntSlider(
         value=20, min=1, max=200, step=1,
@@ -937,7 +945,7 @@ def create_tab(ctx):
             submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync, submit_cmd_sync,
-            submit_manip_status, submit_manip_sync,
+            submit_manip_status, submit_manip_sync, submit_gfn_frame,
         ],
         layout=widgets.Layout(
             display='none', gap='6px', align_items='center',
@@ -3478,6 +3486,47 @@ def create_tab(ctx):
     _GFN_LOOP_SECONDS = 60.0
     _GFN_LOOP_CYCLES = 5
 
+    def _install_gfn_frame_watcher():
+        """Teach the page to watch the frame field, once.
+
+        ipywidgets writes a new value into the DOM without firing an event, so
+        there is nothing to listen for -- the value is read on a timer instead.
+        Reading a string thirty times a second is nothing; sending twenty
+        scripts a second through an Output that clears itself is what did not
+        work.
+        """
+        if state.get('gfn_watcher_installed'):
+            return
+        state['gfn_watcher_installed'] = True
+        _run_manip_js(
+            '(function(){\n'
+            '  var scope=' + json.dumps(submit_scope_id) + ';\n'
+            '  if(window.__delfinGfnWatch && window.__delfinGfnWatch[scope]) return;\n'
+            '  window.__delfinGfnWatch=window.__delfinGfnWatch||{};\n'
+            '  window.__delfinGfnWatch[scope]=true;\n'
+            '  var last="";\n'
+            '  function tick(){\n'
+            '    var root=document.querySelector("."+scope);\n'
+            '    var field=root&&root.querySelector('
+            '".submit-gfn-frame textarea, .submit-gfn-frame input");\n'
+            '    if(field){\n'
+            '      var text=field.value||"";\n'
+            '      if(text&&text!==last){\n'
+            '        last=text;\n'
+            '        try{\n'
+            '          var flat=JSON.parse(text);\n'
+            '          if(window.__delfinSubmitManip&&'
+            'window.__delfinSubmitManip.setPositions)\n'
+            '            window.__delfinSubmitManip.setPositions(scope,flat);\n'
+            '        }catch(e){}\n'
+            '      }\n'
+            '    }\n'
+            '    window.setTimeout(tick,33);\n'
+            '  }\n'
+            '  tick();\n'
+            '})();'
+        )
+
     def _stop_gfn_loop():
         state['gfn_loop'] = None
 
@@ -3504,6 +3553,7 @@ def create_tab(ctx):
         # and every coordinate push is a silent no-op -- which is exactly what
         # "Relaxing with GFN-FF..." and nothing moving looked like.
         _ensure_manip_bootstrap()
+        _install_gfn_frame_watcher()
         token = object()
         state['gfn_loop'] = token
         charge = int(submit_gfn_charge.value or 0)
@@ -3526,18 +3576,15 @@ def create_tab(ctx):
                     break
                 current = outcome['xyz']
                 steps += 1
-                flat = _gfn.coordinates_of(current)
-                _schedule_ui_update(lambda f=flat: _run_manip_js(
-                    'if(window.__delfinSubmitManip&&'
-                    'window.__delfinSubmitManip.setPositions)'
-                    'window.__delfinSubmitManip.setPositions('
-                    + json.dumps(submit_scope_id) + ',' + json.dumps(f) + ');'
-                ))
+                frame = json.dumps(_gfn.coordinates_of(current))
+                _schedule_ui_update(
+                    lambda text=frame: setattr(submit_gfn_frame, 'value', text))
                 if outcome.get('converged'):
                     reason = 'converged'
                     break
 
             def _finish():
+                submit_gfn_frame.value = ''
                 if state.get('gfn_loop') is token:
                     state['gfn_loop'] = None
                     if submit_relax_btn.value:
@@ -5254,6 +5301,7 @@ def create_tab(ctx):
         'submit_gfn_autospin': submit_gfn_autospin,
         'submit_optimize_btn': submit_optimize_btn,
         'submit_relax_btn': submit_relax_btn,
+        'submit_gfn_frame': submit_gfn_frame,
         'submit_pick_sync': submit_pick_sync,
         'submit_reset_btn': submit_reset_btn,
         'editor_state': state,
