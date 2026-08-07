@@ -602,3 +602,16 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     assert "state['manip_inflight'] = True" in apply_body
     # the flag has to be set before the write that would re-render
     assert apply_body.index("if played[0]:") < apply_body.index("coords_widget.value = (")
+
+
+def test_the_playback_finds_its_field_in_fullscreen_too(editor):
+    """Fullscreen moves the viewer into an overlay carrying the same scope
+    class, and the frame field is not one of the things it takes.  Looking
+    only inside the first element with that class found the overlay and no
+    field -- so the playback worked small and showed nothing big."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "querySelectorAll" in watcher, "one root is not enough in fullscreen"
+    assert "if(!field) field=document.querySelector(" in watcher
