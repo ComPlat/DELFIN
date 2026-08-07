@@ -579,3 +579,23 @@ def test_leaving_fullscreen_puts_every_member_back():
     assert "insertBefore" in exit_body and "appendChild" in exit_body
     assert "isConnected" in exit_body, "an orphaned member is a lost control"
     assert "root.appendChild(el)" in exit_body
+
+
+def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
+    """Writing the coordinates the ordinary way rebuilds the viewer.
+
+    Done while the trajectory was playing, that destroyed it milliseconds
+    after it started -- which is why only the end of the optimisation was ever
+    seen.  The playback's last frame is that geometry already.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    assert "played = [False]" in handler
+    assert "played[0] = True" in handler
+    apply_body = handler.split("def _apply")[1]
+    assert "if played[0]:" in apply_body
+    assert "state['manip_inflight'] = True" in apply_body
+    # the flag has to be set before the write that would re-render
+    assert apply_body.index("if played[0]:") < apply_body.index("coords_widget.value = (")

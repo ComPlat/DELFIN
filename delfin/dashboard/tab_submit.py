@@ -3793,6 +3793,7 @@ def create_tab(ctx):
         if gfn:
             _ensure_manip_bootstrap()
             _install_gfn_frame_watcher()
+        played = [False]
 
         def _work():
             from .molecule_forcefield import relax_xyz
@@ -3821,6 +3822,7 @@ def create_tab(ctx):
                 if outcome.get('ok'):
                     results.append((outcome['xyz'],) + tuple(item[1:]))
                     if gfn and outcome.get('frames') and position == 0:
+                        played[0] = True
                         # xtb writes every cycle to xtbopt.log, so the path
                         # costs nothing extra -- one run, and the viewer plays
                         # what the optimiser really walked through.
@@ -3854,6 +3856,14 @@ def create_tab(ctx):
                     lines = [
                         line for line in results[0][0].splitlines()[2:] if line.strip()
                     ]
+                    if played[0]:
+                        # The trajectory is playing, and its last frame is this
+                        # very geometry.  Writing the coordinates the ordinary
+                        # way rebuilds the viewer, which tore the playback down
+                        # milliseconds after it started -- so only the end of
+                        # the optimisation was ever seen.  The box is updated
+                        # for Copy and Submit; the picture is already right.
+                        state['manip_inflight'] = True
                     coords_widget.value = (
                         f"{len(lines)}\nOptimised in DELFIN viewer\n"
                         + '\n'.join(lines)
