@@ -733,12 +733,16 @@ def create_tab(ctx):
         disabled=True,
     )
     submit_internal_value.add_class('submit-internal-value')
-    submit_internal_btn = widgets.Button(
-        description='Set', button_style='primary',
+    submit_internal_btn = widgets.ToggleButton(
+        value=False, description='Set', button_style='primary',
         tooltip=(
-            'Set the value the selection describes: two atoms a bond length, '
-            'three an angle, four a dihedral. The fragment on the far side of '
-            'the coordinate moves.'
+            'Turn the value by hand and watch it: while Set is on, the box '
+            'drives the selection live -- the arrow keys step a bond by '
+            '0.01 A and an angle or dihedral by 0.1 degrees, and the fragment '
+            'on the far side of the coordinate follows. Two atoms are a bond '
+            'length, three an angle, four a dihedral. Hold is the other '
+            'question: it keeps a value at its target while the field runs, '
+            'with pull or fix.'
         ),
         layout=widgets.Layout(width='58px', height='30px'),
         disabled=True,
@@ -3608,15 +3612,47 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)});'
         )
 
-    def on_submit_set_internal(_button=None):
-        """Set the bond, angle or dihedral the current selection describes."""
+    def _step_for_selection(indices):
+        """How far one press of an arrow key moves the value.
+
+        A bond length is Angstrom and a hundredth of one is a fine step; an
+        angle and a dihedral are degrees, where a hundredth is far below what
+        anyone means to turn and a whole degree is a jump.  A tenth is the
+        step, which is also what the box shows.
+        """
+        submit_internal_value.step = 0.01 if len(indices or ()) == 2 else 0.1
+
+    def _apply_internal_now():
+        """Put the selection at the value in the box, and leave it selected."""
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setInternal('
-            f'{json.dumps(submit_scope_id)},{float(submit_internal_value.value)!r});'
+            + json.dumps(submit_scope_id) + ','
+            + repr(float(submit_internal_value.value)) + ');'
         )
-        _clear_selection()
+
+    def on_submit_set_internal(change=None):
+        """Set is a mode: while it is on, the box turns the selection by hand.
+
+        Switching it on puts the selection at what the box says, and every
+        further change of the box does the same -- so the arrow keys turn a
+        dihedral a tenth of a degree at a time and the structure follows.  The
+        picks are kept, because letting go of them after every step is what
+        made turning something by hand impossible.
+        """
+        if not submit_internal_btn.value:
+            return
+        _apply_internal_now()
+
+    def on_submit_internal_value(change):
+        """The box changed.  Who owns it depends on what is selected."""
+        if change.get('name') != 'value' or state.get('internal_quiet'):
+            return
+        if _selected_constraint()[1] is not None:
+            return          # a held value is being retuned, not the geometry
+        if submit_internal_btn.value:
+            _apply_internal_now()
 
     def on_submit_pick_sync(change):
         """Offer the coordination polyhedra of a metal the moment it is picked.
@@ -3630,6 +3666,7 @@ def create_tab(ctx):
         raw = (submit_pick_sync.value or '').strip()
         indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
         state['picked'] = indices
+        _step_for_selection(indices)
         _refresh_swap(indices)
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
         options = None
@@ -3704,7 +3741,14 @@ def create_tab(ctx):
         and angles come from the geometry either way.
         """
         metals = set(perceived.metal_indices or ()) if perceived else set()
-        chosen = [i for i in indices if i not in metals] if perceived else []
+        # An index the structure no longer has: the browser pushes its picks
+        # after a re-render, and an edit that deleted atoms renumbers them.
+        # Asking the perception about one is an IndexError, and this handler
+        # runs on every click in the viewer.
+        chosen = [
+            i for i in indices
+            if i not in metals and 0 <= i < len(perceived.symbols)
+        ] if perceived else []
         if not chosen:
             submit_hyb_dd.layout.display = 'none'
             submit_hyb_dd.disabled = True
@@ -4716,7 +4760,8 @@ def create_tab(ctx):
     submit_constraint_dd.observe(on_submit_constraint_selected, names='value')
     submit_internal_value.observe(on_submit_constraint_retune, names='value')
     submit_reset_btn.on_click(on_submit_reset)
-    submit_internal_btn.on_click(on_submit_set_internal)
+    submit_internal_btn.observe(on_submit_set_internal, names='value')
+    submit_internal_value.observe(on_submit_internal_value, names='value')
     submit_optimize_btn.on_click(on_submit_optimize)
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
@@ -4970,6 +5015,8 @@ def create_tab(ctx):
         # editor state, for the held-value list and Reset
         'submit_constraint_dd': submit_constraint_dd,
         'submit_internal_value': submit_internal_value,
+        'submit_internal_btn': submit_internal_btn,
+        'submit_pick_sync': submit_pick_sync,
         'submit_reset_btn': submit_reset_btn,
         'editor_state': state,
         'refresh_constraints': _refresh_constraints,

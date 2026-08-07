@@ -964,11 +964,15 @@ def test_a_bond_edit_actually_reaches_the_force_field():
 
 
 def test_the_selection_is_released_once_a_value_has_been_set():
-    """Picks accumulate, so leaving them standing after Set or Hold meant the
-    next atom clicked joined them: three atoms became four and the next
-    constraint was built from the wrong set. That is why several values could
-    not be held at once. The highlight spheres stayed on the molecule too,
-    reading as though something were still selected.
+    """Picks accumulate, so leaving them standing after Hold or a bond edit
+    meant the next atom clicked joined them: three atoms became four and the
+    next constraint was built from the wrong set. That is why several values
+    could not be held at once. The highlight spheres stayed on the molecule
+    too, reading as though something were still selected.
+
+    Set is the exception, and deliberately so: it is a mode for turning a
+    value by hand, and letting go of the picks after every tenth of a degree
+    is what made turning something by hand impossible.
 
     Verified in a browser: after clearing, picks and highlight spheres both go
     to zero while the pivot and any held atoms stay."""
@@ -985,10 +989,12 @@ def test_the_selection_is_released_once_a_value_has_been_set():
     assert 'def _clear_selection' in source
     # Choosing a polyhedron is the same kind of act: the metal has done its
     # job, and leaving it picked meant the next atom clicked joined it.
-    for handler in ('on_submit_set_internal', 'on_submit_hold', '_edit_bond',
-                    'on_submit_poly_changed'):
+    for handler in ('on_submit_hold', '_edit_bond', 'on_submit_poly_changed'):
         body = source.split(f'def {handler}')[1].split('\n    def ')[0]
         assert '_clear_selection()' in body, handler
+    # ... and Set, which is a mode now, must NOT let go of them.
+    body = source.split('def on_submit_set_internal')[1].split('\n    def ')[0]
+    assert '_clear_selection()' not in body
 
 
 def test_undo_answers_for_operations_not_for_relaxation_frames():
@@ -1134,8 +1140,11 @@ def test_a_hybridisation_can_be_forced_on_a_whole_selection():
 
     source = open(tab_submit.__file__, encoding='utf-8').read()
     offer = source.split('def _refresh_hybridisation')[1].split('\n    def ')[0]
-    # Every picked atom, metals dropped rather than blocking the offer.
-    assert 'chosen = [i for i in indices if i not in metals]' in offer
+    # Every picked atom, metals dropped rather than blocking the offer -- and
+    # an index the structure no longer has dropped too, because the browser
+    # pushes its picks after a re-render and an edit renumbers the atoms.
+    assert 'i not in metals' in offer
+    assert 'len(perceived.symbols)' in offer
     assert "state['hyb_offer_atoms'] = chosen" in offer
     # A value can only be shown as current when they all share it.
     assert 'held.pop() if len(held) == 1' in offer
