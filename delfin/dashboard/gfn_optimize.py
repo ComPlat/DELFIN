@@ -181,13 +181,9 @@ def optimize_with_gfn(
     spec = GFN_METHODS[key]
     label = spec['label']
 
-    binary = find_xtb()
-    if binary is None:
-        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                'seconds': 0.0,
-                'status': (f'{label} needs xtb, which was not found in '
-                           f'{_where_it_looked()}.')}
-
+    # What is wrong with the *structure* is worth saying whether or not xtb is
+    # installed: too large is too large on any machine, and a caller that has
+    # to hear about the missing program first cannot act on either.
     atoms = _atom_count(xyz_text)
     if atoms < 2:
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -200,6 +196,13 @@ def optimize_with_gfn(
             'status': (f'{atoms} atoms is past the {label} limit of {ceiling} '
                        'for an interactive run; submit it as a job instead.'),
         }
+
+    binary = find_xtb()
+    if binary is None:
+        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': 0.0,
+                'status': (f'{label} needs xtb, which was not found in '
+                           f'{_where_it_looked()}.')}
 
     started = time.perf_counter()
     folder = Path(tempfile.mkdtemp(prefix='delfin-gfn-'))

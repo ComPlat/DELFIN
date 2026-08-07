@@ -438,3 +438,21 @@ def test_every_atom_reaches_xtb_even_with_a_wrong_header():
 
     assert result["ok"] is True
     assert len(gfn.atom_lines(result["xyz"])) == 3, "an atom was dropped"
+
+
+def test_what_is_wrong_with_the_structure_is_said_without_xtb(monkeypatch):
+    """CI has no xtb, and neither does every machine a user sits at.
+
+    Too large is too large on any machine; hearing about a missing program
+    first leaves a caller unable to act on either problem.
+    """
+    monkeypatch.setattr(gfn, "find_xtb", lambda: None)
+    big = "5000\nbig\n" + "\n".join(f"C {i} 0 0" for i in range(5000))
+
+    assert "past the GFN2-xTB limit" in gfn.optimize_with_gfn(big, "gfn2")["status"]
+    assert gfn.optimize_with_gfn("1\nx\nH 0 0 0\n", "gfnff")["status"] == (
+        "There is nothing to optimise."
+    )
+    # a structure with nothing wrong with it does report the missing program
+    fine = "3\nx\nO 0 0 0\nH 1 0 0\nH 0 1 0\n"
+    assert "needs xtb" in gfn.optimize_with_gfn(fine, "gfnff")["status"]
