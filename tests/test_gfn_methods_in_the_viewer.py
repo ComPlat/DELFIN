@@ -349,10 +349,45 @@ def test_the_frames_go_through_a_widget_not_through_run_js(editor):
 
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     # ipywidgets writes the DOM value without firing an event, so it is read
-    # on a timer rather than listened for
-    assert "setTimeout(tick" in watcher
+    # rather than listened for -- and read from an animation frame, which is
+    # also what paces the playback
+    assert "requestAnimationFrame" in watcher
     assert "setPositions" in watcher
     assert "gfn_watcher_installed" in watcher, "it must be installed once"
+
+
+def test_the_whole_trajectory_is_sent_not_the_newest_frame(editor):
+    """The page reads on a timer and the loop writes faster than it looks.
+
+    A frame sent on its own is a frame that can be missed -- which is why only
+    the last structures were arriving.  Every write carries the trajectory so
+    far, so a page that saw only the final write still has all of it.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
+    assert "trajectory.append" in loop
+    assert "json.dumps({'frames': trajectory})" in loop
+    finish = loop.split("def _finish")[1]
+    assert "json.dumps({'frames': trajectory})" in finish, (
+        "the last write has to carry everything"
+    )
+
+
+def test_the_playback_interpolates_between_computed_frames(editor):
+    """Twenty computed steps a second, shown as motion rather than as jumps.
+
+    The positions in between are drawn, not calculated, and every frame the
+    structure actually passed through is one end of an interpolation.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "a[i]+(b[i]-a[i])*t" in watcher, "no interpolation between frames"
+    assert "play.queue" in watcher, "frames have to queue, or they are dropped"
+    assert "drawn, not calculated" in watcher, "say which positions are which"
 
 
 def test_the_loop_starts_the_bootstrap_before_it_pushes(editor):

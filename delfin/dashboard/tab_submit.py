@@ -3487,13 +3487,21 @@ def create_tab(ctx):
     _GFN_LOOP_CYCLES = 5
 
     def _install_gfn_frame_watcher():
-        """Teach the page to watch the frame field, once.
+        """Teach the page to play the trajectory, once.
 
-        ipywidgets writes a new value into the DOM without firing an event, so
-        there is nothing to listen for -- the value is read on a timer instead.
-        Reading a string thirty times a second is nothing; sending twenty
-        scripts a second through an Output that clears itself is what did not
-        work.
+        Two things were wrong with sending one frame at a time.  ipywidgets
+        writes a new value into the DOM without firing an event, so there is
+        nothing to listen for -- the value has to be read on a timer.  And the
+        kernel produces frames faster than the reader can look, so all but the
+        last of each burst were never seen: the structure jumped instead of
+        moving.
+
+        The field carries the whole trajectory instead, and the page keeps its
+        place in it.  Nothing can be missed, because a frame that was written
+        while the reader was busy is still there when it looks again.  Playback
+        interpolates between frames -- twenty computed steps a second shown as
+        continuous motion.  The positions in between are drawn, not calculated;
+        every frame the structure actually passed through is one of the ends.
         """
         if state.get('gfn_watcher_installed'):
             return
@@ -3501,29 +3509,53 @@ def create_tab(ctx):
         _run_manip_js(
             '(function(){\n'
             '  var scope=' + json.dumps(submit_scope_id) + ';\n'
-            '  if(window.__delfinGfnWatch && window.__delfinGfnWatch[scope]) return;\n'
-            '  window.__delfinGfnWatch=window.__delfinGfnWatch||{};\n'
-            '  window.__delfinGfnWatch[scope]=true;\n'
-            '  var last="";\n'
-            '  function tick(){\n'
+            '  window.__delfinGfnPlay=window.__delfinGfnPlay||{};\n'
+            '  if(window.__delfinGfnPlay[scope]) return;\n'
+            '  var play={queue:[],at:0,started:0,last:null,seen:0};\n'
+            '  window.__delfinGfnPlay[scope]=play;\n'
+            '  var STEP_MS=55;\n'
+            '  function read(){\n'
             '    var root=document.querySelector("."+scope);\n'
             '    var field=root&&root.querySelector('
             '".submit-gfn-frame textarea, .submit-gfn-frame input");\n'
-            '    if(field){\n'
-            '      var text=field.value||"";\n'
-            '      if(text&&text!==last){\n'
-            '        last=text;\n'
-            '        try{\n'
-            '          var flat=JSON.parse(text);\n'
-            '          if(window.__delfinSubmitManip&&'
-            'window.__delfinSubmitManip.setPositions)\n'
-            '            window.__delfinSubmitManip.setPositions(scope,flat);\n'
-            '        }catch(e){}\n'
+            '    if(!field) return;\n'
+            '    var text=field.value||"";\n'
+            '    if(!text){ play.queue=[]; play.seen=0; play.last=null; return; }\n'
+            '    var data=null;\n'
+            '    try{ data=JSON.parse(text); }catch(e){ return; }\n'
+            '    var frames=(data&&data.frames)||[];\n'
+            '    if(frames.length>play.seen){\n'
+            '      for(var i=play.seen;i<frames.length;i++) play.queue.push(frames[i]);\n'
+            '      play.seen=frames.length;\n'
+            '    }\n'
+            '  }\n'
+            '  function show(a,b,t){\n'
+            '    if(!window.__delfinSubmitManip||'
+            '!window.__delfinSubmitManip.setPositions) return;\n'
+            '    var out=new Array(b.length);\n'
+            '    if(!a||a.length!==b.length){ out=b; }\n'
+            '    else { for(var i=0;i<b.length;i++) out[i]=a[i]+(b[i]-a[i])*t; }\n'
+            '    try{ window.__delfinSubmitManip.setPositions(scope,out); }catch(e){}\n'
+            '  }\n'
+            '  function frame(now){\n'
+            '    read();\n'
+            '    if(play.queue.length){\n'
+            '      if(!play.started) play.started=now;\n'
+            '      var t=(now-play.started)/STEP_MS;\n'
+            '      if(t>=1){\n'
+            '        var next=play.queue.shift();\n'
+            '        show(play.last,next,1);\n'
+            '        play.last=next; play.started=now;\n'
+            '      } else if(play.last){\n'
+            '        show(play.last,play.queue[0],t);\n'
+            '      } else {\n'
+            '        play.last=play.queue.shift(); show(null,play.last,1);\n'
+            '        play.started=now;\n'
             '      }\n'
             '    }\n'
-            '    window.setTimeout(tick,33);\n'
+            '    window.requestAnimationFrame(frame);\n'
             '  }\n'
-            '  tick();\n'
+            '  window.requestAnimationFrame(frame);\n'
             '})();'
         )
 
@@ -3565,6 +3597,8 @@ def create_tab(ctx):
             current = xyz
             steps = 0
             reason = 'switched off'
+            trajectory = []
+            written = [0]
             while state.get('gfn_loop') is token:
                 if time.monotonic() - started > _GFN_LOOP_SECONDS:
                     reason = f'stopped after {int(_GFN_LOOP_SECONDS)} s'
@@ -3576,15 +3610,26 @@ def create_tab(ctx):
                     break
                 current = outcome['xyz']
                 steps += 1
-                frame = json.dumps(_gfn.coordinates_of(current))
-                _schedule_ui_update(
-                    lambda text=frame: setattr(submit_gfn_frame, 'value', text))
+                trajectory.append(_gfn.coordinates_of(current))
+                # The whole trajectory, not the newest frame: the page reads
+                # the field on a timer and the loop writes faster than it
+                # looks, so a frame sent on its own is a frame that can be
+                # missed.  Written in batches, because every write is a
+                # message and the point is that none of them has to arrive.
+                if len(trajectory) - written[0] >= 3:
+                    written[0] = len(trajectory)
+                    payload = json.dumps({'frames': trajectory})
+                    _schedule_ui_update(
+                        lambda text=payload: setattr(submit_gfn_frame, 'value', text))
                 if outcome.get('converged'):
                     reason = 'converged'
                     break
 
             def _finish():
-                submit_gfn_frame.value = ''
+                # The last write carries every frame, so a page that only ever
+                # saw this one still has the whole trajectory to play.
+                if trajectory:
+                    submit_gfn_frame.value = json.dumps({'frames': trajectory})
                 if state.get('gfn_loop') is token:
                     state['gfn_loop'] = None
                     if submit_relax_btn.value:
