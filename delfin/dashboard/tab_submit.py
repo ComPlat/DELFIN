@@ -3791,8 +3791,11 @@ def create_tab(ctx):
         )
         submit_optimize_btn.disabled = True
         if gfn:
+            # One call, not two: run_js clears its output before displaying,
+            # so a bootstrap followed immediately by a watcher is a bootstrap
+            # the page may never have run.
             _ensure_manip_bootstrap()
-            _install_gfn_frame_watcher()
+            _schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
 
         def _work():
@@ -3851,7 +3854,10 @@ def create_tab(ctx):
                 }
                 if frames:
                     state['isomers'] = results
-                    _show_isomer_at_index(state.get('isomer_index', 0))
+                    if not played[0]:
+                        # Showing the isomer rebuilds the viewer, which is the
+                        # other way the playback was being torn down.
+                        _show_isomer_at_index(state.get('isomer_index', 0))
                 else:
                     lines = [
                         line for line in results[0][0].splitlines()[2:] if line.strip()

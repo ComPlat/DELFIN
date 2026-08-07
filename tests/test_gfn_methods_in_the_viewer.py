@@ -524,7 +524,10 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
     assert "outcome.get('frames')" in handler
     assert "submit_gfn_frame" in handler
-    assert "_install_gfn_frame_watcher()" in handler
+    assert "_install_gfn_frame_watcher" in handler
+    # both ways of showing a result rebuild the viewer, and both would tear
+    # the playback down
+    assert "if not played[0]:" in handler, "the isomer path re-renders too"
 
 
 @_needs_xtb
