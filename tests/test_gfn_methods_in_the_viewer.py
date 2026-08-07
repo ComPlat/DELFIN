@@ -283,13 +283,18 @@ def test_the_loop_ends_by_itself_and_says_how(editor):
     assert "_GFN_LOOP_CYCLES" in loop
 
 
-def test_the_relax_toggle_takes_the_gfn_path_only_for_gfn_ff(editor):
+def test_the_relax_toggle_is_the_browser_fields_alone(editor):
+    """It was given a GFN path, and that was the wrong shape for it.
+
+    Relax runs a field per frame; GFN is a process per step.  The trajectory
+    belongs to Optimise, which gets it from one run for free.
+    """
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
-    assert "if str(submit_ff_dd.value) == 'gfnff':" in toggle
-    assert "_start_gfn_loop()" in toggle and "_stop_gfn_loop()" in toggle
+    assert "_start_gfn_loop()" not in toggle
+    assert "_stop_gfn_loop()" in toggle, "a loop left running would keep going"
 
 
 def test_the_viewer_can_be_given_coordinates_from_the_kernel():
@@ -474,3 +479,49 @@ def test_fullscreen_takes_the_status_line_with_it():
     enter = editor_js.split("function enterFullscreen")[1][:900]
     assert "'.submit-fs-member-status'" in enter
     assert enter.index("submit-fs-member-toolbar") < enter.index("submit-fs-member-status")
+
+
+@_needs_xtb
+def test_one_run_yields_the_path_the_optimiser_walked():
+    """xtb writes every cycle to xtbopt.log while it optimises.
+
+    So the trajectory costs nothing extra -- no second run and no loop of
+    processes -- and the frames are the geometries the optimiser really passed
+    through rather than the ends of restarted runs.
+    """
+    stretched = "3\nstretched\nO 0 0 0\nH 1.30 0 0\nH -0.35 1.25 0\n"
+
+    result = gfn.optimize_with_gfn(stretched, "gfnff")
+
+    assert result["ok"] is True
+    assert len(result["frames"]) > 1, "no path came back"
+    assert all(len(f) == 9 for f in result["frames"]), "3 atoms x 3 numbers"
+    # the last frame is where it ended up
+    ended = gfn.coordinates_of(result["xyz"])
+    assert result["frames"][-1] == pytest.approx(ended, abs=1e-6)
+
+
+def test_relax_is_switched_off_while_a_gfn_method_is_chosen(editor):
+    """Relax runs the browser's own field per frame, which GFN cannot be.
+
+    Left pressable it did something unrecognisable; switched off it says which
+    methods it is for.
+    """
+    assert editor["submit_relax_btn"].disabled is False
+
+    editor["submit_ff_dd"].value = "gfnff"
+    assert editor["submit_relax_btn"].disabled is True
+    assert "browser" in editor["submit_relax_btn"].tooltip
+
+    editor["submit_ff_dd"].value = "uff"
+    assert editor["submit_relax_btn"].disabled is False
+
+
+def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    assert "outcome.get('frames')" in handler
+    assert "submit_gfn_frame" in handler
+    assert "_install_gfn_frame_watcher()" in handler

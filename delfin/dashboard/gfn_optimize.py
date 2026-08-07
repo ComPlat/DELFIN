@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'find_xtb', 'is_gfn_method',
+           'read_trajectory',
            'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
            'electron_parity']
 
@@ -146,6 +147,39 @@ def _atom_count(xyz_text: str) -> int:
     return len(atom_lines(xyz_text))
 
 
+def read_trajectory(folder: Path) -> list:
+    """Every cycle of the optimisation, as flat coordinate lists.
+
+    xtb writes the whole path to xtbopt.log while it optimises, so the
+    trajectory costs nothing extra -- no second run, no loop of processes.
+    These are the geometries the optimiser really passed through.
+    """
+    log = folder / 'xtbopt.log'
+    if not log.exists():
+        return []
+    frames: list = []
+    current: list = []
+    expected = 0
+    for line in log.read_text(encoding='utf-8', errors='replace').splitlines():
+        parts = line.split()
+        if len(parts) == 1 and parts[0].isdigit():
+            if current and len(current) == expected * 3:
+                frames.append(current)
+            expected = int(parts[0])
+            current = []
+            skip = True
+            continue
+        if len(parts) >= 4:
+            try:
+                current.extend(
+                    (float(parts[1]), float(parts[2]), float(parts[3])))
+            except ValueError:
+                continue
+    if current and expected and len(current) == expected * 3:
+        frames.append(current)
+    return frames
+
+
 def _read_optimised(folder: Path, fallback: str) -> Optional[str]:
     """xtb writes the relaxed geometry beside the input."""
     for name in ('xtbopt.xyz', 'xtblast.xyz'):
@@ -235,6 +269,7 @@ def optimize_with_gfn(
             }
         output = (finished.stdout or '') + (finished.stderr or '')
         relaxed = _read_optimised(folder, xyz_text)
+        frames = read_trajectory(folder)
         energy = None
         found = _ENERGY_RE.search(output)
         if found:
@@ -282,7 +317,7 @@ def optimize_with_gfn(
             # handed back -- but not as though it were finished.
             return {
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
-                'seconds': seconds, 'engine': 'xtb', 'version': version,
+                'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted,
                 'status': (f'{label} stopped before converging after '
                            f'{seconds:.1f} s; the geometry it reached is shown. '
@@ -290,7 +325,7 @@ def optimize_with_gfn(
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
-            'seconds': seconds, 'engine': 'xtb', 'version': version,
+            'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted,
             'status': (f'{label} converged in {seconds:.1f} s '
                        f'(xtb {version}, {reported or wanted}).'),

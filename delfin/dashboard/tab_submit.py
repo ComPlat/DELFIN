@@ -3731,13 +3731,6 @@ def create_tab(ctx):
             return
         active = bool(submit_relax_btn.value)
         submit_relax_btn.button_style = 'info' if active else ''
-        if str(submit_ff_dd.value) == 'gfnff':
-            # GFN-FF has no engine in the browser; the kernel runs the steps.
-            if active:
-                _start_gfn_loop()
-            else:
-                _stop_gfn_loop()
-            return
         _stop_gfn_loop()
         if not active:
             _ensure_manip_bootstrap()
@@ -3788,6 +3781,9 @@ def create_tab(ctx):
             f'Optimising {count} frame(s) with {label}...', spinner=True,
         )
         submit_optimize_btn.disabled = True
+        if gfn:
+            _ensure_manip_bootstrap()
+            _install_gfn_frame_watcher()
 
         def _work():
             from .molecule_forcefield import relax_xyz
@@ -3815,6 +3811,15 @@ def create_tab(ctx):
                     continue
                 if outcome.get('ok'):
                     results.append((outcome['xyz'],) + tuple(item[1:]))
+                    if gfn and outcome.get('frames') and position == 0:
+                        # xtb writes every cycle to xtbopt.log, so the path
+                        # costs nothing extra -- one run, and the viewer plays
+                        # what the optimiser really walked through.
+                        trail = list(outcome['frames'])[-400:]
+                        _schedule_ui_update(
+                            lambda t=trail: setattr(
+                                submit_gfn_frame, 'value',
+                                json.dumps({'frames': t})))
                     note = str(outcome.get('status') or '')
                     if 'before converging' in note:
                         # It came back with a geometry, but not a finished one.
@@ -4948,6 +4953,18 @@ def create_tab(ctx):
         submit_gfn_charge.layout.display = '' if gfn else 'none'
         submit_gfn_mult.layout.display = '' if gfn else 'none'
         submit_gfn_autospin.layout.display = '' if gfn else 'none'
+        # Relax is the browser's field running per frame.  GFN is a process per
+        # step on the server, which that toggle cannot be -- so it is switched
+        # off rather than left pressable and doing nothing recognisable.
+        if gfn and submit_relax_btn.value:
+            submit_relax_btn.value = False
+        submit_relax_btn.disabled = gfn
+        submit_relax_btn.tooltip = (
+            'Live relaxation runs the browser\'s own field. Choose UFF or '
+            'MMFF94 for it; GFN acts when Optimise is pressed, and shows the '
+            'path it took.' if gfn else
+            'Relax the structure continuously while you work on it.'
+        )
         if gfn:
             label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
             source = _fill_charge_from_smiles()
