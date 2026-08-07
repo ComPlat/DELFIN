@@ -27,12 +27,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-__all__ = ['GFN_METHODS', 'is_gfn_method', 'xtb_available',
+__all__ = ['GFN_METHODS', 'find_xtb', 'is_gfn_method', 'xtb_available',
            'optimize_with_gfn', 'optimize_autospin', 'electron_parity']
 
 #: What the dropdown offers, and the flags each one means to xtb.
@@ -62,8 +63,51 @@ def is_gfn_method(method: Any) -> bool:
     return str(method or '').strip().lower() in GFN_METHODS
 
 
+def find_xtb() -> Optional[str]:
+    """Where xtb is, asked the way the rest of DELFIN asks.
+
+    ``shutil.which`` alone is not enough and was the whole of the problem: the
+    kernel a dashboard runs in does not inherit the login shell's PATH, so an
+    xtb installed in the very environment the dashboard is running from was
+    reported as missing.  DELFIN already has a resolver that knows about
+    XTBHOME, its own tool directories and the cluster module paths; it is asked
+    first, and the interpreter's own bin directory stands behind it -- an xtb
+    beside the python that is running cannot sensibly be called absent.
+    """
+    try:
+        from delfin.qm_runtime import find_tool_executable
+
+        found = find_tool_executable('xtb')
+        if found:
+            return str(found)
+    except Exception:
+        pass
+    found = shutil.which('xtb')
+    if found:
+        return found
+    for prefix in (sys.prefix, getattr(sys, 'base_prefix', sys.prefix)):
+        candidate = Path(prefix) / 'bin' / 'xtb'
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _where_it_looked() -> str:
+    """The places tried, so a missing xtb is a fixable message, not a wall."""
+    places = []
+    try:
+        from delfin.qm_runtime import get_qm_tools_bin_dir
+
+        places.append(str(get_qm_tools_bin_dir()))
+    except Exception:
+        pass
+    places += ['$DELFIN_XTB_BINARY', '$XTBHOME/$XTBPATH',
+               str(Path(sys.executable).resolve().parent), 'PATH']
+    return ', '.join(places)
+
+
 def xtb_available() -> bool:
-    return bool(shutil.which('xtb'))
+    return find_xtb() is not None
 
 
 def _atom_count(xyz_text: str) -> int:
@@ -111,10 +155,12 @@ def optimize_with_gfn(
     spec = GFN_METHODS[key]
     label = spec['label']
 
-    if not xtb_available():
+    binary = find_xtb()
+    if binary is None:
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
                 'seconds': 0.0,
-                'status': f'{label} needs xtb on the PATH; it was not found.'}
+                'status': (f'{label} needs xtb, which was not found in '
+                           f'{_where_it_looked()}.')}
 
     atoms = _atom_count(xyz_text)
     if atoms < 2:
@@ -135,7 +181,7 @@ def optimize_with_gfn(
         source = folder / 'input.xyz'
         source.write_text(xyz_text if xyz_text.endswith('\n') else xyz_text + '\n',
                           encoding='utf-8')
-        command = ['xtb', source.name, *spec['flags'], '--opt',
+        command = [binary, source.name, *spec['flags'], '--opt',
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
                    '-P', '1']
         if max_steps:

@@ -198,3 +198,39 @@ def test_the_checkbox_appears_with_the_method_and_takes_over_the_box(editor):
     assert editor["submit_gfn_mult"].disabled is True, (
         "a scanned multiplicity is not one the user is setting"
     )
+
+
+# ---------------------------------------------------------------------------
+# finding xtb
+# ---------------------------------------------------------------------------
+def test_xtb_is_looked_for_the_way_the_rest_of_delfin_looks_for_it():
+    """A kernel does not inherit the login shell's PATH.
+
+    Asking only shutil.which reported an xtb installed in DELFIN's own tool
+    directory -- or in the very environment the dashboard runs from -- as
+    missing, which is what happened.
+    """
+    from delfin.dashboard import gfn_optimize as module
+
+    source = open(module.__file__, encoding="utf-8").read()
+    finder = source.split("def find_xtb")[1].split("\ndef ")[0]
+    assert "find_tool_executable" in finder, (
+        "DELFIN's own resolver knows about qm_tools and XTBHOME; ask it first"
+    )
+    assert "shutil.which" in finder
+    assert "sys.prefix" in finder
+
+
+def test_a_missing_xtb_says_where_it_looked():
+    places = gfn._where_it_looked()
+    assert "qm_tools" in places, "the framework's own directory has to be named"
+    assert "XTBHOME" in places and "PATH" in places
+
+
+@_needs_xtb
+def test_the_resolved_binary_is_the_one_that_runs():
+    found = gfn.find_xtb()
+    assert found and found.endswith("xtb")
+    from pathlib import Path
+
+    assert Path(found).is_file()
