@@ -661,3 +661,13 @@ def test_the_page_says_what_the_playback_is_doing(editor):
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfnplay'" in handler
     assert "_set_mol_status(f'Trajectory: {payload}.')" in handler
+
+
+def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
+    """Both lines carry the same text, so both visible prints it twice."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    assert "mol_status_fs.layout.display = 'none'" in source
+    assert ".submit-fs-overlay .submit-fs-member-status {" in source
+    assert "display: block !important;" in source
