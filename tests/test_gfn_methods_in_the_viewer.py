@@ -545,3 +545,21 @@ def test_an_xtb_error_is_a_failure_not_a_partial_result():
     assert result["xyz"] == broken, "the structure must be left as it was"
     assert result["frames"] == []
     assert "charge" in result["status"] and "overlap" in result["status"]
+
+
+def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
+    """The player counted the frames it had seen, and the count carried over.
+
+    A run with fewer frames than the one before it therefore played nothing --
+    which is why the playback looked like it worked only sometimes.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "run!==play.run" in watcher, "a new run has to reset the count"
+    assert "play.seen=0" in watcher
+
+    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    assert "'run': r" in handler, "every payload has to name its run"
+    assert "state['gfn_run']" in handler

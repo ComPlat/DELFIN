@@ -3512,7 +3512,7 @@ def create_tab(ctx):
             '  var scope=' + json.dumps(submit_scope_id) + ';\n'
             '  window.__delfinGfnPlay=window.__delfinGfnPlay||{};\n'
             '  if(window.__delfinGfnPlay[scope]) return;\n'
-            '  var play={queue:[],at:0,started:0,last:null,seen:0};\n'
+            '  var play={queue:[],at:0,started:0,last:null,seen:0,run:null};\n'
             '  window.__delfinGfnPlay[scope]=play;\n'
             '  var STEP_MS=55;\n'
             '  function read(){\n'
@@ -3521,10 +3521,19 @@ def create_tab(ctx):
             '".submit-gfn-frame textarea, .submit-gfn-frame input");\n'
             '    if(!field) return;\n'
             '    var text=field.value||"";\n'
-            '    if(!text){ play.queue=[]; play.seen=0; play.last=null; return; }\n'
+            '    if(!text){ play.queue=[]; play.seen=0; play.last=null;'
+            ' play.run=null; return; }\n'
             '    var data=null;\n'
             '    try{ data=JSON.parse(text); }catch(e){ return; }\n'
             '    var frames=(data&&data.frames)||[];\n'
+            '    var run=(data&&data.run)||0;\n'
+            '    if(run!==play.run){\n'
+            '      /* A new run. Without this the count of frames already\n'
+            '         played carried over, so a shorter run than the one\n'
+            '         before it played nothing at all -- which is what made\n'
+            '         the playback look like it worked only sometimes. */\n'
+            '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
+            '    }\n'
             '    if(frames.length>play.seen){\n'
             '      for(var i=play.seen;i<frames.length;i++) play.queue.push(frames[i]);\n'
             '      play.seen=frames.length;\n'
@@ -3816,10 +3825,12 @@ def create_tab(ctx):
                         # costs nothing extra -- one run, and the viewer plays
                         # what the optimiser really walked through.
                         trail = list(outcome['frames'])[-400:]
+                        state['gfn_run'] = int(state.get('gfn_run', 0)) + 1
+                        run_id = state['gfn_run']
                         _schedule_ui_update(
-                            lambda t=trail: setattr(
+                            lambda t=trail, r=run_id: setattr(
                                 submit_gfn_frame, 'value',
-                                json.dumps({'frames': t})))
+                                json.dumps({'run': r, 'frames': t})))
                     note = str(outcome.get('status') or '')
                     if 'before converging' in note:
                         # It came back with a geometry, but not a finished one.
