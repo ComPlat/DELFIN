@@ -2094,6 +2094,9 @@ GRID_CSS = (
     ' border:1px solid #c3c9d0; border-radius:3px; }'
     '.dsheet-addr { font-family:monospace; font-size:11px; color:#555; min-width:42px; }'
     '.dsheet-status { font-size:11px; color:#666; }'
+    # Last in the bar and pushed to the corner, so it stays there whatever
+    # the controls before it take up.
+    '.dsheet-zen { margin-left:auto; }'
     '.dsheet-status.dsheet-warn { color:#b26a00; font-weight:600; }'
     '.dsheet-lossy { font-size:11px; color:#8a4b00; background:#fff4e0;'
     ' border:1px solid #f0d3a8; border-bottom:none; padding:3px 8px; flex:0 0 auto; }'
@@ -2268,9 +2271,6 @@ def render_grid_html(
         out.append('<button class="dsheet-btn" data-act="insert_cols">+ Column</button>')
         out.append('<button class="dsheet-btn" data-act="delete_cols">&minus; Column</button>')
         out.append('<span class="dsheet-sep"></span>')
-    out.append('<button class="dsheet-btn dsheet-zen"'
-               ' title="Fullscreen: the table alone (Esc leaves)">&#9974;</button>')
-    out.append('<span class="dsheet-sep"></span>')
     out.append('<span class="dsheet-addr">A1</span>')
     out.append('<input class="dsheet-filter" placeholder="Filter…" spellcheck="false">')
     if editable:
@@ -2286,6 +2286,8 @@ def render_grid_html(
                    '<input type="checkbox" class="dsheet-whole">=</label>')
         out.append('<button class="dsheet-btn dsheet-replace-all">Replace all</button>')
     out.append('<span class="dsheet-status"></span>')
+    out.append('<button class="dsheet-btn dsheet-zen"'
+               ' title="Fullscreen: the table alone (Esc leaves)">&#9974;</button>')
     out.append('</div>')
 
     if lossy_note:
