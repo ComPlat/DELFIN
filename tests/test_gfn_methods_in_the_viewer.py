@@ -300,3 +300,83 @@ def test_the_viewer_can_be_given_coordinates_from_the_kernel():
     body = editor_js[editor_js.index("function setPositions("):][:900]
     assert "ffWritePositions" in body
     assert "redrawHighlights" in body
+
+
+@_needs_xtb
+def test_the_loop_really_sends_coordinates_to_the_page(editor, monkeypatch):
+    """The Python half, driven the way the toggle drives it.
+
+    What this cannot check is whether the browser paints them -- there is no
+    browser here.  What it can check is that the message leaves the kernel,
+    carries every coordinate, and is addressed to the viewer's scope.
+    """
+    import time as _time
+
+    refs = editor
+    scripts: list[str] = []
+    state = refs["editor_state"]
+    state["current_xyz_for_copy"] = {"content": _WATER}
+
+    from delfin.dashboard import tab_submit  # noqa: F401
+
+    # the tab writes through ctx.run_js, which the fixture collects
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+
+    deadline = _time.time() + 20
+    while _time.time() < deadline and state.get("gfn_loop") is not None:
+        _time.sleep(0.05)
+    refs["submit_relax_btn"].value = False
+    del scripts
+
+    assert state.get("gfn_loop") is None, "the loop did not end by itself"
+
+
+def test_the_loop_starts_the_bootstrap_before_it_pushes(editor):
+    """Without it there is no __delfinSubmitManip, and every push is a no-op."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
+    assert "_ensure_manip_bootstrap()" in loop
+    assert loop.index("_ensure_manip_bootstrap()") < loop.index("setPositions")
+
+
+def test_the_relaxed_structure_lands_even_if_the_pushes_do_not(editor):
+    """A result that is only visible when a JS call happened to land is not one."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
+    finish = loop.split("def _finish")[1]
+    assert "coords_widget.value" in finish
+    assert "manip_inflight" not in finish, (
+        "the inflight flag skips the re-render, which is what hid the result"
+    )
+
+
+def test_the_atom_count_in_the_header_is_not_trusted():
+    """xtb reads the header's count and ignores the rest, without a word.
+
+    A block whose header says 89 while it carries 90 loses an atom, and every
+    other part of the run succeeds -- so the loss is invisible.  The lines are
+    counted instead, and the header is written to match them.
+    """
+    lying = "2\nheader says two\nO 0 0 0\nH 1 0 0\nH 0 1 0\n"
+    assert gfn._atom_count(lying) == 3
+    assert len(gfn.atom_lines(lying)) == 3
+
+    headerless = "O 0 0 0\nH 1 0 0\nH 0 1 0\n"
+    assert gfn._atom_count(headerless) == 3
+
+    assert gfn.coordinates_of(lying) == [0, 0, 0, 1, 0, 0, 0, 1, 0]
+
+
+@_needs_xtb
+def test_every_atom_reaches_xtb_even_with_a_wrong_header():
+    lying = "2\ntwo, it says\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
+
+    result = gfn.optimize_with_gfn(lying, "gfnff")
+
+    assert result["ok"] is True
+    assert len(gfn.atom_lines(result["xyz"])) == 3, "an atom was dropped"

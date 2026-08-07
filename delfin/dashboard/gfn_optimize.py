@@ -33,8 +33,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-__all__ = ['GFN_METHODS', 'find_xtb', 'is_gfn_method', 'xtb_available',
-           'optimize_with_gfn', 'optimize_autospin', 'electron_parity']
+__all__ = ['GFN_METHODS', 'atom_lines', 'find_xtb', 'is_gfn_method',
+           'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
+           'electron_parity']
 
 #: What the dropdown offers, and the flags each one means to xtb.
 GFN_METHODS: Dict[str, Dict[str, Any]] = {
@@ -110,14 +111,39 @@ def xtb_available() -> bool:
     return find_xtb() is not None
 
 
-def _atom_count(xyz_text: str) -> int:
-    lines = [line for line in str(xyz_text or '').splitlines() if line.strip()]
-    if not lines:
-        return 0
+def atom_lines(xyz_text: str) -> list:
+    """The coordinate lines themselves, header or no header.
+
+    The count in the first line is not trusted: xtb reads that many atoms and
+    silently ignores the rest, so a block whose header says 89 while carrying
+    90 loses one -- and the loss is invisible, because everything else about
+    the run succeeds.  The lines are counted instead, and the header written
+    to match them.
+    """
+    raw = [line for line in str(xyz_text or '').splitlines() if line.strip()]
+    if not raw:
+        return []
+    start = 0
     try:
-        return int(lines[0].split()[0])
+        int(raw[0].split()[0])
+        start = 2                     # a header and its comment line
     except (ValueError, IndexError):
-        return max(0, len(lines) - 2)
+        start = 0
+    out = []
+    for line in raw[start:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            float(parts[1]), float(parts[2]), float(parts[3])
+        except ValueError:
+            continue
+        out.append(f'{parts[0]} {parts[1]} {parts[2]} {parts[3]}')
+    return out
+
+
+def _atom_count(xyz_text: str) -> int:
+    return len(atom_lines(xyz_text))
 
 
 def _read_optimised(folder: Path, fallback: str) -> Optional[str]:
@@ -179,8 +205,10 @@ def optimize_with_gfn(
     folder = Path(tempfile.mkdtemp(prefix='delfin-gfn-'))
     try:
         source = folder / 'input.xyz'
-        source.write_text(xyz_text if xyz_text.endswith('\n') else xyz_text + '\n',
-                          encoding='utf-8')
+        # Written from the lines, with a header that counts them.
+        body = atom_lines(xyz_text)
+        source.write_text(f'{len(body)}\nfrom the DELFIN viewer\n'
+                          + '\n'.join(body) + '\n', encoding='utf-8')
         command = [binary, source.name, *spec['flags'], '--opt',
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
                    '-P', '1']
@@ -369,12 +397,7 @@ def relax_steps(
 def coordinates_of(xyz_text: str) -> list:
     """The flat [x, y, z, x, y, z, ...] the viewer writes positions from."""
     out: list = []
-    for line in str(xyz_text or '').splitlines()[2:]:
+    for line in atom_lines(xyz_text):
         parts = line.split()
-        if len(parts) < 4:
-            continue
-        try:
-            out.extend((float(parts[1]), float(parts[2]), float(parts[3])))
-        except ValueError:
-            continue
+        out.extend((float(parts[1]), float(parts[2]), float(parts[3])))
     return out

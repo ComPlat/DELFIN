@@ -3500,6 +3500,10 @@ def create_tab(ctx):
             _set_mol_status(f'GFN-FF needs xtb, which was not found.')
             submit_relax_btn.value = False
             return
+        # Without the bootstrap there is no __delfinSubmitManip on the page,
+        # and every coordinate push is a silent no-op -- which is exactly what
+        # "Relaxing with GFN-FF..." and nothing moving looked like.
+        _ensure_manip_bootstrap()
         token = object()
         state['gfn_loop'] = token
         charge = int(submit_gfn_charge.value or 0)
@@ -3540,7 +3544,10 @@ def create_tab(ctx):
                         submit_relax_btn.value = False
                 lines = [ln for ln in current.splitlines()[2:] if ln.strip()]
                 if lines:
-                    state['manip_inflight'] = True
+                    # Written the ordinary way, which re-renders.  The live
+                    # pushes are the nice part; this is the part that has to
+                    # be true -- a relaxation whose result is only visible if
+                    # a JavaScript call happened to land is not a result.
                     coords_widget.value = (
                         f'{len(lines)}\nRelaxed with GFN-FF\n' + '\n'.join(lines))
                 _set_mol_status(
@@ -5246,6 +5253,7 @@ def create_tab(ctx):
         'submit_gfn_mult': submit_gfn_mult,
         'submit_gfn_autospin': submit_gfn_autospin,
         'submit_optimize_btn': submit_optimize_btn,
+        'submit_relax_btn': submit_relax_btn,
         'submit_pick_sync': submit_pick_sync,
         'submit_reset_btn': submit_reset_btn,
         'editor_state': state,
