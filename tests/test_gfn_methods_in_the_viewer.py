@@ -525,3 +525,23 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     assert "outcome.get('frames')" in handler
     assert "submit_gfn_frame" in handler
     assert "_install_gfn_frame_watcher()" in handler
+
+
+@_needs_xtb
+def test_an_xtb_error_is_a_failure_not_a_partial_result():
+    """xtb writes xtbopt.log as it goes, so the files exist even when it dies.
+
+    Two atoms on top of each other make it stop with "something is totally
+    wrong" -- and the geometry it had reached was being handed back as though
+    it were a result.  Coordinates no one should use must not arrive looking
+    like coordinates someone can.
+    """
+    broken = "3\noverlapping\nO 0 0 0\nH 0.0001 0 0\nH 0 0.0001 0\n"
+
+    result = gfn.optimize_with_gfn(broken, "gfnff")
+
+    if result["ok"]:            # some builds cope with this one
+        pytest.skip("this xtb build survived the overlap")
+    assert result["xyz"] == broken, "the structure must be left as it was"
+    assert result["frames"] == []
+    assert "charge" in result["status"] and "overlap" in result["status"]

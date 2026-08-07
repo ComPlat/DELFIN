@@ -311,6 +311,29 @@ def optimize_with_gfn(
                            'the result is not what it says on the button.'),
             }
 
+        # xtb can leave a geometry behind and still have failed: it writes
+        # xtbopt.log as it goes, so the files exist even when it stopped with
+        # "something is totally wrong".  Reporting that as a partial success
+        # hands over coordinates no one should use.
+        if 'abnormal termination' in output or '[ERROR]' in output:
+            said = ''
+            for line in output.splitlines():
+                stripped = line.strip()
+                if stripped.startswith('-') and 'xtb' not in stripped[:4]:
+                    said = stripped.lstrip('-0123456789 ').strip()
+                    if said:
+                        break
+            return {
+                'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': time.perf_counter() - started, 'engine': 'xtb',
+                'version': version, 'hamiltonian': reported or wanted,
+                'frames': [],
+                'status': (f'{label} stopped with an error: '
+                           f'{said or "abnormal termination"}. The structure '
+                           'was left as it was -- check the charge, the '
+                           'multiplicity and whether any atoms overlap.'),
+            }
+
         converged = 'GEOMETRY OPTIMIZATION CONVERGED' in output
         if not converged:
             # The geometry is still better than the one that went in, so it is
