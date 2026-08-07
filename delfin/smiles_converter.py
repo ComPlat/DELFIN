@@ -35095,29 +35095,6 @@ def _smiles_to_xyz_isomers_impl(
             # vorangestellt werden, also die, gegen die legacy entdoppelt werden muss.
             _seen_x = {x for x, _l in _ffree_union}
             _extra = [(x, l) for x, l in results if x not in _seen_x]
-            # ===== NUR SAUBERE FRAMES UEBERNEHMEN (DELFIN_FFFREE_UNION_CLEAN, default OFF) =====
-            # GEMESSEN 2026-08-06 (union180b, 180 Systeme): die rohe Union ist auf der
-            # FAEHIGKEIT genau so additiv wie behauptet -- cap_lost 0, cap_gained 20, gegen den
-            # 01.07.-Stand sogar +26 bei cap_LOST 0.  Sie importiert aber legacys DEFEKTE mit:
-            # 2269 -> 9752 Frames (4,3x), und dadurch smiles_ccdc_regressed 77,
-            # pyramid_frame_regressed 46, tier2_regressed 11.
-            #
-            # Der Kommentar oben ("adding legacy's frames next to ours can only raise them")
-            # gilt fuer die BESTWERT-Terme des Auges -- nicht fuer die Terme, die DEFEKTE
-            # FRAMES ZAEHLEN.  legacy liefert 6,9 % saubere Manifolds gegen 57,2 % FF-frei;
-            # wer seine Frames ungefiltert uebernimmt, uebernimmt diese Quote mit.
-            #
-            # Entscheidend: JEDER dieser Regressionsterme ist im Tor auf
-            # `B[rc].topo_correct_frame` gegated -- er kann per Konstruktion nur auf Systemen
-            # feuern, die im Grundarm SCHON einen gueltigen Frame hatten.  Die 20 Rettungen
-            # sind definitionsgemaess die anderen.  Ein Filter, der nur SAUBERE legacy-Frames
-            # uebernimmt, behaelt also die Rettungen und laesst die Defekte draussen.
-            #
-            # Gefiltert wird pro FRAME, nicht pro System: derselbe Selbst-Gate, den der
-            # FF-freie Bauer auf sich selbst anwendet.  Ein Frame, der sich nicht beurteilen
-            # laesst, wird VERWORFEN (fail-closed) -- der Zweck ist, keine Defekte zu
-            # importieren.  Der Fehlerfall ist pro Frame begrenzt, kann also nicht wie der
-            # Dedup-Fehler die ganze Liste leerlaufen lassen.
             # ===== NUR DIE FEHLENDEN ISOMERE (DELFIN_FFFREE_UNION_ISOMERS, default OFF) =====
             # GEMESSEN 2026-08-06 an union180b, 180 Systeme:
             #   FF-frei allein            2346 Frames
@@ -35153,26 +35130,91 @@ def _smiles_to_xyz_isomers_impl(
                 _extra = [_pick[_k] for _k in _order]
                 _trace_seating("UNION_ISOMERS kept %d of %d legacy frames (%d arrangements already in ffree)"
                                % (len(_extra), _n_before, len(_have)))
-            if _extra and _delfin_env_int("DELFIN_FFFREE_UNION_CLEAN", 0):
-                from delfin.manta.converter_backend import _build_is_clean as _uc_gate
-                import numpy as _uc_np
+            # ===== QUALITAETSFILTER AUF DEM IMPORT (UNION_CLEAN, neu 2026-08-07) =====
+            #
+            # WARUM DIE ERSTE FASSUNG ZU SCHWACH WAR.  Sie schickte jeden legacy-Frame durch
+            # `_build_is_clean` -- und der war dort BLIND fuer genau die Defektart, die legacy
+            # mitbringt: er bekam kein `graph_bonds`, kannte also weder eine FEHLENDE noch eine
+            # ERFUNDENE Bindung, sondern nur "ist dieser Kontakt zu kurz".  Gemessen: er filterte
+            # 15 % der Frames und senkte die Regressionen um nichts Nennenswertes.
+            #
+            # WAS DIE MESSUNG SAGT.  unionreach1k hat bewiesen, dass das Entweder-Oder die ganze
+            # Ursache des Reichweiten-Schadens ist: MULTIBOND_LENGTH_EXEMPT allein cap_lost 40,
+            # mit UNION cap_lost 0 und alle 40 gerettet.  Was UNION selbst noch kostet, ist der
+            # ungefilterte Import: isomers_lost 43, n_good_regressions 23.  Und UNION_ISOMERS
+            # hat gezeigt, dass es NICHT die Menge ist -- Frames 9829 -> 3899, Regressionen nur
+            # -16 %.  Es ist die QUALITAET der importierten Frames.
+            #
+            # DAS KRITERIUM, und warum es hier ueberhaupt geht.  Ein Vergleich Frame-gegen-SMILES
+            # scheitert normalerweise an der ATOMREIHENFOLGE -- genau daran ist der Mechanismus
+            # zwanzig Zeilen weiter oben schon einmal gestorben ("They never coincide, so it
+            # returned 0 every time").  Das Auge loest es ORDNUNGSFREI: aus dem SMILES steht
+            # fest, welche Schwer-Nachbarschaften ein Element haben DARF (ein Nitrat-N {O,O,O},
+            # ein Acetat-C {C}, ein Ether-O {C,C}).  Ein Frame-Atom, dessen wahrgenommene
+            # Nachbarschaft KEINE der erlaubten ist, traegt einen Topologiebruch -- ohne dass
+            # ein einziges Atom zugeordnet werden muesste.
+            #
+            # Das faengt beide Richtungen: fehlender Nachbar = abgeloester Substituent oder
+            # gerissene Bindung; zusaetzlicher Nachbar = verschmolzener Kontakt.  Metalle bleiben
+            # auf BEIDEN Seiten aussen vor -- die Koordinationszahl beurteilt der Polyeder, nicht
+            # dieser Test.  Lizenzsauber: RDKit-Parse plus geometrische Perzeption, keine
+            # Referenzdaten.
+            if _extra and _delfin_env_int("DELFIN_FFFREE_UNION_CLEAN", 0) and mol is not None:
+                try:
+                    from delfin.manta import _bond_decollapse as _uq_bd
+                    import numpy as _uq_np
+                    from collections import Counter as _uq_C
 
-                def _uc_ok(_xyz):
-                    try:
-                        _sy, _co = [], []
-                        for _ln in _xyz.strip().splitlines():
-                            _p = _ln.split()
-                            if len(_p) >= 4:
-                                _sy.append(_p[0])
-                                _co.append([float(_p[1]), float(_p[2]), float(_p[3])])
-                        if not _sy:
-                            return False
-                        return bool(_uc_gate(_sy, _uc_np.array(_co, dtype=float)))
-                    except Exception:
-                        return False          # nicht beurteilbar -> nicht uebernehmen
-                _n_before = len(_extra)
-                _extra = [t for t in _extra if _uc_ok(t[0])]
-                _trace_seating("UNION_CLEAN kept %d of %d legacy frames" % (len(_extra), _n_before))
+                    _allowed = {}
+                    for _a in mol.GetAtoms():
+                        _s = _a.GetSymbol()
+                        if _s == "H" or _uq_bd._is_metal(_s):
+                            continue
+                        _env = _uq_C(nb.GetSymbol() for nb in _a.GetNeighbors()
+                                     if nb.GetSymbol() != "H" and not _uq_bd._is_metal(nb.GetSymbol()))
+                        _allowed.setdefault(_s, set()).add(
+                            tuple(sorted(_env.items())))
+
+                    def _uq_ok(_xyz):
+                        try:
+                            _sy, _co = [], []
+                            for _ln in _xyz.strip().splitlines():
+                                _p = _ln.split()
+                                if len(_p) >= 4:
+                                    _sy.append(_p[0])
+                                    _co.append([float(_p[1]), float(_p[2]), float(_p[3])])
+                            if not _sy:
+                                return False
+                            _P = _uq_np.array(_co, dtype=float)
+                            _nbrs = {}
+                            for _i, _j in _uq_bd._geometric_bonds(_sy, _P):
+                                if _sy[_i] == "H" or _sy[_j] == "H":
+                                    continue
+                                if _uq_bd._is_metal(_sy[_i]) or _uq_bd._is_metal(_sy[_j]):
+                                    continue
+                                _nbrs.setdefault(_i, []).append(_sy[_j])
+                                _nbrs.setdefault(_j, []).append(_sy[_i])
+                            for _k, _s in enumerate(_sy):
+                                if _s == "H" or _uq_bd._is_metal(_s):
+                                    continue
+                                _ok = _allowed.get(_s)
+                                if not _ok:
+                                    continue          # Element nicht im SMILES -> nicht beurteilbar
+                                _e = tuple(sorted(_uq_C(_nbrs.get(_k, [])).items()))
+                                if _e not in _ok:
+                                    return False      # Nachbarschaft, die das Molekuel nicht kennt
+                            return True
+                        except Exception:
+                            return False              # nicht beurteilbar -> nicht uebernehmen
+                    _n0 = len(_extra)
+                    _extra = [t for t in _extra if _uq_ok(t[0])]
+                    _trace_seating("UNION_CLEAN(topo) kept %d of %d legacy frames"
+                                   % (len(_extra), _n0))
+                except Exception as _uq_exc:
+                    _trace_seating("UNION_CLEAN(topo) no-op: %s" % (str(_uq_exc)[:70],))
+            # ZUSAMMENFUEHRUNG: FF-frei zuerst, damit Frame 0 die deterministische
+            # Konstruktion bleibt; legacys geprueftes Extra folgt als weitere
+            # Manifold-Mitglieder.  Keiner der beiden Bauer verliert etwas.
             results = list(_ffree_union) + _extra
         except Exception:
             results = list(_ffree_union) + list(results)
