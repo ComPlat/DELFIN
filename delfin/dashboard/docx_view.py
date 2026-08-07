@@ -781,6 +781,226 @@ def search(document: DocxDocument, term: str, *, limit: int = 2000
     return hits
 
 
+def search_matches(
+    document: DocxDocument,
+    term: str,
+    *,
+    match_case: bool = False,
+    whole_word: bool = False,
+    limit: int = 2000,
+) -> List[DocxHit]:
+    """Every occurrence of *term*, with Word's two search switches.
+
+    ``search`` above is the tab's own always-insensitive find; this is what
+    Find and Replace works from, where the two switches change which matches
+    exist and therefore which of them get replaced.
+    """
+    term = str(term or '')
+    if not term:
+        return []
+    flags = 0 if match_case else re.IGNORECASE
+    pattern = re.escape(term)
+    if whole_word:
+        # \b does not fire between two non-word characters, so a term that
+        # starts or ends with punctuation would never match with the switch on.
+        prefix = r'\b' if term[:1].isalnum() or term[:1] == '_' else ''
+        suffix = r'\b' if term[-1:].isalnum() or term[-1:] == '_' else ''
+        pattern = prefix + pattern + suffix
+    finder = re.compile(pattern, flags)
+    hits: List[DocxHit] = []
+    for index, block in enumerate(document.blocks):
+        for found in finder.finditer(block.text):
+            hits.append(DocxHit(block=index, address=block.address,
+                                start=found.start(), end=found.end()))
+            if len(hits) >= limit:
+                return hits
+    return hits
+
+
+def replace_all(
+    path,
+    term: str,
+    replacement: str,
+    *,
+    match_case: bool = False,
+    whole_word: bool = False,
+) -> Dict[str, Any]:
+    """Replace every occurrence, and say how many and where.
+
+    Word replaces the *characters*, not the paragraph: the formatting on either
+    side of a replaced word stays as it was.  That is why this goes through the
+    same text splice an ordinary edit uses instead of rewriting the paragraph --
+    replacing a word in a bold sentence must not unbolden the sentence.
+
+    Returns ``{'document', 'replaced', 'paragraphs'}``; nothing is written to
+    disk here, so the caller decides when to save.
+    """
+    term = str(term or '')
+    if not term:
+        raise DocxError('There is nothing to search for.')
+    replacement = '' if replacement is None else str(replacement)
+
+    path = Path(path)
+    docx = _docx()
+    try:
+        document = docx.Document(str(path))
+    except Exception as exc:
+        raise DocxError(f'Document could not be opened: {exc}') from exc
+
+    flags = 0 if match_case else re.IGNORECASE
+    pattern = re.escape(term)
+    if whole_word:
+        prefix = r'\b' if term[:1].isalnum() or term[:1] == '_' else ''
+        suffix = r'\b' if term[-1:].isalnum() or term[-1:] == '_' else ''
+        pattern = prefix + pattern + suffix
+    finder = re.compile(pattern, flags)
+
+    replaced = 0
+    touched = 0
+    for paragraph in _all_paragraphs(document):
+        before = paragraph.text
+        after, count = finder.subn(replacement, before)
+        if not count:
+            continue
+        _set_paragraph_text(paragraph, after)
+        replaced += count
+        touched += 1
+    return {'document': document, 'replaced': replaced, 'paragraphs': touched}
+
+
+def insert_paragraph(document, address: str, text: str = '',
+                     *, style: str = 'Normal', before: bool = False):
+    """Add a paragraph next to the one at *address*, and return it.
+
+    Word puts a new paragraph *after* the one the cursor is in when Enter is
+    pressed, which is what this does unless told otherwise.
+    """
+    anchor = _paragraph_at(document, str(address))
+    if anchor is None:
+        raise DocxError(f'There is no paragraph {address!r} in the document.')
+    fresh = anchor.insert_paragraph_before(text or '')
+    if not before:
+        # insert_paragraph_before is the only insertion python-docx offers, so
+        # inserting *after* is that same call one paragraph further on -- or,
+        # at the end of the body, moving the anchor up in front of the new one.
+        anchor._p.addnext(fresh._p)
+    style = check_style(style)
+    try:
+        fresh.style = document.styles[style]
+    except KeyError:
+        pass                       # a template without the style keeps its own
+    return fresh
+
+
+def delete_paragraph(document, address: str) -> None:
+    """Take a paragraph out of the document, as Word does on a whole-line delete."""
+    paragraph = _paragraph_at(document, str(address))
+    if paragraph is None:
+        raise DocxError(f'There is no paragraph {address!r} in the document.')
+    element = paragraph._p
+    parent = element.getparent()
+    if parent is None:
+        raise DocxError('That paragraph is not part of the document any more.')
+    parent.remove(element)
+
+
+def add_table(document, rows: int, cols: int, *, style: str = 'Table Grid',
+              after: str = ''):
+    """Put a table into the document, with lines drawn as Word's default does.
+
+    A table without a style has no borders, which looks like a broken table
+    rather than a plain one, so 'Table Grid' stands in where the template has
+    it.
+    """
+    rows, cols = int(rows), int(cols)
+    if rows < 1 or cols < 1:
+        raise DocxError('A table needs at least one row and one column.')
+    if rows * cols > 4000:
+        raise DocxError('That table is too large to add in one step.')
+    table = document.add_table(rows=rows, cols=cols)
+    try:
+        table.style = document.styles[style]
+    except KeyError:
+        pass                       # the template does not define it; leave plain
+    if after:
+        anchor = _paragraph_at(document, str(after))
+        if anchor is not None:
+            anchor._p.addnext(table._tbl)
+    return table
+
+
+def add_table_row(document, table_index: int):
+    """Append a row, as Tab at the end of a table does in Word."""
+    tables = list(document.tables)
+    index = int(table_index)
+    if not (0 <= index < len(tables)):
+        raise DocxError(f'There is no table {index + 1} in the document.')
+    return tables[index].add_row()
+
+
+def drop_table_row(document, table_index: int, row_index: int) -> None:
+    tables = list(document.tables)
+    index = int(table_index)
+    if not (0 <= index < len(tables)):
+        raise DocxError(f'There is no table {index + 1} in the document.')
+    table = tables[index]
+    rows = list(table.rows)
+    if not (0 <= int(row_index) < len(rows)):
+        raise DocxError('That row is not in the table.')
+    if len(rows) == 1:
+        raise DocxError('A table cannot lose its last row.')
+    element = rows[int(row_index)]._tr
+    element.getparent().remove(element)
+
+
+def add_table_column(document, table_index: int, width_emu: Optional[int] = None):
+    tables = list(document.tables)
+    index = int(table_index)
+    if not (0 <= index < len(tables)):
+        raise DocxError(f'There is no table {index + 1} in the document.')
+    table = tables[index]
+    reference = table.columns[-1].width if table.columns else None
+    return table.add_column(width_emu or reference or 914400)
+
+
+def drop_table_column(document, table_index: int, col_index: int) -> None:
+    """Remove a column: in the file that is one cell out of every row."""
+    tables = list(document.tables)
+    index = int(table_index)
+    if not (0 <= index < len(tables)):
+        raise DocxError(f'There is no table {index + 1} in the document.')
+    table = tables[index]
+    column = int(col_index)
+    if not (0 <= column < len(table.columns)):
+        raise DocxError('That column is not in the table.')
+    if len(table.columns) == 1:
+        raise DocxError('A table cannot lose its last column.')
+    for row in table.rows:
+        cells = list(row.cells)
+        if column < len(cells):
+            element = cells[column]._tc
+            parent = element.getparent()
+            if parent is not None:
+                parent.remove(element)
+    grid = table._tbl.find(
+        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblGrid')
+    if grid is not None:
+        columns = list(grid)
+        if column < len(columns):
+            grid.remove(columns[column])
+
+
+def _all_paragraphs(document):
+    """Every paragraph, the body ones and the ones inside tables."""
+    for paragraph in document.paragraphs:
+        yield paragraph
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    yield paragraph
+
+
 def focus_js(scope_class: str, address: str, start: int, end: int) -> str:
     """Mark one hit and scroll it into view, without touching the rest.
 
