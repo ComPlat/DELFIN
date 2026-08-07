@@ -2792,6 +2792,20 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var state = getState(scopeKey);
         return !!state.autoOpt;
     }
+    /* Coordinates worked out by the kernel, put into the viewer as they
+       arrive.  GFN runs on the server -- there is no engine here to step -- so
+       a GFN relaxation is a sequence of these, one per xtb call. */
+    function setPositions(scopeKey, flat) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer || !flat || !flat.length) return false;
+        var pos = (flat instanceof Float64Array) ? flat : Float64Array.from(flat);
+        if (!ffWritePositions(viewer, pos)) return false;
+        try { applyFixedInternals(scopeKey); } catch (e) {}
+        redrawHighlights(scopeKey);
+        try { viewer.render(); } catch (e) {}
+        return true;
+    }
+
     function autoOptimizeTick(scopeKey) {
         var state = getState(scopeKey);
         if (!state.autoOpt) return;
@@ -3899,6 +3913,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         clear: clearPicks,
         clearSelection: clearSelection,
         setPicks: setPicks,
+        setPositions: setPositions,
         undo: undo,
         setForceField: setForceField,
         readInternal: readInternal,

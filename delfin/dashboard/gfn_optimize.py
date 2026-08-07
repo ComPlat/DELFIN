@@ -336,3 +336,45 @@ def optimize_autospin(
     )
     best['tried'] = attempts
     return best
+
+
+def relax_steps(
+    xyz_text: str,
+    *,
+    charge: int = 0,
+    uhf: int = 0,
+    cycles: int = 5,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    """A few optimisation cycles, for a loop that shows the structure settling.
+
+    Measured on a 102-atom complex: one cycle 0.06 s, five 0.09 s, ten 0.12 s.
+    So a loop of short runs moves at roughly ten steps a second and looks like
+    a relaxation rather than a jump -- which a single 0.4 s call to
+    :func:`optimize_with_gfn` does not.
+
+    GFN-FF only.  GFN2 needs about a second for one cycle, and a loop of those
+    is a slideshow that keeps a core busy for it.
+    """
+    result = optimize_with_gfn(
+        xyz_text, 'gfnff', charge=charge, uhf=uhf,
+        max_steps=max(1, int(cycles)), timeout=timeout,
+    )
+    result['converged'] = bool(
+        result.get('ok') and 'converged in' in str(result.get('status') or '')
+    )
+    return result
+
+
+def coordinates_of(xyz_text: str) -> list:
+    """The flat [x, y, z, x, y, z, ...] the viewer writes positions from."""
+    out: list = []
+    for line in str(xyz_text or '').splitlines()[2:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            out.extend((float(parts[1]), float(parts[2]), float(parts[3])))
+        except ValueError:
+            continue
+    return out

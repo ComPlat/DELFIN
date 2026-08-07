@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import threading
+import time
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -3472,6 +3473,83 @@ def create_tab(ctx):
 
         apply_hybridisation_overrides(perceived, state.get('hyb_overrides') or {})
 
+    #: A relaxation that runs on the server cannot be allowed to run forever:
+    #: each step is an xtb process, and a login node is shared.
+    _GFN_LOOP_SECONDS = 60.0
+    _GFN_LOOP_CYCLES = 5
+
+    def _stop_gfn_loop():
+        state['gfn_loop'] = None
+
+    def _start_gfn_loop():
+        """Relax with GFN-FF while the toggle is on, a few cycles at a time.
+
+        The browser has no GFN engine to step, so each step is a call to xtb
+        and the coordinates come back into the viewer as they arrive: about
+        ten steps a second for a hundred atoms, which reads as a relaxation
+        rather than a jump.  It ends by itself -- converged, out of time, or
+        switched off -- because a loop of processes on a shared machine that
+        only a user can stop is a loop that will not be stopped.
+        """
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            _set_mol_status('Load a structure before relaxing.')
+            submit_relax_btn.value = False
+            return
+        if not _gfn.xtb_available():
+            _set_mol_status(f'GFN-FF needs xtb, which was not found.')
+            submit_relax_btn.value = False
+            return
+        token = object()
+        state['gfn_loop'] = token
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
+        started = time.monotonic()
+        _set_mol_status('Relaxing with GFN-FF...', spinner=True)
+
+        def _work():
+            current = xyz
+            steps = 0
+            reason = 'switched off'
+            while state.get('gfn_loop') is token:
+                if time.monotonic() - started > _GFN_LOOP_SECONDS:
+                    reason = f'stopped after {int(_GFN_LOOP_SECONDS)} s'
+                    break
+                outcome = _gfn.relax_steps(
+                    current, charge=charge, uhf=uhf, cycles=_GFN_LOOP_CYCLES)
+                if not outcome.get('ok'):
+                    reason = str(outcome.get('status') or 'failed')
+                    break
+                current = outcome['xyz']
+                steps += 1
+                flat = _gfn.coordinates_of(current)
+                _schedule_ui_update(lambda f=flat: _run_manip_js(
+                    'if(window.__delfinSubmitManip&&'
+                    'window.__delfinSubmitManip.setPositions)'
+                    'window.__delfinSubmitManip.setPositions('
+                    + json.dumps(submit_scope_id) + ',' + json.dumps(f) + ');'
+                ))
+                if outcome.get('converged'):
+                    reason = 'converged'
+                    break
+
+            def _finish():
+                if state.get('gfn_loop') is token:
+                    state['gfn_loop'] = None
+                    if submit_relax_btn.value:
+                        submit_relax_btn.value = False
+                lines = [ln for ln in current.splitlines()[2:] if ln.strip()]
+                if lines:
+                    state['manip_inflight'] = True
+                    coords_widget.value = (
+                        f'{len(lines)}\nRelaxed with GFN-FF\n' + '\n'.join(lines))
+                _set_mol_status(
+                    f'GFN-FF relaxation: {steps} step(s), {reason}.')
+
+            _schedule_ui_update(_finish)
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.
 
@@ -3553,6 +3631,14 @@ def create_tab(ctx):
             return
         active = bool(submit_relax_btn.value)
         submit_relax_btn.button_style = 'info' if active else ''
+        if str(submit_ff_dd.value) == 'gfnff':
+            # GFN-FF has no engine in the browser; the kernel runs the steps.
+            if active:
+                _start_gfn_loop()
+            else:
+                _stop_gfn_loop()
+            return
+        _stop_gfn_loop()
         if not active:
             _ensure_manip_bootstrap()
             _set_ff_notes([])

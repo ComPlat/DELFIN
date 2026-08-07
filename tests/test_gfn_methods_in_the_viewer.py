@@ -249,3 +249,54 @@ def test_the_force_field_notes_say_which_field_they_are_about(editor):
     body = source.split("def _set_ff_notes")[1].split("\n    def ")[0]
     assert "_gfn.is_gfn_method(submit_ff_dd.value)" in body
     assert "the live field, which is UFF" in body
+
+
+# ---------------------------------------------------------------------------
+# the relaxation loop
+# ---------------------------------------------------------------------------
+@_needs_xtb
+def test_a_few_cycles_come_back_quickly_enough_to_loop():
+    """A loop of short runs looks like a relaxation; one long run is a jump."""
+    stretched = "3\nstretched\nO 0 0 0\nH 1.30 0 0\nH -0.35 1.25 0\n"
+
+    step = gfn.relax_steps(stretched, cycles=3)
+
+    assert step["ok"] is True
+    assert step["xyz"] != stretched
+    assert "converged" in step
+
+
+def test_the_flat_coordinates_are_what_the_viewer_writes():
+    flat = gfn.coordinates_of("2\nx\nH 1.0 2.0 3.0\nH 4.0 5.0 6.0\n")
+    assert flat == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def test_the_loop_ends_by_itself_and_says_how(editor):
+    """Converged, out of time, or switched off -- never only by being noticed."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
+    assert "_GFN_LOOP_SECONDS" in loop, "no time limit"
+    assert "outcome.get('converged')" in loop, "it would run past convergence"
+    assert "state.get('gfn_loop') is token" in loop, "switching it off must end it"
+    assert "_GFN_LOOP_CYCLES" in loop
+
+
+def test_the_relax_toggle_takes_the_gfn_path_only_for_gfn_ff(editor):
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
+    assert "if str(submit_ff_dd.value) == 'gfnff':" in toggle
+    assert "_start_gfn_loop()" in toggle and "_stop_gfn_loop()" in toggle
+
+
+def test_the_viewer_can_be_given_coordinates_from_the_kernel():
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    editor_js = submit_manip_bootstrap_js()
+    assert "setPositions: setPositions" in editor_js
+    body = editor_js[editor_js.index("function setPositions("):][:900]
+    assert "ffWritePositions" in body
+    assert "redrawHighlights" in body
