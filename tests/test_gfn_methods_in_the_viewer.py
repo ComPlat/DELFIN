@@ -234,3 +234,18 @@ def test_the_resolved_binary_is_the_one_that_runs():
     from pathlib import Path
 
     assert Path(found).is_file()
+
+
+def test_the_force_field_notes_say_which_field_they_are_about(editor):
+    """They come from the live field, which is UFF whatever the box says.
+
+    Read next to a box saying GFN2-xTB they look like GFN's notes, which is
+    how "GFN behaves exactly like UFF" gets concluded from a panel that never
+    claimed to describe GFN.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    body = source.split("def _set_ff_notes")[1].split("\n    def ")[0]
+    assert "_gfn.is_gfn_method(submit_ff_dd.value)" in body
+    assert "the live field, which is UFF" in body

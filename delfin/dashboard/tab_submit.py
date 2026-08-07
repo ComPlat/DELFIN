@@ -3381,6 +3381,17 @@ def create_tab(ctx):
     def _set_ff_notes(notes):
         """Show what the force field had to approximate, under the viewer."""
         rendered = [html.escape(str(note)) for note in notes if str(note).strip()]
+        if rendered and _gfn.is_gfn_method(submit_ff_dd.value):
+            # These come from the field that runs in the browser, which is UFF
+            # whatever the method box says -- and read as though GFN had
+            # produced them, which is how "GFN behaves exactly like UFF" gets
+            # concluded from a panel that never claimed otherwise.
+            label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+            rendered.insert(0, html.escape(
+                f'These notes are about the live field, which is UFF: it runs '
+                f'in the browser so that dragging follows the mouse. '
+                f'{label} runs when Optimise is pressed, and says so in the '
+                f'status line when it has.'))
         if not rendered:
             submit_ff_notes.value = ''
             return
