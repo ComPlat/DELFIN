@@ -2352,6 +2352,22 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
         _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))   # #279/#281
+        # GRAPH-ANKER FUER DEN ADDITIVEN PFAD (2026-08-06).  Der Selbst-Gate bekam hier
+        # `exempt_pairs`, aber NIE `graph_bonds` -- und sein Riss-Test haengt an genau dieser
+        # Vorbedingung (`if graph_bonds and DELFIN_FFFREE_TORN_GATE`).  Auf allen additiv
+        # enumerierten Frames war der Gate damit STRUKTURELL unerreichbar, obwohl sein eigener
+        # Kommentar ihn "the single largest blind direction we have" nennt.
+        # GEMESSEN: tpr6cn6 (TPR6 auf 69 CN6-Systemen) verbesserte 40 von 40 Systemen,
+        # mean -8,45, cap_lost 0 -- und scheiterte allein daran, dass die hinzugefuegten
+        # Prismen-Frames zu 28 % hart sind gegen einen Boden von 4,7 %.  Die Defekttypen
+        # sagen warum: smiles_topology 17 gegen 1, core_torn 3 gegen 0.  Die Liganden REISSEN.
+        # tpr6torn (TPR6+TORN_GATE gegen TPR6) meldete dann 0/24 Reichweite -- der Gate kam
+        # gar nicht an.  Diese Zeile ist der Grund.
+        # `_graph_bonds_from_blocks` nimmt laut eigenem Docstring genau dasselbe
+        # (ligand_mol, block_offset)-Layout wie `_exempt_from_blocks` -- gleiche Quelle,
+        # gleiche Zeile, keine neue Annahme.  Ohne TORN_GATE bleibt alles byte-identisch,
+        # denn der Gate liest den Parameter nur unter seinem eigenen Env-Schalter.
+        _gb = _graph_bonds_from_blocks(_heteroleptic_block_offsets(vertex_specs))
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], geom_name, vertex_specs)
         except Exception:
@@ -2360,7 +2376,8 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
             continue
         syms, P = built
         syms, P = _maybe_relax(syms, P)
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex):
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex,
+                               graph_bonds=_gb):
             continue
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
