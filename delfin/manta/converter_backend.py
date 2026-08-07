@@ -1222,6 +1222,40 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 continue
             if float(np.linalg.norm(P[i] - P[j])) > _torn_f * _bd._ideal_bond(syms[i], syms[j]):
                 return _gate_no("TORN_BOND")                              # the graph requires this bond; it is torn
+    # ===== KUENSTLICHE BINDUNG (DELFIN_FFFREE_SPURIOUS_BOND, default OFF -> byte-identisch) =====
+    # Die Kehrseite des Riss-Tests direkt darueber.  TORN_BOND fragt "fehlt eine Bindung, die der
+    # Graph verlangt?".  Niemand fragt "gibt es eine Bindung, die er NICHT verlangt?".
+    #
+    # WARUM DAS NICHT SCHON GEFANGEN WIRD.  Die GROSS_OVERLAP-Schleife unten ueberspringt jedes
+    # Paar mit `if (i, j) in bset: continue` -- also jede WAHRGENOMMENE Bindung.  Ein kuenstlicher
+    # Kontakt bei ~1,5 A wird als voellig normale kovalente Bindung wahrgenommen, landet in bset
+    # und wird uebersprungen.  Ihre 0,60-Schwelle sieht nur echte Atom-Ueberlappung.  Der Defekt
+    # liegt also strukturell im blinden Bereich zwischen beiden Tests.
+    #
+    # GEMESSEN, tpr6early (TPR6 auf frueh-UM-CN6): 17 von 17 Systemen besser, keines schlechter,
+    # mean -9,21, capability_lost 0, historischer Boden BESTANDEN.  Einziger Rest: die 77
+    # hinzugefuegten Prismen-Frames sind zu 30 % hart, Defekttyp smiles_topology -- laut Auge
+    # "a frame atom whose perceived heavy-neighbour set does not match ANY the SMILES expects".
+    # Physikalische Ursache: im trigonalen Prisma stehen die Dreiecksflaechen auf DECKUNG,
+    # benachbarte Vertices sind ~2,4 A statt 2,83 A auseinander -- Liganden ruecken zusammen,
+    # bis die Wahrnehmung eine Bindung sieht, die es chemisch nicht gibt.
+    #
+    # Damit ist es genau das Kriterium des Users: ein Isomer, das nur mit einer chemisch nicht
+    # existenten Bindung baubar ist, brauchen wir nicht -- die 54 SAUBEREN neuen Frames schon.
+    # Ein Distanz-Schwellwert waere hier das falsche Werkzeug (er trennt die beiden Faelle nicht);
+    # die Sollmenge tut es exakt.  Metalle und H bleiben aussen vor: M-D-Abstaende variieren
+    # legitim weit, und graph_bonds fuehrt nur Schwer-Schwer-Bindungen.
+    if graph_bonds and os.environ.get("DELFIN_FFFREE_SPURIOUS_BOND", "0") == "1":
+        _req = {(min(i, j), max(i, j)) for i, j in graph_bonds}
+        for i, j in bonds:
+            if i >= len(syms) or j >= len(syms):
+                continue
+            if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
+                continue
+            if syms[i] == "H" or syms[j] == "H":
+                continue
+            if (min(i, j), max(i, j)) not in _req:
+                return _gate_no("SPURIOUS_BOND")     # der Graph verlangt sie nicht; sie ist erfunden
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
     for i in range(n):
