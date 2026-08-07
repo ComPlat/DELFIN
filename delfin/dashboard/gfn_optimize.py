@@ -211,7 +211,7 @@ def optimize_with_gfn(
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                'seconds': 0.0, 'status': f'{method!r} is not a GFN method.'}
+                'seconds': 0.0, 'frames': [], 'status': f'{method!r} is not a GFN method.'}
     spec = GFN_METHODS[key]
     label = spec['label']
 
@@ -221,12 +221,12 @@ def optimize_with_gfn(
     atoms = _atom_count(xyz_text)
     if atoms < 2:
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                'seconds': 0.0, 'status': 'There is nothing to optimise.'}
+                'seconds': 0.0, 'frames': [], 'status': 'There is nothing to optimise.'}
     ceiling = int(max_atoms if max_atoms is not None else spec['max_atoms'])
     if atoms > ceiling:
         return {
             'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-            'seconds': 0.0,
+            'seconds': 0.0, 'frames': [],
             'status': (f'{atoms} atoms is past the {label} limit of {ceiling} '
                        'for an interactive run; submit it as a job instead.'),
         }
@@ -234,7 +234,7 @@ def optimize_with_gfn(
     binary = find_xtb()
     if binary is None:
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                'seconds': 0.0,
+                'seconds': 0.0, 'frames': [],
                 'status': (f'{label} needs xtb, which was not found in '
                            f'{_where_it_looked()}.')}
 
@@ -263,7 +263,7 @@ def optimize_with_gfn(
         except subprocess.TimeoutExpired:
             return {
                 'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                'seconds': time.perf_counter() - started,
+                'seconds': time.perf_counter() - started, 'frames': [],
                 'status': (f'{label} did not finish within {int(timeout)} s '
                            'and was stopped.'),
             }
@@ -286,7 +286,10 @@ def optimize_with_gfn(
                     reason = line.strip()
                     break
             return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                    'seconds': seconds, 'status': f'{label}: {reason}.'}
+                    'seconds': seconds, 'frames': [],
+                    'status': (f'{label}: {reason}. The structure was left as '
+                               'it was -- check the charge, the multiplicity '
+                               'and whether any atoms overlap.')}
 
         # Which program, which version, which Hamiltonian -- read out of the
         # run.  Passing --gfn 2 and being given GFN2 are two different claims,
@@ -306,7 +309,7 @@ def optimize_with_gfn(
             return {
                 'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
                 'seconds': time.perf_counter() - started, 'engine': 'xtb',
-                'version': version, 'hamiltonian': reported,
+                'frames': [], 'version': version, 'hamiltonian': reported,
                 'status': (f'{label} was asked for and xtb ran {reported}; '
                            'the result is not what it says on the button.'),
             }
