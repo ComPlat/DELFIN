@@ -1440,7 +1440,7 @@ def create_tab(ctx):
         profile = get_viewer_profile()
         if not profile['enabled']:
             with viewer_output:
-                clear_output()
+                clear_output(wait=True)
                 display(HTML(viewer_disabled_html()))
             return
         mol3d_counter[0] += 1
@@ -1458,7 +1458,7 @@ def create_tab(ctx):
                 "viewer.addVolumetricData(molData,'cube',{isoval:-0.02,color:'#b00010',opacity:0.85});"
             )
         with viewer_output:
-            clear_output()
+            clear_output(wait=True)
             display(
                 HTML(
                     f"""
@@ -1602,7 +1602,7 @@ def create_tab(ctx):
         profile = get_viewer_profile()
         if not profile['enabled']:
             with viewer_output:
-                clear_output()
+                clear_output(wait=True)
                 display(HTML(viewer_disabled_html()))
             return
         idx = max(0, min(len(frames) - 1, int(state.get("current_xyz_index", 0))))
@@ -1637,7 +1637,7 @@ def create_tab(ctx):
         style_js = profile['style_js']
         viewer_config_js = profile['viewer_config_js']
         with viewer_output:
-            clear_output()
+            clear_output(wait=True)
             display(
                 HTML(
                     f"""

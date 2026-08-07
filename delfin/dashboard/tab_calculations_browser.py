@@ -7298,7 +7298,7 @@ def create_tab(ctx):
         </script>
         """
         with output_widget:
-            clear_output()
+            clear_output(wait=True)
             display(HTML(html))
 
     def calc_update_xyz_viewer(initial_load=False):
@@ -8862,7 +8862,7 @@ def create_tab(ctx):
                 '<span style="color:#555;">Paste reference coordinates and click RMSD.</span>'
             )
             with calc_rmsd_preview:
-                clear_output()
+                clear_output(wait=True)
                 display(HTML(
                     f"<div style='height:{CALC_RMSD_PANEL_HEIGHT};display:flex;align-items:center;justify-content:center;"
                     "color:#666;border:1px dashed #bbb;background:#fafafa;'>"

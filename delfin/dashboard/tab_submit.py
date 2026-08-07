@@ -2834,7 +2834,7 @@ def create_tab(ctx):
         batch_text = smiles_batch_widget.value.strip()
         if raw_input and batch_text:
             with output_area:
-                clear_output()
+                clear_output(wait=True)
                 print(
                     'Warning: both the single-job input and the batch list '
                     'are filled — submission cannot proceed. Please clear '
