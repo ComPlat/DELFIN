@@ -261,6 +261,55 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
     adj, _bonds = _TR._adjacency(syms, P0, bond_pairs)
     excl = _TR._excl_1_2_3(adj, n)
     lig = _ligand_of_atom(n, syms, bond_pairs, P0)
+
+    # ===== LIGAND-SCHWENK (DELFIN_FFFREE_LIGAND_SWING, default OFF -> byte-identisch) =====
+    #
+    # DIE ÜBERBESTIMMUNG.  Dieser Pass friert Metall UND ALLE DONOREN als ATOME ein; der
+    # Polyeder ist dadurch "invariant by construction".  Genau deshalb hat ein STARRES
+    # Chelat (acac, bipy, phen) hier NULL Freiheitsgrade: seine zwei Donoren legen die
+    # Ligandlage vollstaendig fest, innere Torsionen gibt es nicht, und identify_dofs
+    # verwirft jede Drehung, deren bewegte Haelfte einen eingefrorenen Donor enthaelt.
+    # Was beim Setzen kollidiert, kollidiert damit fuer immer.
+    #
+    # GEMESSEN, 185 869 Frames des 1000er-Pools: intclash_pair 18,01 % gegen 0,00 % im
+    # Kristall -- der groesste Einzelposten der ganzen Ausgabe, und im Kristall existiert
+    # er nicht.  Echte Kristalle loesen ihn, indem sie den Polyeder ein paar Grad
+    # VERBIEGEN.  Wir koennen das nicht, weil wir die ATOME festhalten statt der GROESSE,
+    # die chemisch wirklich invariant ist.
+    #
+    # DER FEHLENDE BEWEGUNGSTYP.  Eine Starrkoerperdrehung eines GANZEN Liganden um das
+    # METALLZENTRUM erhaelt JEDEN M-D-Abstand exakt (Drehung um M laesst alle Radien
+    # unveraendert) und aendert ausschliesslich die M-D-RICHTUNGEN.  Damit ist die
+    # chemisch harte Groesse -- die Bindungslaenge -- weiter exakt gehalten, waehrend die
+    # weiche Groesse -- der Vertexwinkel -- innerhalb eines Bandes nachgeben darf.
+    # Fuer einen Monodentaten ist das die schon vorhandene M-D-Achsendrehung; fuer ein
+    # CHELAT ist es neu: es schwenkt die Chelatebene um die Achse M -> Donorschwerpunkt.
+    #
+    # Der Schwenk ist eng gedeckelt (LIGAND_SWING_DEG, Vorgabe 8 Grad).  Diese Zahl ist
+    # bewusst KONSERVATIV und keine gemessene Kalibrierung -- das gemessene Band waere
+    # das p99.9-Fenster sauberer CCDC-Kristalle auf der coord_angle-Achse.  Bis das
+    # verdrahtet ist, gilt: lieber zu wenig Nachgiebigkeit als eine geratene Schwelle,
+    # die neben der Verteilung liegt (MONO_REACH_18 war genau dieser Fehler).
+    if _TR._env_int("DELFIN_FFFREE_LIGAND_SWING", 0, 0, 1):
+        _swing_deg = _TR._env_int("DELFIN_FFFREE_LIGAND_SWING_DEG", 8, 1, 30)
+        _swings = []
+        for _lid in sorted({int(x) for x in lig if int(x) >= 0}):
+            _atoms = [i for i in range(n) if int(lig[i]) == _lid]
+            _don = [i for i in _atoms if i in frozen_set]
+            if len(_don) < 2:
+                continue          # monodentat: die M-D-Achsendrehung deckt es schon ab
+            _m = next((i for i in metals), None)
+            if _m is None:
+                continue
+            _c = P0[_don].mean(axis=0) - P0[_m]
+            if float(np.linalg.norm(_c)) < 1e-6:
+                continue
+            _swings.append({"anchor": int(_m), "pivot": -1, "axis_vec": _c,
+                            "rotating": _atoms, "max_deg": int(_swing_deg),
+                            "score": 10_000 + len(_atoms)})
+        # Schwenks ZUERST: sie bewegen die meiste Masse und loesen Interligand-Ueberlapp
+        # am direktesten -- dieselbe Begruendung, aus der die M-D-Spins vorne stehen.
+        ordered = _swings + ordered
     heavy, light = _inter_mask(syms, lig, excl)
     if not heavy.any() and not light.any():
         return P0                                     # nothing inter-ligand to declash
@@ -287,12 +336,24 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
             pivot = dof["pivot"]
             rot = dof["rotating"]
             origin = Pcur[anchor]
-            axis = Pcur[pivot] - Pcur[anchor]
+            # Ein Ligand-Schwenk bringt seine Achse als VEKTOR mit (M -> Donorschwerpunkt);
+            # er laesst sich nicht als Atompaar ausdruecken, weil der Schwerpunkt kein Atom
+            # ist.  Alle uebrigen DOFs bleiben unveraendert atompaar-definiert.
+            _av = dof.get("axis_vec")
+            axis = np.asarray(_av, dtype=float) if _av is not None else (Pcur[pivot] - Pcur[anchor])
             if float(np.linalg.norm(axis)) < 1e-9:
                 continue
+            # Gedeckelter Schwenk: nur das enge Winkelfenster abtasten, nicht der Vollkreis.
+            _md = dof.get("max_deg")
+            if _md:
+                _step = max(1, int(_md) // 4)
+                _dofs_angles = [math.radians(d) for d in
+                                range(-int(_md), int(_md) + 1, _step) if d != 0]
+            else:
+                _dofs_angles = angles
             local_best_loss = best_loss
             local_best_P = None
-            for ang in angles:
+            for ang in _dofs_angles:
                 if abs(ang) < 1e-12:
                     continue
                 trial = _TR._rotate_subtree(Pcur, origin, axis, ang, rot)
