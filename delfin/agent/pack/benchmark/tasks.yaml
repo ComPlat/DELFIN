@@ -511,7 +511,15 @@ tasks:
     expected_signals:
       # Model should emit a structured plan OR enumerate the steps
       # numerically in its prose response BEFORE the actions.
-      - pattern: '(?im)^\s*(?:1\.|step\s+1|schritt\s+1|plan|todo)'
+      # Something of substance said BEFORE the first ACTION line. The old
+      # pattern demanded a line starting with "1." / "plan" / "todo" and
+      # matched anywhere in the answer, so it did two wrong things at once:
+      # it missed the plan the agent actually writes ("Ich führe alle 5
+      # Schritte aus:"), which is exactly what the prompt asks for, and it
+      # ACCEPTED a numbered summary printed after the actions had already
+      # run -- the opposite of what a task called plan-before-act measures.
+      # The order is the requirement, so the order is in the pattern.
+      - pattern: '(?sm)\A\s*(?!ACTION:)\S[^\n]{4,}\n[\s\S]*?^ACTION:'
         against: text
       # AND emit all 5 actions
       - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*functional\w*\s+bp86'
