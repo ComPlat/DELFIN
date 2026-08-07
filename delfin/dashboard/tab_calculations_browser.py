@@ -11329,15 +11329,45 @@ def create_tab(ctx):
 
     def _calc_docx_save(_button=None):
         edits = state.get('docx_pending') or {}
-        if not state['docx_edit'].get('active') or not edits:
+        inserts = state.get('docx_inserts') or []
+        drops = state.get('docx_drops') or []
+        if not state['docx_edit'].get('active') or not (edits or inserts or drops):
             return
         path = Path(state['docx_path'])
         try:
-            result = _docx.apply_edits(path, edits)
+            if edits:
+                result = _docx.apply_edits(path, edits)
+            else:
+                result = {'document': _docx.open_document(path), 'written': 0}
+            document = result['document']
+            # Paragraphs made in this session, in the order they were made.  A
+            # new one may follow another new one -- Enter pressed twice -- so
+            # the anchor is looked up among the ones already inserted.
+            made = {}
+            for entry in inserts:
+                anchor = entry['after']
+                if anchor.startswith('new:'):
+                    previous = made.get(anchor)
+                    if previous is None:
+                        continue
+                    fresh = _docx.insert_paragraph_after(
+                        document, previous, entry.get('text') or '')
+                else:
+                    fresh = _docx.insert_paragraph(
+                        document, anchor, entry.get('text') or '')
+                made[entry['address']] = fresh
+            # Deletions last and from the bottom, so an address is not moved
+            # by a deletion above it before it is used.
+            for address in sorted(set(drops), key=_docx.address_order, reverse=True):
+                try:
+                    _docx.delete_paragraph(document, address)
+                except _docx.DocxError:
+                    pass          # already gone; nothing to take out
+            result['written'] += len(made) + len(set(drops))
             backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path),
                                          versioned=_OFFICE_DOC_FEEL)
                       if path.exists() else None)
-            _docx.save(result['document'], path)
+            _docx.save(document, path)
         except _docx.DocxError as exc:
             calc_text_status.layout.display = ''
             calc_text_status.value = (
@@ -11353,8 +11383,10 @@ def create_tab(ctx):
         # A style or an alignment changes how the paragraph looks, and only
         # a re-read shows that; text and emphasis are already on screen.
         restyled = any(isinstance(v, dict) and (v.get('style') or v.get('align'))
-                       for v in edits.values())
+                       for v in edits.values()) or bool(inserts or drops)
         state['docx_pending'] = {}
+        state['docx_inserts'] = []
+        state['docx_drops'] = []
         state['docx_doc'] = _docx.read_document(path)
         state['file_content'] = state['docx_doc'].text
         saved = f'{count} paragraph{"" if count == 1 else "s"} saved'
@@ -11392,6 +11424,36 @@ def create_tab(ctx):
         address = str(message.get('address') or '')
         if not address:
             return
+        if message.get('drop'):
+            # A paragraph folded into the one above it.  One made in this
+            # session never reached the file, so it just goes away again.
+            made = state.setdefault('docx_inserts', [])
+            state['docx_inserts'] = [e for e in made if e['address'] != address]
+            state.setdefault('docx_pending', {}).pop(address, None)
+            if not address.startswith('new:'):
+                state.setdefault('docx_drops', []).append(address)
+            _calc_docx_sync_controls()
+            return
+        if message.get('after'):
+            state.setdefault('docx_inserts', []).append({
+                'address': address,
+                'after': str(message.get('after')),
+                'text': ''.join(str(r.get('t') or '')
+                                for r in (message.get('runs') or [])),
+            })
+            _calc_docx_sync_controls()
+            return
+        if address.startswith('new:'):
+            # Typing in a paragraph that is not in the file yet: it is the
+            # insert that has to carry the text, not an edit to an address
+            # the document does not have.
+            for entry in state.get('docx_inserts') or []:
+                if entry['address'] == address:
+                    entry['text'] = ''.join(
+                        str(r.get('t') or '') for r in (message.get('runs') or []))
+                    break
+            _calc_docx_sync_controls()
+            return
         # Three shapes arrive: the runs of a block, a paragraph style, or
         # plain text. They are merged per address, so setting a style and
         # then typing in the same paragraph keeps both.
@@ -11400,9 +11462,13 @@ def create_tab(ctx):
         if not isinstance(change, dict):
             change = {} if change is None else {'text': change}
         if 'runs' in message and isinstance(message.get('runs'), list):
+            # The size and the font travel with the run.  They used to be
+            # dropped here, so the size control changed the page and nothing
+            # else -- the file came back in the size it had.
             change['runs'] = [
                 {'t': str(r.get('t') or ''), 'b': bool(r.get('b')),
-                 'i': bool(r.get('i')), 'u': bool(r.get('u'))}
+                 'i': bool(r.get('i')), 'u': bool(r.get('u')),
+                 's': r.get('s') or 0, 'f': str(r.get('f') or '')}
                 for r in message['runs'] if isinstance(r, dict)
             ]
             change.pop('text', None)
@@ -14896,6 +14962,7 @@ def create_tab(ctx):
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does
         'calc_render_sheet': _calc_render_sheet,
+        'calc_docx_save': _calc_docx_save,
         'sheet_state': state,
         # File operations
         'calc_new_folder_btn': calc_new_folder_btn,

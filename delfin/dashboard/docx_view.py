@@ -27,10 +27,15 @@ Emphasis and paragraph style can be set. A heading is made by naming the
 document's own style, never by turning text big and bold: the style is
 what carries the look and what the table of contents reads.
 
-What is deliberately not offered: adding or removing paragraphs, and
-editing anything outside the body. Those shift the addresses every block
-is written back through, and a control that half-does that would be worse
-than none.
+Enter makes a paragraph, as it does in Word. That shifts the addresses every
+later block is written back through, which is why it was withheld: the answer
+is that a new paragraph is not written straight away but carried as an insert
+against the block it follows, and the addresses are resolved once, in order, at
+save time. The paragraph it starts takes the style Word would give it -- the
+style's own "style for the following paragraph", so Enter after a heading
+returns to body text.
+
+What is still not offered: editing anything outside the body and the tables.
 """
 
 from __future__ import annotations
@@ -113,9 +118,9 @@ def _docx():
 # Reading
 # ---------------------------------------------------------------------------
 
-def _runs_of(paragraph) -> List[Tuple[str, bool, bool, bool, Optional[float]]]:
-    """The paragraph's runs with the emphasis and size each one carries."""
-    out: List[Tuple[str, bool, bool, bool, Optional[float]]] = []
+def _runs_of(paragraph):
+    """The paragraph's runs with the emphasis, size and font each one carries."""
+    out = []
     for run in getattr(paragraph, 'runs', []) or []:
         text = run.text or ''
         if not text:
@@ -126,8 +131,13 @@ def _runs_of(paragraph) -> List[Tuple[str, bool, bool, bool, Optional[float]]]:
                 size = float(run.font.size.pt)
         except Exception:
             size = None
+        name = ''
+        try:
+            name = str(run.font.name or '')
+        except Exception:
+            name = ''
         out.append((text, bool(run.bold), bool(run.italic),
-                    bool(run.underline), size))
+                    bool(run.underline), size, name))
     return out
 
 
@@ -345,7 +355,10 @@ DOC_CSS = (
     ' border:1px solid #c8ced4; border-radius:4px; background:#fff;'
     ' color:#1f2937; line-height:1; padding:0;'
     ' display:inline-flex; align-items:center; justify-content:center; }'
-    '.dw-b { font-weight:700; }'
+    # 'dw-b' is the editable paragraph block, which carries a 9px bottom
+    # margin -- so the Bold button wearing the same class sat 9px above its
+    # neighbours.  The button is 'dw-bold'.
+    '.dw-bold { font-weight:700; }'
     '.dw-i { font-style:italic; font-family:Georgia,serif; }'
     '.dw-u { text-decoration:underline; text-underline-offset:2px; }'
     '.dw-btn:hover { border-color:#1565c0; color:#12447a; }'
@@ -376,9 +389,14 @@ def toolbar_html(current: str = 'Normal') -> str:
     # The letters are plain and the button carries the styling. A <b>, an
     # <i> and a <u> inside three buttons have three different line boxes,
     # so the three buttons stopped lining up with each other.
-    out.append('<button class="dw-btn dw-b" title="Bold (Ctrl+B)">B</button>')
+    out.append('<button class="dw-btn dw-bold" title="Bold (Ctrl+B)">B</button>')
     out.append('<button class="dw-btn dw-i" title="Italic (Ctrl+I)">I</button>')
     out.append('<button class="dw-btn dw-u" title="Underline (Ctrl+U)">U</button>')
+    out.append('<select class="dw-font" title="Font">')
+    out.append('<option value="">Font</option>')
+    for name in FONT_NAMES:
+        out.append(f'<option value="{_html.escape(name, quote=True)}">{_html.escape(name)}</option>')
+    out.append('</select>')
     out.append('<select class="dw-size" title="Font size">')
     out.append('<option value="">Size</option>')
     for size in FONT_SIZES:
@@ -457,6 +475,14 @@ def render_html(document: DocxDocument, *, editable: bool = False) -> str:
 # Sizes in points, as Word lists them.
 FONT_SIZES: Tuple[int, ...] = (8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32)
 
+# The typefaces Word offers by default, which are the ones a reader is likely
+# to have.  A font a machine does not have is substituted by the reader's
+# machine, so offering a long list would promise more than a document can keep.
+FONT_NAMES: Tuple[str, ...] = (
+    'Calibri', 'Cambria', 'Arial', 'Times New Roman', 'Helvetica',
+    'Georgia', 'Verdana', 'Courier New', 'Consolas',
+)
+
 # Where the text sits in the line. Paragraph-level, like the style.
 ALIGNMENTS: Tuple[Tuple[str, str], ...] = (
     ('Left', 'left'),
@@ -484,6 +510,17 @@ def check_style(name: Any) -> str:
     if text not in _KNOWN_STYLES:
         raise DocxError(f'{text!r} is not a paragraph style this view sets.')
     return text
+
+
+def check_font(name: Any) -> str:
+    """A typeface this view offers, or '' for "leave it as it was"."""
+    text = str(name or '').strip()
+    if not text:
+        return ''
+    for offered in FONT_NAMES:
+        if offered.lower() == text.lower():
+            return offered
+    raise DocxError(f'{text!r} is not one of the fonts this view offers.')
 
 
 def check_alignment(name: Any) -> str:
@@ -573,6 +610,19 @@ def _set_paragraph_runs(paragraph, runs: Sequence[Mapping[str, Any]]) -> None:
             from docx.shared import Pt
 
             run.font.size = Pt(size)
+        font_name = check_font(spec.get('f'))
+        if font_name:
+            # Word stores the typeface three times over -- Latin, complex
+            # script and East Asian -- and a reader that only finds one of
+            # them falls back to the theme font, which is how a font change
+            # ends up looking as though it did not happen.
+            from docx.oxml.ns import qn
+
+            run.font.name = font_name
+            rpr = run._element.get_or_add_rPr()
+            fonts = rpr.get_or_add_rFonts()
+            for attr in ('w:ascii', 'w:hAnsi', 'w:cs', 'w:eastAsia'):
+                fonts.set(qn(attr), font_name)
     if not paragraph.runs:
         paragraph.add_run('')
 
@@ -591,9 +641,11 @@ def runs_differ(before: Sequence[Sequence[Any]],
             return None
 
     was = [(bool(run[1]), bool(run[2]), bool(run[3]),
-            _size(run[4] if len(run) > 4 else None)) for run in before]
+            _size(run[4] if len(run) > 4 else None),
+            str(run[5] if len(run) > 5 else '') or '') for run in before]
     now = [(bool(r.get('b')), bool(r.get('i')), bool(r.get('u')),
-            _size(r.get('s'))) for r in after if str(r.get('t') or '')]
+            _size(r.get('s')), str(r.get('f') or '')) for r in after
+           if str(r.get('t') or '')]
     if len(was) != len(now):
         return True
     return was != now
@@ -868,8 +920,65 @@ def replace_all(
     return {'document': document, 'replaced': replaced, 'paragraphs': touched}
 
 
+def _following_style(anchor):
+    """What Word makes the next paragraph when Enter is pressed.
+
+    A style carries the style for the paragraph that follows it, which is why
+    Enter after a heading returns to body text instead of writing a second
+    heading.  Where a template does not say, the paragraph keeps its own style
+    -- which is right for body text and for a list, where Enter continues it.
+    """
+    try:
+        following = anchor.style.next_paragraph_style
+    except Exception:
+        following = None
+    return following if following is not None else getattr(anchor, 'style', None)
+
+
+def open_document(path):
+    """The document as python-docx sees it, with our error on failure."""
+    docx = _docx()
+    try:
+        return docx.Document(str(Path(path)))
+    except Exception as exc:
+        raise DocxError(f'Document could not be opened: {exc}') from exc
+
+
+def address_order(address: str) -> Tuple[int, int, int, int, int]:
+    """Sort key for a block address, so deletions can run bottom-up."""
+    parts = str(address).split(':')
+    try:
+        if parts[0] == 'p' and len(parts) == 2:
+            return (0, int(parts[1]), 0, 0, 0)
+        if parts[0] == 't' and len(parts) == 5:
+            return (1, int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
+    except ValueError:
+        pass
+    return (2, 0, 0, 0, 0)
+
+
+def insert_paragraph_after(document, anchor, text: str = '', *, style=None):
+    """Put a paragraph after *anchor* (a paragraph object), and return it."""
+    fresh = anchor.insert_paragraph_before(text or '')
+    anchor._p.addnext(fresh._p)
+    chosen = style
+    if chosen is None:
+        chosen = _following_style(anchor)
+    if isinstance(chosen, str):
+        try:
+            chosen = document.styles[check_style(chosen)]
+        except KeyError:
+            chosen = None
+    if chosen is not None:
+        try:
+            fresh.style = chosen
+        except Exception:
+            pass                   # a template without it keeps what it has
+    return fresh
+
+
 def insert_paragraph(document, address: str, text: str = '',
-                     *, style: str = 'Normal', before: bool = False):
+                     *, style=None, before: bool = False):
     """Add a paragraph next to the one at *address*, and return it.
 
     Word puts a new paragraph *after* the one the cursor is in when Enter is
@@ -878,17 +987,20 @@ def insert_paragraph(document, address: str, text: str = '',
     anchor = _paragraph_at(document, str(address))
     if anchor is None:
         raise DocxError(f'There is no paragraph {address!r} in the document.')
-    fresh = anchor.insert_paragraph_before(text or '')
     if not before:
-        # insert_paragraph_before is the only insertion python-docx offers, so
-        # inserting *after* is that same call one paragraph further on -- or,
-        # at the end of the body, moving the anchor up in front of the new one.
-        anchor._p.addnext(fresh._p)
-    style = check_style(style)
-    try:
-        fresh.style = document.styles[style]
-    except KeyError:
-        pass                       # a template without the style keeps its own
+        return insert_paragraph_after(document, anchor, text, style=style)
+    fresh = anchor.insert_paragraph_before(text or '')
+    chosen = style if style is not None else getattr(anchor, 'style', None)
+    if isinstance(chosen, str):
+        try:
+            chosen = document.styles[check_style(chosen)]
+        except KeyError:
+            chosen = None
+    if chosen is not None:
+        try:
+            fresh.style = chosen
+        except Exception:
+            pass
     return fresh
 
 
@@ -1075,14 +1187,14 @@ _EDIT_JS_TEMPLATE = r"""
        words. */
     function runsOf(block){
       var runs = [];
-      (function walk(node, bold, italic, under, size){
+      (function walk(node, bold, italic, under, size, face){
         for (var i = 0; i < node.childNodes.length; i++) {
           var child = node.childNodes[i];
           if (child.nodeType === 3) {
             if (child.nodeValue) {
               runs.push({t: child.nodeValue, b: bold ? 1 : 0,
                          i: italic ? 1 : 0, u: under ? 1 : 0,
-                         s: size || 0});
+                         s: size || 0, f: face || ''});
             }
             continue;
           }
@@ -1100,6 +1212,8 @@ _EDIT_JS_TEMPLATE = r"""
               pt = own.indexOf('pt') >= 0 ? px : Math.round(px * 0.75 * 10) / 10;
             }
           }
+          var ownFace = (style.fontFamily || '').split(',')[0]
+                          .replace(/["']/g, '').trim();
           walk(child,
                bold || name === 'B' || name === 'STRONG'
                  || weight === 'bold' || weight === '700' || weight === '600',
@@ -1107,9 +1221,9 @@ _EDIT_JS_TEMPLATE = r"""
                  || style.fontStyle === 'italic',
                under || name === 'U'
                  || (style.textDecoration || '').indexOf('underline') >= 0,
-               pt);
+               pt, ownFace || face);
         }
-      })(block, false, false, false, 0);
+      })(block, false, false, false, 0, '');
       return runs;
     }
 
@@ -1141,7 +1255,7 @@ _EDIT_JS_TEMPLATE = r"""
 
     var bar = root.querySelector('.dw-bar');
     if (bar) {
-      var press = {'.dw-b': 'bold', '.dw-i': 'italic', '.dw-u': 'underline'};
+      var press = {'.dw-bold': 'bold', '.dw-i': 'italic', '.dw-u': 'underline'};
       Object.keys(press).forEach(function(sel){
         var button = bar.querySelector(sel);
         if (!button) return;
@@ -1177,6 +1291,30 @@ _EDIT_JS_TEMPLATE = r"""
         }
         report(block, true);
         sizeBox.value = '';
+      });
+
+      /* Same shape as the size control: wrap what is selected, or the whole
+         paragraph when nothing is. */
+      var fontBox = bar.querySelector('.dw-font');
+      if (fontBox) fontBox.addEventListener('change', function(){
+        var block = currentBlock();
+        var face = fontBox.value;
+        if (!block || !face) { fontBox.value = ''; return; }
+        block.focus();
+        var picked = window.getSelection();
+        if (picked && picked.rangeCount && !picked.isCollapsed) {
+          var span = document.createElement('span');
+          span.style.fontFamily = face;
+          try {
+            picked.getRangeAt(0).surroundContents(span);
+          } catch (_err) {
+            block.style.fontFamily = face;
+          }
+        } else {
+          block.style.fontFamily = face;
+        }
+        report(block, true);
+        fontBox.value = '';
       });
 
       Array.prototype.forEach.call(bar.querySelectorAll('.dw-align'),
@@ -1237,14 +1375,88 @@ _EDIT_JS_TEMPLATE = r"""
       typing = setTimeout(function(){ typing = null; report(block); }, 350);
     });
 
-    /* Enter would start a new paragraph, and a paragraph this view cannot
-       address is a paragraph an edit cannot be written back to. */
+    /* ---------- Enter makes a paragraph ----------
+       The block under the caret is split where the caret stands: what is in
+       front stays, what is behind moves into a new block after it, and the
+       caret goes with it.  The new block carries a temporary address; the
+       kernel resolves it against the block it follows, once, at save time. */
+    var minted = 0;
+
+    function caretTo(block, atEnd){
+      block.focus();
+      var range = document.createRange();
+      range.selectNodeContents(block);
+      range.collapse(!atEnd);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
     page.addEventListener('keydown', function(e){
       if (e.key !== 'Enter' || e.shiftKey) return;
       var block = e.target.closest && e.target.closest('.dw-b');
       if (!block) return;
       e.preventDefault();
-      block.blur();
+
+      /* Everything from the caret to the end of the paragraph moves out. */
+      var tail = '';
+      var sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        var caret = sel.getRangeAt(0);
+        caret.deleteContents();
+        var rest = document.createRange();
+        rest.selectNodeContents(block);
+        rest.setStart(caret.endContainer, caret.endOffset);
+        var holder = document.createElement('div');
+        holder.appendChild(rest.extractContents());
+        tail = holder.innerText || '';
+      }
+      report(block, true);
+
+      minted += 1;
+      var fresh = document.createElement('div');
+      fresh.className = block.className.replace(/\bdw-dirty\b/g, '').trim();
+      fresh.setAttribute('contenteditable', 'true');
+      fresh.setAttribute('spellcheck', 'false');
+      fresh.setAttribute('data-a', 'new:' + minted);
+      fresh.textContent = tail;
+      block.parentNode.insertBefore(fresh, block.nextSibling);
+      fresh.dataset.was = fresh.innerText;
+      fresh.classList.add('dw-dirty');
+      send({kind: 'docx', address: 'new:' + minted,
+            after: block.getAttribute('data-a'),
+            runs: [{t: tail, b: 0, i: 0, u: 0, s: 0, f: ''}]});
+      active = fresh;
+      caretTo(fresh, false);
+    });
+
+    /* Backspace at the very start folds the paragraph into the one above,
+       which is the other half of Enter: without it a paragraph could be made
+       but never unmade. */
+    page.addEventListener('keydown', function(e){
+      if (e.key !== 'Backspace') return;
+      var block = e.target.closest && e.target.closest('.dw-b');
+      if (!block) return;
+      var sel = window.getSelection();
+      if (!sel || !sel.rangeCount || !sel.isCollapsed) return;
+      var at = sel.getRangeAt(0);
+      var before = document.createRange();
+      before.selectNodeContents(block);
+      before.setEnd(at.startContainer, at.startOffset);
+      if (before.toString().length) return;       /* not at the start */
+      var previous = block.previousElementSibling;
+      if (!previous || !previous.classList.contains('dw-b')) return;
+      e.preventDefault();
+      var joined = (previous.innerText || '') + (block.innerText || '');
+      var wasLength = (previous.innerText || '').length;
+      previous.textContent = joined;
+      block.parentNode.removeChild(block);
+      previous.classList.add('dw-dirty');
+      report(previous, true);
+      send({kind: 'docx', address: block.getAttribute('data-a'), drop: 1});
+      active = previous;
+      caretTo(previous, true);
+      if (wasLength === 0) caretTo(previous, false);
     });
   }
 
