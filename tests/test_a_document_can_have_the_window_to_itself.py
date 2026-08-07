@@ -82,6 +82,11 @@ def test_the_explorer_is_what_gets_hidden(opened):
 
     source = open(browser.__file__, encoding="utf-8").read()
     assert ".calc-tab.calc-zen-doc .calc-left { display:none !important; }" in source
+    # and the drag handle between the two columns, which has nothing left to
+    # resize and stands where the table should start
+    assert ".calc-tab.calc-zen-doc .calc-splitter { display:none !important; }" in source
+    # the table reaches the edge, so its scrollbar is at the edge
+    assert "max-width:100% !important; padding:0 !important;" in source
 
 
 def test_both_documents_offer_it_in_their_own_bar():
