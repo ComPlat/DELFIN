@@ -139,7 +139,12 @@ def build_viewer_config(
     # 3Dmol's fog is the depth cue that blends distant atoms into the
     # background. State it explicitly instead of relying on a library default.
     config['disableFog'] = not bool(depth_fog)
-    if ambient_occlusion:
+    if ambient_occlusion and quality != 'low':
+        # Ambient occlusion is a per-frame post-process over the whole canvas.
+        # On a machine that picked the low profile it is the single most
+        # expensive thing the viewer does, and it is a shading nicety -- the
+        # structure reads perfectly well without it.  Nothing is taken away
+        # from anyone who did not ask for the low profile.
         config.update({
             'style': 'ambientOcclusion',
             'strength': 0.65,

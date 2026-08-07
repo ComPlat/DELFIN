@@ -514,3 +514,26 @@ def test_png_export_mirrors_what_the_viewer_shows():
     assert 'shotAtoms[t].style = srcAtoms[t].style' in render
     # The hardcoded style survives only as a fallback when nothing was copied.
     assert 'if (!copied) shot.setStyle' in render
+
+
+def test_the_low_profile_skips_the_shading_pass_that_costs_the_most():
+    """Ambient occlusion is a per-frame post-process over the whole canvas.
+
+    Someone who picks Low has said their machine is the constraint; leaving the
+    most expensive shading pass on is not honouring that.  Nobody else loses it.
+    """
+    from delfin.dashboard.molecule_viewer import build_viewer_config
+
+    low = build_viewer_config(quality='low', ambient_occlusion=True)
+    assert 'style' not in low, 'Low still pays for ambient occlusion'
+    assert low.get('antialias') is False
+    assert low.get('upscale') is False
+
+    for quality in ('medium', 'high'):
+        config = build_viewer_config(quality=quality, ambient_occlusion=True)
+        assert config.get('style') == 'ambientOcclusion', (
+            f'{quality} must be unchanged'
+        )
+
+    # and asking for it off is still off, at every level
+    assert 'style' not in build_viewer_config(quality='high', ambient_occlusion=False)
