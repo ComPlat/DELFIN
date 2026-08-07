@@ -478,7 +478,9 @@ def test_fullscreen_has_a_status_line_of_its_own():
     assert "mol_status_fs.add_class('submit-fs-member-status')" in source
     setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
     assert "mol_status.value = rendered_html" in setter
-    assert "mol_status_fs.value = rendered_html" in setter, "they must agree"
+    assert "mol_status_fs.value = '' if prompt else rendered_html" in setter, (
+        "they must agree on everything except a prompt to load a structure"
+    )
     assert "mol_status_fs.value = ''" in setter, "and agree when empty too"
 
     enter = submit_manip_bootstrap_js().split("function enterFullscreen")[1][:1100]
