@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import copy
 import csv
+from collections import OrderedDict
 import datetime as _dt
 import decimal as _dec
 import html as _html
@@ -58,6 +59,15 @@ ROW_HEADER_WIDTH = 54
 # Reading formulas needs a second parse of the workbook; above this size we skip
 # it and edit against the cached values instead.
 FORMULA_PASS_MAX_BYTES = 8 * 1024 * 1024
+
+# Scrolling used to re-open the workbook and stream past every row above the
+# window -- three times over, once for values, once for the cell formats and
+# once for the formulas -- so moving down a 5000-row sheet cost about 0.7 s per
+# page, every page, forever.  A sheet that fits this budget is read once in full
+# instead and every window after that is a slice of memory.  Above the budget
+# the streaming read stands: a sheet of a million rows must not be held.
+SHEET_CACHE_MAX_CELLS = 400_000
+SHEET_CACHE_ENTRIES = 2
 
 WORKBOOK_SUFFIXES = ('.xlsx', '.xlsm')
 DELIMITED_SUFFIXES = ('.csv', '.tsv', '.tab')
@@ -515,6 +525,103 @@ def apply_results(sheet: SheetData, results: 'FormulaResults') -> None:
                 sheet.values[r_idx][c_idx] = shown
 
 
+#: (path, mtime_ns, sheet, cols) -> (values, styles, formulas) for the whole
+#: sheet.  Small, and dropped as soon as the file changes underneath it.
+_SHEET_CACHE: 'OrderedDict[Tuple[str, int, str, int], Tuple[List[List[str]], List[List[Dict[str, Any]]], List[List[str]]]]' = OrderedDict()
+
+#: One shared empty style, so a sheet of unformatted cells does not become a
+#: sheet of dictionaries.
+_NO_STYLE: Dict[str, Any] = {}
+
+
+def _sheet_cache_key(path: Path, active: str, cols: int):
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    return (str(path), int(stamp), str(active), int(cols))
+
+
+def forget_sheet_cache(path: Optional[Path] = None) -> None:
+    """Drop what is held for *path*, or everything.  Saving invalidates it."""
+    if path is None:
+        _SHEET_CACHE.clear()
+        return
+    target = str(path)
+    for key in [k for k in _SHEET_CACHE if k[0] == target]:
+        _SHEET_CACHE.pop(key, None)
+
+
+def _remember_sheet(key, payload) -> None:
+    _SHEET_CACHE[key] = payload
+    _SHEET_CACHE.move_to_end(key)
+    while len(_SHEET_CACHE) > SHEET_CACHE_ENTRIES:
+        _SHEET_CACHE.popitem(last=False)
+
+
+def _read_whole_sheet(path: Path, active: str, total_rows: int, eff_cols: int):
+    """Values, formats and formulas for every row, in one pass each.
+
+    Returns None if anything goes wrong, which puts the caller back on the
+    streaming read it would have done anyway.
+    """
+    try:
+        book = _load_workbook(filename=str(path), read_only=True, data_only=True)
+        try:
+            ws = book[active] if active in book.sheetnames else book.worksheets[0]
+            values = _pad_grid(
+                _read_window(ws, 0, total_rows, eff_cols), total_rows, eff_cols
+            )
+            styles: List[List[Dict[str, Any]]] = []
+            sheet_s = book[active] if active in book.sheetnames else book.worksheets[0]
+            for r_idx, row in enumerate(sheet_s.iter_rows(
+                    min_row=1, max_row=total_rows, min_col=1, max_col=eff_cols)):
+                if r_idx >= total_rows:
+                    break
+                found: List[Dict[str, Any]] = []
+                for c_idx, cell in enumerate(row):
+                    style = cell_style(cell)
+                    found.append(style or _NO_STYLE)
+                    code = style.get('fmt')
+                    if (code and cell.value is not None
+                            and r_idx < len(values) and c_idx < len(values[r_idx])):
+                        values[r_idx][c_idx] = display_value(cell.value, code)
+                found.extend(_NO_STYLE for _ in range(eff_cols - len(found)))
+                styles.append(found)
+            while len(styles) < total_rows:
+                styles.append([_NO_STYLE] * eff_cols)
+        finally:
+            book.close()
+    except Exception:
+        return None
+
+    formulas: List[List[str]] = []
+    try:
+        if path.stat().st_size <= FORMULA_PASS_MAX_BYTES:
+            book_f = _load_workbook(filename=str(path), read_only=True, data_only=False)
+            try:
+                ws_f = (book_f[active] if active in book_f.sheetnames
+                        else book_f.worksheets[0])
+                formulas = _pad_grid(
+                    _read_window(ws_f, 0, total_rows, eff_cols), total_rows, eff_cols
+                )
+            finally:
+                book_f.close()
+    except Exception:
+        formulas = []
+    return values, styles, formulas
+
+
+def _slice_rows(grid, start0: int, count: int, cols: int, filler):
+    """The window *start0*..*start0+count* of a full-sheet grid."""
+    if not grid:
+        return []
+    out = [list(row[:cols]) for row in grid[start0:start0 + count]]
+    for row in out:
+        row.extend(filler for _ in range(cols - len(row)))
+    return out
+
+
 def read_xlsx(
     path: Path,
     sheet: Optional[str] = None,
@@ -543,7 +650,20 @@ def read_xlsx(
         truncated_cols = total_cols > max_cols
         eff_cols = max(1, min(total_cols or 1, max_cols))
         start0, per_page = window_rows(total_rows, row_offset, eff_cols)
-        raw_values = _read_window(ws, start0, per_page, eff_cols)
+        # Held only once a second window is asked for: opening a file must stay
+        # as quick as it is, and a sheet nobody scrolls is never read in full.
+        cache_key = _sheet_cache_key(path, active, eff_cols)
+        cached = _SHEET_CACHE.get(cache_key) if cache_key else None
+        if (cached is None and cache_key and row_offset > 0
+                and 0 < total_rows * eff_cols <= SHEET_CACHE_MAX_CELLS):
+            cached = _read_whole_sheet(path, active, total_rows, eff_cols)
+            if cached is not None:
+                _remember_sheet(cache_key, cached)
+        if cached is not None:
+            _SHEET_CACHE.move_to_end(cache_key)
+            raw_values = _slice_rows(cached[0], start0, per_page, eff_cols, '')
+        else:
+            raw_values = _read_window(ws, start0, per_page, eff_cols)
     finally:
         wb.close()
 
@@ -555,41 +675,57 @@ def read_xlsx(
     # the same window so a cell's value and its format cannot come from
     # different rows.
     styles: List[List[Dict[str, Any]]] = []
-    try:
-        book_s = _load_workbook(filename=str(path), read_only=True, data_only=True)
-        try:
-            sheet_s = (book_s[active] if active in book_s.sheetnames
-                       else book_s.worksheets[0])
-            for r_idx, row in enumerate(sheet_s.iter_rows(
-                    min_row=start0 + 1, max_row=start0 + n_rows_view,
-                    min_col=1, max_col=n_cols_view)):
-                if r_idx >= n_rows_view:
-                    break
-                found = []
-                for c_idx, cell in enumerate(row):
-                    style = cell_style(cell)
-                    found.append(style)
-                    # The value is taken from the cell here rather than from
-                    # the window of strings: a number and the format that
-                    # says how to write it have to come from the same cell.
-                    code = style.get('fmt')
-                    if (code and cell.value is not None
-                            and r_idx < len(values)
-                            and c_idx < len(values[r_idx])):
-                        values[r_idx][c_idx] = display_value(cell.value, code)
-                found.extend({} for _ in range(n_cols_view - len(found)))
-                styles.append(found)
-        finally:
-            book_s.close()
+    if cached is not None:
+        # Already read, formats applied to the values with them.  Both come
+        # from the same pass over the same cells, which is the property the
+        # streaming version below is careful about too.
+        styles = _slice_rows(cached[1], start0, n_rows_view, n_cols_view, _NO_STYLE)
         while len(styles) < n_rows_view:
-            styles.append([{} for _ in range(n_cols_view)])
-    except Exception:
-        styles = []
+            styles.append([_NO_STYLE] * n_cols_view)
+        for r_idx, row in enumerate(
+                _slice_rows(cached[0], start0, n_rows_view, n_cols_view, '')):
+            for c_idx, text in enumerate(row):
+                if text and r_idx < len(values) and c_idx < len(values[r_idx]):
+                    values[r_idx][c_idx] = text
+    else:
+        try:
+            book_s = _load_workbook(filename=str(path), read_only=True, data_only=True)
+            try:
+                sheet_s = (book_s[active] if active in book_s.sheetnames
+                           else book_s.worksheets[0])
+                for r_idx, row in enumerate(sheet_s.iter_rows(
+                        min_row=start0 + 1, max_row=start0 + n_rows_view,
+                        min_col=1, max_col=n_cols_view)):
+                    if r_idx >= n_rows_view:
+                        break
+                    found = []
+                    for c_idx, cell in enumerate(row):
+                        style = cell_style(cell)
+                        found.append(style)
+                        # The value is taken from the cell here rather than from
+                        # the window of strings: a number and the format that
+                        # says how to write it have to come from the same cell.
+                        code = style.get('fmt')
+                        if (code and cell.value is not None
+                                and r_idx < len(values)
+                                and c_idx < len(values[r_idx])):
+                            values[r_idx][c_idx] = display_value(cell.value, code)
+                    found.extend({} for _ in range(n_cols_view - len(found)))
+                    styles.append(found)
+            finally:
+                book_s.close()
+            while len(styles) < n_rows_view:
+                styles.append([{} for _ in range(n_cols_view)])
+        except Exception:
+            styles = []
 
     formulas: List[List[str]] = []
     has_formulas = False
     try:
-        if path.stat().st_size <= FORMULA_PASS_MAX_BYTES:
+        if cached is not None:
+            raw = _slice_rows(cached[2], start0, n_rows_view, n_cols_view, '')
+            raw = _pad_grid(raw, n_rows_view, n_cols_view) if cached[2] else []
+        elif path.stat().st_size <= FORMULA_PASS_MAX_BYTES:
             wb_f = _load_workbook(filename=str(path), read_only=True, data_only=False)
             try:
                 ws_f = wb_f[active] if active in wb_f.sheetnames else wb_f.worksheets[0]
@@ -597,6 +733,9 @@ def read_xlsx(
             finally:
                 wb_f.close()
             raw = _pad_grid(raw, n_rows_view, n_cols_view)
+        else:
+            raw = []
+        if raw:
             for r_idx, row in enumerate(raw):
                 out_row = [cell if cell.startswith('=') else '' for cell in row]
                 if any(out_row):
