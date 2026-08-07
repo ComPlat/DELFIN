@@ -21,6 +21,7 @@ from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
+from . import gfn_optimize as _gfn
 from .molecule_viewer import apply_molecule_view_style, submit_manip_bootstrap_js
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
@@ -714,10 +715,30 @@ def create_tab(ctx):
         disabled=True,
     )
     submit_ff_dd = widgets.Dropdown(
-        options=[('UFF', 'uff'), ('MMFF94', 'mmff94')],
+        options=[('UFF', 'uff'), ('MMFF94', 'mmff94'),
+                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2')],
         value='uff',
-        layout=widgets.Layout(width='112px'),
+        tooltip=(
+            'What Optimise minimises with. UFF and MMFF94 run in the browser '
+            'and also drive the live relaxation while you drag. GFN-FF and '
+            'GFN2-xTB run xtb on the server: too slow for a drag, right for a '
+            'press -- and they know about the metal, where UFF guesses.'
+        ),
+        layout=widgets.Layout(width='128px'),
         disabled=True,
+    )
+    # xtb needs both, and there is no honest default for a metal complex: the
+    # wrong number of unpaired electrons gives a confident wrong answer rather
+    # than an error.  Shown only when a GFN method is chosen.
+    submit_gfn_charge = widgets.IntText(
+        value=0, description='q', step=1,
+        style={'description_width': '12px'},
+        layout=widgets.Layout(width='72px', display='none'),
+    )
+    submit_gfn_mult = widgets.IntText(
+        value=1, description='M', step=1,
+        style={'description_width': '14px'},
+        layout=widgets.Layout(width='72px', display='none'),
     )
     submit_internal_label = widgets.HTML(
         value=(
@@ -896,7 +917,8 @@ def create_tab(ctx):
             submit_select_btn, submit_manip_btn, submit_draw_btn,
             submit_element_dd,
             submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
-            submit_ff_dd, submit_strength_slider,
+            submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
+            submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
@@ -3454,7 +3476,9 @@ def create_tab(ctx):
             payload = export_forcefield_terms(
                 xyz,
                 perceived=_perception_for(xyz),
-                method=submit_ff_dd.value,
+                # The live field is what the browser relaxes with on every
+                # frame, so it is always one of the two that live there.
+                method=_live_ff_method(),
                 polyhedron=polyhedron,
                 restraints=[
                     c for c in (state.get('constraints') or [])
@@ -3546,9 +3570,14 @@ def create_tab(ctx):
             _set_mol_status('Load a structure before optimising.')
             return
         method = submit_ff_dd.value
+        gfn = _gfn.is_gfn_method(method)
+        label = (_gfn.GFN_METHODS[method]['label'] if gfn else method.upper())
+        charge = int(submit_gfn_charge.value or 0)
+        # xtb counts unpaired electrons, not multiplicity: M = 2S+1.
+        uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
         count = len(frames) or 1
         _set_mol_status(
-            f'Optimising {count} frame(s) with {method.upper()}...', spinner=True,
+            f'Optimising {count} frame(s) with {label}...', spinner=True,
         )
         submit_optimize_btn.disabled = True
 
@@ -3559,18 +3588,26 @@ def create_tab(ctx):
             for position, item in enumerate(targets):
                 xyz = item[0]
                 try:
-                    outcome = relax_xyz(
-                        xyz,
-                        max_steps=500,
-                        perceived=_perception_for(xyz),
-                        method=method,
-                    )
+                    if gfn:
+                        outcome = _gfn.optimize_with_gfn(
+                            xyz, method, charge=charge, uhf=uhf)
+                    else:
+                        outcome = relax_xyz(
+                            xyz,
+                            max_steps=500,
+                            perceived=_perception_for(xyz),
+                            method=method,
+                        )
                 except Exception as exc:
                     failures.append(f'frame {position + 1}: {exc}')
                     results.append(item)
                     continue
                 if outcome.get('ok'):
                     results.append((outcome['xyz'],) + tuple(item[1:]))
+                    note = str(outcome.get('status') or '')
+                    if 'before converging' in note:
+                        # It came back with a geometry, but not a finished one.
+                        failures.append(f'frame {position + 1}: {note}')
                 else:
                     failures.append(
                         f"frame {position + 1}: {outcome.get('status') or 'failed'}"
@@ -3595,10 +3632,10 @@ def create_tab(ctx):
                         + '\n'.join(lines)
                     )
                 done = count - len(failures)
-                _set_mol_status(
-                    f'Optimised {done} of {count} frame(s) with {method.upper()}.',
-                    *failures[:2],
-                )
+                said = f'Optimised {done} of {count} frame(s) with {label}.'
+                if gfn:
+                    said += f' charge {charge}, multiplicity {uhf + 1}.'
+                _set_mol_status(said, *failures[:2])
 
             _schedule_ui_update(_apply)
 
@@ -4648,9 +4685,61 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
         )
 
+    def _fill_charge_from_smiles():
+        """Take the charge off the SMILES the structure was built from.
+
+        A SMILES states the formal charges outright, so asking the user for a
+        number the input already carries is asking them to repeat themselves.
+        Nothing else can be read that way -- a pasted XYZ says nothing about
+        charge, and no input says anything about the spin -- so those stay the
+        user's to set.  Returns the SMILES it read, or '' when there was none.
+        """
+        smiles = str((state.get('converted_xyz_cache') or {}).get('smiles') or '')
+        if not smiles:
+            return ''
+        try:
+            submit_gfn_charge.value = int(_get_smiles_charge(smiles))
+        except Exception:
+            return ''
+        return smiles
+
+    def _live_ff_method():
+        """The method the browser relaxes with while an atom is dragged.
+
+        GFN runs on the server; a round trip per frame would cap a drag at
+        about 13 Hz, so dragging keeps the force field that lives in the
+        browser.  Choosing GFN changes what Optimise does, not what a drag
+        does, and the status line says so once rather than silently.
+        """
+        chosen = str(submit_ff_dd.value or 'uff')
+        return 'uff' if _gfn.is_gfn_method(chosen) else chosen
+
     def on_submit_ff_changed(change):
         if change.get('name') != 'value':
             return
+        gfn = _gfn.is_gfn_method(submit_ff_dd.value)
+        submit_gfn_charge.layout.display = '' if gfn else 'none'
+        submit_gfn_mult.layout.display = '' if gfn else 'none'
+        if gfn:
+            label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+            source = _fill_charge_from_smiles()
+            if not _gfn.xtb_available():
+                _set_mol_status(
+                    f'{label} needs xtb on the PATH; it was not found. '
+                    'Optimise will say so rather than doing nothing.')
+            elif source:
+                _set_mol_status(
+                    f'Optimise now uses {label}. Charge {submit_gfn_charge.value} '
+                    f'read from the SMILES; the multiplicity is yours to set. '
+                    'Dragging keeps UFF -- xtb runs on the server and cannot '
+                    'answer once per frame.')
+            else:
+                _set_mol_status(
+                    f'Optimise now uses {label}. Set the charge (q) and the '
+                    'multiplicity (M): xtb needs both, and a wrong spin on a '
+                    'metal gives a confident wrong answer rather than an error. '
+                    'Dragging keeps UFF -- xtb runs on the server and cannot '
+                    'answer once per frame.')
         # Re-assign parameters under the newly chosen method, but only if the
         # live relaxation is actually switched on.
         if submit_relax_btn.value:
@@ -5023,6 +5112,10 @@ def create_tab(ctx):
         'submit_constraint_dd': submit_constraint_dd,
         'submit_internal_value': submit_internal_value,
         'submit_internal_btn': submit_internal_btn,
+        'submit_ff_dd': submit_ff_dd,
+        'submit_gfn_charge': submit_gfn_charge,
+        'submit_gfn_mult': submit_gfn_mult,
+        'submit_optimize_btn': submit_optimize_btn,
         'submit_pick_sync': submit_pick_sync,
         'submit_reset_btn': submit_reset_btn,
         'editor_state': state,
