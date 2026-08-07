@@ -456,3 +456,21 @@ def test_what_is_wrong_with_the_structure_is_said_without_xtb(monkeypatch):
     # a structure with nothing wrong with it does report the missing program
     fine = "3\nx\nO 0 0 0\nH 1 0 0\nH 0 1 0\n"
     assert "needs xtb" in gfn.optimize_with_gfn(fine, "gfnff")["status"]
+
+
+def test_fullscreen_takes_the_status_line_with_it():
+    """It carries the spinner and what the run is doing.
+
+    Left behind, fullscreen showed a structure moving for no stated reason --
+    or, worse, not moving with nothing to say why.
+    """
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    assert "mol_status.add_class('submit-fs-member-status')" in source
+
+    editor_js = submit_manip_bootstrap_js()
+    enter = editor_js.split("function enterFullscreen")[1][:900]
+    assert "'.submit-fs-member-status'" in enter
+    assert enter.index("submit-fs-member-toolbar") < enter.index("submit-fs-member-status")

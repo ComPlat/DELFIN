@@ -3765,6 +3765,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (!root) return;
             var selectors = [
                 '.submit-fs-member-toolbar',
+                /* The status line comes too: it carries the spinner and what
+                   the field or a GFN run is doing, and leaving it behind meant
+                   fullscreen showed a structure moving for no stated reason --
+                   or, worse, not moving with nothing to say why. */
+                '.submit-fs-member-status',
                 '.submit-fs-member-viewer',
                 '.submit-fs-member-isomer',
                 '.submit-fs-member-copyrow'
