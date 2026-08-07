@@ -624,6 +624,15 @@ def create_tab(ctx):
         value='',
         layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
     )
+    # A second one, for the overlay.  Not the same widget moved: fullscreen
+    # relocates its members by hand and ipywidgets knows nothing about it, so
+    # the line borrowed for the big view came back somewhere else and was lost
+    # from the small one.  Two widgets, one text, nothing moved.
+    mol_status_fs = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
+    )
+    mol_status_fs.add_class('submit-fs-member-status')
     mol_output = widgets.Output(layout=widgets.Layout(
         border='2px solid #1976d2', width='100%', height=f'{SUBMIT_MOL_HEIGHT}px',
         overflow='hidden', box_sizing='border-box',
@@ -1120,6 +1129,8 @@ def create_tab(ctx):
         func(*args, **kwargs)
 
     def _set_mol_status(*lines, spinner=False):
+        # Both copies always say the same thing; which one is on screen is the
+        # overlay's business, not the caller's.
         rendered = [html.escape(str(line)) for line in lines if line not in (None, '')]
         spinner_html = (
             "<span class='delfin-busy' style='margin-right:6px; vertical-align:middle;' "
@@ -1129,6 +1140,7 @@ def create_tab(ctx):
         text_html = '<br>'.join(rendered)
         if not spinner_html and not text_html:
             mol_status.value = ''
+            mol_status_fs.value = ''
             return
         if spinner_html and text_html:
             first, *rest = rendered
@@ -1137,11 +1149,13 @@ def create_tab(ctx):
                 body += '<br>' + '<br>'.join(rest)
         else:
             body = spinner_html + text_html
-        mol_status.value = (
+        rendered_html = (
             "<div style='font-family: monospace; white-space: pre-wrap; "
             "font-size: 13px; line-height: 1.35;'>"
             f"{body}</div>"
         )
+        mol_status.value = rendered_html
+        mol_status_fs.value = rendered_html
 
     def _clear_mol_status():
         mol_status.value = ''
@@ -5283,7 +5297,7 @@ def create_tab(ctx):
 
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'), mol_status,
-        submit_manip_toolbar, mol_output, isomer_nav_row, xyz_copy_row,
+        submit_manip_toolbar, mol_status_fs, mol_output, isomer_nav_row, xyz_copy_row,
         submit_ff_notes,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),

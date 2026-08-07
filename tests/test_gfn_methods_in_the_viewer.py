@@ -463,19 +463,26 @@ def test_what_is_wrong_with_the_structure_is_said_without_xtb(monkeypatch):
     assert "needs xtb" in gfn.optimize_with_gfn(fine, "gfnff")["status"]
 
 
-def test_fullscreen_does_not_borrow_the_status_line():
-    """Moving a widget into the overlay and back is a DOM move ipywidgets does
-    not know about.  After one round trip the status line was gone from the
-    ordinary view -- the view that matters most -- so fullscreen keeps its
-    hands off it and needs its own element instead."""
+def test_fullscreen_has_a_status_line_of_its_own():
+    """Both views need it, and neither may take the other's.
+
+    Fullscreen relocates its members by hand; ipywidgets knows nothing about
+    that, so the line borrowed for the big view came back somewhere else and
+    was lost from the small one.  Two widgets carrying the same text is the
+    version where nothing is moved that the small view needs.
+    """
     from delfin.dashboard import tab_submit
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    assert "mol_status.add_class('submit-fs-member-status')" not in source
+    assert "mol_status_fs.add_class('submit-fs-member-status')" in source
+    setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
+    assert "mol_status.value = rendered_html" in setter
+    assert "mol_status_fs.value = rendered_html" in setter, "they must agree"
+    assert "mol_status_fs.value = ''" in setter, "and agree when empty too"
 
-    enter = submit_manip_bootstrap_js().split("function enterFullscreen")[1][:900]
-    assert "'.submit-fs-member-status'" not in enter
+    enter = submit_manip_bootstrap_js().split("function enterFullscreen")[1][:1100]
+    assert "'.submit-fs-member-status'" in enter
 
 
 def test_relax_is_switched_off_while_a_gfn_method_is_chosen(editor):

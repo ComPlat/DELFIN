@@ -3765,12 +3765,13 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (!root) return;
             var selectors = [
                 '.submit-fs-member-toolbar',
-                /* The status line is deliberately NOT moved here.  Taking
-                   it into the overlay and putting it back is a DOM move
-                   ipywidgets does not know about, and after one round trip it
-                   was gone from the ordinary view -- which is the view that
-                   matters most.  Fullscreen needs its own status element, not
-                   a borrowed one. */
+                /* Its own status line, not the one the ordinary view uses.
+                   Moving that one into the overlay and back is a DOM move
+                   ipywidgets knows nothing about, and after one round trip it
+                   was gone from the small view.  This one exists to be moved:
+                   both carry the same text, so whichever is on screen says
+                   the same thing. */
+                '.submit-fs-member-status',
                 '.submit-fs-member-viewer',
                 '.submit-fs-member-isomer',
                 '.submit-fs-member-copyrow'
