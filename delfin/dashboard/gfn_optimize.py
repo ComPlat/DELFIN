@@ -31,7 +31,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'find_xtb', 'is_gfn_method',
            'read_trajectory',
@@ -200,6 +200,7 @@ def optimize_with_gfn(
     max_steps: Optional[int] = None,
     timeout: float = DEFAULT_TIMEOUT,
     max_atoms: Optional[int] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -256,10 +257,40 @@ def optimize_with_gfn(
         environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
                            OMP_STACKSIZE='1G')
         try:
-            finished = subprocess.run(
-                command, cwd=str(folder), capture_output=True, text=True,
-                timeout=timeout, env=environment,
-            )
+            if should_stop is None:
+                finished = subprocess.run(
+                    command, cwd=str(folder), capture_output=True, text=True,
+                    timeout=timeout, env=environment,
+                )
+            else:
+                # Started rather than run, so it can be stopped: an optimisation
+                # a user has switched off has to end, not be waited out.
+                running = subprocess.Popen(
+                    command, cwd=str(folder), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, env=environment,
+                )
+                waited = 0.0
+                while running.poll() is None:
+                    if should_stop():
+                        running.terminate()
+                        try:
+                            running.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            running.kill()
+                        return {
+                            'ok': False, 'xyz': xyz_text, 'energy': None,
+                            'method': key, 'frames': [], 'engine': 'xtb',
+                            'seconds': time.perf_counter() - started,
+                            'status': f'{label} was stopped.',
+                        }
+                    if waited > timeout:
+                        running.kill()
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    time.sleep(0.05)
+                    waited += 0.05
+                out, err = running.communicate()
+                finished = subprocess.CompletedProcess(
+                    command, running.returncode, out, err)
         except subprocess.TimeoutExpired:
             return {
                 'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -406,6 +437,9 @@ def optimize_autospin(
     best = None
     for step in range(max(1, int(spins))):
         uhf = parity + 2 * step
+        stopper = kwargs.get('should_stop')
+        if stopper is not None and stopper():
+            break                      # switched off between attempts
         result = optimize_with_gfn(xyz_text, method, charge=charge, uhf=uhf,
                                    **kwargs)
         attempts.append((uhf + 1, result.get('energy'), bool(result.get('ok'))))

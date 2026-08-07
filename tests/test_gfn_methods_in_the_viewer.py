@@ -615,3 +615,47 @@ def test_the_playback_finds_its_field_in_fullscreen_too(editor):
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "querySelectorAll" in watcher, "one root is not enough in fullscreen"
     assert "if(!field) field=document.querySelector(" in watcher
+
+
+def test_optimise_is_a_switch_that_can_be_turned_off(editor):
+    """On starts it, off stops it, and it goes back up by itself.
+
+    A push button that cannot be un-pushed leaves the only way out of a long
+    optimisation being to wait for it.
+    """
+    import ipywidgets as w
+
+    button = editor["submit_optimize_btn"]
+    assert isinstance(button, w.ToggleButton)
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    assert "state['optimize_run'] = None" in handler, "off has to end the run"
+    assert "should_stop=_stopped" in handler, "the run has to watch for it"
+    apply_body = handler.split("def _apply")[1]
+    assert "submit_optimize_btn.value = False" in apply_body, (
+        "the switch has to release itself when the work is over"
+    )
+
+
+@_needs_xtb
+def test_a_run_that_is_switched_off_ends_rather_than_being_waited_out():
+    import threading
+    import time
+
+    stretched = "3\nstretched\nO 0 0 0\nH 1.40 0 0\nH -0.40 1.35 0\n"
+    stop = [False]
+    threading.Timer(0.05, lambda: stop.__setitem__(0, True)).start()
+
+    started = time.perf_counter()
+    result = gfn.optimize_with_gfn(
+        stretched, "gfnff", should_stop=lambda: stop[0], timeout=60)
+    elapsed = time.perf_counter() - started
+
+    if result["ok"]:
+        pytest.skip("it finished before the stop arrived")
+    assert "was stopped" in result["status"]
+    assert result["xyz"] == stretched, "a stopped run must change nothing"
+    assert elapsed < 30

@@ -706,7 +706,8 @@ def create_tab(ctx):
         layout=widgets.Layout(width='132px', height='30px'),
         disabled=True,
     )
-    submit_optimize_btn = widgets.Button(
+    submit_optimize_btn = widgets.ToggleButton(
+        value=False,
         description='Optimize all', button_style='success', icon='compress',
         tooltip=(
             'Minimise every frame currently loaded -- all isomers or batch '
@@ -3774,7 +3775,15 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)});'
         )
 
-    def on_submit_optimize(_button=None):
+    def on_submit_optimize(change=None):
+        """A switch, not a push: on starts it, off stops it, and it turns
+        itself off when the optimisation has converged or failed."""
+        if isinstance(change, dict) and change.get('name') == 'value':
+            if not submit_optimize_btn.value:
+                state['optimize_run'] = None      # off: the run ends itself
+                return
+        elif not submit_optimize_btn.value:
+            return
         """Minimise every frame that is loaded, not just the one on screen.
 
         The Submit tab can hold a whole set at once -- generated isomers, or
@@ -3801,7 +3810,6 @@ def create_tab(ctx):
         _set_mol_status(
             f'Optimising {count} frame(s) with {label}...', spinner=True,
         )
-        submit_optimize_btn.disabled = True
         if gfn:
             # One call, not two: run_js clears its output before displaying,
             # so a bootstrap followed immediately by a watcher is a bootstrap
@@ -3809,6 +3817,11 @@ def create_tab(ctx):
             _ensure_manip_bootstrap()
             _schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
+        token = object()
+        state['optimize_run'] = token
+
+        def _stopped():
+            return state.get('optimize_run') is not token
 
         def _work():
             from .molecule_forcefield import relax_xyz
@@ -3817,12 +3830,17 @@ def create_tab(ctx):
             for position, item in enumerate(targets):
                 xyz = item[0]
                 try:
+                    if _stopped():
+                        failures.append(f'frame {position + 1}: stopped')
+                        results.append(item)
+                        continue
                     if gfn and autospin:
                         outcome = _gfn.optimize_autospin(
-                            xyz, method, charge=charge)
+                            xyz, method, charge=charge, should_stop=_stopped)
                     elif gfn:
                         outcome = _gfn.optimize_with_gfn(
-                            xyz, method, charge=charge, uhf=uhf)
+                            xyz, method, charge=charge, uhf=uhf,
+                            should_stop=_stopped)
                     else:
                         outcome = relax_xyz(
                             xyz,
@@ -3859,6 +3877,12 @@ def create_tab(ctx):
                     results.append(item)
 
             def _apply():
+                # Converged, failed or stopped -- the switch goes back up by
+                # itself, so it never claims to be working when it is not.
+                if state.get('optimize_run') is token:
+                    state['optimize_run'] = None
+                if submit_optimize_btn.value:
+                    submit_optimize_btn.value = False
                 submit_optimize_btn.disabled = False
                 state['pre_optimize_frames'] = {
                     'isomers': frames,
@@ -5143,7 +5167,7 @@ def create_tab(ctx):
     submit_reset_btn.on_click(on_submit_reset)
     submit_internal_btn.observe(on_submit_set_internal, names='value')
     submit_internal_value.observe(on_submit_internal_value, names='value')
-    submit_optimize_btn.on_click(on_submit_optimize)
+    submit_optimize_btn.observe(on_submit_optimize, names='value')
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
