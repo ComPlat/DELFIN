@@ -1159,7 +1159,13 @@ def create_tab(ctx):
             f"{body}</div>"
         )
         mol_status.value = rendered_html
-        mol_status_fs.value = rendered_html
+        # The fullscreen copy is there to report work -- a spinner, a
+        # trajectory, a result.  Asking for coordinates is not work, and in
+        # fullscreen there is a structure on screen to look at, so the prompt
+        # would be a permanent line saying nothing.
+        prompt = any('enter XYZ' in str(line) or 'Load a structure' in str(line)
+                     for line in lines)
+        mol_status_fs.value = '' if prompt else rendered_html
 
     def _clear_mol_status():
         mol_status.value = ''

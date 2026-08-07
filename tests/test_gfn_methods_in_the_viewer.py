@@ -660,7 +660,8 @@ def test_the_page_says_what_the_playback_is_doing(editor):
 
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfnplay'" in handler
-    assert "_set_mol_status(f'Trajectory: {payload}.')" in handler
+    assert "state['gfn_play_note'] = str(payload)" in handler
+    assert "Trajectory: {payload}" in handler
 
 
 def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
@@ -671,3 +672,17 @@ def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
     assert "mol_status_fs.layout.display = 'none'" in source
     assert ".submit-fs-overlay .submit-fs-member-status {" in source
     assert "display: block !important;" in source
+
+
+def test_fullscreen_is_not_told_to_enter_coordinates(editor):
+    """The copy reports work: a spinner, a trajectory, a result.
+
+    In fullscreen there is a structure on screen, so a prompt to load one is a
+    permanent line saying nothing.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
+    assert "'enter XYZ' in str(line)" in setter
+    assert "mol_status_fs.value = '' if prompt else rendered_html" in setter
