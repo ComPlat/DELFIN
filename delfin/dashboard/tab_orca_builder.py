@@ -39,6 +39,11 @@ from .input_processing import (
 
 _COORD_LINE_RE = re.compile(r'^\s*\*\s*(?:xyzfile|xyz|gzmt|internal)\b', re.IGNORECASE)
 
+# On-screen size of the atom numbers in the molecule preview, as the factor the
+# high-resolution label texture is down-scaled by.  Selectable in the preview
+# toolbar; this is the size a fresh viewer starts with.
+_LABEL_SCALE_DEFAULT = 0.20
+
 
 def strip_coord_block(text):
     """Return the INP text with a trailing ORCA coordinate block removed.
@@ -54,6 +59,41 @@ def strip_coord_block(text):
         if _COORD_LINE_RE.match(line):
             return '\n'.join(lines[:i]).rstrip()
     return text.rstrip()
+
+
+def _orca_kabsch_align(reference_coords, target_coords, mapping=None):
+    """Superpose the reference onto the target and return (aligned, RMSD).
+
+    The rotation that minimises the RMSD is ``R = V U^T`` from the SVD of the
+    covariance ``ref^T target``, and it acts on *column* vectors.  Coordinates
+    here are rows, so it has to be applied transposed -- ``rows @ R.T``.
+    Applying it untransposed rotates the reference by the inverse and reports
+    the RMSD of that, which is why an exactly rotated copy of a structure used
+    to come out several Angstrom apart from itself.
+    """
+    ref = np.asarray(reference_coords, dtype=float)
+    target = np.asarray(target_coords, dtype=float)
+    if ref.shape != target.shape:
+        raise ValueError(f'Coordinate shape mismatch: {ref.shape} vs {target.shape}.')
+    if mapping is not None:
+        map_idx = np.asarray(mapping, dtype=int)
+        if map_idx.ndim != 1 or map_idx.size != ref.shape[0]:
+            raise ValueError('Invalid mapping length for Kabsch alignment.')
+        target = target[map_idx]
+    ref_centroid = ref.mean(axis=0)
+    target_centroid = target.mean(axis=0)
+    ref_centered = ref - ref_centroid
+    target_centered = target - target_centroid
+    covariance = ref_centered.T @ target_centered
+    u, _s, vt = np.linalg.svd(covariance)
+    rotation = vt.T @ u.T
+    if np.linalg.det(rotation) < 0:
+        vt[-1, :] *= -1.0
+        rotation = vt.T @ u.T
+    aligned = ref_centered @ rotation.T + target_centroid
+    diff = aligned - target
+    rmsd = float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
+    return aligned, rmsd
 
 
 def create_tab(ctx):
@@ -229,6 +269,14 @@ def create_tab(ctx):
         value=True, description='#', tooltip='Show / hide atom numbers',
         layout=widgets.Layout(width='40px', height='28px'),
     )
+    # On-screen size of the atom numbers.  The value is the factor the
+    # high-resolution label texture is down-scaled by, so larger stays sharp.
+    orca_mol_label_size = widgets.Dropdown(
+        options=[('S', 0.11), ('M', 0.15), ('L', 0.20), ('XL', 0.28), ('XXL', 0.38)],
+        value=_LABEL_SCALE_DEFAULT,
+        tooltip='Size of the atom numbers',
+        layout=widgets.Layout(width='68px', height='28px'),
+    )
     orca_mol_fullscreen_btn = widgets.Button(
         description='', icon='expand', tooltip='Toggle fullscreen (Esc to exit)',
         layout=widgets.Layout(width='40px', height='28px'),
@@ -241,6 +289,7 @@ def create_tab(ctx):
             orca_mol_nav_label,
             orca_mol_next_btn,
             orca_mol_labels_btn,
+            orca_mol_label_size,
             orca_mol_fullscreen_btn,
         ],
         layout=widgets.Layout(display='none', align_items='center', gap='6px'),
@@ -340,31 +389,6 @@ def create_tab(ctx):
             for sym, xyz in zip(symbols, arr)
         )
         return f'{len(symbols)}\n{comment}\n{body}'
-
-    def _orca_kabsch_align(reference_coords, target_coords, mapping=None):
-        ref = np.asarray(reference_coords, dtype=float)
-        target = np.asarray(target_coords, dtype=float)
-        if ref.shape != target.shape:
-            raise ValueError(f'Coordinate shape mismatch: {ref.shape} vs {target.shape}.')
-        if mapping is not None:
-            map_idx = np.asarray(mapping, dtype=int)
-            if map_idx.ndim != 1 or map_idx.size != ref.shape[0]:
-                raise ValueError('Invalid mapping length for Kabsch alignment.')
-            target = target[map_idx]
-        ref_centroid = ref.mean(axis=0)
-        target_centroid = target.mean(axis=0)
-        ref_centered = ref - ref_centroid
-        target_centered = target - target_centroid
-        covariance = ref_centered.T @ target_centered
-        u, _s, vt = np.linalg.svd(covariance)
-        rotation = vt.T @ u.T
-        if np.linalg.det(rotation) < 0:
-            vt[-1, :] *= -1.0
-            rotation = vt.T @ u.T
-        aligned = ref_centered @ rotation + target_centroid
-        diff = aligned - target
-        rmsd = float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
-        return aligned, rmsd
 
     def _orca_sq_distance_matrix(a, b):
         a = np.asarray(a, dtype=float)
@@ -802,8 +826,8 @@ def create_tab(ctx):
         "    // PLANE at the rotation centre (world (0,0,rz), depth invariant\n"
         "    // under rotation) along the screen-right model direction, so f\n"
         "    // tracks the mouse-wheel zoom only, NOT rotation.  DISP is the base\n"
-        "    // on-screen size; lower it for smaller numbers.\n"
-        "    var DISP=0.15, f=1;\n"
+        "    // on-screen size, set from the toolbar's size control.\n"
+        "    var DISP=(+v.__delfinLabelScale)||__DISP__, f=1;\n"
         "    if(typeof v.modelToScreen==='function'&&m>0){ try{\n"
         "      var pcx=-w[0],pcy=-w[1],pcz=-w[2];\n"
         "      var q1=v.modelToScreen({x:pcx,y:pcy,z:pcz});\n"
@@ -840,6 +864,15 @@ def create_tab(ctx):
         "    var pos=hs.indexOf(afterInteraction);if(pos>=0)hs.splice(pos,1);\n"
         "    if(typeof previousCleanup==='function'){try{previousCleanup();}catch(e){}}\n"
         "  };\n"
+        "  // Resizing the numbers goes through the same settled pass that already\n"
+        "  // sizes them, so the size control redraws only the labels -- the model\n"
+        "  // and the camera are left untouched.\n"
+        "  window.__delfinSetLabelScale=function(scale){\n"
+        "    var vv=window._orcaBuildViewer; if(!vv) return;\n"
+        "    vv.__delfinLabelScale=scale;\n"
+        "    var hs=vv.__delfinInteractionEndHandlers||[];\n"
+        "    for(var i=0;i<hs.length;i++){try{hs[i]();}catch(e){}}\n"
+        "  };\n"
         "  schedule(0);\n"
         "})();"
     )
@@ -864,6 +897,8 @@ def create_tab(ctx):
             'var __delfinAL=($3Dmol&&$3Dmol.SpriteAlignment&&$3Dmol.SpriteAlignment.center)'
             '?$3Dmol.SpriteAlignment.center:"center";',
             '%s.__delfinLbls=%s.__delfinLbls||[];' % (var, var),
+            # carry the size chosen in the toolbar into every new viewer
+            '%s.__delfinLabelScale=%.3f;' % (var, _label_scale()),
         ]
         pushes = []
         for i, line in enumerate(lines[2: 2 + n_atoms]):
@@ -885,10 +920,20 @@ def create_tab(ctx):
             )
         if not pushes:
             return ''
-        depth_patch = _LABEL_DEPTH_PATCH_JS.replace('__VAR__', var)
+        depth_patch = (
+            _LABEL_DEPTH_PATCH_JS
+            .replace('__VAR__', var)
+            .replace('__DISP__', '%.3f' % _LABEL_SCALE_DEFAULT)
+        )
         return '\n    '.join(
             preamble + pushes + [depth_patch]
         )
+
+    def _label_scale():
+        try:
+            return float(orca_mol_label_size.value)
+        except Exception:
+            return _LABEL_SCALE_DEFAULT
 
     def _labels_js(full_xyz, var='viewer'):
         """Atom-number labels, gated by the preview's labels on/off toggle."""
@@ -1131,6 +1176,17 @@ def create_tab(ctx):
         state['show_atom_labels'] = bool(orca_mol_labels_btn.value)
         _refresh_mol_view(reset_view=False)  # keep orientation, just add/drop labels
 
+    def on_mol_label_size(change):
+        """Resize the numbers in the live viewer.
+
+        The molecule is not re-rendered: the browser only rescales the label
+        sprites it already has, so the size changes as the dropdown closes.
+        """
+        ctx.run_js(
+            'if(window.__delfinSetLabelScale)window.__delfinSetLabelScale(%.3f);'
+            % _label_scale()
+        )
+
     def handle_orca_convert_smiles(button):
         raw_input = orca_coords.value.strip()
         if not raw_input:
@@ -1246,6 +1302,18 @@ def create_tab(ctx):
                 print('Check Numbering needs at least two named XYZ blocks.')
             return
 
+        # The comparison holds the kernel, so say so before it starts: the
+        # message reaches the browser while the mapping is still running.
+        with orca_output:
+            clear_output()
+            print(f'Comparing {len(xyz_blocks) - 1} block(s) against the reference...')
+        orca_check_numbering_btn.disabled = True
+        try:
+            _run_numbering_check(xyz_blocks)
+        finally:
+            orca_check_numbering_btn.disabled = False
+
+    def _run_numbering_check(xyz_blocks):
         ref_name, ref_xyz = xyz_blocks[0]
         try:
             ref_symbols, ref_coords = _orca_parse_xyz_symbols_coords(ref_xyz)
@@ -1264,7 +1332,14 @@ def create_tab(ctx):
                 result = _orca_check_numbering_pair(ref_symbols, ref_coords, target_symbols, target_coords)
                 results[idx] = result
                 n_edits = int(result.get('n_bond_edits', 0))
-                if n_edits > 0:
+                mapping = list(result.get('best_mapping') or [])
+                is_identity = mapping == list(range(len(mapping)))
+                if n_edits > 0 and is_identity:
+                    verdict = (
+                        f'reaction mapping ({n_edits} bond edit(s)) - '
+                        'numbering already matches'
+                    )
+                elif n_edits > 0:
                     verdict = f'reaction mapping ({n_edits} bond edit(s)) - reorder available'
                 elif result.get('suspicious'):
                     verdict = 'numbering could be wrong'
@@ -1525,6 +1600,7 @@ def create_tab(ctx):
     orca_mol_prev_btn.on_click(on_mol_prev)
     orca_mol_next_btn.on_click(on_mol_next)
     orca_mol_labels_btn.observe(on_mol_labels_toggle, names='value')
+    orca_mol_label_size.observe(on_mol_label_size, names='value')
     update_orca_molecule_view()
     update_orca_preview()
     state['last_auto_keywords'] = _build_keyword_line()
@@ -2052,5 +2128,7 @@ def create_tab(ctx):
         'orca_mol_prev_btn': orca_mol_prev_btn,
         'orca_mol_next_btn': orca_mol_next_btn,
         'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
+        'orca_mol_labels_btn': orca_mol_labels_btn,
+        'orca_mol_label_size': orca_mol_label_size,
         'update_orca_preview': update_orca_preview,
     }

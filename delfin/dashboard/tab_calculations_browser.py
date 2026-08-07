@@ -6541,7 +6541,10 @@ def create_tab(ctx):
         if np.linalg.det(rotation) < 0:
             vt[-1, :] *= -1.0
             rotation = vt.T @ u.T
-        aligned = ref_centered @ rotation + target_centroid
+        # The rotation acts on column vectors; these coordinates are rows, so it
+        # is applied transposed.  Untransposed it turns the reference the wrong
+        # way and reports the RMSD of that.
+        aligned = ref_centered @ rotation.T + target_centroid
         diff = aligned - target
         rmsd = float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
         if return_rotation:
@@ -6840,7 +6843,7 @@ def create_tab(ctx):
             if best is None or rmsd < best[0] - 1e-12:
                 best = (rmsd, aligned.copy(), mapping.copy())
 
-            ref_rot_centered = ref_centered @ rotation
+            ref_rot_centered = ref_centered @ rotation.T
             new_mapping = _calc_element_assignment_for_rotation(
                 ref_symbols_lc, target_symbols_lc, ref_rot_centered, target_centered
             )
