@@ -21,7 +21,7 @@ _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 
 
 @pytest.fixture
-def editor(tmp_path):
+def editor_built(tmp_path):
     pytest.importorskip("ipywidgets")
     from delfin.dashboard import tab_submit
 
@@ -34,10 +34,22 @@ def editor(tmp_path):
         office_dir=tmp_path / "office",
     )
     ctx.run_js = sent.append
-    _widget, refs = tab_submit.create_tab(ctx)
+    widget, refs = tab_submit.create_tab(ctx)
     refs["coords_widget"].value = _WATER
     sent.clear()
+    return refs, sent, widget
+
+
+@pytest.fixture
+def editor(editor_built):
+    refs, sent, _widget = editor_built
     return refs, sent
+
+
+@pytest.fixture
+def editor_with_widget(editor_built):
+    refs, _sent, widget = editor_built
+    return refs, widget
 
 
 def _hold(refs, atoms, value, kind="distance", mode="pull"):
@@ -94,6 +106,50 @@ def test_editing_the_value_retunes_the_selected_constraint(editor):
     assert held[0]["value"] == pytest.approx(1.55)
     assert held[0]["atoms"] == [0, 1], "retuning must not touch the atoms"
     assert held[0]["mode"] == "pull", "retuning must not touch the mode"
+
+
+def _mode_dropdown(widget):
+    """The pull/fix box, found by what it offers."""
+    import ipywidgets as w
+
+    for child in getattr(widget, "children", ()) or ():
+        options = getattr(child, "options", None)
+        if isinstance(child, w.Dropdown) and options:
+            values = tuple(
+                option[1] if isinstance(option, tuple) else option
+                for option in options
+            )
+            if values == ("pull", "fix"):
+                return child
+        found = _mode_dropdown(child)
+        if found is not None:
+            return found
+    return None
+
+
+def test_a_held_value_can_be_turned_from_pull_into_fix(editor_with_widget):
+    refs, widget = editor_with_widget
+    _hold(refs, (0, 1), 1.20, mode="pull")
+    mode = _mode_dropdown(widget)
+    refs["submit_constraint_dd"].value = "c0"
+    assert mode.value == "pull", "the box does not follow the selected entry"
+
+    mode.value = "fix"
+
+    held = refs["editor_state"]["constraints"][0]
+    assert held["mode"] == "fix"
+    assert held["value"] == pytest.approx(1.20), "the value must survive"
+    assert held["atoms"] == [0, 1], "the atoms must survive"
+
+
+def test_the_mode_box_with_nothing_selected_arms_the_next_hold_only(editor_with_widget):
+    """It must not silently retune an entry the user is not looking at."""
+    refs, widget = editor_with_widget
+    _hold(refs, (0, 1), 1.20, mode="pull")
+
+    _mode_dropdown(widget).value = "fix"
+
+    assert refs["editor_state"]["constraints"][0]["mode"] == "pull"
 
 
 def test_the_value_box_alone_does_not_invent_a_constraint(editor):
