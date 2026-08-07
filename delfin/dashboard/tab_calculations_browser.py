@@ -11421,6 +11421,9 @@ def create_tab(ctx):
             return
         if message.get('kind') != 'docx':
             return
+        if message.get('zen'):
+            _calc_toggle_doc_zen()
+            return
         address = str(message.get('address') or '')
         if not address:
             return
@@ -11813,6 +11816,10 @@ def create_tab(ctx):
                 # The browser has already painted what was typed.  What it
                 # cannot know is what the formulas now work out to.
                 _calc_sheet_live_formulas(path, sheet_name, view)
+            return
+
+        if action == 'zen':
+            _calc_toggle_doc_zen()
             return
 
         if action == 'replace':
@@ -12994,6 +13001,40 @@ def create_tab(ctx):
     # -- wiring -------------------------------------------------------------
     calc_back_btn.on_click(calc_on_back)
     calc_home_btn.on_click(calc_on_home)
+    def _calc_toggle_doc_zen():
+        """Fullscreen with the file browser out of the way.
+
+        The tab's own fullscreen gives the tab the window and keeps the
+        explorer beside the document, which is right when the point is to see
+        a job's output next to the folder it came from.  It is not right for a
+        spreadsheet or a document, where the point is the document.  Same
+        lift-out, one class more, and the kernel owns the state so the tab's
+        button and the one in the document's own bar cannot disagree.
+        """
+        on = not bool(state.get('zen_doc'))
+        state['zen_doc'] = on
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) return;
+            root.classList.toggle('calc-zen-doc', {json.dumps(on)});
+        }})();
+        """)
+        if calc_fullscreen_btn is not None:
+            # Let the tab's own handler own 'calc-zen'; this only adds the
+            # class that takes the explorer out.
+            if bool(calc_fullscreen_btn.value) != on:
+                calc_fullscreen_btn.value = on
+                return
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) return;
+            root.classList.toggle('calc-zen', {json.dumps(on)});
+            setTimeout(function() {{ window.dispatchEvent(new Event('resize')); }}, 60);
+        }})();
+        """)
+
     def _calc_on_fullscreen(change):
         """Give the tab the whole window, or hand it back.
 
@@ -13001,6 +13042,16 @@ def create_tab(ctx):
         reaches here as a click on that same button.
         """
         on = bool(change.get('new'))
+        if not on and state.get('zen_doc'):
+            # Leaving fullscreen leaves all of it, or the explorer would stay
+            # hidden in a tab that is no longer fullscreen.
+            state['zen_doc'] = False
+            _run_js(f"""
+            (function() {{
+                var root = document.querySelector('.{calc_scope_id}');
+                if (root) root.classList.remove('calc-zen-doc');
+            }})();
+            """)
         calc_fullscreen_btn.description = '⤫' if on else '⛶'
         calc_fullscreen_btn.tooltip = (
             'Leave fullscreen (Esc)' if on else 'Fullscreen (Esc exits)')
@@ -14387,6 +14438,14 @@ def create_tab(ctx):
         ' z-index:9990 !important; background:#fff !important;'
         ' margin:0 !important; padding:10px !important; }'
         '.calc-tab.calc-zen > h3 { display:none !important; }'
+        # Fullscreen for a document: the document alone.  The explorer holds
+        # the folder listing and the controls that act on files -- none of it
+        # is what someone reading a table is looking at.  Hidden rather than
+        # unmounted: the widget bridges the document talks through live in
+        # that column, and a display:none element still answers a click.
+        '.calc-tab.calc-zen-doc .calc-left { display:none !important; }'
+        '.calc-tab.calc-zen-doc .calc-right { flex:1 1 100% !important;'
+        ' max-width:100% !important; }'
         # Office holds documents, not jobs. These controls report on
         # calculations -- a keyword menu of ORCA section headings, a DELFIN
         # report, a 3D structure, the calculation archive, running SSH

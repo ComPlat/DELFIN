@@ -2268,6 +2268,9 @@ def render_grid_html(
         out.append('<button class="dsheet-btn" data-act="insert_cols">+ Column</button>')
         out.append('<button class="dsheet-btn" data-act="delete_cols">&minus; Column</button>')
         out.append('<span class="dsheet-sep"></span>')
+    out.append('<button class="dsheet-btn dsheet-zen"'
+               ' title="Fullscreen: the table alone (Esc leaves)">&#9974;</button>')
+    out.append('<span class="dsheet-sep"></span>')
     out.append('<span class="dsheet-addr">A1</span>')
     out.append('<input class="dsheet-filter" placeholder="Filter…" spellcheck="false">')
     if editable:
@@ -2659,6 +2662,21 @@ _GRID_JS_TEMPLATE = r"""
   if (underlineBtn) underlineBtn.addEventListener('click', function(){
     applyFormat({underline: !selectionHas('underline')});
   });
+  /* ---------- fullscreen ----------
+     The kernel owns the state, because the tab's own fullscreen button has to
+     agree with it; the browser only asks. */
+  var zenBtn = wrap.querySelector('.dsheet-zen');
+  if (zenBtn) zenBtn.addEventListener('click', function(){
+    send('zen', []);
+  });
+  document.addEventListener('keydown', function(e){
+    if (e.key !== 'Escape') return;
+    var scope = wrap.closest('.calc-tab');
+    if (!scope || !scope.classList.contains('calc-zen-doc')) return;
+    e.preventDefault();
+    send('zen', []);
+  }, true);
+
   /* ---------- replace ----------
      The kernel holds the whole sheet and does the matching; the browser only
      asks.  What comes back is an ordinary edit journal, which is what makes a

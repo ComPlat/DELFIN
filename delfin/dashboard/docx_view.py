@@ -414,6 +414,10 @@ def toolbar_html(current: str = 'Normal') -> str:
         out.append(f'<option value="{_html.escape(code, quote=True)}"{chosen}>'
                    f'{_html.escape(label)}</option>')
     out.append('</select>')
+    out.append('<span class="dw-bar-sep"></span>')
+    out.append('<button class="dw-btn dw-zen"'
+               ' title="Fullscreen: the document alone (Esc leaves)">'
+               '&#9974;</button>')
     out.append('</div>')
     return ''.join(out)
 
@@ -1330,6 +1334,20 @@ _EDIT_JS_TEMPLATE = r"""
                   align: where});
           });
         });
+
+      /* Fullscreen: the kernel owns the state, so the tab's own button and
+         this one cannot disagree about it. */
+      var zenBtn = bar.querySelector('.dw-zen');
+      if (zenBtn) zenBtn.addEventListener('click', function(){
+        send({kind: 'docx', zen: 1});
+      });
+      document.addEventListener('keydown', function(e){
+        if (e.key !== 'Escape') return;
+        var scope = page.closest('.calc-tab');
+        if (!scope || !scope.classList.contains('calc-zen-doc')) return;
+        e.preventDefault();
+        send({kind: 'docx', zen: 1});
+      }, true);
 
       var styleBox = bar.querySelector('.dw-style');
       if (styleBox) styleBox.addEventListener('change', function(){
