@@ -14444,8 +14444,12 @@ def create_tab(ctx):
         # unmounted: the widget bridges the document talks through live in
         # that column, and a display:none element still answers a click.
         '.calc-tab.calc-zen-doc .calc-left { display:none !important; }'
+        # The splitter is a drag handle between the two columns.  With one of
+        # them gone it is a grey bar standing where the table should start,
+        # and there is nothing left for it to resize.
+        '.calc-tab.calc-zen-doc .calc-splitter { display:none !important; }'
         '.calc-tab.calc-zen-doc .calc-right { flex:1 1 100% !important;'
-        ' max-width:100% !important; }'
+        ' max-width:100% !important; padding:0 !important; }'
         # Office holds documents, not jobs. These controls report on
         # calculations -- a keyword menu of ORCA section headings, a DELFIN
         # report, a 3D structure, the calculation archive, running SSH
