@@ -563,3 +563,19 @@ def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
     handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
     assert "'run': r" in handler, "every payload has to name its run"
     assert "state['gfn_run']" in handler
+
+
+def test_leaving_fullscreen_puts_every_member_back():
+    """The status line is needed in both views, not only the big one.
+
+    Fullscreen moves the widgets into an overlay and the overlay is removed on
+    exit -- so a member that could not be put back where it came from would be
+    carried out of the page with it and be missing from the small view.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    editor_js = submit_manip_bootstrap_js()
+    exit_body = editor_js.split("function exitFullscreen")[1][:1600]
+    assert "insertBefore" in exit_body and "appendChild" in exit_body
+    assert "isConnected" in exit_body, "an orphaned member is a lost control"
+    assert "root.appendChild(el)" in exit_body

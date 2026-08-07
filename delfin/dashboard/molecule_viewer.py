@@ -3810,6 +3810,19 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             try { entry.overlay.parentNode.removeChild(entry.overlay); } catch (e) {}
             delete window._submitFsByScope[scopeKey];
             var root = document.querySelector('.' + scopeKey);
+            /* A member whose recorded parent was itself replaced while
+               fullscreen was open has nowhere to go back to, and would be
+               carried out of the page with the overlay -- the toolbar, the
+               viewer or the status line simply gone from the small view.
+               Anything left unconnected is put back into the scope. */
+            if (root) {
+                for (var j = 0; j < entry.restore.length; j++) {
+                    var el = entry.restore[j].el;
+                    if (el && !el.isConnected) {
+                        try { root.appendChild(el); } catch (e) {}
+                    }
+                }
+            }
             var btn = root && root.querySelector('.submit-fullscreen-btn');
             setFsIcon(btn, false);
             resizeScopeViewer(scopeKey);
