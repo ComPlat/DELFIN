@@ -1093,7 +1093,7 @@ def multibond_ideal(e1, e2, order):
 
 
 def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
-                    graph_bonds=None) -> bool:
+                    graph_bonds=None, block_bounds=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
     (a non-coordinating atom intruding into the metal's first shell) — so fffree
@@ -1222,31 +1222,24 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 continue
             if float(np.linalg.norm(P[i] - P[j])) > _torn_f * _bd._ideal_bond(syms[i], syms[j]):
                 return _gate_no("TORN_BOND")                              # the graph requires this bond; it is torn
-    # ===== KUENSTLICHE BINDUNG (DELFIN_FFFREE_SPURIOUS_BOND, default OFF -> byte-identisch) =====
-    # Die Kehrseite des Riss-Tests direkt darueber.  TORN_BOND fragt "fehlt eine Bindung, die der
-    # Graph verlangt?".  Niemand fragt "gibt es eine Bindung, die er NICHT verlangt?".
-    #
-    # WARUM DAS NICHT SCHON GEFANGEN WIRD.  Die GROSS_OVERLAP-Schleife unten ueberspringt jedes
-    # Paar mit `if (i, j) in bset: continue` -- also jede WAHRGENOMMENE Bindung.  Ein kuenstlicher
-    # Kontakt bei ~1,5 A wird als voellig normale kovalente Bindung wahrgenommen, landet in bset
-    # und wird uebersprungen.  Ihre 0,60-Schwelle sieht nur echte Atom-Ueberlappung.  Der Defekt
-    # liegt also strukturell im blinden Bereich zwischen beiden Tests.
-    #
-    # GEMESSEN, tpr6early (TPR6 auf frueh-UM-CN6): 17 von 17 Systemen besser, keines schlechter,
-    # mean -9,21, capability_lost 0, historischer Boden BESTANDEN.  Einziger Rest: die 77
-    # hinzugefuegten Prismen-Frames sind zu 30 % hart, Defekttyp smiles_topology -- laut Auge
-    # "a frame atom whose perceived heavy-neighbour set does not match ANY the SMILES expects".
-    # Physikalische Ursache: im trigonalen Prisma stehen die Dreiecksflaechen auf DECKUNG,
-    # benachbarte Vertices sind ~2,4 A statt 2,83 A auseinander -- Liganden ruecken zusammen,
-    # bis die Wahrnehmung eine Bindung sieht, die es chemisch nicht gibt.
-    #
-    # Damit ist es genau das Kriterium des Users: ein Isomer, das nur mit einer chemisch nicht
-    # existenten Bindung baubar ist, brauchen wir nicht -- die 54 SAUBEREN neuen Frames schon.
-    # Ein Distanz-Schwellwert waere hier das falsche Werkzeug (er trennt die beiden Faelle nicht);
-    # die Sollmenge tut es exakt.  Metalle und H bleiben aussen vor: M-D-Abstaende variieren
-    # legitim weit, und graph_bonds fuehrt nur Schwer-Schwer-Bindungen.
-    if graph_bonds and os.environ.get("DELFIN_FFFREE_SPURIOUS_BOND", "0") == "1":
+    # ⚠ 2026-08-07 VERENGT.  Die erste Fassung schlug bei JEDER wahrgenommenen Bindung an, die
+    # der Graph nicht fuehrt -- und war damit zu grob: tpr6spur verlor 7 Isomere und riss
+    # ccdc_isomer_lost, ccdc_arrangement_lost und ccdc_backbone_lost, also SCHLECHTER als ohne.
+    # Grund: die geometrische Wahrnehmung sieht auch LIGANDINTERN Bindungen, die der
+    # Blockgraph nicht auffuehrt (Ringschluesse, Perzeptionsrand), und die sind harmlos.
+    # Die physikalische Ursache im Prisma ist enger: die Dreiecksflaechen stehen auf Deckung,
+    # also kollidieren VERSCHIEDENE LIGANDEN miteinander.  Genau darauf wird jetzt geprueft --
+    # eine wahrgenommene Bindung zwischen zwei verschiedenen Ligandbloecken kann es chemisch
+    # nicht geben, denn jeder Block ist ein eigenes Molekuel.
+    if (block_bounds and graph_bonds
+            and os.environ.get("DELFIN_FFFREE_SPURIOUS_BOND", "0") == "1"):
         _req = {(min(i, j), max(i, j)) for i, j in graph_bonds}
+
+        def _blk(a):
+            for _b, (_s, _e) in enumerate(block_bounds):
+                if _s <= a < _e:
+                    return _b
+            return -1
         for i, j in bonds:
             if i >= len(syms) or j >= len(syms):
                 continue
@@ -1254,8 +1247,11 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 continue
             if syms[i] == "H" or syms[j] == "H":
                 continue
-            if (min(i, j), max(i, j)) not in _req:
-                return _gate_no("SPURIOUS_BOND")     # der Graph verlangt sie nicht; sie ist erfunden
+            if (min(i, j), max(i, j)) in _req:
+                continue
+            _bi, _bj = _blk(i), _blk(j)
+            if _bi >= 0 and _bj >= 0 and _bi != _bj:
+                return _gate_no("SPURIOUS_INTERLIG_BOND")   # zwei getrennte Molekuele, verschmolzen
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
     for i in range(n):
@@ -2430,6 +2426,11 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         # gleiche Zeile, keine neue Annahme.  Ohne TORN_GATE bleibt alles byte-identisch,
         # denn der Gate liest den Parameter nur unter seinem eigenen Env-Schalter.
         _gb = _graph_bonds_from_blocks(_heteroleptic_block_offsets(vertex_specs))
+        # Blockgrenzen fuer die Interligand-Pruefung: jeder Ligand belegt einen
+        # zusammenhaengenden Atombereich, Metall auf 0.  Gleiche Quelle wie _gb.
+        _bb = []
+        for _frag, _off in _heteroleptic_block_offsets(vertex_specs):
+            _bb.append((_off, _off + Chem.AddHs(_frag).GetNumAtoms()))
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], geom_name, vertex_specs)
         except Exception:
@@ -2439,7 +2440,7 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         syms, P = built
         syms, P = _maybe_relax(syms, P)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex,
-                               graph_bonds=_gb):
+                               graph_bonds=_gb, block_bounds=_bb):
             continue
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
