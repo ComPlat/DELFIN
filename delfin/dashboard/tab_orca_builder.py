@@ -131,7 +131,13 @@ def create_tab(ctx):
         ),
         description='Coordinates:',
         layout=widgets.Layout(width='100%', height='520px', box_sizing='border-box'), style=ws,
+        # Every keystroke used to rebuild the 3D preview from scratch, so typing
+        # coordinates fought a viewer that was being torn down and recreated
+        # between characters.  The browser now reports the box once typing
+        # stops (see debounce_input), and the preview follows in one step.
+        continuous_update=False,
     )
+    orca_coords.add_class('delfin-debounced')
     orca_convert_smiles_btn = widgets.Button(
         description='CONVERT SMILES', button_style='info',
         layout=widgets.Layout(width='200px'),

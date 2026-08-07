@@ -438,6 +438,72 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
     _append_js(ctx, script)
 
 
+def debounce_input(ctx, class_name='delfin-debounced', delay_ms=350):
+    """Let a text box report its value once typing stops, instead of per keystroke.
+
+    A widget with ``continuous_update=True`` sends every keystroke to the kernel,
+    and a handler that renders a 3D viewer or re-parses a file then runs dozens
+    of times while a line is being typed -- the box lags behind the keyboard and
+    the work is thrown away as soon as the next character arrives.  Setting
+    ``continuous_update=False`` alone would go too far the other way: nothing at
+    all happens until the box loses focus.
+
+    So the widget is declared ``continuous_update=False`` and this script fires
+    its change event *delay_ms* after the last keystroke.  Typing stays smooth,
+    the handler runs once, and pasting still updates without clicking elsewhere.
+    Add ``class_name`` to the widget to opt in.
+    """
+    script = f"""
+    (function() {{
+        window.__delfinDebounceClasses = window.__delfinDebounceClasses || [];
+        if (window.__delfinDebounceClasses.indexOf('{class_name}') === -1) {{
+            window.__delfinDebounceClasses.push('{class_name}');
+        }}
+        window.__delfinDebounceDelay = {int(delay_ms)};
+        function arm(el) {{
+            if (!el || el.__delfinDebounced) return;
+            const tag = (el.tagName || '').toUpperCase();
+            if (tag !== 'TEXTAREA' && tag !== 'INPUT') return;
+            el.__delfinDebounced = true;
+            el.addEventListener('input', function() {{
+                if (el.__delfinDebounceTimer) clearTimeout(el.__delfinDebounceTimer);
+                el.__delfinDebounceTimer = setTimeout(function() {{
+                    el.__delfinDebounceTimer = 0;
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}, window.__delfinDebounceDelay);
+            }});
+            /* Leaving the box must not wait for the timer. */
+            el.addEventListener('blur', function() {{
+                if (el.__delfinDebounceTimer) {{
+                    clearTimeout(el.__delfinDebounceTimer);
+                    el.__delfinDebounceTimer = 0;
+                }}
+            }});
+        }}
+        function scan(root) {{
+            if (!root || !root.querySelectorAll) return;
+            window.__delfinDebounceClasses.forEach(function(cls) {{
+                root.querySelectorAll('.' + cls + ' textarea, .' + cls + ' input')
+                    .forEach(arm);
+            }});
+        }}
+        scan(document);
+        if (window.__delfinDebounceObserver) return;
+        const obs = new MutationObserver(function(muts) {{
+            muts.forEach(function(m) {{
+                m.addedNodes && m.addedNodes.forEach(function(node) {{
+                    if (!node || node.nodeType !== 1) return;
+                    scan(node);
+                }});
+            }});
+        }});
+        obs.observe(document.documentElement, {{ childList: true, subtree: true }});
+        window.__delfinDebounceObserver = obs;
+    }})();
+    """
+    _append_js(ctx, script)
+
+
 def disable_spellcheck_global(ctx):
     """Disable spellcheck for all textareas in the dashboard."""
     script = """

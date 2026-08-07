@@ -68,6 +68,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         apply_branding,
         create_busy_css,
         create_page_css,
+        debounce_input,
         disable_spellcheck_global,
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
@@ -600,6 +601,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     # Disable spellcheck in all textareas (browser-level red underlines).
     disable_spellcheck_global(ctx)
+    # Text boxes marked 'delfin-debounced' report their value once typing
+    # stops, so a handler that renders on every keystroke runs once instead.
+    debounce_input(ctx)
     logo_data_uri = _load_logo_data_uri()
     apply_branding(ctx, title='DELFIN Dashboard', favicon_data_uri=logo_data_uri)
 
