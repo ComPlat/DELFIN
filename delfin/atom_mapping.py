@@ -296,6 +296,48 @@ def apply_rt(X, R, pc, qc):
     return (np.asarray(X, dtype=float) - pc) @ R.T + qc
 
 
+def false_twin_groups(G, syms):
+    """Group atoms that share an element *and* an identical neighbour set.
+
+    Two such atoms (the three H of a methyl, the two H of a CH2, isolated ions
+    of the same element) can never be adjacent to each other, so any graph
+    isomorphism maps such a group onto another group as a whole and may permute
+    its members freely.  Every atom appears in exactly one group; groups of one
+    are ordinary atoms.
+    """
+    groups = defaultdict(list)
+    for i in G.nodes:
+        groups[(syms[i], frozenset(G[i]))].append(i)
+    return [sorted(members) for members in groups.values()]
+
+
+def twin_quotient(G, syms, colours, groups):
+    """Collapse each twin group onto its first member.
+
+    The quotient carries the element, the WL colour and the group size, which
+    is what an isomorphism has to preserve.  Because the members of a group are
+    interchangeable, the quotient holds one node per *distinguishable* atom, and
+    isomorphisms of the quotient are in one-to-one correspondence with the
+    isomorphism classes of the full graph.
+    """
+    import networkx as nx
+
+    quotient = nx.Graph()
+    rep = {}
+    for members in groups:
+        head = members[0]
+        for member in members:
+            rep[member] = head
+        quotient.add_node(
+            head, el=syms[head], wl=colours[head], mult=len(members)
+        )
+    for u, v in G.edges():
+        ru, rv = rep[u], rep[v]
+        if ru != rv:
+            quotient.add_edge(ru, rv)
+    return quotient
+
+
 def is_isomorphism(mapping, G1, s1, G2, s2):
     if len(set(mapping.values())) != len(mapping):
         return False
@@ -415,6 +457,10 @@ def map_atoms(sym_ref, xyz_ref, sym_tgt, xyz_tgt, max_edits=2, verbose=False):
             return None
         return m
 
+    def _rmsd_for(order):
+        R, pc, qc = kabsch_rt(x2[order], x1)
+        return float(np.sqrt(((apply_rt(x2, R, pc, qc)[order] - x1) ** 2).sum(1).mean()))
+
     def _refine(x2a):
         """Iterated Hungarian + Kabsch (ICP-like) from an initial superposition.
         Returns (order, rmsd) for a verified mapping, or None."""
@@ -432,6 +478,34 @@ def map_atoms(sym_ref, xyz_ref, sym_tgt, xyz_tgt, max_edits=2, verbose=False):
             else:
                 break
         return None if local is None else (local, local_rmsd)
+
+    def _place_twins(order, groups, rounds=12):
+        """Give the interchangeable atoms of each twin group their nearest
+        partner (Hungarian on distance, re-superposed and repeated).  Permuting
+        a group's images keeps the mapping an isomorphism, so this can only
+        lower the RMSD -- it never puts the mapping at risk."""
+        order = list(order)
+        best_order, best_local = order, _rmsd_for(order)
+        for _ in range(rounds):
+            R, pc, qc = kabsch_rt(x2[order], x1)
+            x2a = apply_rt(x2, R, pc, qc)
+            trial = list(order)
+            for members in groups:
+                if len(members) < 2:
+                    continue
+                images = [order[i] for i in members]
+                cost = np.linalg.norm(
+                    x1[members][:, None, :] - x2a[images][None, :, :], axis=-1
+                )
+                row, col = linear_sum_assignment(cost)
+                for a, b in zip(row, col):
+                    trial[members[a]] = images[b]
+            rmsd = _rmsd_for(trial)
+            if rmsd < best_local - 1e-9:
+                best_order, best_local, order = trial, rmsd, trial
+            else:
+                break
+        return best_order, best_local
 
     best, best_rmsd, method = None, np.inf, 'failed'
 
@@ -458,8 +532,18 @@ def map_atoms(sym_ref, xyz_ref, sym_tgt, xyz_tgt, max_edits=2, verbose=False):
             if res is not None and res[1] < best_rmsd:
                 best, best_rmsd, method = res[0], res[1], 'xyzmap-verified'
 
-    # Last resort: colour-constrained VF2 (bounded), pick the lowest-RMSD
-    # isomorphism.  Handles the rare case the seeded refinement misses.
+    # Last resort: colour-constrained VF2, pick the lowest-RMSD isomorphism.
+    # Handles the rare case the seeded refinement misses.
+    #
+    # The search runs on the twin quotient, not on the full graph.  Every methyl
+    # contributes 6 and every CH2 2 isomorphisms that differ only in which of
+    # its interchangeable hydrogens goes where, so an ordinary ligand has tens of
+    # thousands of them -- enumerating those costs minutes and answers nothing,
+    # because the choice inside a group is a question of distance, not of
+    # topology.  One node per distinguishable atom leaves a handful of genuinely
+    # different isomorphisms; each is lifted back and its interchangeable atoms
+    # are then placed by distance, which is both the complete search and the
+    # geometrically better answer.
     if best is None:
         import networkx as nx
 
@@ -468,15 +552,27 @@ def map_atoms(sym_ref, xyz_ref, sym_tgt, xyz_tgt, max_edits=2, verbose=False):
         for i in range(n):
             H1.nodes[i]['wl'] = c1[i]
             H2.nodes[i]['wl'] = c2[i]
-        nm = lambda a, b: a['el'] == b['el'] and a['wl'] == b['wl']
-        gm = nx.algorithms.isomorphism.GraphMatcher(H1, H2, node_match=nm)
+        groups1 = false_twin_groups(H1, sym_ref)
+        groups2 = false_twin_groups(H2, sym_tgt)
+        members1 = {g[0]: g for g in groups1}
+        members2 = {g[0]: g for g in groups2}
+        Q1 = twin_quotient(H1, sym_ref, c1, groups1)
+        Q2 = twin_quotient(H2, sym_tgt, c2, groups2)
+        if verbose:
+            print('twin quotient: %d -> %d distinguishable atoms'
+                  % (n, Q1.number_of_nodes()))
+        nm = lambda a, b: (a['el'] == b['el'] and a['wl'] == b['wl']
+                           and a['mult'] == b['mult'])
+        gm = nx.algorithms.isomorphism.GraphMatcher(Q1, Q2, node_match=nm)
         for k, mm in enumerate(gm.isomorphisms_iter()):
-            order = [mm[i] for i in range(n)]
-            R, pc, qc = kabsch_rt(x2[order], x1)
-            rmsd = float(np.sqrt(((apply_rt(x2, R, pc, qc)[order] - x1) ** 2).sum(1).mean()))
+            order = [-1] * n
+            for head1, head2 in mm.items():
+                for a, b in zip(members1[head1], members2[head2]):
+                    order[a] = b
+            order, rmsd = _place_twins(order, groups1)
             if rmsd < best_rmsd:
                 best, best_rmsd, method = order, rmsd, 'xyzmap-vf2'
-            if k > 50000:
+            if k > 20000:
                 break
 
     if best is None:

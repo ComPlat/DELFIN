@@ -162,6 +162,49 @@ def test_reaction_one_formed_bond():
     assert res["n_bond_edits"] == 1
 
 
+def test_twin_quotient_drops_the_interchangeable_hydrogens():
+    """The VF2 fallback searches the twin quotient, not the full graph.
+
+    Neopentane has 31104 element-preserving automorphisms, and 1296 of them only
+    permute hydrogens within a methyl -- mappings that differ in nothing a graph
+    can see.  The quotient keeps the 24 that are genuinely different.  Scoring
+    the full set is what made a numbering check on a real ligand take minutes.
+    """
+    import networkx as nx
+
+    syms, coords = _mol_from_smiles("CC(C)(C)C")
+    G = am.connectivity(syms, coords)
+
+    groups = am.false_twin_groups(G, syms)
+    assert sorted(len(g) for g in groups if len(g) > 1) == [3, 3, 3, 3]
+
+    quotient = am.twin_quotient(G, syms, {i: syms[i] for i in G.nodes}, groups)
+    assert quotient.number_of_nodes() == 9   # 5 C + one node per methyl H triple
+    assert quotient.number_of_edges() == 8   # the skeleton is untouched
+
+    node_match = lambda a, b: a["el"] == b["el"] and a["mult"] == b["mult"]
+    matcher = nx.algorithms.isomorphism.GraphMatcher(
+        quotient, quotient, node_match=node_match
+    )
+    assert sum(1 for _ in matcher.isomorphisms_iter()) == 24
+
+    full = nx.algorithms.isomorphism.GraphMatcher(G, G, node_match=am._elem_match)
+    assert sum(1 for _ in zip(full.isomorphisms_iter(), range(2000))) == 2000
+
+
+def test_twins_are_never_adjacent_so_the_quotient_keeps_every_bond():
+    # Members of a twin group share a neighbour set, which no atom can do with
+    # something it is bonded to -- so collapsing a group never swallows a bond.
+    syms, coords = _mol_from_smiles("CC(C)(C)c1ccccc1")
+    G = am.connectivity(syms, coords)
+    groups = am.false_twin_groups(G, syms)
+    for members in groups:
+        for i in members:
+            for j in members:
+                assert i == j or not G.has_edge(i, j)
+    assert sum(len(g) for g in groups) == G.number_of_nodes()
+
+
 def test_formula_mismatch_raises():
     a_syms, a_xyz = _metal_complex("Fe")
     b_syms, b_xyz = _metal_complex("Fe")
