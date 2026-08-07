@@ -2611,7 +2611,7 @@ def _torsion_relax_frame(out_syms, P, fixed, block_specs):
         return P
 
 
-def _joint_declash_frame(out_syms, P, fixed, block_specs):
+def _joint_declash_frame(out_syms, P, fixed, block_specs, geom=None):
     """Apply the env-gated JOINT global INTER-LIGAND heavy-heavy declash to one
     assembled frame (``DELFIN_FFFREE_JOINT_DECLASH``), threading the true
     per-ligand connectivity (``block_specs`` = list of ``(offset, lmol,
@@ -2626,7 +2626,7 @@ def _joint_declash_frame(out_syms, P, fixed, block_specs):
                                     for (off, m, dl) in block_specs) if bb is not None]
             if blocks:
                 bp = _JD._TR.bonds_from_blocks(0, blocks)
-        return np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+        return np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, geom=geom, bond_pairs=bp),
                           dtype=float)
     except Exception:
         return P
@@ -2725,7 +2725,7 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
         # M-D-axis rotations + internal torsions jointly minimising the GLOBAL
         # inter-ligand heavy-heavy clash (the self-gate blocker for class-B), core
         # frozen.  Runs after #308; no-op when DELFIN_FFFREE_JOINT_DECLASH unset.
-        P = _joint_declash_frame(out_syms, P, fixed, block_specs)
+        P = _joint_declash_frame(out_syms, P, fixed, block_specs, geom=geometry)
         # SOFT coordination-sphere flex (env-gated, default-OFF byte-id): let the
         # donors breathe a hard-bounded amount to open the residual MILD inter-ligand
         # heavy-heavy clashes that rotation/frozen-donor refine cannot (clash forensik
@@ -2981,7 +2981,7 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             P = _torsion_relax_frame(out_syms, P, fixed, block_specs)
             # JOINT inter-ligand declash (env-gated, default-OFF byte-id): global
             # inter-ligand heavy-heavy minimisation, core frozen.  After #308.
-            P = _joint_declash_frame(out_syms, P, fixed, block_specs)
+            P = _joint_declash_frame(out_syms, P, fixed, block_specs, geom=geometry)
             # SOFT coordination-sphere flex (env-gated, default-OFF byte-id): donors
             # breathe a bounded amount to open residual mild inter-ligand clashes.
             P = _sphere_flex_frame(out_syms, P, fixed, block_specs)
@@ -4447,7 +4447,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             _g = _global_donor_seat(out_syms, P, lig_blocks)
             if _g is not None:
                 P = _g
-        P = _finish_config_frame(out_syms, P, fixed, relax_frags, refine)
+        P = _finish_config_frame(out_syms, P, fixed, relax_frags, refine, geom=geometry)
         return out_syms, P, donors
 
     # ENSEMBLE assembly (Task A.1): enumerate the Cartesian product of per-ligand
@@ -4483,7 +4483,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             _g = _global_donor_seat(out_syms, Pc, lig_blocks)
             if _g is not None:
                 Pc = _g
-        Pc = _finish_config_frame(out_syms, Pc, fixed, relax_frags, refine)
+        Pc = _finish_config_frame(out_syms, Pc, fixed, relax_frags, refine, geom=geometry)
         if not np.all(np.isfinite(Pc)):
             continue
         dup = False
@@ -4501,7 +4501,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     return [(syms, P, donors) for syms, P in frames]
 
 
-def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
+def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True, geom=None):
     """Shared finishing tail for a single assembled chelate-config frame: the
     FUNDAMENTAL internal relaxation (division-of-labor doctrine) — build the
     ligands-only mol (NO metal) at the placed coords and UFF-relax it with the
@@ -4600,7 +4600,7 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
         # inter-ligand heavy-heavy minimisation, core frozen.  After #308.  Reuses
         # the same true-connectivity bond list.  No-op when the flag is unset.
         from delfin.manta import joint_declash as _JD
-        P = np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+        P = np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, geom=geom, bond_pairs=bp),
                        dtype=float)
         # SOFT coordination-sphere radial flex (env-gated, default-OFF byte-id):
         # let crowded monodentate ligands translate radially outward a bounded

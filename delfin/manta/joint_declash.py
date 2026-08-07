@@ -64,6 +64,7 @@ import numpy as np
 import delfin.manta._bond_decollapse as _bd
 from delfin.manta import torsion_relax as _TR
 from delfin.manta.refine import _vdw
+from delfin.manta import polyhedra as _PLY
 
 # --- Metalloid-donor awareness (env-gated, default OFF) ----------------------
 # _bond_decollapse._METALS mis-classifies the heavy metalloid sigma-donors
@@ -219,7 +220,8 @@ def _objective(P: np.ndarray, heavy: np.ndarray, light: np.ndarray,
 def declash(syms: Sequence[str], P, frozen: Iterable[int],
             grid: int = _DEF_GRID, passes: int = _DEF_PASSES,
             md_tol: float = _DEF_MD_TOL, max_dofs: int = _DEF_MAX_DOFS,
-            bond_pairs: Optional[Sequence[Tuple[int, int]]] = None) -> np.ndarray:
+            bond_pairs: Optional[Sequence[Tuple[int, int]]] = None,
+            geom: Optional[str] = None) -> np.ndarray:
     """Joint global INTER-LIGAND heavy-heavy declash of an assembled complex.
 
     ``frozen``: indices that must not move (metal + all donor atoms).
@@ -292,6 +294,27 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
     # die neben der Verteilung liegt (MONO_REACH_18 war genau dieser Fehler).
     if _TR._env_int("DELFIN_FFFREE_LIGAND_SWING", 0, 0, 1):
         _swing_deg = _TR._env_int("DELFIN_FFFREE_LIGAND_SWING_DEG", 8, 1, 30)
+        # ===== DIE POLYEDER-SCHRANKE, GEMESSEN STATT GERATEN (2026-08-07) =====
+        # Die Winkelkappe oben ist eine GERATENE Zahl, und der erste Lauf hat sie widerlegt:
+        # bei 8 Grad rissen poly_cshm_regressed 2, poly_lost 1, poly_type_lost 1; bei 3 Grad
+        # waren alle drei weg (capability +3/-0, 21:8, mean -0,517).  Enger war auf JEDER
+        # Achse besser -- die Kappe war das Problem, nicht der Bewegungstyp.
+        #
+        # Die richtige Groesse ist nicht ein Winkel, sondern DIE, DIE DAS TOR MISST: die
+        # Abweichung des Donorsatzes vom Idealpolyeder (CShM), denn `poly_cshm_regressed`
+        # ist der Term, der gerissen ist.  Und der Bauer kann sie selbst rechnen --
+        # polyhedra.cshm ist reine Geometrie, keine Referenzdaten.
+        #
+        # DIE SCHRANKE: der Schwenk darf den Polyeder nicht WEITER verzerren als er ohnehin
+        # schon ist.  Vorgabe 0.0 = strikt never-worse, ohne jede geratene Zahl.  Ein
+        # groesseres Budget ist per Env setzbar und dann eine MESSFRAGE, kein Gefuehl.
+        #
+        # ⚠ Zur Kalibrierung, und warum sie NICHT hier steht: 553 Kristalle sitzen selbst
+        # nicht auf dem Ideal (p50 0,37 · p90 3,65 · p99 8,0 CShM gegen den eigenen
+        # Idealpolyeder).  Ein Budget in dieser Groessenordnung waere also chemisch
+        # gedeckt -- aber die Zahl ist CCDC-abgeleitet und gehoert nicht in dieses Repo.
+        # Sie steht im privaten Arbeitsbereich; hier bleibt die Vorgabe bei 0.
+        _swing_cshm = float(os.environ.get("DELFIN_FFFREE_LIGAND_SWING_CSHM", "0") or 0.0)
         _swings = []
         for _lid in sorted({int(x) for x in lig if int(x) >= 0}):
             _atoms = [i for i in range(n) if int(lig[i]) == _lid]
@@ -306,6 +329,7 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                 continue
             _swings.append({"anchor": int(_m), "pivot": -1, "axis_vec": _c,
                             "rotating": _atoms, "max_deg": int(_swing_deg),
+                            "cshm_budget": _swing_cshm,
                             "score": 10_000 + len(_atoms)})
         # Schwenks ZUERST: sie bewegen die meiste Masse und loesen Interligand-Ueberlapp
         # am direktesten -- dieselbe Begruendung, aus der die M-D-Spins vorne stehen.
@@ -361,6 +385,25 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                     continue
                 if not _TR._md_ok(base_md, trial, md_tol):
                     continue
+                # POLYEDER-SCHRANKE fuer den Ligand-Schwenk: dieselbe Groesse, die das Tor
+                # misst.  Der M-D-ABSTAND ist durch die Drehung um M exakt erhalten, aber die
+                # RICHTUNGEN aendern sich -- und genau das hat bei 8 Grad poly_cshm_regressed
+                # gerissen.  Also hier pruefen statt hinterher feststellen.
+                _cb = dof.get("cshm_budget")
+                if _cb is not None and geom:
+                    try:
+                        _don_idx = [i for i in range(n) if i in frozen_set
+                                    and not _is_center(syms[i])]
+                        if _don_idx:
+                            _m0 = next((i for i in metals), 0)
+                            _c_before = _PLY.cshm([Pcur[i] - Pcur[_m0] for i in _don_idx],
+                                                  geom)
+                            _c_after = _PLY.cshm([trial[i] - trial[_m0] for i in _don_idx],
+                                                 geom)
+                            if _c_after > _c_before + float(_cb) + 1e-9:
+                                continue          # wuerde den Polyeder weiter verzerren
+                    except Exception:
+                        pass                      # nicht beurteilbar -> alte Sicherungen gelten
                 tl, thd = _objective(trial, heavy, light, rsum)
                 if thd < hdmin_floor:
                     continue                          # would worsen worst heavy contact
@@ -387,6 +430,7 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
 
 
 def declash_if_enabled(syms: Sequence[str], P, frozen: Iterable[int],
+                       geom: Optional[str] = None,
                        bond_pairs: Optional[Sequence[Tuple[int, int]]] = None):
     """Wire-in entry: when ``DELFIN_FFFREE_JOINT_DECLASH=1`` run :func:`declash`,
     else return ``P`` unchanged (byte-identical default-OFF).  ``bond_pairs``
@@ -398,7 +442,7 @@ def declash_if_enabled(syms: Sequence[str], P, frozen: Iterable[int],
         passes = _TR._env_int("DELFIN_FFFREE_JOINT_PASSES", _DEF_PASSES, 1, 32)
         md_tol = _TR._env_float("DELFIN_FFFREE_JOINT_MD_TOL", _DEF_MD_TOL, 0.0, 2.0)
         max_dofs = _TR._env_int("DELFIN_FFFREE_JOINT_MAX_DOFS", _DEF_MAX_DOFS, 1, 256)
-        return declash(syms, P, frozen, grid=grid, passes=passes,
+        return declash(syms, P, frozen, grid=grid, passes=passes, geom=geom,
                        md_tol=md_tol, max_dofs=max_dofs, bond_pairs=bond_pairs)
     except Exception:
         return P
