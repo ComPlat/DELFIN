@@ -314,6 +314,10 @@ def create_tab(ctx):
         'numbering_check_block_idx': 1,
         'numbering_view_step': 0,
         'show_atom_labels': True,
+        # the viewer currently on screen: its div, and whether it is still the
+        # thing the Output widget holds (see _update_molecule_js)
+        'viewer_div': None,
+        'viewer_live': False,
     }
 
     # -- helpers --------------------------------------------------------
@@ -947,6 +951,59 @@ def create_tab(ctx):
             return ''
         return _atom_labels_js(full_xyz, var=var)
 
+    def _update_molecule_js(xyz_data, label_js=''):
+        """Script that shows another molecule in the viewer that is already there.
+
+        Building a viewer means disposing a WebGL context and creating a new one,
+        which is what browsing molecules and switching the numbers on and off
+        used to do on every click.  Swapping the model inside the living viewer
+        costs a render, keeps the camera exactly where the user left it, and
+        does not consume one of the handful of contexts a browser grants.
+
+        Returns '' when there is nothing live to update, so the caller falls
+        back to a full render.
+        """
+        div_id = state.get('viewer_div')
+        if not div_id or not state.get('viewer_live'):
+            return ''
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            return ''
+        return (
+            '(function(){\n'
+            '  var tries=0;\n'
+            '  function go(){\n'
+            f'    var el=document.getElementById({json.dumps(div_id)});\n'
+            '    var viewer=window._orcaBuildViewer;\n'
+            '    if(!el||!viewer||typeof viewer.addModel!=="function"){\n'
+            # a viewer displayed moments ago may still be starting up
+            '      if(++tries<40){setTimeout(go,50);}\n'
+            '      return;\n'
+            '    }\n'
+            '    try{\n'
+            '      if(typeof viewer.removeAllLabels==="function") viewer.removeAllLabels();\n'
+            '      viewer.__delfinLbls=[];viewer.__delfinProj=[];\n'
+            '      viewer.removeAllModels();\n'
+            f'      viewer.addModel({json.dumps(xyz_data)},"xyz");\n'
+            f'      viewer.setStyle({{}},{profile["style_js"]});\n'
+            f'      {label_js}\n'
+            '      viewer.render();\n'
+            '      var hs=viewer.__delfinInteractionEndHandlers||[];\n'
+            '      for(var i=0;i<hs.length;i++){try{hs[i]();}catch(_e){}}\n'
+            '    }catch(_err){}\n'
+            '  }\n'
+            '  go();\n'
+            '})();'
+        )
+
+    def _show_molecule_in_place(full_xyz):
+        """Show *full_xyz* without rebuilding the viewer.  True if it happened."""
+        script = _update_molecule_js(full_xyz, _labels_js(full_xyz))
+        if not script:
+            return False
+        ctx.run_js(script)
+        return True
+
     def _viewer_html(xyz_data, label_js='', reset_view=False):
         """Build a self-contained HTML block that renders xyz_data in a $3Dmol viewer.
 
@@ -956,7 +1013,10 @@ def create_tab(ctx):
         div_id = 'orca-mol-' + uuid.uuid4().hex[:10]
         profile = get_viewer_profile()
         if not profile['enabled']:
+            state['viewer_live'] = False
             return viewer_disabled_html()
+        state['viewer_div'] = div_id
+        state['viewer_live'] = True
         mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
         zoom = str(DEFAULT_3DMOL_ZOOM if DEFAULT_3DMOL_ZOOM is not None else 0.9)
         reset_js = 'window._orcaBuildViewState=null;' if reset_view else ''
@@ -976,6 +1036,9 @@ def create_tab(ctx):
 
     def _overlay_viewer_html(reference_xyz, target_xyz, reset_view=False):
         profile = get_viewer_profile()
+        # two models in one viewer: not the single molecule an in-place swap
+        # would be updating
+        state['viewer_live'] = False
         if not profile['enabled']:
             return viewer_disabled_html()
         div_id = 'orca-overlay-' + uuid.uuid4().hex[:10]
@@ -1095,6 +1158,7 @@ def create_tab(ctx):
             orca_mol_output.layout.min_height = '560px'
         with orca_mol_output:
             clear_output(wait=True)
+            state['viewer_live'] = False   # nothing on screen until we draw it
             if blocks:
                 idx = state['xyz_view_idx']
                 _block_name, full_xyz = blocks[idx]
@@ -1163,7 +1227,7 @@ def create_tab(ctx):
             return
         state['xyz_view_idx'] = (state['xyz_view_idx'] - 1) % len(blocks)
         _update_nav_label()
-        _refresh_mol_view(reset_view=False)  # keep orientation
+        _show_next_molecule()
 
     def on_mol_next(btn):
         blocks = state['xyz_blocks']
@@ -1176,10 +1240,28 @@ def create_tab(ctx):
             return
         state['xyz_view_idx'] = (state['xyz_view_idx'] + 1) % len(blocks)
         _update_nav_label()
+        _show_next_molecule()
+
+    def _show_next_molecule():
+        """Browse to the selected block, in place where the viewer allows it."""
+        blocks = state['xyz_blocks']
+        idx = state['xyz_view_idx']
+        if 0 <= idx < len(blocks) and _show_molecule_in_place(blocks[idx][1]):
+            return
         _refresh_mol_view(reset_view=False)  # keep orientation
 
     def on_mol_labels_toggle(change):
         state['show_atom_labels'] = bool(orca_mol_labels_btn.value)
+        blocks = state['xyz_blocks']
+        idx = state['xyz_view_idx']
+        # adding or dropping numbers is a label operation, not a reason to
+        # throw the viewer away
+        if (
+            not state.get('numbering_check_active')
+            and 0 <= idx < len(blocks)
+            and _show_molecule_in_place(blocks[idx][1])
+        ):
+            return
         _refresh_mol_view(reset_view=False)  # keep orientation, just add/drop labels
 
     def on_mol_label_size(change):
@@ -1197,24 +1279,24 @@ def create_tab(ctx):
         raw_input = orca_coords.value.strip()
         if not raw_input:
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print('Please enter a SMILES string in the Coordinates box.')
             return
         cleaned_data, input_type = clean_input_data(raw_input)
         if input_type != 'smiles':
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print('Input is not a SMILES string. Please enter a SMILES.')
             return
         with orca_output:
-            clear_output()
+            clear_output(wait=True)
             print('Converting SMILES to 3D coordinates...')
         xyz_string, num_atoms, _method, preview_items, error = smiles_to_xyz_quick_with_previews(
             cleaned_data
         )
         if error or not xyz_string:
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print(f'Error: {error or "Conversion failed"}')
             return
         xyz_blocks = [('quick.xyz', xyz_string)]
@@ -1231,7 +1313,7 @@ def create_tab(ctx):
                 block_text.append(f'{filename};\n{block_xyz}\n*')
             orca_coords.value = '\n\n'.join(block_text)
         with orca_output:
-            clear_output()
+            clear_output(wait=True)
             print(f'Converted SMILES to {num_atoms} atoms.')
 
     orca_convert_smiles_btn.on_click(handle_orca_convert_smiles)
@@ -1257,7 +1339,7 @@ def create_tab(ctx):
         xyz_text = _current_xyz_for_copy()
         if not xyz_text:
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print('No coordinates available to copy.')
             return
         text_payload = json.dumps(str(xyz_text))
@@ -1295,7 +1377,7 @@ def create_tab(ctx):
             "})();"
         )
         with orca_output:
-            clear_output()
+            clear_output(wait=True)
             print('Copied coordinates as XYZ to clipboard.')
 
     orca_copy_coords_btn.on_click(handle_orca_copy_coordinates)
@@ -1304,14 +1386,14 @@ def create_tab(ctx):
         xyz_blocks = parse_xyz_blocks(orca_coords.value) or []
         if len(xyz_blocks) < 2:
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print('Check Numbering needs at least two named XYZ blocks.')
             return
 
         # The comparison holds the kernel, so say so before it starts: the
         # message reaches the browser while the mapping is still running.
         with orca_output:
-            clear_output()
+            clear_output(wait=True)
             print(f'Comparing {len(xyz_blocks) - 1} block(s) against the reference...')
         orca_check_numbering_btn.disabled = True
         try:
@@ -1325,7 +1407,7 @@ def create_tab(ctx):
             ref_symbols, ref_coords = _orca_parse_xyz_symbols_coords(ref_xyz)
         except Exception as exc:
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print(f'Reference block could not be parsed: {exc}')
             return
 
@@ -1379,7 +1461,7 @@ def create_tab(ctx):
         state['numbering_view_step'] = 0
         _refresh_mol_view(reset_view=True)
         with orca_output:
-            clear_output()
+            clear_output(wait=True)
             print('\n'.join(lines))
             print()
             print('Molecule Preview cycles through overlay, aligned reference, and reordered target for the selected comparison block.')
@@ -1392,13 +1474,13 @@ def create_tab(ctx):
         result = (state.get('numbering_check_results') or {}).get(idx) or {}
         if not xyz_records or idx <= 0 or idx >= len(xyz_records):
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print('No checked block is selected for numbering fix.')
             return
         reordered_xyz = str(result.get('reordered_target_xyz') or '').strip()
         if not reordered_xyz:
             with orca_output:
-                clear_output()
+                clear_output(wait=True)
                 print('No numbering fix is available for the selected block.')
             return
 
@@ -1411,7 +1493,7 @@ def create_tab(ctx):
             rebuilt.append(f'{header}\n{record["full_xyz"].strip()}\n*')
         orca_coords.value = '\n\n'.join(rebuilt)
         with orca_output:
-            clear_output()
+            clear_output(wait=True)
             print(f'Applied numbering fix to block {idx + 1}.')
             print('Please inspect the Molecule Preview again to confirm the reordered block looks correct.')
 
