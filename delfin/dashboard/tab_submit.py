@@ -738,8 +738,8 @@ def create_tab(ctx):
         tooltip=(
             'Turn the value by hand and watch it: while Set is on, the box '
             'drives the selection live -- the arrow keys step a bond by '
-            '0.01 A and an angle or dihedral by 0.1 degrees, and the fragment '
-            'on the far side of the coordinate follows. Two atoms are a bond '
+            '0.01 A, an angle by 0.1 and a dihedral by 0.5 degrees, and the '
+            'fragment on the far side of the coordinate follows. Two atoms are a bond '
             'length, three an angle, four a dihedral. Hold is the other '
             'question: it keeps a value at its target while the field runs, '
             'with pull or fix.'
@@ -3615,12 +3615,19 @@ def create_tab(ctx):
     def _step_for_selection(indices):
         """How far one press of an arrow key moves the value.
 
-        A bond length is Angstrom and a hundredth of one is a fine step; an
-        angle and a dihedral are degrees, where a hundredth is far below what
-        anyone means to turn and a whole degree is a jump.  A tenth is the
-        step, which is also what the box shows.
+        Three different quantities, three different steps.  A bond length is
+        Angstrom, where a hundredth is fine.  An angle is degrees and a tenth
+        is the useful step.  A dihedral is what gets turned through a whole
+        rotation -- half a degree there, so holding the key sweeps it instead
+        of creeping.
         """
-        submit_internal_value.step = 0.01 if len(indices or ()) == 2 else 0.1
+        picked = len(indices or ())
+        if picked == 2:
+            submit_internal_value.step = 0.01     # bond length, in Angstrom
+        elif picked == 4:
+            submit_internal_value.step = 0.5      # dihedral, swept by hand
+        else:
+            submit_internal_value.step = 0.1      # angle
 
     def _apply_internal_now():
         """Put the selection at the value in the box, and leave it selected."""

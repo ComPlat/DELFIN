@@ -103,17 +103,20 @@ def test_with_set_off_the_box_moves_nothing(editor):
     assert "setInternal" not in "\n".join(sent)
 
 
-def test_an_angle_steps_by_a_tenth_of_a_degree_and_a_bond_by_a_hundredth(editor):
+def test_each_quantity_gets_the_step_it_is_turned_in(editor):
+    """Three quantities, three steps: a hundredth of an Angstrom for a bond,
+    a tenth of a degree for an angle, half a degree for a dihedral -- which is
+    the one that gets swept through a whole rotation by hand."""
     refs, _sent = editor
 
     _pick(refs, [0, 1])
-    assert refs["submit_internal_value"].step == 0.01, "a bond is Angstrom"
+    assert refs["submit_internal_value"].step == 0.01
 
     _pick(refs, [0, 1, 2])
-    assert refs["submit_internal_value"].step == 0.1, "an angle is degrees"
+    assert refs["submit_internal_value"].step == 0.1
 
     _pick(refs, [0, 1, 2, 3])
-    assert refs["submit_internal_value"].step == 0.1, "a dihedral is degrees"
+    assert refs["submit_internal_value"].step == 0.5
 
 
 def test_a_held_value_being_retuned_keeps_the_box_to_itself(editor):
