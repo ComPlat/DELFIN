@@ -34,6 +34,7 @@ from .input_processing import (
 from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
 from . import docx_view as _docx
 from . import pdf_view as _pdf
+from . import formula_engine as _formula_engine
 from . import spreadsheet_view as _sheet
 from .molecule_viewer import (
     VIEWER_CONTAINER_DYNAMIC_SCALE,
@@ -11451,6 +11452,56 @@ def create_tab(ctx):
             state['formula_note'] = ''
         return results
 
+    def _calc_sheet_live_formulas(path, sheet_name, view):
+        """Work out the formulas as they are typed, edits and all.
+
+        The workbook-wide engine runs on the *file* and takes seconds, so a
+        formula only produced a number after saving.  This works the sheet out
+        from what is on screen -- including the changes that have not been
+        saved -- and pushes the results of the visible rows back in.  Nothing is
+        marked as an edit by it: a result is not something the user typed.
+        """
+        if view.get('kind') != 'xlsx':
+            return                      # a csv holds text, not formulas
+        try:
+            grids = _sheet.sheet_grids_for_formulas(Path(path), sheet_name)
+        except Exception:
+            grids = None
+        if grids is None:
+            return                      # too large to hold: saving still works
+        values = [list(row) for row in grids[0]]
+        formulas = [list(row) for row in grids[1]]
+
+        def _place(row0, col0, text):
+            while len(values) <= row0:
+                values.append([])
+                formulas.append([])
+            for grid in (values, formulas):
+                while len(grid[row0]) <= col0:
+                    grid[row0].append('')
+            if _formula_engine.is_formula(text):
+                formulas[row0][col0], values[row0][col0] = text, ''
+            else:
+                formulas[row0][col0], values[row0][col0] = '', text
+
+        for op in _calc_sheet_pending_ops(str(path), sheet_name):
+            if op.get('op') == 'set':
+                _place(int(op['row']) - 1, int(op['col']) - 1, op.get('text', ''))
+
+        try:
+            results = _formula_engine.evaluate_grid(formulas, values)
+        except Exception:
+            return
+        first = int(view.get('row_offset') or 0)
+        last = first + int(view.get('page_rows') or 0) - 1
+        cells = [
+            [row0 + 1, col0 + 1, _sheet.format_result(value)]
+            for (row0, col0), value in results.items()
+            if first <= row0 <= last
+        ]
+        if cells:
+            _calc_sheet_show_cells(view['token'], cells)
+
     def _calc_sheet_push_results(path, view):
         """Show what the formulas work out to after the file was written."""
         results = _calc_formula_results(path)
@@ -11656,7 +11707,10 @@ def create_tab(ctx):
                 return
             if ops:
                 state['sheet_pending'].setdefault(key, []).extend(ops)
-            return  # the browser has already painted these cells
+                # The browser has already painted what was typed.  What it
+                # cannot know is what the formulas now work out to.
+                _calc_sheet_live_formulas(path, sheet_name, view)
+            return
 
         if action == 'save':
             ops = state['sheet_pending'].get(key) or []
@@ -14737,6 +14791,9 @@ def create_tab(ctx):
         'calc_file_info': calc_file_info,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
+        # the spreadsheet, for driving it the way the browser does
+        'calc_render_sheet': _calc_render_sheet,
+        'sheet_state': state,
         # File operations
         'calc_new_folder_btn': calc_new_folder_btn,
         'calc_new_folder_input': calc_new_folder_input,

@@ -612,6 +612,52 @@ def _read_whole_sheet(path: Path, active: str, total_rows: int, eff_cols: int):
     return values, styles, formulas
 
 
+def sheet_grids_for_formulas(
+    path: Path,
+    sheet_name: Optional[str] = None,
+    *,
+    max_cols: int = MAX_COLS,
+) -> Optional[Tuple[List[List[str]], List[List[str]]]]:
+    """(values, formulas) for a whole sheet, for working formulas out live.
+
+    A formula in the window can refer to rows far above it -- a total under a
+    column is the ordinary case -- so the window on screen is not enough to
+    work one out.  Returns None for a sheet too large to hold, where the caller
+    falls back to the workbook-wide engine.
+    """
+    path = Path(path)
+    try:
+        book = _load_workbook(filename=str(path), read_only=True, data_only=True)
+    except Exception:
+        return None
+    try:
+        names = list(book.sheetnames)
+        if not names:
+            return None
+        active = sheet_name if sheet_name in names else names[0]
+        ws = book[active]
+        total_rows = int(ws.max_row or 0)
+        total_cols = int(ws.max_column or 0)
+    except Exception:
+        return None
+    finally:
+        book.close()
+    eff_cols = max(1, min(total_cols or 1, max_cols))
+    if not total_rows or total_rows * eff_cols > SHEET_CACHE_MAX_CELLS:
+        return None
+    key = _sheet_cache_key(path, active, eff_cols)
+    payload = _SHEET_CACHE.get(key) if key else None
+    if payload is None:
+        payload = _read_whole_sheet(path, active, total_rows, eff_cols)
+        if payload is None:
+            return None
+        if key:
+            _remember_sheet(key, payload)
+    elif key:
+        _SHEET_CACHE.move_to_end(key)
+    return payload[0], payload[2]
+
+
 def _slice_rows(grid, start0: int, count: int, cols: int, filler):
     """The window *start0*..*start0+count* of a full-sheet grid."""
     if not grid:
