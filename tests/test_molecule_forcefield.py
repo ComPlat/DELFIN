@@ -1076,3 +1076,61 @@ def test_a_carbonyl_carbon_is_stiffer_out_of_plane():
     assert len(payload['inversions']) == 3, payload['inversions']
     for entry in payload['inversions']:
         assert abs(entry['k_inv'] - 50.0 / 3.0) < 1e-3, entry
+
+
+def _ni_backbone_xyz():
+    """A four-coordinate metal whose chelate backbone carbons sit at 2.4 A.
+
+    Four nitrogens at 1.99 A and two carbons between them, held there by the
+    ring itself. Each carbon closes a three-membered ring with a nitrogen
+    that is genuinely bound -- and is a fifth further out than it.
+    """
+    rows = [
+        'Ni   0.0000   0.0000   0.0000',
+        'N    1.9930   0.0000   0.0000',   # true donor
+        'N   -1.9930   0.0000   0.0000',   # true donor
+        'C    1.7500   1.6600   0.0000',   # backbone, 2.41 A from Ni
+        'C   -1.7500   1.6300   0.0000',   # backbone, 2.38 A from Ni
+        'C    3.0000   2.3000   0.0000',
+        'C   -3.0000   2.3000   0.0000',
+        'H    3.9000   1.7000   0.0000',
+        'H   -3.9000   1.7000   0.0000',
+        'H    3.0500   3.3900   0.0000',
+        'H   -3.0500   3.3900   0.0000',
+    ]
+    return f'{len(rows)}\nNi backbone\n' + '\n'.join(rows) + '\n'
+
+
+def test_a_backbone_carbon_held_near_a_metal_is_not_a_donor():
+    """On a square-planar Ni with four nitrogens at 1.99 A, the two backbone
+    carbons between them came in at 2.38 and 2.41 -- close enough for the
+    geometric cutoff, and only four-connected counting the metal, so the
+    five-bond rule left them alone. The complex came back six-coordinate and
+    was offered octahedra.
+
+    They each close a three-membered ring with a nitrogen that is genuinely
+    bound. A real three-membered ring at a metal is a side-on alkene, and
+    there the two carbons are equally far -- Zeise's salt measures 1.00 --
+    while these are a fifth further out than the donor they hang off."""
+    perceived = mff.perceive_molecule(_ni_backbone_xyz())
+    metal = perceived.metal_indices[0]
+    donors = perceived.neighbours()[metal]
+    assert all(perceived.symbols[j] == 'N' for j in donors), [
+        perceived.symbols[j] for j in donors]
+    assert any('markedly further out' in w for w in perceived.warnings)
+
+
+def test_a_side_on_alkene_keeps_both_of_its_carbons():
+    """The one three-membered ring at a metal that is real. Both carbons are
+    equally far, which is what tells it apart from a chelate artefact."""
+    zeise = mff.perceive_molecule(
+        '10\nzeise\n'
+        'Pt  0.000  0.000  0.000\nCl  2.310  0.000  0.000\n'
+        'Cl -1.155  2.001  0.000\nCl -1.155 -2.001  0.000\n'
+        'C   0.000  0.688  2.030\nC   0.000 -0.688  2.030\n'
+        'H   0.930  1.230  2.300\nH  -0.930  1.230  2.300\n'
+        'H   0.930 -1.230  2.300\nH  -0.930 -1.230  2.300\n')
+    metal = zeise.metal_indices[0]
+    donors = zeise.neighbours()[metal]
+    assert len(donors) == 5, [zeise.symbols[j] for j in donors]
+    assert sum(1 for j in donors if zeise.symbols[j] == 'C') == 2

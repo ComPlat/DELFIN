@@ -178,6 +178,12 @@ _LINEAR_ANGLE_CUTOFF = 175.0
 #: the centre is three-coordinate and meant to be flat.
 _INVERSION_CENTRES = {'C': 6.0, 'N': 6.0, 'O': 6.0}
 
+#: How much further from the metal a carbon has to be than the donor it is
+#: bonded to before the contact is read as an artefact of the chelate ring
+#: rather than a bond.  A side-on alkene, where the ring is real, measures
+#: 1.00; the artefacts measured 1.19 and 1.21.
+_CHELATE_CONTACT_RATIO = 1.15
+
 #: A carbonyl carbon is far stiffer out of plane than a general sp2 one.
 _CARBONYL_INVERSION = 50.0
 
@@ -871,15 +877,54 @@ def _drop_impossible_metal_contacts(
     longest offending contact goes first, and only far enough to bring the
     carbon back to four.
 
-    Deliberately carbon only.  Oxygen would be the obvious next candidate and
-    is exactly wrong: a coordinated ether or a bridging alkoxide is
-    three-connected on purpose.
+    A second reading catches what the first cannot.  On a square-planar Ni
+    with four nitrogens at 1.99 A, the two backbone carbons between them came
+    in at 2.38 and 2.41 -- close enough for the geometric cutoff, and only
+    four-connected counting the metal, so the valence rule left them alone.
+    They were never donors: they are held there by the chelate ring itself,
+    and each closes a three-membered ring with a nitrogen that is genuinely
+    bound.  A real three-membered ring at a metal is a side-on alkene, and
+    there the two carbons are equally far -- Zeise's salt measures 1.00.  An
+    artefact is markedly further than the donor it hangs off: 1.21 and 1.19
+    here, so a fifth again is the line.  A phosphine's ipso carbon at 1.13
+    stays, which is right: that one is genuinely ambiguous and Bond exists
+    for it.
+
+    Deliberately carbon only, both times.  Oxygen would be the obvious next
+    candidate and is exactly wrong: a coordinated ether or a bridging
+    alkoxide is three-connected on purpose.
     """
     metals = set(int(m) for m in metal_indices)
     if not metals:
         return mol
     removed = 0
     editable = Chem.RWMol(mol)
+
+    # Carbons that only look like donors because a chelate ring holds them
+    # there. Measured against the donor they hang off, and only where they
+    # are markedly further from the metal than it is.
+    for metal in sorted(metals):
+        try:
+            around = [n.GetIdx() for n in
+                      editable.GetAtomWithIdx(metal).GetNeighbors()]
+        except Exception:
+            continue
+        for index in list(around):
+            if symbols[index] != 'C':
+                continue
+            far = _distance(coords[metal], coords[index])
+            for other in around:
+                if other == index or other in metals:
+                    continue
+                if editable.GetBondBetweenAtoms(index, other) is None:
+                    continue
+                near = _distance(coords[metal], coords[other])
+                if near > 1e-6 and far / near > _CHELATE_CONTACT_RATIO:
+                    if editable.GetBondBetweenAtoms(index, metal) is not None:
+                        editable.RemoveBond(index, metal)
+                        removed += 1
+                    break
+
     for atom in list(editable.GetAtoms()):
         index = atom.GetIdx()
         if symbols[index] != 'C':
@@ -899,9 +944,10 @@ def _drop_impossible_metal_contacts(
         return mol
     warnings.append(
         f'{removed} metal-carbon contact(s) were dropped: they would have '
-        'given a carbon five bonds, which the geometric perception reaches '
-        'only because a metal has a large covalent radius. Use Bond if one '
-        'of them was real.'
+        'given a carbon five bonds, or they sit markedly further out than '
+        'the donor they are bonded to, which is what a chelate ring holding '
+        'a backbone carbon near the metal looks like. Use Bond if one of '
+        'them was real.'
     )
     return editable.GetMol()
 
