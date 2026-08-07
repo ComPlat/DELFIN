@@ -32,13 +32,17 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-__all__ = ['GFN_METHODS', 'is_gfn_method', 'xtb_available', 'optimize_with_gfn']
+__all__ = ['GFN_METHODS', 'is_gfn_method', 'xtb_available',
+           'optimize_with_gfn', 'optimize_autospin', 'electron_parity']
 
 #: What the dropdown offers, and the flags each one means to xtb.
 GFN_METHODS: Dict[str, Dict[str, Any]] = {
-    'gfnff': {'label': 'GFN-FF', 'flags': ['--gfnff'], 'max_atoms': 600},
-    'gfn2': {'label': 'GFN2-xTB', 'flags': ['--gfn', '2'], 'max_atoms': 250},
-    'gfn1': {'label': 'GFN1-xTB', 'flags': ['--gfn', '1'], 'max_atoms': 250},
+    'gfnff': {'label': 'GFN-FF', 'flags': ['--gfnff'], 'max_atoms': 600,
+              'reports': 'GFN-FF'},
+    'gfn2': {'label': 'GFN2-xTB', 'flags': ['--gfn', '2'], 'max_atoms': 250,
+             'reports': 'GFN2-xTB'},
+    'gfn1': {'label': 'GFN1-xTB', 'flags': ['--gfn', '1'], 'max_atoms': 250,
+             'reports': 'GFN1-xTB'},
 }
 
 #: A run that has not finished by then is not going to be useful, and the
@@ -46,6 +50,12 @@ GFN_METHODS: Dict[str, Dict[str, Any]] = {
 DEFAULT_TIMEOUT = 180.0
 
 _ENERGY_RE = re.compile(r'TOTAL ENERGY\s+(-?\d+\.\d+)')
+_VERSION_RE = re.compile(r'xtb version\s+([0-9.]+)')
+# What the run says it did, taken from its own output rather than from the
+# flags we passed: an xtb that ignored a flag would otherwise be indisting-
+# uishable from one that honoured it.
+_HAMILTONIAN_RE = re.compile(r'Hamiltonian\s+(GFN[0-9A-Za-z-]*)')
+_GFNFF_BANNER = 'G F N - F F'
 
 
 def is_gfn_method(method: Any) -> bool:
@@ -166,20 +176,117 @@ def optimize_with_gfn(
             return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
                     'seconds': seconds, 'status': f'{label}: {reason}.'}
 
+        # Which program, which version, which Hamiltonian -- read out of the
+        # run.  Passing --gfn 2 and being given GFN2 are two different claims,
+        # and only the second one is evidence.
+        version = ''
+        found_version = _VERSION_RE.search(output)
+        if found_version:
+            version = found_version.group(1)
+        reported = ''
+        found_hamiltonian = _HAMILTONIAN_RE.search(output)
+        if found_hamiltonian:
+            reported = found_hamiltonian.group(1).strip()
+        elif _GFNFF_BANNER in output:
+            reported = 'GFN-FF'
+        wanted = str(spec.get('reports') or '')
+        if reported and wanted and reported.upper() != wanted.upper():
+            return {
+                'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': time.perf_counter() - started, 'engine': 'xtb',
+                'version': version, 'hamiltonian': reported,
+                'status': (f'{label} was asked for and xtb ran {reported}; '
+                           'the result is not what it says on the button.'),
+            }
+
         converged = 'GEOMETRY OPTIMIZATION CONVERGED' in output
         if not converged:
             # The geometry is still better than the one that went in, so it is
             # handed back -- but not as though it were finished.
             return {
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
-                'seconds': seconds,
+                'seconds': seconds, 'engine': 'xtb', 'version': version,
+                'hamiltonian': reported or wanted,
                 'status': (f'{label} stopped before converging after '
-                           f'{seconds:.1f} s; the geometry it reached is shown.'),
+                           f'{seconds:.1f} s; the geometry it reached is shown. '
+                           f'(xtb {version}, {reported or wanted})'),
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
-            'seconds': seconds,
-            'status': f'{label} converged in {seconds:.1f} s.',
+            'seconds': seconds, 'engine': 'xtb', 'version': version,
+            'hamiltonian': reported or wanted,
+            'status': (f'{label} converged in {seconds:.1f} s '
+                       f'(xtb {version}, {reported or wanted}).'),
         }
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+
+
+def electron_parity(xyz_text: str, charge: int = 0) -> int:
+    """Whether the molecule has an odd or an even number of electrons.
+
+    An even count can only pair up to a singlet, triplet, quintet ...; an odd
+    one to a doublet, quartet ... -- so the parity fixes which multiplicities
+    are even possible, and scanning the others would be scanning nonsense.
+    """
+    from delfin.atom_mapping import _periodic_table
+
+    table = _periodic_table()
+    electrons = 0
+    for line in str(xyz_text or '').splitlines()[2:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            electrons += int(table.GetAtomicNumber(parts[0].capitalize()))
+        except Exception:
+            continue
+    return (electrons - int(charge)) % 2
+
+
+def optimize_autospin(
+    xyz_text: str,
+    method: str = 'gfnff',
+    *,
+    charge: int = 0,
+    spins: int = 3,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Optimise at several multiplicities and keep the lowest in energy.
+
+    For an open-shell transition metal the spin is not a detail: a fixed guess
+    gives a confidently wrong energy and, through it, a wrong geometry.  This
+    tries the multiplicities the electron count allows -- the parity and the
+    next two above it -- and returns the one that came out lowest, saying which
+    it was.  It costs what it sounds like it costs: three runs instead of one.
+
+    Falls back to the parity run if every attempt fails, so the caller always
+    gets the same shape of answer.
+    """
+    parity = electron_parity(xyz_text, charge)
+    attempts = []
+    best = None
+    for step in range(max(1, int(spins))):
+        uhf = parity + 2 * step
+        result = optimize_with_gfn(xyz_text, method, charge=charge, uhf=uhf,
+                                   **kwargs)
+        attempts.append((uhf + 1, result.get('energy'), bool(result.get('ok'))))
+        if not result.get('ok') or result.get('energy') is None:
+            continue
+        if best is None or result['energy'] < best['energy']:
+            best = dict(result, uhf=uhf, multiplicity=uhf + 1)
+    if best is None:
+        fallback = optimize_with_gfn(xyz_text, method, charge=charge,
+                                     uhf=parity, **kwargs)
+        return dict(fallback, uhf=parity, multiplicity=parity + 1,
+                    tried=attempts)
+    tried = ', '.join(
+        f'M={m}: {"failed" if e is None else f"{e:.6f}"}'
+        for m, e, _ok in attempts
+    )
+    best['status'] = (
+        f"{best['status']} Lowest of {len(attempts)} multiplicities "
+        f"(M={best['multiplicity']}); {tried}."
+    )
+    best['tried'] = attempts
+    return best

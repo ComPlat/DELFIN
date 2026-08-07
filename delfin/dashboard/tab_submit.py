@@ -740,6 +740,16 @@ def create_tab(ctx):
         style={'description_width': '14px'},
         layout=widgets.Layout(width='72px', display='none'),
     )
+    submit_gfn_autospin = widgets.Checkbox(
+        value=False, description='auto M', indent=False,
+        tooltip=(
+            'Try the multiplicities the electron count allows and keep the '
+            'one that comes out lowest. For an open-shell metal a fixed guess '
+            'gives a confidently wrong energy and, through it, a wrong '
+            'geometry -- but it costs three runs instead of one.'
+        ),
+        layout=widgets.Layout(width='86px', display='none'),
+    )
     submit_internal_label = widgets.HTML(
         value=(
             '<span class="submit-internal-label" '
@@ -918,7 +928,7 @@ def create_tab(ctx):
             submit_element_dd,
             submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
-            submit_strength_slider,
+            submit_gfn_autospin, submit_strength_slider,
             submit_optimize_btn, submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
@@ -3575,6 +3585,7 @@ def create_tab(ctx):
         charge = int(submit_gfn_charge.value or 0)
         # xtb counts unpaired electrons, not multiplicity: M = 2S+1.
         uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
+        autospin = bool(submit_gfn_autospin.value)
         count = len(frames) or 1
         _set_mol_status(
             f'Optimising {count} frame(s) with {label}...', spinner=True,
@@ -3588,7 +3599,10 @@ def create_tab(ctx):
             for position, item in enumerate(targets):
                 xyz = item[0]
                 try:
-                    if gfn:
+                    if gfn and autospin:
+                        outcome = _gfn.optimize_autospin(
+                            xyz, method, charge=charge)
+                    elif gfn:
                         outcome = _gfn.optimize_with_gfn(
                             xyz, method, charge=charge, uhf=uhf)
                     else:
@@ -3634,7 +3648,12 @@ def create_tab(ctx):
                 done = count - len(failures)
                 said = f'Optimised {done} of {count} frame(s) with {label}.'
                 if gfn:
-                    said += f' charge {charge}, multiplicity {uhf + 1}.'
+                    if autospin:
+                        picked = results[0][0] if results else None
+                        del picked
+                        said += f' charge {charge}, multiplicity scanned.'
+                    else:
+                        said += f' charge {charge}, multiplicity {uhf + 1}.'
                 _set_mol_status(said, *failures[:2])
 
             _schedule_ui_update(_apply)
@@ -4685,6 +4704,17 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
         )
 
+    def on_submit_autospin(change):
+        if change.get('name') != 'value':
+            return
+        scanning = bool(submit_gfn_autospin.value)
+        submit_gfn_mult.disabled = scanning
+        if scanning:
+            _set_mol_status(
+                'The multiplicity is scanned: the ones the electron count '
+                'allows are each optimised and the lowest is kept. Three runs '
+                'instead of one.')
+
     def _fill_charge_from_smiles():
         """Take the charge off the SMILES the structure was built from.
 
@@ -4720,6 +4750,7 @@ def create_tab(ctx):
         gfn = _gfn.is_gfn_method(submit_ff_dd.value)
         submit_gfn_charge.layout.display = '' if gfn else 'none'
         submit_gfn_mult.layout.display = '' if gfn else 'none'
+        submit_gfn_autospin.layout.display = '' if gfn else 'none'
         if gfn:
             label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
             source = _fill_charge_from_smiles()
@@ -4837,6 +4868,7 @@ def create_tab(ctx):
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
+    submit_gfn_autospin.observe(on_submit_autospin, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
@@ -5115,6 +5147,7 @@ def create_tab(ctx):
         'submit_ff_dd': submit_ff_dd,
         'submit_gfn_charge': submit_gfn_charge,
         'submit_gfn_mult': submit_gfn_mult,
+        'submit_gfn_autospin': submit_gfn_autospin,
         'submit_optimize_btn': submit_optimize_btn,
         'submit_pick_sync': submit_pick_sync,
         'submit_reset_btn': submit_reset_btn,

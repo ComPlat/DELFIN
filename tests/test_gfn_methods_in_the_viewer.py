@@ -135,3 +135,66 @@ def test_dragging_keeps_a_force_field_that_lives_in_the_browser(editor):
     assert "'uff' if _gfn.is_gfn_method(chosen) else chosen" in live
     # and the live export uses that, not the dropdown
     assert "method=_live_ff_method()," in source
+
+
+# ---------------------------------------------------------------------------
+# it really is xtb, and it says which Hamiltonian it ran
+# ---------------------------------------------------------------------------
+@_needs_xtb
+def test_the_result_names_the_program_that_produced_it():
+    """Passing --gfn 2 and being given GFN2 are two different claims."""
+    result = gfn.optimize_with_gfn(_WATER, "gfn2")
+
+    assert result["engine"] == "xtb"
+    assert result["version"], "xtb did not report a version"
+    assert result["hamiltonian"] == "GFN2-xTB"
+    assert "xtb" in result["status"]
+
+
+@_needs_xtb
+def test_each_method_reports_its_own_hamiltonian():
+    assert gfn.optimize_with_gfn(_WATER, "gfnff")["hamiltonian"] == "GFN-FF"
+    assert gfn.optimize_with_gfn(_WATER, "gfn1")["hamiltonian"] == "GFN1-xTB"
+
+
+# ---------------------------------------------------------------------------
+# autospin
+# ---------------------------------------------------------------------------
+def test_the_parity_decides_which_multiplicities_are_possible():
+    # water: 10 electrons, even -> singlet, triplet, quintet
+    assert gfn.electron_parity(_WATER, 0) == 0
+    # take one electron away and it can only be a doublet, quartet ...
+    assert gfn.electron_parity(_WATER, 1) == 1
+
+
+@_needs_xtb
+def test_autospin_keeps_the_multiplicity_that_came_out_lowest():
+    result = gfn.optimize_autospin(_WATER, "gfn2", charge=0)
+
+    assert result["ok"] is True
+    assert result["multiplicity"] == 1, "water is a singlet"
+    assert len(result["tried"]) == 3
+    energies = [e for _m, e, ok in result["tried"] if ok and e is not None]
+    assert result["energy"] == min(energies)
+    assert "Lowest of 3 multiplicities" in result["status"]
+
+
+@_needs_xtb
+def test_autospin_scans_the_parity_the_charge_implies():
+    result = gfn.optimize_autospin(_WATER, "gfnff", charge=1)
+
+    assert [m for m, _e, _ok in result["tried"]] == [2, 4, 6], (
+        "an odd electron count cannot be a singlet"
+    )
+
+
+def test_the_checkbox_appears_with_the_method_and_takes_over_the_box(editor):
+    assert editor["submit_gfn_autospin"].layout.display == "none"
+
+    editor["submit_ff_dd"].value = "gfn2"
+    assert editor["submit_gfn_autospin"].layout.display == ""
+
+    editor["submit_gfn_autospin"].value = True
+    assert editor["submit_gfn_mult"].disabled is True, (
+        "a scanned multiplicity is not one the user is setting"
+    )
