@@ -3928,18 +3928,19 @@ def create_tab(ctx):
             submit_hold_mode.value = entry.get('mode', 'pull')
         finally:
             state['hold_mode_quiet'] = False
-        unit = 'Å' if entry['kind'] == 'distance' else '°'
-        value = (
-            f'{float(entry["value"]):.3f}' if entry['kind'] == 'distance'
-            else f'{float(entry["value"]):.1f}'
-        )
+        kind = str(entry['kind'])
+        unit = 'Å' if kind == 'distance' else '°'
+        number = float(entry['value'])
+        value = '{:.3f}'.format(number) if kind == 'distance' else '{:.1f}'.format(number)
+        label = 'held <b>{}</b> ({})'.format(kind, unit)
+        atoms = [int(i) for i in entry['atoms']]
         _run_manip_js(
             'if(window.__delfinSubmitManip&&window.__delfinSubmitManip.setPicks)'
             'window.__delfinSubmitManip.setPicks('
-            f'{json.dumps(submit_scope_id)},'
-            f'{json.dumps([int(i) for i in entry["atoms"]])},'
-            f'{json.dumps(value)},'
-            f'{json.dumps(f"held <b>{entry["kind"]}</b> ({unit})")});'
+            + json.dumps(submit_scope_id) + ','
+            + json.dumps(atoms) + ','
+            + json.dumps(value) + ','
+            + json.dumps(label) + ');'
         )
 
     def on_submit_constraint_selected(change):
