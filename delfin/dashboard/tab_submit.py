@@ -624,7 +624,6 @@ def create_tab(ctx):
         value='',
         layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
     )
-    mol_status.add_class('submit-fs-member-status')
     mol_output = widgets.Output(layout=widgets.Layout(
         border='2px solid #1976d2', width='100%', height=f'{SUBMIT_MOL_HEIGHT}px',
         overflow='hidden', box_sizing='border-box',

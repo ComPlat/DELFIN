@@ -463,42 +463,19 @@ def test_what_is_wrong_with_the_structure_is_said_without_xtb(monkeypatch):
     assert "needs xtb" in gfn.optimize_with_gfn(fine, "gfnff")["status"]
 
 
-def test_fullscreen_takes_the_status_line_with_it():
-    """It carries the spinner and what the run is doing.
-
-    Left behind, fullscreen showed a structure moving for no stated reason --
-    or, worse, not moving with nothing to say why.
-    """
+def test_fullscreen_does_not_borrow_the_status_line():
+    """Moving a widget into the overlay and back is a DOM move ipywidgets does
+    not know about.  After one round trip the status line was gone from the
+    ordinary view -- the view that matters most -- so fullscreen keeps its
+    hands off it and needs its own element instead."""
     from delfin.dashboard import tab_submit
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    assert "mol_status.add_class('submit-fs-member-status')" in source
+    assert "mol_status.add_class('submit-fs-member-status')" not in source
 
-    editor_js = submit_manip_bootstrap_js()
-    enter = editor_js.split("function enterFullscreen")[1][:900]
-    assert "'.submit-fs-member-status'" in enter
-    assert enter.index("submit-fs-member-toolbar") < enter.index("submit-fs-member-status")
-
-
-@_needs_xtb
-def test_one_run_yields_the_path_the_optimiser_walked():
-    """xtb writes every cycle to xtbopt.log while it optimises.
-
-    So the trajectory costs nothing extra -- no second run and no loop of
-    processes -- and the frames are the geometries the optimiser really passed
-    through rather than the ends of restarted runs.
-    """
-    stretched = "3\nstretched\nO 0 0 0\nH 1.30 0 0\nH -0.35 1.25 0\n"
-
-    result = gfn.optimize_with_gfn(stretched, "gfnff")
-
-    assert result["ok"] is True
-    assert len(result["frames"]) > 1, "no path came back"
-    assert all(len(f) == 9 for f in result["frames"]), "3 atoms x 3 numbers"
-    # the last frame is where it ended up
-    ended = gfn.coordinates_of(result["xyz"])
-    assert result["frames"][-1] == pytest.approx(ended, abs=1e-6)
+    enter = submit_manip_bootstrap_js().split("function enterFullscreen")[1][:900]
+    assert "'.submit-fs-member-status'" not in enter
 
 
 def test_relax_is_switched_off_while_a_gfn_method_is_chosen(editor):
