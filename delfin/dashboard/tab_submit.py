@@ -3962,6 +3962,7 @@ def create_tab(ctx):
                     )
                 done = count - len(failures)
                 said = f'Optimised {done} of {count} frame(s) with {label}.'
+                state['gfn_last_status'] = said
                 if gfn:
                     if autospin:
                         picked = results[0][0] if results else None
@@ -3969,7 +3970,12 @@ def create_tab(ctx):
                         said += f' charge {charge}, multiplicity scanned.'
                     else:
                         said += f' charge {charge}, multiplicity {uhf + 1}.'
-                _set_mol_status(said, *failures[:2])
+                # The page's report about the playback is kept: it arrives
+                # while this message is being built and would otherwise be
+                # wiped by it a moment later.
+                note = state.get('gfn_play_note')
+                extra = [f'Trajectory: {note}.'] if note else []
+                _set_mol_status(said, *(list(failures[:2]) + extra))
 
             _schedule_ui_update(_apply)
 
@@ -4709,7 +4715,10 @@ def create_tab(ctx):
             # What the playback is doing, said by the page.  Without this the
             # only way to tell an invisible trajectory from a missing one was
             # to read the browser's console.
-            _set_mol_status(f'Trajectory: {payload}.')
+            state['gfn_play_note'] = str(payload)
+            _set_mol_status(*[line for line in (
+                state.get('gfn_last_status') or '', f'Trajectory: {payload}.'
+            ) if line])
             return
 
         if verb == 'undo':

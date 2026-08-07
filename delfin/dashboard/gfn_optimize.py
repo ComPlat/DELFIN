@@ -277,11 +277,36 @@ def optimize_with_gfn(
                             running.wait(timeout=5)
                         except subprocess.TimeoutExpired:
                             running.kill()
+                        # Keep what it reached.  Stopping is how a user
+                        # says "that is far enough", not "undo it" -- xtb has
+                        # already written the path and the last geometry on it.
+                        walked = read_trajectory(folder)
+                        # xtbopt.xyz is only written when the optimisation
+                        # finishes, so a stopped run has its last geometry in
+                        # the log and nowhere else.
+                        reached = _read_optimised(folder, xyz_text)
+                        if reached is None and walked:
+                            symbols = [line.split()[0]
+                                       for line in atom_lines(xyz_text)]
+                            last = walked[-1]
+                            if len(symbols) * 3 == len(last):
+                                rows = [
+                                    f'{symbols[i]} {last[3*i]:.8f} '
+                                    f'{last[3*i+1]:.8f} {last[3*i+2]:.8f}'
+                                    for i in range(len(symbols))
+                                ]
+                                reached = (f'{len(rows)}\nstopped after '
+                                           f'{len(walked)} steps\n'
+                                           + '\n'.join(rows) + '\n')
                         return {
-                            'ok': False, 'xyz': xyz_text, 'energy': None,
-                            'method': key, 'frames': [], 'engine': 'xtb',
+                            'ok': bool(reached),
+                            'xyz': reached or xyz_text, 'energy': None,
+                            'method': key, 'frames': walked, 'engine': 'xtb',
                             'seconds': time.perf_counter() - started,
-                            'status': f'{label} was stopped.',
+                            'status': (
+                                f'{label} stopped after {len(walked)} step(s); '
+                                'the geometry it had reached is kept.'
+                                if reached else f'{label} was stopped.'),
                         }
                     if waited > timeout:
                         running.kill()
