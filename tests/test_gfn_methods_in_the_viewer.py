@@ -636,3 +636,21 @@ def test_a_run_that_is_switched_off_ends_rather_than_being_waited_out():
     assert "was stopped" in result["status"]
     assert result["xyz"] == stretched, "a stopped run must change nothing"
     assert elapsed < 30
+
+
+def test_the_page_says_what_the_playback_is_doing(editor):
+    """Otherwise the only way to tell an invisible trajectory from a missing
+    one is to read the browser's console -- which is asking the user to be an
+    instrument."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    for report in ('"received "', '"drawing"', '"setPositions did not draw"',
+                   '"no setPositions on the page"'):
+        assert report in watcher, f"the page never reports {report}"
+    assert 'gfnplay:' in watcher
+
+    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
+    assert "verb == 'gfnplay'" in handler
+    assert "_set_mol_status(f'Trajectory: {payload}.')" in handler

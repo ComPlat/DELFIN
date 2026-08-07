@@ -3549,15 +3549,48 @@ def create_tab(ctx):
             '    if(frames.length>play.seen){\n'
             '      for(var i=play.seen;i<frames.length;i++) play.queue.push(frames[i]);\n'
             '      play.seen=frames.length;\n'
+            '      say("received "+frames.length+" frames");\n'
             '    }\n'
+            '  }\n'
+            '  function say(text){\n'
+            '    /* The page reports back through the command bridge the editor\n'
+            '       already has, so a playback that does not appear says why by\n'
+            '       itself instead of being read out of a console. */\n'
+            '    try{\n'
+            '      var root=document.querySelector("."+scope);\n'
+            '      var wrap=root&&root.querySelector(".submit-cmd-sync");\n'
+            '      var input=wrap&&wrap.querySelector("input, textarea");\n'
+            '      if(!input) return;\n'
+            '      play.serial=(play.serial||0)+1;\n'
+            '      var proto=(input.tagName==="TEXTAREA")\n'
+            '        ? window.HTMLTextAreaElement.prototype\n'
+            '        : window.HTMLInputElement.prototype;\n'
+            '      var setter=Object.getOwnPropertyDescriptor(proto,"value");\n'
+            '      var line="gfnplay:"+play.serial+":"+text;\n'
+            '      if(setter&&setter.set) setter.set.call(input,line);\n'
+            '      else input.value=line;\n'
+            '      input.dispatchEvent(new Event("input",{bubbles:true}));\n'
+            '      input.dispatchEvent(new Event("change",{bubbles:true}));\n'
+            '    }catch(e){}\n'
             '  }\n'
             '  function show(a,b,t){\n'
             '    if(!window.__delfinSubmitManip||'
-            '!window.__delfinSubmitManip.setPositions) return;\n'
+            '!window.__delfinSubmitManip.setPositions){\n'
+            '      if(!play.toldNoApi){ play.toldNoApi=1;'
+            ' say("no setPositions on the page"); }\n'
+            '      return;\n'
+            '    }\n'
             '    var out=new Array(b.length);\n'
             '    if(!a||a.length!==b.length){ out=b; }\n'
             '    else { for(var i=0;i<b.length;i++) out[i]=a[i]+(b[i]-a[i])*t; }\n'
-            '    try{ window.__delfinSubmitManip.setPositions(scope,out); }catch(e){}\n'
+            '    var ok=false;\n'
+            '    try{ ok=window.__delfinSubmitManip.setPositions(scope,out); }\n'
+            '    catch(e){ ok=false; }\n'
+            '    play.drawn=(play.drawn||0)+(ok?1:0);\n'
+            '    if(!ok&&!play.toldNoDraw){ play.toldNoDraw=1;'
+            ' say("setPositions did not draw"); }\n'
+            '    if(ok&&!play.toldDrawing){ play.toldDrawing=1;'
+            ' say("drawing"); }\n'
             '  }\n'
             '  function frame(now){\n'
             '    read();\n'
@@ -4653,6 +4686,13 @@ def create_tab(ctx):
         if len(parts) != 3:
             return
         verb, payload = parts[0], parts[2]
+
+        if verb == 'gfnplay':
+            # What the playback is doing, said by the page.  Without this the
+            # only way to tell an invisible trajectory from a missing one was
+            # to read the browser's console.
+            _set_mol_status(f'Trajectory: {payload}.')
+            return
 
         if verb == 'undo':
             _undo_structure()
