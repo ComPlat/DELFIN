@@ -359,6 +359,7 @@ DOC_CSS = (
     # margin -- so the Bold button wearing the same class sat 9px above its
     # neighbours.  The button is 'dw-bold'.
     '.dw-bold { font-weight:700; }'
+    '.dw-zen { margin-left:auto; }'
     '.dw-i { font-style:italic; font-family:Georgia,serif; }'
     '.dw-u { text-decoration:underline; text-underline-offset:2px; }'
     '.dw-btn:hover { border-color:#1565c0; color:#12447a; }'
@@ -414,7 +415,9 @@ def toolbar_html(current: str = 'Normal') -> str:
         out.append(f'<option value="{_html.escape(code, quote=True)}"{chosen}>'
                    f'{_html.escape(label)}</option>')
     out.append('</select>')
-    out.append('<span class="dw-bar-sep"></span>')
+    # Last of everything and pushed into the corner: a control that changes
+    # the whole frame rather than the text belongs away from the ones that
+    # act on what is selected.
     out.append('<button class="dw-btn dw-zen"'
                ' title="Fullscreen: the document alone (Esc leaves)">'
                '&#9974;</button>')
