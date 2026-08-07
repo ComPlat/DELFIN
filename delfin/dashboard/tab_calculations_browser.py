@@ -11499,8 +11499,45 @@ def create_tab(ctx):
             for (row0, col0), value in results.items()
             if first <= row0 <= last
         ]
+        cells.extend(_calc_sheet_reformatted(path, sheet_name, view, values, results))
         if cells:
             _calc_sheet_show_cells(view['token'], cells)
+
+    def _calc_sheet_reformatted(path, sheet_name, view, values, results):
+        """The cells whose number format was just changed, written out again.
+
+        Choosing a format changes how a number reads, and the browser cannot
+        work that out for itself -- which is why there was no control for it.
+        The kernel can: it writes the cell out in the chosen format and pushes
+        the text in, so the choice is visible before saving instead of after
+        saving and re-opening.
+        """
+        first = int(view.get('row_offset') or 0)
+        last = first + int(view.get('page_rows') or 0) - 1
+        out = []
+        for op in _calc_sheet_pending_ops(str(path), sheet_name):
+            if op.get('op') != 'format' or 'number_format' not in op:
+                continue
+            code = op.get('number_format') or 'General'
+            for row in range(int(op['r1']), int(op['r2']) + 1):
+                row0 = row - 1
+                if not first <= row0 <= last:
+                    continue
+                for col in range(int(op['c1']), int(op['c2']) + 1):
+                    col0 = col - 1
+                    if (row0, col0) in results:
+                        continue          # a formula's result owns that cell
+                    text = ''
+                    if row0 < len(values) and col0 < len(values[row0]):
+                        text = values[row0][col0]
+                    if text == '':
+                        continue
+                    try:
+                        number = float(str(text).replace(',', '.'))
+                    except (TypeError, ValueError):
+                        continue          # text has no number format to read
+                    out.append([row, col, _sheet.display_value(number, code)])
+        return out
 
     def _calc_sheet_push_results(path, view):
         """Show what the formulas work out to after the file was written."""
@@ -11710,6 +11747,72 @@ def create_tab(ctx):
                 # The browser has already painted what was typed.  What it
                 # cannot know is what the formulas now work out to.
                 _calc_sheet_live_formulas(path, sheet_name, view)
+            return
+
+        if action == 'replace':
+            term = str(payload.get('find') or '')
+            if not term:
+                _calc_sheet_note('Type what to find first.')
+                return
+            grids = None
+            if view.get('kind') == 'xlsx':
+                try:
+                    grids = _sheet.sheet_grids_for_formulas(path, sheet_name)
+                except Exception:
+                    grids = None
+            else:
+                window = _sheet.read_delimited(path, row_offset=0)[0]
+                grids = (window.values, window.formulas or
+                         [[''] * len(row) for row in window.values])
+            if grids is None:
+                _calc_sheet_note(
+                    'This sheet is too large to replace across in one step; '
+                    'edit the cells directly.')
+                return
+            values = [list(row) for row in grids[0]]
+            formulas = [list(row) for row in grids[1]]
+            # Cells changed but not saved yet are part of the sheet too.
+            for pending_op in _calc_sheet_pending_ops(str(path), sheet_name):
+                if pending_op.get('op') != 'set':
+                    continue
+                row0, col0 = int(pending_op['row']) - 1, int(pending_op['col']) - 1
+                while len(values) <= row0:
+                    values.append([])
+                    formulas.append([])
+                while len(values[row0]) <= col0:
+                    values[row0].append('')
+                while len(formulas[row0]) <= col0:
+                    formulas[row0].append('')
+                text = pending_op.get('text', '')
+                if str(text).startswith('='):
+                    formulas[row0][col0], values[row0][col0] = text, ''
+                else:
+                    formulas[row0][col0], values[row0][col0] = '', text
+            try:
+                ops = _sheet.replace_ops(
+                    values, formulas, term=term,
+                    replacement=str(payload.get('repl') or ''),
+                    match_case=bool(payload.get('match_case')),
+                    whole_cell=bool(payload.get('whole_cell')),
+                )
+            except _sheet.SpreadsheetError as exc:
+                _calc_sheet_note(str(exc))
+                return
+            if not ops:
+                _calc_sheet_note(f'{term!r} is not in this sheet.', color='#4a525c')
+                return
+            state['sheet_pending'].setdefault(key, []).extend(ops)
+            # A replacement is an edit like any other: it shows as unsaved and
+            # is written by the same code that writes a typed cell.
+            _calc_sheet_apply_cells(
+                view['token'],
+                [[op['row'], op['col'], op['text']] for op in ops],
+            )
+            _calc_sheet_live_formulas(path, sheet_name, view)
+            count = len(ops)
+            _calc_sheet_note(
+                f'{count} cell{"" if count == 1 else "s"} replaced · not saved yet',
+                color='#2e7d32')
             return
 
         if action == 'save':

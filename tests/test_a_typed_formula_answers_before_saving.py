@@ -124,3 +124,26 @@ def test_a_csv_keeps_its_text(tmp_path):
     pushed = _type(refs, sent, 3, 1, "=SUM(A1:A2)")
 
     assert "__dsheetShow" not in pushed
+
+
+def test_a_chosen_number_format_shows_at_once(opened):
+    """Picking a format used to do nothing until the file was saved and reopened."""
+    refs, sent, _path = opened
+    view = refs["sheet_state"]["sheet_view"]
+
+    refs["calc_sheet_payload_input"].value = json.dumps({
+        "action": "edit",
+        "token": view["token"],
+        "path": str(view["path"]),
+        "sheet": view["sheet"],
+        "kind": view["kind"],
+        "ops": [{"op": "format", "r1": 1, "c1": 1, "r2": 1, "c2": 1,
+                 "number_format": "0.00"}],
+    })
+    refs["calc_sheet_action_btn"].click()
+    pushed = "\n".join(sent)
+
+    assert "__dsheetShow" in pushed, "nothing was written back to the grid"
+    assert "10.00" in pushed or "10,00" in pushed, (
+        f"the cell was not rewritten in the chosen format: {pushed[-300:]}"
+    )

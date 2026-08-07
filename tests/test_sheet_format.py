@@ -233,13 +233,23 @@ def test_the_controls_are_offered_on_a_workbook():
     assert 'dsheet-swatch' in markup
 
 
-def test_no_control_sets_a_number_format_yet():
-    """Setting one changes how a number should read, and the browser cannot
-    re-read it: picking a format did nothing visible until the file had been
-    saved and opened again. A format a workbook already carries is still
-    read and shown -- only the control is gone."""
-    assert 'dsheet-numfmt' not in _grid()
-    assert 'dsheet-numfmt' not in sheet.grid_js('calc-scope-1', 'tok')
+def test_a_number_format_can_be_chosen_and_is_shown_at_once():
+    """The control was withheld because the browser cannot re-read a number in
+    a new format, so picking one did nothing visible until the file had been
+    saved and opened again.  It does not have to: the kernel writes the cell
+    out in the chosen format and pushes the text in, the way a worked-out
+    formula arrives."""
+    markup = _grid()
+    assert 'dsheet-numfmt' in markup
+    for code in ('General', '0.00', '#,##0.00', '0.00E+00', '0%'):
+        assert code in markup, f'{code} is not offered'
+    assert 'dsheet-numfmt' in sheet.grid_js('calc-scope-1', 'tok')
+    assert 'number_format' in sheet.grid_js('calc-scope-1', 'tok')
+
+
+def test_a_csv_is_not_offered_a_number_format():
+    """A csv holds text; a format is a thing a workbook carries."""
+    assert 'dsheet-numfmt' not in _grid(kind='csv')
 
 
 def test_a_csv_is_not_offered_them():

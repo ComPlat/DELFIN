@@ -206,6 +206,20 @@ FILL_COLOURS: Tuple[Tuple[str, str], ...] = (
 )
 _KNOWN_FILLS = {code for _label, code in FILL_COLOURS if code}
 
+# How a number reads.  Excel's own codes, so a workbook written here opens in
+# Excel showing what it showed in the dashboard.
+NUMBER_FORMATS: Tuple[Tuple[str, str], ...] = (
+    ('Format', ''),
+    ('General', 'General'),
+    ('Integer', '0'),
+    ('1234.57', '0.00'),
+    ('1,234.57', '#,##0.00'),
+    ('Scientific', '0.00E+00'),
+    ('Percent', '0%'),
+    ('Percent 0.0', '0.0%'),
+    ('Date', 'DD.MM.YYYY'),
+)
+
 _HEX_RE = re.compile(r'^[0-9A-Fa-f]{6}$')
 
 
@@ -1354,6 +1368,61 @@ def validate_ops(ops: Any) -> List[Dict[str, Any]]:
     return clean
 
 
+def replace_ops(
+    values: Sequence[Sequence[str]],
+    formulas: Sequence[Sequence[str]],
+    term: str,
+    replacement: str,
+    *,
+    match_case: bool = False,
+    whole_cell: bool = False,
+) -> List[Dict[str, Any]]:
+    """Excel's Replace All, as a journal of ordinary cell edits.
+
+    Producing ``set`` ops rather than writing anything means replacing is
+    undoable, shows as unsaved, and is written by the same code that writes a
+    typed cell -- there is no second path to the file that could behave
+    differently from the first.
+
+    The two switches are the ones Excel's dialog carries for a sheet: *match
+    case*, and *match entire cell contents* (not "whole word" -- that is Word's
+    dialog).  A formula cell is searched in its formula text, which is what
+    Excel does with its default "Look in: Formulas".
+    """
+    term = str(term or '')
+    if not term:
+        raise SpreadsheetError('There is nothing to search for.')
+    replacement = '' if replacement is None else str(replacement)
+    flags = 0 if match_case else re.IGNORECASE
+    finder = re.compile(re.escape(term), flags)
+
+    ops: List[Dict[str, Any]] = []
+    for row0 in range(len(values)):
+        row_values = values[row0]
+        row_formulas = formulas[row0] if row0 < len(formulas) else ()
+        for col0 in range(len(row_values)):
+            source = ''
+            if col0 < len(row_formulas) and str(row_formulas[col0] or '').startswith('='):
+                source = str(row_formulas[col0])
+            else:
+                source = str(row_values[col0] or '')
+            if not source:
+                continue
+            if whole_cell:
+                same = (source == term if match_case
+                        else source.lower() == term.lower())
+                if not same:
+                    continue
+                after = replacement
+            else:
+                after, count = finder.subn(replacement, source)
+                if not count:
+                    continue
+            ops.append({'op': 'set', 'row': row0 + 1, 'col': col0 + 1,
+                        'text': after})
+    return ops
+
+
 def replay_ops(sheet: SheetData, ops: Sequence[Mapping[str, Any]]) -> Set[Tuple[int, int]]:
     """Apply a journal to an in-memory window so pending edits stay visible.
 
@@ -2017,6 +2086,10 @@ GRID_CSS = (
     '.dsheet-btn.dsheet-primary { background:#1976d2; border-color:#1565c0; color:#fff; }'
     '.dsheet-btn.dsheet-primary:disabled { background:#b8c4d0; border-color:#b0bcc8; color:#fff; }'
     '.dsheet-sep { display:inline-block; width:1px; height:16px; background:#ccd2d8; margin:0 4px; }'
+    '.dsheet-find, .dsheet-repl { font-size:11px; height:22px; padding:0 6px;'
+    ' width:110px; border:1px solid #c3c9d2; border-radius:3px; margin-left:4px; }'
+    '.dsheet-switch { font-size:11px; display:inline-flex; align-items:center;'
+    ' gap:2px; margin-left:4px; color:#4a525c; user-select:none; }'
     '.dsheet-filter { font-size:11px; height:22px; padding:0 6px; width:140px;'
     ' border:1px solid #c3c9d0; border-radius:3px; }'
     '.dsheet-addr { font-family:monospace; font-size:11px; color:#555; min-width:42px; }'
@@ -2175,11 +2248,14 @@ def render_grid_html(
                         '<span class="dsheet-swatch dsheet-swatch-none"'
                         f' data-fill="" title="{_attr(label)}">&times;</span>')
             out.append('</span>')
-            # No control for the number format yet. Setting one changes how a
-            # number should read, and the browser cannot re-read it: picking
-            # a format did nothing visible until the file had been saved and
-            # opened again, which is worse than not offering it. A format a
-            # workbook already carries is still read and shown.
+            # Setting a number format changes how a number reads, and the
+            # browser cannot work that out for itself.  It does not have to:
+            # the kernel writes the cell back out in the chosen format and
+            # pushes the text in, the same way a worked-out formula arrives.
+            out.append('<select class="dsheet-numfmt" title="Number format">')
+            for label, code in NUMBER_FORMATS:
+                out.append(f'<option value="{_attr(code)}">{_attr(label)}</option>')
+            out.append('</select>')
             out.append('<span class="dsheet-sep"></span>')
         if office:
             out.append('<button class="dsheet-btn dsheet-undo" disabled'
@@ -2194,6 +2270,18 @@ def render_grid_html(
         out.append('<span class="dsheet-sep"></span>')
     out.append('<span class="dsheet-addr">A1</span>')
     out.append('<input class="dsheet-filter" placeholder="Filter…" spellcheck="false">')
+    if editable:
+        # Excel's dialog, flattened into the bar: what to find, what to put
+        # there, and its two switches.
+        out.append('<input class="dsheet-find" placeholder="Find…" spellcheck="false">')
+        out.append('<input class="dsheet-repl" placeholder="Replace with…"'
+                   ' spellcheck="false">')
+        out.append('<label class="dsheet-switch" title="Match case">'
+                   '<input type="checkbox" class="dsheet-case">Aa</label>')
+        out.append('<label class="dsheet-switch"'
+                   ' title="Match entire cell contents">'
+                   '<input type="checkbox" class="dsheet-whole">=</label>')
+        out.append('<button class="dsheet-btn dsheet-replace-all">Replace all</button>')
     out.append('<span class="dsheet-status"></span>')
     out.append('</div>')
 
@@ -2570,6 +2658,35 @@ _GRID_JS_TEMPLATE = r"""
   });
   if (underlineBtn) underlineBtn.addEventListener('click', function(){
     applyFormat({underline: !selectionHas('underline')});
+  });
+  /* ---------- replace ----------
+     The kernel holds the whole sheet and does the matching; the browser only
+     asks.  What comes back is an ordinary edit journal, which is what makes a
+     replacement undoable and visible as unsaved. */
+  var replaceBtn = wrap.querySelector('.dsheet-replace-all');
+  if (replaceBtn) replaceBtn.addEventListener('click', function(){
+    var findEl = wrap.querySelector('.dsheet-find');
+    var replEl = wrap.querySelector('.dsheet-repl');
+    var caseEl = wrap.querySelector('.dsheet-case');
+    var wholeEl = wrap.querySelector('.dsheet-whole');
+    var term = findEl ? findEl.value : '';
+    if (!term) {
+      if (statusEl) statusEl.textContent = 'Type what to find first.';
+      return;
+    }
+    send('replace', [], {
+      find: term,
+      repl: replEl ? replEl.value : '',
+      match_case: !!(caseEl && caseEl.checked),
+      whole_cell: !!(wholeEl && wholeEl.checked)
+    });
+  });
+
+  var numfmt = wrap.querySelector('.dsheet-numfmt');
+  if (numfmt) numfmt.addEventListener('change', function(){
+    var code = numfmt.value;
+    numfmt.selectedIndex = 0;          /* it is an action, not a state */
+    if (code) applyFormat({number_format: code});
   });
   Array.prototype.forEach.call(wrap.querySelectorAll('.dsheet-swatch'),
     function(swatch){
