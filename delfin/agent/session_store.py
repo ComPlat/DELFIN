@@ -53,11 +53,21 @@ def _atomic_write_text(path: Path, text: str) -> None:
                 pass
 
 # Legacy mode name migration
+# Kept identical to the engine's table on purpose: when the two disagreed,
+# the same saved session migrated differently depending on which one read
+# it -- the engine knew `pipeline`, this one did not. See the engine's copy
+# for why the multi-role pipelines were retired.
 _LEGACY_MODE_MAP = {
-    "default": "quick",
-    "high_risk": "reviewed",
-    "runtime_cluster": "cluster",
-    "release": "full",
+    "default": "solo",
+    "high_risk": "solo",
+    "runtime_cluster": "solo",
+    "release": "solo",
+    "quick": "solo",
+    "reviewed": "solo",
+    "tdd": "solo",
+    "cluster": "solo",
+    "full": "solo",
+    "pipeline": "solo",
 }
 
 

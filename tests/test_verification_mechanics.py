@@ -280,8 +280,8 @@ def test_engine_copies_verdict_and_evidence_per_role(tmp_path):
         pack_name: DELFIN_AGENT_LITE
         version: 1
         modes:
-          - id: quick
-            file: modes/quick.md
+          - id: solo
+            file: modes/solo.md
             route:
               - session_manager
               - builder_agent

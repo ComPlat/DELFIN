@@ -24,17 +24,37 @@ def _load_settings() -> dict:
         return {}
 
 
+# Every name a session could have been saved under, mapped to a mode the
+# user can actually pick. Two generations of retirement are folded in here,
+# and the older one used to stop halfway: `default` mapped to `quick`,
+# `release` to `full` -- onto the very modes that were later retired. A
+# session saved months ago therefore migrated onto a mode missing from the
+# picker: the control showed a value it could not offer, and the engine
+# started a seven-role pipeline the user could neither see nor switch off.
+#
+# The multi-role pipelines are gone because what genuinely differs between
+# sessions is which folder they work in and what they may reach from there.
+# Pipeline in particular was never a mode in any sense the rest of the
+# system used: it routed to solo_agent, ran the same tools, and differed
+# only by a page of instructions. A page of instructions is a procedure, so
+# it is a skill (`pipeline-build`) -- reachable from the coding mode
+# without having to enter a mode you can then be stuck in, and paid for
+# only when invoked.
+#
+# The session store keeps the identical table; when the two disagreed, the
+# same saved session migrated differently depending on which one read it.
 _LEGACY_MODE_MAP = {
-    "default": "quick",
-    "high_risk": "reviewed",
-    "runtime_cluster": "cluster",
-    "release": "full",
-    # Pipeline was never a mode in any sense the rest of the system used:
-    # it routed to solo_agent, ran the same tools, and differed only by a
-    # page of instructions. That page is a procedure, so it is a skill
-    # (`pipeline-build`) — reachable from the coding mode without having
-    # to switch into a mode you can then be stuck in, and paid for only
-    # when it is invoked. Saved sessions and `/mode pipeline` land here.
+    # First generation of names.
+    "default": "solo",
+    "high_risk": "solo",
+    "runtime_cluster": "solo",
+    "release": "solo",
+    # The multi-role pipelines themselves.
+    "quick": "solo",
+    "reviewed": "solo",
+    "tdd": "solo",
+    "cluster": "solo",
+    "full": "solo",
     "pipeline": "solo",
 }
 
@@ -4365,19 +4385,17 @@ class AgentEngine:
         }
         return instructions.get(role, f"Continue with the task:\n\n{user_task}")
 
-    @staticmethod
-    def suggest_mode(user_message: str, current_mode: str = "quick") -> str | None:
-        """Suggest a higher mode based on file paths mentioned in the message.
-
-        Returns the suggested mode ID if escalation is warranted,
-        or None if the current mode is sufficient.
-        """
-        current_rank = _MODE_RANK.get(current_mode, 0)
-        decision = AgentEngine.recommend_task_route(user_message, current_mode)
-        suggested = decision.get("mode", current_mode)
-        if _MODE_RANK.get(suggested, 0) > current_rank:
-            return suggested
-        return None
+    # `suggest_mode` lived here. It ranked modes on a ladder (quick <
+    # reviewed < cluster < full) and proposed a climb up it. There is no
+    # ladder any more: the three modes that remain differ by WHICH FOLDER
+    # the session works in, which is not something to escalate into. It
+    # returned `cluster` and `full` to a user who cannot select either.
+    #
+    # Nothing in the package called it -- checked across delfin/ -- which
+    # is exactly why it survived the retirement untouched. Deleted rather
+    # than repaired: a suggestion function over a set with no order has
+    # nothing left to suggest, and leaving it would hand the next caller a
+    # mode that does not exist.
 
     @staticmethod
     def recommend_task_route(
@@ -4554,7 +4572,14 @@ class AgentEngine:
             pass
 
         return {
-            "mode": mode,
+            # The scoring above still reasons in terms of the retired
+            # pipelines, and that reasoning is worth keeping -- "this looks
+            # like a release" is a real signal, and it survives in
+            # risk_flags and reasons. What must not survive is a `mode` the
+            # user cannot select: this value is a public part of the
+            # contract, and naming `quick` or `full` here invites the next
+            # caller to act on a mode that no longer exists.
+            "mode": _migrate_mode(mode),
             "task_class": task_class,
             "intent": intent,
             "confidence": confidence,

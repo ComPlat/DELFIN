@@ -336,13 +336,13 @@ def agent_tree(tmp_path):
     lite_dir = tmp_path / "pack_lite"
     modes = lite_dir / "modes"
     modes.mkdir(parents=True)
-    (modes / "quick.md").write_text("# quick mode")
+    (modes / "solo.md").write_text("# quick mode")
     (lite_dir / "manifest.yaml").write_text(textwrap.dedent("""\
         pack_name: DELFIN_AGENT_LITE
         version: 1
         modes:
-          - id: quick
-            file: modes/quick.md
+          - id: solo
+            file: modes/solo.md
             route:
               - session_manager
               - builder_agent

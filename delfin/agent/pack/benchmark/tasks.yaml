@@ -518,7 +518,13 @@ tasks:
         against: action
       - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*basis\w*\s+def2'
         against: action
-      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*dispersion\w*\s+d3bj'
+      # `disp_corr` is the CONTROL.txt key; `dispersion` is a dashboard
+      # dropdown field, reached by a different command. Demanding
+      # "dispersion" here scored the working command as wrong and the
+      # broken one as right -- and hid it, because the model used to write
+      # the broken one. Both spellings pass now; the task is about
+      # planning before acting, not about which synonym is typed.
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*disp\w*\s+d3bj'
         against: action
       - pattern: '(?:ACTION:\s*)?/tab\s+submit'
         against: action
