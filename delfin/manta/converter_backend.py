@@ -2293,7 +2293,35 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     # but early-TM Mo/W CN6 prefer TPR — coverage gap previously missed (no TPR-6 in
     # the FF-free Pólya enumerator).  Additive, env-gated default OFF (byte-identical
     # when unset).  Same pattern as CN5 SPY-5: best-effort, never bails OC-6 result.
-    if d.get("cn") == 6 and os.environ.get("DELFIN_FFFREE_TPR6", "0") == "1" \
+    # GELTUNGSBEREICH (DELFIN_FFFREE_TPR6_EARLY_TM, default OFF -> byte-identisch).
+    # Der Hebel oben feuert auf JEDEM CN6-System, dessen Primaergeometrie nicht schon TPR ist.
+    # Seine eigene Begruendung ist viel enger: "early-TM Mo/W CN6 prefer TPR".  Beim spaeten
+    # Uebergangsmetall ist das trigonale Prisma chemisch unrealistisch -- und genau dort reisst
+    # der Bau.  GEMESSEN an tpr6cn6 (69 CN6-Systeme, FF-frei gebaut): 40 von 40 Systemen besser,
+    # keines schlechter, mean -8,45, capability_lost 0 -- blockiert allein daran, dass die
+    # hinzugefuegten Prismen-Frames zu 28 % hart sind gegen einen Boden von 4,7 %, mit
+    # smiles_topology 17 gegen 1 und core_torn 3 gegen 0 als Defekttypen.
+    #
+    # Beide vorhandenen Gates scheiden aus: TORN_GATE sieht nur die FEHLENDE Bindung (zweimal
+    # REACH 0/24), der Konsens-Gate TOPOLOGY_GATE verwirft die Prismen KOMPLETT (isomers_lost 9,
+    # jedes betroffene System 3 -> 2 Isomere) -- er kann "anderes Isomer" nicht von "Artefakt"
+    # unterscheiden.  Bleibt: das Prisma dort NICHT bauen, wo es chemisch nicht vorkommt.
+    #
+    # Die Menge ist elementbasiert und universell -- kein SMILES, kein Refcode, kein System.
+    # d0-d2-Uebergangsmetalle der Gruppen 3-7, fuer die trigonal-prismatisches CN6 dokumentiert
+    # ist (klassisch Mo/W-Dithiolene, dazu Nb/Ta/V/Zr/Hf/Re).  Eine Ladung steht am
+    # Zerlegungs-Dict nicht zur Verfuegung, deshalb Element statt d-Zahl.
+    _TPR6_EARLY_TM = frozenset((
+        "Sc", "Y", "La",       # Gruppe 3
+        "Ti", "Zr", "Hf",      # Gruppe 4
+        "V", "Nb", "Ta",       # Gruppe 5
+        "Cr", "Mo", "W",       # Gruppe 6
+        "Mn", "Tc", "Re",      # Gruppe 7
+    ))
+    _tpr6_on = os.environ.get("DELFIN_FFFREE_TPR6", "0") == "1"
+    if _tpr6_on and os.environ.get("DELFIN_FFFREE_TPR6_EARLY_TM", "0") == "1":
+        _tpr6_on = str(d.get("metal") or "") in _TPR6_EARLY_TM
+    if d.get("cn") == 6 and _tpr6_on \
             and d["geometry"] != "TPR-6 trigonal prism":
         results += _enumerate_geometry(d, "trigonal_prism", "TPR-6 trigonal prism",
                                        lig_ref, lab_elem, spec, max_isomers)
