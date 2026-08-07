@@ -39,14 +39,18 @@ def agent_tree(tmp_path):
     lite_dir = tmp_path / "pack_lite"
     modes = lite_dir / "modes"
     modes.mkdir(parents=True)
-    (modes / "quick.md").write_text("# Mode: quick\nQuick mode.")
+    (modes / "solo.md").write_text("# Mode: quick\nQuick mode.")
+    # Named `solo` because every retired mode name now migrates onto
+    # it; a fixture built around `quick` describes a manifest the
+    # loader no longer has. The multi-role route is kept so the
+    # engine's role advancement stays under test.
     manifest = textwrap.dedent("""\
         pack_name: DELFIN_AGENT_LITE
         version: 1
-        recommended_default_mode: quick
+        recommended_default_mode: solo
         modes:
-          - id: quick
-            file: modes/quick.md
+          - id: solo
+            file: modes/solo.md
             route:
               - solo_agent
     """)

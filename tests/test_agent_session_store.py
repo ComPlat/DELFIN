@@ -116,7 +116,9 @@ def test_list_sessions_summary_fields(sessions_dir):
     assert len(sessions) == 1
     s = sessions[0]
     assert s["session_id"] == "sess-x"
-    assert s["mode"] == "reviewed"
+    # Stored under a retired name; migrated on read so the picker
+    # never shows a mode it cannot offer.
+    assert s["mode"] == "solo"
     assert s["message_count"] == 3
     # Full chat_messages should NOT be in the summary
     assert "chat_messages" not in s

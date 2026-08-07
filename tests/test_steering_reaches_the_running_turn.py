@@ -113,11 +113,19 @@ def test_a_new_turn_starts_the_budget_over(office_engine):
 # ---------------------------------------------------------------------------
 
 def test_pipeline_roles_get_no_steering(tmp_path):
-    """Scripted roles run one step and keep no list of their own."""
+    """Scripted roles run one step and keep no list of their own.
+
+    The role is set directly rather than via a mode: every retired
+    multi-role mode now migrates onto `solo`, whose role IS interactive,
+    so building the engine in `quick` no longer produces a scripted role
+    to test with.
+    """
     with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
         eng = E.AgentEngine(
             repo_dir=tmp_path, backend="api", provider="kit",
-            model="kit.qwen3.5-397b-A17b", mode="quick")
+            model="kit.qwen3.5-397b-A17b", mode="solo")
+    eng.route = ["builder_agent"]
+    eng.current_role_index = 0
     assert eng.current_role not in E._STEERING_ROLES
     _open_task(eng, "Nicht für diese Rolle")
     assert eng._drain_turn_steering() == []

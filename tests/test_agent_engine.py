@@ -28,14 +28,18 @@ def agent_tree(tmp_path):
     lite_dir = tmp_path / "pack_lite"
     modes = lite_dir / "modes"
     modes.mkdir(parents=True)
-    (modes / "quick.md").write_text("# quick mode")
+    (modes / "solo.md").write_text("# solo mode")
 
+        # The fixture's mode is named `solo` because that is where every
+        # retired name now migrates to. It keeps a THREE-role route on
+        # purpose: the engine's role-advancement machinery is what these
+        # tests exercise, and a single-role route would stop testing it.
     manifest = textwrap.dedent("""\
         pack_name: DELFIN_AGENT_LITE
         version: 1
         modes:
-          - id: quick
-            file: modes/quick.md
+          - id: solo
+            file: modes/solo.md
             route:
               - session_manager
               - builder_agent
@@ -74,7 +78,7 @@ def test_engine_init(agent_tree, mock_client):
             mode="quick",
             pack_dir=agent_tree,
         )
-    assert engine.mode == "quick"
+    assert engine.mode == "solo"
     assert engine.route == ["session_manager", "builder_agent", "test_agent"]
     assert engine.current_role == "session_manager"
     assert engine.current_role_index == 0
@@ -232,7 +236,7 @@ def test_engine_get_status(agent_tree, mock_client):
         )
 
     status = engine.get_status()
-    assert status["mode"] == "quick"
+    assert status["mode"] == "solo"
     assert status["backend"] == "cli"
     assert status["role"] == "session_manager"
     assert status["role_index"] == 0
@@ -273,7 +277,7 @@ def test_engine_available_modes(agent_tree, mock_client):
         )
 
     modes = engine.available_modes()
-    assert "quick" in modes
+    assert "solo" in modes
 
 
 def test_cli_client_init():
@@ -477,7 +481,7 @@ def test_engine_export_state(agent_tree, mock_client):
     engine.advance_role()
 
     exported = engine.export_state()
-    assert exported["mode"] == "quick"
+    assert exported["mode"] == "solo"
     assert exported["role_index"] == 1
     assert exported["route"] == ["session_manager", "builder_agent", "test_agent"]
     assert "session_manager" in exported["role_outputs"]
@@ -920,24 +924,29 @@ def test_reviewer_handoff_is_role_specific(agent_tree, mock_client):
     assert "Primary goal: catch goal drift in review" in handoff
 
 
-def test_suggest_mode_detects_cluster():
-    """Test that cluster files trigger cluster mode suggestion."""
+# The two `suggest_mode` tests that stood here pinned a defect as a
+# requirement: they asserted the agent proposes `cluster` and `reviewed`,
+# modes retired from the picker. The signal they were really about -- that
+# a SLURM file or the CLI parser marks a task as risky -- is still
+# detected, and is now asserted where it survives, in risk_flags.
+
+
+def test_a_slurm_file_is_still_recognised_as_risky():
     from delfin.agent.engine import AgentEngine
 
-    result = AgentEngine.suggest_mode(
-        "Fix the bug in delfin/dashboard/backend_slurm.py", "quick"
-    )
-    assert result == "cluster"
+    flags = AgentEngine.recommend_task_route(
+        "Fix the bug in delfin/dashboard/backend_slurm.py", "solo"
+    )["risk_flags"]
+    assert flags["cluster"]
 
 
-def test_suggest_mode_detects_reviewed():
-    """Test that cli.py triggers reviewed mode suggestion."""
+def test_the_cli_parser_is_still_recognised_as_risky():
     from delfin.agent.engine import AgentEngine
 
-    result = AgentEngine.suggest_mode(
-        "Refactor delfin/cli.py argument parsing", "quick"
-    )
-    assert result == "reviewed"
+    flags = AgentEngine.recommend_task_route(
+        "Refactor delfin/cli.py argument parsing", "solo"
+    )["risk_flags"]
+    assert flags["reviewed"]
 
 
 def test_suggest_mode_no_escalation_needed(monkeypatch):
@@ -956,30 +965,22 @@ def test_suggest_mode_no_escalation_needed(monkeypatch):
         "delfin.agent.provider_profile.load_provider_profile",
         lambda *a, **kw: {})
 
-    result = AgentEngine.suggest_mode(
-        "Fix a typo in the README", "quick"
-    )
-    assert result is None
+    flags = AgentEngine.recommend_task_route(
+        "Fix a typo in the README", "solo"
+    )["risk_flags"]
+    assert not any(flags.values())
 
 
-def test_suggest_mode_already_high_enough():
-    """Test that no suggestion if current mode is already sufficient."""
+def test_both_risks_are_reported_not_ranked():
+    """There is no ladder to climb any more, so naming both is the answer
+    -- the old test asserted cluster BEAT reviewed, which only meant
+    something while modes were ordered."""
     from delfin.agent.engine import AgentEngine
 
-    result = AgentEngine.suggest_mode(
-        "Fix delfin/cli.py", "cluster"
-    )
-    assert result is None  # cluster > reviewed, no escalation
-
-
-def test_suggest_mode_cluster_over_reviewed():
-    """Test that cluster wins when both cluster and reviewed files mentioned."""
-    from delfin.agent.engine import AgentEngine
-
-    result = AgentEngine.suggest_mode(
-        "Change delfin/cli.py and backend_slurm.py together", "quick"
-    )
-    assert result == "cluster"
+    flags = AgentEngine.recommend_task_route(
+        "Change delfin/cli.py and backend_slurm.py together", "solo"
+    )["risk_flags"]
+    assert flags["cluster"] and flags["reviewed"]
 
 
 def test_recommend_task_route_prefers_dashboard_for_dashboard_ops():
@@ -1025,7 +1026,8 @@ def test_recommend_task_route_escalates_cluster_for_runtime_changes():
         "Fix restart handling in delfin/dashboard/backend_slurm.py and scratch recovery logic.",
         "quick",
     )
-    assert decision["mode"] == "cluster"
+    assert decision["mode"] == "solo"
+    assert decision["risk_flags"]["cluster"]
     assert decision["risk_flags"]["cluster"] is True
 
 
@@ -1036,7 +1038,8 @@ def test_recommend_task_route_escalates_reviewed_for_api_semantics():
         "Change CONTROL validation and public API semantics for result parsing.",
         "quick",
     )
-    assert decision["mode"] == "reviewed"
+    assert decision["mode"] == "solo"
+    assert decision["risk_flags"]["reviewed"]
     assert decision["intent"] == "change"
 
 
@@ -1048,7 +1051,10 @@ def test_recommend_task_route_chemistry_code_change_goes_reviewed():
         "Fix the CREST conformer search implementation for metal complexes.",
         "quick",
     )
-    assert decision["mode"] == "reviewed"
+    # It is the chemistry-plus-change combination that used to escalate,
+    # not a risk keyword, so there is no risk flag to assert here -- the
+    # classification itself is the content of this test.
+    assert decision["mode"] == "solo"
     assert decision["task_class"] == "chemistry"
     assert decision["intent"] == "change"
 
@@ -1073,16 +1079,19 @@ def test_recommend_task_route_occupier_code_change():
         "Refactor the OCCUPIER auto tree logic in delfin/occupier_auto.py.",
         "quick",
     )
-    assert decision["mode"] == "reviewed"
+    assert decision["mode"] == "solo"
+    assert decision["risk_flags"]["reviewed"]
 
 
-def test_suggest_mode_escalates_for_chemistry_files():
-    """Chemistry workflow files should trigger reviewed mode suggestion."""
+def test_chemistry_files_are_still_recognised_as_risky():
+    """The signal survives the retirement of the mode it used to name."""
     from delfin.agent.engine import AgentEngine
 
-    assert AgentEngine.suggest_mode("Fix delfin/esd_module.py", "quick") == "reviewed"
-    assert AgentEngine.suggest_mode("Fix delfin/xtb_crest.py", "quick") == "reviewed"
-    assert AgentEngine.suggest_mode("Fix delfin/calculators.py", "quick") == "reviewed"
+    for path in ("delfin/esd_module.py", "delfin/xtb_crest.py",
+                 "delfin/calculators.py"):
+        flags = AgentEngine.recommend_task_route(
+            f"Fix {path}", "solo")["risk_flags"]
+        assert flags["reviewed"], path
 
 
 def test_research_agent_uses_sonnet():
@@ -1155,8 +1164,9 @@ def test_recommend_task_route_escalates_low_success_coding_tasks():
             on = _route()
 
     assert off["task_class"] == "coding"
-    assert off["mode"] == "quick", "a recorded rate still rewrites the route"
-    assert on["mode"] == "reviewed"
+    assert off["mode"] == "solo", "a recorded rate still rewrites the route"
+    assert any("adaptive" in r for r in on["reasons"]), (
+        "the escalation is no longer visible anywhere")
     assert any("recorded" in reason for reason in on["reasons"])
 
 

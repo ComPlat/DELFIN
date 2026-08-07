@@ -124,10 +124,10 @@ class TestEngineDistillerWiring:
         manifest = textwrap.dedent("""\
             pack_name: DELFIN_AGENT_LITE
             version: 1
-            recommended_default_mode: quick
+            recommended_default_mode: solo
             modes:
-              - id: quick
-                file: modes/quick.md
+              - id: solo
+                file: modes/solo.md
                 route:
                   - solo_agent
               - id: solo

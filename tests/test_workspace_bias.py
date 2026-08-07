@@ -145,11 +145,10 @@ def test_recommend_task_route_smiles_converter_escalation(monkeypatch):
     outside = AgentEngine.recommend_task_route(
         msg, current_mode="dashboard", is_delfin_workspace=False,
     )
-    # The chemistry-file escalation triggers reviewed in DELFIN
-    inside_reviewed = "reviewed" in inside.get("risk_flags", []) or \
-        inside.get("mode") in {"reviewed", "full"}
-    outside_reviewed = "reviewed" in outside.get("risk_flags", []) or \
-        outside.get("mode") in {"reviewed", "full"}
-    # At minimum: outside should NOT escalate harder than inside
-    if inside_reviewed:
-        assert not outside_reviewed or outside.get("mode") != inside.get("mode")
+    # Membership was tested against the risk_flags DICT, which iterates its
+    # KEYS -- so both sides read as escalated and the check rested entirely
+    # on the modes differing. Read the values.
+    assert inside["risk_flags"]["reviewed"], "the bias no longer fires"
+    assert not outside["risk_flags"]["reviewed"], "it fires outside DELFIN too"
+    assert inside["task_class"] == "chemistry"
+    assert outside["task_class"] == "coding"

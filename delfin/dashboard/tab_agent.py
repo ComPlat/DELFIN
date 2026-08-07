@@ -3232,9 +3232,13 @@ def create_tab(ctx):
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
                  ("Office", "office")],
         value="dashboard",
-        description="Mode:",
-        layout=widgets.Layout(width="200px"),
-        style={"description_width": "45px"},
+        # It selects the folder the session works in, and that is the only
+        # question it answers. Labelled "Mode" it silently answered a second
+        # one -- what the agent may reach -- which belongs to Perms next to
+        # it, and left the user to guess where one ended and the other began.
+        description="Workspace:",
+        layout=widgets.Layout(width="215px"),
+        style={"description_width": "78px"},
     )
     mode_desc_html = widgets.HTML(
         value=(
