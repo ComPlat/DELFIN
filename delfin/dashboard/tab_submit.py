@@ -3915,6 +3915,10 @@ def create_tab(ctx):
         if state.get('gfn_follow'):
             return True     # already following; it keeps the run it began
         _gfn_new_generation()
+        # What the molecule looked like before this drag: the bonding is read
+        # from here, not from a frame that has already been pulled about.
+        state['gfn_topology_source'] = (
+            state.get('current_xyz_for_copy') or {}).get('content')
         state['gfn_follow'] = True
         state['gfn_follow_steps'] = 0
         state['gfn_follow_frames'] = []
@@ -4055,6 +4059,21 @@ def create_tab(ctx):
         _drop_gfn_topology()
         folder = tempfile.mkdtemp(prefix='delfin-gfnff-topo-')
         state['gfn_topology'] = {'dir': folder, 'atoms': atoms}
+        # Perceived here and now, from the structure as it stood before a hand
+        # was laid on it.  Left to the first calculation that needs it, the
+        # perception is made from a geometry that has already been pulled
+        # about -- and if the drag has gone past where a bond is still
+        # recognised, the topology that is then kept for the whole session is
+        # one with the bond missing.  Measured: a propane whose C-C had been
+        # pulled to 2.1 A perceived that way came back at 3.57 A.
+        seed = (state.get('gfn_topology_source')
+                or (state.get('current_xyz_for_copy') or {}).get('content'))
+        if seed and len(_gfn.atom_lines(seed)) == atoms:
+            try:
+                _gfn.relax_steps(seed, cycles=1, timeout=30.0,
+                                 topology=Path(folder))
+            except Exception:
+                pass
         return Path(folder)
 
     def _drop_gfn_topology():
@@ -4115,10 +4134,9 @@ def create_tab(ctx):
             return
         _gfn_new_generation()
         state['gfn_settle_note'] = note
-        state['gfn_settle_forced'] = True
-        _arm_gfn_settle()
+        _arm_gfn_settle(forced=True)
 
-    def _arm_gfn_settle():
+    def _arm_gfn_settle(forced=False):
         """Tidy the structure after a release, with the method on screen.
 
         The same promise Settle makes under the browser's field: what reaches
@@ -4129,12 +4147,17 @@ def create_tab(ctx):
         Waits a moment first, because the coordinates of the release arrive on
         a message of their own and this has to start from them.
         """
+        if forced:
+            # Asked for by a hand -- a value held, a value set.  That is not a
+            # tidy-up to be skipped when something else is in the air; it is
+            # the answer to something the user just did, and it has to happen.
+            state['gfn_settle_forced'] = True
         if not (_gfn.is_gfn_method(submit_ff_dd.value)
                 and _gfn.xtb_available()
                 and (submit_settle_btn.value
                      or state.get('gfn_settle_forced'))):
             return
-        if state.get('optimize_interrupted') is not None:
+        if not forced and state.get('optimize_interrupted') is not None:
             # An optimisation was interrupted by this very drag and is coming
             # back.  A whole minimisation is more than a settle, not less.
             return
@@ -4161,8 +4184,16 @@ def create_tab(ctx):
         threading.Thread(target=_wait, daemon=True).start()
 
     def _gfn_settle_now():
-        if state.get('gfn_follow') or state.get('gfn_settle_busy'):
+        if state.get('gfn_follow'):
             return                      # a new drag started in the meantime
+        if state.get('gfn_settle_busy'):
+            # One is already running.  What has just been asked for is a
+            # different question from the one it is answering, so it is asked
+            # again the moment that one is done -- dropped here, a value held
+            # while something was in flight did nothing at all until the
+            # toggle was switched off and on again.
+            state['gfn_settle_pending'] = True
+            return
         if state.get('optimize_run') is not None:
             return                      # Optimise is doing this already
         generation = int(state.get('gfn_generation', 0))
@@ -4250,6 +4281,9 @@ def create_tab(ctx):
 
             def _done():
                 state['gfn_settle_busy'] = False
+                if state.pop('gfn_settle_pending', False):
+                    # Something was asked for while this was running.
+                    _schedule_ui_update(lambda: _arm_gfn_settle(forced=True))
                 if (int(state.get('gfn_generation', 0)) != generation
                         or state.get('optimize_run') is not None):
                     # The structure moved on while this was running, or
@@ -4460,16 +4494,13 @@ def create_tab(ctx):
             _ensure_manip_bootstrap()
             _install_gfn_frame_watcher()
             _set_mol_status(
-                f'{label} is now relaxing the structure, and keeps up with '
-                'what you do to it: drag an atom and the rest follows, hold a '
-                'value and it moves to it. It stops when it has converged.'
+                f'Drag an atom and the rest of the molecule follows it with '
+                f'{label}. Letting go leaves it where you put it -- Optimise '
+                'is what takes it downhill, and Settle asks for that on every '
+                'release.'
                 + ('' if submit_ff_dd.value == 'gfnff' else
                    f' {label} is the slow one -- if it drags heavily, '
                    'GFN-FF answers about twenty times faster.'))
-            # Switched on and nothing happening is the complaint this answers:
-            # under the browser's field the structure starts settling at once,
-            # and there is no reason for this one to wait for a drag.
-            _arm_gfn_takeup()
             return
         if not active:
             _ensure_manip_bootstrap()
@@ -5604,14 +5635,11 @@ def create_tab(ctx):
             # a drag that moved something sends its coordinates first -- this
             # is what keeps the switch from being left on with nothing running.
             _arm_gfn_restart()
-            # Letting go gives the relaxation back what the drag took from it.
-            # While Dynamik Opt is down that has nothing to do with Settle: the
-            # switch means the structure is being kept relaxed, so it carries
-            # on to convergence -- it used to stop dead at the release unless
-            # Settle happened to be on as well, which is why pressing Optimise
-            # afterwards still had work to do.
-            _arm_gfn_takeup()
-            # Settle alone, without Dynamik Opt, still tidies one release.
+            # Letting go leaves the structure where the hand left it.  Dragging
+            # moves along the potential surface; going down it is what Optimise
+            # is for, and doing that unasked took the choice away -- the atom
+            # you had just placed was pulled off the place you placed it.
+            # Settle is the way to ask for it on every release.
             _arm_gfn_settle()
             return
 
@@ -6078,6 +6106,12 @@ def create_tab(ctx):
         # A follow armed under the old method must not outlive the choice that
         # armed it: the toggle handler reads the method that is chosen *now*.
         _end_gfn_follow()
+        if gfn and submit_settle_btn.value:
+            # Under GFN, letting go leaves the structure where the hand left
+            # it.  Tidying on every release is a thing to ask for, not the
+            # default -- an atom pulled off the place it was just put is the
+            # opposite of placing it.
+            submit_settle_btn.value = False
         submit_relax_btn.disabled = False
         # The page reads this switch itself, and only follows when the class is
         # on it: asking the kernel whether to follow would cost a round trip

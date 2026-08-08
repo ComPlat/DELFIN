@@ -317,31 +317,6 @@ def test_the_follow_ends_with_the_drag_and_with_the_method(editor):
         assert "_end_gfn_follow()" in body, name
 
 
-def test_switching_relax_on_starts_the_relaxation_at_once(editor):
-    """Pressed, and nothing happening, is the switch claiming to be live.
-
-    It used to wait for a drag, which is not what the same switch does under
-    the browser's field: there the structure starts settling the moment it goes
-    down.  It ends by itself, because a structure that has converged has
-    nothing left to ask for -- that is what keeps a loop of processes on a
-    shared machine from being a loop that will not be stopped.
-    """
-    from delfin.dashboard import tab_submit
-
-    source = open(tab_submit.__file__, encoding="utf-8").read()
-    toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
-    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
-    assert "_arm_gfn_takeup()" in gfn_branch, "the press is what starts it"
-
-    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
-    assert "not outcome.get('converged') and _gfn_live_is_on()" in settle, (
-        "a round that did not converge has to be followed by another"
-    )
-    assert "state.get('gfn_follow')" in settle, (
-        "and a hand on an atom takes over from a relaxation of the whole thing"
-    )
-
-
 def test_a_held_value_is_taken_up_without_pressing_optimise(editor):
     """Setting a value, watching nothing happen and having to press Optimise
     for it is the switch claiming to be live and not being it."""
@@ -354,7 +329,9 @@ def test_a_held_value_is_taken_up_without_pressing_optimise(editor):
 
     takeup = source.split("def _arm_gfn_takeup")[1].split("\n    def ")[0]
     assert "_gfn_live_is_on()" in takeup, "only while the switch is down"
-    assert "state['gfn_settle_forced'] = True" in takeup
+    assert "_arm_gfn_settle(forced=True)" in takeup, (
+        "asked for by a hand, so it is not a tidy-up that may be skipped"
+    )
 
 
 def test_the_runner_says_whether_it_converged(editor):
@@ -374,44 +351,6 @@ def test_the_viewer_can_be_given_coordinates_from_the_kernel():
     body = editor_js[editor_js.index("function setPositions("):][:900]
     assert "ffWritePositions" in body
     assert "redrawHighlights" in body
-
-
-@_needs_xtb
-def test_relaxing_ends_by_itself_and_then_costs_nothing(editor):
-    """A loop of processes on a shared machine that only a user can stop is a
-    loop that will not be stopped.  This one stops when the structure has
-    converged, and nothing runs after that until something changes.
-    """
-    import time as _time
-
-    refs = editor
-    state = refs["editor_state"]
-    propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 1.16 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
-    )
-    refs["coords_widget"].value = propane
-    state["current_xyz_for_copy"] = {"content": propane}
-    refs["submit_ff_dd"].value = "gfnff"
-
-    refs["submit_relax_btn"].value = True
-    deadline = _time.time() + 60
-    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
-        _time.sleep(0.05)
-    assert "converged after" in refs["mol_status"].value, refs["mol_status"].value
-    assert "Settled with GFN-FF" in refs["coords_widget"].value
-
-    # and then it is quiet: nothing armed, nothing running, nothing to run
-    _time.sleep(1.0)
-    assert state.get("gfn_settle_busy") is False
-    assert state.get("gfn_settle_forced") is False
-    assert state.get("gfn_settle_armed") is False
-
-    refs["submit_relax_btn"].value = False
-
-
 def test_the_frames_go_through_a_widget_not_through_run_js(editor):
     """run_js writes into one Output and clears it first.
 
@@ -1224,7 +1163,11 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
     real = tab_submit._gfn.optimize_with_gfn
 
     def recording(text, method, **kwargs):
-        handed.append(text)
+        # The single cycle that reads GFN-FF's bonding is not an optimisation
+        # of anything; counting it here would make the first real run look
+        # like the second.
+        if kwargs.get("max_steps") != 1:
+            handed.append(text)
         return real(text, method, **kwargs)
 
     monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", recording)
@@ -2103,71 +2046,6 @@ def test_the_status_counts_the_atoms_the_hand_is_on(editor):
     source = open(tab_submit.__file__, encoding="utf-8").read()
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "holding {len(holding)} atoms" in follow
-
-
-def test_letting_go_gives_the_relaxation_back_what_the_drag_took(editor):
-    """While Dynamik Opt is down, carrying on after a release has nothing to do
-    with Settle: the switch means the structure is being kept relaxed.
-
-    It used to stop dead at the release unless Settle happened to be on as
-    well, which is why pressing Optimise afterwards still had work to do.
-    """
-    from delfin.dashboard import tab_submit
-
-    source = open(tab_submit.__file__, encoding="utf-8").read()
-    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
-    free = handler.split("verb == 'gfnfree'")[1].split("return")[0]
-    assert "_arm_gfn_takeup()" in free, "the relaxation has to carry on"
-    assert "_arm_gfn_settle()" in free, "and Settle alone still tidies one"
-
-
-@_needs_xtb
-def test_a_release_relaxes_to_convergence_with_settle_switched_off(editor):
-    """The complaint this closes: it reacted briefly, stopped where the drag
-    left it, and pressing Optimise then went on optimising."""
-    import time as _time
-
-    refs = editor
-    state = refs["editor_state"]
-    propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
-    )
-    refs["coords_widget"].value = propane
-    state["current_xyz_for_copy"] = {"content": propane}
-    refs["submit_ff_dd"].value = "gfnff"
-    refs["submit_settle_btn"].value = False          # deliberately off
-    refs["submit_relax_btn"].value = True
-    deadline = _time.time() + 60
-    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
-        _time.sleep(0.05)
-
-    refs["submit_cmd_sync"].value = "gfngrab:1:"
-    now = state["current_xyz_for_copy"]["content"]
-    rows = [line.split() for line in gfn.atom_lines(now)]
-    rows[0][2] = f"{float(rows[0][2]) + 0.45:.6f}"
-    body = "\n".join(" ".join(r) for r in rows)
-    refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held=0\n{body}\n"
-    _time.sleep(0.3)
-    refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
-    refs["submit_cmd_sync"].value = "gfnfree:1:"
-
-    deadline = _time.time() + 90
-    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
-        _time.sleep(0.05)
-    assert "converged after" in refs["mol_status"].value, refs["mol_status"].value
-
-    # and there is nothing left for Optimise to find
-    settled = state["current_xyz_for_copy"]["content"]
-    again = gfn.optimize_with_gfn(settled, "gfnff")
-    assert gfn.largest_shift(settled, again["xyz"]) < 0.01, (
-        "Optimise still had work to do after the relaxation said it was done"
-    )
-    refs["submit_relax_btn"].value = False
-
-
 def test_a_run_that_ends_lands_the_picture_on_its_last_frame(player_js):
     """Otherwise the viewer keeps whatever it had drawn while the kernel keeps
     the geometry it computed, and the two drift apart.
@@ -2299,57 +2177,6 @@ def test_a_past_drag_has_no_hold_on_the_present(editor):
     assert "int(state.get('gfn_generation', 0)) != generation" in settle, (
         "nor may a finished run write its geometry over a newer one"
     )
-
-
-@_needs_xtb
-def test_letting_go_finishes_without_cycling_the_toggle(editor):
-    """The complaint in one line: it took switching Dynamik off and on again."""
-    import time as _time
-
-    refs = editor
-    state = refs["editor_state"]
-    propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
-    )
-    refs["coords_widget"].value = propane
-    state["current_xyz_for_copy"] = {"content": propane}
-    refs["submit_ff_dd"].value = "gfnff"
-    refs["submit_settle_btn"].value = False
-    refs["submit_relax_btn"].value = True
-    deadline = _time.time() + 60
-    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
-        _time.sleep(0.05)
-
-    # two drags in a row, the second right after the first
-    for atom, shift in ((0, 0.8), (2, 0.6)):
-        refs["submit_cmd_sync"].value = f"gfngrab:{atom}:"
-        rows = [line.split()
-                for line in gfn.atom_lines(state["current_xyz_for_copy"]["content"])]
-        rows[atom][2] = f"{float(rows[atom][2]) + shift:.6f}"
-        body = "\n".join(" ".join(r) for r in rows)
-        refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held={atom}\n{body}\n"
-        _time.sleep(0.15)
-        refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
-        refs["submit_cmd_sync"].value = f"gfnfree:{atom}:"
-        deadline = _time.time() + 90
-        while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
-            _time.sleep(0.05)
-        assert "converged after" in refs["mol_status"].value, refs["mol_status"].value
-
-    settled = state["current_xyz_for_copy"]["content"]
-    again = gfn.optimize_with_gfn(settled, "gfnff")
-    assert gfn.largest_shift(settled, again["xyz"]) < 0.01, (
-        "the toggle should not have to be cycled for it to finish"
-    )
-    refs["submit_relax_btn"].value = False
-
-
-# ---------------------------------------------------------------------------
-# GFN-FF perceives its bonding once, and a drag must not make it do so again
-# ---------------------------------------------------------------------------
 @_needs_xtb
 def test_gfnff_loses_the_bond_it_was_never_told_to_keep(tmp_path):
     """The cliff, measured, and the reason the perception has to be kept.
@@ -2456,12 +2283,91 @@ def test_optimise_supersedes_the_live_relaxation(editor):
     assert settle.count("state.get('optimize_run') is not None") >= 3, (
         "it must also not start one, nor write its geometry over Optimise's"
     )
+def test_dragging_moves_along_the_surface_and_optimise_goes_down_it(editor):
+    """The division the editor settled on, and the reason for it.
+
+    Dragging an atom moves the structure along the potential surface and
+    leaves it where the hand left it -- an atom pulled off the place it was
+    just put is the opposite of placing it.  Optimise is what goes downhill.
+    Settle asks for that on every release, and is a choice rather than the
+    default under GFN.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
+    free = handler.split("verb == 'gfnfree'")[1].split("return")[0]
+    assert "_arm_gfn_takeup()" not in free, (
+        "letting go must not walk the structure downhill unasked"
+    )
+    assert "_arm_gfn_settle()" in free, "Settle is how that is asked for"
+
+    toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
+    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
+    assert "_arm_gfn_takeup()" not in gfn_branch, (
+        "switching it on arms the follow; it does not optimise"
+    )
+
+    changed = source.split("def on_submit_ff_changed")[1].split("\n    def ")[0]
+    assert "submit_settle_btn.value = False" in changed
+
+
+def test_choosing_gfn_leaves_the_structure_where_the_hand_puts_it(editor):
+    editor["submit_settle_btn"].value = True
+    editor["submit_ff_dd"].value = "gfnff"
+    assert editor["submit_settle_btn"].value is False, (
+        "tidying on every release is a thing to ask for, not the default"
+    )
+    assert editor["submit_settle_btn"].layout.display in (None, ""), (
+        "and it has to stay reachable, or it cannot be asked for"
+    )
+
+
+def test_a_held_value_is_never_dropped_because_something_else_was_running(editor):
+    """A value held while a relaxation was in flight did nothing at all until
+    the toggle was switched off and on again."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "state['gfn_settle_pending'] = True" in settle
+    assert "state.pop('gfn_settle_pending', False)" in settle
+
+    armed = source.split("def _arm_gfn_settle")[1].split("\n    def ")[0]
+    assert "if not forced and state.get('optimize_interrupted')" in armed, (
+        "a value the user just held is not a tidy-up to be skipped"
+    )
+    takeup = source.split("def _arm_gfn_takeup")[1].split("\n    def ")[0]
+    assert "_arm_gfn_settle(forced=True)" in takeup
+
+
+def test_the_bonding_is_read_before_a_hand_is_laid_on_the_molecule(editor):
+    """Left to the first calculation that needs it, the perception is made
+    from a geometry that has already been pulled about -- and past the point
+    where a bond is still recognised, the topology kept for the whole session
+    is one with the bond missing.  Measured: a propane whose C-C had been
+    pulled to 2.1 A perceived that way came back at 3.57 A."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    began = source.split("def _begin_gfn_follow")[1].split("\n    def ")[0]
+    assert "state['gfn_topology_source']" in began
+
+    keeper = source.split("def _gfn_topology_dir")[1].split("\n    def ")[0]
+    assert "gfn_topology_source" in keeper
+    assert "relax_steps(seed, cycles=1" in keeper, (
+        "the perception is made from it there and then"
+    )
 
 
 @_needs_xtb
-def test_one_press_of_optimise_is_enough_after_a_drag(editor):
-    """The complaint in one line: the first press worked out an energy and the
-    second one optimised."""
+def test_the_whole_cycle_end_to_end(editor):
+    """Drag, let go, drag again, let go, press Optimise once.
+
+    The structure stays where each drag left it, the bond survives being
+    pulled well past where GFN-FF would otherwise stop seeing it, and one
+    press takes it to the minimum.
+    """
     import time as _time
 
     refs = editor
@@ -2472,28 +2378,6 @@ def test_one_press_of_optimise_is_enough_after_a_drag(editor):
         "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
         "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
     )
-    refs["coords_widget"].value = propane
-    state["current_xyz_for_copy"] = {"content": propane}
-    refs["submit_ff_dd"].value = "gfnff"
-    refs["submit_relax_btn"].value = True
-    deadline = _time.time() + 60
-    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
-        _time.sleep(0.05)
-
-    # a carbon pulled well past where GFN-FF stops seeing the bond
-    refs["submit_cmd_sync"].value = "gfngrab:1:"
-    rows = [line.split()
-            for line in gfn.atom_lines(state["current_xyz_for_copy"]["content"])]
-    rows[0][1] = f"{float(rows[0][1]) - 0.9:.6f}"
-    body = "\n".join(" ".join(r) for r in rows)
-    refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held=0\n{body}\n"
-    _time.sleep(0.3)
-    refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
-    refs["submit_cmd_sync"].value = "gfnfree:1:"
-    deadline = _time.time() + 120
-    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
-        _time.sleep(0.05)
-    released = state["current_xyz_for_copy"]["content"]
 
     def carbon_carbon(xyz):
         rows = [line.split() for line in gfn.atom_lines(xyz)]
@@ -2501,18 +2385,40 @@ def test_one_press_of_optimise_is_enough_after_a_drag(editor):
         b = [float(v) for v in rows[1][1:4]]
         return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
 
-    assert carbon_carbon(released) < 1.7, (
-        f"the bond was broken by the drag: {carbon_carbon(released):.3f} A"
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+    assert refs["submit_relax_btn"].value is True, "xtb was not found"
+
+    for step, (atom, pull) in enumerate(((0, 0.7), (2, 0.6))):
+        refs["submit_cmd_sync"].value = f"gfngrab:{step}:"
+        rows = [line.split()
+                for line in gfn.atom_lines(state["current_xyz_for_copy"]["content"])]
+        rows[atom][1] = f"{float(rows[atom][1]) - pull:.6f}"
+        body = "\n".join(" ".join(r) for r in rows)
+        refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held={atom}\n{body}\n"
+        _time.sleep(0.5)
+        refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
+        refs["submit_cmd_sync"].value = f"gfnfree:{step}:"
+        _time.sleep(1.0)
+
+    pulled_about = state["current_xyz_for_copy"]["content"]
+    assert carbon_carbon(pulled_about) > 1.9, (
+        "the drag should have left it stretched, not tidied it up"
     )
 
-    refs["submit_optimize_btn"].value = True          # exactly one press
+    refs["submit_optimize_btn"].value = True              # exactly one press
     deadline = _time.time() + 120
     while _time.time() < deadline and refs["submit_optimize_btn"].value:
         _time.sleep(0.05)
 
-    optimised = state["current_xyz_for_copy"]["content"]
-    assert carbon_carbon(optimised) < 1.7, "Optimise broke the bond"
-    assert gfn.largest_shift(released, optimised) < 0.05, (
-        "one press has to be enough -- there was work left after it"
+    minimised = state["current_xyz_for_copy"]["content"]
+    assert carbon_carbon(minimised) < 1.6, (
+        f"one press has to reach the minimum: {carbon_carbon(minimised):.3f} A"
+    )
+    again = gfn.optimize_with_gfn(minimised, "gfnff")
+    assert gfn.largest_shift(minimised, again["xyz"]) < 0.02, (
+        "and there must be nothing left for a second press"
     )
     refs["submit_relax_btn"].value = False
