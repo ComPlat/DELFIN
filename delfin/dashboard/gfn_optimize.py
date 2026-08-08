@@ -259,18 +259,28 @@ def optimize_with_gfn(
         # fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
                            OMP_STACKSIZE='1G')
+        # xtb's own output goes to a file rather than to a pipe.  A pipe that
+        # nobody reads holds 64 KiB and then blocks the program writing to it,
+        # and the loop below reads nothing until the process has ended: xtb
+        # waits for the loop, the loop waits for xtb, and an optimisation that
+        # takes half a second never finishes at all.  Measured on a decane --
+        # 77 276 bytes of output from a GFN2 optimisation, which is about
+        # thirty cycles, so every real molecule was past it.
+        record = folder / 'xtb.out'
+        sink = open(record, 'w', encoding='utf-8')
         try:
             if should_stop is None and on_frames is None:
-                finished = subprocess.run(
-                    command, cwd=str(folder), capture_output=True, text=True,
-                    timeout=timeout, env=environment,
+                subprocess.run(
+                    command, cwd=str(folder), stdout=sink, env=environment,
+                    stderr=subprocess.STDOUT, timeout=timeout,
                 )
             else:
-                # Started rather than run, so it can be stopped: an optimisation
-                # a user has switched off has to end, not be waited out.
+                # Started rather than run, so it can be stopped: an
+                # optimisation a user has switched off has to end, not be
+                # waited out.
                 running = subprocess.Popen(
-                    command, cwd=str(folder), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, text=True, env=environment,
+                    command, cwd=str(folder), stdout=sink,
+                    stderr=subprocess.STDOUT, env=environment,
                 )
                 waited = 0.0
                 sent = 0
@@ -347,9 +357,7 @@ def optimize_with_gfn(
                                     pass
                     time.sleep(0.05)
                     waited += 0.05
-                out, err = running.communicate()
-                finished = subprocess.CompletedProcess(
-                    command, running.returncode, out, err)
+                running.wait()
         except subprocess.TimeoutExpired:
             return {
                 'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -357,7 +365,9 @@ def optimize_with_gfn(
                 'status': (f'{label} did not finish within {int(timeout)} s '
                            'and was stopped.'),
             }
-        output = (finished.stdout or '') + (finished.stderr or '')
+        finally:
+            sink.close()
+        output = record.read_text(encoding='utf-8', errors='replace')
         relaxed = _read_optimised(folder, xyz_text)
         frames = read_trajectory(folder)
         energy = None
