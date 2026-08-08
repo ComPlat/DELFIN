@@ -4060,6 +4060,7 @@ def create_tab(ctx):
             _schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
         state['gfn_energy'] = None
+        state['gfn_held'] = None
         state['gfn_halt_sent'] = False
         run_id = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run_id
@@ -4096,6 +4097,11 @@ def create_tab(ctx):
 
         # The run this one replaces, taken before it is overwritten below.
         earlier = state.get('optimize_thread')
+        # What the user is holding.  Set and Hold mean the same to xtb as they
+        # mean to the browser's field -- a pull negotiates, a fix is met -- so
+        # a value held on screen is held in the optimisation too, rather than
+        # being quietly given up the moment GFN is chosen.
+        held = list(state.get('constraints') or [])
 
         def _work():
             from .molecule_forcefield import relax_xyz
@@ -4117,11 +4123,13 @@ def create_tab(ctx):
                     if gfn and autospin:
                         outcome = _gfn.optimize_autospin(
                             xyz, method, charge=charge, should_stop=_stopped,
-                            timeout=None, on_frames=_push_frames)
+                            timeout=None, on_frames=_push_frames,
+                            constraints=held)
                     elif gfn:
                         outcome = _gfn.optimize_with_gfn(
                             xyz, method, charge=charge, uhf=uhf,
                             should_stop=_stopped, timeout=None,
+                            constraints=held,
                             on_frames=_push_frames if position == 0 else None)
                     else:
                         outcome = relax_xyz(
@@ -4137,6 +4145,8 @@ def create_tab(ctx):
                 if outcome.get('ok'):
                     if outcome.get('energy') is not None and position == 0:
                         state['gfn_energy'] = float(outcome['energy'])
+                    if position == 0:
+                        state['gfn_held'] = outcome.get('held')
                     kept = outcome['xyz']
                     if _stopped() and outcome.get('frames'):
                         # Stop means the frame that was on screen.  xtb runs
@@ -4224,6 +4234,12 @@ def create_tab(ctx):
                 if energy is not None:
                     said += (f' E = {energy:.6f} Eh '
                              f'({energy * 627.5094740631:.2f} kcal/mol).')
+                # What was held while it ran, and what became of it.  A value
+                # the user is holding on screen that the optimisation quietly
+                # ignored would make the result an answer to a question nobody
+                # asked.
+                said += _gfn.held_note(state.get('gfn_held') or {
+                    'held': 0, 'dropped': [], 'mixed': False, 'force': None})
                 state['gfn_last_status'] = said
                 if gfn:
                     if autospin:

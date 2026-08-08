@@ -33,8 +33,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-__all__ = ['GFN_METHODS', 'atom_lines', 'find_xtb', 'is_gfn_method',
-           'read_trajectory',
+__all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
+           'held_note', 'is_gfn_method', 'read_trajectory',
            'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
            'electron_parity']
 
@@ -149,6 +149,102 @@ def _atom_count(xyz_text: str) -> int:
     return len(atom_lines(xyz_text))
 
 
+#: What the editor's two ways of holding a value mean to xtb, in its own
+#: force-constant units.  Measured on a propane whose C1-C2 was asked for
+#: 1.700 A and whose C1-C2-C3 angle was asked for 100.0 deg, GFN-FF:
+#:
+#:     0.25   1.6463 A   103.85 deg
+#:     0.5    1.6704 A   102.23 deg
+#:     1.0    1.6843 A   101.20 deg
+#:     5.0    1.6967 A   100.26 deg
+#:     20.0   1.6992 A   100.07 deg
+#:
+#: A pull is meant to negotiate with the chemistry and settle at a compromise,
+#: which is what 0.5 does; a fix is meant to be met, and 20 meets it to a
+#: thousandth of an Angstrom -- past the digits the value box shows.
+PULL_FORCE_CONSTANT = 0.5
+FIX_FORCE_CONSTANT = 20.0
+
+#: How many atoms each kind of held value names.
+CONSTRAINT_ATOMS = {'distance': 2, 'angle': 3, 'dihedral': 4}
+
+
+def constraint_input(
+    constraints: Any = (),
+    atoms: Optional[int] = None,
+) -> Dict[str, Any]:
+    """The xtb input file for the values the editor is holding.
+
+    Returns ``{'text', 'force', 'held', 'dropped', 'mixed'}``.  The text is
+    empty when there is nothing to hold, and then no input file is written at
+    all.
+
+    Three things about xtb decide the shape of this, all of them measured on
+    xtb 6.7.1 rather than taken from the manual.
+
+    It numbers atoms from one, not from zero.
+
+    It takes **one** force constant for the whole ``$constrain`` block: a
+    second ``force constant=`` line, in the same block or in a second block, is
+    read and ignored.  So a set with anything exact in it is held exact
+    throughout, and the caller is handed ``mixed`` to say so rather than left
+    to wonder why a pull stopped negotiating.
+
+    And it holds *internal* coordinates only.  ``$constrain atoms:`` naming a
+    single atom changes nothing at all -- the geometry comes back identical to
+    the free one, digit for digit -- and ``$fix atoms:`` is worse than nothing
+    in this build: three fixed carbons of a propane came back with their C-C
+    at 1.4555 A instead of 1.5255 under GFN-FF, and at 0.4623 A under GFN2.
+    Holding an atom where it is, is therefore not something xtb is asked to
+    do; see :func:`optimize_with_gfn` for who does it instead.
+    """
+    kept, dropped = [], []
+    exact = negotiated = False
+    for entry in (constraints or ()):
+        kind = str((entry or {}).get('kind') or '').strip().lower()
+        wanted = CONSTRAINT_ATOMS.get(kind)
+        indices = [int(i) for i in ((entry or {}).get('atoms') or ())]
+        if wanted is None or len(indices) != wanted:
+            dropped.append(entry)
+            continue
+        if any(i < 0 or (atoms is not None and i >= atoms) for i in indices):
+            # A held value that names an atom this structure does not have is
+            # dropped rather than passed on: xtb would stop with a parse error
+            # about a line the user never typed.
+            dropped.append(entry)
+            continue
+        value = (entry or {}).get('value')
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            dropped.append(entry)
+            continue
+        mode = str((entry or {}).get('mode') or 'pull').lower()
+        if mode == 'fix':
+            exact = True
+        else:
+            negotiated = True
+        kept.append((kind, indices, value))
+
+    force = FIX_FORCE_CONSTANT if exact else PULL_FORCE_CONSTANT
+    lines = []
+    if kept:
+        lines.append('$constrain')
+        lines.append(f'  force constant={force}')
+        for kind, indices, value in kept:
+            numbers = ', '.join(str(i + 1) for i in indices)
+            lines.append(f'  {kind}: {numbers}, {value:.6f}')
+        lines.append('$end')
+    return {
+        'text': ('\n'.join(lines) + '\n') if lines else '',
+        'force': force if kept else None,
+        'held': len(kept),
+        'dropped': dropped,
+        # Both kinds in one set, and only one force constant to hold them with.
+        'mixed': bool(exact and negotiated),
+    }
+
+
 def read_trajectory(folder: Path) -> list:
     """Every cycle of the optimisation, as flat coordinate lists.
 
@@ -193,6 +289,26 @@ def _read_optimised(folder: Path, fallback: str) -> Optional[str]:
     return None if fallback is None else None
 
 
+def held_note(held: Dict[str, Any]) -> str:
+    """What was held, said out loud.
+
+    A constraint that was quietly dropped, or a pull that was held as firmly as
+    a fix because xtb has only one force constant to give, makes the result an
+    answer to a different question than the one that was asked.
+    """
+    said = []
+    if held['held']:
+        said.append(f"{held['held']} held value(s) at force constant "
+                    f"{held['force']:g}")
+    if held['dropped']:
+        said.append(f"{len(held['dropped'])} held value(s) dropped -- they "
+                    'name atoms this structure does not have')
+    if held['mixed']:
+        said.append('xtb takes one force constant for the whole set, so the '
+                    'pulls were held as firmly as the exact values')
+    return (' ' + '; '.join(said) + '.') if said else ''
+
+
 def optimize_with_gfn(
     xyz_text: str,
     method: str = 'gfnff',
@@ -204,6 +320,7 @@ def optimize_with_gfn(
     max_atoms: Optional[int] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     on_frames: Optional[Callable[[list], None]] = None,
+    constraints: Any = (),
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -211,6 +328,10 @@ def optimize_with_gfn(
     failure ``ok`` is False, ``xyz`` is the input unchanged and ``status`` says
     why in a sentence a chemist can act on -- a structure that silently comes
     back unrelaxed is worse than one that says it did not converge.
+
+    *constraints* are the values the editor is holding, in its own shape --
+    ``{'kind', 'atoms', 'value', 'mode'}`` with atoms counted from zero; see
+    :func:`constraint_input` for what each mode becomes.
     """
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
@@ -255,6 +376,10 @@ def optimize_with_gfn(
                    '-P', '1']
         if max_steps:
             command += ['--cycles', str(int(max_steps))]
+        held = constraint_input(constraints, atoms=len(body))
+        if held['text']:
+            (folder / 'xtb.inp').write_text(held['text'], encoding='utf-8')
+            command += ['--input', 'xtb.inp']
         # One core, and a scratch directory of its own: two of these must not
         # fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
@@ -444,17 +569,19 @@ def optimize_with_gfn(
             return {
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
-                'hamiltonian': reported or wanted,
+                'hamiltonian': reported or wanted, 'held': held,
                 'status': (f'{label} stopped before converging after '
                            f'{seconds:.1f} s; the geometry it reached is shown. '
-                           f'(xtb {version}, {reported or wanted})'),
+                           f'(xtb {version}, {reported or wanted})'
+                           + held_note(held)),
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
-            'hamiltonian': reported or wanted,
+            'hamiltonian': reported or wanted, 'held': held,
             'status': (f'{label} converged in {seconds:.1f} s '
-                       f'(xtb {version}, {reported or wanted}).'),
+                       f'(xtb {version}, {reported or wanted}).'
+                       + held_note(held)),
         }
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -540,6 +667,7 @@ def relax_steps(
     uhf: int = 0,
     cycles: int = 5,
     timeout: float = 30.0,
+    constraints: Any = (),
 ) -> Dict[str, Any]:
     """A few optimisation cycles, for a loop that shows the structure settling.
 
@@ -554,6 +682,7 @@ def relax_steps(
     result = optimize_with_gfn(
         xyz_text, 'gfnff', charge=charge, uhf=uhf,
         max_steps=max(1, int(cycles)), timeout=timeout,
+        constraints=constraints,
     )
     result['converged'] = bool(
         result.get('ok') and 'converged in' in str(result.get('status') or '')

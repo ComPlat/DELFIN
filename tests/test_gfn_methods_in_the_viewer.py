@@ -1151,3 +1151,167 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
         _time.sleep(0.05)
     assert refs["submit_optimize_btn"].value is False, "the switch stayed down"
     assert state.get("optimize_run") is None
+
+
+# ---------------------------------------------------------------------------
+# what Hold and Set mean to xtb
+# ---------------------------------------------------------------------------
+def test_a_held_value_becomes_a_constraint_block_counted_from_one():
+    """xtb numbers atoms from one; the editor numbers them from zero."""
+    built = gfn.constraint_input([
+        {"kind": "distance", "atoms": [0, 1], "value": 1.3, "mode": "pull"},
+        {"kind": "angle", "atoms": [1, 0, 2], "value": 109.5, "mode": "pull"},
+        {"kind": "dihedral", "atoms": [0, 1, 2, 3], "value": 180.0,
+         "mode": "pull"},
+    ], atoms=4)
+
+    lines = built["text"].splitlines()
+    assert lines[0] == "$constrain"
+    assert lines[-1] == "$end"
+    assert "  distance: 1, 2, 1.300000" in lines
+    assert "  angle: 2, 1, 3, 109.500000" in lines
+    assert "  dihedral: 1, 2, 3, 4, 180.000000" in lines
+    assert built["held"] == 3
+
+
+def test_a_pull_and_a_fix_are_two_different_force_constants():
+    """Measured on a propane asked for C-C 1.700 A: 0.5 gives 1.6704, which is
+    a compromise, and 20 gives 1.6992, which is the value."""
+    pull = gfn.constraint_input(
+        [{"kind": "distance", "atoms": [0, 1], "value": 1.7, "mode": "pull"}])
+    fix = gfn.constraint_input(
+        [{"kind": "distance", "atoms": [0, 1], "value": 1.7, "mode": "fix"}])
+
+    assert pull["force"] == gfn.PULL_FORCE_CONSTANT < gfn.FIX_FORCE_CONSTANT
+    assert fix["force"] == gfn.FIX_FORCE_CONSTANT
+    assert f"force constant={gfn.PULL_FORCE_CONSTANT}" in pull["text"]
+    assert f"force constant={gfn.FIX_FORCE_CONSTANT}" in fix["text"]
+
+
+def test_one_force_constant_holds_the_whole_set_and_it_is_said():
+    """A second `force constant=` line is read and ignored -- measured: a block
+    asking 0.25 for a distance and 10 for an angle held both at 0.25, digit for
+    digit.  So a set with anything exact in it is exact throughout, and a pull
+    that has stopped negotiating has to say why."""
+    both = gfn.constraint_input([
+        {"kind": "distance", "atoms": [0, 1], "value": 1.7, "mode": "pull"},
+        {"kind": "angle", "atoms": [0, 1, 2], "value": 100.0, "mode": "fix"},
+    ], atoms=3)
+
+    assert both["text"].count("force constant=") == 1
+    assert both["force"] == gfn.FIX_FORCE_CONSTANT
+    assert both["mixed"] is True
+    assert "one force constant for the whole set" in gfn.held_note(both)
+
+    alone = gfn.constraint_input(
+        [{"kind": "distance", "atoms": [0, 1], "value": 1.7, "mode": "pull"}])
+    assert alone["mixed"] is False
+
+
+def test_a_held_value_naming_an_atom_that_is_not_there_is_dropped_and_said():
+    """xtb would stop with a parse error about a line the user never typed."""
+    built = gfn.constraint_input([
+        {"kind": "distance", "atoms": [0, 40], "value": 1.7, "mode": "pull"},
+        {"kind": "distance", "atoms": [0, 1], "value": 1.7, "mode": "pull"},
+        {"kind": "angle", "atoms": [0, 1], "value": 100.0, "mode": "pull"},
+    ], atoms=9)
+
+    assert built["held"] == 1, "only the one that names atoms it has"
+    assert len(built["dropped"]) == 2
+    assert "dropped" in gfn.held_note(built)
+
+
+def test_nothing_held_writes_no_input_file_at_all():
+    assert gfn.constraint_input([])["text"] == ""
+    assert gfn.constraint_input([])["force"] is None
+    assert gfn.held_note(gfn.constraint_input([])) == ""
+
+
+def test_holding_an_atom_where_it_is_is_not_asked_of_xtb():
+    """Measured on xtb 6.7.1, and the reason the editor does not try.
+
+    `$constrain atoms:` naming one atom changes nothing -- the geometry comes
+    back identical to the free one -- and `$fix atoms:` is worse than nothing:
+    three fixed carbons of a propane came back with their C-C at 1.4555 A
+    instead of 1.5255 under GFN-FF, and at 0.4623 A under GFN2.
+    """
+    source = open(gfn.__file__, encoding="utf-8").read()
+    assert "$fix" not in gfn.constraint_input(
+        [{"kind": "distance", "atoms": [0, 1], "value": 1.7, "mode": "fix"}]
+    )["text"]
+    assert "0.4623" in source, "the measurement that decided it has to be here"
+
+
+@_needs_xtb
+def test_a_pull_negotiates_and_a_fix_is_met():
+    """The whole of point six, against the program itself."""
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+
+    def carbon_carbon(xyz):
+        rows = [line.split() for line in gfn.atom_lines(xyz)]
+        first = [float(v) for v in rows[0][1:4]]
+        second = [float(v) for v in rows[1][1:4]]
+        return sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
+
+    free = gfn.optimize_with_gfn(propane, "gfnff")
+    assert free["ok"], free["status"]
+    assert abs(carbon_carbon(free["xyz"]) - 1.49) < 0.05, "free C-C is ~1.49 A"
+
+    asked = [{"kind": "distance", "atoms": [0, 1], "value": 1.70}]
+    pull = gfn.optimize_with_gfn(
+        propane, "gfnff", constraints=[dict(asked[0], mode="pull")])
+    fix = gfn.optimize_with_gfn(
+        propane, "gfnff", constraints=[dict(asked[0], mode="fix")])
+
+    assert pull["ok"] and fix["ok"]
+    pulled, fixed = carbon_carbon(pull["xyz"]), carbon_carbon(fix["xyz"])
+    assert 1.60 < pulled < 1.69, f"a pull settles short of the value: {pulled}"
+    assert abs(fixed - 1.70) < 0.005, f"a fix meets it: {fixed}"
+    assert "force constant" in fix["status"]
+
+
+@_needs_xtb
+def test_what_the_editor_holds_is_what_the_optimisation_holds(editor):
+    """Held on screen and given up the moment GFN is chosen is the bug this
+    closes: the angle is asked for and the angle is what comes back."""
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    state["constraints"] = [
+        {"kind": "angle", "atoms": [0, 1, 2], "value": 100.0, "mode": "fix"},
+    ]
+
+    refs["submit_optimize_btn"].value = True
+    deadline = _time.time() + 60
+    while _time.time() < deadline and refs["submit_optimize_btn"].value:
+        _time.sleep(0.05)
+
+    rows = [line.split() for line in gfn.atom_lines(refs["coords_widget"].value)]
+    points = [[float(v) for v in row[1:4]] for row in rows]
+    first = [points[0][n] - points[1][n] for n in range(3)]
+    third = [points[2][n] - points[1][n] for n in range(3)]
+    import math
+
+    dot = sum(a * b for a, b in zip(first, third))
+    norms = math.dist(points[0], points[1]) * math.dist(points[2], points[1])
+    angle = math.degrees(math.acos(max(-1.0, min(1.0, dot / norms))))
+
+    assert abs(angle - 100.0) < 1.0, f"asked for 100 deg, got {angle:.2f}"
+    assert "held value" in refs["mol_status"].value, (
+        "the status has to say what was held while it ran"
+    )
