@@ -26,7 +26,7 @@ _needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not install
 
 
 def test_the_methods_offered_are_the_ones_xtb_knows():
-    assert set(gfn.GFN_METHODS) == {"gfnff", "gfn2", "gfn1"}
+    assert set(gfn.GFN_METHODS) == {"gfnff", "gfn2", "gfn1", "gxtb"}
     assert gfn.is_gfn_method("gfnff") and gfn.is_gfn_method("GFN2")
     assert not gfn.is_gfn_method("uff") and not gfn.is_gfn_method("")
 
@@ -123,7 +123,7 @@ def player_js(tmp_path):
 
 def test_the_methods_stand_next_to_uff(editor):
     values = [v for _label, v in editor["submit_ff_dd"].options]
-    assert values == ["uff", "mmff94", "gfnff", "gfn2"]
+    assert values == ["uff", "mmff94", "gfnff", "gfn2", "gxtb"]
 
 
 def test_charge_and_spin_appear_only_for_a_gfn_method(editor):
@@ -971,7 +971,7 @@ def test_controls_that_cannot_work_under_gfn_are_taken_away(editor, monkeypatch)
     """
     from delfin.dashboard import tab_submit
 
-    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: True)
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
     editor["submit_ff_dd"].value = "uff"
 
     editor["submit_ff_dd"].value = "gfnff"
@@ -1200,10 +1200,11 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
     refs = editor
     state = refs["editor_state"]
     xyz = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
     refs["coords_widget"].value = xyz
     state["current_xyz_for_copy"] = {"content": xyz}
@@ -1234,7 +1235,7 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
 
     body = [line for line in xyz.splitlines()[2:] if line.strip()]
     parts = body[0].split()
-    parts[1] = f"{float(parts[1]) - 0.7:.6f}"
+    parts[1] = f"{float(parts[1]) + 0.7:.6f}"
     body[0] = " ".join(parts)
     moved = f"{len(body)}\nDELFIN drag-end\n" + "\n".join(body) + "\n"
     refs["submit_manip_sync"].value = moved
@@ -1245,8 +1246,9 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
         _time.sleep(0.02)
     assert len(handed) >= 2, "the run never started again"
 
-    assert gfn.atom_lines(handed[0])[0].split()[1].startswith("-1.26")
-    assert gfn.atom_lines(handed[1])[0].split()[1].startswith("-1.96"), (
+    first = float(gfn.atom_lines(handed[0])[0].split()[1])
+    second = float(gfn.atom_lines(handed[1])[0].split()[1])
+    assert abs(second - (first + 0.7)) < 1e-4, (
         "the second run was handed the structure from before the drag"
     )
 
@@ -1354,10 +1356,11 @@ def test_holding_an_atom_where_it_is_is_not_asked_of_xtb():
 def test_a_pull_negotiates_and_a_fix_is_met():
     """The whole of point six, against the program itself."""
     propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
 
     def carbon_carbon(xyz):
@@ -1394,10 +1397,11 @@ def test_what_the_editor_holds_is_what_the_optimisation_holds(editor):
     refs = editor
     state = refs["editor_state"]
     propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
     refs["coords_widget"].value = propane
     state["current_xyz_for_copy"] = {"content": propane}
@@ -1518,10 +1522,11 @@ def test_the_rest_of_the_molecule_follows_the_atom_that_is_dragged(editor):
     refs = editor
     state = refs["editor_state"]
     propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
 
     def points(xyz):
@@ -1595,6 +1600,7 @@ def test_the_installer_is_delfins_own_and_is_asked_for_xtb_alone():
 def test_the_offer_appears_only_when_it_is_needed(editor, monkeypatch):
     from delfin.dashboard import tab_submit
 
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: None)
     monkeypatch.setattr(tab_submit._gfn, "find_xtb", lambda: None)
     monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
 
@@ -1602,7 +1608,7 @@ def test_the_offer_appears_only_when_it_is_needed(editor, monkeypatch):
 
     editor["submit_ff_dd"].value = "gfnff"
     assert editor["submit_xtb_install_btn"].layout.display == ""
-    assert "Install xtb" in editor["mol_status"].value
+    assert "was not found" in editor["mol_status"].value
 
     editor["submit_ff_dd"].value = "uff"
     assert editor["submit_xtb_install_btn"].layout.display == "none", (
@@ -1613,7 +1619,7 @@ def test_the_offer_appears_only_when_it_is_needed(editor, monkeypatch):
 def test_the_offer_stays_away_when_xtb_is_already_there(editor, monkeypatch):
     from delfin.dashboard import tab_submit
 
-    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: True)
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
 
     editor["submit_ff_dd"].value = "gfn2"
 
@@ -1625,6 +1631,7 @@ def test_the_first_press_says_what_the_second_one_would_do(editor, monkeypatch):
     click, and on a cluster the right answer is often the module instead."""
     from delfin.dashboard import tab_submit
 
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: None)
     monkeypatch.setattr(tab_submit._gfn, "find_xtb", lambda: None)
     monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
     ran: list = []
@@ -1653,6 +1660,7 @@ def test_the_second_press_runs_it_and_says_where_xtb_ended_up(editor, monkeypatc
 
     from delfin.dashboard import tab_submit
 
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: None)
     monkeypatch.setattr(tab_submit._gfn, "find_xtb", lambda: None)
     monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
 
@@ -1776,13 +1784,13 @@ def test_dynamik_opt_goes_away_when_there_is_no_xtb_behind_it(editor, monkeypatc
     it is pressed, nothing happens, and nothing says why."""
     from delfin.dashboard import tab_submit
 
-    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: None)
 
     editor["submit_ff_dd"].value = "gfnff"
     assert editor["submit_relax_btn"].layout.display == "none"
     assert editor["submit_relax_btn"].value is False
 
-    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: True)
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
     editor["submit_ff_dd"].value = "gfn2"
     assert editor["submit_relax_btn"].layout.display == ""
 
@@ -1938,10 +1946,11 @@ def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
     refs = editor
     state = refs["editor_state"]
     propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
     refs["coords_widget"].value = propane
     state["current_xyz_for_copy"] = {"content": propane}
@@ -1986,10 +1995,11 @@ def test_holding_a_value_moves_the_structure_to_it_there_and_then(editor):
     refs = editor
     state = refs["editor_state"]
     propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
 
     def carbon_angle(xyz):
@@ -2270,16 +2280,18 @@ def test_gfnff_loses_the_bond_it_was_never_told_to_keep(tmp_path):
     a molecule that can fall apart between one answer and the next.
     """
     propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
 
     def pulled(by):
         rows = [line.split() for line in gfn.atom_lines(propane)]
-        rows[0][1] = f"{float(rows[0][1]) - by:.6f}"
-        return "9\npulled\n" + "\n".join(" ".join(r) for r in rows) + "\n"
+        rows[0][1] = f"{float(rows[0][1]) + by:.6f}"
+        return (f"{len(rows)}\npulled\n"
+                + "\n".join(" ".join(r) for r in rows) + "\n")
 
     def carbon_carbon(xyz):
         rows = [line.split() for line in gfn.atom_lines(xyz)]
@@ -2459,10 +2471,11 @@ def test_the_whole_cycle_end_to_end(editor):
     refs = editor
     state = refs["editor_state"]
     propane = (
-        "9\npropane\n"
-        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
-        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
-        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
     )
 
     def carbon_carbon(xyz):
@@ -2481,11 +2494,11 @@ def test_the_whole_cycle_end_to_end(editor):
         refs["submit_cmd_sync"].value = f"gfngrab:{step}:"
         rows = [line.split()
                 for line in gfn.atom_lines(state["current_xyz_for_copy"]["content"])]
-        rows[atom][1] = f"{float(rows[atom][1]) - pull:.6f}"
+        rows[atom][1] = f"{float(rows[atom][1]) + pull:.6f}"
         body = "\n".join(" ".join(r) for r in rows)
-        refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held={atom}\n{body}\n"
+        refs["submit_manip_sync"].value = f"{len(rows)}\nDELFIN drag-follow held={atom}\n{body}\n"
         _time.sleep(0.5)
-        refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
+        refs["submit_manip_sync"].value = f"{len(rows)}\nDELFIN drag-end\n{body}\n"
         refs["submit_cmd_sync"].value = f"gfnfree:{step}:"
         _time.sleep(1.0)
 
@@ -2728,3 +2741,154 @@ def test_the_reach_is_added_not_multiplied_so_metals_keep_one_sphere():
             assert reach < bond + behind, (
                 f"{metal}-{donor} reaches past the atom behind the donor"
             )
+
+
+# ---------------------------------------------------------------------------
+# g-xTB, which is not the xtb beside it
+# ---------------------------------------------------------------------------
+def test_gxtb_is_looked_for_under_its_own_name():
+    """It ships as a statically linked xtb 6.7.1 of its own -- the method is
+    not in a released tblite, and tblite 0.4.0 offers gfn1, gfn2 and ipea1.
+
+    An ordinary xtb **accepts** --gxtb and silently runs GFN2: measured here,
+    the energy came back at -5.070383095219 either way, and the Hamiltonian
+    line said GFN2-xTB.  So the binary is never assumed to be the one beside
+    it.
+    """
+    assert gfn.GFN_METHODS["gxtb"]["flags"] == ["--gxtb"]
+    assert gfn.GFN_METHODS["gxtb"]["binary"] == "gxtb"
+    assert gfn.GFN_METHODS["gxtb"]["reports"] is None, (
+        "g-xTB prints no Hamiltonian line of its own; that is the check"
+    )
+
+    source = open(gfn.__file__, encoding="utf-8").read()
+    finder = source.split("def find_gxtb")[1].split("\ndef ")[0]
+    assert "DELFIN_GXTB_BINARY" in finder
+    assert "xtb-gxtb" in finder
+
+
+def test_an_xtb_that_ignored_the_flag_is_caught(monkeypatch):
+    """The one way this can go wrong silently, so the one thing checked."""
+    monkeypatch.setattr(gfn, "find_gxtb", gfn.find_xtb)   # the wrong binary
+
+    if gfn.find_xtb() is None:
+        pytest.skip("no xtb to be wrong with")
+    refused = gfn.optimize_with_gfn(_WATER, "gxtb")
+
+    assert refused["ok"] is False
+    assert "ignored the flag" in refused["status"]
+    assert "GFN2-xTB" in refused["status"], "it has to name what ran instead"
+
+
+def test_gxtb_is_offered_no_solvent_because_it_takes_none():
+    """--alpb, --gbsa and --cpcmx all stop this build dead, and --cosmo runs
+    but only writes a file: it moved water in water *up* by 1.6 kcal/mol,
+    which is the wrong direction for a solvation energy."""
+    assert gfn.GFN_METHODS["gxtb"].get("solvation") is False
+
+    refused = gfn.optimize_with_gfn(_WATER, "gxtb", solvent="water")
+    assert refused["ok"] is False
+    assert "no implicit solvation" in refused["status"]
+    assert "GFN2-xTB or GFN-FF" in refused["status"], (
+        "and it has to say which method does have one"
+    )
+
+
+def test_the_installer_can_be_asked_for_gxtb():
+    assert gfn.install_command("gxtb")[-1] == "gxtb"
+    assert gfn.install_command()[-1] == "xtb", "xtb stays the default"
+
+    script = open(gfn.install_script(), encoding="utf-8").read()
+    assert "install_gxtb()" in script
+    assert "gxtb|g-xtb)   install_gxtb ;;" in script
+    assert "sha256sum" in script, (
+        "a binary fetched from the network and run on a user's structures is "
+        "worth the one line it costs to check it is the one that was published"
+    )
+    assert "link_into_bin \"${target}/bin/xtb\" xtb-gxtb" in script
+
+
+def test_the_offer_names_the_program_the_method_needs(editor, monkeypatch):
+    """g-xTB is not the xtb beside it, so offering the wrong one would install
+    something that changes nothing."""
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: None)
+
+    editor["submit_ff_dd"].value = "gfnff"
+    assert editor["submit_xtb_install_btn"].description == "Install xtb"
+
+    editor["submit_ff_dd"].value = "gxtb"
+    assert editor["submit_xtb_install_btn"].description == "Install g-xTB"
+    assert editor["editor_state"]["xtb_install_tool"] == "gxtb"
+
+
+def test_the_solvent_box_is_gone_under_a_method_that_has_no_solvation(editor):
+    editor["submit_ff_dd"].value = "gfn2"
+    editor["submit_gfn_solvent"].value = "water"
+    assert editor["submit_gfn_solvent"].layout.display == ""
+
+    editor["submit_ff_dd"].value = "gxtb"
+    assert editor["submit_gfn_solvent"].layout.display == "none"
+    assert editor["submit_gfn_solvent"].value == "", (
+        "a control that can only produce a refusal is worse than no control"
+    )
+
+
+_needs_gxtb = pytest.mark.skipif(
+    __import__("delfin.dashboard.gfn_optimize", fromlist=["x"]).find_gxtb() is None,
+    reason="the g-xTB build is not installed",
+)
+
+
+@_needs_gxtb
+def test_gxtb_optimises_and_gets_the_geometry_right():
+    """It approximates wB97M-V/def2-TZVPPD, and on a propane it does.
+
+    Experiment: C-C 1.526 A, C-C-C 112.4 deg, C-H 1.09 A.  Measured here --
+    GFN-FF 1.5213 / 112.51, GFN2 1.5238 / 111.67, g-xTB 1.5162 / 112.49 -- so
+    it is at least as good as the others and takes 0.21 s where GFN2 takes
+    0.03; a full optimisation is 0.29 s at 32 atoms and 2.19 s at 92.
+    """
+    import math
+
+    propane = (
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
+    )
+    result = gfn.optimize_with_gfn(propane, "gxtb")
+
+    assert result["ok"] is True, result["status"]
+    assert result["converged"] is True
+    assert result["frames"], "the path has to come back, as for any other method"
+    points = [[float(v) for v in line.split()[1:4]]
+              for line in gfn.atom_lines(result["xyz"])]
+    assert abs(math.dist(points[0], points[1]) - 1.526) < 0.05, "C-C"
+    first = [points[0][n] - points[1][n] for n in range(3)]
+    third = [points[2][n] - points[1][n] for n in range(3)]
+    dot = sum(a * b for a, b in zip(first, third))
+    norms = math.dist(points[0], points[1]) * math.dist(points[2], points[1])
+    angle = math.degrees(math.acos(max(-1.0, min(1.0, dot / norms))))
+    assert abs(angle - 112.4) < 3.0, f"C-C-C came out at {angle:.2f} deg"
+
+    # and its energy is a different quantity from a GFN one, not a variant
+    assert result["energy"] < -50, "g-xTB totals include the core electrons"
+
+
+@_needs_gxtb
+def test_gxtb_holds_what_the_editor_holds():
+    """Charge, spin and held values reach it the same way they reach GFN2 --
+    it is the same command line, which is the whole point of it being an xtb.
+    """
+    held = [{"kind": "distance", "atoms": [0, 1], "value": 1.05, "mode": "fix"}]
+    result = gfn.optimize_with_gfn(_WATER, "gxtb", constraints=held)
+
+    assert result["ok"] is True, result["status"]
+    rows = [line.split() for line in gfn.atom_lines(result["xyz"])]
+    first = [float(v) for v in rows[0][1:4]]
+    second = [float(v) for v in rows[1][1:4]]
+    length = sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
+    assert abs(length - 1.05) < 0.01, f"the held O-H came out at {length:.3f} A"

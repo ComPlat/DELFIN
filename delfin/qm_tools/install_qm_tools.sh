@@ -11,6 +11,12 @@ XTB4STDA_SHARE_DIR="${SHARE_DIR}/xtb4stda"
 MAMBA_ENV="${ROOT}/.mamba_env"
 ORCA_LOCAL_DIR="${ROOT}/third_party/orca"
 
+# g-xTB ships as a statically linked xtb 6.7.1 of its own -- the method is not
+# in a released tblite yet, and the ordinary xtb accepts --gxtb and silently
+# runs GFN2 -- so it is installed beside xtb rather than instead of it.
+GXTB_TAG="${GXTB_TAG:-v2.0.1}"
+GXTB_ASSET="${GXTB_ASSET:-xtb-6.7.1-gxtb-140526-linux-x86_64.tar.xz}"
+GXTB_URL="${GXTB_URL:-https://github.com/grimme-lab/g-xtb/releases/download/${GXTB_TAG}/${GXTB_ASSET}}"
 XTB4STDA_URL="${XTB4STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/xtb4stda}"
 STDA_URL="${STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/stda_v1.6.1}"
 XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubusercontent.com/grimme-lab/xtb4stda/master}"
@@ -171,6 +177,41 @@ install_xtb() {
   install_conda_stack
 }
 
+install_gxtb() {
+  local archive="${DOWNLOAD_DIR}/${GXTB_ASSET}"
+  local sums="${archive}.sha256"
+  local target="${ROOT}/third_party/gxtb"
+
+  if [[ -x "${target}/bin/xtb" && "${FORCE_REDOWNLOAD}" != "1" ]]; then
+    log "reuse g-xTB in ${target}"
+    link_into_bin "${target}/bin/xtb" xtb-gxtb
+    return
+  fi
+
+  download_file "${GXTB_URL}" "${archive}"
+  # The release publishes a checksum beside the tarball.  A binary fetched
+  # from the network and run on a user's structures is worth the one line it
+  # costs to check that it is the one that was published.
+  download_file "${GXTB_URL}.sha256" "${sums}"
+  if have sha256sum; then
+    local want got
+    want="$(awk '{print $1}' "${sums}")"
+    got="$(sha256sum "${archive}" | awk '{print $1}')"
+    [[ "${want}" == "${got}" ]] || die "g-xTB checksum mismatch: expected ${want}, got ${got}"
+    log "g-xTB checksum verified"
+  else
+    warn "sha256sum not found; the g-xTB download could not be verified"
+  fi
+
+  rm -rf "${target}"
+  mkdir -p "${target}"
+  # One directory deep in the tarball (xtb-6.7.1/), stripped so the layout
+  # here does not depend on the version in its name.
+  tar -xf "${archive}" -C "${target}" --strip-components=1
+  [[ -x "${target}/bin/xtb" ]] || die "g-xTB archive did not contain bin/xtb"
+  link_into_bin "${target}/bin/xtb" xtb-gxtb
+}
+
 install_crest() {
   local path
   if path="$(detect_existing_tool crest)"; then
@@ -280,7 +321,7 @@ summary() {
   local python_bin=""
 
   log "installation summary"
-  for prog in xtb crest std2 stda xtb4stda dftb+; do
+  for prog in xtb xtb-gxtb crest std2 stda xtb4stda dftb+; do
     if [[ -x "${BIN_DIR}/${prog}" ]]; then
       printf "  %-12s %s\n" "${prog}" "${BIN_DIR}/${prog}"
     else
@@ -321,6 +362,7 @@ main() {
     for tool in "$@"; do
       case "${tool}" in
         xtb)          install_xtb ;;
+        gxtb|g-xtb)   install_gxtb ;;
         crest)        install_crest ;;
         dftb+|dftbplus) install_dftbplus ;;
         xtb4stda|stda) install_xtb4stda_bundle ;;
@@ -333,7 +375,7 @@ main() {
           install_std2
           ;;
         *)
-          die "Unknown tool: ${tool}. Available: xtb, crest, dftb+, xtb4stda, stda, std2, all"
+          die "Unknown tool: ${tool}. Available: xtb, gxtb, crest, dftb+, xtb4stda, stda, std2, all"
           ;;
       esac
     done

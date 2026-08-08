@@ -743,13 +743,14 @@ def create_tab(ctx):
     )
     submit_ff_dd = widgets.Dropdown(
         options=[('UFF', 'uff'), ('MMFF94', 'mmff94'),
-                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2')],
+                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb')],
         value='uff',
         tooltip=(
             'What Optimise minimises with. UFF and MMFF94 run in the browser '
-            'and also drive the live relaxation while you drag. GFN-FF and '
-            'GFN2-xTB run xtb on the server: too slow for a drag, right for a '
-            'press -- and they know about the metal, where UFF guesses.'
+            'and also drive the live relaxation while you drag. GFN-FF, '
+            'GFN2-xTB and g-xTB run xtb on the server, and they know about the '
+            'metal where UFF guesses. g-xTB approximates wB97M-V/def2-TZVPPD '
+            'and needs a build of its own; Install g-xTB fetches it.'
         ),
         layout=widgets.Layout(width='128px'),
         disabled=True,
@@ -4148,7 +4149,7 @@ def create_tab(ctx):
         """Whether something on screen is meant to act on a change at once."""
         return (submit_relax_btn.value
                 and _gfn.is_gfn_method(submit_ff_dd.value)
-                and _gfn.xtb_available())
+                and _gfn.find_binary(submit_ff_dd.value) is not None)
 
     def _arm_gfn_takeup(note=''):
         """Take up a change to what is held, straight away.
@@ -4182,7 +4183,7 @@ def create_tab(ctx):
             # the answer to something the user just did, and it has to happen.
             state['gfn_settle_forced'] = True
         if not (_gfn.is_gfn_method(submit_ff_dd.value)
-                and _gfn.xtb_available()
+                and _gfn.find_binary(submit_ff_dd.value) is not None
                 and (submit_settle_btn.value
                      or state.get('gfn_settle_forced'))):
             return
@@ -4515,8 +4516,8 @@ def create_tab(ctx):
                 state['gfn_settle_rounds'] = 0
                 _set_mol_status('The structure is no longer being relaxed.')
                 return
-            if not _gfn.xtb_available():
-                _set_mol_status(f'{label} needs xtb, which was not found.')
+            if _gfn.find_binary(submit_ff_dd.value) is None:
+                _set_mol_status(f'{label} needs a program that was not found.')
                 submit_relax_btn.value = False
                 return
             if not submit_manip_btn.value:
@@ -6024,7 +6025,7 @@ def create_tab(ctx):
         )
 
     def on_submit_solvent(change):
-        if change.get('name') != 'value':
+        if change.get('name') != 'value' or state.get('solvent_quiet'):
             return
         wet = str(submit_gfn_solvent.value or '')
         _set_mol_status(
@@ -6079,11 +6080,28 @@ def create_tab(ctx):
         submit_xtb_confirm_btn.layout.display = 'none'
         submit_xtb_cancel_btn.layout.display = 'none'
 
+    def _missing_tool():
+        """Which program the chosen method needs and has not got.
+
+        g-xTB is not the xtb beside it: it ships as a build of its own, and an
+        ordinary xtb accepts --gxtb and silently runs GFN2.  So what is missing
+        is a question with two answers, and offering the wrong one would
+        install something that changes nothing.
+        """
+        method = str(submit_ff_dd.value)
+        if not _gfn.is_gfn_method(method):
+            return None
+        return None if _gfn.find_binary(method) else (
+            'gxtb' if method == 'gxtb' else 'xtb')
+
     def _refresh_xtb_offer():
-        """xtb missing under a GFN method is a thing to fix, not a wall."""
-        gfn = _gfn.is_gfn_method(submit_ff_dd.value)
+        """A missing program under a GFN method is a thing to fix, not a wall."""
+        missing = _missing_tool()
+        state['xtb_install_tool'] = missing
+        submit_xtb_install_btn.description = (
+            'Install g-xTB' if missing == 'gxtb' else 'Install xtb')
         _offer_xtb_install(
-            gfn and not _gfn.xtb_available()
+            missing is not None
             and _gfn.install_script() is not None
             and not state.get('xtb_installing'))
 
@@ -6095,7 +6113,7 @@ def create_tab(ctx):
         to load the module instead -- so the command is on screen before it
         runs, and cancelling is as easy as agreeing.
         """
-        command = _gfn.install_command()
+        command = _gfn.install_command(state.get('xtb_install_tool') or 'xtb')
         if command is None:
             _set_mol_status('DELFIN\'s installer is not next to this copy of '
                             'the dashboard, so there is nothing to run.')
@@ -6121,16 +6139,20 @@ def create_tab(ctx):
             return
         state['xtb_installing'] = True
         _offer_xtb_install(False)
-        _set_mol_status('Installing xtb...', spinner=True)
+        _set_mol_status(
+            f'Installing {state.get("xtb_install_tool") or "xtb"}...',
+            spinner=True)
 
         def _work():
             def _line(text):
                 if text.strip():
                     _schedule_ui_update(
-                        _set_mol_status, 'Installing xtb...', text.strip(),
-                        spinner=True)
+                        _set_mol_status,
+                        f'Installing {state.get("xtb_install_tool") or "xtb"}'
+                        '...', text.strip(), spinner=True)
 
-            outcome = _gfn.install_xtb(on_line=_line)
+            outcome = _gfn.install_xtb(
+                on_line=_line, tool=state.get('xtb_install_tool') or 'xtb')
 
             def _done():
                 state['xtb_installing'] = False
@@ -6157,7 +6179,17 @@ def create_tab(ctx):
         submit_gfn_charge.layout.display = '' if gfn else 'none'
         submit_gfn_mult.layout.display = '' if gfn else 'none'
         submit_gfn_autospin.layout.display = '' if gfn else 'none'
-        submit_gfn_solvent.layout.display = '' if gfn else 'none'
+        # A method without solvation gets no solvent box: a control that can
+        # only produce a refusal is worse than no control.
+        solvated = gfn and _gfn.GFN_METHODS[
+            str(submit_ff_dd.value)].get('solvation') is not False
+        submit_gfn_solvent.layout.display = '' if solvated else 'none'
+        if not solvated and submit_gfn_solvent.value:
+            state['solvent_quiet'] = True
+            try:
+                submit_gfn_solvent.value = ''
+            finally:
+                state['solvent_quiet'] = False
         # Relax means the browser's own field running once per frame, and there
         # is no GFN engine in the browser to run.  Under GFN it means the other
         # half of the same idea: while an atom is being dragged, the rest of
@@ -6191,7 +6223,7 @@ def create_tab(ctx):
         submit_strength_slider.layout.display = 'none' if gfn else ''
         # Dynamik Opt without an xtb behind it cannot do anything at all, so
         # it goes rather than sitting there being pressed to no effect.
-        usable = not gfn or _gfn.xtb_available()
+        usable = not gfn or _gfn.find_binary(submit_ff_dd.value) is not None
         submit_relax_btn.layout.display = '' if usable else 'none'
         if not usable and submit_relax_btn.value:
             submit_relax_btn.value = False
@@ -6231,9 +6263,9 @@ def create_tab(ctx):
         if gfn:
             label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
             source = _fill_charge_from_smiles()
-            if not _gfn.xtb_available():
+            if _gfn.find_binary(submit_ff_dd.value) is None:
                 _set_mol_status(
-                    f'{label} needs xtb, which was not found. Install xtb '
+                    f'{label} needs a program that was not found. The button '
                     'fetches it with DELFIN\'s own installer, and says what '
                     'it will run before it runs it.'
                     if _gfn.install_script() is not None else

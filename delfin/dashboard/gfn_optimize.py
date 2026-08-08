@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
+           'find_binary', 'find_gxtb',
            'held_note', 'hold_atoms_at', 'install_command', 'install_script',
            'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
            'solvent_note',
@@ -48,6 +49,15 @@ GFN_METHODS: Dict[str, Dict[str, Any]] = {
              'reports': 'GFN2-xTB'},
     'gfn1': {'label': 'GFN1-xTB', 'flags': ['--gfn', '1'], 'max_atoms': 250,
              'reports': 'GFN1-xTB'},
+    # g-xTB approximates wB97M-V/def2-TZVPPD and is nearly as quick as GFN2:
+    # measured here, a full optimisation is 0.29 s for 32 atoms, 0.68 s for 62
+    # and 2.19 s for 92.  It needs a binary of its own -- see find_binary.
+    # No solvent: this build takes none.  --alpb, --gbsa and --cpcmx all stop
+    # it dead, and --cosmo runs but only writes a COSMO file -- it moved water
+    # in water *up* by 1.6 kcal/mol, which is the wrong direction for a
+    # solvation energy and means it is not one.
+    'gxtb': {'label': 'g-xTB', 'flags': ['--gxtb'], 'max_atoms': 250,
+             'reports': None, 'binary': 'gxtb', 'solvation': False},
 }
 
 #: The solvents this xtb accepts, asked of the binary rather than taken from a
@@ -122,6 +132,38 @@ def find_xtb() -> Optional[str]:
     return None
 
 
+def find_gxtb() -> Optional[str]:
+    """The xtb that has g-xTB in it, which is not the ordinary one.
+
+    g-xTB is shipped as a statically linked xtb 6.7.1 of its own: the method is
+    not in a released tblite yet, and an ordinary xtb **accepts** ``--gxtb``
+    and silently runs GFN2 -- measured, the energy came back identical to the
+    GFN2 one to the last digit.  So it is looked for under its own name and
+    never confused with the xtb beside it.
+    """
+    override = os.environ.get('DELFIN_GXTB_BINARY')
+    if override and Path(override).is_file():
+        return override
+    try:
+        from delfin.qm_runtime import get_qm_tools_bin_dir
+
+        candidate = Path(get_qm_tools_bin_dir()) / 'xtb-gxtb'
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            return str(candidate)
+    except Exception:
+        pass
+    found = shutil.which('xtb-gxtb')
+    return found or None
+
+
+def find_binary(method: Any = None) -> Optional[str]:
+    """Whichever program the chosen method needs."""
+    spec = GFN_METHODS.get(str(method or '').strip().lower()) or {}
+    if spec.get('binary') == 'gxtb':
+        return find_gxtb()
+    return find_xtb()
+
+
 def _where_it_looked() -> str:
     """The places tried, so a missing xtb is a fixable message, not a wall."""
     places = []
@@ -147,21 +189,22 @@ def install_script() -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
-def install_command() -> Optional[list]:
-    """Exactly what installing xtb would run, so it can be shown before it is.
+def install_command(tool: str = 'xtb') -> Optional[list]:
+    """Exactly what installing *tool* would run, so it can be shown before it is.
 
-    The script takes the tools to install as arguments; naming xtb keeps it to
+    The script takes the tools to install as arguments; naming one keeps it to
     that one rather than fetching crest, dftb+ and the stda bundle behind it.
     """
     script = install_script()
-    return ['bash', str(script), 'xtb'] if script else None
+    return ['bash', str(script), str(tool)] if script else None
 
 
 def install_xtb(
     on_line: Optional[Callable[[str], None]] = None,
     timeout: float = 1800.0,
+    tool: str = 'xtb',
 ) -> Dict[str, Any]:
-    """Run DELFIN's installer for xtb and say where it ended up.
+    """Run DELFIN's installer for *tool* and say where it ended up.
 
     Never called by itself: fetching a few hundred megabytes through conda is
     not something a program should decide on a user's behalf, and on a cluster
@@ -170,7 +213,7 @@ def install_xtb(
     *on_line* is handed each line as it is printed, because the install takes
     minutes and a silent one is indistinguishable from a hung one.
     """
-    command = install_command()
+    command = install_command(tool)
     if command is None:
         return {'ok': False, 'binary': None, 'lines': [],
                 'status': ('DELFIN\'s installer is not next to this copy of '
@@ -212,10 +255,11 @@ def install_xtb(
         except Exception:
             pass
     spent = time.perf_counter() - started
-    binary = find_xtb()
+    binary = find_gxtb() if tool == 'gxtb' else find_xtb()
+    name = 'g-xTB' if tool == 'gxtb' else 'xtb'
     if running.returncode == 0 and binary:
         return {'ok': True, 'binary': binary, 'lines': lines,
-                'status': f'xtb installed at {binary} in {spent / 60:.1f} min.'}
+                'status': f'{name} installed at {binary} in {spent / 60:.1f} min.'}
     said = ''
     for text in reversed(lines):
         if 'ERROR' in text or 'error' in text:
@@ -223,9 +267,10 @@ def install_xtb(
             break
     return {
         'ok': False, 'binary': binary, 'lines': lines,
-        'status': (f'The install ended without an xtb: {said}'
+        'status': (f'The install ended without a working {name}: {said}'
                    if said else
-                   'The install ended without an xtb the dashboard can find.'),
+                   f'The install ended without a {name} the dashboard can '
+                   'find.'),
     }
 
 
@@ -525,6 +570,15 @@ def optimize_with_gfn(
         }
 
     wet = str(solvent or '').strip().lower()
+    if wet and spec.get('solvation') is False:
+        return {
+            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+            'seconds': 0.0, 'frames': [],
+            'status': (f'{label} has no implicit solvation in this build: '
+                       'ALPB, GBSA and CPCM-X all stop it, and COSMO only '
+                       'writes a file. Optimise it in the gas phase, or '
+                       'choose GFN2-xTB or GFN-FF for a solvent.'),
+        }
     if wet and wet not in SOLVENTS:
         return {
             'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -534,11 +588,14 @@ def optimize_with_gfn(
                        + ', '.join(n for n in SOLVENTS if n) + '.'),
         }
 
-    binary = find_xtb()
+    binary = find_binary(key)
     if binary is None:
+        wanted = ('its own xtb build, xtb-gxtb -- an ordinary xtb accepts '
+                  '--gxtb and silently runs GFN2 instead'
+                  if spec.get('binary') == 'gxtb' else 'xtb')
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
                 'seconds': 0.0, 'frames': [],
-                'status': (f'{label} needs xtb, which was not found in '
+                'status': (f'{label} needs {wanted}, which was not found in '
                            f'{_where_it_looked()}.')}
 
     started = time.perf_counter()
@@ -744,6 +801,20 @@ def optimize_with_gfn(
         elif _GFNFF_BANNER in output:
             reported = 'GFN-FF'
         wanted = str(spec.get('reports') or '')
+        if spec.get('reports') is None and reported:
+            # g-xTB prints no Hamiltonian line of its own.  An ordinary xtb
+            # given --gxtb prints one -- GFN2-xTB -- because it ignored the
+            # flag and ran GFN2, and the energy is GFN2's to the last digit.
+            # That is the one way this can go wrong silently, so it is the one
+            # thing checked.
+            return {
+                'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': time.perf_counter() - started, 'engine': 'xtb',
+                'frames': [], 'version': version, 'hamiltonian': reported,
+                'status': (f'{label} was asked for and this xtb ran '
+                           f'{reported} instead: it does not have g-xTB in it '
+                           'and ignored the flag. Install the g-xTB build.'),
+            }
         if reported and wanted and reported.upper() != wanted.upper():
             return {
                 'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -783,20 +854,20 @@ def optimize_with_gfn(
             return {
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
-                'hamiltonian': reported or wanted, 'held': held,
+                'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet,
                 'status': (f'{label} stopped before converging after '
                            f'{seconds:.1f} s; the geometry it reached is shown. '
-                           f'(xtb {version}, {reported or wanted})'
+                           f'(xtb {version}, {reported or wanted or label})'
                            + solvent_note(wet) + held_note(held)),
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
-            'hamiltonian': reported or wanted, 'held': held,
+            'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet,
             'status': (f'{label} converged in {seconds:.1f} s '
-                       f'(xtb {version}, {reported or wanted}).'
+                       f'(xtb {version}, {reported or wanted or label}).'
                        + solvent_note(wet) + held_note(held)),
         }
     finally:
