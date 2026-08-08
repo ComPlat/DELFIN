@@ -720,13 +720,25 @@ def create_tab(ctx):
     )
     submit_optimize_btn = widgets.ToggleButton(
         value=False,
-        description='Optimize all', button_style='success', icon='compress',
+        description='Optimize', button_style='success', icon='compress',
         tooltip=(
-            'Minimise every frame currently loaded -- all isomers or batch '
-            'entries, not just the one on screen. Undo restores the geometries '
-            'from before the run.'
+            'Minimise the frame on screen. A switch: press again to stop, and '
+            'what is stopped is what you were looking at. Undo restores the '
+            'geometry from before the run in one step.'
         ),
-        layout=widgets.Layout(width='128px', height='30px'),
+        layout=widgets.Layout(width='112px', height='30px'),
+        disabled=True,
+    )
+    submit_optimize_all_btn = widgets.ToggleButton(
+        value=False,
+        description='all', button_style='success',
+        tooltip=(
+            'Minimise every frame that is loaded -- all isomers or batch '
+            'entries, not only the one on screen. They run one after another, '
+            'never side by side: a login node is shared, and a set of isomers '
+            'would otherwise start one xtb per frame at once.'
+        ),
+        layout=widgets.Layout(width='52px', height='30px'),
         disabled=True,
     )
     submit_ff_dd = widgets.Dropdown(
@@ -952,7 +964,8 @@ def create_tab(ctx):
             submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_strength_slider,
-            submit_optimize_btn, submit_relax_btn, submit_settle_btn,
+            submit_optimize_btn, submit_optimize_all_btn,
+            submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -1273,6 +1286,7 @@ def create_tab(ctx):
         submit_hyb_auto_btn.disabled = not enabled
         submit_ff_dd.disabled = not enabled
         submit_optimize_btn.disabled = not enabled
+        submit_optimize_all_btn.disabled = not enabled
         submit_internal_value.disabled = not enabled
         submit_internal_btn.disabled = not enabled
         submit_hold_btn.disabled = not enabled
@@ -3898,15 +3912,28 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)});'
         )
 
-    def on_submit_optimize(change=None):
+    def on_submit_optimize_all(change=None):
+        on_submit_optimize(change, every_frame=True)
+
+    def on_submit_optimize(change=None, every_frame=False):
         """A switch, not a push: on starts it, off stops it, and it turns
-        itself off when the optimisation has converged or failed."""
+        itself off when the optimisation has converged or failed.
+
+        *every_frame* is the difference between the two buttons: Optimize takes
+        the frame on screen, all takes the whole set -- one after another,
+        because a login node is shared.
+        """
+        button = submit_optimize_all_btn if every_frame else submit_optimize_btn
         if isinstance(change, dict) and change.get('name') == 'value':
-            if not submit_optimize_btn.value:
+            if not button.value:
                 state['optimize_run'] = None      # off: the run ends itself
                 return
-        elif not submit_optimize_btn.value:
+        elif not button.value:
             return
+        if submit_optimize_btn.value and submit_optimize_all_btn.value:
+            # One run at a time, whichever was asked for second stands down.
+            other = submit_optimize_btn if every_frame else submit_optimize_all_btn
+            other.value = False
         """Minimise every frame that is loaded, not just the one on screen.
 
         The Submit tab can hold a whole set at once -- generated isomers, or
@@ -3917,7 +3944,7 @@ def create_tab(ctx):
         the browser's own undo stack cannot, because the results arrive from
         Python and re-render the viewer.
         """
-        frames = list(state.get('isomers') or [])
+        frames = list(state.get('isomers') or []) if every_frame else []
         single = (state.get('current_xyz_for_copy') or {}).get('content')
         if not frames and not single:
             _set_mol_status('Load a structure before optimising.')
@@ -3940,6 +3967,7 @@ def create_tab(ctx):
             _ensure_manip_bootstrap()
             _schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
+        state['gfn_energy'] = None
         state['gfn_halt_sent'] = False
         run_id = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run_id
@@ -3998,6 +4026,8 @@ def create_tab(ctx):
                     results.append(item)
                     continue
                 if outcome.get('ok'):
+                    if outcome.get('energy') is not None and position == 0:
+                        state['gfn_energy'] = float(outcome['energy'])
                     kept = outcome['xyz']
                     if _stopped() and outcome.get('frames'):
                         # Stop means the frame that was on screen.  xtb runs
@@ -4039,9 +4069,10 @@ def create_tab(ctx):
                 # itself, so it never claims to be working when it is not.
                 if state.get('optimize_run') is token:
                     state['optimize_run'] = None
-                if submit_optimize_btn.value:
-                    submit_optimize_btn.value = False
-                submit_optimize_btn.disabled = False
+                for switch in (submit_optimize_btn, submit_optimize_all_btn):
+                    if switch.value:
+                        switch.value = False
+                    switch.disabled = False
                 state['pre_optimize_frames'] = {
                     'isomers': frames,
                     'coords': coords_widget.value,
@@ -4070,6 +4101,14 @@ def create_tab(ctx):
                     )
                 done = count - len(failures)
                 said = f'Optimised {done} of {count} frame(s) with {label}.'
+                # The energy, the way the force field shows one.  xtb reports
+                # it in hartree; kcal/mol is what the rest of the tab speaks,
+                # and both are given because a total energy is compared
+                # against other totals and a difference against chemistry.
+                energy = state.get('gfn_energy')
+                if energy is not None:
+                    said += (f' E = {energy:.6f} Eh '
+                             f'({energy * 627.5094740631:.2f} kcal/mol).')
                 state['gfn_last_status'] = said
                 if gfn:
                     if autospin:
@@ -5200,7 +5239,15 @@ def create_tab(ctx):
         # off rather than left pressable and doing nothing recognisable.
         if gfn and submit_relax_btn.value:
             submit_relax_btn.value = False
+        if gfn and submit_settle_btn.value:
+            submit_settle_btn.value = False
         submit_relax_btn.disabled = gfn
+        # Out of the way entirely, not merely greyed: a control that cannot do
+        # anything under the chosen method is clutter that invites the question
+        # of why it is dead.
+        for widget in (submit_relax_btn, submit_settle_btn,
+                       submit_strength_slider):
+            widget.layout.display = 'none' if gfn else ''
         submit_relax_btn.tooltip = (
             'Live relaxation runs the browser\'s own field. Choose UFF or '
             'MMFF94 for it; GFN acts when Optimise is pressed, and shows the '
@@ -5353,6 +5400,8 @@ def create_tab(ctx):
     # switch went off costs a round trip, and the playback ran on for it.
     submit_optimize_btn.add_class('submit-optimize-switch')
     submit_optimize_btn.observe(on_submit_optimize, names='value')
+    submit_optimize_all_btn.add_class('submit-optimize-switch')
+    submit_optimize_all_btn.observe(on_submit_optimize_all, names='value')
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
@@ -5614,6 +5663,9 @@ def create_tab(ctx):
         'submit_gfn_mult': submit_gfn_mult,
         'submit_gfn_autospin': submit_gfn_autospin,
         'submit_optimize_btn': submit_optimize_btn,
+        'submit_optimize_all_btn': submit_optimize_all_btn,
+        'submit_settle_btn': submit_settle_btn,
+        'submit_strength_slider': submit_strength_slider,
         'submit_relax_btn': submit_relax_btn,
         'submit_gfn_frame': submit_gfn_frame,
         'submit_pick_sync': submit_pick_sync,

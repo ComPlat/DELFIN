@@ -508,7 +508,7 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "outcome.get('frames')" in handler
     assert "submit_gfn_frame" in handler
     assert "_install_gfn_frame_watcher" in handler
@@ -550,7 +550,7 @@ def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
     assert "run!==play.run" in watcher, "a new run has to reset the count"
     assert "play.seen=0" in watcher
 
-    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "'run': r" in handler, "every payload has to name its run"
     assert "state['gfn_run']" in handler
 
@@ -581,7 +581,7 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "played = [False]" in handler
     assert "played[0] = True" in handler
     apply_body = handler.split("def _apply")[1]
@@ -614,16 +614,17 @@ def test_optimise_is_a_switch_that_can_be_turned_off(editor):
 
     button = editor["submit_optimize_btn"]
     assert isinstance(button, w.ToggleButton)
+    assert isinstance(editor["submit_optimize_all_btn"], w.ToggleButton)
 
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "state['optimize_run'] = None" in handler, "off has to end the run"
     assert "should_stop=_stopped" in handler, "the run has to watch for it"
     apply_body = handler.split("def _apply")[1]
-    assert "submit_optimize_btn.value = False" in apply_body, (
-        "the switch has to release itself when the work is over"
+    assert "switch.value = False" in apply_body, (
+        "the switches have to release themselves when the work is over"
     )
 
 
@@ -727,7 +728,7 @@ def test_the_dashboard_runs_without_a_clock_because_it_has_a_switch(editor):
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "timeout=None" in handler
     assert "should_stop=_stopped" in handler, "without it nothing could stop it"
 
@@ -753,7 +754,7 @@ def test_the_path_is_handed_over_while_it_is_still_being_walked(editor):
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "def _push_frames" in handler
     assert "on_frames=_push_frames" in handler
 
@@ -847,7 +848,7 @@ def test_stopping_keeps_the_frame_that_was_on_screen(editor):
     cmd = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "state['gfn_shown_frame']" in cmd
 
-    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "gfn_shown_frame" in handler
     assert "stopped at the frame on" in handler
 
@@ -876,3 +877,72 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
     # and it is checked before anything is drawn, every frame
     body = watcher.split("function frame(now)")[1]
     assert body.index("switchIsOn()") < body.index("read();")
+
+
+# ---------------------------------------------------------------------------
+# the controls, split and cleaned up
+# ---------------------------------------------------------------------------
+def test_controls_that_cannot_work_under_gfn_are_taken_away(editor):
+    """Greying them out invites the question of why they are dead."""
+    assert editor["submit_relax_btn"].layout.display in (None, "")
+    editor["submit_ff_dd"].value = "uff"
+
+    editor["submit_ff_dd"].value = "gfnff"
+    for name in ("submit_relax_btn", "submit_settle_btn", "submit_strength_slider"):
+        assert editor[name].layout.display == "none", name
+
+    editor["submit_ff_dd"].value = "uff"
+    for name in ("submit_relax_btn", "submit_settle_btn", "submit_strength_slider"):
+        assert editor[name].layout.display == "", name
+
+
+def test_optimise_and_optimise_all_are_two_switches(editor):
+    import ipywidgets as w
+
+    one = editor["submit_optimize_btn"]
+    every = editor["submit_optimize_all_btn"]
+    assert isinstance(one, w.ToggleButton) and isinstance(every, w.ToggleButton)
+    assert one.description == "Optimize" and every.description == "all"
+
+
+def test_only_one_of_them_runs_at_a_time(editor):
+    """A login node is shared; two sets of xtb processes is how it is noticed."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
+    assert "other.value = False" in handler
+    # and the frames of a set are walked in one loop, not started side by side
+    assert "for position, item in enumerate(targets):" in handler
+    assert "threading.Thread" in handler and handler.count("threading.Thread") == 1
+
+
+def test_only_all_takes_the_whole_set(editor):
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
+    assert "if every_frame else []" in handler
+
+
+@_needs_xtb
+def test_the_energy_is_reported_like_the_force_field_reports_one(editor):
+    import time
+
+    editor["coords_widget"].value = "3\nw\nO 0 0 0\nH 1.05 0 0\nH -0.28 1.02 0\n"
+    editor["submit_ff_dd"].value = "gfnff"
+
+    editor["submit_optimize_btn"].value = True
+    deadline = time.time() + 30
+    while time.time() < deadline and editor["submit_optimize_btn"].value:
+        time.sleep(0.05)
+
+    energy = editor["editor_state"].get("gfn_energy")
+    assert energy is not None and energy < 0, "no energy came back"
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
+    assert "E = {energy:.6f} Eh" in handler
+    assert "kcal/mol" in handler, "the tab speaks kcal/mol elsewhere"

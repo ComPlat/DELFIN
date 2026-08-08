@@ -194,8 +194,10 @@ def test_optimisation_covers_every_frame_and_is_undoable():
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding='utf-8').read()
-    body = source.split('def on_submit_optimize')[1].split('\n    def ')[0]
-    assert "frames = list(state.get('isomers') or [])" in body
+    body = source.split('def on_submit_optimize(change=None, every_frame=False)')[1].split('\n    def ')[0]
+    assert "frames = list(state.get('isomers') or []) if every_frame else []" in body, (
+        "Optimize takes the frame on screen; all takes the set"
+    )
     assert "state['pre_optimize_frames']" in body
     assert 'relax_xyz(' in body and 'max_steps=500' in body
     # A 500-step minimisation per frame takes seconds; it must not block the UI.
