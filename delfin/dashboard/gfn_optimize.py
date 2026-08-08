@@ -203,6 +203,7 @@ def optimize_with_gfn(
     timeout: Optional[float] = DEFAULT_TIMEOUT,
     max_atoms: Optional[int] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    on_frames: Optional[Callable[[list], None]] = None,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -259,7 +260,7 @@ def optimize_with_gfn(
         environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
                            OMP_STACKSIZE='1G')
         try:
-            if should_stop is None:
+            if should_stop is None and on_frames is None:
                 finished = subprocess.run(
                     command, cwd=str(folder), capture_output=True, text=True,
                     timeout=timeout, env=environment,
@@ -272,8 +273,24 @@ def optimize_with_gfn(
                     stderr=subprocess.PIPE, text=True, env=environment,
                 )
                 waited = 0.0
+                sent = 0
                 while running.poll() is None:
-                    if should_stop():
+                    # xtb writes xtbopt.log as it optimises, so the path can be
+                    # handed over while it is still being walked.  Reading it
+                    # only at the end is why the trajectory used to appear
+                    # after the run instead of during it.
+                    if on_frames is not None:
+                        try:
+                            walking = read_trajectory(folder)
+                        except Exception:
+                            walking = []
+                        if len(walking) > sent:
+                            sent = len(walking)
+                            try:
+                                on_frames(walking)
+                            except Exception:
+                                pass
+                    if should_stop is not None and should_stop():
                         running.terminate()
                         try:
                             running.wait(timeout=5)

@@ -3889,6 +3889,18 @@ def create_tab(ctx):
             _ensure_manip_bootstrap()
             _schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
+        run_id = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = run_id
+
+        def _push_frames(frames):
+            """Hand the path over while xtb is still walking it."""
+            played[0] = True
+            trail = list(frames)[-400:]
+            _schedule_ui_update(
+                lambda t=trail: setattr(
+                    submit_gfn_frame, 'value',
+                    json.dumps({'run': run_id, 'frames': t})))
+
         token = object()
         state['optimize_run'] = token
 
@@ -3909,11 +3921,12 @@ def create_tab(ctx):
                     if gfn and autospin:
                         outcome = _gfn.optimize_autospin(
                             xyz, method, charge=charge, should_stop=_stopped,
-                            timeout=None)
+                            timeout=None, on_frames=_push_frames)
                     elif gfn:
                         outcome = _gfn.optimize_with_gfn(
                             xyz, method, charge=charge, uhf=uhf,
-                            should_stop=_stopped, timeout=None)
+                            should_stop=_stopped, timeout=None,
+                            on_frames=_push_frames if position == 0 else None)
                     else:
                         outcome = relax_xyz(
                             xyz,
@@ -3932,13 +3945,7 @@ def create_tab(ctx):
                         # xtb writes every cycle to xtbopt.log, so the path
                         # costs nothing extra -- one run, and the viewer plays
                         # what the optimiser really walked through.
-                        trail = list(outcome['frames'])[-400:]
-                        state['gfn_run'] = int(state.get('gfn_run', 0)) + 1
-                        run_id = state['gfn_run']
-                        _schedule_ui_update(
-                            lambda t=trail, r=run_id: setattr(
-                                submit_gfn_frame, 'value',
-                                json.dumps({'run': r, 'frames': t})))
+                        _push_frames(outcome['frames'])
                     note = str(outcome.get('status') or '')
                     if 'before converging' in note:
                         # It came back with a geometry, but not a finished one.

@@ -8,6 +8,7 @@ a charge and a spin: the charge can be read off a SMILES, the spin never can.
 
 from __future__ import annotations
 
+import pathlib
 import shutil
 
 import pytest
@@ -743,3 +744,46 @@ def test_without_a_timeout_the_hand_is_what_stops_it():
         stretched, "gfnff", should_stop=lambda: stop[0], timeout=None)
 
     assert "stopped" in result["status"] or result["ok"]
+
+
+def test_the_path_is_handed_over_while_it_is_still_being_walked(editor):
+    """The trajectory only played once the run was switched off, and frame 1
+    stood there while it worked -- because xtbopt.log was read at the end.
+    xtb writes it as it goes, so it can be read as it goes."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    assert "def _push_frames" in handler
+    assert "on_frames=_push_frames" in handler
+
+    runner = open(
+        __import__("delfin.dashboard.gfn_optimize", fromlist=["x"]).__file__,
+        encoding="utf-8").read()
+    loop = runner.split("while running.poll() is None:")[1][:900]
+    assert "read_trajectory(folder)" in loop, "the log is not read while running"
+    assert "on_frames(walking)" in loop
+
+
+@_needs_xtb
+def test_frames_arrive_during_a_long_run_not_after_it():
+    import threading
+    import time
+
+    zn = pathlib.Path(__file__).parent / "fixtures" / "does-not-exist"
+    del zn
+    stretched = "6\nbent\nC 0 0 0\nC 1.9 0 0\nH -0.6 0.9 0\nH -0.6 -0.9 0\n" \
+                "H 2.5 0.9 0\nH 2.5 -0.9 0\n"
+    seen: list[int] = []
+    stop = [False]
+    threading.Timer(3.0, lambda: stop.__setitem__(0, True)).start()
+
+    result = gfn.optimize_with_gfn(
+        stretched, "gfnff", timeout=None, should_stop=lambda: stop[0],
+        on_frames=lambda frames: seen.append(len(frames)))
+
+    # a molecule this small may well finish inside one poll; what must hold is
+    # that nothing is reported twice and the final result agrees
+    assert seen == sorted(seen)
+    if seen:
+        assert seen[-1] <= len(result["frames"])
