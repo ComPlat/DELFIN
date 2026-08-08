@@ -2094,3 +2094,66 @@ def test_the_status_counts_the_atoms_the_hand_is_on(editor):
     source = open(tab_submit.__file__, encoding="utf-8").read()
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "holding {len(holding)} atoms" in follow
+
+
+def test_letting_go_gives_the_relaxation_back_what_the_drag_took(editor):
+    """While Dynamik Opt is down, carrying on after a release has nothing to do
+    with Settle: the switch means the structure is being kept relaxed.
+
+    It used to stop dead at the release unless Settle happened to be on as
+    well, which is why pressing Optimise afterwards still had work to do.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
+    free = handler.split("verb == 'gfnfree'")[1].split("return")[0]
+    assert "_arm_gfn_takeup()" in free, "the relaxation has to carry on"
+    assert "_arm_gfn_settle()" in free, "and Settle alone still tidies one"
+
+
+@_needs_xtb
+def test_a_release_relaxes_to_convergence_with_settle_switched_off(editor):
+    """The complaint this closes: it reacted briefly, stopped where the drag
+    left it, and pressing Optimise then went on optimising."""
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_settle_btn"].value = False          # deliberately off
+    refs["submit_relax_btn"].value = True
+    deadline = _time.time() + 60
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+
+    refs["submit_cmd_sync"].value = "gfngrab:1:"
+    now = state["current_xyz_for_copy"]["content"]
+    rows = [line.split() for line in gfn.atom_lines(now)]
+    rows[0][2] = f"{float(rows[0][2]) + 0.45:.6f}"
+    body = "\n".join(" ".join(r) for r in rows)
+    refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held=0\n{body}\n"
+    _time.sleep(0.3)
+    refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
+    refs["submit_cmd_sync"].value = "gfnfree:1:"
+
+    deadline = _time.time() + 90
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+    assert "converged after" in refs["mol_status"].value, refs["mol_status"].value
+
+    # and there is nothing left for Optimise to find
+    settled = state["current_xyz_for_copy"]["content"]
+    again = gfn.optimize_with_gfn(settled, "gfnff")
+    assert gfn.largest_shift(settled, again["xyz"]) < 0.01, (
+        "Optimise still had work to do after the relaxation said it was done"
+    )
+    refs["submit_relax_btn"].value = False

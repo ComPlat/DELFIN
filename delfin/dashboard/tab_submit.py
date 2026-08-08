@@ -5445,8 +5445,14 @@ def create_tab(ctx):
             # a drag that moved something sends its coordinates first -- this
             # is what keeps the switch from being left on with nothing running.
             _arm_gfn_restart()
-            # And if Settle is on, the structure is tidied around where the
-            # atom was put rather than left at the cursor.
+            # Letting go gives the relaxation back what the drag took from it.
+            # While Dynamik Opt is down that has nothing to do with Settle: the
+            # switch means the structure is being kept relaxed, so it carries
+            # on to convergence -- it used to stop dead at the release unless
+            # Settle happened to be on as well, which is why pressing Optimise
+            # afterwards still had work to do.
+            _arm_gfn_takeup()
+            # Settle alone, without Dynamik Opt, still tidies one release.
             _arm_gfn_settle()
             return
 
