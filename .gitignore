@@ -35,6 +35,18 @@ delfin/qm_tools/share/
 delfin/qm_tools/third_party/
 delfin/qm_tools/HYPERPOLARIZABILITY_SETUP.txt
 
+# What xtb drops in the directory it is started from. Anchored to the repo
+# root, which is where the dashboard is launched -- a file of one of these
+# names anywhere else is somebody's, not a leftover.
+/gfnff_topo
+/gfnff_charges
+/gfnff_adjacency
+/xtbrestart
+/xtbtopo.mol
+/.xtboptok
+/charges
+/wbo
+
 # Local runtime/build cache
 .runtime_cache/
 

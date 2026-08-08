@@ -3541,11 +3541,6 @@ def create_tab(ctx):
 
         apply_hybridisation_overrides(perceived, state.get('hyb_overrides') or {})
 
-    #: A relaxation that runs on the server cannot be allowed to run forever:
-    #: each step is an xtb process, and a login node is shared.
-    _GFN_LOOP_SECONDS = 60.0
-    _GFN_LOOP_CYCLES = 5
-
     def _install_gfn_frame_watcher():
         """Teach the page to play the trajectory, once.
 
@@ -3885,96 +3880,6 @@ def create_tab(ctx):
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _stop_gfn_loop():
-        state['gfn_loop'] = None
-
-    def _start_gfn_loop():
-        """Relax with GFN-FF while the toggle is on, a few cycles at a time.
-
-        The browser has no GFN engine to step, so each step is a call to xtb
-        and the coordinates come back into the viewer as they arrive: about
-        ten steps a second for a hundred atoms, which reads as a relaxation
-        rather than a jump.  It ends by itself -- converged, out of time, or
-        switched off -- because a loop of processes on a shared machine that
-        only a user can stop is a loop that will not be stopped.
-        """
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
-        if not xyz:
-            _set_mol_status('Load a structure before relaxing.')
-            submit_relax_btn.value = False
-            return
-        if not _gfn.xtb_available():
-            _set_mol_status(f'GFN-FF needs xtb, which was not found.')
-            submit_relax_btn.value = False
-            return
-        # Without the bootstrap there is no __delfinSubmitManip on the page,
-        # and every coordinate push is a silent no-op -- which is exactly what
-        # "Relaxing with GFN-FF..." and nothing moving looked like.
-        _ensure_manip_bootstrap()
-        _install_gfn_frame_watcher()
-        token = object()
-        state['gfn_loop'] = token
-        charge = int(submit_gfn_charge.value or 0)
-        uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
-        started = time.monotonic()
-        _set_mol_status('Relaxing with GFN-FF...', spinner=True)
-
-        def _work():
-            current = xyz
-            steps = 0
-            reason = 'switched off'
-            trajectory = []
-            written = [0]
-            while state.get('gfn_loop') is token:
-                if time.monotonic() - started > _GFN_LOOP_SECONDS:
-                    reason = f'stopped after {int(_GFN_LOOP_SECONDS)} s'
-                    break
-                outcome = _gfn.relax_steps(
-                    current, charge=charge, uhf=uhf, cycles=_GFN_LOOP_CYCLES)
-                if not outcome.get('ok'):
-                    reason = str(outcome.get('status') or 'failed')
-                    break
-                current = outcome['xyz']
-                steps += 1
-                trajectory.append(_gfn.coordinates_of(current))
-                # The whole trajectory, not the newest frame: the page reads
-                # the field on a timer and the loop writes faster than it
-                # looks, so a frame sent on its own is a frame that can be
-                # missed.  Written in batches, because every write is a
-                # message and the point is that none of them has to arrive.
-                if len(trajectory) - written[0] >= 3:
-                    written[0] = len(trajectory)
-                    payload = json.dumps({'frames': trajectory})
-                    _schedule_ui_update(
-                        lambda text=payload: setattr(submit_gfn_frame, 'value', text))
-                if outcome.get('converged'):
-                    reason = 'converged'
-                    break
-
-            def _finish():
-                # The last write carries every frame, so a page that only ever
-                # saw this one still has the whole trajectory to play.
-                if trajectory:
-                    submit_gfn_frame.value = json.dumps({'frames': trajectory})
-                if state.get('gfn_loop') is token:
-                    state['gfn_loop'] = None
-                    if submit_relax_btn.value:
-                        submit_relax_btn.value = False
-                lines = [ln for ln in current.splitlines()[2:] if ln.strip()]
-                if lines:
-                    # Written the ordinary way, which re-renders.  The live
-                    # pushes are the nice part; this is the part that has to
-                    # be true -- a relaxation whose result is only visible if
-                    # a JavaScript call happened to land is not a result.
-                    coords_widget.value = (
-                        f'{len(lines)}\nRelaxed with GFN-FF\n' + '\n'.join(lines))
-                _set_mol_status(
-                    f'GFN-FF relaxation: {steps} step(s), {reason}.')
-
-            _schedule_ui_update(_finish)
-
-        threading.Thread(target=_work, daemon=True).start()
-
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.
 
@@ -4056,7 +3961,6 @@ def create_tab(ctx):
             return
         active = bool(submit_relax_btn.value)
         submit_relax_btn.button_style = 'info' if active else ''
-        _stop_gfn_loop()
         if _gfn.is_gfn_method(submit_ff_dd.value):
             # There is no GFN engine in the browser to run per frame, so this
             # switch means something else here: while it is on, the molecule
@@ -5643,6 +5547,10 @@ def create_tab(ctx):
         # the molecule follows it -- one short xtb run per push, and nothing at
         # all when nothing is being dragged.  It was switched off and hidden
         # here before there was anything for it to do.
+        # Switching method takes the switch with it, and the follow with the
+        # switch: the toggle handler reads the method that is chosen *now*, so
+        # a follow armed under GFN would outlive the choice that armed it.
+        _end_gfn_follow()
         if submit_relax_btn.value:
             submit_relax_btn.value = False
         if gfn and submit_settle_btn.value:

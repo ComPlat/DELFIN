@@ -295,30 +295,48 @@ def test_the_flat_coordinates_are_what_the_viewer_writes():
     assert flat == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
 
-def test_the_loop_ends_by_itself_and_says_how(editor):
-    """Converged, out of time, or switched off -- never only by being noticed."""
+def test_the_follow_ends_with_the_drag_and_with_the_method(editor):
+    """A loop of processes on a shared machine that only a user can stop is a
+    loop that will not be stopped.
+
+    This one has no clock because it needs none: it runs while a hand is on an
+    atom and stops when the hand comes off, when the switch goes up, or when a
+    method that has no xtb behind it is chosen.
+    """
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
-    assert "_GFN_LOOP_SECONDS" in loop, "no time limit"
-    assert "outcome.get('converged')" in loop, "it would run past convergence"
-    assert "state.get('gfn_loop') is token" in loop, "switching it off must end it"
-    assert "_GFN_LOOP_CYCLES" in loop
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "while state.get('gfn_follow')" in follow, (
+        "it has to stop when the drag does"
+    )
+
+    for name in ("on_submit_relax_toggle", "on_submit_ff_changed",
+                 "on_submit_cmd"):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "_end_gfn_follow()" in body, name
 
 
-def test_the_relax_toggle_is_the_browser_fields_alone(editor):
-    """It was given a GFN path, and that was the wrong shape for it.
+def test_switching_relax_on_starts_nothing_until_something_is_dragged(editor):
+    """Relax under GFN arms the follow; it does not begin a relaxation.
 
-    Relax runs a field per frame; GFN is a process per step.  The trajectory
-    belongs to Optimise, which gets it from one run for free.
+    The shape that was wrong before was a loop of xtb processes running for as
+    long as a toggle was down.  Nothing runs here until the page pushes a
+    geometry, and the page only pushes while an atom is being moved.
     """
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
-    assert "_start_gfn_loop()" not in toggle
-    assert "_stop_gfn_loop()" in toggle, "a loop left running would keep going"
+    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
+    gfn_branch = gfn_branch.split("if not active:")[0] + gfn_branch.split(
+        "return\n", 2)[-1]
+    assert "relax_steps" not in gfn_branch, "nothing may run on the press"
+    assert "_gfn_follow_step" not in gfn_branch
+    assert "threading.Thread" not in gfn_branch
+    # what it does instead: put the pieces the follow needs on the page
+    assert "_ensure_manip_bootstrap()" in toggle
+    assert "_install_gfn_frame_watcher()" in toggle
 
 
 def test_the_viewer_can_be_given_coordinates_from_the_kernel():
@@ -332,33 +350,33 @@ def test_the_viewer_can_be_given_coordinates_from_the_kernel():
 
 
 @_needs_xtb
-def test_the_loop_really_sends_coordinates_to_the_page(editor, monkeypatch):
-    """The Python half, driven the way the toggle drives it.
+def test_relax_under_gfn_costs_nothing_while_nothing_is_dragged(editor):
+    """Pressed and left alone, it must not start an xtb -- nor a hundred.
 
-    What this cannot check is whether the browser paints them -- there is no
-    browser here.  What it can check is that the message leaves the kernel,
-    carries every coordinate, and is addressed to the viewer's scope.
+    Driven the way the toggle drives it, with a real xtb on the machine: what
+    is watched is that no process runs and no frame is produced until a drag
+    pushes a geometry.
     """
     import time as _time
 
     refs = editor
-    scripts: list[str] = []
     state = refs["editor_state"]
     state["current_xyz_for_copy"] = {"content": _WATER}
 
-    from delfin.dashboard import tab_submit  # noqa: F401
-
-    # the tab writes through ctx.run_js, which the fixture collects
     refs["submit_ff_dd"].value = "gfnff"
     refs["submit_relax_btn"].value = True
+    assert refs["submit_relax_btn"].value is True, "xtb was not found"
 
-    deadline = _time.time() + 20
-    while _time.time() < deadline and state.get("gfn_loop") is not None:
-        _time.sleep(0.05)
+    _time.sleep(1.0)
+
+    assert refs["submit_gfn_frame"].value == "", "something was calculated"
+    assert state.get("gfn_follow_busy") in (None, False)
+    assert state.get("gfn_follow") in (None, False), (
+        "the follow arms on the grab, not on the press"
+    )
+
     refs["submit_relax_btn"].value = False
-    del scripts
-
-    assert state.get("gfn_loop") is None, "the loop did not end by itself"
+    assert state.get("gfn_follow") is False
 
 
 def test_the_frames_go_through_a_widget_not_through_run_js(editor):
@@ -372,9 +390,11 @@ def test_the_frames_go_through_a_widget_not_through_run_js(editor):
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
-    assert "submit_gfn_frame" in loop, "the frames do not go through the field"
-    assert "setPositions" not in loop, "a per-frame run_js is what failed"
+    for name in ("_gfn_follow_step", "on_submit_optimize(change=None, "
+                 "every_frame=False)"):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "submit_gfn_frame" in body, f"{name} does not use the field"
+        assert "setPositions" not in body, "a per-frame run_js is what failed"
 
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     # ipywidgets writes the DOM value without firing an event, so it is read
@@ -385,23 +405,24 @@ def test_the_frames_go_through_a_widget_not_through_run_js(editor):
     assert "gfn_watcher_installed" in watcher, "it must be installed once"
 
 
-def test_the_whole_trajectory_is_sent_not_the_newest_frame(editor):
-    """The page reads on a timer and the loop writes faster than it looks.
+def test_the_trail_is_sent_not_the_newest_frame_alone(editor):
+    """The page reads on a timer and the kernel writes faster than it looks.
 
     A frame sent on its own is a frame that can be missed -- which is why only
-    the last structures were arriving.  Every write carries the trajectory so
-    far, so a page that saw only the final write still has all of it.
+    the last structures were arriving.  Every write carries a run of frames, so
+    a page that looked once still has the ones it did not see.
     """
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
-    assert "trajectory.append" in loop
-    assert "json.dumps({'frames': trajectory})" in loop
-    finish = loop.split("def _finish")[1]
-    assert "json.dumps({'frames': trajectory})" in finish, (
-        "the last write has to carry everything"
-    )
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "frames.append(" in follow
+    assert "frames[-40:]" in follow, "one frame per write can be missed"
+
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "walked[-400:]" in handler
 
 
 def test_the_playback_interpolates_between_computed_frames(editor):
@@ -419,26 +440,40 @@ def test_the_playback_interpolates_between_computed_frames(editor):
     assert "drawn, not calculated" in watcher, "say which positions are which"
 
 
-def test_the_loop_starts_the_bootstrap_before_it_pushes(editor):
-    """Without it there is no __delfinSubmitManip, and every push is a no-op."""
+def test_the_bootstrap_is_on_the_page_before_anything_pushes(editor):
+    """Without it there is no __delfinSubmitManip, and every push is a no-op --
+    which is exactly what "Relaxing..." and nothing moving looked like."""
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
-    assert "_ensure_manip_bootstrap()" in loop
-    assert loop.index("_ensure_manip_bootstrap()") < loop.index("submit_gfn_frame")
+    toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
+    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
+    assert "_ensure_manip_bootstrap()" in gfn_branch
+    assert "_install_gfn_frame_watcher()" in gfn_branch
+
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert handler.index("_ensure_manip_bootstrap()") < handler.index(
+        "def _push_frames")
 
 
-def test_the_relaxed_structure_lands_even_if_the_pushes_do_not(editor):
-    """A result that is only visible when a JS call happened to land is not one."""
+def test_the_optimised_structure_lands_even_if_the_pushes_do_not(editor):
+    """A result that is only visible when a JS call happened to land is not one.
+
+    The playback is the nice part; the coordinate box is the part that has to
+    be true, and Copy and Submit both read it.
+    """
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
-    loop = source.split("def _start_gfn_loop")[1].split("\n    def ")[0]
-    finish = loop.split("def _finish")[1]
-    assert "coords_widget.value" in finish
-    assert "manip_inflight" not in finish, (
-        "the inflight flag skips the re-render, which is what hid the result"
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    apply_step = handler.split("def _apply()")[1]
+    assert "coords_widget.value = (" in apply_step
+    assert "if played[0]:" in apply_step, (
+        "the re-render is skipped only when the picture is already right"
     )
 
 
