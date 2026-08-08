@@ -2296,7 +2296,7 @@ def test_a_past_drag_has_no_hold_on_the_present(editor):
         "a timer for a structure that is history must not fire"
     )
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
-    assert "if int(state.get('gfn_generation', 0)) != generation:" in settle, (
+    assert "int(state.get('gfn_generation', 0)) != generation" in settle, (
         "nor may a finished run write its geometry over a newer one"
     )
 
@@ -2421,3 +2421,96 @@ def test_only_gfnff_has_a_topology_to_keep():
     source = open(gfn.__file__, encoding="utf-8").read()
     runner = source.split("def optimize_with_gfn")[1].split("\ndef ")[0]
     assert "keeping = topology is not None and key == 'gfnff'" in runner
+
+
+def test_optimise_keeps_the_bonding_the_editor_has_been_working_with(editor):
+    """Pressing Optimise on a structure that has been pulled about used to
+    re-perceive the topology and shove the molecule apart -- the same cliff the
+    drag had, in the one place a user reaches for when the drag went wrong."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "topology=perceived" in handler
+    assert "None if every_frame" in handler, (
+        "a set of isomers is a set of different molecules, and one perception "
+        "cannot describe them all"
+    )
+
+
+def test_optimise_supersedes_the_live_relaxation(editor):
+    """Two xtb runs writing the same coordinate box is how the first press came
+    to look like it had only worked out an energy: the live one landed after it
+    and put its own, older geometry back, so a second press was needed."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "or state.get('optimize_run') is not None" in settle, (
+        "the live relaxation has to stop when Optimise starts"
+    )
+    assert settle.count("state.get('optimize_run') is not None") >= 3, (
+        "it must also not start one, nor write its geometry over Optimise's"
+    )
+
+
+@_needs_xtb
+def test_one_press_of_optimise_is_enough_after_a_drag(editor):
+    """The complaint in one line: the first press worked out an energy and the
+    second one optimised."""
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+    deadline = _time.time() + 60
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+
+    # a carbon pulled well past where GFN-FF stops seeing the bond
+    refs["submit_cmd_sync"].value = "gfngrab:1:"
+    rows = [line.split()
+            for line in gfn.atom_lines(state["current_xyz_for_copy"]["content"])]
+    rows[0][1] = f"{float(rows[0][1]) - 0.9:.6f}"
+    body = "\n".join(" ".join(r) for r in rows)
+    refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held=0\n{body}\n"
+    _time.sleep(0.3)
+    refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
+    refs["submit_cmd_sync"].value = "gfnfree:1:"
+    deadline = _time.time() + 120
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+    released = state["current_xyz_for_copy"]["content"]
+
+    def carbon_carbon(xyz):
+        rows = [line.split() for line in gfn.atom_lines(xyz)]
+        a = [float(v) for v in rows[0][1:4]]
+        b = [float(v) for v in rows[1][1:4]]
+        return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+    assert carbon_carbon(released) < 1.7, (
+        f"the bond was broken by the drag: {carbon_carbon(released):.3f} A"
+    )
+
+    refs["submit_optimize_btn"].value = True          # exactly one press
+    deadline = _time.time() + 120
+    while _time.time() < deadline and refs["submit_optimize_btn"].value:
+        _time.sleep(0.05)
+
+    optimised = state["current_xyz_for_copy"]["content"]
+    assert carbon_carbon(optimised) < 1.7, "Optimise broke the bond"
+    assert gfn.largest_shift(released, optimised) < 0.05, (
+        "one press has to be enough -- there was work left after it"
+    )
+    refs["submit_relax_btn"].value = False

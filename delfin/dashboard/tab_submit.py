@@ -4163,6 +4163,8 @@ def create_tab(ctx):
     def _gfn_settle_now():
         if state.get('gfn_follow') or state.get('gfn_settle_busy'):
             return                      # a new drag started in the meantime
+        if state.get('optimize_run') is not None:
+            return                      # Optimise is doing this already
         generation = int(state.get('gfn_generation', 0))
         method = str(submit_ff_dd.value)
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
@@ -4218,15 +4220,23 @@ def create_tab(ctx):
                 # two switches was keeping this alive.
                 should_stop=lambda: bool(
                     state.get('gfn_follow')
+                    # Optimise is the same calculation asked for by hand, and
+                    # it supersedes this one.  Two xtb runs writing the same
+                    # coordinate box is how the first press came to look like
+                    # it had only worked out an energy: the live one landed
+                    # after it and put its own, older geometry back.
+                    or state.get('optimize_run') is not None
                     or not (submit_settle_btn.value or _gfn_live_is_on())),
             )
 
             def _done():
                 state['gfn_settle_busy'] = False
-                if int(state.get('gfn_generation', 0)) != generation:
-                    # The structure moved on while this was running.  Its
-                    # geometry is about the one before, and writing it would
-                    # be a past drag reaching into the present.
+                if (int(state.get('gfn_generation', 0)) != generation
+                        or state.get('optimize_run') is not None):
+                    # The structure moved on while this was running, or
+                    # Optimise took over.  Either way this geometry is about a
+                    # molecule that is no longer the current one, and writing
+                    # it would be the past reaching into the present.
                     return
                 state['gfn_settle_again'] = False
                 # Where the next round's frames carry on from.
@@ -4646,16 +4656,25 @@ def create_tab(ctx):
                         failures.append(f'frame {position + 1}: stopped')
                         results.append(item)
                         continue
+                    # The bonding the editor has been working with, so that
+                    # pressing Optimise on a structure that has been pulled
+                    # about does not re-perceive it and shove the molecule
+                    # apart -- the same cliff the drag had.  Only for the one
+                    # frame on screen: a set of isomers is a set of different
+                    # molecules, and one perception cannot describe them all.
+                    perceived = (None if every_frame
+                                 else _gfn_topology_dir(
+                                     len(_gfn.atom_lines(xyz))))
                     if gfn and autospin:
                         outcome = _gfn.optimize_autospin(
                             xyz, method, charge=charge, should_stop=_stopped,
                             timeout=None, on_frames=_push_frames,
-                            constraints=held)
+                            constraints=held, topology=perceived)
                     elif gfn:
                         outcome = _gfn.optimize_with_gfn(
                             xyz, method, charge=charge, uhf=uhf,
                             should_stop=_stopped, timeout=None,
-                            constraints=held,
+                            constraints=held, topology=perceived,
                             on_frames=_push_frames if position == 0 else None)
                     else:
                         outcome = relax_xyz(
