@@ -2398,6 +2398,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
 
 
 def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_isomers):
+    _topo_env_on = os.environ.get("DELFIN_FFFREE_TOPO_ENV", "0") == "1"
     """Build all clean isomers of `d`'s ligand set on a SPECIFIC polyhedron (geom_name).
     Best-effort: skips isomers that fail to build / fail the self-gate, returns [] on any
     enumeration error.  Used to add SPY-5 alongside TBP-5 for CN5 (polytopal completeness)."""
@@ -2442,6 +2443,57 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex,
                                graph_bonds=_gb, block_bounds=_bb):
             continue
+        # ===== TOPOLOGIE-FILTER AUF DEM ERGAENZTEN FRAME (2026-08-08) =====
+        # DELFIN_FFFREE_TOPO_ENV, default OFF -> byte-identisch.
+        #
+        # WARUM HIER UND NICHT IM SELBST-GATE.  Ein Versuch, dasselbe in _build_is_clean zu
+        # pruefen (SPURIOUS_BOND), traf AUCH die primaeren Frames und verlor Isomere:
+        # tpr6spur2 meldete isomers_lost 4 und ccdc_arrangement_lost 3, also SCHLECHTER als
+        # ohne.  Hier laeuft der Test ausschliesslich auf dem ERGAENZTEN Frame -- er kann
+        # damit nur eine Ergaenzung verwerfen, nie ein bestehendes Isomer.  Das ist dieselbe
+        # Bauform wie jede Landung dieses Projekts: ADD, never replace.
+        #
+        # WAS ER PRUEFT.  Der gemessene Rest von tpr6final war ausschliesslich das: 187
+        # ergaenzte Frames, davon 53 hart, Defekttyp smiles_topology 17 und core_torn 3.
+        # Das Auge definiert smiles_topology so: aus dem Molekuel steht fest, welche
+        # SCHWER-NACHBARSCHAFT ein Atom haben MUSS; ein Frame-Atom, dessen wahrgenommene
+        # Nachbarschaft davon abweicht, traegt einen Topologiebruch.
+        #
+        # graph_bonds liegt hier bereits in FRAME-Indizes vor (aus denselben Bloecken wie
+        # exempt_pairs), also entfaellt das Zuordnungsproblem, an dem der Mechanismus in
+        # smiles_converter:31880 einmal gestorben ist ("they never coincide, so it returned 0
+        # every time").  Verglichen wird pro Atom die MENGE der Nachbar-Elemente; eine
+        # Perzeptionsrandbedingung, die nur die ANZAHL gleicher Elemente aendert, bleibt
+        # damit unauffaellig, waehrend ein abgeloester Substituent oder ein verschmolzener
+        # Kontakt die Menge veraendert.
+        if _topo_env_on and _gb:
+            try:
+                from collections import Counter as _te_C
+                _req_nb = {}
+                for _i, _j in _gb:
+                    _req_nb.setdefault(_i, []).append(syms[_j])
+                    _req_nb.setdefault(_j, []).append(syms[_i])
+                _got_nb = {}
+                for _i, _j in _bd._geometric_bonds(syms, P):
+                    if syms[_i] == "H" or syms[_j] == "H":
+                        continue
+                    if _bd._is_metal(syms[_i]) or _bd._is_metal(syms[_j]):
+                        continue
+                    _got_nb.setdefault(_i, []).append(syms[_j])
+                    _got_nb.setdefault(_j, []).append(syms[_i])
+                _broken = False
+                for _i, _s in enumerate(syms):
+                    if _s == "H" or _bd._is_metal(_s):
+                        continue
+                    if _i not in _req_nb:
+                        continue          # kein Sollwert -> nicht beurteilbar
+                    if set(_te_C(_got_nb.get(_i, []))) != set(_te_C(_req_nb[_i])):
+                        _broken = True
+                        break
+                if _broken:
+                    continue              # ergaenzter Frame mit gebrochener Topologie
+            except Exception:
+                pass                      # nicht beurteilbar -> alte Sicherungen gelten
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
