@@ -760,9 +760,11 @@ def test_the_path_is_handed_over_while_it_is_still_being_walked(editor):
     runner = open(
         __import__("delfin.dashboard.gfn_optimize", fromlist=["x"]).__file__,
         encoding="utf-8").read()
-    loop = runner.split("while running.poll() is None:")[1][:900]
+    loop = runner.split("while running.poll() is None:")[1][:2200]
     assert "read_trajectory(folder)" in loop, "the log is not read while running"
     assert "on_frames(walking)" in loop
+    # and the switch is checked before any of that, every pass
+    assert loop.index("should_stop()") < loop.index("read_trajectory(folder)")
 
 
 @_needs_xtb
