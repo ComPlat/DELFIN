@@ -688,3 +688,32 @@ def test_fullscreen_is_not_told_to_enter_coordinates(editor):
     setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
     assert "'enter XYZ' in str(line)" in setter
     assert "mol_status_fs.value = '' if prompt else rendered_html" in setter
+
+
+def test_the_player_arrives_with_the_startup_scripts(tmp_path):
+    """run_js clears its output before displaying, so a script sent at click
+    time can be replaced before the page has run it.  That is how the player
+    came to be missing while everything it depends on was working -- and why
+    the page never reported anything at all.  add_init_js is the channel the
+    explorer's own JS arrives on."""
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.context import DashboardContext
+
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir()
+    through_run_js: list[str] = []
+    ctx = DashboardContext(
+        calc_dir=tmp_path / "calc",
+        archive_dir=tmp_path / "archive",
+        office_dir=tmp_path / "office",
+    )
+    ctx.run_js = through_run_js.append
+    tab_submit.create_tab(ctx)
+
+    startup = "\n".join(ctx.init_js_parts)
+    assert "__delfinGfnPlay" in startup, "the player is not on the page"
+    assert not any("__delfinGfnPlay" in s for s in through_run_js), (
+        "it must not go through the channel that clears itself"
+    )
+    assert "gfnplay:" in startup, "it has to be able to report back"

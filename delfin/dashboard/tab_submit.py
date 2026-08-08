@@ -3531,7 +3531,7 @@ def create_tab(ctx):
         if state.get('gfn_watcher_installed'):
             return
         state['gfn_watcher_installed'] = True
-        _run_manip_js(
+        _emit_watcher_js(
             '(function(){\n'
             '  var scope=' + json.dumps(submit_scope_id) + ';\n'
             '  window.__delfinGfnPlay=window.__delfinGfnPlay||{};\n'
@@ -3637,6 +3637,22 @@ def create_tab(ctx):
             '  window.requestAnimationFrame(frame);\n'
             '})();'
         )
+
+    def _emit_watcher_js(script):
+        """Send the player with the start-up scripts, not through run_js.
+
+        run_js writes into a single Output and clears it first, so a script
+        sent at click time can be replaced before the page has run it -- which
+        is how the player came to be missing while everything it depends on
+        was working.  add_init_js is the channel the explorer's own JS arrives
+        on, and that one has never been in doubt.
+        """
+        try:
+            ctx.add_init_js(script)
+            return
+        except Exception:
+            pass
+        _run_manip_js(script)
 
     def _stop_gfn_loop():
         state['gfn_loop'] = None
@@ -5216,6 +5232,9 @@ def create_tab(ctx):
     submit_manip_clear_btn.on_click(on_submit_manip_clear)
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
+    # On the page from the start: a player installed at click time races the
+    # run it is meant to show.
+    _install_gfn_frame_watcher()
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
     submit_gfn_autospin.observe(on_submit_autospin, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
