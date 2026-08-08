@@ -165,9 +165,57 @@ _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
 
+def checkout_fingerprint(root: Path | str) -> dict[str, tuple[int, int]]:
+    """(size, mtime) for every file under ``root``, excluding the guarded
+    fixture workspaces and anything git already ignores by convention.
+
+    Used to answer one question after a run: did the agent change the
+    checkout outside the directories it is allowed to change? The guard
+    below covers three fixture directories, while the agent's workspace is
+    the whole tree -- so a run once rewrote a test file two directories
+    away and nothing said so.
+    """
+    base = Path(root)
+    guarded = [base / rel for rel in _BEHAVIOR_WS_RELS]
+    skip = {".git", "__pycache__", ".pytest_cache", "node_modules"}
+    out: dict[str, tuple[int, int]] = {}
+    for path in base.rglob("*"):
+        try:
+            if not path.is_file():
+                continue
+            if any(part in skip for part in path.parts):
+                continue
+            if any(g in path.parents for g in guarded):
+                continue
+            st = path.stat()
+            out[str(path.relative_to(base))] = (st.st_size, int(st.st_mtime))
+        except OSError:
+            continue
+    return out
+
+
+def changed_outside_workspaces(
+    root: Path | str, before: dict[str, tuple[int, int]],
+) -> list[str]:
+    """Paths that differ from ``before`` -- added, removed or rewritten.
+
+    Reporting, not reverting: restoring the whole checkout would throw
+    away whatever the developer had uncommitted, which is a worse failure
+    than the one being fixed."""
+    after = checkout_fingerprint(root)
+    changed = {p for p in set(before) | set(after)
+               if before.get(p) != after.get(p)}
+    return sorted(changed)
+
+
 class _PristineWorkspace:
     """Snapshot/restore guard for the fixture workspaces (a dir that does not
-    exist under the current working directory is skipped)."""
+    exist under the current working directory is skipped).
+
+    ``failed`` records a snapshot that did not happen. It used to swallow
+    the error and set ``_pairs`` empty, so the restore then did nothing at
+    all -- silently, at the one moment the caller most needed to hear it.
+    """
 
     def __init__(self, root: Path | None = None) -> None:
         import os as _os
@@ -175,6 +223,7 @@ class _PristineWorkspace:
         self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
         self._pairs: list[tuple[Path, Path]] = []
         self._snap_root: Path | None = None
+        self.failed = False
 
     def __enter__(self) -> "_PristineWorkspace":
         import shutil
@@ -189,6 +238,7 @@ class _PristineWorkspace:
                     self._pairs.append((ws, snap))
         except Exception:
             self._pairs = []
+            self.failed = True
         return self
 
     def __exit__(self, *exc) -> None:
@@ -331,6 +381,13 @@ def run_suite(
     sample as it lands.
     """
 
+    import os as _os
+    _root = Path(_os.getcwd())
+    try:
+        _before = checkout_fingerprint(_root)
+    except Exception:
+        _before = {}
+
     out: list[BenchmarkResult] = []
     for task in tasks:
         per_task_replicate: Callable[..., None] | None = (
@@ -351,6 +408,23 @@ def run_suite(
                 progress(task, result)
             except Exception:
                 pass  # best-effort progress reporting
+
+    # Say what the run changed outside the directories it may change. The
+    # fixture guard restores those three; everything else the agent touches
+    # persists, and a run that quietly rewrites a test file leaves the next
+    # measurement starting from a different tree than the last.
+    try:
+        _changed = changed_outside_workspaces(_root, _before) if _before else []
+    except Exception:
+        _changed = []
+    if _changed:
+        print(f"\n⚠️  this run changed {len(_changed)} file(s) OUTSIDE the "
+              f"fixture workspaces — the checkout is not as it was found:")
+        for rel in _changed[:20]:
+            print(f"     {rel}")
+        if len(_changed) > 20:
+            print(f"     … and {len(_changed) - 20} more")
+        print("     review with `git status` before trusting the next run.")
     return out
 
 
