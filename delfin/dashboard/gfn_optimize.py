@@ -48,8 +48,10 @@ GFN_METHODS: Dict[str, Dict[str, Any]] = {
              'reports': 'GFN1-xTB'},
 }
 
-#: A run that has not finished by then is not going to be useful, and the
-#: dashboard is not going to keep a login node busy waiting for it.
+#: For callers that cannot be stopped by hand.  The dashboard passes None:
+#: Optimise is a switch there, so the person watching decides when a run has
+#: gone on long enough -- and a clock that stops a converging optimisation at
+#: an arbitrary second is worse than one that never stops it.
 DEFAULT_TIMEOUT = 180.0
 
 _ENERGY_RE = re.compile(r'TOTAL ENERGY\s+(-?\d+\.\d+)')
@@ -198,7 +200,7 @@ def optimize_with_gfn(
     charge: int = 0,
     uhf: int = 0,
     max_steps: Optional[int] = None,
-    timeout: float = DEFAULT_TIMEOUT,
+    timeout: Optional[float] = DEFAULT_TIMEOUT,
     max_atoms: Optional[int] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
@@ -308,7 +310,7 @@ def optimize_with_gfn(
                                 'the geometry it had reached is kept.'
                                 if reached else f'{label} was stopped.'),
                         }
-                    if waited > timeout:
+                    if timeout and waited > timeout:
                         running.kill()
                         raise subprocess.TimeoutExpired(command, timeout)
                     time.sleep(0.05)

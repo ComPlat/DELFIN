@@ -717,3 +717,29 @@ def test_the_player_arrives_with_the_startup_scripts(tmp_path):
         "it must not go through the channel that clears itself"
     )
     assert "gfnplay:" in startup, "it has to be able to report back"
+
+
+def test_the_dashboard_runs_without_a_clock_because_it_has_a_switch(editor):
+    """A clock that stops a converging optimisation at an arbitrary second is
+    worse than one that never stops it.  Optimise is a switch, so the person
+    watching decides when a run has gone on long enough."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    assert "timeout=None" in handler
+    assert "should_stop=_stopped" in handler, "without it nothing could stop it"
+
+
+@_needs_xtb
+def test_without_a_timeout_the_hand_is_what_stops_it():
+    import threading
+
+    stretched = "3\nstretched\nO 0 0 0\nH 1.40 0 0\nH -0.40 1.35 0\n"
+    stop = [False]
+    threading.Timer(0.05, lambda: stop.__setitem__(0, True)).start()
+
+    result = gfn.optimize_with_gfn(
+        stretched, "gfnff", should_stop=lambda: stop[0], timeout=None)
+
+    assert "stopped" in result["status"] or result["ok"]

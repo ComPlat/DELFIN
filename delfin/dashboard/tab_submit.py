@@ -3908,11 +3908,12 @@ def create_tab(ctx):
                         continue
                     if gfn and autospin:
                         outcome = _gfn.optimize_autospin(
-                            xyz, method, charge=charge, should_stop=_stopped)
+                            xyz, method, charge=charge, should_stop=_stopped,
+                            timeout=None)
                     elif gfn:
                         outcome = _gfn.optimize_with_gfn(
                             xyz, method, charge=charge, uhf=uhf,
-                            should_stop=_stopped)
+                            should_stop=_stopped, timeout=None)
                     else:
                         outcome = relax_xyz(
                             xyz,
