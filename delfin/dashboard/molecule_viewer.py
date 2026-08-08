@@ -2795,10 +2795,28 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     /* Coordinates worked out by the kernel, put into the viewer as they
        arrive.  GFN runs on the server -- there is no engine here to step -- so
        a GFN relaxation is a sequence of these, one per xtb call. */
-    function setPositions(scopeKey, flat) {
+    // keepSerials: atoms whose positions the caller is in charge of, and which
+    // the incoming ones must not overwrite. That is what makes a drag possible
+    // while a calculation is answering: the coordinates come back describing
+    // where the dragged atom was when they were sent, and the cursor has moved
+    // on since -- written back, the atom would be pulled to where it was a
+    // fifth of a second ago, sixty times a second.
+    function setPositions(scopeKey, flat, keepSerials) {
         var viewer = getViewer(scopeKey);
         if (!viewer || !flat || !flat.length) return false;
-        var pos = (flat instanceof Float64Array) ? flat : Float64Array.from(flat);
+        var keeping = !!(keepSerials && keepSerials.length);
+        // A copy when some of it is about to be overwritten: the caller's own
+        // array is not ours to edit.
+        var pos = (flat instanceof Float64Array && !keeping)
+            ? flat : Float64Array.from(flat);
+        if (keeping) {
+            var here = ffReadPositions(viewer);
+            ffIndicesOf(viewer, keepSerials).forEach(function(i) {
+                pos[3*i] = here[3*i];
+                pos[3*i+1] = here[3*i+1];
+                pos[3*i+2] = here[3*i+2];
+            });
+        }
         if (!ffWritePositions(viewer, pos)) return false;
         try { applyFixedInternals(scopeKey); } catch (e) {}
         redrawHighlights(scopeKey);
@@ -3934,6 +3952,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         clearSelection: clearSelection,
         setPicks: setPicks,
         setPositions: setPositions,
+        // So a watcher outside this closure can hand the geometry over while
+        // the mouse is still down, rather than only when it is let go.
+        pushXyz: pushXyzToPython,
         undo: undo,
         setForceField: setForceField,
         readInternal: readInternal,

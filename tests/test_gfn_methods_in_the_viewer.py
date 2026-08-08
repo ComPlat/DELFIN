@@ -92,6 +92,29 @@ def editor(tmp_path):
     return refs
 
 
+@pytest.fixture
+def player_js(tmp_path):
+    """The trajectory player as the page receives it.
+
+    Reading it out of the Python source instead means reading string literals
+    that are split across lines wherever they happened to be too long.
+    """
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import tab_submit
+
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir()
+    ctx = DashboardContext(
+        calc_dir=tmp_path / "calc",
+        archive_dir=tmp_path / "archive",
+        office_dir=tmp_path / "office",
+    )
+    ctx.run_js = lambda _script: None
+    tab_submit.create_tab(ctx)
+    startup = "\n".join(ctx.init_js_parts)
+    return startup[startup.index("window.__delfinGfnPlay"):]
+
+
 def test_the_methods_stand_next_to_uff(editor):
     values = [v for _label, v in editor["submit_ff_dd"].options]
     assert values == ["uff", "mmff94", "gfnff", "gfn2"]
@@ -488,20 +511,25 @@ def test_fullscreen_has_a_status_line_of_its_own():
     assert "'.submit-fs-member-status'" in enter
 
 
-def test_relax_is_switched_off_while_a_gfn_method_is_chosen(editor):
-    """Relax runs the browser's own field per frame, which GFN cannot be.
+def test_relax_means_the_molecule_follows_the_drag_under_gfn(editor):
+    """There is no GFN engine in the browser to run once per frame.
 
-    Left pressable it did something unrecognisable; switched off it says which
-    methods it is for.
+    So under GFN this switch means the other half of the same idea: while an
+    atom is being dragged the rest of the molecule follows it, one short xtb
+    run per push and nothing at all when nothing is being dragged.  It used to
+    be switched off and hidden, which was right while there was nothing for it
+    to do.
     """
     assert editor["submit_relax_btn"].disabled is False
 
     editor["submit_ff_dd"].value = "gfnff"
-    assert editor["submit_relax_btn"].disabled is True
-    assert "browser" in editor["submit_relax_btn"].tooltip
+    assert editor["submit_relax_btn"].disabled is False
+    assert "follow" in editor["submit_relax_btn"].tooltip
+    assert "GFN-FF on the server" in editor["submit_relax_btn"].tooltip
 
     editor["submit_ff_dd"].value = "uff"
     assert editor["submit_relax_btn"].disabled is False
+    assert "continuously" in editor["submit_relax_btn"].tooltip
 
 
 def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
@@ -884,16 +912,21 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
 # the controls, split and cleaned up
 # ---------------------------------------------------------------------------
 def test_controls_that_cannot_work_under_gfn_are_taken_away(editor):
-    """Greying them out invites the question of why they are dead."""
-    assert editor["submit_relax_btn"].layout.display in (None, "")
+    """Greying them out invites the question of why they are dead.
+
+    Settling on release and Strength are the browser field's own notions, and
+    that field is not what runs under GFN.  Relax stays, because it does have
+    something to do: it is what makes the molecule follow a dragged atom.
+    """
     editor["submit_ff_dd"].value = "uff"
 
     editor["submit_ff_dd"].value = "gfnff"
-    for name in ("submit_relax_btn", "submit_settle_btn", "submit_strength_slider"):
+    for name in ("submit_settle_btn", "submit_strength_slider"):
         assert editor[name].layout.display == "none", name
+    assert editor["submit_relax_btn"].layout.display in (None, "")
 
     editor["submit_ff_dd"].value = "uff"
-    for name in ("submit_relax_btn", "submit_settle_btn", "submit_strength_slider"):
+    for name in ("submit_settle_btn", "submit_strength_slider"):
         assert editor[name].layout.display == "", name
 
 
@@ -1049,7 +1082,9 @@ def test_the_playback_lets_go_of_the_picture_while_an_atom_is_dragged(editor):
     assert "_submitManipStateByScope" in watcher, "it reads the drag off the page"
     assert 'drag.kind==="translate"' in watcher
     assert 'send(held?"gfngrab":"gfnfree","")' in watcher
-    assert "if(play.held){ window.requestAnimationFrame(frame); return; }" in watcher
+    assert "if(play.held&&!followIsOn()){" in watcher, (
+        "with nothing following, the drag has the picture to itself"
+    )
     assert "play.queue=[]; play.last=null;" in watcher, (
         "the queued frames belong to a structure that has just been changed"
     )
@@ -1314,4 +1349,149 @@ def test_what_the_editor_holds_is_what_the_optimisation_holds(editor):
     assert abs(angle - 100.0) < 1.0, f"asked for 100 deg, got {angle:.2f}"
     assert "held value" in refs["mol_status"].value, (
         "the status has to say what was held while it ran"
+    )
+
+
+# ---------------------------------------------------------------------------
+# the molecule follows the atom being dragged
+# ---------------------------------------------------------------------------
+def test_the_page_hands_the_geometry_over_while_the_mouse_is_down(player_js):
+    """A drag that only reports at the release cannot be followed."""
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    assert "function followIsOn()" in player_js
+    assert "submit-gfn-follow" in player_js, "the switch is read off the page"
+    assert 'pushXyz(scope,"drag-follow")' in player_js
+    assert "now-(play.pushed||0)>200" in player_js, (
+        "faster than xtb answers only builds a queue about where it used to be"
+    )
+    # and the manip API has to offer that push at all
+    assert "pushXyz: pushXyzToPython" in submit_manip_bootstrap_js()
+
+
+def test_the_dragged_atom_belongs_to_the_cursor_not_to_the_answer(player_js):
+    """The coordinates come back describing where the atom was when they were
+    sent, and the cursor has moved on since.  Written back, the atom would be
+    pulled to where it was a fifth of a second ago, sixty times a second."""
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    assert "function heldSerials()" in player_js
+    assert "setPositions(scope,out,heldSerials())" in player_js
+
+    editor_js = submit_manip_bootstrap_js()
+    body = editor_js[editor_js.index("function setPositions("):][:1200]
+    assert "keepSerials" in body
+    assert "ffIndicesOf(viewer, keepSerials)" in body
+    assert "ffReadPositions(viewer)" in body, (
+        "the kept atoms have to come from where they are now"
+    )
+
+
+def test_a_truncated_trail_says_where_in_the_run_it_starts(editor):
+    """The tail is sent rather than the whole path -- every write is a message.
+
+    Counting from the front of the message would replay what has been shown and
+    then stop showing anything new: the player counts frames of the run, not
+    frames of the message.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "var from=(data&&data.from)||0;" in watcher
+    assert "play.seen=from+frames.length;" in watcher
+
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "'from': first" in handler
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "'from': len(frames) - len(trail)" in follow
+
+
+def test_the_follow_runs_one_process_at_a_time_and_takes_the_newest(editor):
+    """A hand moves faster than xtb answers.  A queue of answers about where
+    the atom used to be is worse than no answer at all."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "state.get('gfn_follow_busy')" in follow
+    assert "state.pop('gfn_follow_xyz', None)" in follow, "the newest wins"
+    assert "relax_steps(" in follow and "_GFN_FOLLOW_CYCLES" in follow
+    assert "constraints=constraints" in follow, (
+        "a value held on screen is held while the molecule follows too"
+    )
+
+
+@_needs_xtb
+def test_the_rest_of_the_molecule_follows_the_atom_that_is_dragged(editor):
+    """Point seven, played through the tab the way the browser plays it.
+
+    The carbon is walked out 0.36 A in six pushes, each one carrying the
+    relaxed rest from the answer before it -- which is what the page does when
+    it writes every atom but the one under the cursor.
+    """
+    import json as _json
+    import math
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+
+    def points(xyz):
+        return [[float(v) for v in line.split()[1:4]]
+                for line in gfn.atom_lines(xyz)]
+
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+    assert refs["submit_relax_btn"].value is True, "xtb was not found"
+
+    refs["submit_cmd_sync"].value = "gfngrab:1:"
+    assert state.get("gfn_follow") is True
+
+    current, seen = propane, 0
+    for _step in range(6):
+        rows = [line.split() for line in gfn.atom_lines(current)]
+        rows[0][1] = f"{float(rows[0][1]) - 0.06:.6f}"     # the cursor moves
+        current = (f"{len(rows)}\nDELFIN drag-follow\n"
+                   + "\n".join(" ".join(r) for r in rows) + "\n")
+        refs["submit_manip_sync"].value = current
+        deadline = _time.time() + 20
+        while _time.time() < deadline:
+            data = _json.loads(refs["submit_gfn_frame"].value or "{}")
+            if len(data.get("frames") or []) > seen:
+                seen = len(data["frames"])
+                break
+            _time.sleep(0.01)
+        else:
+            raise AssertionError("no answer came back for a push")
+        # the page keeps the dragged atom and writes the rest
+        flat = _json.loads(refs["submit_gfn_frame"].value)["frames"][-1]
+        rows = [line.split() for line in gfn.atom_lines(current)]
+        for i in range(1, len(rows)):
+            rows[i][1:4] = [f"{flat[3 * i + n]:.6f}" for n in range(3)]
+        current = (f"{len(rows)}\nDELFIN drag-follow\n"
+                   + "\n".join(" ".join(r) for r in rows) + "\n")
+
+    refs["submit_cmd_sync"].value = "gfnfree:2:"
+    assert state.get("gfn_follow") is False
+
+    began, ended = points(propane), points(current)
+    assert abs(ended[0][0] - (began[0][0] - 0.36)) < 1e-4, (
+        "the dragged atom did not stay where the cursor put it"
+    )
+    assert math.dist(began[1], ended[1]) > 0.05, "the neighbour did not follow"
+    assert math.dist(began[2], ended[2]) > 0.05, "nor did the far carbon"
+    stretched = math.dist(ended[0], ended[1])
+    assert stretched < math.dist(began[0], began[1]) + 0.36, (
+        "the rest of the molecule did not close any of the gap"
     )

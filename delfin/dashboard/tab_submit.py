@@ -3609,10 +3609,17 @@ def create_tab(ctx):
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
             '      play.shown=0; play.toldStop=0;\n'
             '    }\n'
-            '    if(frames.length>play.seen){\n'
-            '      for(var i=play.seen;i<frames.length;i++) play.queue.push(frames[i]);\n'
-            '      play.seen=frames.length;\n'
-            '      say("received "+frames.length+" frames");\n'
+            '    /* Where in the run these frames start.  A long run sends the\n'
+            '       tail rather than the whole path -- every write is a message\n'
+            '       and the whole path grows without end -- so counting from\n'
+            '       the front of the message would replay frames already shown\n'
+            '       and then stop showing new ones altogether. */\n'
+            '    var from=(data&&data.from)||0;\n'
+            '    if(from+frames.length>play.seen){\n'
+            '      var start=Math.max(0,play.seen-from);\n'
+            '      for(var i=start;i<frames.length;i++) play.queue.push(frames[i]);\n'
+            '      play.seen=from+frames.length;\n'
+            '      say("received "+play.seen+" frames");\n'
             '    }\n'
             '    /* xtb produces frames faster than any frame rate can show\n'
             '       them, so a queue that is allowed to grow puts the picture\n'
@@ -3657,7 +3664,8 @@ def create_tab(ctx):
             '    if(!a||a.length!==b.length){ out=b; }\n'
             '    else { for(var i=0;i<b.length;i++) out[i]=a[i]+(b[i]-a[i])*t; }\n'
             '    var ok=false;\n'
-            '    try{ ok=window.__delfinSubmitManip.setPositions(scope,out); }\n'
+            '    try{ ok=window.__delfinSubmitManip.setPositions('
+            'scope,out,heldSerials()); }\n'
             '    catch(e){ ok=false; }\n'
             '    play.drawn=(play.drawn||0)+(ok?1:0);\n'
             '    if(!ok&&!play.toldNoDraw){ play.toldNoDraw=1;'
@@ -3677,6 +3685,24 @@ def create_tab(ctx):
             '    if(!drag) return false;\n'
             '    return drag.kind==="translate"||drag.kind==="rotate"'
             '||drag.kind==="draw";\n'
+            '  }\n'
+            '  function heldSerials(){\n'
+            '    /* The atoms the hand is moving.  Coordinates that come back\n'
+            '       describe where they were when they were sent, and the\n'
+            '       cursor has moved on since -- so those are the ones the\n'
+            '       playback must leave alone. */\n'
+            '    var st=(window._submitManipStateByScope||{})[scope];\n'
+            '    return (st&&st.drag&&st.drag.targets)||[];\n'
+            '  }\n'
+            '  function followIsOn(){\n'
+            '    /* Relax, read off the page rather than asked of the kernel --\n'
+            '       the same reason as the switch below. */\n'
+            '    var holder=document.querySelector(".submit-gfn-follow");\n'
+            '    if(!holder) return false;\n'
+            '    var btn=(holder.tagName==="BUTTON")?holder'
+            ':holder.querySelector("button");\n'
+            '    if(!btn) return false;\n'
+            '    return btn.classList.contains("mod-active");\n'
             '  }\n'
             '  function switchIsOn(){\n'
             '    /* ipywidgets marks a pressed toggle with mod-active.  Reading\n'
@@ -3700,9 +3726,23 @@ def create_tab(ctx):
             '    if(held!==!!play.held){\n'
             '      play.held=held?1:0;\n'
             '      if(held){ play.queue=[]; play.last=null; }\n'
+            '      else { play.follow=0; play.pushed=0; }\n'
             '      send(held?"gfngrab":"gfnfree","");\n'
             '    }\n'
-            '    if(play.held){ window.requestAnimationFrame(frame); return; }\n'
+            '    if(play.held&&!followIsOn()){\n'
+            '      window.requestAnimationFrame(frame); return;\n'
+            '    }\n'
+            '    if(play.held){\n'
+            '      /* Following: the geometry goes over while the mouse is\n'
+            '         still down, five times a second.  Faster than xtb can\n'
+            '         answer is pointless -- the answers would queue behind the\n'
+            '         hand and arrive about a structure that has moved on. */\n'
+            '      if(now-(play.pushed||0)>200){\n'
+            '        play.pushed=now;\n'
+            '        try{ window.__delfinSubmitManip.pushXyz(scope,'
+            '"drag-follow"); }catch(e){}\n'
+            '      }\n'
+            '    }\n'
             '    if(play.queue.length&&!switchIsOn()){\n'
             '      play.queue=[];\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
@@ -3745,6 +3785,84 @@ def create_tab(ctx):
         except Exception:
             pass
         _run_manip_js(script)
+
+    #: A follow step is a whole xtb process, so it is a few cycles rather than
+    #: a minimisation.  Measured on a 102-atom complex: one cycle 0.06 s, five
+    #: 0.09 s, ten 0.12 s -- five is about ten answers a second, which reads as
+    #: the molecule following the hand rather than catching up with it.
+    _GFN_FOLLOW_CYCLES = 5
+
+    def _begin_gfn_follow():
+        """A drag has started and the molecule is to follow it."""
+        if not (submit_relax_btn.value
+                and _gfn.is_gfn_method(submit_ff_dd.value)):
+            return False
+        state['gfn_follow'] = True
+        state['gfn_follow_frames'] = []
+        run = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = run
+        state['gfn_follow_run'] = run
+        return True
+
+    def _end_gfn_follow():
+        state['gfn_follow'] = False
+
+    def _gfn_follow_step(xyz):
+        """Relax around the atom the hand is holding, and send that back.
+
+        The dragged atom is not held by xtb: it cannot be.  ``$fix atoms:`` is
+        broken in xtb 6.7.1 and ``$constrain atoms:`` naming one atom does
+        nothing at all, both measured -- xtb holds internal coordinates, not
+        positions.  The hold is the page's instead: the frames that come back
+        are written to every atom *except* the ones being dragged, so the
+        cursor keeps the one it is holding and xtb arranges the rest around it.
+
+        Only one process at a time, and the newest geometry wins: a hand moves
+        faster than xtb answers, and a queue of answers about where the atom
+        used to be is worse than no answer at all.
+        """
+        state['gfn_follow_xyz'] = xyz
+        if state.get('gfn_follow_busy'):
+            return
+        state['gfn_follow_busy'] = True
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
+        constraints = list(state.get('constraints') or [])
+
+        def _work():
+            try:
+                while state.get('gfn_follow'):
+                    current = state.pop('gfn_follow_xyz', None)
+                    if current is None:
+                        return
+                    outcome = _gfn.relax_steps(
+                        current, charge=charge, uhf=uhf,
+                        cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
+                        constraints=constraints,
+                    )
+                    if not outcome.get('ok'):
+                        note = str(outcome.get('status') or 'it did not run')
+                        _schedule_ui_update(
+                            _set_mol_status,
+                            f'The molecule stopped following: {note}')
+                        return
+                    frames = list(state.get('gfn_follow_frames') or [])
+                    frames.append(_gfn.coordinates_of(outcome['xyz']))
+                    state['gfn_follow_frames'] = frames
+                    # The tail, not the whole drag: every write is a message,
+                    # and a minute of dragging is three hundred frames of a
+                    # hundred atoms in each of them.
+                    trail = frames[-40:]
+                    payload = json.dumps({'run': state.get('gfn_follow_run'),
+                                          'from': len(frames) - len(trail),
+                                          'frames': trail})
+                    _schedule_ui_update(
+                        lambda text=payload: setattr(
+                            submit_gfn_frame, 'value', text))
+            finally:
+                state['gfn_follow_busy'] = False
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _stop_gfn_loop():
         state['gfn_loop'] = None
@@ -3918,6 +4036,32 @@ def create_tab(ctx):
         active = bool(submit_relax_btn.value)
         submit_relax_btn.button_style = 'info' if active else ''
         _stop_gfn_loop()
+        if _gfn.is_gfn_method(submit_ff_dd.value):
+            # There is no GFN engine in the browser to run per frame, so this
+            # switch means something else here: while it is on, the molecule
+            # follows the atom being dragged -- one short xtb run per push,
+            # and nothing at all when nothing is being dragged.  A continuous
+            # loop of processes on a shared machine is what this deliberately
+            # is not.
+            _end_gfn_follow()
+            label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+            if not active:
+                _set_mol_status('The molecule no longer follows the atom you '
+                                'drag.')
+                return
+            if not _gfn.xtb_available():
+                _set_mol_status(f'{label} needs xtb, which was not found.')
+                submit_relax_btn.value = False
+                return
+            if not submit_manip_btn.value:
+                submit_manip_btn.value = True  # dragging is what it is for
+            _ensure_manip_bootstrap()
+            _install_gfn_frame_watcher()
+            _set_mol_status(
+                f'Drag an atom and the rest of the molecule follows it, '
+                f'{_gfn.GFN_METHODS["gfnff"]["label"]} on the server. '
+                f'Optimise still uses {label}.')
+            return
         if not active:
             _ensure_manip_bootstrap()
             _set_ff_notes([])
@@ -4068,9 +4212,11 @@ def create_tab(ctx):
         def _push_frames(frames):
             """Hand the path over while xtb is still walking it."""
             played[0] = True
-            trail = list(frames)[-400:]
+            walked = list(frames)
+            trail = walked[-400:]
+            begins = len(walked) - len(trail)
 
-            def _write(t=trail):
+            def _write(t=trail, first=begins):
                 # A run that has been replaced does not draw.  An interrupted
                 # one has frames in hand when it is told to stop, and writing
                 # them afterwards played the abandoned path over the structure
@@ -4078,7 +4224,7 @@ def create_tab(ctx):
                 if state.get('gfn_run') != run_id:
                     return
                 submit_gfn_frame.value = json.dumps(
-                    {'run': run_id, 'frames': t})
+                    {'run': run_id, 'from': first, 'frames': t})
 
             _schedule_ui_update(_write)
 
@@ -5021,9 +5167,11 @@ def create_tab(ctx):
                 _set_mol_status('Moved while it ran; the optimisation stops '
                                 'there and starts again from what you make.',
                                 spinner=True)
+            _begin_gfn_follow()
             return
 
         if verb == 'gfnfree':
+            _end_gfn_follow()
             # Let go of.  If nothing else has already asked for the restart --
             # a drag that moved something sends its coordinates first -- this
             # is what keeps the switch from being left on with nothing running.
@@ -5391,24 +5539,35 @@ def create_tab(ctx):
         submit_gfn_charge.layout.display = '' if gfn else 'none'
         submit_gfn_mult.layout.display = '' if gfn else 'none'
         submit_gfn_autospin.layout.display = '' if gfn else 'none'
-        # Relax is the browser's field running per frame.  GFN is a process per
-        # step on the server, which that toggle cannot be -- so it is switched
-        # off rather than left pressable and doing nothing recognisable.
-        if gfn and submit_relax_btn.value:
+        # Relax means the browser's own field running once per frame, and there
+        # is no GFN engine in the browser to run.  Under GFN it means the other
+        # half of the same idea: while an atom is being dragged, the rest of
+        # the molecule follows it -- one short xtb run per push, and nothing at
+        # all when nothing is being dragged.  It was switched off and hidden
+        # here before there was anything for it to do.
+        if submit_relax_btn.value:
             submit_relax_btn.value = False
         if gfn and submit_settle_btn.value:
             submit_settle_btn.value = False
-        submit_relax_btn.disabled = gfn
+        submit_relax_btn.disabled = False
+        # The page reads this switch itself, and only follows when the class is
+        # on it: asking the kernel whether to follow would cost a round trip
+        # per push, and a UFF drag would be pushing for no reason.
+        if gfn:
+            submit_relax_btn.add_class('submit-gfn-follow')
+        else:
+            submit_relax_btn.remove_class('submit-gfn-follow')
         # Out of the way entirely, not merely greyed: a control that cannot do
         # anything under the chosen method is clutter that invites the question
-        # of why it is dead.
-        for widget in (submit_relax_btn, submit_settle_btn,
-                       submit_strength_slider):
+        # of why it is dead.  Settling and Strength belong to the browser's
+        # field, which is not what runs here.
+        for widget in (submit_settle_btn, submit_strength_slider):
             widget.layout.display = 'none' if gfn else ''
         submit_relax_btn.tooltip = (
-            'Live relaxation runs the browser\'s own field. Choose UFF or '
-            'MMFF94 for it; GFN acts when Optimise is pressed, and shows the '
-            'path it took.' if gfn else
+            'While this is on, dragging an atom lets the rest of the molecule '
+            'follow it -- GFN-FF on the server, a few cycles per push. '
+            'Optimise minimises the whole thing with the chosen method.'
+            if gfn else
             'Relax the structure continuously while you work on it.'
         )
         if gfn:
@@ -5422,15 +5581,15 @@ def create_tab(ctx):
                 _set_mol_status(
                     f'Optimise now uses {label}. Charge {submit_gfn_charge.value} '
                     f'read from the SMILES; the multiplicity is yours to set. '
-                    'Dragging keeps UFF -- xtb runs on the server and cannot '
-                    'answer once per frame.')
+                    'Switch Relax on to have the molecule follow an atom you '
+                    'drag.')
             else:
                 _set_mol_status(
                     f'Optimise now uses {label}. Set the charge (q) and the '
                     'multiplicity (M): xtb needs both, and a wrong spin on a '
                     'metal gives a confident wrong answer rather than an error. '
-                    'Dragging keeps UFF -- xtb runs on the server and cannot '
-                    'answer once per frame.')
+                    'Switch Relax on to have the molecule follow an atom you '
+                    'drag.')
         # Re-assign parameters under the newly chosen method, but only if the
         # live relaxation is actually switched on.
         if submit_relax_btn.value:
@@ -5494,6 +5653,10 @@ def create_tab(ctx):
         # rest of the way onto the vertex it is now closest to.
         lines = new_xyz.splitlines()
         drag_ended = len(lines) > 1 and lines[1].strip() == 'DELFIN drag-end'
+        # Sent while the mouse is still down, so the molecule can follow the
+        # atom rather than wait for it to be let go.
+        if len(lines) > 1 and lines[1].strip() == 'DELFIN drag-follow':
+            _gfn_follow_step(new_xyz)
         if (drag_ended and state.get('poly_applied')
                 and state.get('poly_metal') is not None):
             # Only a real end of a drag, not the twice-a-second heartbeat the
