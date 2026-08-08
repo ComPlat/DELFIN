@@ -3914,6 +3914,7 @@ def create_tab(ctx):
         state['gfn_follow_method'] = str(submit_ff_dd.value)
         if state.get('gfn_follow'):
             return True     # already following; it keeps the run it began
+        _gfn_new_generation()
         state['gfn_follow'] = True
         state['gfn_follow_steps'] = 0
         state['gfn_follow_frames'] = []
@@ -4029,6 +4030,24 @@ def create_tab(ctx):
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
 
+    def _gfn_new_generation():
+        """Everything in flight belongs to the structure it was started for.
+
+        A drag, a Hold, a Set: each makes a new structure, and every timer and
+        every worker started for the one before it is now about something that
+        no longer exists.  They used to be left to finish -- writing their
+        geometry over the new one, or holding a flag that made the next
+        relaxation skip itself, which is why switching the toggle off and on
+        again finished the job that letting go should have.  One counter
+        settles all of it: whatever does not belong to the current generation
+        does nothing at all.
+        """
+        state['gfn_generation'] = int(state.get('gfn_generation', 0)) + 1
+        state['gfn_settle_forced'] = False
+        state['gfn_settle_rounds'] = 0
+        state['gfn_settle_again'] = False
+        return state['gfn_generation']
+
     def _gfn_uhf_now():
         """How many unpaired electrons the live relaxation should assume.
 
@@ -4061,6 +4080,7 @@ def create_tab(ctx):
         """
         if not _gfn_live_is_on():
             return
+        _gfn_new_generation()
         state['gfn_settle_note'] = note
         state['gfn_settle_forced'] = True
         _arm_gfn_settle()
@@ -4092,6 +4112,7 @@ def create_tab(ctx):
         if state.get('gfn_settle_armed'):
             return
         state['gfn_settle_armed'] = True
+        generation = int(state.get('gfn_generation', 0))
 
         def _wait():
             while True:
@@ -4100,6 +4121,8 @@ def create_tab(ctx):
                     break
                 time.sleep(min(left, 0.05))
             state['gfn_settle_armed'] = False
+            if int(state.get('gfn_generation', 0)) != generation:
+                return          # the structure it was armed for is history
             _schedule_ui_update(_gfn_settle_now)
 
         threading.Thread(target=_wait, daemon=True).start()
@@ -4107,6 +4130,7 @@ def create_tab(ctx):
     def _gfn_settle_now():
         if state.get('gfn_follow') or state.get('gfn_settle_busy'):
             return                      # a new drag started in the meantime
+        generation = int(state.get('gfn_generation', 0))
         method = str(submit_ff_dd.value)
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
         if not xyz or not _gfn.is_gfn_method(method):
@@ -4165,6 +4189,11 @@ def create_tab(ctx):
 
             def _done():
                 state['gfn_settle_busy'] = False
+                if int(state.get('gfn_generation', 0)) != generation:
+                    # The structure moved on while this was running.  Its
+                    # geometry is about the one before, and writing it would
+                    # be a past drag reaching into the present.
+                    return
                 state['gfn_settle_again'] = False
                 # Where the next round's frames carry on from.
                 state['gfn_settle_offset'] = offset + int(

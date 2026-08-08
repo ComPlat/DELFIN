@@ -2269,3 +2269,79 @@ def test_a_live_run_shows_the_frame_that_is_current_not_the_way_there(player_js)
     assert "from=from+frames.length-1;" in player_js, (
         "the count has to stay honest, or the next payload replays"
     )
+
+
+def test_a_past_drag_has_no_hold_on_the_present(editor):
+    """Switching the toggle off and on again finished the job that letting go
+    should have -- which is what a leftover from an earlier drag looks like.
+
+    Every timer and every worker belongs to the structure it was started for.
+    A drag, a Hold, a Set: each makes a new one, and whatever does not belong
+    to the current generation does nothing at all.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    fresh = source.split("def _gfn_new_generation")[1].split("\n    def ")[0]
+    assert "state['gfn_generation'] = int(state.get('gfn_generation', 0)) + 1" in fresh
+    for flag in ("gfn_settle_forced", "gfn_settle_rounds", "gfn_settle_again"):
+        assert f"state['{flag}']" in fresh, flag
+
+    for name in ("_begin_gfn_follow", "_arm_gfn_takeup"):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "_gfn_new_generation()" in body, name
+
+    armed = source.split("def _arm_gfn_settle")[1].split("\n    def ")[0]
+    assert "if int(state.get('gfn_generation', 0)) != generation:" in armed, (
+        "a timer for a structure that is history must not fire"
+    )
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "if int(state.get('gfn_generation', 0)) != generation:" in settle, (
+        "nor may a finished run write its geometry over a newer one"
+    )
+
+
+@_needs_xtb
+def test_letting_go_finishes_without_cycling_the_toggle(editor):
+    """The complaint in one line: it took switching Dynamik off and on again."""
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_settle_btn"].value = False
+    refs["submit_relax_btn"].value = True
+    deadline = _time.time() + 60
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+
+    # two drags in a row, the second right after the first
+    for atom, shift in ((0, 0.8), (2, 0.6)):
+        refs["submit_cmd_sync"].value = f"gfngrab:{atom}:"
+        rows = [line.split()
+                for line in gfn.atom_lines(state["current_xyz_for_copy"]["content"])]
+        rows[atom][2] = f"{float(rows[atom][2]) + shift:.6f}"
+        body = "\n".join(" ".join(r) for r in rows)
+        refs["submit_manip_sync"].value = f"9\nDELFIN drag-follow held={atom}\n{body}\n"
+        _time.sleep(0.15)
+        refs["submit_manip_sync"].value = f"9\nDELFIN drag-end\n{body}\n"
+        refs["submit_cmd_sync"].value = f"gfnfree:{atom}:"
+        deadline = _time.time() + 90
+        while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+            _time.sleep(0.05)
+        assert "converged after" in refs["mol_status"].value, refs["mol_status"].value
+
+    settled = state["current_xyz_for_copy"]["content"]
+    again = gfn.optimize_with_gfn(settled, "gfnff")
+    assert gfn.largest_shift(settled, again["xyz"]) < 0.01, (
+        "the toggle should not have to be cycled for it to finish"
+    )
+    refs["submit_relax_btn"].value = False
