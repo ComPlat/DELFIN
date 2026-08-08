@@ -35130,6 +35130,28 @@ def _smiles_to_xyz_isomers_impl(
                 _extra = [_pick[_k] for _k in _order]
                 _trace_seating("UNION_ISOMERS kept %d of %d legacy frames (%d arrangements already in ffree)"
                                % (len(_extra), _n_before, len(_have)))
+            # ⛔ GEMESSEN UND WIDERLEGT (2026-08-08) -- NICHT WIEDER EINSCHALTEN.
+            #
+            #   unionreach1k  UNION + Reichweite OHNE diesen Filter    8 Blocker, cap 0/+26
+            #   unionqual     dieselben plus UNION_CLEAN              13 Blocker, cap 0/+26
+            #     neu gerissen: ccdc_backbone_lost 6, ccdc_pucker_lost 2,
+            #                   ccdc_hapto_mode_lost 1, ccdc_isomer_lost 1 -> 2
+            #
+            # Dasselbe Kriterium wurde am selben Tag ein zweites Mal widerlegt, auf einem
+            # ANDEREN Pfad: TOPO_ENV im additiven Enumerator, in Isolation gegen den Champion
+            # (topoenvsolo) -- ccdc_arrangement_lost 3, isomers_lost 4, 1 besser / 4
+            # schlechter.  Zwei Orte, dasselbe Ergebnis: es ist nicht die Platzierung, es ist
+            # das KRITERIUM.  Der Vergleich der Nachbar-Element-Menge feuert auf Frames, die
+            # reale Rueckgrate, Pucker und Haptizitaeten tragen -- die geometrische Perzeption
+            # sieht dort Nachbarschaften, die der Graph nicht auffuehrt, ohne dass etwas
+            # kaputt waere.
+            #
+            # Der beste bekannte Union-Zustand ist damit OHNE Filter: cap_lost 0, cap_gained
+            # 26, 8 Blocker.  Was Union noch kostet, braucht ein anderes Instrument -- und
+            # nach drei gescheiterten Versuchen (TORN_GATE, SPURIOUS_BOND, dieses) ist die
+            # ehrliche Lesart, dass der Bauer die schlechten Import-Frames mit den
+            # vorhandenen Mitteln NICHT von den guten trennen kann.  Das ist die Grenze
+            # "das Auge ist die Obergrenze der Konstruktion", dreifach gemessen.
             # ===== QUALITAETSFILTER AUF DEM IMPORT (UNION_CLEAN, neu 2026-08-07) =====
             #
             # WARUM DIE ERSTE FASSUNG ZU SCHWACH WAR.  Sie schickte jeden legacy-Frame durch
