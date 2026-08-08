@@ -2411,9 +2411,11 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
     edit = source.split("def _apply_structure")[1].split("\n    def ")[0]
     assert "_drop_gfn_topology()" in edit, "a structural edit is another molecule"
 
-    for name in ("_gfn_follow_step", "_gfn_settle_now"):
-        body = source.split(f"def {name}")[1].split("\n    def ")[0]
-        assert "topology=_gfn_topology_dir(" in body, name
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "topology=_gfn_topology_dir(" in follow
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "perceived = _gfn_topology_dir(" in settle
+    assert "topology=perceived" in settle
 
 
 def test_only_gfnff_has_a_topology_to_keep():

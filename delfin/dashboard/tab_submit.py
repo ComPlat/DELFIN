@@ -4192,6 +4192,22 @@ def create_tab(ctx):
             (f'{note}: {label} is moving the structure to it...' if note
              else f'{label} is settling the structure...')
             + (f' (round {rounds})' if rounds > 1 else ''), spinner=True)
+        perceived = _gfn_topology_dir(len(_gfn.atom_lines(xyz)))
+        # Auto M, and no scan has happened yet: this run does the scanning, so
+        # that it and Optimise are asking about the same molecule.
+        scanning = bool(submit_gfn_autospin.value
+                        and state.get('gfn_scanned_uhf') is None)
+
+        def _settle_stopped():
+            # A hand on an atom takes over from a relaxation of the whole
+            # thing; Optimise is the same calculation asked for by hand and
+            # supersedes it outright -- two xtb runs writing the same
+            # coordinate box is how the first press came to look like it had
+            # only worked out an energy.  And switching off means what it says,
+            # whichever of the two switches was keeping this alive.
+            return bool(state.get('gfn_follow')
+                        or state.get('optimize_run') is not None
+                        or not (submit_settle_btn.value or _gfn_live_is_on()))
 
         def _push(frames):
             walked = list(frames)
@@ -4205,29 +4221,32 @@ def create_tab(ctx):
 
         def _work():
             began = time.perf_counter()
-            outcome = _gfn.optimize_with_gfn(
-                xyz, method, charge=charge, uhf=uhf,
-                # No cycle cap: this is the ordinary optimisation, run on the
-                # frame that is on screen now.  Chopping it into rounds bought
-                # nothing -- the geometry between rounds is not a place anyone
-                # wants to stop at -- and cost a stutter at every boundary and
-                # an early ending whenever a round happened to move little.
-                max_steps=None, timeout=120.0,
-                constraints=constraints, on_frames=_push,
-                topology=_gfn_topology_dir(len(_gfn.atom_lines(xyz))),
-                # A hand on an atom takes over from a relaxation of the whole
-                # thing; and switching off means what it says, whichever of the
-                # two switches was keeping this alive.
-                should_stop=lambda: bool(
-                    state.get('gfn_follow')
-                    # Optimise is the same calculation asked for by hand, and
-                    # it supersedes this one.  Two xtb runs writing the same
-                    # coordinate box is how the first press came to look like
-                    # it had only worked out an energy: the live one landed
-                    # after it and put its own, older geometry back.
-                    or state.get('optimize_run') is not None
-                    or not (submit_settle_btn.value or _gfn_live_is_on())),
-            )
+            if scanning:
+                # Auto M with nothing scanned yet.  Optimise would scan and
+                # keep the lowest; running the box's M here instead makes the
+                # two answer about different molecules, and pressing Optimise
+                # afterwards then moves the structure for no visible reason.
+                # It costs three runs, once -- after that the answer is known.
+                outcome = _gfn.optimize_autospin(
+                    xyz, method, charge=charge, constraints=constraints,
+                    on_frames=_push, topology=perceived, timeout=None,
+                    should_stop=_settle_stopped,
+                )
+                if outcome.get('uhf') is not None:
+                    state['gfn_scanned_uhf'] = int(outcome['uhf'])
+            else:
+                # No cycle cap and no clock: this is the ordinary
+                # optimisation, run on the frame that is on screen now, on the
+                # same terms Optimise runs on.  Chopping it into rounds bought
+                # nothing -- the geometry between two rounds is not a place
+                # anyone wants to stop at -- and cost a stutter at every
+                # boundary and an early ending whenever a round moved little.
+                outcome = _gfn.optimize_with_gfn(
+                    xyz, method, charge=charge, uhf=uhf,
+                    max_steps=None, timeout=None,
+                    constraints=constraints, on_frames=_push,
+                    topology=perceived, should_stop=_settle_stopped,
+                )
 
             def _done():
                 state['gfn_settle_busy'] = False
