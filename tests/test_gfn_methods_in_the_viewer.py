@@ -317,26 +317,53 @@ def test_the_follow_ends_with_the_drag_and_with_the_method(editor):
         assert "_end_gfn_follow()" in body, name
 
 
-def test_switching_relax_on_starts_nothing_until_something_is_dragged(editor):
-    """Relax under GFN arms the follow; it does not begin a relaxation.
+def test_switching_relax_on_starts_the_relaxation_at_once(editor):
+    """Pressed, and nothing happening, is the switch claiming to be live.
 
-    The shape that was wrong before was a loop of xtb processes running for as
-    long as a toggle was down.  Nothing runs here until the page pushes a
-    geometry, and the page only pushes while an atom is being moved.
+    It used to wait for a drag, which is not what the same switch does under
+    the browser's field: there the structure starts settling the moment it goes
+    down.  It ends by itself, because a structure that has converged has
+    nothing left to ask for -- that is what keeps a loop of processes on a
+    shared machine from being a loop that will not be stopped.
     """
     from delfin.dashboard import tab_submit
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
     gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
-    gfn_branch = gfn_branch.split("if not active:")[0] + gfn_branch.split(
-        "return\n", 2)[-1]
-    assert "relax_steps" not in gfn_branch, "nothing may run on the press"
-    assert "_gfn_follow_step" not in gfn_branch
-    assert "threading.Thread" not in gfn_branch
-    # what it does instead: put the pieces the follow needs on the page
-    assert "_ensure_manip_bootstrap()" in toggle
-    assert "_install_gfn_frame_watcher()" in toggle
+    assert "_arm_gfn_takeup()" in gfn_branch, "the press is what starts it"
+
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "not outcome.get('converged') and _gfn_live_is_on()" in settle, (
+        "a round that did not converge has to be followed by another"
+    )
+    assert "state.get('gfn_follow')" in settle, (
+        "and a hand on an atom takes over from a relaxation of the whole thing"
+    )
+
+
+def test_a_held_value_is_taken_up_without_pressing_optimise(editor):
+    """Setting a value, watching nothing happen and having to press Optimise
+    for it is the switch claiming to be live and not being it."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    for name in ("on_submit_hold", "on_submit_hold_mode", "_apply_internal_now"):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "_arm_gfn_takeup(" in body, name
+
+    takeup = source.split("def _arm_gfn_takeup")[1].split("\n    def ")[0]
+    assert "_gfn_live_is_on()" in takeup, "only while the switch is down"
+    assert "state['gfn_settle_forced'] = True" in takeup
+
+
+def test_the_runner_says_whether_it_converged(editor):
+    """String-matching a status line to decide whether to go round again is a
+    decision resting on a sentence someone may reword."""
+    import inspect
+
+    source = inspect.getsource(gfn.optimize_with_gfn)
+    assert "'converged': True," in source and "'converged': False," in source
 
 
 def test_the_viewer_can_be_given_coordinates_from_the_kernel():
@@ -350,33 +377,39 @@ def test_the_viewer_can_be_given_coordinates_from_the_kernel():
 
 
 @_needs_xtb
-def test_relax_under_gfn_costs_nothing_while_nothing_is_dragged(editor):
-    """Pressed and left alone, it must not start an xtb -- nor a hundred.
-
-    Driven the way the toggle drives it, with a real xtb on the machine: what
-    is watched is that no process runs and no frame is produced until a drag
-    pushes a geometry.
+def test_relaxing_ends_by_itself_and_then_costs_nothing(editor):
+    """A loop of processes on a shared machine that only a user can stop is a
+    loop that will not be stopped.  This one stops when the structure has
+    converged, and nothing runs after that until something changes.
     """
     import time as _time
 
     refs = editor
     state = refs["editor_state"]
-    state["current_xyz_for_copy"] = {"content": _WATER}
-
-    refs["submit_ff_dd"].value = "gfnff"
-    refs["submit_relax_btn"].value = True
-    assert refs["submit_relax_btn"].value is True, "xtb was not found"
-
-    _time.sleep(1.0)
-
-    assert refs["submit_gfn_frame"].value == "", "something was calculated"
-    assert state.get("gfn_follow_busy") in (None, False)
-    assert state.get("gfn_follow") in (None, False), (
-        "the follow arms on the grab, not on the press"
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 1.16 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
     )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+
+    refs["submit_relax_btn"].value = True
+    deadline = _time.time() + 60
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+    assert "converged after" in refs["mol_status"].value, refs["mol_status"].value
+    assert "Settled with GFN-FF" in refs["coords_widget"].value
+
+    # and then it is quiet: nothing armed, nothing running, nothing to run
+    _time.sleep(1.0)
+    assert state.get("gfn_settle_busy") is False
+    assert state.get("gfn_settle_forced") is False
+    assert state.get("gfn_settle_armed") is False
 
     refs["submit_relax_btn"].value = False
-    assert state.get("gfn_follow") is False
 
 
 def test_the_frames_go_through_a_widget_not_through_run_js(editor):
@@ -946,14 +979,22 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
 # ---------------------------------------------------------------------------
 # the controls, split and cleaned up
 # ---------------------------------------------------------------------------
-def test_controls_that_cannot_work_under_gfn_are_taken_away(editor):
+def test_controls_that_cannot_work_under_gfn_are_taken_away(editor, monkeypatch):
     """Greying them out invites the question of why they are dead.
 
     Strength is how many steps the browser's field takes per animation frame,
     and that field does not run under GFN.  Relax and Settle both keep a
-    meaning -- follow a dragged atom, and tidy up when it is let go -- and both
-    are carried out by the method that is chosen, never by anything else.
+    meaning -- relax the structure and follow a dragged atom, and tidy up when
+    it is let go -- and both are carried out by the method that is chosen,
+    never by anything else.
+
+    With an xtb on the machine, that is: whether Relax is there at all is a
+    different question, and the machine running the tests answers it either
+    way, so it is said here rather than inherited.
     """
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: True)
     editor["submit_ff_dd"].value = "uff"
 
     editor["submit_ff_dd"].value = "gfnff"
@@ -1907,3 +1948,53 @@ def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
         for i in range(1, 9) for n in range(3)
     )
     assert moved > 0.005, "and everything else has to have followed"
+
+
+@_needs_xtb
+def test_holding_a_value_moves_the_structure_to_it_there_and_then(editor):
+    """Point of the whole thing, driven the way the buttons drive it: Hold is
+    pressed, Optimise is not, and the angle is what it was asked to be."""
+    import math
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+
+    def carbon_angle(xyz):
+        points = [[float(v) for v in line.split()[1:4]]
+                  for line in gfn.atom_lines(xyz)]
+        first = [points[0][n] - points[1][n] for n in range(3)]
+        third = [points[2][n] - points[1][n] for n in range(3)]
+        dot = sum(a * b for a, b in zip(first, third))
+        norms = (math.dist(points[0], points[1])
+                 * math.dist(points[2], points[1]))
+        return math.degrees(math.acos(max(-1.0, min(1.0, dot / norms))))
+
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+    deadline = _time.time() + 60
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+
+    state["picked"] = [0, 1, 2]
+    refs["submit_internal_value"].value = 95.0
+    refs["submit_hold_mode"].value = "fix"
+    refs["submit_hold_btn"].click()
+
+    deadline = _time.time() + 60
+    while _time.time() < deadline and "converged after" not in refs["mol_status"].value:
+        _time.sleep(0.05)
+
+    held = carbon_angle(refs["coords_widget"].value)
+    assert abs(held - 95.0) < 1.5, (
+        f"asked for 95 deg and got {held:.2f} without pressing Optimise"
+    )
+    refs["submit_relax_btn"].value = False

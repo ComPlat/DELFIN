@@ -660,6 +660,7 @@ def optimize_with_gfn(
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted, 'held': held,
+                'converged': False,
                 'status': (f'{label} stopped before converging after '
                            f'{seconds:.1f} s; the geometry it reached is shown. '
                            f'(xtb {version}, {reported or wanted})'
@@ -669,6 +670,7 @@ def optimize_with_gfn(
             'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted, 'held': held,
+            'converged': True,
             'status': (f'{label} converged in {seconds:.1f} s '
                        f'(xtb {version}, {reported or wanted}).'
                        + held_note(held)),

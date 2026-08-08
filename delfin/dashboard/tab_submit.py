@@ -3961,6 +3961,27 @@ def create_tab(ctx):
     #: because this happens on every release.
     _GFN_SETTLE_CYCLES = 40
 
+    def _gfn_live_is_on():
+        """Whether something on screen is meant to act on a change at once."""
+        return (submit_relax_btn.value
+                and _gfn.is_gfn_method(submit_ff_dd.value)
+                and _gfn.xtb_available())
+
+    def _arm_gfn_takeup(note=''):
+        """Take up a change to what is held, straight away.
+
+        Setting a value, watching nothing happen and having to press Optimise
+        for it is the switch claiming to be live and not being it.  Under the
+        browser's field a held value acts the moment it is set, because the
+        field is already running; here nothing is running between drags, so
+        the change is what starts it.
+        """
+        if not _gfn_live_is_on():
+            return
+        state['gfn_settle_note'] = note
+        state['gfn_settle_forced'] = True
+        _arm_gfn_settle()
+
     def _arm_gfn_settle():
         """Tidy the structure after a release, with the method on screen.
 
@@ -3972,15 +3993,19 @@ def create_tab(ctx):
         Waits a moment first, because the coordinates of the release arrive on
         a message of their own and this has to start from them.
         """
-        if not (submit_settle_btn.value
-                and _gfn.is_gfn_method(submit_ff_dd.value)
-                and _gfn.xtb_available()):
+        if not (_gfn.is_gfn_method(submit_ff_dd.value)
+                and _gfn.xtb_available()
+                and (submit_settle_btn.value
+                     or state.get('gfn_settle_forced'))):
             return
         if state.get('optimize_interrupted') is not None:
             # An optimisation was interrupted by this very drag and is coming
             # back.  A whole minimisation is more than a settle, not less.
             return
-        state['gfn_settle_at'] = time.monotonic() + _GFN_RESTART_DELAY
+        # A round that follows another round waits only long enough not to
+        # spin; a release waits for its coordinates to arrive first.
+        state['gfn_settle_at'] = time.monotonic() + (
+            0.05 if state.get('gfn_settle_again') else _GFN_RESTART_DELAY)
         if state.get('gfn_settle_armed'):
             return
         state['gfn_settle_armed'] = True
@@ -4010,7 +4035,13 @@ def create_tab(ctx):
         constraints = list(state.get('constraints') or [])
         run = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run
-        _set_mol_status(f'{label} is settling the structure...', spinner=True)
+        rounds = int(state.get('gfn_settle_rounds') or 0) + 1
+        state['gfn_settle_rounds'] = rounds
+        note = str(state.get('gfn_settle_note') or '')
+        _set_mol_status(
+            (f'{note}: {label} is moving the structure to it...' if note
+             else f'{label} is settling the structure...')
+            + (f' (round {rounds})' if rounds > 1 else ''), spinner=True)
 
         def _push(frames):
             walked = list(frames)
@@ -4027,13 +4058,20 @@ def create_tab(ctx):
                 xyz, method, charge=charge, uhf=uhf,
                 max_steps=_GFN_SETTLE_CYCLES, timeout=60.0,
                 constraints=constraints, on_frames=_push,
-                # Switching Settle off mid-settle means what it says.
-                should_stop=lambda: not submit_settle_btn.value,
+                # A hand on an atom takes over from a relaxation of the whole
+                # thing; and switching off means what it says, whichever of the
+                # two switches was keeping this alive.
+                should_stop=lambda: bool(
+                    state.get('gfn_follow')
+                    or not (submit_settle_btn.value or _gfn_live_is_on())),
             )
 
             def _done():
                 state['gfn_settle_busy'] = False
+                state['gfn_settle_again'] = False
                 if not outcome.get('ok'):
+                    state['gfn_settle_forced'] = False
+                    state['gfn_settle_rounds'] = 0
                     _set_mol_status(
                         f'{label} could not settle it: '
                         f'{outcome.get("status") or "it did not run"}')
@@ -4048,8 +4086,24 @@ def create_tab(ctx):
                     coords_widget.value = (
                         f'{len(lines)}\nSettled with {label}\n'
                         + '\n'.join(lines))
-                said = (f'{label} settled the structure in '
-                        f'{time.perf_counter() - began:.1f} s.')
+                # Not converged and the switch is still down: keep going.  That
+                # is what makes this a relaxation rather than a single push --
+                # and it ends by itself, because a structure that has converged
+                # has nothing left to ask for.
+                if (not outcome.get('converged') and _gfn_live_is_on()
+                        and not state.get('gfn_follow')):
+                    state['gfn_settle_again'] = True
+                    state['gfn_settle_forced'] = True
+                    _arm_gfn_settle()
+                    return
+                state['gfn_settle_forced'] = False
+                state['gfn_settle_note'] = ''
+                took = time.perf_counter() - began
+                said = (
+                    f'{label} relaxed the structure: converged after '
+                    f'{rounds} round(s).' if outcome.get('converged') else
+                    f'{label} settled the structure in {took:.1f} s.')
+                state['gfn_settle_rounds'] = 0
                 state['gfn_last_status'] = said
                 _set_mol_status(said)
 
@@ -4182,8 +4236,9 @@ def create_tab(ctx):
             _stop_browser_field()
             label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
             if not active:
-                _set_mol_status('The molecule no longer follows the atom you '
-                                'drag.')
+                state['gfn_settle_forced'] = False
+                state['gfn_settle_rounds'] = 0
+                _set_mol_status('The structure is no longer being relaxed.')
                 return
             if not _gfn.xtb_available():
                 _set_mol_status(f'{label} needs xtb, which was not found.')
@@ -4194,12 +4249,16 @@ def create_tab(ctx):
             _ensure_manip_bootstrap()
             _install_gfn_frame_watcher()
             _set_mol_status(
-                f'Drag an atom and the rest of the molecule follows it, '
-                f'{label} on the server, a few cycles per push. Each step '
-                'says how long it took.'
+                f'{label} is now relaxing the structure, and keeps up with '
+                'what you do to it: drag an atom and the rest follows, hold a '
+                'value and it moves to it. It stops when it has converged.'
                 + ('' if submit_ff_dd.value == 'gfnff' else
                    f' {label} is the slow one -- if it drags heavily, '
-                   'GFN-FF follows about twenty times faster.'))
+                   'GFN-FF answers about twenty times faster.'))
+            # Switched on and nothing happening is the complaint this answers:
+            # under the browser's field the structure starts settling at once,
+            # and there is no reason for this one to wait for a drag.
+            _arm_gfn_takeup()
             return
         if not active:
             _ensure_manip_bootstrap()
@@ -4580,6 +4639,9 @@ def create_tab(ctx):
             + json.dumps(submit_scope_id) + ','
             + repr(float(submit_internal_value.value)) + ');'
         )
+        # The browser moves the atoms; under GFN the rest of the molecule has
+        # to be given the chance to arrange itself around where they landed.
+        _arm_gfn_takeup('Set')
 
     def on_submit_set_internal(change=None):
         """Set is a mode: while it is on, the box turns the selection by hand.
@@ -5479,6 +5541,10 @@ def create_tab(ctx):
         _refresh_constraints()
         _set_mol_status(f'Holding {_describe_constraint(entry)}.')
         _enable_live_forcefield()
+        # Under GFN nothing is running between drags, so the change is what
+        # starts it: a value set while the switch is down used to sit there
+        # until Optimise was pressed.
+        _arm_gfn_takeup(f'Holding {_describe_constraint(entry)}')
         # A fresh set for the next one: several values can then be held at
         # once, which is the whole point of a list.
         _clear_selection()
@@ -5498,6 +5564,7 @@ def create_tab(ctx):
         state['constraints'] = held
         _refresh_constraints()
         _enable_live_forcefield()
+        _arm_gfn_takeup(f'Holding {_describe_constraint(held[position])}')
 
     def on_submit_reset(_button=None):
         """Back to the structure that was loaded, with nothing set on it.
@@ -6262,6 +6329,8 @@ def create_tab(ctx):
         'handle_validate_control': handle_validate_control,
         # editor state, for the held-value list and Reset
         'submit_constraint_dd': submit_constraint_dd,
+        'submit_hold_btn': submit_hold_btn,
+        'submit_hold_mode': submit_hold_mode,
         'submit_internal_value': submit_internal_value,
         'submit_internal_btn': submit_internal_btn,
         'submit_ff_dd': submit_ff_dd,
