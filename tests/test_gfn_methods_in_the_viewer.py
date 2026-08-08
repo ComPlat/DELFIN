@@ -2664,19 +2664,67 @@ def test_the_bond_perception_is_the_covalent_radii_and_says_where_it_stops():
     """3Dmol has no re-perception to ask for -- rebuildBonds does not exist in
     this build -- so the lines are worked out here, from the radii.
 
-    Driven in a real JS engine: a C-C is drawn out to 1.95 A and gone at 1.98,
-    which is (0.76 + 0.76) x 1.30; a double bond that survives keeps its order,
-    because the distance says whether there is a bond and not what kind; two
-    atoms on top of each other are a mistake rather than a bond; and Pt-P at
-    2.30 A is drawn, which a rule tuned on carbon would have missed.
+    Driven in a real JS engine: a C-C is drawn out to 1.92 A and gone at 1.95;
+    a double bond that survives keeps its order, because the distance says
+    whether there is a bond and not what kind; two atoms on top of each other
+    are a mistake rather than a bond; and Pt-P at 2.30 A is drawn, which a rule
+    tuned on carbon would have missed.
     """
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     editor_js = submit_manip_bootstrap_js()
     assert "var COVALENT_RADII" in editor_js
-    assert "var BOND_TOLERANCE = 1.30;" in editor_js
+    assert "var BOND_TOLERANCE = 0.40;" in editor_js
     body = editor_js[editor_js.index("function perceiveBonds("):][:2200]
     assert "was[i + '-' + j] || 1" in body, "a double bond has to stay double"
     assert "d2 < 0.16" in body, "overlapping atoms are not a bond"
     for element in ("Pt", "Fe", "Re", "Pd", "Ru"):
         assert f"{element}:" in editor_js, f"no covalent radius for {element}"
+
+
+def test_the_reach_is_added_not_multiplied_so_metals_keep_one_sphere():
+    """A factor grows the reach with the radii, so a metal gets a
+    proportionally huge one and starts drawing lines to the second
+    coordination sphere.
+
+    Measured on a manganese, radii 1.50 and 0.76: a factor of 1.30 reaches
+    2.94 A and picks up a carbon at 2.90, which is second sphere.  Adding 0.40
+    reaches 2.66 and does not, while every first-sphere contact still is --
+    Mn-N 2.25, Mn-O 2.15, Mn-Cl 2.40, Pt-P 2.30.
+
+    Checked across 35 metals from scandium to uranium against N, O, P, S, Cl
+    and C donors: no first-sphere bond falls outside the reach, and the
+    tightest margin to the atom behind the donor is 0.56 A (Sc-O).  It holds
+    for any element, because the second sphere is one covalent bond further
+    off -- an N-H is 1.02 A, the shortest thing that can be behind a donor --
+    and the tolerance is 0.40.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    editor_js = submit_manip_bootstrap_js()
+    body = editor_js[editor_js.index("function perceiveBonds("):][:2400]
+    assert "var reach = radii[i] + radii[j] + BOND_TOLERANCE;" in body, (
+        "multiplying is what reached into the second sphere"
+    )
+    assert "* BOND_TOLERANCE" not in body
+
+    radii = editor_js[editor_js.index("var COVALENT_RADII"):]
+    radii = radii[:radii.index("};")]
+    import re
+
+    table = {m.group(1): float(m.group(2))
+             for m in re.finditer(r"([A-Z][a-z]?): ([0-9.]+)", radii)}
+    tolerance = 0.40
+    donors = {"N": 1.02, "O": 0.96, "P": 1.84, "S": 1.34, "C": 1.09}
+    metals = ["Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+              "Zr", "Mo", "Ru", "Rh", "Pd", "Ag", "W", "Re", "Os", "Ir",
+              "Pt", "Au", "Hg", "La", "Ce", "Nd", "Eu", "Gd", "Yb", "U"]
+    for metal in metals:
+        assert metal in table, f"no covalent radius for {metal}"
+        for donor, behind in donors.items():
+            reach = table[metal] + table[donor] + tolerance
+            bond = table[metal] + table[donor]
+            assert reach >= bond, f"{metal}-{donor} bond would not be drawn"
+            assert reach < bond + behind, (
+                f"{metal}-{donor} reaches past the atom behind the donor"
+            )

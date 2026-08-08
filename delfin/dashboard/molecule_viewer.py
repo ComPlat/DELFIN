@@ -1382,9 +1382,15 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         Rn: 1.50, Fr: 2.60, Ra: 2.21, Ac: 2.15, Th: 2.06, Pa: 2.00, U: 1.96
     };
     // How much longer than the two radii together a contact may be and still
-    // be drawn.  A C-C bond is 0.76 + 0.76 = 1.52 A, so 1.30 draws it out to
-    // 1.98 A and stops -- which is about where a chemist stops calling it one.
-    var BOND_TOLERANCE = 1.30;
+    // be drawn.  Added, not multiplied: a factor grows the reach with the
+    // radii, so a metal gets a proportionally huge one and starts drawing
+    // lines to the second coordination sphere.  Measured on a manganese --
+    // radii 1.50 and 0.76 -- a factor of 1.30 reaches 2.94 A and picks up a
+    // carbon at 2.90, which is second sphere; adding 0.40 reaches 2.66 and
+    // does not, while every first-sphere contact still is: Mn-N at 2.25,
+    // Mn-O at 2.15, Mn-Cl at 2.40, Pt-P at 2.30.  A C-C is then drawn out to
+    // 1.92 A, which is about where one stops calling it a bond.
+    var BOND_TOLERANCE = 0.40;
 
     function covalentRadius(element) {
         var name = String(element || '');
@@ -1420,7 +1426,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 var dx = atoms[i].x - atoms[j].x;
                 var dy = atoms[i].y - atoms[j].y;
                 var dz = atoms[i].z - atoms[j].z;
-                var reach = (radii[i] + radii[j]) * BOND_TOLERANCE;
+                var reach = radii[i] + radii[j] + BOND_TOLERANCE;
                 var d2 = dx * dx + dy * dy + dz * dz;
                 // Two atoms on top of each other are a mistake, not a bond.
                 if (d2 > reach * reach || d2 < 0.16) continue;
