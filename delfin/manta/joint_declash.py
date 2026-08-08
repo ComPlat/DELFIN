@@ -398,6 +398,28 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                             _m0 = next((i for i in metals), 0)
                             _c_before = _PLY.cshm([Pcur[i] - Pcur[_m0] for i in _don_idx],
                                                   geom)
+                            # ===== KEIN SCHWENK AUF UNSICHERER AUSGANGSFORM (2026-08-08) =====
+                            # GEMESSEN, ligswing1k auf dem 1000er-Pool: von den 9 geschaedigten
+                            # Systemen hatten 5 (56 %) bereits den FALSCHEN Polyeder gebaut,
+                            # in der unbeschaedigten Vergleichsgruppe nur 7 von 43 (16 %) --
+                            # eine 3,5-fache Anreicherung.  (Auf dem kleineren 180er-Pool war
+                            # das Signal noch 43 % gegen 32 % und damit nicht belastbar; erst
+                            # das groessere Sample trennt.)
+                            #
+                            # Physikalisch ist das zwingend: wer schon die falsche Form gebaut
+                            # hat, optimiert den Schwenk INNERHALB einer Form, die nicht stimmt.
+                            # Jede Bewegung fuehrt dann genauso wahrscheinlich vom Kristall weg
+                            # wie hin -- die Clash-Zielfunktion weiss nichts darueber.
+                            #
+                            # Der Bauer kann das ohne Kristall pruefen: sitzt der Donorsatz
+                            # schon WEITER vom eigenen Idealpolyeder entfernt als ein reales
+                            # Kristall im p90 (CShM 3,65 ueber 553 Kristalle), ist die
+                            # Ausgangsform keine vertrauenswuerdige Basis.  Die Schranke kommt
+                            # per Env, weil die Zahl CCDC-abgeleitet ist; Vorgabe 0 = aus.
+                            _c_floor = float(os.environ.get(
+                                "DELFIN_FFFREE_LIGAND_SWING_MAX_START_CSHM", "0") or 0.0)
+                            if _c_floor > 0.0 and _c_before > _c_floor:
+                                continue          # unsichere Ausgangsform -> gar nicht schwenken
                             _c_after = _PLY.cshm([trial[i] - trial[_m0] for i in _don_idx],
                                                  geom)
                             if _c_after > _c_before + float(_cb) + 1e-9:
