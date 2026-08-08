@@ -811,3 +811,19 @@ def test_the_switch_still_works_on_a_run_that_is_reporting_frames():
 
     assert elapsed < 5, "the stop check has to run whatever else is going on"
     assert result["ok"] or "stopped" in result["status"]
+
+
+def test_the_playback_speeds_up_when_it_falls_behind(editor):
+    """xtb computes faster than a fixed frame rate can show.
+
+    75 frames arrive in 0.4 s and would take 4 s at 55 ms each, so the picture
+    trails the calculation and keeps trailing it further.  A backlog is played
+    faster; the whole path is still shown.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "function stepMs()" in watcher
+    assert "play.queue.length" in watcher
+    assert "stepMs()" in watcher.split("var t=(now-play.started)")[1][:20]
