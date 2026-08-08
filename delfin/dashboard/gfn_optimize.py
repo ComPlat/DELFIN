@@ -446,6 +446,28 @@ def optimize_with_gfn(
                        'for an interactive run; submit it as a job instead.'),
         }
 
+    # A multiplicity the electron count cannot produce is not refused by xtb:
+    # water asked for a doublet came back with the singlet's energy to the last
+    # digit, -5.070543980552 either way.  A confidently mislabelled answer is
+    # the one failure this module exists to prevent, so it is refused here.
+    try:
+        parity = electron_parity(xyz_text, charge)
+    except Exception:
+        parity = None                 # cannot tell; not a reason to refuse
+    if parity is not None and max(0, int(uhf)) % 2 != parity % 2:
+        multiplicity = max(0, int(uhf)) + 1
+        return {
+            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+            'seconds': 0.0, 'frames': [],
+            'status': (
+                f'{atoms} atoms at charge {charge} have an '
+                f'{"odd" if parity else "even"} number of electrons, which '
+                f'cannot make M = {multiplicity}. xtb does not refuse this -- '
+                f'it answers with the nearest multiplicity it can and says '
+                f'nothing -- so it is refused here. Try M = '
+                f'{multiplicity - 1 if multiplicity > 1 else 2}.'),
+        }
+
     binary = find_xtb()
     if binary is None:
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -812,6 +834,26 @@ def hold_atoms_at(xyz_text: str, reference: str, indices: Any) -> str:
     head = str(xyz_text or '').splitlines()
     comment = head[1] if len(head) > 1 else ''
     return f'{len(rows)}\n{comment}\n{body}\n'
+
+
+def largest_shift(before: str, after: str) -> float:
+    """How far the atom that moved most has moved, in Angstrom.
+
+    Whether a relaxation is still getting anywhere is a different question from
+    whether xtb calls it converged, and it is the one worth asking of a loop
+    that runs until it is finished: held values that cannot all be met at once
+    never converge, and a relaxation that will not end is a process per round
+    for as long as the switch is down.
+    """
+    first = coordinates_of(before)
+    second = coordinates_of(after)
+    if not first or len(first) != len(second):
+        return 0.0
+    worst = 0.0
+    for i in range(0, len(first), 3):
+        moved = sum((first[i + n] - second[i + n]) ** 2 for n in range(3))
+        worst = max(worst, moved)
+    return worst ** 0.5
 
 
 def coordinates_of(xyz_text: str) -> list:

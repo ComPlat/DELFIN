@@ -3897,7 +3897,7 @@ def create_tab(ctx):
         method = str(state.get('gfn_follow_method') or submit_ff_dd.value)
         label = _gfn.GFN_METHODS[method]['label']
         charge = int(submit_gfn_charge.value or 0)
-        uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
+        uhf = _gfn_uhf_now()
         constraints = list(state.get('constraints') or [])
 
         def _work():
@@ -3925,7 +3925,15 @@ def create_tab(ctx):
                     # question when something in the chain is broken.
                     steps = int(state.get('gfn_follow_steps') or 0) + 1
                     state['gfn_follow_steps'] = steps
-                    said = (f'{label} is following the drag: {steps} step(s), '
+                    # How many atoms the hand is on.  Grabbing an atom that is
+                    # part of a selection drags the whole selection, so a
+                    # selection left over from earlier makes every drag move
+                    # everything -- which reads as the molecule fighting
+                    # itself, and is invisible unless it is counted here.
+                    many = (f' holding {len(holding)} atoms,'
+                            if len(holding) > 1 else '')
+                    said = (f'{label} is following the drag:{many} {steps} '
+                            f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
                             'each.')
                     state['gfn_last_status'] = said
@@ -3960,6 +3968,30 @@ def create_tab(ctx):
     #: it would stay rather than take one step towards it -- but still a bound,
     #: because this happens on every release.
     _GFN_SETTLE_CYCLES = 40
+
+    #: How many rounds before it gives up on converging.  Held values that
+    #: cannot all be met at once never converge -- measured on a propane with
+    #: two fixed distances and an angle fighting each other, not converged in
+    #: any round -- and a relaxation that will not end is a process per round
+    #: for as long as the switch is down, and a structure that visibly jitters.
+    _GFN_SETTLE_ROUNDS = 12
+    #: And a round that moved nothing has settled, whatever xtb calls it.
+    _GFN_SETTLE_STILL = 0.005
+
+    def _gfn_uhf_now():
+        """How many unpaired electrons the live relaxation should assume.
+
+        The box says a multiplicity and xtb counts unpaired electrons, so
+        M = 2S+1 becomes M - 1.  With auto M on, the box is not the answer at
+        all -- Optimise scans and keeps the lowest -- and a live relaxation
+        running the box's fixed M while Optimise ran a scanned one is two
+        answers about two different molecules, which is why pressing Optimise
+        after it moved the structure again.  Scanning every round would cost
+        three runs a round, so what the last scan settled on is used instead.
+        """
+        if submit_gfn_autospin.value and state.get('gfn_scanned_uhf') is not None:
+            return int(state['gfn_scanned_uhf'])
+        return max(0, int(submit_gfn_mult.value or 1) - 1)
 
     def _gfn_live_is_on():
         """Whether something on screen is meant to act on a change at once."""
@@ -4031,12 +4063,20 @@ def create_tab(ctx):
         label = _gfn.GFN_METHODS[method]['label']
         state['gfn_settle_busy'] = True
         charge = int(submit_gfn_charge.value or 0)
-        uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
+        uhf = _gfn_uhf_now()
         constraints = list(state.get('constraints') or [])
-        run = int(state.get('gfn_run', 0)) + 1
-        state['gfn_run'] = run
         rounds = int(state.get('gfn_settle_rounds') or 0) + 1
         state['gfn_settle_rounds'] = rounds
+        # One run number for the whole relaxation, not one per round.  A new
+        # run number resets the player, which drops what it had not drawn yet
+        # and applies the next frame outright instead of moving to it: with a
+        # round every few tenths of a second that is a twitch per round, and
+        # what it looks like is the structure jittering.
+        if rounds == 1:
+            state['gfn_run'] = int(state.get('gfn_run', 0)) + 1
+            state['gfn_settle_offset'] = 0
+        run = int(state.get('gfn_run', 0))
+        offset = int(state.get('gfn_settle_offset') or 0)
         note = str(state.get('gfn_settle_note') or '')
         _set_mol_status(
             (f'{note}: {label} is moving the structure to it...' if note
@@ -4046,8 +4086,9 @@ def create_tab(ctx):
         def _push(frames):
             walked = list(frames)
             trail = walked[-60:]
+            state['gfn_settle_walked'] = len(walked)
             _schedule_ui_update(
-                lambda t=trail, f=len(walked) - len(trail): setattr(
+                lambda t=trail, f=offset + len(walked) - len(trail): setattr(
                     submit_gfn_frame, 'value',
                     json.dumps({'run': run, 'from': f, 'follow': 1,
                                 'frames': t})))
@@ -4069,6 +4110,9 @@ def create_tab(ctx):
             def _done():
                 state['gfn_settle_busy'] = False
                 state['gfn_settle_again'] = False
+                # Where the next round's frames carry on from.
+                state['gfn_settle_offset'] = offset + int(
+                    state.pop('gfn_settle_walked', 0) or 0)
                 if not outcome.get('ok'):
                     state['gfn_settle_forced'] = False
                     state['gfn_settle_rounds'] = 0
@@ -4087,11 +4131,16 @@ def create_tab(ctx):
                         f'{len(lines)}\nSettled with {label}\n'
                         + '\n'.join(lines))
                 # Not converged and the switch is still down: keep going.  That
-                # is what makes this a relaxation rather than a single push --
-                # and it ends by itself, because a structure that has converged
-                # has nothing left to ask for.
+                # is what makes this a relaxation rather than a single push.
+                # It ends three ways -- converged, standing still, or out of
+                # rounds -- because held values that cannot all be met at once
+                # never converge, and a relaxation that will not end is a
+                # process per round for as long as the switch is down.
+                moved = _gfn.largest_shift(xyz, outcome['xyz'])
                 if (not outcome.get('converged') and _gfn_live_is_on()
-                        and not state.get('gfn_follow')):
+                        and not state.get('gfn_follow')
+                        and rounds < _GFN_SETTLE_ROUNDS
+                        and moved > _GFN_SETTLE_STILL):
                     state['gfn_settle_again'] = True
                     state['gfn_settle_forced'] = True
                     _arm_gfn_settle()
@@ -4099,10 +4148,24 @@ def create_tab(ctx):
                 state['gfn_settle_forced'] = False
                 state['gfn_settle_note'] = ''
                 took = time.perf_counter() - began
-                said = (
-                    f'{label} relaxed the structure: converged after '
-                    f'{rounds} round(s).' if outcome.get('converged') else
-                    f'{label} settled the structure in {took:.1f} s.')
+                if outcome.get('converged'):
+                    said = (f'{label} relaxed the structure: converged after '
+                            f'{rounds} round(s).')
+                elif not _gfn_live_is_on() or state.get('gfn_follow'):
+                    said = f'{label} settled the structure in {took:.1f} s.'
+                else:
+                    # Said out loud, because a structure that has stopped
+                    # improving and one that is finished look identical, and
+                    # only one of them is worth pressing Optimise on.
+                    why = ('it is no longer moving' if moved <= _GFN_SETTLE_STILL
+                           else f'{rounds} rounds is as far as this goes')
+                    said = (
+                        f'{label} stopped without converging: {why}. '
+                        + ('Held values that cannot all be met at once are the '
+                           'usual reason -- the list beside the toolbar is '
+                           'what it is trying to satisfy.'
+                           if state.get('constraints') else
+                           'Optimise will run it without a round limit.'))
                 state['gfn_settle_rounds'] = 0
                 state['gfn_last_status'] = said
                 _set_mol_status(said)
@@ -4491,6 +4554,11 @@ def create_tab(ctx):
                         state['gfn_energy'] = float(outcome['energy'])
                     if position == 0:
                         state['gfn_held'] = outcome.get('held')
+                        if outcome.get('multiplicity'):
+                            # What the scan settled on, so the live relaxation
+                            # asks the same question this one did rather than
+                            # a different one with the box's fixed M.
+                            state['gfn_scanned_uhf'] = int(outcome['uhf'])
                     kept = outcome['xyz']
                     if _stopped() and outcome.get('frames'):
                         # Stop means the frame that was on screen.  xtb runs

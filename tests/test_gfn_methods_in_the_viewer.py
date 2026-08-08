@@ -1998,3 +1998,99 @@ def test_holding_a_value_moves_the_structure_to_it_there_and_then(editor):
         f"asked for 95 deg and got {held:.2f} without pressing Optimise"
     )
     refs["submit_relax_btn"].value = False
+
+
+# ---------------------------------------------------------------------------
+# a relaxation that will not end, and a spin that cannot exist
+# ---------------------------------------------------------------------------
+def test_a_multiplicity_the_electrons_cannot_make_is_refused():
+    """xtb does not refuse it.  Water asked for a doublet came back with the
+    singlet's energy to the last digit -- -5.070543980552 either way -- and a
+    confidently mislabelled answer is the one failure this module exists to
+    prevent."""
+    refused = gfn.optimize_with_gfn(_WATER, "gfn2", charge=0, uhf=1)
+
+    assert refused["ok"] is False
+    assert "even number of electrons" in refused["status"]
+    assert "cannot make M = 2" in refused["status"]
+    assert refused["xyz"] == _WATER
+
+    # and the ones it can make are not refused
+    for uhf in (0, 2):
+        assert "cannot make" not in gfn.optimize_with_gfn(
+            _WATER, "gfn2", charge=0, uhf=uhf)["status"]
+    # an odd electron count is the other way round
+    assert gfn.optimize_with_gfn(_WATER, "gfn2", charge=1, uhf=0)["ok"] is False
+
+
+def test_how_far_the_structure_moved_is_asked_of_the_coordinates():
+    """Whether a relaxation is still getting anywhere is a different question
+    from whether xtb calls it converged."""
+    before = "2\nx\nH 0.0 0.0 0.0\nH 1.0 0.0 0.0\n"
+    after = "2\nx\nH 0.0 0.0 0.0\nH 1.1 0.0 0.0\n"
+
+    assert abs(gfn.largest_shift(before, after) - 0.1) < 1e-9
+    assert gfn.largest_shift(before, before) == 0.0
+    assert gfn.largest_shift(before, "3\nx\nH 0 0 0\nH 1 0 0\nH 2 0 0\n") == 0.0
+
+
+def test_the_relaxation_ends_three_ways_and_says_which(editor):
+    """Converged, standing still, or out of rounds.  A structure that has
+    stopped improving and one that is finished look identical, and only one of
+    them is worth pressing Optimise on."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "rounds < _GFN_SETTLE_ROUNDS" in settle
+    assert "moved > _GFN_SETTLE_STILL" in settle
+    assert "stopped without converging" in settle
+    assert "Held values that cannot all be met at once" in settle
+
+
+def test_the_whole_relaxation_is_one_run_not_one_per_round(editor):
+    """A new run number resets the player: it drops what it had not drawn and
+    applies the next frame outright instead of moving to it.  With a round
+    every few tenths of a second that is a twitch per round."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "if rounds == 1:" in settle, "only the first round takes a number"
+    assert "state['gfn_settle_offset'] = 0" in settle
+    assert "offset + len(walked) - len(trail)" in settle, (
+        "and the frames of later rounds carry on from where the last stopped"
+    )
+
+
+def test_the_live_relaxation_asks_the_same_spin_optimise_did(editor):
+    """Optimise scanning multiplicities while the live relaxation ran the box's
+    fixed one is two answers about two different molecules -- and pressing
+    Optimise afterwards then moves the structure again, for no visible reason.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    picked = source.split("def _gfn_uhf_now")[1].split("\n    def ")[0]
+    assert "submit_gfn_autospin.value" in picked
+    assert "state.get('gfn_scanned_uhf')" in picked
+
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "state['gfn_scanned_uhf'] = int(outcome['uhf'])" in handler
+
+    for name in ("_gfn_follow_step", "_gfn_settle_now"):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "uhf = _gfn_uhf_now()" in body, name
+
+
+def test_the_status_counts_the_atoms_the_hand_is_on(editor):
+    """Grabbing an atom that is part of a selection drags the whole selection,
+    so one left over from earlier makes every drag move everything -- which
+    reads as the molecule fighting itself and is otherwise invisible."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "holding {len(holding)} atoms" in follow
