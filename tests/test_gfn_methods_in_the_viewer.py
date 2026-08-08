@@ -1900,8 +1900,9 @@ def test_the_follow_is_paced_by_the_machine_not_by_a_clock(player_js):
     assert "if(since>500||(answered&&since>50)){" in player_js, (
         "as soon as the last answer landed, with a floor and a ceiling"
     )
-    # and drawn over exactly as long as the next one takes to arrive
-    assert "if(play.follow&&play.gap) return play.gap;" in player_js
+    # and drawn over exactly as long as the next one takes to arrive -- but
+    # only while they arrive one at a time; a burst keeps the backlog rules
+    assert "if(play.follow&&play.gap&&n<=3) return play.gap;" in player_js
     assert "play.gap=Math.min(600," in player_js
 
 
@@ -2157,3 +2158,31 @@ def test_a_release_relaxes_to_convergence_with_settle_switched_off(editor):
         "Optimise still had work to do after the relaxation said it was done"
     )
     refs["submit_relax_btn"].value = False
+
+
+def test_a_run_that_ends_lands_the_picture_on_its_last_frame(player_js):
+    """Otherwise the viewer keeps whatever it had drawn while the kernel keeps
+    the geometry it computed, and the two drift apart.
+
+    Driven in a real JS engine: a relaxation walking an atom from 0 to 29 was
+    at 11.9 when the next drag started a new run, and the viewer stayed there.
+    The next drag then hands over a structure that is behind, and the
+    relaxation nobody saw is walked again -- which is every earlier drag being
+    made a second time.
+    """
+    assert "show(play.last,play.queue[play.queue.length-1],1);" in player_js
+    landing = player_js.split("if(run!==play.run){")[1].split("play.run=run;")[0]
+    assert "if(play.queue.length){" in landing, (
+        "the frames of the ending run have to be landed before they are dropped"
+    )
+
+
+def test_a_burst_is_not_played_at_the_pace_of_a_followed_hand(player_js):
+    """A follow arrives one answer at a time and is drawn over the gap between
+    them; a relaxation arrives in bursts, and those keep the backlog rules."""
+    step = player_js.split("function stepMs(){")[1].split("\n  }")[0]
+    assert "if(n>60) return 8;" in step
+    assert step.index("if(n>10) return 35;") < step.index("play.gap"), (
+        "the backlog rules come first"
+    )
+    assert "play.follow&&play.gap&&n<=3" in step
