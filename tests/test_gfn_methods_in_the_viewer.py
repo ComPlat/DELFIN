@@ -940,7 +940,7 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
     assert 'classList.contains("mod-active")' in watcher
     # and it is checked before anything is drawn, every frame
     body = watcher.split("function frame(now)")[1]
-    assert body.index("switchIsOn()") < body.index("read();")
+    assert body.index("switchIsOn()") < body.index("read(now);")
 
 
 # ---------------------------------------------------------------------------
@@ -1397,8 +1397,8 @@ def test_the_page_hands_the_geometry_over_while_the_mouse_is_down(player_js):
     assert "function followIsOn()" in player_js
     assert "submit-gfn-follow" in player_js, "the switch is read off the page"
     assert 'pushXyz(scope,"drag-follow")' in player_js
-    assert "now-(play.pushed||0)>200" in player_js, (
-        "faster than xtb answers only builds a queue about where it used to be"
+    assert "var since=now-(play.pushed||0);" in player_js, (
+        "the pace is the machine's, and it has to be measured to be followed"
     )
     # and the manip API has to offer that push at all
     assert "pushXyz: pushXyzToPython" in submit_manip_bootstrap_js()
@@ -1803,3 +1803,107 @@ def test_letting_go_settles_with_the_method_that_is_chosen(editor):
     second = [float(v) for v in rows[1][1:4]]
     length = sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
     assert length < 1.75, f"the stretched C-C was not tidied up: {length:.3f}"
+
+
+# ---------------------------------------------------------------------------
+# the atom under the cursor stays under the cursor
+# ---------------------------------------------------------------------------
+def test_the_held_atoms_are_put_back_where_they_were_sent():
+    """xtb pulls a dragged atom most of the way home in five cycles -- 244 mA
+    of a 250 mA drag -- and the answer outlives the drag.  Applied after the
+    release, when nothing is being held any more, it took the atom with it."""
+    sent = ("3\nsent\nC 5.000000 0.0 0.0\nH 1.0 0.0 0.0\nH 0.0 1.0 0.0\n")
+    answered = ("3\nanswered\nC 1.100000 0.2 0.1\nH 1.4 0.1 0.0\n"
+                "H 0.1 1.3 0.0\n")
+
+    kept = gfn.hold_atoms_at(answered, sent, [0])
+
+    rows = [line.split() for line in gfn.atom_lines(kept)]
+    assert rows[0][1:4] == ["5.000000", "0.0", "0.0"], "the held atom moved"
+    assert rows[1][1:4] == ["1.4", "0.1", "0.0"], "the rest must keep the answer"
+
+    both = gfn.hold_atoms_at(answered, sent, [0, 2])
+    rows = [line.split() for line in gfn.atom_lines(both)]
+    assert rows[0][1] == "5.000000" and rows[2][1:4] == ["0.0", "1.0", "0.0"], (
+        "a selection of several atoms is dragged as one, and held as one"
+    )
+
+    assert gfn.hold_atoms_at(answered, sent, []) == answered
+    # a structure that changed size under it is left alone rather than mangled
+    assert gfn.hold_atoms_at(answered, "2\nx\nH 0 0 0\nH 1 0 0\n", [0]) == answered
+
+
+def test_the_page_names_the_atoms_the_hand_is_on(player_js):
+    """Python cannot know which atoms are being dragged; the page can."""
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    push = submit_manip_bootstrap_js().split("function pushXyzToPython(")[1][:1400]
+    assert "held=" in push and "ffIndicesOf(viewer, targets)" in push
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    sync = source.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
+    assert "word.startswith('held=')" in sync
+    assert "_gfn_follow_step(new_xyz, holding)" in sync
+
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "_gfn.hold_atoms_at(" in follow
+
+
+def test_the_follow_is_paced_by_the_machine_not_by_a_clock(player_js):
+    """A fixed fifth of a second threw nine tenths of GFN-FF away: it answers
+    a small molecule in under twenty milliseconds.  Measured in a real engine,
+    one second of dragging went from 5 answers to 16."""
+    assert "answered=play.seen>(play.pushedAt||0)" in player_js
+    assert "if(since>500||(answered&&since>50)){" in player_js, (
+        "as soon as the last answer landed, with a floor and a ceiling"
+    )
+    # and drawn over exactly as long as the next one takes to arrive
+    assert "if(play.follow&&play.gap) return play.gap;" in player_js
+    assert "play.gap=Math.min(600," in player_js
+
+
+@_needs_xtb
+def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
+    """The whole of the spring-back, driven the way the page drives it."""
+    import json as _json
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+    refs["submit_cmd_sync"].value = "gfngrab:1:"
+
+    rows = [line.split() for line in gfn.atom_lines(propane)]
+    rows[0][1] = f"{float(rows[0][1]) - 0.30:.6f}"
+    pushed = ("9\nDELFIN drag-follow held=0\n"
+              + "\n".join(" ".join(r) for r in rows) + "\n")
+    refs["submit_manip_sync"].value = pushed
+
+    deadline = _time.time() + 30
+    while _time.time() < deadline and not (
+            _json.loads(refs["submit_gfn_frame"].value or "{}").get("frames")):
+        _time.sleep(0.01)
+    frames = _json.loads(refs["submit_gfn_frame"].value)["frames"]
+    assert frames, refs["mol_status"].value
+
+    answered = frames[-1]
+    assert abs(answered[0] - float(rows[0][1])) < 1e-6, (
+        f"the held atom came back at {answered[0]:.4f}, not "
+        f"{float(rows[0][1]):.4f} -- that is the spring back"
+    )
+    moved = max(
+        abs(answered[3 * i + n] - float(rows[i][1 + n]))
+        for i in range(1, 9) for n in range(3)
+    )
+    assert moved > 0.005, "and everything else has to have followed"

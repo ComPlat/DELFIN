@@ -34,8 +34,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
-           'held_note', 'install_command', 'install_script', 'install_xtb',
-           'is_gfn_method', 'read_trajectory',
+           'held_note', 'hold_atoms_at', 'install_command', 'install_script',
+           'install_xtb', 'is_gfn_method', 'read_trajectory',
            'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
            'electron_parity']
 
@@ -784,6 +784,32 @@ def relax_steps(
         result.get('ok') and 'converged in' in str(result.get('status') or '')
     )
     return result
+
+
+def hold_atoms_at(xyz_text: str, reference: str, indices: Any) -> str:
+    """*xyz_text*, with the named atoms put back where *reference* has them.
+
+    xtb cannot be asked to leave an atom alone -- it holds internal
+    coordinates, not positions -- so an answer about a dragged structure has
+    the dragged atom most of the way home again: 244 mA of a 250 mA drag, in
+    five cycles.  Putting it back here rather than in the browser matters
+    because the answer outlives the drag: applied after the release, when
+    nothing is being held any more, it would take the atom with it.
+    """
+    wanted = sorted({int(i) for i in (indices or ())})
+    if not wanted:
+        return xyz_text
+    rows = [line.split() for line in atom_lines(xyz_text)]
+    source = [line.split() for line in atom_lines(reference)]
+    if not rows or len(rows) != len(source):
+        return xyz_text
+    for index in wanted:
+        if 0 <= index < len(rows):
+            rows[index][1:4] = source[index][1:4]
+    body = '\n'.join(' '.join(row) for row in rows)
+    head = str(xyz_text or '').splitlines()
+    comment = head[1] if len(head) > 1 else ''
+    return f'{len(rows)}\n{comment}\n{body}\n'
 
 
 def coordinates_of(xyz_text: str) -> list:

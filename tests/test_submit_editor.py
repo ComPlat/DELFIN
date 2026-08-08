@@ -717,7 +717,8 @@ def test_the_polyhedron_reconsiders_once_per_drag_not_twice_a_second():
     Verified in a browser: three seconds of relaxation produce six pushes and
     no drag-end marker at all, and one drag produces exactly one."""
     push = _body('pushXyzToPython')
-    assert "serializeXyz(viewer, reason ? ('DELFIN ' + reason) : null)" in push
+    assert "var note = reason ? ('DELFIN ' + reason) : null;" in push
+    assert "serializeXyz(viewer, note)" in push
     # The heartbeat inside the relaxation loop carries no reason.
     tick = _body('autoOptimizeTick')
     assert 'pushXyzToPython(scopeKey);' in tick
@@ -730,7 +731,9 @@ def test_the_polyhedron_reconsiders_once_per_drag_not_twice_a_second():
 
     source = open(tab_submit.__file__, encoding='utf-8').read()
     sync = source.split('def on_submit_manip_sync')[1].split('\n    def ')[0]
-    assert "lines[1].strip() == 'DELFIN drag-end'" in sync
+    # The comment line now carries the atoms the hand is on as well, so the
+    # marker is read as a prefix rather than as the whole line.
+    assert "note.startswith('DELFIN drag-end')" in sync
     # And it runs after the coordinates have landed, or the assignment would be
     # worked out from where the ligands used to be.
     assert sync.index("state['poly_recheck'] = True") < sync.index('coords_widget.value = payload')

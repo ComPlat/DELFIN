@@ -3570,6 +3570,11 @@ def create_tab(ctx):
             '  window.__delfinGfnPlay[scope]=play;\n'
             '  var STEP_MS=55;\n'
             '  function stepMs(){\n'
+            '    /* A follow is paced by the answers, not by a constant: one\n'
+            '       arrives, and it is drawn over exactly the time the next one\n'
+            '       takes to come.  Played faster than that the picture sits\n'
+            '       still between answers, which is the stepping. */\n'
+            '    if(play.follow&&play.gap) return play.gap;\n'
             '    /* xtb computes faster than this plays: 75 frames arrive in\n'
             '       0.4 s and would take 4 s to show, so the picture trails the\n'
             '       calculation and keeps trailing it further.  A backlog is\n'
@@ -3581,7 +3586,7 @@ def create_tab(ctx):
             '    if(n>10) return 35;\n'
             '    return STEP_MS;\n'
             '  }\n'
-            '  function read(){\n'
+            '  function read(arrivedAt){\n'
             '    /* Fullscreen moves the viewer into an overlay that carries\n'
             '       the same scope class, and the frame field is not one of the\n'
             '       things it takes -- so looking only inside the first element\n'
@@ -3645,6 +3650,11 @@ def create_tab(ctx):
             '         of moved to -- which is every frame of a follow, where\n'
             '         they arrive further apart than a step. */\n'
             '      if(!play.queue.length) play.started=0;\n'
+            '      /* How long the machine took over the last answer, which is\n'
+            '         how long this one has to be drawn over. */\n'
+            '      if(play.arrived) play.gap=Math.min(600,\n'
+            '        Math.max(40,arrivedAt-play.arrived));\n'
+            '      play.arrived=arrivedAt;\n'
             '      for(var i=start;i<frames.length;i++) play.queue.push(frames[i]);\n'
             '      play.seen=from+frames.length;\n'
             '      say("received "+play.seen+" frames");\n'
@@ -3762,11 +3772,17 @@ def create_tab(ctx):
             '    }\n'
             '    if(play.held){\n'
             '      /* Following: the geometry goes over while the mouse is\n'
-            '         still down, five times a second.  Faster than xtb can\n'
-            '         answer is pointless -- the answers would queue behind the\n'
-            '         hand and arrive about a structure that has moved on. */\n'
-            '      if(now-(play.pushed||0)>200){\n'
-            '        play.pushed=now;\n'
+            '         still down, and the pace is set by the machine rather\n'
+            '         than by a clock.  The next one goes as soon as the last\n'
+            '         answer has landed -- GFN-FF answers a small molecule in\n'
+            '         under twenty milliseconds and a fixed fifth of a second\n'
+            '         threw nine tenths of that away.  A floor keeps the\n'
+            '         messages from becoming the bottleneck, and a ceiling\n'
+            '         starts again if an answer never comes at all. */\n'
+            '      var since=now-(play.pushed||0);\n'
+            '      var answered=play.seen>(play.pushedAt||0);\n'
+            '      if(since>500||(answered&&since>50)){\n'
+            '        play.pushed=now; play.pushedAt=play.seen;\n'
             '        var api=window.__delfinSubmitManip;\n'
             '        if(!api||!api.pushXyz){\n'
             '          /* An editor from before the follow existed.  Swallowed,\n'
@@ -3791,7 +3807,7 @@ def create_tab(ctx):
             '      if(!play.toldStop){ play.toldStop=1;\n'
             '        say("stopped at frame "+(play.shown||0)); }\n'
             '    }\n'
-            '    read();\n'
+            '    read(now);\n'
             '    if(play.queue.length){\n'
             '      if(!play.started) play.started=now;\n'
             '      var t=(now-play.started)/stepMs();\n'
@@ -3858,7 +3874,7 @@ def create_tab(ctx):
     def _end_gfn_follow():
         state['gfn_follow'] = False
 
-    def _gfn_follow_step(xyz):
+    def _gfn_follow_step(xyz, holding=()):
         """Relax around the atom the hand is holding, and send that back.
 
         The dragged atom is not held by xtb: it cannot be.  ``$fix atoms:`` is
@@ -3874,7 +3890,7 @@ def create_tab(ctx):
         """
         if not state.get('gfn_follow') and not _begin_gfn_follow():
             return          # not following: Relax is up, or GFN is not chosen
-        state['gfn_follow_xyz'] = xyz
+        state['gfn_follow_xyz'] = (xyz, tuple(holding or ()))
         if state.get('gfn_follow_busy'):
             return
         state['gfn_follow_busy'] = True
@@ -3887,9 +3903,10 @@ def create_tab(ctx):
         def _work():
             try:
                 while state.get('gfn_follow'):
-                    current = state.pop('gfn_follow_xyz', None)
-                    if current is None:
+                    newest = state.pop('gfn_follow_xyz', None)
+                    if newest is None:
                         return
+                    current, holding = newest
                     began = time.perf_counter()
                     outcome = _gfn.relax_steps(
                         current, method=method, charge=charge, uhf=uhf,
@@ -3913,8 +3930,15 @@ def create_tab(ctx):
                             'each.')
                     state['gfn_last_status'] = said
                     _schedule_ui_update(_set_mol_status, said, spinner=True)
+                    # The atoms under the cursor go back where they were sent.
+                    # xtb pulls them most of the way home in five cycles, and
+                    # this answer outlives the drag -- applied after the
+                    # release it would take them with it, which is the spring
+                    # back that looked like the drag being undone.
+                    settled = _gfn.hold_atoms_at(
+                        outcome['xyz'], current, holding)
                     frames = list(state.get('gfn_follow_frames') or [])
-                    frames.append(_gfn.coordinates_of(outcome['xyz']))
+                    frames.append(_gfn.coordinates_of(settled))
                     state['gfn_follow_frames'] = frames
                     # The tail, not the whole drag: every write is a message,
                     # and a minute of dragging is three hundred frames of a
@@ -5895,11 +5919,18 @@ def create_tab(ctx):
         # polyhedron accepts the ligand where it has been put and pulls it the
         # rest of the way onto the vertex it is now closest to.
         lines = new_xyz.splitlines()
-        drag_ended = len(lines) > 1 and lines[1].strip() == 'DELFIN drag-end'
+        note = lines[1].strip() if len(lines) > 1 else ''
+        drag_ended = note.startswith('DELFIN drag-end')
         # Sent while the mouse is still down, so the molecule can follow the
-        # atom rather than wait for it to be let go.
-        if len(lines) > 1 and lines[1].strip() == 'DELFIN drag-follow':
-            _gfn_follow_step(new_xyz)
+        # atom rather than wait for it to be let go.  The comment line names
+        # the atoms the hand is on, so the answer can keep them there.
+        if note.startswith('DELFIN drag-follow'):
+            holding = []
+            for word in note.split():
+                if word.startswith('held='):
+                    holding = [int(n) for n in word[5:].split(',')
+                               if n.strip().lstrip('-').isdigit()]
+            _gfn_follow_step(new_xyz, holding)
         if (drag_ended and state.get('poly_applied')
                 and state.get('poly_metal') is not None):
             # Only a real end of a drag, not the twice-a-second heartbeat the

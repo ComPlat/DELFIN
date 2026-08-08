@@ -1336,7 +1336,19 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (!viewer) return;
         var input = getSyncInput(scopeKey);
         if (!input) return;
-        var xyz = serializeXyz(viewer, reason ? ('DELFIN ' + reason) : null);
+        var note = reason ? ('DELFIN ' + reason) : null;
+        // Which atoms the hand is holding, named in the comment line. Whoever
+        // answers has to put them back exactly where they are: an answer that
+        // moved them is applied to every atom once the drag is over, and the
+        // one under the cursor springs back to wherever the calculation had
+        // pulled it -- which is most of the way home, in five cycles.
+        var held = window._submitManipStateByScope[scopeKey];
+        var targets = held && held.drag && held.drag.targets;
+        if (note && targets && targets.length) {
+            var indices = ffIndicesOf(viewer, targets);
+            if (indices.length) note += ' held=' + indices.join(',');
+        }
+        var xyz = serializeXyz(viewer, note);
         var proto = (input.tagName === 'TEXTAREA')
             ? window.HTMLTextAreaElement.prototype
             : window.HTMLInputElement.prototype;
