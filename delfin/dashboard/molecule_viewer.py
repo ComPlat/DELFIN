@@ -1362,6 +1362,75 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // Force 3Dmol to rebuild atom/bond geometry after we mutated atom.x/y/z
     // directly. Without this, viewer.render() re-uses the cached mesh and the
     // molecule appears frozen.
+    // Covalent radii in Angstrom (Cordero et al., 2008), for deciding which
+    // atoms are close enough to be drawn as bonded.  Only the elements a
+    // molecule editor meets; anything else falls back to a value that draws
+    // nothing absurd.
+    var COVALENT_RADII = {
+        H: 0.31, He: 0.28, Li: 1.28, Be: 0.96, B: 0.84, C: 0.76, N: 0.71,
+        O: 0.66, F: 0.57, Ne: 0.58, Na: 1.66, Mg: 1.41, Al: 1.21, Si: 1.11,
+        P: 1.07, S: 1.05, Cl: 1.02, Ar: 1.06, K: 2.03, Ca: 1.76, Sc: 1.70,
+        Ti: 1.60, V: 1.53, Cr: 1.39, Mn: 1.50, Fe: 1.42, Co: 1.38, Ni: 1.24,
+        Cu: 1.32, Zn: 1.22, Ga: 1.22, Ge: 1.20, As: 1.19, Se: 1.20, Br: 1.20,
+        Kr: 1.16, Rb: 2.20, Sr: 1.95, Y: 1.90, Zr: 1.75, Nb: 1.64, Mo: 1.54,
+        Tc: 1.47, Ru: 1.46, Rh: 1.42, Pd: 1.39, Ag: 1.45, Cd: 1.44, In: 1.42,
+        Sn: 1.39, Sb: 1.39, Te: 1.38, I: 1.39, Xe: 1.40, Cs: 2.44, Ba: 2.15,
+        La: 2.07, Ce: 2.04, Pr: 2.03, Nd: 2.01, Sm: 1.98, Eu: 1.98, Gd: 1.96,
+        Tb: 1.94, Dy: 1.92, Ho: 1.92, Er: 1.89, Tm: 1.90, Yb: 1.87, Lu: 1.87,
+        Hf: 1.75, Ta: 1.70, W: 1.62, Re: 1.51, Os: 1.44, Ir: 1.41, Pt: 1.36,
+        Au: 1.36, Hg: 1.32, Tl: 1.45, Pb: 1.46, Bi: 1.48, Po: 1.40, At: 1.50,
+        Rn: 1.50, Fr: 2.60, Ra: 2.21, Ac: 2.15, Th: 2.06, Pa: 2.00, U: 1.96
+    };
+    // How much longer than the two radii together a contact may be and still
+    // be drawn.  A C-C bond is 0.76 + 0.76 = 1.52 A, so 1.30 draws it out to
+    // 1.98 A and stops -- which is about where a chemist stops calling it one.
+    var BOND_TOLERANCE = 1.30;
+
+    function covalentRadius(element) {
+        var name = String(element || '');
+        name = name.charAt(0).toUpperCase() + name.slice(1, 2).toLowerCase();
+        var r = COVALENT_RADII[name];
+        return (typeof r === 'number') ? r : 1.50;
+    }
+
+    // Work out which atoms are bonded from where they are now.  3Dmol decides
+    // that once, when the model is built, and never again: an atom dragged
+    // away keeps its line and a pair pushed together never gets one.  This is
+    // called from redrawHighlights, which every drag frame and every set of
+    // coordinates goes through, so the lines follow the structure while it is
+    // being moved rather than after.
+    function perceiveBonds(viewer) {
+        var atoms = getAtoms(viewer);
+        var n = atoms.length;
+        if (!n) return;
+        // What each pair was, so a double bond that survives stays a double
+        // one: the distance says whether there is a bond, not what kind.
+        var was = {};
+        for (var i = 0; i < n; i++) {
+            var had = atoms[i].bonds || [], orders = atoms[i].bondOrder || [];
+            for (var k = 0; k < had.length; k++) {
+                if (had[k] > i) was[i + '-' + had[k]] = orders[k] || 1;
+            }
+        }
+        for (var i = 0; i < n; i++) { atoms[i].bonds = []; atoms[i].bondOrder = []; }
+        var radii = new Array(n);
+        for (var i = 0; i < n; i++) radii[i] = covalentRadius(atoms[i].elem);
+        for (var i = 0; i < n; i++) {
+            for (var j = i + 1; j < n; j++) {
+                var dx = atoms[i].x - atoms[j].x;
+                var dy = atoms[i].y - atoms[j].y;
+                var dz = atoms[i].z - atoms[j].z;
+                var reach = (radii[i] + radii[j]) * BOND_TOLERANCE;
+                var d2 = dx * dx + dy * dy + dz * dz;
+                // Two atoms on top of each other are a mistake, not a bond.
+                if (d2 > reach * reach || d2 < 0.16) continue;
+                var order = was[i + '-' + j] || 1;
+                atoms[i].bonds.push(j); atoms[i].bondOrder.push(order);
+                atoms[j].bonds.push(i); atoms[j].bondOrder.push(order);
+            }
+        }
+    }
+
     function invalidateGeometry(viewer) {
         try {
             var m = viewer.getModel();
@@ -1484,6 +1553,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
         var state = getState(scopeKey);
+        // Every drag frame and every set of coordinates comes through here, so
+        // this is where the lines are made to follow the distances -- during a
+        // manipulation as much as after one.
+        if (state.dynamicBonds) perceiveBonds(viewer);
         invalidateGeometry(viewer);
         // Remove previous shapes
         state.shapes.forEach(function(s) {
@@ -2831,14 +2904,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         if (!ffWritePositions(viewer, pos)) return false;
         try { applyFixedInternals(scopeKey); } catch (e) {}
-        // The lines between the atoms are 3Dmol's own bond list, worked out
-        // once when the model was built. Moving atoms does not touch it, so a
-        // bond pulled apart keeps being drawn as a bond and one pushed
-        // together is never drawn at all -- the picture shows the connectivity
-        // the structure had, not the one it has. Asking for it back costs a
-        // rebuild per frame, and in a crowded coordination sphere it flickers,
-        // because perception there is at its limit. So it is asked for.
-        if (getState(scopeKey).dynamicBonds) invalidateGeometry(viewer);
+        // redrawHighlights is what makes the lines follow the distances when
+        // that has been asked for; every path that moves atoms goes through
+        // it, so there is nothing to do here.
         redrawHighlights(scopeKey);
         try { viewer.render(); } catch (e) {}
         return true;
@@ -2851,8 +2919,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         if (viewer) {
             // Once now, so switching it on shows the truth immediately rather
-            // than at the next frame somebody happens to send.
-            invalidateGeometry(viewer);
+            // than at the next frame somebody happens to send.  Switching it
+            // off leaves the lines as they last were: going back to the ones
+            // the model was built with would mean remembering a connectivity
+            // that several edits ago stopped describing anything.
             redrawHighlights(scopeKey);
             try { viewer.render(); } catch (e) {}
         }

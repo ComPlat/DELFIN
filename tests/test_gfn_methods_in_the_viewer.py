@@ -2641,11 +2641,14 @@ def test_the_lines_can_be_asked_to_follow_the_distances(editor):
 
     editor_js = submit_manip_bootstrap_js()
     assert "setDynamicBonds: setDynamicBonds" in editor_js
-    body = editor_js[editor_js.index("function setPositions("):][:1800]
-    assert "if (getState(scopeKey).dynamicBonds) invalidateGeometry(viewer);" in body
 
-    setter = editor_js[editor_js.index("function setDynamicBonds("):][:700]
-    assert "invalidateGeometry(viewer)" in setter, (
+    # every drag frame and every set of coordinates comes through here, which
+    # is what makes the lines follow during a manipulation and not only after
+    redraw = editor_js[editor_js.index("function redrawHighlights("):][:600]
+    assert "if (state.dynamicBonds) perceiveBonds(viewer);" in redraw
+
+    setter = editor_js[editor_js.index("function setDynamicBonds("):][:900]
+    assert "redrawHighlights(scopeKey)" in setter, (
         "switching it on has to show the truth at once, not at the next frame"
     )
 
@@ -2655,3 +2658,25 @@ def test_the_lines_can_be_asked_to_follow_the_distances(editor):
     assert "Bond and Unbond" in editor["mol_status"].value, (
         "the picture and what the calculation holds together are two questions"
     )
+
+
+def test_the_bond_perception_is_the_covalent_radii_and_says_where_it_stops():
+    """3Dmol has no re-perception to ask for -- rebuildBonds does not exist in
+    this build -- so the lines are worked out here, from the radii.
+
+    Driven in a real JS engine: a C-C is drawn out to 1.95 A and gone at 1.98,
+    which is (0.76 + 0.76) x 1.30; a double bond that survives keeps its order,
+    because the distance says whether there is a bond and not what kind; two
+    atoms on top of each other are a mistake rather than a bond; and Pt-P at
+    2.30 A is drawn, which a rule tuned on carbon would have missed.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    editor_js = submit_manip_bootstrap_js()
+    assert "var COVALENT_RADII" in editor_js
+    assert "var BOND_TOLERANCE = 1.30;" in editor_js
+    body = editor_js[editor_js.index("function perceiveBonds("):][:2200]
+    assert "was[i + '-' + j] || 1" in body, "a double bond has to stay double"
+    assert "d2 < 0.16" in body, "overlapping atoms are not a bond"
+    for element in ("Pt", "Fe", "Re", "Pd", "Ru"):
+        assert f"{element}:" in editor_js, f"no covalent radius for {element}"
