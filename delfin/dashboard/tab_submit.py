@@ -3650,7 +3650,23 @@ def create_tab(ctx):
             '    if(ok&&!play.toldDrawing){ play.toldDrawing=1;'
             ' say("drawing"); }\n'
             '  }\n'
+            '  function switchIsOn(){\n'
+            '    /* ipywidgets marks a pressed toggle with mod-active.  Reading\n'
+            '       it here is instant; asking the kernel costs a round trip,\n'
+            '       and the picture ran on for the length of it. */\n'
+            '    var holder=document.querySelector(".submit-optimize-switch");\n'
+            '    if(!holder) return true;\n'
+            '    var btn=(holder.tagName==="BUTTON")?holder'
+            ':holder.querySelector("button");\n'
+            '    if(!btn) return true;\n'
+            '    return btn.classList.contains("mod-active");\n'
+            '  }\n'
             '  function frame(now){\n'
+            '    if(play.queue.length&&!switchIsOn()){\n'
+            '      play.queue=[];\n'
+            '      if(!play.toldStop){ play.toldStop=1;\n'
+            '        say("stopped at frame "+(play.shown||0)); }\n'
+            '    }\n'
             '    read();\n'
             '    if(play.queue.length){\n'
             '      if(!play.started) play.started=now;\n'
@@ -5333,6 +5349,9 @@ def create_tab(ctx):
     submit_reset_btn.on_click(on_submit_reset)
     submit_internal_btn.observe(on_submit_set_internal, names='value')
     submit_internal_value.observe(on_submit_internal_value, names='value')
+    # The page watches this button itself: waiting for the kernel to say the
+    # switch went off costs a round trip, and the playback ran on for it.
+    submit_optimize_btn.add_class('submit-optimize-switch')
     submit_optimize_btn.observe(on_submit_optimize, names='value')
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)

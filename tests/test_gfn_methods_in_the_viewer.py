@@ -859,3 +859,20 @@ def test_a_backlog_is_skipped_rather_than_played_out(editor):
     source = open(tab_submit.__file__, encoding="utf-8").read()
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "play.queue.slice(-20)" in watcher
+
+
+def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
+    """Waiting to be told the switch went off costs a round trip, and the
+    playback ran on for the length of it.  ipywidgets marks a pressed toggle
+    with mod-active; reading that is instant."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    assert "submit_optimize_btn.add_class('submit-optimize-switch')" in source
+
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "function switchIsOn()" in watcher
+    assert 'classList.contains("mod-active")' in watcher
+    # and it is checked before anything is drawn, every frame
+    body = watcher.split("function frame(now)")[1]
+    assert body.index("switchIsOn()") < body.index("read();")
