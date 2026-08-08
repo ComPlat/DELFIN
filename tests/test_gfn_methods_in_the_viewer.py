@@ -946,3 +946,30 @@ def test_the_energy_is_reported_like_the_force_field_reports_one(editor):
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "E = {energy:.6f} Eh" in handler
     assert "kcal/mol" in handler, "the tab speaks kcal/mol elsewhere"
+
+
+# ---------------------------------------------------------------------------
+# undo answers for what the user did, not for what the optimiser did
+# ---------------------------------------------------------------------------
+def test_a_whole_optimisation_is_one_step_of_undo(editor):
+    """The playback writes coordinates dozens of times a second.
+
+    If each of those were a step, Undo would walk back through an optimisation
+    frame by frame and the operation before it would be unreachable.  Undo
+    answers for dashboard events: a run is one.
+    """
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    undo = source.split("def on_submit_manip_undo")[1].split("\n    def ")[0]
+    assert "state.pop('pre_optimize_frames'" in undo, (
+        "the geometries from before the run are what one undo restores"
+    )
+
+    # and the frames the page is given never enter the browser's own stack
+    editor_js = submit_manip_bootstrap_js()
+    body = editor_js[editor_js.index("function setPositions("):][:900]
+    assert "snapshotForUndo" not in body, (
+        "a played frame is not something the user did"
+    )
