@@ -949,20 +949,20 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
 def test_controls_that_cannot_work_under_gfn_are_taken_away(editor):
     """Greying them out invites the question of why they are dead.
 
-    Settling on release and Strength are the browser field's own notions, and
-    that field is not what runs under GFN.  Relax stays, because it does have
-    something to do: it is what makes the molecule follow a dragged atom.
+    Strength is how many steps the browser's field takes per animation frame,
+    and that field does not run under GFN.  Relax and Settle both keep a
+    meaning -- follow a dragged atom, and tidy up when it is let go -- and both
+    are carried out by the method that is chosen, never by anything else.
     """
     editor["submit_ff_dd"].value = "uff"
 
     editor["submit_ff_dd"].value = "gfnff"
-    for name in ("submit_settle_btn", "submit_strength_slider"):
-        assert editor[name].layout.display == "none", name
+    assert editor["submit_strength_slider"].layout.display == "none"
     assert editor["submit_relax_btn"].layout.display in (None, "")
+    assert editor["submit_settle_btn"].layout.display in (None, "")
 
     editor["submit_ff_dd"].value = "uff"
-    for name in ("submit_settle_btn", "submit_strength_slider"):
-        assert editor[name].layout.display == "", name
+    assert editor["submit_strength_slider"].layout.display == ""
 
 
 def test_optimise_and_optimise_all_are_two_switches(editor):
@@ -1664,3 +1664,142 @@ def test_the_installer_runs_and_ends_with_an_xtb_the_dashboard_can_find():
     assert outcome["ok"] is True, outcome["status"]
     assert outcome["binary"] and pathlib.Path(outcome["binary"]).is_file()
     assert gfn.find_xtb() == outcome["binary"]
+
+
+# ---------------------------------------------------------------------------
+# the method that is chosen is the method that acts
+# ---------------------------------------------------------------------------
+def test_nothing_of_the_browsers_field_may_run_under_gfn(editor):
+    """A dozen handlers install UFF parameters -- Hold, a polyhedron, a
+    hybridisation, a bond edit.  Any one of them put a UFF relaxation under a
+    molecule whose method box said GFN: it settled on release, and the geometry
+    that reached the coordinate box was UFF's."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    enable = source.split("def _enable_live_forcefield")[1].split("\n    def ")[0]
+    head = enable.split("\"\"\"", 2)[2]
+    assert "if _gfn.is_gfn_method(submit_ff_dd.value):" in head
+    assert head.index("_stop_browser_field()") < head.index("xyz =")
+
+    toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
+    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
+    assert "_stop_browser_field()" in gfn_branch, (
+        "a field left running from a UFF session goes on relaxing"
+    )
+
+    changed = source.split("def on_submit_ff_changed")[1].split("\n    def ")[0]
+    assert "_stop_browser_field()" in changed
+
+
+def test_the_follow_uses_the_method_that_is_on_screen(editor):
+    """GFN-FF whatever the box said is a picture of a calculation nobody asked
+    for -- and, from the outside, indistinguishable from the right one."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    began = source.split("def _begin_gfn_follow")[1].split("\n    def ")[0]
+    assert "state['gfn_follow_method'] = str(submit_ff_dd.value)" in began
+
+    follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "method=method" in follow, "the chosen method has to reach xtb"
+    assert "'gfnff'" not in follow, "no method may be baked in here"
+    assert "{label} is following the drag" in follow, (
+        "and the status has to name the one that ran"
+    )
+
+
+def test_relax_steps_runs_the_method_it_is_given():
+    """It was GFN-FF only, which is what let the wrong one run quietly."""
+    import inspect
+
+    signature = inspect.signature(gfn.relax_steps)
+    assert "method" in signature.parameters
+    assert signature.parameters["method"].default == "gfnff"
+
+    source = inspect.getsource(gfn.relax_steps)
+    assert "optimize_with_gfn(\n        xyz_text, method," in source
+
+
+def test_dynamik_opt_goes_away_when_there_is_no_xtb_behind_it(editor, monkeypatch):
+    """A switch that cannot do anything is worse than one that is not there:
+    it is pressed, nothing happens, and nothing says why."""
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
+
+    editor["submit_ff_dd"].value = "gfnff"
+    assert editor["submit_relax_btn"].layout.display == "none"
+    assert editor["submit_relax_btn"].value is False
+
+    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: True)
+    editor["submit_ff_dd"].value = "gfn2"
+    assert editor["submit_relax_btn"].layout.display == ""
+
+
+def test_switching_methods_back_and_forth_re_arms_the_right_engine(editor):
+    """Switching is something a user does constantly. It must not cost a press
+    each time, nor leave the previous engine running under the new choice."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    changed = source.split("def on_submit_ff_changed")[1].split("\n    def ")[0]
+    assert "submit_relax_btn.value = False" not in changed.split(
+        "usable = not gfn")[0], "the switch keeps its position"
+    assert "elif submit_relax_btn.value:" in changed
+    assert "startAutoOptimize" in changed, "going back to UFF has to re-arm it"
+
+
+def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
+    """Settle means: what reaches the coordinate box has relaxed around where
+    the atom was put, not wherever the cursor stopped."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
+    assert "method = str(submit_ff_dd.value)" in settle
+    assert "_GFN_SETTLE_CYCLES" in settle and "on_frames=_push" in settle
+    assert "coords_widget.value = (" in settle, "the result has to land"
+
+    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
+    assert "_arm_gfn_settle()" in handler, "a release is what triggers it"
+
+    toggle = source.split("def on_submit_settle_toggle")[1].split("\n    def ")[0]
+    assert "if _gfn.is_gfn_method(submit_ff_dd.value):" in toggle
+    assert toggle.index("return") < toggle.index("_ensure_manip_bootstrap()"), (
+        "the browser must not be told to settle with a field it does not have"
+    )
+
+
+@_needs_xtb
+def test_letting_go_settles_with_the_method_that_is_chosen(editor):
+    """Driven the way the page drives it: a release with Settle on."""
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    strained = (
+        "9\npropane, one carbon pulled out\n"
+        "C -1.66 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    refs["coords_widget"].value = strained
+    state["current_xyz_for_copy"] = {"content": strained}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_settle_btn"].value = True
+
+    refs["submit_cmd_sync"].value = "gfnfree:1:"
+
+    deadline = _time.time() + 60
+    while _time.time() < deadline and "Settled with" not in refs["coords_widget"].value:
+        _time.sleep(0.05)
+
+    assert "Settled with GFN-FF" in refs["coords_widget"].value, (
+        refs["mol_status"].value
+    )
+    rows = [line.split() for line in gfn.atom_lines(refs["coords_widget"].value)]
+    first = [float(v) for v in rows[0][1:4]]
+    second = [float(v) for v in rows[1][1:4]]
+    length = sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
+    assert length < 1.75, f"the stretched C-C was not tidied up: {length:.3f}"

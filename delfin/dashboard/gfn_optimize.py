@@ -753,6 +753,7 @@ def optimize_autospin(
 def relax_steps(
     xyz_text: str,
     *,
+    method: str = 'gfnff',
     charge: int = 0,
     uhf: int = 0,
     cycles: int = 5,
@@ -761,16 +762,21 @@ def relax_steps(
 ) -> Dict[str, Any]:
     """A few optimisation cycles, for a loop that shows the structure settling.
 
-    Measured on a 102-atom complex: one cycle 0.06 s, five 0.09 s, ten 0.12 s.
-    So a loop of short runs moves at roughly ten steps a second and looks like
-    a relaxation rather than a jump -- which a single 0.4 s call to
-    :func:`optimize_with_gfn` does not.
+    Measured on a 102-atom complex with GFN-FF: one cycle 0.06 s, five 0.09 s,
+    ten 0.12 s.  So a loop of short runs moves at roughly ten steps a second
+    and looks like a relaxation rather than a jump -- which a single 0.4 s call
+    to :func:`optimize_with_gfn` does not.
 
-    GFN-FF only.  GFN2 needs about a second for one cycle, and a loop of those
-    is a slideshow that keeps a core busy for it.
+    *method* is the caller's to choose, and it is the method the caller has on
+    screen: a loop that quietly ran something else would be a picture of a
+    calculation nobody asked for.  It is not free -- GFN2 needs about a second
+    for a cycle where GFN-FF needs a twentieth of one, so a loop of GFN2 steps
+    is a slideshow and keeps a core busy for it.  Whoever calls this is
+    expected to say how long each step took, so the cost is visible rather
+    than merely suffered.
     """
     result = optimize_with_gfn(
-        xyz_text, 'gfnff', charge=charge, uhf=uhf,
+        xyz_text, method, charge=charge, uhf=uhf,
         max_steps=max(1, int(cycles)), timeout=timeout,
         constraints=constraints,
     )
