@@ -1897,13 +1897,18 @@ def test_the_follow_is_paced_by_the_machine_not_by_a_clock(player_js):
     a small molecule in under twenty milliseconds.  Measured in a real engine,
     one second of dragging went from 5 answers to 16."""
     assert "answered=play.seen>(play.pushedAt||0)" in player_js
-    assert "if(since>500||(answered&&since>50)){" in player_js, (
+    assert "if(since>500||(answered&&since>floor)){" in player_js, (
         "as soon as the last answer landed, with a floor and a ceiling"
+    )
+    assert "var floor=Math.max(16,Math.min(120,(play.gap||60)/2));" in player_js, (
+        "and the floor is the machine's own answer time, not a constant"
     )
     # and drawn over exactly as long as the next one takes to arrive -- but
     # only while they arrive one at a time; a burst keeps the backlog rules
     assert "if(play.follow&&play.gap&&n<=3) return play.gap;" in player_js
-    assert "play.gap=Math.min(600," in player_js
+    assert "play.gap=play.gap?(play.gap*0.6+measured*0.4):measured;" in player_js, (
+        "averaged, or the drawing speed jumps about as much as the arrivals do"
+    )
 
 
 @_needs_xtb
@@ -2186,3 +2191,61 @@ def test_a_burst_is_not_played_at_the_pace_of_a_followed_hand(player_js):
         "the backlog rules come first"
     )
     assert "play.follow&&play.gap&&n<=3" in step
+
+
+@_needs_xtb
+def test_a_run_shorter_than_the_reading_interval_still_hands_its_path_over():
+    """The watching loop reads the log five times a second at most.
+
+    A settle of a small molecule is twenty milliseconds, so it handed over
+    nothing at all: the picture never saw the relaxation it is a picture of,
+    kept the geometry the drag had left, and gave that one to the next drag --
+    which walked the whole path again, in front of the user, as though every
+    earlier drag were being redone.
+    """
+    import time as _time
+
+    strained = (
+        "9\npropane, strained\n"
+        "C -1.26 0.00 0.30\nC 0.00 1.16 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    handed: list = []
+    began = _time.perf_counter()
+    result = gfn.optimize_with_gfn(
+        strained, "gfnff", max_steps=40, timeout=60,
+        should_stop=lambda: False, on_frames=handed.append,
+    )
+    spent = _time.perf_counter() - began
+
+    assert result["ok"] is True, result["status"]
+    assert spent < 0.2, f"the run has to be shorter than the interval: {spent:.3f} s"
+    assert handed, "a run that fast handed over nothing at all"
+    assert len(handed[-1]) == len(result["frames"]), (
+        "and what it handed over has to be the whole path"
+    )
+
+
+def test_the_path_is_handed_over_once_at_the_end_whatever_the_clock_did():
+    source = open(gfn.__file__, encoding="utf-8").read()
+    runner = source.split("def optimize_with_gfn")[1].split("\ndef ")[0]
+    assert "if on_frames is not None and len(frames) > sent:" in runner
+    assert runner.index("sent = 0") < runner.index("while running.poll()")
+
+
+def test_letting_go_does_not_walk_the_atom_back_through_the_drag(player_js):
+    """The queued follow answers describe the drag: each carries the dragged
+    atom where the hand had it when the frame was computed, and while the hand
+    was down they were drawn around it.  Drawn after the release, with nothing
+    held any more, they walk that atom back through the whole drag.
+
+    Driven in a real JS engine: three answers queued at x = 1, 2, 3, the hand
+    lets go, and the only thing drawn is 3 -- where the hand left it.
+    """
+    release = player_js.split("if(held){ play.queue=[]; play.last=null; }")[1]
+    release = release.split("send(held")[0]
+    assert "show(play.last,play.queue[play.queue.length-1],1);" in release, (
+        "it has to land on the newest before dropping the rest"
+    )
+    assert "play.queue=[]; play.last=null;" in release

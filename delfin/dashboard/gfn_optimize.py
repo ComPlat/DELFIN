@@ -505,6 +505,7 @@ def optimize_with_gfn(
         # thirty cycles, so every real molecule was past it.
         record = folder / 'xtb.out'
         sink = open(record, 'w', encoding='utf-8')
+        sent = 0
         try:
             if should_stop is None and on_frames is None:
                 subprocess.run(
@@ -520,7 +521,6 @@ def optimize_with_gfn(
                     stderr=subprocess.STDOUT, env=environment,
                 )
                 waited = 0.0
-                sent = 0
                 last_read = 0.0
                 last_size = -1
                 log = folder / 'xtbopt.log'
@@ -607,6 +607,18 @@ def optimize_with_gfn(
         output = record.read_text(encoding='utf-8', errors='replace')
         relaxed = _read_optimised(folder, xyz_text)
         frames = read_trajectory(folder)
+        if on_frames is not None and len(frames) > sent:
+            # The path, once, at the end.  The loop above reads it five times a
+            # second at most, so a run shorter than that interval hands over
+            # nothing at all -- and a settle of a small molecule is twenty
+            # milliseconds.  The picture then never saw the relaxation it is a
+            # picture of, kept the geometry the drag had left, and handed that
+            # one to the next drag: the whole path was walked again, in front
+            # of the user, as though the earlier drags were being redone.
+            try:
+                on_frames(frames)
+            except Exception:
+                pass
         energy = None
         found = _ENERGY_RE.search(output)
         if found:
