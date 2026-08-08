@@ -2422,3 +2422,115 @@ def test_the_whole_cycle_end_to_end(editor):
         "and there must be nothing left for a second press"
     )
     refs["submit_relax_btn"].value = False
+
+
+# ---------------------------------------------------------------------------
+# a structure optimised in water is not one optimised in vacuum
+# ---------------------------------------------------------------------------
+def test_the_solvents_are_the_ones_this_xtb_is_parametrised_for():
+    """Asked of the binary, not taken from a manual: every name here came back
+    parametrised from xtb 6.7.1, for GFN2 and GFN-FF alike.
+
+    ALPB is the model because it is xtb's own recommendation and covers all of
+    them; the older GBSA knows a subset -- no ethanol, no dioxane, no aniline,
+    no ester, no alcohol beyond methanol.
+    """
+    assert gfn.SOLVENTS[""] == "none (gas phase)"
+    for name in ("water", "dmso", "thf", "toluene", "ethanol", "ch2cl2"):
+        assert name in gfn.SOLVENTS
+    # aliases xtb also takes, deliberately not offered twice
+    assert "h2o" not in gfn.SOLVENTS and "n-hexane" not in gfn.SOLVENTS
+
+    source = open(gfn.__file__, encoding="utf-8").read()
+    runner = source.split("def optimize_with_gfn")[1].split("\ndef ")[0]
+    assert "command += ['--alpb', wet]" in runner
+
+
+def test_a_solvent_it_does_not_know_is_refused_with_the_list():
+    refused = gfn.optimize_with_gfn(_WATER, "gfn2", solvent="schnaps")
+
+    assert refused["ok"] is False
+    assert "not a solvent this xtb is parametrised for" in refused["status"]
+    assert "acetone" in refused["status"], "the ones it does know have to be named"
+
+
+def test_which_solvent_a_result_is_about_is_part_of_the_result():
+    """A geometry optimised in the gas phase and one optimised in water are two
+    answers to two different questions, and one that does not say which invites
+    them to be compared."""
+    assert gfn.solvent_note("water") == " In water (ALPB)."
+    assert gfn.solvent_note("ch2cl2") == " In dichloromethane (ALPB)."
+    assert gfn.solvent_note("") == ""
+    assert gfn.solvent_note(None) == ""
+
+
+def test_the_solvent_reaches_every_way_of_running_it(editor):
+    """Optimise, the follow and the relaxation after it are the same
+    calculation asked for in three ways; a solvent that reached only one of
+    them would make them disagree."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    for name in ("on_submit_optimize(change=None, every_frame=False)",
+                 "_gfn_follow_step", "_gfn_settle_now"):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "submit_gfn_solvent.value" in body, name
+        assert "solvent=wet" in body, name
+
+
+def test_the_solvent_box_appears_with_the_method(editor):
+    assert editor["submit_gfn_solvent"].layout.display == "none"
+
+    editor["submit_ff_dd"].value = "gfn2"
+    assert editor["submit_gfn_solvent"].layout.display == ""
+    assert editor["submit_gfn_solvent"].value == "", "gas phase unless asked"
+
+    editor["submit_gfn_solvent"].value = "water"
+    assert "water" in editor["mol_status"].value
+    assert "worth optimising again" in editor["mol_status"].value, (
+        "the structure on screen was not optimised in it"
+    )
+
+    editor["submit_ff_dd"].value = "uff"
+    assert editor["submit_gfn_solvent"].layout.display == "none"
+
+
+@_needs_xtb
+def test_a_solvent_changes_the_answer_and_the_answer_says_so(editor):
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    refs["coords_widget"].value = _WATER
+    state["current_xyz_for_copy"] = {"content": _WATER}
+    refs["submit_ff_dd"].value = "gfn2"
+
+    energies = {}
+    for solvent in ("", "water"):
+        refs["submit_gfn_solvent"].value = solvent
+        refs["submit_optimize_btn"].value = True
+        deadline = _time.time() + 120
+        while _time.time() < deadline and refs["submit_optimize_btn"].value:
+            _time.sleep(0.05)
+        energies[solvent] = state["gfn_energy"]
+
+    assert energies[""] is not None and energies["water"] is not None
+    assert energies["water"] < energies[""], (
+        "water in water has to be stabilised by the solvent"
+    )
+    kcal = (energies[""] - energies["water"]) * 627.5094740631
+    assert 3 < kcal < 30, f"solvation energy of {kcal:.1f} kcal/mol is not credible"
+    assert "In water (ALPB)" in refs["mol_status"].value
+
+
+@_needs_xtb
+def test_gfnff_takes_a_solvent_too():
+    """It is the method the drag and the release use, so if it could not be
+    solvated the live half of the editor would be answering a different
+    question from the pressed half."""
+    dry = gfn.optimize_with_gfn(_WATER, "gfnff")
+    wet = gfn.optimize_with_gfn(_WATER, "gfnff", solvent="water")
+
+    assert dry["ok"] and wet["ok"]
+    assert wet["energy"] != dry["energy"]
+    assert wet["solvent"] == "water" and dry["solvent"] == ""

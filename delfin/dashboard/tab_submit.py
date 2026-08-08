@@ -767,6 +767,18 @@ def create_tab(ctx):
         style={'description_width': '14px'},
         layout=widgets.Layout(width='72px', display='none'),
     )
+    submit_gfn_solvent = widgets.Dropdown(
+        options=[(label, name) for name, label in _gfn.SOLVENTS.items()],
+        value='',
+        tooltip=(
+            'Optimise with an implicit solvent around the structure, using '
+            'ALPB -- xtb\'s own recommendation, and the model that covers '
+            'every solvent it is parametrised for. A geometry optimised in '
+            'the gas phase and one optimised in water are different answers; '
+            'the status line says which you got.'
+        ),
+        layout=widgets.Layout(width='140px', display='none'),
+    )
     submit_gfn_autospin = widgets.Checkbox(
         value=False, description='auto M', indent=False,
         tooltip=(
@@ -981,7 +993,7 @@ def create_tab(ctx):
             submit_element_dd,
             submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
-            submit_gfn_autospin,
+            submit_gfn_autospin, submit_gfn_solvent,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider,
@@ -3955,6 +3967,7 @@ def create_tab(ctx):
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         constraints = list(state.get('constraints') or [])
+        wet = str(submit_gfn_solvent.value or '') or None
 
         def _work():
             try:
@@ -3967,7 +3980,7 @@ def create_tab(ctx):
                     outcome = _gfn.relax_steps(
                         current, method=method, charge=charge, uhf=uhf,
                         cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
-                        constraints=constraints,
+                        constraints=constraints, solvent=wet,
                         topology=_gfn_topology_dir(
                             len(_gfn.atom_lines(current))),
                     )
@@ -4206,6 +4219,7 @@ def create_tab(ctx):
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         constraints = list(state.get('constraints') or [])
+        wet = str(submit_gfn_solvent.value or '') or None
         rounds = int(state.get('gfn_settle_rounds') or 0) + 1
         state['gfn_settle_rounds'] = rounds
         # One run number for the whole relaxation, not one per round.  A new
@@ -4261,7 +4275,7 @@ def create_tab(ctx):
                 outcome = _gfn.optimize_autospin(
                     xyz, method, charge=charge, constraints=constraints,
                     on_frames=_push, topology=perceived, timeout=None,
-                    should_stop=_settle_stopped,
+                    solvent=wet, should_stop=_settle_stopped,
                 )
                 if outcome.get('uhf') is not None:
                     state['gfn_scanned_uhf'] = int(outcome['uhf'])
@@ -4275,7 +4289,7 @@ def create_tab(ctx):
                 outcome = _gfn.optimize_with_gfn(
                     xyz, method, charge=charge, uhf=uhf,
                     max_steps=None, timeout=None,
-                    constraints=constraints, on_frames=_push,
+                    constraints=constraints, on_frames=_push, solvent=wet,
                     topology=perceived, should_stop=_settle_stopped,
                 )
 
@@ -4688,6 +4702,7 @@ def create_tab(ctx):
         # a value held on screen is held in the optimisation too, rather than
         # being quietly given up the moment GFN is chosen.
         held = list(state.get('constraints') or [])
+        wet = str(submit_gfn_solvent.value or '') or None
 
         def _work():
             from .molecule_forcefield import relax_xyz
@@ -4719,12 +4734,12 @@ def create_tab(ctx):
                         outcome = _gfn.optimize_autospin(
                             xyz, method, charge=charge, should_stop=_stopped,
                             timeout=None, on_frames=_push_frames,
-                            constraints=held, topology=perceived)
+                            constraints=held, topology=perceived, solvent=wet)
                     elif gfn:
                         outcome = _gfn.optimize_with_gfn(
                             xyz, method, charge=charge, uhf=uhf,
                             should_stop=_stopped, timeout=None,
-                            constraints=held, topology=perceived,
+                            constraints=held, topology=perceived, solvent=wet,
                             on_frames=_push_frames if position == 0 else None)
                     else:
                         outcome = relax_xyz(
@@ -4838,6 +4853,7 @@ def create_tab(ctx):
                 # the user is holding on screen that the optimisation quietly
                 # ignored would make the result an answer to a question nobody
                 # asked.
+                said += _gfn.solvent_note(submit_gfn_solvent.value)
                 said += _gfn.held_note(state.get('gfn_held') or {
                     'held': 0, 'dropped': [], 'mixed': False, 'force': None})
                 state['gfn_last_status'] = said
@@ -5973,6 +5989,16 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
         )
 
+    def on_submit_solvent(change):
+        if change.get('name') != 'value':
+            return
+        wet = str(submit_gfn_solvent.value or '')
+        _set_mol_status(
+            f'Optimising in {_gfn.SOLVENTS[wet]} from now on (ALPB). The '
+            'structure on screen was not, so it is worth optimising again.'
+            if wet else
+            'Optimising in the gas phase from now on.')
+
     def on_submit_autospin(change):
         if change.get('name') != 'value':
             return
@@ -6097,6 +6123,7 @@ def create_tab(ctx):
         submit_gfn_charge.layout.display = '' if gfn else 'none'
         submit_gfn_mult.layout.display = '' if gfn else 'none'
         submit_gfn_autospin.layout.display = '' if gfn else 'none'
+        submit_gfn_solvent.layout.display = '' if gfn else 'none'
         # Relax means the browser's own field running once per frame, and there
         # is no GFN engine in the browser to run.  Under GFN it means the other
         # half of the same idea: while an atom is being dragged, the rest of
@@ -6315,6 +6342,7 @@ def create_tab(ctx):
     submit_xtb_confirm_btn.on_click(on_submit_xtb_confirm)
     submit_xtb_cancel_btn.on_click(on_submit_xtb_cancel)
     submit_gfn_autospin.observe(on_submit_autospin, names='value')
+    submit_gfn_solvent.observe(on_submit_solvent, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
@@ -6604,6 +6632,7 @@ def create_tab(ctx):
         'submit_gfn_charge': submit_gfn_charge,
         'submit_gfn_mult': submit_gfn_mult,
         'submit_gfn_autospin': submit_gfn_autospin,
+        'submit_gfn_solvent': submit_gfn_solvent,
         'submit_xtb_install_btn': submit_xtb_install_btn,
         'submit_xtb_confirm_btn': submit_xtb_confirm_btn,
         'submit_xtb_cancel_btn': submit_xtb_cancel_btn,

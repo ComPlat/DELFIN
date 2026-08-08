@@ -35,7 +35,8 @@ from typing import Any, Callable, Dict, Optional
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
            'held_note', 'hold_atoms_at', 'install_command', 'install_script',
-           'install_xtb', 'is_gfn_method', 'read_trajectory',
+           'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
+           'solvent_note',
            'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
            'electron_parity']
 
@@ -47,6 +48,28 @@ GFN_METHODS: Dict[str, Dict[str, Any]] = {
              'reports': 'GFN2-xTB'},
     'gfn1': {'label': 'GFN1-xTB', 'flags': ['--gfn', '1'], 'max_atoms': 250,
              'reports': 'GFN1-xTB'},
+}
+
+#: The solvents this xtb accepts, asked of the binary rather than taken from a
+#: manual: every name here was tried against xtb 6.7.1 and came back
+#: parametrised, for GFN2 and for GFN-FF alike.  ALPB is the model -- it is
+#: xtb's own recommendation, and the older GBSA knows only a subset of these
+#: (no ethanol, no dioxane, no aniline, no ester, no alcohols beyond methanol).
+#: Aliases xtb also takes are left out: h2o is water, n-hexane is hexane.
+SOLVENTS: Dict[str, str] = {
+    '': 'none (gas phase)',
+    'acetone': 'acetone', 'acetonitrile': 'acetonitrile',
+    'aniline': 'aniline', 'benzaldehyde': 'benzaldehyde',
+    'benzene': 'benzene', 'ch2cl2': 'dichloromethane',
+    'chcl3': 'chloroform', 'cs2': 'carbon disulfide',
+    'dioxane': 'dioxane', 'dmf': 'DMF', 'dmso': 'DMSO',
+    'ether': 'diethyl ether', 'ethanol': 'ethanol',
+    'ethylacetate': 'ethyl acetate', 'furane': 'furan',
+    'hexadecane': 'hexadecane', 'hexane': 'hexane',
+    'methanol': 'methanol', 'nitromethane': 'nitromethane',
+    'octanol': 'octanol', 'woctanol': 'octanol (wet)',
+    'phenol': 'phenol', 'thf': 'THF', 'toluene': 'toluene',
+    'water': 'water',
 }
 
 #: For callers that cannot be stopped by hand.  The dashboard passes None:
@@ -381,6 +404,19 @@ def _read_optimised(folder: Path, fallback: str) -> Optional[str]:
     return None if fallback is None else None
 
 
+def solvent_note(solvent: Any) -> str:
+    """Which solvent a result is about, or that it is about none.
+
+    A geometry optimised in the gas phase and one optimised in water are two
+    different answers to two different questions, and a result that does not
+    say which it is invites them to be compared.
+    """
+    wet = str(solvent or '').strip().lower()
+    if not wet or wet not in SOLVENTS or wet == '':
+        return ''
+    return f' In {SOLVENTS[wet]} (ALPB).'
+
+
 def held_note(held: Dict[str, Any]) -> str:
     """What was held, said out loud.
 
@@ -414,6 +450,7 @@ def optimize_with_gfn(
     on_frames: Optional[Callable[[list], None]] = None,
     constraints: Any = (),
     topology: Optional[Path] = None,
+    solvent: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -436,6 +473,11 @@ def optimize_with_gfn(
     drag means the molecule can fall apart between one answer and the next.
     Given a directory, the perception made at the start is reused: at a C-C of
     2.33 A it still pulls back, to 1.51.
+
+    *solvent* is one of :data:`SOLVENTS`, run with ALPB.  A geometry optimised
+    in the gas phase and one optimised in water are different answers, and
+    which was asked for belongs in the result rather than in the operator's
+    memory -- so it is named in the status.
     """
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
@@ -482,6 +524,16 @@ def optimize_with_gfn(
                 f'{multiplicity - 1 if multiplicity > 1 else 2}.'),
         }
 
+    wet = str(solvent or '').strip().lower()
+    if wet and wet not in SOLVENTS:
+        return {
+            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+            'seconds': 0.0, 'frames': [],
+            'status': (f'{wet!r} is not a solvent this xtb is parametrised '
+                       f'for. It knows: '
+                       + ', '.join(n for n in SOLVENTS if n) + '.'),
+        }
+
     binary = find_xtb()
     if binary is None:
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -502,6 +554,8 @@ def optimize_with_gfn(
                    '-P', '1']
         if max_steps:
             command += ['--cycles', str(int(max_steps))]
+        if wet:
+            command += ['--alpb', wet]
         held = constraint_input(constraints, atoms=len(body))
         if held['text']:
             (folder / 'xtb.inp').write_text(held['text'], encoding='utf-8')
@@ -730,20 +784,20 @@ def optimize_with_gfn(
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted, 'held': held,
-                'converged': False,
+                'converged': False, 'solvent': wet,
                 'status': (f'{label} stopped before converging after '
                            f'{seconds:.1f} s; the geometry it reached is shown. '
                            f'(xtb {version}, {reported or wanted})'
-                           + held_note(held)),
+                           + solvent_note(wet) + held_note(held)),
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted, 'held': held,
-            'converged': True,
+            'converged': True, 'solvent': wet,
             'status': (f'{label} converged in {seconds:.1f} s '
                        f'(xtb {version}, {reported or wanted}).'
-                       + held_note(held)),
+                       + solvent_note(wet) + held_note(held)),
         }
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -832,6 +886,7 @@ def relax_steps(
     timeout: float = 30.0,
     constraints: Any = (),
     topology: Optional[Path] = None,
+    solvent: Optional[str] = None,
 ) -> Dict[str, Any]:
     """A few optimisation cycles, for a loop that shows the structure settling.
 
@@ -851,7 +906,7 @@ def relax_steps(
     result = optimize_with_gfn(
         xyz_text, method, charge=charge, uhf=uhf,
         max_steps=max(1, int(cycles)), timeout=timeout,
-        constraints=constraints, topology=topology,
+        constraints=constraints, topology=topology, solvent=solvent,
     )
     result['converged'] = bool(
         result.get('ok') and 'converged in' in str(result.get('status') or '')
