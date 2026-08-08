@@ -2831,9 +2831,32 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         if (!ffWritePositions(viewer, pos)) return false;
         try { applyFixedInternals(scopeKey); } catch (e) {}
+        // The lines between the atoms are 3Dmol's own bond list, worked out
+        // once when the model was built. Moving atoms does not touch it, so a
+        // bond pulled apart keeps being drawn as a bond and one pushed
+        // together is never drawn at all -- the picture shows the connectivity
+        // the structure had, not the one it has. Asking for it back costs a
+        // rebuild per frame, and in a crowded coordination sphere it flickers,
+        // because perception there is at its limit. So it is asked for.
+        if (getState(scopeKey).dynamicBonds) invalidateGeometry(viewer);
         redrawHighlights(scopeKey);
         try { viewer.render(); } catch (e) {}
         return true;
+    }
+
+    // Whether the lines follow the distances while the structure moves.
+    function setDynamicBonds(scopeKey, enabled) {
+        var state = getState(scopeKey);
+        state.dynamicBonds = !!enabled;
+        var viewer = getViewer(scopeKey);
+        if (viewer) {
+            // Once now, so switching it on shows the truth immediately rather
+            // than at the next frame somebody happens to send.
+            invalidateGeometry(viewer);
+            redrawHighlights(scopeKey);
+            try { viewer.render(); } catch (e) {}
+        }
+        return state.dynamicBonds;
     }
 
     function autoOptimizeTick(scopeKey) {
@@ -3964,6 +3987,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         clearSelection: clearSelection,
         setPicks: setPicks,
         setPositions: setPositions,
+        setDynamicBonds: setDynamicBonds,
         // So a watcher outside this closure can hand the geometry over while
         // the mouse is still down, rather than only when it is let go.
         pushXyz: pushXyzToPython,

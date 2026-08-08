@@ -23,6 +23,8 @@ _needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not install
 # ---------------------------------------------------------------------------
 # the runner
 # ---------------------------------------------------------------------------
+
+
 def test_the_methods_offered_are_the_ones_xtb_knows():
     assert set(gfn.GFN_METHODS) == {"gfnff", "gfn2", "gfn1"}
     assert gfn.is_gfn_method("gfnff") and gfn.is_gfn_method("GFN2")
@@ -49,6 +51,8 @@ def test_nothing_to_optimise_is_not_an_error_worth_running():
 
 
 @_needs_xtb
+
+
 def test_it_relaxes_and_says_what_it_cost():
     result = gfn.optimize_with_gfn(_WATER, "gfnff", charge=0, uhf=0)
 
@@ -61,6 +65,8 @@ def test_it_relaxes_and_says_what_it_cost():
 
 
 @_needs_xtb
+
+
 def test_the_charge_and_the_spin_reach_xtb():
     """A different charge has to give a different energy, or they were dropped."""
     neutral = gfn.optimize_with_gfn(_WATER, "gfn2", charge=0, uhf=0)
@@ -164,6 +170,8 @@ def test_dragging_keeps_a_force_field_that_lives_in_the_browser(editor):
 # ---------------------------------------------------------------------------
 # it really is xtb, and it says which Hamiltonian it ran
 # ---------------------------------------------------------------------------
+
+
 @_needs_xtb
 def test_the_result_names_the_program_that_produced_it():
     """Passing --gfn 2 and being given GFN2 are two different claims."""
@@ -176,6 +184,8 @@ def test_the_result_names_the_program_that_produced_it():
 
 
 @_needs_xtb
+
+
 def test_each_method_reports_its_own_hamiltonian():
     assert gfn.optimize_with_gfn(_WATER, "gfnff")["hamiltonian"] == "GFN-FF"
     assert gfn.optimize_with_gfn(_WATER, "gfn1")["hamiltonian"] == "GFN1-xTB"
@@ -184,6 +194,8 @@ def test_each_method_reports_its_own_hamiltonian():
 # ---------------------------------------------------------------------------
 # autospin
 # ---------------------------------------------------------------------------
+
+
 def test_the_parity_decides_which_multiplicities_are_possible():
     # water: 10 electrons, even -> singlet, triplet, quintet
     assert gfn.electron_parity(_WATER, 0) == 0
@@ -192,6 +204,8 @@ def test_the_parity_decides_which_multiplicities_are_possible():
 
 
 @_needs_xtb
+
+
 def test_autospin_keeps_the_multiplicity_that_came_out_lowest():
     result = gfn.optimize_autospin(_WATER, "gfn2", charge=0)
 
@@ -204,6 +218,8 @@ def test_autospin_keeps_the_multiplicity_that_came_out_lowest():
 
 
 @_needs_xtb
+
+
 def test_autospin_scans_the_parity_the_charge_implies():
     result = gfn.optimize_autospin(_WATER, "gfnff", charge=1)
 
@@ -227,6 +243,8 @@ def test_the_checkbox_appears_with_the_method_and_takes_over_the_box(editor):
 # ---------------------------------------------------------------------------
 # finding xtb
 # ---------------------------------------------------------------------------
+
+
 def test_xtb_is_looked_for_the_way_the_rest_of_delfin_looks_for_it():
     """A kernel does not inherit the login shell's PATH.
 
@@ -252,6 +270,8 @@ def test_a_missing_xtb_says_where_it_looked():
 
 
 @_needs_xtb
+
+
 def test_the_resolved_binary_is_the_one_that_runs():
     found = gfn.find_xtb()
     assert found and found.endswith("xtb")
@@ -278,6 +298,8 @@ def test_the_force_field_notes_say_which_field_they_are_about(editor):
 # ---------------------------------------------------------------------------
 # the relaxation loop
 # ---------------------------------------------------------------------------
+
+
 @_needs_xtb
 def test_a_few_cycles_come_back_quickly_enough_to_loop():
     """A loop of short runs looks like a relaxation; one long run is a jump."""
@@ -348,9 +370,11 @@ def test_the_viewer_can_be_given_coordinates_from_the_kernel():
 
     editor_js = submit_manip_bootstrap_js()
     assert "setPositions: setPositions" in editor_js
-    body = editor_js[editor_js.index("function setPositions("):][:900]
+    body = editor_js[editor_js.index("function setPositions("):][:1800]
     assert "ffWritePositions" in body
     assert "redrawHighlights" in body
+
+
 def test_the_frames_go_through_a_widget_not_through_run_js(editor):
     """run_js writes into one Output and clears it first.
 
@@ -467,6 +491,8 @@ def test_the_atom_count_in_the_header_is_not_trusted():
 
 
 @_needs_xtb
+
+
 def test_every_atom_reaches_xtb_even_with_a_wrong_header():
     lying = "2\ntwo, it says\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 
@@ -553,6 +579,8 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
 
 
 @_needs_xtb
+
+
 def test_an_xtb_error_is_a_failure_not_a_partial_result():
     """xtb writes xtbopt.log as it goes, so the files exist even when it dies.
 
@@ -664,6 +692,8 @@ def test_optimise_is_a_switch_that_can_be_turned_off(editor):
 
 
 @_needs_xtb
+
+
 def test_a_run_that_is_switched_off_ends_rather_than_being_waited_out():
     import threading
     import time
@@ -770,6 +800,8 @@ def test_the_dashboard_runs_without_a_clock_because_it_has_a_switch(editor):
 
 
 @_needs_xtb
+
+
 def test_without_a_timeout_the_hand_is_what_stops_it():
     import threading
 
@@ -805,6 +837,8 @@ def test_the_path_is_handed_over_while_it_is_still_being_walked(editor):
 
 
 @_needs_xtb
+
+
 def test_frames_arrive_during_a_long_run_not_after_it():
     import threading
     import time
@@ -829,6 +863,8 @@ def test_frames_arrive_during_a_long_run_not_after_it():
 
 
 @_needs_xtb
+
+
 def test_the_switch_still_works_on_a_run_that_is_reporting_frames():
     """Reading the log is the expensive part and it grows, so parsing it on
     every pass crowded the stop check out: the trajectory appeared and the
@@ -918,6 +954,8 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
 # ---------------------------------------------------------------------------
 # the controls, split and cleaned up
 # ---------------------------------------------------------------------------
+
+
 def test_controls_that_cannot_work_under_gfn_are_taken_away(editor, monkeypatch):
     """Greying them out invites the question of why they are dead.
 
@@ -975,6 +1013,8 @@ def test_only_all_takes_the_whole_set(editor):
 
 
 @_needs_xtb
+
+
 def test_the_energy_is_reported_like_the_force_field_reports_one(editor):
     import time
 
@@ -1000,6 +1040,8 @@ def test_the_energy_is_reported_like_the_force_field_reports_one(editor):
 # ---------------------------------------------------------------------------
 # undo answers for what the user did, not for what the optimiser did
 # ---------------------------------------------------------------------------
+
+
 def test_a_whole_optimisation_is_one_step_of_undo(editor):
     """The playback writes coordinates dozens of times a second.
 
@@ -1027,6 +1069,8 @@ def test_a_whole_optimisation_is_one_step_of_undo(editor):
 # ---------------------------------------------------------------------------
 # a pipe nobody reads
 # ---------------------------------------------------------------------------
+
+
 def test_xtb_talks_to_a_file_and_not_into_a_pipe():
     """A pipe holds 64 KiB and then blocks whoever is writing to it.
 
@@ -1044,6 +1088,8 @@ def test_xtb_talks_to_a_file_and_not_into_a_pipe():
 
 
 @_needs_xtb
+
+
 def test_a_run_that_says_more_than_a_pipe_holds_still_ends(tmp_path):
     """The regression itself, at the size that showed it.
 
@@ -1081,6 +1127,8 @@ def test_a_run_that_says_more_than_a_pipe_holds_still_ends(tmp_path):
 # ---------------------------------------------------------------------------
 # a hand on the structure while xtb is minimising it
 # ---------------------------------------------------------------------------
+
+
 def test_the_playback_lets_go_of_the_picture_while_an_atom_is_dragged(editor):
     """Otherwise the drag cannot happen at all.
 
@@ -1135,6 +1183,8 @@ def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
 
 
 @_needs_xtb
+
+
 def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
     """The whole of point five, driven the way the browser drives it.
 
@@ -1210,6 +1260,8 @@ def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
 # ---------------------------------------------------------------------------
 # what Hold and Set mean to xtb
 # ---------------------------------------------------------------------------
+
+
 def test_a_held_value_becomes_a_constraint_block_counted_from_one():
     """xtb numbers atoms from one; the editor numbers them from zero."""
     built = gfn.constraint_input([
@@ -1297,6 +1349,8 @@ def test_holding_an_atom_where_it_is_is_not_asked_of_xtb():
 
 
 @_needs_xtb
+
+
 def test_a_pull_negotiates_and_a_fix_is_met():
     """The whole of point six, against the program itself."""
     propane = (
@@ -1330,6 +1384,8 @@ def test_a_pull_negotiates_and_a_fix_is_met():
 
 
 @_needs_xtb
+
+
 def test_what_the_editor_holds_is_what_the_optimisation_holds(editor):
     """Held on screen and given up the moment GFN is chosen is the bug this
     closes: the angle is asked for and the angle is what comes back."""
@@ -1374,6 +1430,8 @@ def test_what_the_editor_holds_is_what_the_optimisation_holds(editor):
 # ---------------------------------------------------------------------------
 # the molecule follows the atom being dragged
 # ---------------------------------------------------------------------------
+
+
 def test_the_page_hands_the_geometry_over_while_the_mouse_is_down(player_js):
     """A drag that only reports at the release cannot be followed."""
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
@@ -1444,6 +1502,8 @@ def test_the_follow_runs_one_process_at_a_time_and_takes_the_newest(editor):
 
 
 @_needs_xtb
+
+
 def test_the_rest_of_the_molecule_follows_the_atom_that_is_dragged(editor):
     """Point seven, played through the tab the way the browser plays it.
 
@@ -1519,6 +1579,8 @@ def test_the_rest_of_the_molecule_follows_the_atom_that_is_dragged(editor):
 # ---------------------------------------------------------------------------
 # xtb that is not there yet
 # ---------------------------------------------------------------------------
+
+
 def test_the_installer_is_delfins_own_and_is_asked_for_xtb_alone():
     """Naming the tool keeps it to that one: with no arguments the script
     fetches crest, dftb+ and the stda bundle behind it as well."""
@@ -1638,6 +1700,8 @@ def test_an_install_that_produced_no_xtb_is_a_failure_not_a_shrug(monkeypatch):
 
 
 @_needs_xtb
+
+
 def test_the_installer_runs_and_ends_with_an_xtb_the_dashboard_can_find():
     """Run for real.  With an xtb already on the machine the script links that
     one instead of downloading -- which is the path a user whose cluster
@@ -1653,6 +1717,8 @@ def test_the_installer_runs_and_ends_with_an_xtb_the_dashboard_can_find():
 # ---------------------------------------------------------------------------
 # the method that is chosen is the method that acts
 # ---------------------------------------------------------------------------
+
+
 def test_nothing_of_the_browsers_field_may_run_under_gfn(editor):
     """A dozen handlers install UFF parameters -- Hold, a polyhedron, a
     hybridisation, a bond edit.  Any one of them put a UFF relaxation under a
@@ -1759,6 +1825,8 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
 
 
 @_needs_xtb
+
+
 def test_letting_go_settles_with_the_method_that_is_chosen(editor):
     """Driven the way the page drives it: a release with Settle on."""
     import time as _time
@@ -1795,6 +1863,8 @@ def test_letting_go_settles_with_the_method_that_is_chosen(editor):
 # ---------------------------------------------------------------------------
 # the atom under the cursor stays under the cursor
 # ---------------------------------------------------------------------------
+
+
 def test_the_held_atoms_are_put_back_where_they_were_sent():
     """xtb pulls a dragged atom most of the way home in five cycles -- 244 mA
     of a 250 mA drag -- and the answer outlives the drag.  Applied after the
@@ -1858,6 +1928,8 @@ def test_the_follow_is_paced_by_the_machine_not_by_a_clock(player_js):
 
 
 @_needs_xtb
+
+
 def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
     """The whole of the spring-back, driven the way the page drives it."""
     import json as _json
@@ -1903,6 +1975,8 @@ def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
 
 
 @_needs_xtb
+
+
 def test_holding_a_value_moves_the_structure_to_it_there_and_then(editor):
     """Point of the whole thing, driven the way the buttons drive it: Hold is
     pressed, Optimise is not, and the angle is what it was asked to be."""
@@ -1955,6 +2029,8 @@ def test_holding_a_value_moves_the_structure_to_it_there_and_then(editor):
 # ---------------------------------------------------------------------------
 # a relaxation that will not end, and a spin that cannot exist
 # ---------------------------------------------------------------------------
+
+
 def test_a_multiplicity_the_electrons_cannot_make_is_refused():
     """xtb does not refuse it.  Water asked for a doublet came back with the
     singlet's energy to the last digit -- -5.070543980552 either way -- and a
@@ -2046,6 +2122,8 @@ def test_the_status_counts_the_atoms_the_hand_is_on(editor):
     source = open(tab_submit.__file__, encoding="utf-8").read()
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "holding {len(holding)} atoms" in follow
+
+
 def test_a_run_that_ends_lands_the_picture_on_its_last_frame(player_js):
     """Otherwise the viewer keeps whatever it had drawn while the kernel keeps
     the geometry it computed, and the two drift apart.
@@ -2075,6 +2153,8 @@ def test_a_burst_is_not_played_at_the_pace_of_a_followed_hand(player_js):
 
 
 @_needs_xtb
+
+
 def test_a_run_shorter_than_the_reading_interval_still_hands_its_path_over():
     """The watching loop reads the log five times a second at most.
 
@@ -2177,6 +2257,8 @@ def test_a_past_drag_has_no_hold_on_the_present(editor):
     assert "int(state.get('gfn_generation', 0)) != generation" in settle, (
         "nor may a finished run write its geometry over a newer one"
     )
+
+
 @_needs_xtb
 def test_gfnff_loses_the_bond_it_was_never_told_to_keep(tmp_path):
     """The cliff, measured, and the reason the perception has to be kept.
@@ -2283,6 +2365,8 @@ def test_optimise_supersedes_the_live_relaxation(editor):
     assert settle.count("state.get('optimize_run') is not None") >= 3, (
         "it must also not start one, nor write its geometry over Optimise's"
     )
+
+
 def test_dragging_moves_along_the_surface_and_optimise_goes_down_it(editor):
     """The division the editor settled on, and the reason for it.
 
@@ -2361,6 +2445,8 @@ def test_the_bonding_is_read_before_a_hand_is_laid_on_the_molecule(editor):
 
 
 @_needs_xtb
+
+
 def test_the_whole_cycle_end_to_end(editor):
     """Drag, let go, drag again, let go, press Optimise once.
 
@@ -2427,6 +2513,8 @@ def test_the_whole_cycle_end_to_end(editor):
 # ---------------------------------------------------------------------------
 # a structure optimised in water is not one optimised in vacuum
 # ---------------------------------------------------------------------------
+
+
 def test_the_solvents_are_the_ones_this_xtb_is_parametrised_for():
     """Asked of the binary, not taken from a manual: every name here came back
     parametrised from xtb 6.7.1, for GFN2 and GFN-FF alike.
@@ -2496,6 +2584,8 @@ def test_the_solvent_box_appears_with_the_method(editor):
 
 
 @_needs_xtb
+
+
 def test_a_solvent_changes_the_answer_and_the_answer_says_so(editor):
     import time as _time
 
@@ -2524,6 +2614,8 @@ def test_a_solvent_changes_the_answer_and_the_answer_says_so(editor):
 
 
 @_needs_xtb
+
+
 def test_gfnff_takes_a_solvent_too():
     """It is the method the drag and the release use, so if it could not be
     solvated the live half of the editor would be answering a different
@@ -2534,3 +2626,32 @@ def test_gfnff_takes_a_solvent_too():
     assert dry["ok"] and wet["ok"]
     assert wet["energy"] != dry["energy"]
     assert wet["solvent"] == "water" and dry["solvent"] == ""
+
+
+def test_the_lines_can_be_asked_to_follow_the_distances(editor):
+    """3Dmol works its bond list out once, when the model is built.  Moving
+    atoms does not touch it, so a bond pulled apart goes on being drawn as a
+    bond -- the picture keeps the connectivity the structure had rather than
+    the one it has.
+
+    Off by default: it costs a rebuild per frame, and in a crowded
+    coordination sphere the perception is at its limit and the lines flicker.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    editor_js = submit_manip_bootstrap_js()
+    assert "setDynamicBonds: setDynamicBonds" in editor_js
+    body = editor_js[editor_js.index("function setPositions("):][:1800]
+    assert "if (getState(scopeKey).dynamicBonds) invalidateGeometry(viewer);" in body
+
+    setter = editor_js[editor_js.index("function setDynamicBonds("):][:700]
+    assert "invalidateGeometry(viewer)" in setter, (
+        "switching it on has to show the truth at once, not at the next frame"
+    )
+
+    assert editor["submit_dyn_bonds_btn"].value is False
+    editor["submit_dyn_bonds_btn"].value = True
+    assert "follow the distances" in editor["mol_status"].value
+    assert "Bond and Unbond" in editor["mol_status"].value, (
+        "the picture and what the calculation holds together are two questions"
+    )

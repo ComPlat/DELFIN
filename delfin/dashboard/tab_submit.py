@@ -767,6 +767,22 @@ def create_tab(ctx):
         style={'description_width': '14px'},
         layout=widgets.Layout(width='72px', display='none'),
     )
+    # The lines between the atoms are 3Dmol's own bond list, worked out once
+    # when the model was built.  Moving atoms does not touch it, so a bond
+    # pulled apart goes on being drawn -- the picture keeps the connectivity
+    # the structure had rather than the one it has.  Off by default: it costs a
+    # rebuild per frame, and in a crowded coordination sphere the perception is
+    # at its limit and the lines flicker.
+    submit_dyn_bonds_btn = widgets.ToggleButton(
+        value=False, description='Dyn. bonds', icon='link',
+        tooltip=(
+            'Let the lines between the atoms follow the distances while the '
+            'structure moves, instead of keeping the bonds it was drawn with. '
+            'Only the picture changes -- what the calculation holds together '
+            'is a separate question, and Bond and Unbond are how that is said.'
+        ),
+        layout=widgets.Layout(width='104px', height='30px'),
+    )
     submit_gfn_solvent = widgets.Dropdown(
         options=[(label, name) for name, label in _gfn.SOLVENTS.items()],
         value='',
@@ -1002,7 +1018,7 @@ def create_tab(ctx):
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
-            submit_bond_btn, submit_unbond_btn,
+            submit_bond_btn, submit_unbond_btn, submit_dyn_bonds_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync, submit_cmd_sync,
             submit_manip_status, submit_manip_sync, submit_gfn_frame,
@@ -5956,6 +5972,24 @@ def create_tab(ctx):
             _set_mol_status('Polyhedron released.')
         _clear_selection()
 
+    def on_submit_dyn_bonds(change):
+        """Whether the drawn lines follow the distances."""
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_dyn_bonds_btn.value)
+        submit_dyn_bonds_btn.button_style = 'info' if active else ''
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setDynamicBonds('
+            f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
+        )
+        _set_mol_status(
+            'The lines follow the distances now. Only the picture: what the '
+            'calculation holds together is Bond and Unbond\'s business.'
+            if active else
+            'The lines keep the bonds the structure was drawn with.')
+
     def on_submit_settle_toggle(change):
         if change.get('name') != 'value':
             return
@@ -6345,6 +6379,7 @@ def create_tab(ctx):
     submit_gfn_solvent.observe(on_submit_solvent, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
+    submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
@@ -6633,6 +6668,7 @@ def create_tab(ctx):
         'submit_gfn_mult': submit_gfn_mult,
         'submit_gfn_autospin': submit_gfn_autospin,
         'submit_gfn_solvent': submit_gfn_solvent,
+        'submit_dyn_bonds_btn': submit_dyn_bonds_btn,
         'submit_xtb_install_btn': submit_xtb_install_btn,
         'submit_xtb_confirm_btn': submit_xtb_confirm_btn,
         'submit_xtb_cancel_btn': submit_xtb_cancel_btn,
