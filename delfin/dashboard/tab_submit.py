@@ -777,6 +777,24 @@ def create_tab(ctx):
         ),
         layout=widgets.Layout(width='86px', display='none'),
     )
+    # Shown only when a GFN method is chosen and xtb cannot be found.  Two
+    # presses, not one: the install fetches a conda environment of a few
+    # hundred megabytes, and on a cluster the right answer is often "load the
+    # module instead" -- so what it would run is shown before it runs.
+    submit_xtb_install_btn = widgets.Button(
+        description='Install xtb', icon='download',
+        tooltip='Fetch xtb with DELFIN\'s own installer. It will say what it '
+                'runs before it runs it.',
+        layout=widgets.Layout(width='118px', height='30px', display='none'),
+    )
+    submit_xtb_confirm_btn = widgets.Button(
+        description='Yes, install', button_style='warning',
+        layout=widgets.Layout(width='108px', height='30px', display='none'),
+    )
+    submit_xtb_cancel_btn = widgets.Button(
+        description='Cancel',
+        layout=widgets.Layout(width='72px', height='30px', display='none'),
+    )
     submit_internal_label = widgets.HTML(
         value=(
             '<span class="submit-internal-label" '
@@ -963,7 +981,10 @@ def create_tab(ctx):
             submit_element_dd,
             submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
-            submit_gfn_autospin, submit_strength_slider,
+            submit_gfn_autospin,
+            submit_xtb_install_btn, submit_xtb_confirm_btn,
+            submit_xtb_cancel_btn,
+            submit_strength_slider,
             submit_optimize_btn, submit_optimize_all_btn,
             submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_poly_turn_btn,
@@ -5532,6 +5553,83 @@ def create_tab(ctx):
         chosen = str(submit_ff_dd.value or 'uff')
         return 'uff' if _gfn.is_gfn_method(chosen) else chosen
 
+    def _offer_xtb_install(offer):
+        """Show the offer, or the two buttons that carry it out, or neither."""
+        submit_xtb_install_btn.layout.display = '' if offer else 'none'
+        submit_xtb_confirm_btn.layout.display = 'none'
+        submit_xtb_cancel_btn.layout.display = 'none'
+
+    def _refresh_xtb_offer():
+        """xtb missing under a GFN method is a thing to fix, not a wall."""
+        gfn = _gfn.is_gfn_method(submit_ff_dd.value)
+        _offer_xtb_install(
+            gfn and not _gfn.xtb_available()
+            and _gfn.install_script() is not None
+            and not state.get('xtb_installing'))
+
+    def on_submit_xtb_install(_button=None):
+        """The first press only says what the second one would do.
+
+        Fetching a conda environment of a few hundred megabytes is not a thing
+        to start on a single click, and on a cluster the right answer is often
+        to load the module instead -- so the command is on screen before it
+        runs, and cancelling is as easy as agreeing.
+        """
+        command = _gfn.install_command()
+        if command is None:
+            _set_mol_status('DELFIN\'s installer is not next to this copy of '
+                            'the dashboard, so there is nothing to run.')
+            return
+        submit_xtb_install_btn.layout.display = 'none'
+        submit_xtb_confirm_btn.layout.display = ''
+        submit_xtb_cancel_btn.layout.display = ''
+        _set_mol_status(
+            'This will run:  ' + ' '.join(command),
+            'It fetches xtb from conda-forge into DELFIN\'s own tool '
+            'directory -- a few hundred megabytes, several minutes, and it '
+            'needs the network. On a cluster, module load xtb may be the '
+            'better answer.',
+        )
+
+    def on_submit_xtb_cancel(_button=None):
+        _refresh_xtb_offer()
+        _set_mol_status('Left alone. Optimise will say xtb is missing rather '
+                        'than doing nothing.')
+
+    def on_submit_xtb_confirm(_button=None):
+        if state.get('xtb_installing'):
+            return
+        state['xtb_installing'] = True
+        _offer_xtb_install(False)
+        _set_mol_status('Installing xtb...', spinner=True)
+
+        def _work():
+            def _line(text):
+                if text.strip():
+                    _schedule_ui_update(
+                        _set_mol_status, 'Installing xtb...', text.strip(),
+                        spinner=True)
+
+            outcome = _gfn.install_xtb(on_line=_line)
+
+            def _done():
+                state['xtb_installing'] = False
+                _refresh_xtb_offer()
+                if outcome.get('ok'):
+                    # Asked again rather than assumed: the resolver is what
+                    # every run will use, and a binary it cannot see is not
+                    # installed as far as the dashboard is concerned.
+                    _set_mol_status(outcome['status'],
+                                    'Optimise will use it from now on.')
+                else:
+                    _set_mol_status(outcome.get('status') or 'The install '
+                                    'did not finish.',
+                                    *outcome.get('lines', [])[-2:])
+
+            _schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def on_submit_ff_changed(change):
         if change.get('name') != 'value':
             return
@@ -5570,11 +5668,16 @@ def create_tab(ctx):
             if gfn else
             'Relax the structure continuously while you work on it.'
         )
+        _refresh_xtb_offer()
         if gfn:
             label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
             source = _fill_charge_from_smiles()
             if not _gfn.xtb_available():
                 _set_mol_status(
+                    f'{label} needs xtb, which was not found. Install xtb '
+                    'fetches it with DELFIN\'s own installer, and says what '
+                    'it will run before it runs it.'
+                    if _gfn.install_script() is not None else
                     f'{label} needs xtb on the PATH; it was not found. '
                     'Optimise will say so rather than doing nothing.')
             elif source:
@@ -5703,6 +5806,9 @@ def create_tab(ctx):
     # run it is meant to show.
     _install_gfn_frame_watcher()
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
+    submit_xtb_install_btn.on_click(on_submit_xtb_install)
+    submit_xtb_confirm_btn.on_click(on_submit_xtb_confirm)
+    submit_xtb_cancel_btn.on_click(on_submit_xtb_cancel)
     submit_gfn_autospin.observe(on_submit_autospin, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
@@ -5991,6 +6097,9 @@ def create_tab(ctx):
         'submit_gfn_charge': submit_gfn_charge,
         'submit_gfn_mult': submit_gfn_mult,
         'submit_gfn_autospin': submit_gfn_autospin,
+        'submit_xtb_install_btn': submit_xtb_install_btn,
+        'submit_xtb_confirm_btn': submit_xtb_confirm_btn,
+        'submit_xtb_cancel_btn': submit_xtb_cancel_btn,
         'submit_optimize_btn': submit_optimize_btn,
         'submit_optimize_all_btn': submit_optimize_all_btn,
         'submit_settle_btn': submit_settle_btn,

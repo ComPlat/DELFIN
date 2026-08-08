@@ -1495,3 +1495,137 @@ def test_the_rest_of_the_molecule_follows_the_atom_that_is_dragged(editor):
     assert stretched < math.dist(began[0], began[1]) + 0.36, (
         "the rest of the molecule did not close any of the gap"
     )
+
+
+# ---------------------------------------------------------------------------
+# xtb that is not there yet
+# ---------------------------------------------------------------------------
+def test_the_installer_is_delfins_own_and_is_asked_for_xtb_alone():
+    """Naming the tool keeps it to that one: with no arguments the script
+    fetches crest, dftb+ and the stda bundle behind it as well."""
+    script = gfn.install_script()
+    assert script is not None and script.name == "install_qm_tools.sh"
+
+    command = gfn.install_command()
+    assert command[0] == "bash" and command[-1] == "xtb"
+    assert str(script) in command
+
+
+def test_the_offer_appears_only_when_it_is_needed(editor, monkeypatch):
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_xtb", lambda: None)
+    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
+
+    assert editor["submit_xtb_install_btn"].layout.display == "none"
+
+    editor["submit_ff_dd"].value = "gfnff"
+    assert editor["submit_xtb_install_btn"].layout.display == ""
+    assert "Install xtb" in editor["mol_status"].value
+
+    editor["submit_ff_dd"].value = "uff"
+    assert editor["submit_xtb_install_btn"].layout.display == "none", (
+        "nothing to install for a field that runs in the browser"
+    )
+
+
+def test_the_offer_stays_away_when_xtb_is_already_there(editor, monkeypatch):
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: True)
+
+    editor["submit_ff_dd"].value = "gfn2"
+
+    assert editor["submit_xtb_install_btn"].layout.display == "none"
+
+
+def test_the_first_press_says_what_the_second_one_would_do(editor, monkeypatch):
+    """A few hundred megabytes through conda is not a thing to start on one
+    click, and on a cluster the right answer is often the module instead."""
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_xtb", lambda: None)
+    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
+    ran: list = []
+    monkeypatch.setattr(tab_submit._gfn, "install_xtb",
+                        lambda **kwargs: ran.append(kwargs) or {"ok": True})
+
+    editor["submit_ff_dd"].value = "gfnff"
+    editor["submit_xtb_install_btn"].click()
+
+    assert ran == [], "the first press must not install anything"
+    assert editor["submit_xtb_install_btn"].layout.display == "none"
+    assert editor["submit_xtb_confirm_btn"].layout.display == ""
+    assert editor["submit_xtb_cancel_btn"].layout.display == ""
+    said = editor["mol_status"].value
+    assert "install_qm_tools.sh xtb" in said, "the command has to be on screen"
+    assert "megabytes" in said and "module load xtb" in said
+
+    editor["submit_xtb_cancel_btn"].click()
+    assert ran == []
+    assert editor["submit_xtb_install_btn"].layout.display == ""
+    assert editor["submit_xtb_confirm_btn"].layout.display == "none"
+
+
+def test_the_second_press_runs_it_and_says_where_xtb_ended_up(editor, monkeypatch):
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_xtb", lambda: None)
+    monkeypatch.setattr(tab_submit._gfn, "xtb_available", lambda: False)
+
+    def fake_install(on_line=None, **_kwargs):
+        if on_line:
+            on_line("[qm_tools] link xtb")
+        return {"ok": True, "binary": "/somewhere/bin/xtb", "lines": [],
+                "status": "xtb installed at /somewhere/bin/xtb in 0.4 min."}
+
+    monkeypatch.setattr(tab_submit._gfn, "install_xtb", fake_install)
+
+    editor["submit_ff_dd"].value = "gfnff"
+    editor["submit_xtb_install_btn"].click()
+    editor["submit_xtb_confirm_btn"].click()
+
+    deadline = _time.time() + 10
+    while (_time.time() < deadline
+           and "/somewhere/bin/xtb" not in editor["mol_status"].value):
+        _time.sleep(0.02)
+
+    assert editor["editor_state"].get("xtb_installing") is False
+    assert "/somewhere/bin/xtb" in editor["mol_status"].value
+    assert editor["mol_status"].value.count("Installing xtb...") == 0, (
+        "the spinner has to go when the install is over"
+    )
+
+
+def test_an_install_that_produced_no_xtb_is_a_failure_not_a_shrug(monkeypatch):
+    """Reporting success without a binary sends the user back to a button that
+    already said it worked."""
+    class _Fake:
+        returncode = 0
+        stdout = iter(["[qm_tools] ERROR: micromamba/conda not found\n"])
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(gfn.subprocess, "Popen", lambda *a, **k: _Fake())
+    monkeypatch.setattr(gfn, "find_xtb", lambda: None)
+
+    outcome = gfn.install_xtb()
+
+    assert outcome["ok"] is False
+    assert "micromamba/conda not found" in outcome["status"]
+
+
+@_needs_xtb
+def test_the_installer_runs_and_ends_with_an_xtb_the_dashboard_can_find():
+    """Run for real.  With an xtb already on the machine the script links that
+    one instead of downloading -- which is the path a user whose cluster
+    provides xtb takes, and the one that has to work without the network.
+    """
+    outcome = gfn.install_xtb(timeout=900)
+
+    assert outcome["ok"] is True, outcome["status"]
+    assert outcome["binary"] and pathlib.Path(outcome["binary"]).is_file()
+    assert gfn.find_xtb() == outcome["binary"]

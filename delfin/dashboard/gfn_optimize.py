@@ -34,7 +34,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
-           'held_note', 'is_gfn_method', 'read_trajectory',
+           'held_note', 'install_command', 'install_script', 'install_xtb',
+           'is_gfn_method', 'read_trajectory',
            'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
            'electron_parity']
 
@@ -112,6 +113,95 @@ def _where_it_looked() -> str:
 
 def xtb_available() -> bool:
     return find_xtb() is not None
+
+
+def install_script() -> Optional[Path]:
+    """DELFIN's own installer for the QM tools, if it is where it should be."""
+    candidate = (Path(__file__).resolve().parent.parent
+                 / 'qm_tools' / 'install_qm_tools.sh')
+    return candidate if candidate.is_file() else None
+
+
+def install_command() -> Optional[list]:
+    """Exactly what installing xtb would run, so it can be shown before it is.
+
+    The script takes the tools to install as arguments; naming xtb keeps it to
+    that one rather than fetching crest, dftb+ and the stda bundle behind it.
+    """
+    script = install_script()
+    return ['bash', str(script), 'xtb'] if script else None
+
+
+def install_xtb(
+    on_line: Optional[Callable[[str], None]] = None,
+    timeout: float = 1800.0,
+) -> Dict[str, Any]:
+    """Run DELFIN's installer for xtb and say where it ended up.
+
+    Never called by itself: fetching a few hundred megabytes through conda is
+    not something a program should decide on a user's behalf, and on a cluster
+    the answer is often "load the module instead".  The caller asks first.
+
+    *on_line* is handed each line as it is printed, because the install takes
+    minutes and a silent one is indistinguishable from a hung one.
+    """
+    command = install_command()
+    if command is None:
+        return {'ok': False, 'binary': None, 'lines': [],
+                'status': ('DELFIN\'s installer is not next to this copy of '
+                           'the dashboard, so there is nothing to run.')}
+    started = time.perf_counter()
+    lines: list = []
+    try:
+        running = subprocess.Popen(
+            command, cwd=str(Path(command[1]).parent),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            # Nothing to type into: a dashboard has no terminal to answer a
+            # prompt on, and an installer waiting for one would look hung.
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return {'ok': False, 'binary': None, 'lines': [],
+                'status': f'The installer could not be started: {exc}'}
+    try:
+        # Read as it goes.  The output is small, but it is the only sign of
+        # life for several minutes -- and an unread pipe would block it.
+        for line in running.stdout:
+            text = line.rstrip()
+            lines.append(text)
+            if on_line is not None:
+                try:
+                    on_line(text)
+                except Exception:
+                    pass
+            if time.perf_counter() - started > timeout:
+                running.kill()
+                return {'ok': False, 'binary': None, 'lines': lines,
+                        'status': (f'The install was still going after '
+                                   f'{int(timeout / 60)} minutes and was '
+                                   'stopped.')}
+        running.wait(timeout=30)
+    finally:
+        try:
+            running.stdout.close()
+        except Exception:
+            pass
+    spent = time.perf_counter() - started
+    binary = find_xtb()
+    if running.returncode == 0 and binary:
+        return {'ok': True, 'binary': binary, 'lines': lines,
+                'status': f'xtb installed at {binary} in {spent / 60:.1f} min.'}
+    said = ''
+    for text in reversed(lines):
+        if 'ERROR' in text or 'error' in text:
+            said = text
+            break
+    return {
+        'ok': False, 'binary': binary, 'lines': lines,
+        'status': (f'The install ended without an xtb: {said}'
+                   if said else
+                   'The install ended without an xtb the dashboard can find.'),
+    }
 
 
 def atom_lines(xyz_text: str) -> list:
