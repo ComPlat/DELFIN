@@ -3655,6 +3655,16 @@ def create_tab(ctx):
             '       the front of the message would replay frames already shown\n'
             '       and then stop showing new ones altogether. */\n'
             '    var from=(data&&data.from)||0;\n'
+            '    if(play.follow&&play.seen===0&&frames.length>1){\n'
+            '      /* A live run arriving from the start: only its newest frame\n'
+            '         is worth anything.  The ones before it describe where the\n'
+            '         structure was on the way here -- the drag that has just\n'
+            '         happened, or a relaxation of it -- and playing those is\n'
+            '         showing the user their own past.  What is wanted is the\n'
+            '         frame that is current. */\n'
+            '      from=from+frames.length-1;\n'
+            '      frames=[frames[frames.length-1]];\n'
+            '    }\n'
             '    if(from+frames.length>play.seen){\n'
             '      var start=Math.max(0,play.seen-from);\n'
             '      /* A frame arriving into an empty queue starts its own\n'
@@ -4138,7 +4148,12 @@ def create_tab(ctx):
             began = time.perf_counter()
             outcome = _gfn.optimize_with_gfn(
                 xyz, method, charge=charge, uhf=uhf,
-                max_steps=_GFN_SETTLE_CYCLES, timeout=60.0,
+                # No cycle cap: this is the ordinary optimisation, run on the
+                # frame that is on screen now.  Chopping it into rounds bought
+                # nothing -- the geometry between rounds is not a place anyone
+                # wants to stop at -- and cost a stutter at every boundary and
+                # an early ending whenever a round happened to move little.
+                max_steps=None, timeout=120.0,
                 constraints=constraints, on_frames=_push,
                 # A hand on an atom takes over from a relaxation of the whole
                 # thing; and switching off means what it says, whichever of the

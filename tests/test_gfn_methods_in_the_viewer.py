@@ -1799,7 +1799,10 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
     source = open(tab_submit.__file__, encoding="utf-8").read()
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
     assert "method = str(submit_ff_dd.value)" in settle
-    assert "_GFN_SETTLE_CYCLES" in settle and "on_frames=_push" in settle
+    assert "max_steps=None" in settle, (
+        "it is the ordinary optimisation, run on the frame that is on screen"
+    )
+    assert "on_frames=_push" in settle
     assert "coords_widget.value = (" in settle, "the result has to land"
 
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
@@ -2249,3 +2252,20 @@ def test_letting_go_does_not_walk_the_atom_back_through_the_drag(player_js):
         "it has to land on the newest before dropping the rest"
     )
     assert "play.queue=[]; play.last=null;" in release
+
+
+def test_a_live_run_shows_the_frame_that_is_current_not_the_way_there(player_js):
+    """The frames before the newest describe where the structure was on the way
+    here -- the drag that has just happened, or a relaxation of it.  Playing
+    those is showing the user their own past.
+
+    Driven in a real JS engine: a live run carrying a path of twelve frames
+    draws frame twelve and nothing else.  An Optimise run still carries its
+    path, because showing what the optimiser walked through is what that button
+    is for.
+    """
+    assert "if(play.follow&&play.seen===0&&frames.length>1){" in player_js
+    assert "frames=[frames[frames.length-1]];" in player_js
+    assert "from=from+frames.length-1;" in player_js, (
+        "the count has to stay honest, or the next payload replays"
+    )
