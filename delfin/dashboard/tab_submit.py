@@ -3571,6 +3571,18 @@ def create_tab(ctx):
             '    var text=field.value||"";\n'
             '    if(!text){ play.queue=[]; play.seen=0; play.last=null;'
             ' play.run=null; return; }\n'
+            '    if(data&&data.halt){\n'
+            '      /* The run was switched off.  Playing out the queue after\n'
+            '         that is the picture carrying on without the thing it is\n'
+            '         a picture of. */\n'
+            '      play.queue=[]; play.seen=(data.frames||[]).length;\n'
+            '      if(!play.toldStop){ play.toldStop=1;\n'
+            '        /* Which frame is on screen.  Stopping keeps that one:\n'
+            '           frames xtb had already computed but nobody had seen\n'
+            '           are not what the user stopped at. */\n'
+            '        say("stopped at frame "+(play.shown||0)); }\n'
+            '      return;\n'
+            '    }\n'
             '    var data=null;\n'
             '    try{ data=JSON.parse(text); }catch(e){ return; }\n'
             '    var frames=(data&&data.frames)||[];\n'
@@ -3581,11 +3593,21 @@ def create_tab(ctx):
             '         before it played nothing at all -- which is what made\n'
             '         the playback look like it worked only sometimes. */\n'
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
+            '      play.shown=0; play.toldStop=0;\n'
             '    }\n'
             '    if(frames.length>play.seen){\n'
             '      for(var i=play.seen;i<frames.length;i++) play.queue.push(frames[i]);\n'
             '      play.seen=frames.length;\n'
             '      say("received "+frames.length+" frames");\n'
+            '    }\n'
+            '    /* xtb produces frames faster than any frame rate can show\n'
+            '       them, so a queue that is allowed to grow puts the picture\n'
+            '       permanently behind the calculation.  Beyond a second of\n'
+            '       backlog the older ones are skipped: what is on screen is\n'
+            '       then always close to what xtb is doing, which is the point\n'
+            '       of watching at all. */\n'
+            '    if(play.queue.length>20){\n'
+            '      play.queue=play.queue.slice(-20);\n'
             '    }\n'
             '  }\n'
             '  function say(text){\n'
@@ -3637,6 +3659,7 @@ def create_tab(ctx):
             '        var next=play.queue.shift();\n'
             '        show(play.last,next,1);\n'
             '        play.last=next; play.started=now;\n'
+            '        play.shown=(play.shown||0)+1;\n'
             '      } else if(play.last){\n'
             '        show(play.last,play.queue[0],t);\n'
             '      } else {\n'
@@ -3901,6 +3924,7 @@ def create_tab(ctx):
             _ensure_manip_bootstrap()
             _schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
+        state['gfn_halt_sent'] = False
         run_id = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run_id
 
@@ -3917,7 +3941,14 @@ def create_tab(ctx):
         state['optimize_run'] = token
 
         def _stopped():
-            return state.get('optimize_run') is not token
+            halted = state.get('optimize_run') is not token
+            if halted and not state.get('gfn_halt_sent'):
+                state['gfn_halt_sent'] = True
+                _schedule_ui_update(
+                    lambda: setattr(submit_gfn_frame, 'value',
+                                    json.dumps({'run': run_id, 'halt': 1,
+                                                'frames': []})))
+            return halted
 
         def _work():
             from .molecule_forcefield import relax_xyz
@@ -3951,7 +3982,26 @@ def create_tab(ctx):
                     results.append(item)
                     continue
                 if outcome.get('ok'):
-                    results.append((outcome['xyz'],) + tuple(item[1:]))
+                    kept = outcome['xyz']
+                    if _stopped() and outcome.get('frames'):
+                        # Stop means the frame that was on screen.  xtb runs
+                        # ahead of the picture, and geometries nobody saw are
+                        # not what the user stopped at.
+                        shown = state.get('gfn_shown_frame')
+                        walked = outcome['frames']
+                        if isinstance(shown, int) and 0 < shown <= len(walked):
+                            symbols = [line.split()[0]
+                                       for line in _gfn.atom_lines(xyz)]
+                            frame = walked[shown - 1]
+                            if len(symbols) * 3 == len(frame):
+                                rows = [
+                                    f'{symbols[i]} {frame[3*i]:.8f} '
+                                    f'{frame[3*i+1]:.8f} {frame[3*i+2]:.8f}'
+                                    for i in range(len(symbols))
+                                ]
+                                kept = (f'{len(rows)}\nstopped at the frame on '
+                                        f'screen\n' + '\n'.join(rows) + '\n')
+                    results.append((kept,) + tuple(item[1:]))
                     if gfn and outcome.get('frames') and position == 0:
                         played[0] = True
                         # xtb writes every cycle to xtbopt.log, so the path
@@ -4758,6 +4808,11 @@ def create_tab(ctx):
             # only way to tell an invisible trajectory from a missing one was
             # to read the browser's console.
             state['gfn_play_note'] = str(payload)
+            if str(payload).startswith('stopped at frame '):
+                try:
+                    state['gfn_shown_frame'] = int(str(payload).rsplit(' ', 1)[1])
+                except ValueError:
+                    pass
             _set_mol_status(*[line for line in (
                 state.get('gfn_last_status') or '', f'Trajectory: {payload}.'
             ) if line])

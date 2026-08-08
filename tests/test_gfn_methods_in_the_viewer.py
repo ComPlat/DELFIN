@@ -827,3 +827,35 @@ def test_the_playback_speeds_up_when_it_falls_behind(editor):
     assert "function stepMs()" in watcher
     assert "play.queue.length" in watcher
     assert "stepMs()" in watcher.split("var t=(now-play.started)")[1][:20]
+
+
+def test_stopping_keeps_the_frame_that_was_on_screen(editor):
+    """Stop means what the user was looking at.
+
+    xtb runs ahead of the picture -- it produces frames faster than any frame
+    rate shows them -- so keeping its newest geometry hands back something
+    nobody saw and did not choose.  The page says which frame it was showing;
+    that one is kept and the rest are discarded.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "play.shown=(play.shown||0)+1" in watcher, "nothing counts what was shown"
+    assert '"stopped at frame "' in watcher
+
+    cmd = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
+    assert "state['gfn_shown_frame']" in cmd
+
+    handler = source.split("def on_submit_optimize")[1].split("\n    def ")[0]
+    assert "gfn_shown_frame" in handler
+    assert "stopped at the frame on" in handler
+
+
+def test_a_backlog_is_skipped_rather_than_played_out(editor):
+    """A queue allowed to grow puts the picture permanently behind the run."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "play.queue.slice(-20)" in watcher
