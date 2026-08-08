@@ -62,6 +62,8 @@ _VERSION_RE = re.compile(r'xtb version\s+([0-9.]+)')
 # uishable from one that honoured it.
 _HAMILTONIAN_RE = re.compile(r'Hamiltonian\s+(GFN[0-9A-Za-z-]*)')
 _GFNFF_BANNER = 'G F N - F F'
+#: What GFN-FF leaves behind that describes the molecule rather than the run.
+_GFNFF_TOPOLOGY_FILES = ('gfnff_topo', 'gfnff_charges')
 
 
 def is_gfn_method(method: Any) -> bool:
@@ -411,6 +413,7 @@ def optimize_with_gfn(
     should_stop: Optional[Callable[[], bool]] = None,
     on_frames: Optional[Callable[[list], None]] = None,
     constraints: Any = (),
+    topology: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -422,6 +425,17 @@ def optimize_with_gfn(
     *constraints* are the values the editor is holding, in its own shape --
     ``{'kind', 'atoms', 'value', 'mode'}`` with atoms counted from zero; see
     :func:`constraint_input` for what each mode becomes.
+
+    *topology* is a directory the caller owns, in which GFN-FF's perceived
+    bonding is kept between runs.  GFN-FF works out its topology from whatever
+    geometry it is handed, once, and then holds the molecule together with it.
+    That is fine for a single run and wrong for a drag: measured on a propane,
+    pulling a carbon out to a C-C of 1.87 A relaxes back to 1.49, and at 1.96 A
+    the bond is no longer seen at all and the same relaxation pushes it to
+    2.80.  A cliff, not a slope -- and a fresh perception on every step of a
+    drag means the molecule can fall apart between one answer and the next.
+    Given a directory, the perception made at the start is reused: at a C-C of
+    2.33 A it still pulls back, to 1.51.
     """
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
@@ -492,6 +506,16 @@ def optimize_with_gfn(
         if held['text']:
             (folder / 'xtb.inp').write_text(held['text'], encoding='utf-8')
             command += ['--input', 'xtb.inp']
+        # GFN-FF's perceived bonding, carried in from the caller's directory
+        # if it has one from an earlier run on this molecule.  Only GFN-FF has
+        # one; GFN2 works the bonding out afresh from the wavefunction every
+        # time and cannot be told.
+        keeping = topology is not None and key == 'gfnff'
+        if keeping:
+            for name in _GFNFF_TOPOLOGY_FILES:
+                source_file = Path(topology) / name
+                if source_file.is_file():
+                    shutil.copy2(str(source_file), str(folder / name))
         # One core, and a scratch directory of its own: two of these must not
         # fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
@@ -604,6 +628,18 @@ def optimize_with_gfn(
             }
         finally:
             sink.close()
+        if keeping:
+            # Kept for the next step of the same drag.  The atom count is
+            # written beside it: a topology belongs to one molecule, and an
+            # atom added or taken away makes it a different one.
+            try:
+                Path(topology).mkdir(parents=True, exist_ok=True)
+                for name in _GFNFF_TOPOLOGY_FILES:
+                    made = folder / name
+                    if made.is_file():
+                        shutil.copy2(str(made), str(Path(topology) / name))
+            except OSError:
+                pass
         output = record.read_text(encoding='utf-8', errors='replace')
         relaxed = _read_optimised(folder, xyz_text)
         frames = read_trajectory(folder)
@@ -795,6 +831,7 @@ def relax_steps(
     cycles: int = 5,
     timeout: float = 30.0,
     constraints: Any = (),
+    topology: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """A few optimisation cycles, for a loop that shows the structure settling.
 
@@ -814,7 +851,7 @@ def relax_steps(
     result = optimize_with_gfn(
         xyz_text, method, charge=charge, uhf=uhf,
         max_steps=max(1, int(cycles)), timeout=timeout,
-        constraints=constraints,
+        constraints=constraints, topology=topology,
     )
     result['converged'] = bool(
         result.get('ok') and 'converged in' in str(result.get('status') or '')

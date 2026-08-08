@@ -3964,6 +3964,8 @@ def create_tab(ctx):
                         current, method=method, charge=charge, uhf=uhf,
                         cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
                         constraints=constraints,
+                        topology=_gfn_topology_dir(
+                            len(_gfn.atom_lines(current))),
                     )
                     if not outcome.get('ok'):
                         note = str(outcome.get('status') or 'it did not run')
@@ -4029,6 +4031,37 @@ def create_tab(ctx):
     _GFN_SETTLE_ROUNDS = 12
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
+
+    def _gfn_topology_dir(atoms):
+        """Where GFN-FF's perceived bonding is kept while a structure is worked
+        on.
+
+        GFN-FF reads its topology out of the geometry it is handed, once.  On a
+        drag that is a fresh perception per step, and it has a cliff in it:
+        measured on a propane, a C-C pulled to 1.87 A relaxes back to 1.49,
+        and at 1.96 A the bond is not seen at all and the same relaxation
+        pushes it to 2.80.  So the perception is made once and kept, the way
+        the browser's field assigns its parameters once when the switch goes
+        down -- at 2.33 A it then still pulls back, to 1.51.
+
+        It belongs to one molecule: an atom added or taken away makes it a
+        different one, and the count is what says so.
+        """
+        import tempfile
+
+        kept = state.get('gfn_topology')
+        if kept and kept.get('atoms') == atoms:
+            return Path(kept['dir'])
+        _drop_gfn_topology()
+        folder = tempfile.mkdtemp(prefix='delfin-gfnff-topo-')
+        state['gfn_topology'] = {'dir': folder, 'atoms': atoms}
+        return Path(folder)
+
+    def _drop_gfn_topology():
+        """Forget the bonding: the molecule is not the same one any more."""
+        kept = state.pop('gfn_topology', None)
+        if kept:
+            shutil.rmtree(kept.get('dir') or '', ignore_errors=True)
 
     def _gfn_new_generation():
         """Everything in flight belongs to the structure it was started for.
@@ -4179,6 +4212,7 @@ def create_tab(ctx):
                 # an early ending whenever a round happened to move little.
                 max_steps=None, timeout=120.0,
                 constraints=constraints, on_frames=_push,
+                topology=_gfn_topology_dir(len(_gfn.atom_lines(xyz))),
                 # A hand on an atom takes over from a relaxation of the whole
                 # thing; and switching off means what it says, whichever of the
                 # two switches was keeping this alive.
@@ -5300,7 +5334,9 @@ def create_tab(ctx):
 
         # An atom added or taken away is a different molecule from the one xtb
         # has in hand, down to the number of coordinates -- so a run under it
-        # is ended here and starts again on the molecule that now exists.
+        # is ended here and starts again on the molecule that now exists, and
+        # the bonding GFN-FF had perceived goes with it.
+        _drop_gfn_topology()
         _interrupt_gfn()
         _arm_gfn_restart()
 

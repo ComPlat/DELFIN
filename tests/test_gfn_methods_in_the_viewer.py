@@ -2345,3 +2345,79 @@ def test_letting_go_finishes_without_cycling_the_toggle(editor):
         "the toggle should not have to be cycled for it to finish"
     )
     refs["submit_relax_btn"].value = False
+
+
+# ---------------------------------------------------------------------------
+# GFN-FF perceives its bonding once, and a drag must not make it do so again
+# ---------------------------------------------------------------------------
+@_needs_xtb
+def test_gfnff_loses_the_bond_it_was_never_told_to_keep(tmp_path):
+    """The cliff, measured, and the reason the perception has to be kept.
+
+    GFN-FF works its topology out of whatever geometry it is handed.  Pulling
+    a carbon of a propane out relaxes back cleanly to 1.49 A while the bond is
+    still seen -- and the moment it is not, the same relaxation pushes the two
+    apart instead.  On a drag, where every step is a fresh perception, that is
+    a molecule that can fall apart between one answer and the next.
+    """
+    propane = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+
+    def pulled(by):
+        rows = [line.split() for line in gfn.atom_lines(propane)]
+        rows[0][1] = f"{float(rows[0][1]) - by:.6f}"
+        return "9\npulled\n" + "\n".join(" ".join(r) for r in rows) + "\n"
+
+    def carbon_carbon(xyz):
+        rows = [line.split() for line in gfn.atom_lines(xyz)]
+        first = [float(v) for v in rows[0][1:4]]
+        second = [float(v) for v in rows[1][1:4]]
+        return sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
+
+    far = pulled(0.9)
+    assert carbon_carbon(far) > 2.2
+
+    # perceived afresh: the bond is not there any more, and it is pushed apart
+    fresh = gfn.relax_steps(far, cycles=5)
+    assert carbon_carbon(fresh["xyz"]) > carbon_carbon(far), (
+        "this is the failure the kept topology exists for"
+    )
+
+    # perceived once from the intact molecule, then kept: it pulls back
+    keep = tmp_path / "topo"
+    gfn.relax_steps(propane, cycles=5, topology=keep)
+    assert (keep / "gfnff_topo").is_file(), "nothing was kept"
+    held = gfn.relax_steps(far, cycles=5, topology=keep)
+    assert carbon_carbon(held["xyz"]) < 1.8, (
+        f"kept topology should pull back: {carbon_carbon(held['xyz']):.3f} A"
+    )
+
+
+def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
+    """It belongs to one molecule: an atom added or taken away makes it another
+    one, and the count is what says so."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    keeper = source.split("def _gfn_topology_dir")[1].split("\n    def ")[0]
+    assert "kept.get('atoms') == atoms" in keeper
+    dropper = source.split("def _drop_gfn_topology")[1].split("\n    def ")[0]
+    assert "shutil.rmtree" in dropper
+
+    edit = source.split("def _apply_structure")[1].split("\n    def ")[0]
+    assert "_drop_gfn_topology()" in edit, "a structural edit is another molecule"
+
+    for name in ("_gfn_follow_step", "_gfn_settle_now"):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "topology=_gfn_topology_dir(" in body, name
+
+
+def test_only_gfnff_has_a_topology_to_keep():
+    """GFN2 works the bonding out from the wavefunction every time."""
+    source = open(gfn.__file__, encoding="utf-8").read()
+    runner = source.split("def optimize_with_gfn")[1].split("\ndef ")[0]
+    assert "keeping = topology is not None and key == 'gfnff'" in runner
