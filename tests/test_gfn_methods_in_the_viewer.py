@@ -787,3 +787,25 @@ def test_frames_arrive_during_a_long_run_not_after_it():
     assert seen == sorted(seen)
     if seen:
         assert seen[-1] <= len(result["frames"])
+
+
+@_needs_xtb
+def test_the_switch_still_works_on_a_run_that_is_reporting_frames():
+    """Reading the log is the expensive part and it grows, so parsing it on
+    every pass crowded the stop check out: the trajectory appeared and the
+    switch stopped working.  Stopping comes first and every time round."""
+    import threading
+    import time
+
+    zn_like = "3\nstretched\nO 0 0 0\nH 1.45 0 0\nH -0.45 1.35 0\n"
+    stop = [False]
+    threading.Timer(0.3, lambda: stop.__setitem__(0, True)).start()
+
+    started = time.perf_counter()
+    result = gfn.optimize_with_gfn(
+        zn_like, "gfnff", timeout=None, should_stop=lambda: stop[0],
+        on_frames=lambda frames: None)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 5, "the stop check has to run whatever else is going on"
+    assert result["ok"] or "stopped" in result["status"]

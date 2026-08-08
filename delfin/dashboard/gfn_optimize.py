@@ -274,22 +274,14 @@ def optimize_with_gfn(
                 )
                 waited = 0.0
                 sent = 0
+                last_read = 0.0
+                last_size = -1
+                log = folder / 'xtbopt.log'
                 while running.poll() is None:
-                    # xtb writes xtbopt.log as it optimises, so the path can be
-                    # handed over while it is still being walked.  Reading it
-                    # only at the end is why the trajectory used to appear
-                    # after the run instead of during it.
-                    if on_frames is not None:
-                        try:
-                            walking = read_trajectory(folder)
-                        except Exception:
-                            walking = []
-                        if len(walking) > sent:
-                            sent = len(walking)
-                            try:
-                                on_frames(walking)
-                            except Exception:
-                                pass
+                    # Stopping comes first and every time round.  Reading the
+                    # log is the expensive part -- it is parsed whole and it
+                    # grows -- so on a long run it crowded the stop check out
+                    # and the switch stopped working.
                     if should_stop is not None and should_stop():
                         running.terminate()
                         try:
@@ -330,6 +322,29 @@ def optimize_with_gfn(
                     if timeout and waited > timeout:
                         running.kill()
                         raise subprocess.TimeoutExpired(command, timeout)
+                    # xtb writes the log as it optimises, so the path is handed
+                    # over while it is still being walked -- but only when the
+                    # file has actually grown, and no more than five times a
+                    # second.  Parsing it on every pass is what starved the
+                    # stop check.
+                    if on_frames is not None and waited - last_read >= 0.2:
+                        last_read = waited
+                        try:
+                            size = log.stat().st_size if log.exists() else -1
+                        except OSError:
+                            size = -1
+                        if size != last_size:
+                            last_size = size
+                            try:
+                                walking = read_trajectory(folder)
+                            except Exception:
+                                walking = []
+                            if len(walking) > sent:
+                                sent = len(walking)
+                                try:
+                                    on_frames(walking)
+                                except Exception:
+                                    pass
                     time.sleep(0.05)
                     waited += 0.05
                 out, err = running.communicate()
