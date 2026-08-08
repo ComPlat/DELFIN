@@ -660,7 +660,8 @@ def test_the_page_says_what_the_playback_is_doing(editor):
     for report in ('"received "', '"drawing"', '"setPositions did not draw"',
                    '"no setPositions on the page"'):
         assert report in watcher, f"the page never reports {report}"
-    assert 'gfnplay:' in watcher
+    assert 'send("gfnplay", text)' in watcher
+    assert 'verb+":"+play.serial' in watcher, "the line has to name its verb"
 
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfnplay'" in handler
@@ -718,7 +719,7 @@ def test_the_player_arrives_with_the_startup_scripts(tmp_path):
     assert not any("__delfinGfnPlay" in s for s in through_run_js), (
         "it must not go through the channel that clears itself"
     )
-    assert "gfnplay:" in startup, "it has to be able to report back"
+    assert '"gfnplay"' in startup, "it has to be able to report back"
 
 
 def test_the_dashboard_runs_without_a_clock_because_it_has_a_switch(editor):
@@ -973,3 +974,180 @@ def test_a_whole_optimisation_is_one_step_of_undo(editor):
     assert "snapshotForUndo" not in body, (
         "a played frame is not something the user did"
     )
+
+
+# ---------------------------------------------------------------------------
+# a pipe nobody reads
+# ---------------------------------------------------------------------------
+def test_xtb_talks_to_a_file_and_not_into_a_pipe():
+    """A pipe holds 64 KiB and then blocks whoever is writing to it.
+
+    The watching loop reads nothing until the process has ended, so xtb waited
+    for the loop and the loop waited for xtb: an optimisation that takes half a
+    second never finished at all.  It is the switch's own path -- the plain
+    call drains its pipes -- so it was every stoppable run, which is every run
+    the dashboard starts.
+    """
+    source = open(gfn.__file__, encoding="utf-8").read()
+    runner = source.split("def optimize_with_gfn")[1].split("\ndef ")[0]
+    assert "stdout=sink" in runner and "stderr=subprocess.STDOUT" in runner
+    assert "subprocess.PIPE" not in runner, "a pipe is what deadlocked"
+    assert "record.read_text" in runner, "the output is read back off disk"
+
+
+@_needs_xtb
+def test_a_run_that_says_more_than_a_pipe_holds_still_ends(tmp_path):
+    """The regression itself, at the size that showed it.
+
+    A GFN2 optimisation of a decane says 77 276 bytes, which is past what a
+    pipe will hold.  Through the stoppable path -- the one the switch uses --
+    it used to hang for as long as anyone was willing to wait.
+    """
+    import time as _time
+
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCCCCCCCCC"))
+    AllChem.EmbedMolecule(mol, randomSeed=7)
+    conf = mol.GetConformer()
+    rows = []
+    for atom in mol.GetAtoms():
+        p = conf.GetAtomPosition(atom.GetIdx())
+        rows.append(f"{atom.GetSymbol()} {p.x:.6f} {p.y:.6f} {p.z:.6f}")
+    decane = f"{len(rows)}\ndecane\n" + "\n".join(rows) + "\n"
+
+    started = _time.perf_counter()
+    # should_stop given, so it takes the path that watches rather than waits
+    result = gfn.optimize_with_gfn(
+        decane, "gfn2", charge=0, uhf=0, timeout=120,
+        should_stop=lambda: False, on_frames=lambda _frames: None,
+    )
+    spent = _time.perf_counter() - started
+
+    assert result["ok"] is True, result["status"]
+    assert spent < 60, f"it took {spent:.0f} s; it used not to end at all"
+    assert len(result["frames"]) > 20, "the whole path has to come back"
+
+
+# ---------------------------------------------------------------------------
+# a hand on the structure while xtb is minimising it
+# ---------------------------------------------------------------------------
+def test_the_playback_lets_go_of_the_picture_while_an_atom_is_dragged(editor):
+    """Otherwise the drag cannot happen at all.
+
+    The player writes every atom's position once per animation frame, so an
+    atom being pulled is put back where xtb had it sixty times a second.  The
+    page decides this itself: asking the kernel costs a round trip, and the
+    picture fights the hand for the length of it.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
+    assert "function grabbed()" in watcher
+    assert "_submitManipStateByScope" in watcher, "it reads the drag off the page"
+    assert 'drag.kind==="translate"' in watcher
+    assert 'send(held?"gfngrab":"gfnfree","")' in watcher
+    assert "if(play.held){ window.requestAnimationFrame(frame); return; }" in watcher
+    assert "play.queue=[]; play.last=null;" in watcher, (
+        "the queued frames belong to a structure that has just been changed"
+    )
+
+
+def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
+    """The kernel is told at the grab, not at the release.
+
+    A GFN2 run is seconds long; every one of them would otherwise be spent
+    minimising a structure the user is in the middle of changing.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
+    assert "verb == 'gfngrab'" in handler and "_interrupt_gfn()" in handler
+    assert "verb == 'gfnfree'" in handler and "_arm_gfn_restart()" in handler
+
+    # Set, Hold and a bond edit arrive as coordinates, and count the same
+    sync = source.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
+    assert "if drag_ended:" in sync
+    assert "_interrupt_gfn()" in sync and "_arm_gfn_restart()" in sync
+
+    optimise = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "state.get('optimize_interrupted') is token" in optimise, (
+        "an interrupted run must not write the geometry it reached"
+    )
+    assert "state.get('gfn_run') != run_id" in optimise, (
+        "nor draw the path it had walked over the structure now on screen"
+    )
+
+
+@_needs_xtb
+def test_a_moved_atom_is_what_the_next_run_starts_from(editor, monkeypatch):
+    """The whole of point five, driven the way the browser drives it.
+
+    xtb really runs; what is recorded is the geometry each run was handed.  The
+    first is the structure as loaded, the second is the one with an atom moved
+    -- a run that started again from the old coordinates would be optimising
+    something the user had already changed.
+    """
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    refs = editor
+    state = refs["editor_state"]
+    xyz = (
+        "9\npropane\n"
+        "C -1.26 0.00 0.00\nC 0.00 0.86 0.00\nC 1.26 0.00 0.00\n"
+        "H -2.15 0.63 0.00\nH -1.30 -0.64 0.88\nH 0.00 1.50 0.89\n"
+        "H 0.00 1.50 -0.89\nH 2.15 0.63 0.00\nH 1.30 -0.64 0.88\n"
+    )
+    refs["coords_widget"].value = xyz
+    state["current_xyz_for_copy"] = {"content": xyz}
+    refs["submit_ff_dd"].value = "gfnff"
+
+    handed: list[str] = []
+    real = tab_submit._gfn.optimize_with_gfn
+
+    def recording(text, method, **kwargs):
+        handed.append(text)
+        return real(text, method, **kwargs)
+
+    monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", recording)
+
+    refs["submit_optimize_btn"].value = True
+    deadline = _time.time() + 30
+    while _time.time() < deadline and not handed:
+        _time.sleep(0.02)
+
+    # an atom is picked up, and the page says so before the run can finish
+    refs["submit_cmd_sync"].value = "gfngrab:1:"
+    assert state.get("optimize_run") is None, "the run was not ended"
+    assert state.get("optimize_interrupted") is not None
+
+    body = [line for line in xyz.splitlines()[2:] if line.strip()]
+    parts = body[0].split()
+    parts[1] = f"{float(parts[1]) - 0.7:.6f}"
+    body[0] = " ".join(parts)
+    moved = f"{len(body)}\nDELFIN drag-end\n" + "\n".join(body) + "\n"
+    refs["submit_manip_sync"].value = moved
+    refs["submit_cmd_sync"].value = "gfnfree:2:"
+
+    deadline = _time.time() + 30
+    while _time.time() < deadline and len(handed) < 2:
+        _time.sleep(0.02)
+    assert len(handed) >= 2, "the run never started again"
+
+    assert gfn.atom_lines(handed[0])[0].split()[1].startswith("-1.26")
+    assert gfn.atom_lines(handed[1])[0].split()[1].startswith("-1.96"), (
+        "the second run was handed the structure from before the drag"
+    )
+
+    deadline = _time.time() + 60
+    while _time.time() < deadline and refs["submit_optimize_btn"].value:
+        _time.sleep(0.05)
+    assert refs["submit_optimize_btn"].value is False, "the switch stayed down"
+    assert state.get("optimize_run") is None

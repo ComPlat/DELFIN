@@ -3624,7 +3624,8 @@ def create_tab(ctx):
             '      play.queue=play.queue.slice(-20);\n'
             '    }\n'
             '  }\n'
-            '  function say(text){\n'
+            '  function say(text){ send("gfnplay", text); }\n'
+            '  function send(verb,text){\n'
             '    /* The page reports back through the command bridge the editor\n'
             '       already has, so a playback that does not appear says why by\n'
             '       itself instead of being read out of a console. */\n'
@@ -3638,7 +3639,7 @@ def create_tab(ctx):
             '        ? window.HTMLTextAreaElement.prototype\n'
             '        : window.HTMLInputElement.prototype;\n'
             '      var setter=Object.getOwnPropertyDescriptor(proto,"value");\n'
-            '      var line="gfnplay:"+play.serial+":"+text;\n'
+            '      var line=verb+":"+play.serial+":"+text;\n'
             '      if(setter&&setter.set) setter.set.call(input,line);\n'
             '      else input.value=line;\n'
             '      input.dispatchEvent(new Event("input",{bubbles:true}));\n'
@@ -3664,6 +3665,19 @@ def create_tab(ctx):
             '    if(ok&&!play.toldDrawing){ play.toldDrawing=1;'
             ' say("drawing"); }\n'
             '  }\n'
+            '  function grabbed(){\n'
+            '    /* Whether an atom is being moved right now.  A playback that\n'
+            '       keeps writing positions during a drag puts the atom back\n'
+            '       where xtb had it once per animation frame, so it cannot be\n'
+            '       moved at all -- the drag has to own the picture while it\n'
+            '       lasts.  A rectangle being pulled over the molecule selects\n'
+            '       and moves nothing, so it is not a grab. */\n'
+            '    var held=(window._submitManipStateByScope||{})[scope];\n'
+            '    var drag=held&&held.drag;\n'
+            '    if(!drag) return false;\n'
+            '    return drag.kind==="translate"||drag.kind==="rotate"'
+            '||drag.kind==="draw";\n'
+            '  }\n'
             '  function switchIsOn(){\n'
             '    /* ipywidgets marks a pressed toggle with mod-active.  Reading\n'
             '       it here is instant; asking the kernel costs a round trip,\n'
@@ -3676,6 +3690,19 @@ def create_tab(ctx):
             '    return btn.classList.contains("mod-active");\n'
             '  }\n'
             '  function frame(now){\n'
+            '    /* An atom picked up while xtb is running: the kernel is told\n'
+            '       at the grab rather than at the release, because a GFN2 run\n'
+            '       is thirteen seconds and every one of them would be spent\n'
+            '       minimising a structure the user is in the middle of\n'
+            '       changing.  The queue goes with it -- those frames belong to\n'
+            '       the geometry that has just been altered. */\n'
+            '    var held=grabbed();\n'
+            '    if(held!==!!play.held){\n'
+            '      play.held=held?1:0;\n'
+            '      if(held){ play.queue=[]; play.last=null; }\n'
+            '      send(held?"gfngrab":"gfnfree","");\n'
+            '    }\n'
+            '    if(play.held){ window.requestAnimationFrame(frame); return; }\n'
             '    if(play.queue.length&&!switchIsOn()){\n'
             '      play.queue=[];\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
@@ -3912,6 +3939,66 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)});'
         )
 
+    #: How long to wait after the last change before starting again.  Letting
+    #: go of an atom arrives as a burst -- the release, then the coordinates,
+    #: sometimes a settled version behind them -- and starting on the first of
+    #: those would launch an xtb for each one.
+    _GFN_RESTART_DELAY = 0.35
+
+    def _interrupt_gfn():
+        """End the running optimisation because the structure under it changed.
+
+        xtb is minimising a geometry that stopped existing the moment an atom
+        was moved, so the run is ended rather than raced.  It is not ended the
+        way the switch ends it: nothing has been stopped from where the user
+        is standing, and the frame they were shown is not a result to keep --
+        the optimisation is about to start again from what they have made.
+        """
+        token = state.get('optimize_run')
+        if token is None:
+            return False
+        state['optimize_run'] = None
+        state['optimize_interrupted'] = token
+        # No halt report: "stopped at frame 12" belongs to the switch.
+        state['gfn_halt_sent'] = True
+        # A run number the page has never seen, carrying nothing.  It resets
+        # the player, so the frames of the abandoned run cannot play out over
+        # the geometry the user has just made.
+        blank = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = blank
+        submit_gfn_frame.value = json.dumps({'run': blank, 'frames': []})
+        return True
+
+    def _arm_gfn_restart():
+        """Start the optimisation again, once the changing has stopped."""
+        if state.get('optimize_interrupted') is None:
+            return
+        state['gfn_restart_at'] = time.monotonic() + _GFN_RESTART_DELAY
+        if state.get('gfn_restart_armed'):
+            return                      # already waiting; it will wait longer
+        state['gfn_restart_armed'] = True
+
+        def _wait():
+            while True:
+                left = state.get('gfn_restart_at', 0.0) - time.monotonic()
+                if left <= 0:
+                    break
+                time.sleep(min(left, 0.05))
+            state['gfn_restart_armed'] = False
+            _schedule_ui_update(_restart_gfn)
+
+        threading.Thread(target=_wait, daemon=True).start()
+
+    def _restart_gfn():
+        if state.pop('optimize_interrupted', None) is None:
+            return
+        every_frame = bool(state.get('optimize_every_frame'))
+        button = submit_optimize_all_btn if every_frame else submit_optimize_btn
+        if not button.value:
+            return                      # switched off while it was waiting
+        state['gfn_restarting'] = True
+        on_submit_optimize(None, every_frame=every_frame)
+
     def on_submit_optimize_all(change=None):
         on_submit_optimize(change, every_frame=True)
 
@@ -3957,8 +4044,13 @@ def create_tab(ctx):
         uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
         autospin = bool(submit_gfn_autospin.value)
         count = len(frames) or 1
+        # Which switch is running, so a restart presses the same one.
+        state['optimize_every_frame'] = bool(every_frame)
+        again = bool(state.pop('gfn_restarting', False))
         _set_mol_status(
-            f'Optimising {count} frame(s) with {label}...', spinner=True,
+            (f'Moved while it ran; {label} starts again from the structure '
+             'you made...' if again else
+             f'Optimising {count} frame(s) with {label}...'), spinner=True,
         )
         if gfn:
             # One call, not two: run_js clears its output before displaying,
@@ -3976,10 +4068,18 @@ def create_tab(ctx):
             """Hand the path over while xtb is still walking it."""
             played[0] = True
             trail = list(frames)[-400:]
-            _schedule_ui_update(
-                lambda t=trail: setattr(
-                    submit_gfn_frame, 'value',
-                    json.dumps({'run': run_id, 'frames': t})))
+
+            def _write(t=trail):
+                # A run that has been replaced does not draw.  An interrupted
+                # one has frames in hand when it is told to stop, and writing
+                # them afterwards played the abandoned path over the structure
+                # the user had just made.
+                if state.get('gfn_run') != run_id:
+                    return
+                submit_gfn_frame.value = json.dumps(
+                    {'run': run_id, 'frames': t})
+
+            _schedule_ui_update(_write)
 
         token = object()
         state['optimize_run'] = token
@@ -3994,8 +4094,17 @@ def create_tab(ctx):
                                                 'frames': []})))
             return halted
 
+        # The run this one replaces, taken before it is overwritten below.
+        earlier = state.get('optimize_thread')
+
         def _work():
             from .molecule_forcefield import relax_xyz
+            # One xtb at a time.  An interrupted run is still shutting its
+            # process down when the replacement starts, and a login node is
+            # shared -- so the new one waits for the old one to be gone rather
+            # than briefly doubling up.
+            if earlier is not None and earlier.is_alive():
+                earlier.join(timeout=15)
             results, failures = [], []
             targets = frames or [(single, None, None)]
             for position, item in enumerate(targets):
@@ -4065,6 +4174,12 @@ def create_tab(ctx):
                     results.append(item)
 
             def _apply():
+                if state.get('optimize_interrupted') is token:
+                    # The structure changed under this run.  What it reached is
+                    # a minimum of a geometry that no longer exists, so neither
+                    # the coordinates nor the switch are touched: the run that
+                    # replaces it is already on its way.
+                    return
                 # Converged, failed or stopped -- the switch goes back up by
                 # itself, so it never claims to be working when it is not.
                 if state.get('optimize_run') is token:
@@ -4126,7 +4241,9 @@ def create_tab(ctx):
 
             _schedule_ui_update(_apply)
 
-        threading.Thread(target=_work, daemon=True).start()
+        worker = threading.Thread(target=_work, daemon=True)
+        state['optimize_thread'] = worker
+        worker.start()
 
     def _clear_selection():
         """Drop the picks so the next constraint starts from a clean set."""
@@ -4665,6 +4782,12 @@ def create_tab(ctx):
         })
         state['structure_undo'] = history[-_STRUCTURE_UNDO_LIMIT:]
 
+        # An atom added or taken away is a different molecule from the one xtb
+        # has in hand, down to the number of coordinates -- so a run under it
+        # is ended here and starts again on the molecule that now exists.
+        _interrupt_gfn()
+        _arm_gfn_restart()
+
         xyz = to_xyz(structure, note)
         lines = [line for line in xyz.splitlines()[2:] if line.strip()]
         # The write below re-renders through update_molecule_view, which
@@ -4871,6 +4994,24 @@ def create_tab(ctx):
             _set_mol_status(*[line for line in (
                 state.get('gfn_last_status') or '', f'Trajectory: {payload}.'
             ) if line])
+            return
+
+        if verb == 'gfngrab':
+            # An atom has been picked up while xtb was minimising.  Ending the
+            # run at the grab rather than at the release is the whole point: a
+            # GFN2 run is thirteen seconds, and all of them would otherwise be
+            # spent on a structure the user is in the middle of changing.
+            if _interrupt_gfn():
+                _set_mol_status('Moved while it ran; the optimisation stops '
+                                'there and starts again from what you make.',
+                                spinner=True)
+            return
+
+        if verb == 'gfnfree':
+            # Let go of.  If nothing else has already asked for the restart --
+            # a drag that moved something sends its coordinates first -- this
+            # is what keeps the switch from being left on with nothing running.
+            _arm_gfn_restart()
             return
 
         if verb == 'undo':
@@ -5346,6 +5487,15 @@ def create_tab(ctx):
             state['poly_assignment'] = None
             state['poly_recheck'] = True
 
+        if drag_ended:
+            # Set, Hold, a bond edit and a drag all arrive here.  Any of them
+            # during an optimisation makes what xtb is doing about a structure
+            # that is no longer on the screen, so it starts again from the one
+            # that is -- and the geometry lands first, so it is the new one it
+            # starts from.
+            _interrupt_gfn()
+            _arm_gfn_restart()
+
         payload = header + coord_body
         # The guard is cleared by update_molecule_view, which traitlets only
         # calls when the value actually changes. Dragging an atom out and back,
@@ -5668,6 +5818,12 @@ def create_tab(ctx):
         'submit_strength_slider': submit_strength_slider,
         'submit_relax_btn': submit_relax_btn,
         'submit_gfn_frame': submit_gfn_frame,
+        # The two channels the page speaks through, and the line it is
+        # answered on: a test that cannot use them has to drive the editor
+        # through its internals instead of the way the browser drives it.
+        'submit_cmd_sync': submit_cmd_sync,
+        'submit_manip_sync': submit_manip_sync,
+        'mol_status': mol_status,
         'submit_pick_sync': submit_pick_sync,
         'submit_reset_btn': submit_reset_btn,
         'editor_state': state,

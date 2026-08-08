@@ -201,7 +201,8 @@ def test_optimisation_covers_every_frame_and_is_undoable():
     assert "state['pre_optimize_frames']" in body
     assert 'relax_xyz(' in body and 'max_steps=500' in body
     # A 500-step minimisation per frame takes seconds; it must not block the UI.
-    assert 'threading.Thread(target=_work, daemon=True).start()' in body
+    assert 'threading.Thread(target=_work, daemon=True)' in body
+    assert 'worker.start()' in body
     # One bad frame must not lose the others.
     assert 'results.append(item)' in body
 
