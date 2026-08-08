@@ -241,6 +241,43 @@ _CHAMPION_FLAGS = (
                           # 13 of 16 touched manifolds better.  That is the rarer and more valuable shape --
                           # the other additive levers grow the manifold, this one improves it.
                           # Env DELFIN_FFFREE_BETA_SIBLING(+_STRICT); impl converter_backend.py / assemble_complex.py.
+    "TPR6", "TPR6_EARLY_TM",
+                          # #29: CN6 trigonal-prismatic COMPLETENESS, additiv im sauberen Bauer.
+                          # decompose setzt CN6 immer auf OC-6; das trigonale Prisma fehlte im
+                          # FF-freien Polya-Enumerator ganz.  results += _enumerate_geometry(...) --
+                          # das Primaerframe bleibt unberuehrt, es kommt ein Geschwister dazu.
+                          #
+                          # GELTUNGSBEREICH, und warum er nicht aus dem Codekommentar stammt: der
+                          # Hebel feuerte auf JEDEM CN6-System.  Seine Begruendung nennt "early-TM
+                          # Mo/W", aber die KRISTALLE sagen etwas anderes -- von 210 CN6-Kristallen
+                          # im 1000er-Pool sind 8 trigonal-prismatisch, und ihre Metalle sind
+                          # Zr 2, Co 2, Zn 1, Ti 1, Fe 1, Cu 1.  Das Prisma wird vom LIGANDEN
+                          # erzwungen (Clathrochelate, Dithiolene), nicht vom Metall.  TPR6_EARLY_TM
+                          # schraenkt trotzdem auf d0-d2 der Gruppen 3-7 ein: elementbasiert,
+                          # universell, kein SMILES und kein Refcode -- und GEMESSEN besser als ohne
+                          # (ohne die Einschraenkung rissen tier2 auf 2 Systemen und der historische
+                          # Boden; mit ihr ist beides null).
+                          #
+                          # gelandet 2026-08-08, pool_ffree_cn6 (69 Systeme = CN6 geschnitten mit
+                          # dem, was FF-frei wirklich baut), Label tpr6final, --reuse-build:
+                          #   n=17, valid 17->17, cap_LOST=0, cap_gained=0, build_lost=0
+                          #   17 besser / 0 gleich / 0 SCHLECHTER, mean_delta -9.209
+                          #   BLOCKER (0) -- alle 38 Verbotsterme null, topology_floor=True
+                          #   historischer Boden gegen HIST1K (01.07.-Stand): blocked_by = []
+                          #
+                          # ⚠ EHRLICH ZUM TOR: landing_gate.ok war FALSE, blockiert von genau einem
+                          # Term, absolute_not_improved.  Der misst einen ANTEIL: 617 Frames mit 29
+                          # harten werden zu 804 mit 82, weil 187 Frames dazukommen -- 134 SAUBERE
+                          # und 53 defekte.  Nichts Bestehendes wird schlechter (die 38 Nullen
+                          # beweisen es), aber der Anteil steigt.  Drei Versuche, die 53 zu filtern,
+                          # sind gemessen gescheitert: TORN_GATE (falsche Richtung, 0/24 Reichweite),
+                          # SPURIOUS_BOND (traf auch die primaeren Frames, isomers_lost 4),
+                          # TOPO_ENV (Kriterium feuert auf guten Frames, in Isolation belegt).
+                          # Der USER hat nach vollstaendiger Darstellung dieser Abwaegung entschieden
+                          # zu landen: 17 von 17 Systemen besser und nichts zerstoert wiegt schwerer
+                          # als ein gestiegener Anteil.  Das ist eine ENTSCHEIDUNG, kein bestandenes
+                          # Tor, und steht hier, damit niemand es spaeter fuer letzteres haelt.
+                          # Env DELFIN_FFFREE_TPR6(+_EARLY_TM); impl converter_backend.py:2350ff.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
