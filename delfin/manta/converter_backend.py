@@ -2444,6 +2444,26 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
                                graph_bonds=_gb, block_bounds=_bb):
             continue
         # ===== TOPOLOGIE-FILTER AUF DEM ERGAENZTEN FRAME (2026-08-08) =====
+        # ⛔ GEMESSEN UND WIDERLEGT -- NICHT WIEDER EINSCHALTEN OHNE NEUES KRITERIUM.
+        #
+        #   topoenvsolo (TOPO_ENV ALLEIN gegen den Champion, 40er-Sonde, CN6-Pool):
+        #     ccdc_arrangement_lost 3   LIBNAO, LIBNES, URUTEH
+        #     isomers_lost 4            HOQVAN, LIBNAO, LIBNES, URUTEH
+        #     1 besser / 4 schlechter
+        #   tpr6topoenv (mit TPR6 zusammen): exakt DIESELBEN Systeme, exakt dieselben Terme.
+        #
+        # Der ganze Schaden kommt vom Filter ALLEIN.  Meine erste Erklaerung -- er treffe ueber
+        # die gemeinsame Funktion auch die CN4_BOTH-Ergaenzungen des Champions -- war FALSCH:
+        # die Isolation zeigt, dass es nicht der Ort ist, sondern das KRITERIUM.  Der Vergleich
+        # der Nachbar-Element-MENGE feuert auf Frames, die reale Arrangements und Isomere
+        # tragen; die geometrische Perzeption sieht dort Nachbarschaften, die der Blockgraph
+        # nicht auffuehrt, ohne dass etwas kaputt waere.
+        #
+        # Zum Vergleich, ohne diesen Filter:  tpr6final = BLOCKER 0, 17 von 17 Systemen besser,
+        # historischer Boden bestanden.  Der Filter macht aus null Blockern zwei.
+        #
+        # Der Code bleibt stehen (Projektregel: nie loeschen), aber die Tarnung ist weg: wer
+        # ihn einschaltet, weiss jetzt, dass er gemessen und schlechter ist.
         # DELFIN_FFFREE_TOPO_ENV, default OFF -> byte-identisch.
         #
         # WARUM HIER UND NICHT IM SELBST-GATE.  Ein Versuch, dasselbe in _build_is_clean zu
