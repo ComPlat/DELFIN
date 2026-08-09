@@ -1448,7 +1448,16 @@ def _scope_no(reason, detail=""):
     return None
 
 
-def _fffree_chelate_isomers(d, geom_key, max_isomers):
+def _rescue_first_config_enabled() -> bool:
+    """Darf das ERSTE Config eines Systems die letzte Rettungssprosse benutzen?
+
+    (DELFIN_FFFREE_RESCUE_FIRST_CONFIG, Vorgabe AUS -> byte-identisch.)  Wirkt nur, wenn der
+    Aufrufer zugleich `union=True` durchreicht -- die Begruendung steht an der Sperre selbst.
+    """
+    return os.environ.get("DELFIN_FFFREE_RESCUE_FIRST_CONFIG", "0") == "1"
+
+
+def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
     """Build all distinct isomers of a chelate-containing complex (mixed bi-/
     monodentate) via the universal chelate-config enumerator + per-config
     geometric assembly.  Returns [(xyz, label), ...] or None."""
@@ -1567,7 +1576,28 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 # rescued config can only ADD an isomer; it cannot flip the system away from
                 # legacy.  That is the additivity the heteroleptic branch could not have,
                 # and the difference is exactly what trilatresc measured.
-                if reseated is None and results:
+                #
+                # ===== DIE PRAEMISSE DIESER SPERRE FAELLT IM UNION-MODUS WEG (2026-08-09) =====
+                # Der Satz oben nennt den Grund selbst: sie schuetzt davor, dass ein gerettetes
+                # ERSTES Config das System von legacy WEGZIEHT.  Laeuft der Aufrufer im
+                # Vereinigungsmodus, gibt es dieses Wegziehen nicht -- legacy baut zu Ende und
+                # seine Frames bleiben stehen, unsere kommen daneben.  Die Sperre verteidigt
+                # dann gegen eine Gefahr, die nicht mehr existiert.
+                #
+                # WAS SIE KOSTET, gemessen am 09.08. aus der Bauspur ueber 40 Systeme mit
+                # Chelat-Enumeration: 309 Isomere enumeriert, 236 vom Bauer selbst verworfen
+                # = 76 Prozent.  Und die Sprossen darueber stehen im Champion alle auf AUS
+                # (DECOLLAPSE aus, CONFORMER_SEATING aus und global negativ mit cap_lost 78).
+                # Fuer das erste Config eines Systems gibt es damit heute UEBERHAUPT KEINE
+                # Rettung; scheitern alle Configs daran, verliert das System den FF-freien
+                # Bauer ganz -- CHELATE_EMPTY, gemessen 35 von 136 Systemen.
+                #
+                # ⛔ Die Bedingung ist eine UND-Verknuepfung, nicht bloss Dokumentation: ohne
+                # Union ist die Praemisse echt und die Sperre richtig.  Dieselbe Lehre wie am
+                # 07.08. -- MULTIBOND_LENGTH_EXEMPT allein cap_lost 40, mit Union cap_lost 0
+                # und gained 26.  Nicht der Hebel war der Schaden, das Entweder-Oder war es.
+                if reseated is None and (results
+                                         or (union and _rescue_first_config_enabled())):
                     reseated = _trilat_rescue(
                         lambda: _build_config_never_worse(d, config, ligands, geom_key),
                         cn=d.get("cn"), geom=d.get("geometry"),
@@ -2105,8 +2135,13 @@ def _coord_filter(results):
         return results
 
 
-def _fffree_isomers(smiles: str, max_isomers: int = 50
+def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                     ) -> Optional[List[Tuple[str, str]]]:
+    # `union`: der Aufrufer sagt, ob er unsere Frames NEBEN die von legacy stellt statt
+    # statt ihrer.  Bewusst ein Argument und keine zweite Lesung des Vereinigungs-Schalters
+    # -- dessen Lesestelle in smiles_converter traegt die Zusage, die EINZIGE zu sein, und
+    # ein Repo mit neun verschiedenen Metall-Praedikaten hat sich diese Regel verdient.
+    # Wirkung an genau EINER Stelle: der letzten Rettungssprosse im Chelat-Pfad.
     d = DEC.decompose(smiles)
     if d is None:
         return _scope_no("DECOMPOSE_NONE")
@@ -2128,7 +2163,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         return (_coord_filter(_fffree_hapto_isomers(d, max_isomers))
                 or _scope_no("HAPTO_EMPTY", "cn=%s geom=%s" % (d.get("cn"), d.get("geometry"))))
     if d.get("has_chelate"):
-        chel = _fffree_chelate_isomers(d, geom_key, max_isomers) or []
+        chel = _fffree_chelate_isomers(d, geom_key, max_isomers, union=union) or []
         # CN4 dual-geometry completeness (DELFIN_FFFREE_CN4_BOTH, default OFF ->
         # byte-identical): the chelate path builds only on the single decompose-chosen
         # CN4 shape, so the partner geometry (the one the crystal may actually have --

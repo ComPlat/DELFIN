@@ -31891,9 +31891,14 @@ def _smiles_to_xyz_isomers_impl(
     _hapto_ff_fallback: Optional[List[Tuple[str, str]]] = None
     _ffree_union: Optional[List[Tuple[str, str]]] = None   # DELFIN_FFFREE_UNION, see below
     if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
+        # EINE Lesung, zwei Verwendungen: hier fuer die Rettungssprosse im FF-freien Bauer,
+        # unten fuer das Zusammenlegen der beiden Manifolds.  Die Zusage "die einzige
+        # Lesestelle" bleibt damit wahr -- sie ist nur nach oben gewandert, weil der Wert
+        # jetzt VOR dem Aufruf gebraucht wird und nicht erst nach seinem Ergebnis.
+        _union_on = _delfin_env_int("DELFIN_FFFREE_UNION", 0)
         try:
             from delfin.manta.converter_backend import _fffree_isomers
-            _ff = _fffree_isomers(smiles, max_isomers=max_isomers)
+            _ff = _fffree_isomers(smiles, max_isomers=max_isomers, union=bool(_union_on))
         except Exception:
             _ff = None
         if _ff:
@@ -31986,7 +31991,7 @@ def _smiles_to_xyz_isomers_impl(
                 # early return dropped instead of conditioned: stash our frames, let the
                 # legacy pipeline run to completion, concatenate at the end.  Costs a second
                 # build per system -- and the machine sat half idle all night.
-                if _delfin_env_int("DELFIN_FFFREE_UNION", 0):
+                if _union_on:                      # dieselbe Lesung wie oben, nicht eine zweite
                     _ffree_union = _ff
                 else:
                     return _ff, None
