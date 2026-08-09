@@ -1382,17 +1382,49 @@ def _iso_trace(reason, k, geom_tag):
     for tetradentates, bent sp centres, hydrogens left behind by the rescale).
     Counting is the cheapest way to tell them apart, and nothing counted before.
     """
-    if not _ff_trace_on():
-        return
-    try:
-        os.write(2, ("[ISO_DROP] %s config=%d geom=%s\n" % (reason, k, geom_tag)).encode())
-    except Exception:
-        pass
+    _ff_trace_write("[ISO_DROP] %s config=%d geom=%s" % (reason, k, geom_tag))
 
 
 def _ff_trace_on():
     """The ONE place the FF-free trace flag is read (DELFIN_FFFREE_ISO_TRACE)."""
-    return os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") == "1"
+    _v = os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0")
+    return bool(_v) and _v != "0"
+
+
+def _ff_trace_write(line):
+    """Write one trace line -- to a FILE when the flag names a path, else stderr.
+
+    ⚠ 2026-08-09, DER GRUND.  Dieser Trace wurde am 01.08. gebaut, um genau EINE Frage zu
+    beantworten: warum faellt die Mehrheit der Systeme aus dem FF-freien Bauer heraus.  Der
+    Docstring von _scope_no sagt es woertlich ("808 anonymous fall-throughs into a ranked
+    work list").  Er hat nie eine Zeile geliefert -- weil er nach STDERR schreibt, und
+    loop.py verwirft den stderr der Bau-Worker (er landet nur in results/debug_<rid>.log,
+    und nur wenn --debug auf genau dieses System zeigt).
+
+    Fuer den CLEANGATE-Trace ist derselbe Fehler am 04.08. schon einmal behoben worden --
+    dort steht der Kommentar "A FILE, not stderr ... measured: 139 of 142 systems built, ZERO
+    trace lines".  Die Korrektur wurde nur nicht auf den Nachbartrace uebertragen, und so hat
+    das wichtigste Diagnoseinstrument des Projekts eine Woche lang ins Leere geschrieben.
+
+    DELFIN_FFFREE_ISO_TRACE=1        wie bisher: stderr
+    DELFIN_FFFREE_ISO_TRACE=<pfad>   O_APPEND, eine kurze Zeile pro Aufruf; das ist ueber
+                                     parallele Worker hinweg atomar genug.
+    DELFIN_FFFREE_TRACE_RID          optional, wird vorangestellt, damit aus der Verteilung
+                                     ein POOL werden kann und nicht nur eine Rangliste.
+    """
+    _v = os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0")
+    if not _v or _v == "0":
+        return
+    _rid = os.environ.get("DELFIN_FFFREE_TRACE_RID", "")
+    _out = ("%s %s" % (_rid, line)) if _rid else line
+    try:
+        if _v == "1":
+            os.write(2, (_out + "\n").encode())
+        else:
+            with open(_v, "a") as _fh:
+                _fh.write(_out + "\n")
+    except Exception:
+        pass
 
 
 def _scope_no(reason, detail=""):
@@ -1412,12 +1444,7 @@ def _scope_no(reason, detail=""):
     Every `return None` in _fffree_isomers is a silent decline today; naming them turns 808
     anonymous fall-throughs into a ranked work list.
     """
-    if _ff_trace_on():
-        try:
-            os.write(2, ("[FFREE_SCOPE] %s%s\n"
-                         % (reason, (" " + detail) if detail else "")).encode())
-        except Exception:
-            pass
+    _ff_trace_write("[FFREE_SCOPE] %s%s" % (reason, (" " + detail) if detail else ""))
     return None
 
 

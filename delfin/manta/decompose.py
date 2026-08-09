@@ -759,11 +759,9 @@ def _bail(reason: str, detail: str = ""):
     imports THIS module at load time; by the time _bail can run, both are in sys.modules.
     """
     try:
-        from delfin.manta.converter_backend import _ff_trace_on
-        if not _ff_trace_on():
-            return None
-        os.write(2, ("[FFREE_SCOPE] DECOMPOSE_%s%s\n"
-                     % (reason, (" " + detail) if detail else "")).encode())
+        from delfin.manta.converter_backend import _ff_trace_write
+        _ff_trace_write("[FFREE_SCOPE] DECOMPOSE_%s%s"
+                        % (reason, (" " + detail) if detail else ""))
     except Exception:
         pass
     return None
