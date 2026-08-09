@@ -287,13 +287,23 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
     # Fuer einen Monodentaten ist das die schon vorhandene M-D-Achsendrehung; fuer ein
     # CHELAT ist es neu: es schwenkt die Chelatebene um die Achse M -> Donorschwerpunkt.
     #
-    # Der Schwenk ist eng gedeckelt (LIGAND_SWING_DEG, Vorgabe 8 Grad).  Diese Zahl ist
-    # bewusst KONSERVATIV und keine gemessene Kalibrierung -- das gemessene Band waere
-    # das p99.9-Fenster sauberer CCDC-Kristalle auf der coord_angle-Achse.  Bis das
-    # verdrahtet ist, gilt: lieber zu wenig Nachgiebigkeit als eine geratene Schwelle,
-    # die neben der Verteilung liegt (MONO_REACH_18 war genau dieser Fehler).
+    # Der Schwenk ist eng gedeckelt (LIGAND_SWING_DEG).  Die Vorgabe war 8 Grad und der
+    # Kommentar hier sagte selbst, das sei "keine gemessene Kalibrierung".
+    #
+    # ⚠ 2026-08-09: SIE IST JETZT GEMESSEN, ALSO STEHT SIE HIER.  Die Kurve vom 07.08.
+    # (8 -> 3 -> 1 Grad, gleicher Pool, gleiches Auge):
+    #     8 Grad   poly_cshm_regressed 2 · poly_lost 1 · poly_type_lost 1
+    #     3 Grad   alle drei NULL, capability +3/-0, 21:8, mean -0,517
+    #     1 Grad   zu eng, der Freiheitsgrad traegt nicht mehr
+    # Die 8 stand also nicht nur unbelegt da, sie war WIDERLEGT -- und wer den Schwenk
+    # ohne DELFIN_FFFREE_LIGAND_SWING_DEG=3 einschaltet, bekommt die schlechtere Zahl.
+    # Genau die Klasse Fehler, die MONO_REACH_18 war: eine Schwelle neben der Verteilung.
+    # Vorgabe daher 3; byte-identisch, solange der Schalter aus ist.
+    #
+    # Die beiden CShM-Schranken bleiben bewusst per Env und ohne Vorgabe: sie sind aus
+    # CCDC-Kristallen abgeleitet und duerfen nicht in dieses Repo (Lizenz).
     if _TR._env_int("DELFIN_FFFREE_LIGAND_SWING", 0, 0, 1):
-        _swing_deg = _TR._env_int("DELFIN_FFFREE_LIGAND_SWING_DEG", 8, 1, 30)
+        _swing_deg = _TR._env_int("DELFIN_FFFREE_LIGAND_SWING_DEG", 3, 1, 30)
         # ===== DIE POLYEDER-SCHRANKE, GEMESSEN STATT GERATEN (2026-08-07) =====
         # Die Winkelkappe oben ist eine GERATENE Zahl, und der erste Lauf hat sie widerlegt:
         # bei 8 Grad rissen poly_cshm_regressed 2, poly_lost 1, poly_type_lost 1; bei 3 Grad
