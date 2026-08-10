@@ -1590,7 +1590,35 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         box.style.display = 'block';
     }
 
+    // One drawing per displayed frame, however often it is asked for.
+    //
+    // A drag asks twice per mouse event -- once when the cursor moves the
+    // atom and once when the relaxation answers -- and a mouse reports far
+    // more often than a screen refreshes: measured over a 60-step drag, 61
+    // events produced 116 full geometry rebuilds and 181 ms of drawing, and
+    // the display could show at most a third of them. The rest was work
+    // thrown away, and it was thrown away on the thread that also has to
+    // answer the user.
+    //
+    // So a request marks the scope as needing a drawing and the drawing
+    // happens once, on the next animation frame, which is the soonest anybody
+    // could see it anyway.
     function redrawHighlights(scopeKey) {
+        var state = getState(scopeKey);
+        if (state.redrawPending) return;
+        state.redrawPending = true;
+        var run = function() {
+            state.redrawPending = false;
+            drawHighlightsNow(scopeKey);
+        };
+        if (typeof window.requestAnimationFrame === 'function') {
+            state.redrawRaf = window.requestAnimationFrame(run);
+        } else {
+            run();
+        }
+    }
+
+    function drawHighlightsNow(scopeKey) {
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
         var state = getState(scopeKey);
@@ -3755,6 +3783,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // answer meant for it.
         state.ffBusy = false;
         state.ffStats = null;
+        if (state.redrawRaf) {
+            try { window.cancelAnimationFrame(state.redrawRaf); } catch (e) {}
+        }
+        state.redrawPending = false;
+        state.redrawRaf = null;
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
         redrawHighlights(scopeKey);
@@ -3907,14 +3940,19 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 anchorIndex + ',' + other + ',' + order);
             return;
         }
-        // Dragged into space: grow a new atom that way.
+        // Dragged into space: grow a new atom that way, and say where the
+        // hand let go as well as which way it went. Only the direction used to
+        // be sent, so the atom always landed at the length its bond wanted --
+        // right when the editor is keeping the chemistry straight, and wrong
+        // when the user has switched that off and is placing things by hand.
         var to = screenToWorld(scopeKey, clientX, clientY, anchorAtom);
         if (!to) return;
         var dx = to.x - anchorAtom.x, dy = to.y - anchorAtom.y,
             dz = to.z - anchorAtom.z;
         pushCommandToPython(scopeKey, 'grow',
             anchorIndex + ',' + element + ',' + order + ','
-            + dx.toFixed(4) + ',' + dy.toFixed(4) + ',' + dz.toFixed(4));
+            + dx.toFixed(4) + ',' + dy.toFixed(4) + ',' + dz.toFixed(4) + ','
+            + to.x.toFixed(4) + ',' + to.y.toFixed(4) + ',' + to.z.toFixed(4));
     }
 
 

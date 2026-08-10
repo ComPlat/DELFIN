@@ -2672,8 +2672,11 @@ def test_the_lines_can_be_asked_to_follow_the_distances(editor):
     assert "setDynamicBonds: setDynamicBonds" in editor_js
 
     # every drag frame and every set of coordinates comes through here, which
-    # is what makes the lines follow during a manipulation and not only after
-    redraw = editor_js[editor_js.index("function redrawHighlights("):][:600]
+    # is what makes the lines follow during a manipulation and not only after.
+    # The asking and the drawing are two functions now -- a drag asks about
+    # twice per mouse event and a mouse reports faster than a screen refreshes,
+    # so the drawing happens once a frame however often it is asked for.
+    redraw = editor_js[editor_js.index("function drawHighlightsNow("):][:600]
     assert "if (state.dynamicBonds) perceiveBonds(viewer);" in redraw
 
     setter = editor_js[editor_js.index("function setDynamicBonds("):][:900]

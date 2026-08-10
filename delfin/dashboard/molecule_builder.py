@@ -462,18 +462,35 @@ def place_atom(structure: Structure, element: str, position: Sequence[float],
 def grow_from(structure: Structure, anchor: int, element: str,
               order: int = 1,
               direction: Optional[Sequence[float]] = None,
-              adjust_h: bool = True) -> Optional[int]:
-    """Hang a new atom off ``anchor`` at a sensible length and angle.
+              adjust_h: bool = True,
+              at: Optional[Sequence[float]] = None) -> Optional[int]:
+    """Hang a new atom off ``anchor``.
 
-    A hydrogen already sitting in the way is consumed rather than pushed
-    aside, which is what makes repeated growing build a chain instead of a
-    thicket -- the same thing Avogadro does.
+    With *adjust_h* on, DELFIN keeps the chemistry right: a hydrogen already
+    sitting in the way is consumed rather than pushed aside, which is what
+    makes repeated growing build a chain instead of a thicket -- the same
+    thing Avogadro does -- and the new atom lands at the length and angle its
+    bond wants.
+
+    With it off, nothing is consumed and nothing is idealised: the atom goes
+    where it was asked for.  That distinction is the whole of the switch, and
+    without it there was no way to put a second hydrogen on an oxygen at all
+    -- growing one ate the one already there, so three atoms went in and three
+    came out and the screen did not change.  Whether that oxygen then wants a
+    charge is the chemist's business, not the editor's.
+
+    *at* is where the user let go, in model coordinates.  It is honoured when
+    the hydrogens are not being adjusted, because then the point of the drag
+    is where the atom should be; otherwise only its direction is taken and the
+    distance comes from the bond.
     """
     if not 0 <= int(anchor) < len(structure):
         return None
     anchor = int(anchor)
     centre = structure.coords[anchor]
-    spare = structure.hydrogens_on(anchor)
+    if at is not None and (direction is None or _norm(direction) < 1e-6):
+        direction = _sub(at, centre)
+    spare = structure.hydrogens_on(anchor) if adjust_h else []
     if spare:
         # Reuse the hydrogen's own direction when the caller gave none.
         if direction is None:
@@ -488,6 +505,12 @@ def grow_from(structure: Structure, anchor: int, element: str,
         wanted = default_valence(structure.symbols[anchor]) or (len(taken) + 1)
         direction = free_directions(taken, 1, max(wanted, len(taken) + 1))[0]
     distance = bond_length(structure.symbols[anchor], element, order)
+    if not adjust_h and at is not None:
+        reach = _norm(_sub(at, centre))
+        # Not on top of the atom it is being grown from: a click that did not
+        # move is a click, not a placement.
+        if reach > 0.3:
+            distance = reach
     position = _add(centre, _scale(_unit(direction), distance))
     index = structure.add_atom(element, position)
     structure.set_bond(anchor, index, max(1, int(order)))
@@ -498,8 +521,9 @@ def grow_from(structure: Structure, anchor: int, element: str,
     # the old shape put them and the new atom lands among them: growing
     # straight at one of them left two atoms 0.45 A apart, which the renderer
     # then drew as a second bond to that hydrogen.
-    rearrange_hydrogens(structure, anchor)
-    rearrange_hydrogens(structure, index)
+    if adjust_h:
+        rearrange_hydrogens(structure, anchor)
+        rearrange_hydrogens(structure, index)
     return index
 
 
@@ -582,6 +606,39 @@ def delete_atoms(structure: Structure, indices: Iterable[int],
     return len(drop)
 
 
+#: What the angle between two partners should be, by steric number.  Plain
+#: VSEPR, and the only three that arise here.
+_IDEAL_ANGLE = {2: 180.0, 3: 120.0, 4: 109.47}
+
+#: How far from it still counts as that shape.  A relaxed structure wanders a
+#: few degrees from the textbook value and is not wrong, so some room is
+#: needed -- but tetrahedral and trigonal are only 10.47 degrees apart, and at
+#: fifteen an ethene built from an ethane kept its tetrahedral hydrogens:
+#: measured, H-C-H stayed at 109.3 where it had to reach 120.  Eight leaves a
+#: relaxed geometry alone and still tells the two shapes apart.
+_ANGLE_TOLERANCE = 8.0
+
+
+def _angles_already_fit(structure: Structure, index: int, total: int) -> bool:
+    """Whether the partners of this atom already stand where they should."""
+    ideal = _IDEAL_ANGLE.get(int(total))
+    if ideal is None:
+        return False
+    centre = structure.coords[index]
+    partners = structure.neighbours(index)
+    if len(partners) < 2:
+        # One partner can point anywhere; there is no angle to be wrong.
+        return len(partners) == 1
+    for position, first in enumerate(partners):
+        for second in partners[position + 1:]:
+            here = _unit(_sub(structure.coords[first], centre))
+            there = _unit(_sub(structure.coords[second], centre))
+            cosine = max(-1.0, min(1.0, _dot(here, there)))
+            if abs(math.degrees(math.acos(cosine)) - ideal) > _ANGLE_TOLERANCE:
+                return False
+    return True
+
+
 def rearrange_hydrogens(structure: Structure, index: int) -> int:
     """Move the hydrogens on one atom to the shape its bonds now imply.
 
@@ -612,9 +669,42 @@ def rearrange_hydrogens(structure: Structure, index: int) -> int:
     # trigonal planar and the hydrogens belong at 120 degrees in that plane.
     total = len(heavy) + len(hydrogens) + _LONE_PAIRS.get(symbol, 0)
     distance = bond_length(symbol, 'H')
+    # If the shape is already the shape it should be, nothing moves.
+    #
+    # The ideal directions are worked out fresh each time and come out at
+    # whatever azimuth the construction happens to give, so matching a correct
+    # methyl group against them turned every one of its hydrogens -- the same
+    # tetrahedron, rotated, with the atoms in different corners of it. That
+    # ran on every edit that touched the centre, which is why a hydrogen
+    # somebody had dragged into place jumped to a sibling's position for no
+    # reason a user could see.
+    #
+    # So the question asked first is whether the angles are already right, and
+    # only a centre whose shape has genuinely changed -- a bond raised to
+    # double, turning a tetrahedron into a trigonal plane -- is rebuilt.
+    if _angles_already_fit(structure, index, total):
+        return 0
+
     directions = free_directions(taken, len(hydrogens), total)
-    for hydrogen, direction in zip(hydrogens, directions):
-        structure.coords[hydrogen] = _add(centre, _scale(_unit(direction), distance))
+
+    # Each hydrogen takes the direction it is *already* nearest to, not the
+    # next one in the list. Handing them out in order permuted them: on a
+    # methyl group that was already correct, H3 was sent to where H4 had been
+    # and H4 and H5 changed places -- the same shape, different atoms in it.
+    # Every edit that touched the centre did this, so a hydrogen a user had
+    # dragged somewhere jumped to a sibling's place for no visible reason.
+    remaining = list(range(len(directions)))
+    for hydrogen in hydrogens:
+        here = _unit(_sub(structure.coords[hydrogen], centre))
+        best = max(remaining,
+                   key=lambda slot: _dot(here, _unit(directions[slot])))
+        remaining.remove(best)
+        chosen = _unit(directions[best])
+        # And if it is already there, it stays exactly where it is: an atom
+        # that moves by a thousandth of an angstrom for no reason is still an
+        # atom that moved, and the picture flickers.
+        if _dot(here, chosen) < 0.999:
+            structure.coords[hydrogen] = _add(centre, _scale(chosen, distance))
     return len(hydrogens)
 
 

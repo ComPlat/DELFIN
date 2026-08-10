@@ -307,3 +307,113 @@ def test_the_fullscreen_status_does_not_keep_a_finished_message(editor):
         "the overlay is still showing the message the small view has dropped"
     )
     assert editor["mol_status"].value == ""
+
+
+# ---------------------------------------------------------------------------
+# what the switch means when you are drawing
+# ---------------------------------------------------------------------------
+def test_a_second_hydrogen_can_be_put_on_an_oxygen():
+    """It could not be, and nothing said why.
+
+    Growing a hydrogen ate the hydrogen already there -- three atoms went in,
+    three came out, and the screen did not change. That is right while DELFIN
+    is keeping the valences straight, and it is the whole problem when the
+    user has switched that off and wants the atom they asked for.
+    """
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+
+    on = structure_from_xyz(water, {})
+    grow_from(on, 0, 'H', adjust_h=True)
+    assert len(on) == 3, 'with the valence kept, the oxygen stays satisfied'
+
+    off = structure_from_xyz(water, {})
+    grown = grow_from(off, 0, 'H', adjust_h=False)
+    assert len(off) == 4, 'the hydrogen that was asked for'
+    assert grown is not None
+    # And the two that were there are untouched.
+    assert off.coords[1] == pytest.approx((0.96, 0.0, 0.0))
+    assert off.coords[2] == pytest.approx((-0.24, 0.93, 0.0))
+
+
+def test_it_lands_where_the_hand_let_go():
+    """Only the direction of the drag used to be sent, so the atom always
+    landed at the length its bond wanted. That is right when the chemistry is
+    being kept straight and wrong when the user is placing by hand."""
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+    released = [0.0, -0.80, 0.55]
+
+    off = structure_from_xyz(water, {})
+    grown = grow_from(off, 0, 'H', adjust_h=False, at=released)
+    assert off.coords[grown] == pytest.approx(tuple(released), abs=1e-6)
+
+    # With the adjustment on it is the bond that decides, as before.
+    on = structure_from_xyz(water, {})
+    grown = grow_from(on, 0, 'H', adjust_h=True, at=released)
+    reach = sum((on.coords[grown][i] - on.coords[0][i]) ** 2 for i in range(3)) ** 0.5
+    assert reach == pytest.approx(0.97, abs=0.05), 'an O-H bond length'
+
+    # A click that did not move is a click, not a placement.
+    still = structure_from_xyz(water, {})
+    grown = grow_from(still, 0, 'H', adjust_h=False, at=[0.02, 0.0, 0.0])
+    reach = sum((still.coords[grown][i]) ** 2 for i in range(3)) ** 0.5
+    assert reach > 0.3, 'it was put on top of the atom it grew from'
+
+
+def test_the_page_sends_where_the_hand_let_go():
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    editor = submit_manip_bootstrap_js()
+    grow = editor.split("pushCommandToPython(scopeKey, 'grow'")[1][:400]
+    assert 'to.x.toFixed' in grow and 'to.z.toFixed' in grow
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
+    assert "verb == 'grow' and len(fields) in (6, 9)" in handler
+    assert 'at=landed' in handler
+
+
+def test_hydrogens_are_not_shuffled_by_an_edit_somewhere_else():
+    """They were, on every edit that touched the centre.
+
+    The ideal directions are worked out fresh each time and come out at
+    whatever azimuth the construction gives, so an already-correct methyl
+    group was matched against a rotated copy of itself and every hydrogen in
+    it moved to a sibling's place -- for no reason a user could see, and
+    undoing whatever they had positioned by hand.
+    """
+    from delfin.dashboard.molecule_builder import rearrange_hydrogens
+
+    settled = structure_from_xyz(ETHANE, {})
+    before = [tuple(c) for c in settled.coords]
+    rearrange_hydrogens(settled, 0)
+    assert [tuple(c) for c in settled.coords] == before, 'it shuffled them'
+
+    # A hydrogen put somewhere by hand survives an edit elsewhere.
+    dragged = structure_from_xyz(ETHANE, {})
+    dragged.coords[2] = (-0.36, 1.30, 0.40)
+    place_atom(dragged, 'C', [3.0, 0.0, 0.0])
+    assert dragged.coords[2] == pytest.approx((-0.36, 1.30, 0.40))
+
+
+def test_but_a_centre_that_changed_shape_is_still_rebuilt():
+    """Which is what the rearrangement is for: ethene's carbons are trigonal
+    planar, not two tetrahedra sharing an edge, and a double bond read back
+    off a tetrahedral geometry comes out single."""
+    import math
+
+    structure = structure_from_xyz(ETHANE, {})
+    set_bond_order(structure, 0, 1, 2)
+
+    hydrogens = [i for i, s in enumerate(structure.symbols) if s == 'H']
+    near = [h for h in hydrogens if structure.coords[h][0] < 0.7]
+    assert len(near) == 2
+
+    def angle(a, b, c):
+        u = [structure.coords[a][i] - structure.coords[b][i] for i in range(3)]
+        v = [structure.coords[c][i] - structure.coords[b][i] for i in range(3)]
+        nu = sum(x * x for x in u) ** 0.5
+        nv = sum(x * x for x in v) ** 0.5
+        return math.degrees(math.acos(sum(u[i] * v[i] for i in range(3)) / (nu * nv)))
+
+    assert angle(near[0], 0, near[1]) == pytest.approx(120.0, abs=2.0)

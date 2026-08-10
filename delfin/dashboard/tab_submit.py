@@ -5951,16 +5951,27 @@ def create_tab(ctx):
                            [float(v) for v in fields[1:4]],
                            adjust_h=not keep_h)
                 _apply_structure(structure, f'Placed {element}.')
-            elif verb == 'grow' and len(fields) == 6:
+            elif verb == 'grow' and len(fields) in (6, 9):
                 element = normalise_element(fields[1])
                 if element is None:
                     _set_mol_status(f'{fields[1]} is not an element.')
                     return
-                grow_from(structure, int(fields[0]), element,
-                          order=int(fields[2]),
-                          direction=[float(v) for v in fields[3:6]],
-                          adjust_h=not keep_h)
-                _apply_structure(structure, f'Grew {element}.')
+                # Where the hand let go, when the page said. With the
+                # hydrogens left alone the atom belongs there rather than at
+                # the length its bond would prefer -- that is what switching
+                # the adjustment off is for.
+                landed = [float(v) for v in fields[6:9]] if len(fields) == 9 else None
+                grown = grow_from(structure, int(fields[0]), element,
+                                  order=int(fields[2]),
+                                  direction=[float(v) for v in fields[3:6]],
+                                  adjust_h=not keep_h, at=landed)
+                if grown is None:
+                    _set_mol_status(f'{element} could not be grown there.')
+                    return
+                _apply_structure(
+                    structure,
+                    f'Grew {element}.' if not keep_h else
+                    f'Grew {element} where you let go.')
             elif verb == 'setelement' and len(fields) == 2:
                 element = normalise_element(fields[1])
                 if element is None:
