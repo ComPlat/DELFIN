@@ -445,3 +445,66 @@ def test_the_shared_environment_goes_once_nothing_uses_it():
     # And it runs after the replacement, never before.
     tool = text.split('install_conda_tool() {')[1].split('\n}')[0]
     assert tool.index('link_into_bin') < tool.index('retire_legacy_env')
+
+
+# ---------------------------------------------------------------------------
+# installed where it is looked for
+# ---------------------------------------------------------------------------
+def test_a_tool_is_looked_for_where_the_buttons_put_it(tmp_path, monkeypatch):
+    """It was neither, reliably.
+
+    The Settings tab installs into the user's own copy, the Submit tab's
+    button and the agent's installer wrote into the packaged one, and the
+    resolver answered "the packaged one" unless a setting had been saved. So a
+    user pressed Install, the tools landed in ~/.delfin/qm_tools, and every one
+    of them was reported missing -- measured on a real machine with dftb+,
+    stda and xtb4stda all present on disk and all reported absent.
+    """
+    from delfin import qm_runtime
+
+    monkeypatch.delenv('DELFIN_QM_TOOLS_ROOT', raising=False)
+    monkeypatch.delenv('DELFIN_QM_ROOT', raising=False)
+
+    user_root = tmp_path / 'user'
+    (user_root / 'bin').mkdir(parents=True)
+    packaged = tmp_path / 'packaged'
+    (packaged / 'bin').mkdir(parents=True)
+    monkeypatch.setattr(qm_runtime, 'get_user_qm_tools_root', lambda: user_root)
+    monkeypatch.setattr(qm_runtime, 'get_packaged_qm_tools_root', lambda: packaged)
+
+    # Nothing installed yet: the packaged copy is as good an answer as any.
+    assert qm_runtime.get_qm_tools_root() == packaged
+
+    # Something installed by the dashboard: that is where it is looked for.
+    (user_root / 'bin' / 'xtb').write_text('#!/bin/sh\n')
+    assert qm_runtime.get_qm_tools_root() == user_root
+
+    # And both are searched either way, so a tool in either is found.
+    looked = [str(p) for p in qm_runtime.iter_qm_tools_bin_dirs()]
+    assert str(user_root / 'bin') in looked
+    assert str(packaged / 'bin') in looked
+
+    # An explicit choice still wins over both.
+    monkeypatch.setenv('DELFIN_QM_TOOLS_ROOT', str(tmp_path / 'chosen'))
+    assert qm_runtime.get_qm_tools_root() == (tmp_path / 'chosen')
+
+
+def test_the_install_button_writes_where_the_resolver_reads(tmp_path,
+                                                            monkeypatch):
+    """Left to itself the installer installs beside its own file, and the copy
+    the Submit tab runs lives inside the package."""
+    from delfin.dashboard import gfn_optimize as gfn
+
+    monkeypatch.setenv('DELFIN_QM_TOOLS_ROOT', str(tmp_path / 'tools'))
+    command = gfn.install_command('xtb')
+
+    assert command[0] == 'env', 'the root has to reach the script'
+    joined = ' '.join(command)
+    assert f'DELFIN_QM_TOOLS_ROOT={tmp_path / "tools"}' in joined
+    assert 'install_qm_tools.sh xtb' in joined
+    assert gfn.install_root() == tmp_path / 'tools'
+
+    # And the script listens: it used to install beside itself whatever it was
+    # told, which is why naming the directory changed nothing.
+    text = gfn.install_script().read_text(encoding='utf-8')
+    assert 'ROOT="${DELFIN_QM_TOOLS_ROOT:-${DELFIN_QM_ROOT:-' in text

@@ -1603,7 +1603,13 @@ def test_the_installer_is_delfins_own_and_is_asked_for_xtb_alone():
     assert script is not None and script.name == "install_qm_tools.sh"
 
     command = gfn.install_command()
-    assert command[0] == "bash" and command[-1] == "xtb"
+    # It names the directory the resolver reads on the way, or it would
+    # install beside its own file -- inside the package -- while the Settings
+    # tab filled the user's copy, and only one of the two was searched.
+    assert command[-1] == "xtb"
+    assert "bash" in command and command[-2].endswith("install_qm_tools.sh")
+    if command[0] == "env":
+        assert any(part.startswith("DELFIN_QM_TOOLS_ROOT=") for part in command)
     assert str(script) in command
 
 

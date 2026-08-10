@@ -35,7 +35,8 @@ from typing import Any, Callable, Dict, Optional
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
            'find_binary', 'find_gxtb',
-           'held_note', 'hold_atoms_at', 'install_command', 'install_script',
+           'held_note', 'hold_atoms_at', 'install_command', 'install_root',
+           'install_script',
            'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
            'solvent_note',
            'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
@@ -445,6 +446,22 @@ def xtb_available() -> bool:
     return find_xtb() is not None
 
 
+def install_root() -> Optional[Path]:
+    """The tool directory an install should write into.
+
+    The same one the resolver reads, which was not a given: this button used
+    to run the packaged copy of the installer in place, while the Settings tab
+    installed into the user's own copy -- so the two buttons filled two
+    different directories and only one of them was being searched.
+    """
+    try:
+        from delfin.qm_runtime import get_qm_tools_root
+
+        return Path(get_qm_tools_root())
+    except Exception:
+        return None
+
+
 def install_script() -> Optional[Path]:
     """DELFIN's own installer for the QM tools, if it is where it should be."""
     candidate = (Path(__file__).resolve().parent.parent
@@ -457,9 +474,24 @@ def install_command(tool: str = 'xtb') -> Optional[list]:
 
     The script takes the tools to install as arguments; naming one keeps it to
     that one rather than fetching crest, dftb+ and the stda bundle behind it.
+
+    It is pointed at the directory the resolver reads.  Left to itself the
+    script installs beside its own file, and this copy of it lives inside the
+    package -- so this button filled one directory while the Settings tab
+    filled another, and only one of the two was ever searched.  A user pressed
+    Install, the tools arrived, and they were reported missing.
     """
     script = install_script()
-    return ['bash', str(script), str(tool)] if script else None
+    if not script:
+        return None
+    command = ['bash', str(script), str(tool)]
+    root = install_root()
+    if root is not None and root != script.parent:
+        # env(1) rather than a shell assignment, so the command shown is the
+        # command run.
+        return ['env', f'DELFIN_QM_TOOLS_ROOT={root}',
+                f'DELFIN_QM_ROOT={root}'] + command
+    return command
 
 
 def install_xtb(
@@ -484,8 +516,12 @@ def install_xtb(
     started = time.perf_counter()
     lines: list = []
     try:
+        script = install_script()
         running = subprocess.Popen(
-            command, cwd=str(Path(command[1]).parent),
+            # Where the script lives, not command[1] -- the command starts
+            # with the directory it is being pointed at now, and reading a
+            # working directory out of it gave a name that is not a path.
+            command, cwd=str(script.parent) if script else None,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             # Nothing to type into: a dashboard has no terminal to answer a
             # prompt on, and an installer waiting for one would look hung.

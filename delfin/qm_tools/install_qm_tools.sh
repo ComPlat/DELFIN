@@ -2,7 +2,15 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Where the tools go. Beside this script unless told otherwise -- and it was
+# never told otherwise, which is the whole of the problem: the Settings tab
+# ran a staged copy and filled the user's own directory, the Submit tab ran
+# the packaged copy and filled the package, and only one of the two was being
+# searched. A user pressed Install, the tools arrived, and they were reported
+# missing. Both callers now name the directory the resolver reads.
+ROOT="${DELFIN_QM_TOOLS_ROOT:-${DELFIN_QM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+mkdir -p "${ROOT}"
+ROOT="$(cd "${ROOT}" && pwd)"
 BIN_DIR="${ROOT}/bin"
 DOWNLOAD_DIR="${ROOT}/downloads"
 BUILD_DIR="${ROOT}/build"
