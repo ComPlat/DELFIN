@@ -31946,6 +31946,43 @@ def _smiles_to_xyz_isomers_impl(
                         _b6_mol = None
                     if _b6_mol is not None:
                         _ff = _apply_baustein6_if_enabled(_b6_mol, _ff, False)
+                # ── STEREOCENTRE FOLDS FOR THE FF-FREE PATH (DELFIN_FFFREE_STEREO_ON_FFREE,
+                #    default OFF -> byte-identical).  Found 2026-08-10. ──
+                #
+                # THE HOLE.  STEREOCENTER_ENUM is a CHAMPION flag, and it has never once run on
+                # a force-field-free frame.  Its single call site is ~2900 lines below this
+                # return (the dispatch at _apply_stereocenter_enum_if_enabled, def 1699, called
+                # exactly once), and under UNION the FF-free frames are parked in _ffree_union
+                # and concatenated only at the very end -- also after it.  So in BOTH modes the
+                # fold expansion sees the legacy manifold and nothing else.  Same shape as the
+                # ring-pucker gap documented just below, and the same shape as B6 above: a
+                # post-pass that the early return silently skips.
+                #
+                # WHY IT PORTS WITHOUT ANY ADAPTER.  _stereocenter_enum.expand_results is a pure
+                # FRAME-LIST transformer: it takes the finished [(xyz, label), ...], reads each
+                # frame's own geometry, groups by coordination isomer and APPENDS the folds that
+                # are missing ("Originals are preserved verbatim -> never-worse-safe").  It does
+                # not know or care which constructor produced the frames.  Note this is exactly
+                # the case the ring-pucker note below is NOT: that emitter needed a mol whose
+                # atom order matched the frame's, which never held here.  This one needs no mol
+                # at all -- the dispatch's own docstring says so ("``mol`` is unused (the
+                # corrector operates on XYZ text only)"), which is why None is passed, the same
+                # as _apply_pi_coplanar_m_if_enabled one block up.
+                #
+                # WHY A SECOND GATE AND NOT JUST THE CALL.  _apply_stereocenter_enum_if_enabled
+                # already gates on DELFIN_(FFFREE_)STEREOCENTER_ENUM -- and that flag is IN the
+                # champion.  Calling it unconditionally here would therefore change every
+                # champion build the moment this line lands, which is precisely what "default
+                # OFF -> byte-identical" forbids.  The extra flag keeps the reach measurable:
+                # off = today's champion to the byte, on = the same champion plus the folds the
+                # FF-free manifolds never got.
+                #
+                # ⚠ UNMEASURED.  Additive by the module's own contract, but the reach is unknown:
+                # measured 10.08. on legacy manifolds only 4.8 % of systems carry a _stereo-
+                # frame at all, and the FF-free subset may be richer or poorer in coordinated
+                # secondary amines.  Run the fire census on this line before drawing conclusions.
+                if _delfin_env_int("DELFIN_FFFREE_STEREO_ON_FFREE", 0):
+                    _ff = _apply_stereocenter_enum_if_enabled(None, _ff, False)
                 # RING PUCKER FOR THE FF-FREE PATH: the hook that USED to sit here has been
                 # removed, and the reason is worth keeping.
                 #
