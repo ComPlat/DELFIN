@@ -31820,6 +31820,49 @@ def smiles_to_xyz_isomers(*args, **kwargs):
                     os.environ["DELFIN_FFFREE_DETERMINISTIC_ENUM"] = _enum_env_prev
 
 
+def _ffree_shared_tail(mol, results, dual_parse_done: bool):
+    """THE SHARED TAIL: the post-build correctors the FF-free path returns past.
+
+    WHY THIS EXISTS (2026-08-10).  ``_smiles_to_xyz_isomers_impl`` returns the FF-free
+    frames ~2900 lines before the legacy pipeline reaches its final passes, so every
+    corrector down there sees the legacy manifold and nothing else.  That is not a
+    decision anyone took; it is what an early ``return`` does to everything appended
+    after it.  Counted on 2026-08-10 there are EIGHTEEN statements of the shape
+    ``results = _apply_*(mol, results, ...)`` between the FF-free return and the union
+    merge, and the FF-free frames reach none of them.
+
+    ⚠ BUT THE HONEST NUMBER IS TWO, NOT EIGHTEEN.  Cross-checked against
+    ``cli_manta._CHAMPION_FLAGS``: sixteen of the eighteen are gated by flags that are
+    NOT in the champion (COORD_ANGLE_FIX, HYDROXYL_GEOM, AROM_BOND_LENGTH,
+    AROMATIC_PLANARITY, BOND_DECOLLAPSE_FORCE, CASCADE_REFINER, FIX_WUXQAK_ANGLE_DEG,
+    5F_F_HAPTO_FINAL_CLEARANCE, ...), so in the reported runs they are no-ops on BOTH
+    paths and porting them would gain exactly nothing.  Only these two are champion-
+    active, and only they are wired here.  Two more were already hand-wired at the
+    FF-free exit years apart -- pi-coplanar and (2026-08-10) the stereocentre folds --
+    which is the symptom this function is meant to end: each gap patched alone, none
+    of them found by looking.
+
+    ⚠⚠ EXPECT A NULL RESULT AND DO NOT MISREAD IT.  Both correctors take ``mol`` and
+    pass it down (isolated-reseat hands it straight to ``_isolated_reseat.correct_results``;
+    arom-planarize needs it for ``_class_conditional_flag``).  A mol parsed from the
+    SMILES carries RDKit's atom order, while FF-free frames carry metal-at-0 plus
+    AddHs(ligand) blocks in construction order -- the two never coincide.  That exact
+    mismatch already turned the ring-pucker emitter into a null lever at this very
+    position (185 of 187 systems byte-identical; see the note inside the FF-free block).
+    If this tail measures "affected = 0", the FIRST hypothesis is the atom-order
+    mismatch, NOT "the correctors decline FF-free frames".  Trace the guarded call
+    site with fire_census before concluding anything.
+
+    Additive/never-worse is each corrector's own contract (both carry per-frame
+    rollback); this function adds no policy of its own.  Callers gate it.
+    """
+    if not results:
+        return results
+    results = _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done)
+    results = _apply_arom_planarize_if_enabled(mol, results, dual_parse_done)
+    return results
+
+
 def _smiles_to_xyz_isomers_impl(
     smiles: str,
     num_confs: int = 200,
@@ -31983,6 +32026,32 @@ def _smiles_to_xyz_isomers_impl(
                 # secondary amines.  Run the fire census on this line before drawing conclusions.
                 if _delfin_env_int("DELFIN_FFFREE_STEREO_ON_FFREE", 0):
                     _ff = _apply_stereocenter_enum_if_enabled(None, _ff, False)
+                # ── THE SHARED TAIL (DELFIN_FFFREE_SHARED_TAIL, default OFF -> byte-identical) ──
+                #
+                # The two hand-wired lines above are the symptom, not the cure: pi-coplanar was
+                # patched in when someone noticed it, the stereocentre folds on 2026-08-10 when
+                # someone else did, and nobody ever asked what ELSE lives past this return.  The
+                # answer is in _ffree_shared_tail's docstring -- eighteen correctors, of which
+                # exactly two are champion-active.  Those two run here.
+                #
+                # ``mol`` is parsed LAZILY behind the flag, the same discipline as the B6 block
+                # above: the default-OFF path parses nothing and pays nothing, and the correctors
+                # need topology only.  Failure to parse leaves _ff untouched -- a corrector that
+                # cannot be applied must never cost the frames it was meant to improve.
+                #
+                # ⚠ Read the docstring before judging a null measurement: the SMILES-mol atom
+                # order and the FF-free frame atom order do not coincide, which is what made the
+                # ring-pucker emitter a null lever at this exact spot.  "affected = 0" here means
+                # "find out which of the two it was", not "the correctors decline".
+                if _delfin_env_int("DELFIN_FFFREE_SHARED_TAIL", 0):
+                    try:
+                        _tail_mol = _prepare_mol_for_embedding(
+                            smiles, hapto_approx=hapto_mode,
+                        )
+                    except Exception:
+                        _tail_mol = None
+                    if _tail_mol is not None:
+                        _ff = _ffree_shared_tail(_tail_mol, _ff, False)
                 # RING PUCKER FOR THE FF-FREE PATH: the hook that USED to sit here has been
                 # removed, and the reason is worth keeping.
                 #
