@@ -208,22 +208,64 @@ def get_qm_tools_bin_dir() -> Path:
     return get_qm_tools_root() / "bin"
 
 
-def get_csp_tools_root() -> Path:
-    env_root = os.environ.get("DELFIN_CSP_TOOLS_ROOT")
+def _tools_root(kind: str, env_key: str) -> Path:
+    """The directory for one family of tools, chosen the way qm_tools is.
+
+    An explicit setting wins; otherwise the user's own copy is preferred once
+    it holds anything, because that is where the install buttons put things,
+    and the packaged copy stands behind it.  Written once and used three
+    times, because three roots that each decide for themselves is how a tool
+    ends up installed where nothing looks for it.
+    """
+    env_root = os.environ.get(env_key)
     if env_root:
         return Path(env_root).expanduser().resolve()
-    return (Path(__file__).resolve().parent / "csp_tools").resolve()
+    user_root = (Path.home() / ".delfin" / kind).resolve()
+    try:
+        if any((user_root / "bin").iterdir()):
+            return user_root
+    except OSError:
+        pass
+    return (Path(__file__).resolve().parent / kind).resolve()
+
+
+def _tools_bin_dirs(kind: str, env_key: str) -> tuple:
+    """Both copies, the chosen one first: a tool in either is installed."""
+    seen, out = set(), []
+    roots = [_tools_root(kind, env_key),
+             (Path.home() / ".delfin" / kind).resolve(),
+             (Path(__file__).resolve().parent / kind).resolve()]
+    for root in roots:
+        candidate = root / "bin"
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        out.append(candidate)
+    return tuple(out)
+
+
+def get_csp_tools_root() -> Path:
+    return _tools_root("csp_tools", "DELFIN_CSP_TOOLS_ROOT")
 
 
 def get_csp_tools_bin_dir() -> Path:
     return get_csp_tools_root() / "bin"
 
 
+def iter_csp_tools_bin_dirs() -> tuple:
+    return _tools_bin_dirs("csp_tools", "DELFIN_CSP_TOOLS_ROOT")
+
+
 def get_mlp_tools_root() -> Path:
-    env_root = os.environ.get("DELFIN_MLP_TOOLS_ROOT")
-    if env_root:
-        return Path(env_root).expanduser().resolve()
-    return (Path(__file__).resolve().parent / "mlp_tools").resolve()
+    return _tools_root("mlp_tools", "DELFIN_MLP_TOOLS_ROOT")
+
+
+def get_mlp_tools_bin_dir() -> Path:
+    return get_mlp_tools_root() / "bin"
+
+
+def iter_mlp_tools_bin_dirs() -> tuple:
+    return _tools_bin_dirs("mlp_tools", "DELFIN_MLP_TOOLS_ROOT")
 
 
 _CSP_TOOL_NAMES = frozenset({"gnrs", "genarris"})
@@ -328,9 +370,10 @@ def _iter_locator_candidates(locator: str) -> Iterable[str]:
 
 def _iter_tool_candidates(spec: ToolSpec) -> Iterable[tuple[str, str]]:
     if spec.name in _CSP_TOOL_NAMES or any(a in _CSP_TOOL_NAMES for a in spec.aliases):
-        csp_bin = get_csp_tools_bin_dir() / spec.name
-        if csp_bin.exists():
-            yield str(csp_bin), "csp_tools"
+        for csp_dir in iter_csp_tools_bin_dirs():
+            csp_bin = csp_dir / spec.name
+            if csp_bin.exists():
+                yield str(csp_bin), "csp_tools"
 
     if spec.prefer_qm_tools:
         for bin_dir in iter_qm_tools_bin_dirs():
@@ -457,9 +500,19 @@ def _resolve_xtb4stda_home(root: Path) -> str:
 def _prepare_tool_environment(extra_env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     env = os.environ.copy()
     root = get_qm_tools_root()
-    bin_dir = str(root / "bin")
+    # Every tool directory, not only the QM one. A CREST that calls out to a
+    # tool from the CSP or MLP set found nothing on the PATH: those bins were
+    # written by the installers, named in env.sh, and never put in front of a
+    # subprocess by anything in Python.
+    bins = [str(path) for path in
+            (iter_qm_tools_bin_dirs() + iter_csp_tools_bin_dirs()
+             + iter_mlp_tools_bin_dirs())
+            if path.is_dir()]
+    if not bins:
+        bins = [str(root / "bin")]
     current_path = env.get("PATH", "")
-    env["PATH"] = bin_dir if not current_path else f"{bin_dir}{os.pathsep}{current_path}"
+    joined = os.pathsep.join(bins)
+    env["PATH"] = joined if not current_path else f"{joined}{os.pathsep}{current_path}"
     share_xtb4stda = root / "share" / "xtb4stda"
     if share_xtb4stda.exists():
         env.setdefault("XTB4STDAHOME", _resolve_xtb4stda_home(root))

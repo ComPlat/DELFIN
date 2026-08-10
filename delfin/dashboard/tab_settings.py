@@ -1330,6 +1330,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             qm_tools_root=runtime_payload.get('qm_tools_root', ''),
             orca_base=effective_orca_base,
             csp_tools_root=runtime_payload.get('csp_tools_root', ''),
+            mlp_tools_root=runtime_payload.get('mlp_tools_root', ''),
             tool_binaries=runtime_payload.get('tool_binaries', {}) or {},
         )
 

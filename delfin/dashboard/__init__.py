@@ -170,6 +170,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
             csp_tools_root=runtime_settings.get('csp_tools_root', ''),
+            mlp_tools_root=runtime_settings.get('mlp_tools_root', ''),
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
 
@@ -197,6 +198,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
             csp_tools_root=runtime_settings.get('csp_tools_root', ''),
+            mlp_tools_root=runtime_settings.get('mlp_tools_root', ''),
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
         backend_obj = LocalJobBackend(

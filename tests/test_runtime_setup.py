@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -231,3 +232,96 @@ def test_staging_the_tools_keeps_the_links_and_survives_a_broken_one(tmp_path):
     assert (staged / "bin" / "xtb").is_symlink()
 
     shutil.rmtree(staged, ignore_errors=True)
+
+
+def test_the_venv_rebuild_does_not_edit_a_login_file_blind(tmp_path, monkeypatch):
+    """Two things it used to do to a machine that were not its to do.
+
+    It rewrote ``~/.bashrc`` with sed, deleting whatever lay between two
+    patterns -- a login file is not ours to edit blind. And it deleted
+    ``$HOME/.venv`` outright, which may be somebody's environment, built for
+    something else and simply sharing a name.
+    """
+    import subprocess
+
+    from delfin import runtime_setup
+
+    home = tmp_path / "home"
+    (home / ".venv" / "bin").mkdir(parents=True)
+    (home / ".venv" / "marker").write_text("somebody else's\n")
+    (home / ".bashrc").write_text("alias ll=ls\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    class NotStarted:
+        def __init__(self, *args, **kwargs):
+            self.pid = 0
+
+    real_popen = runtime_setup.subprocess.Popen
+    monkeypatch.setattr(runtime_setup.subprocess, "Popen", NotStarted)
+    try:
+        runtime_setup.rebuild_venv(repo_dir=str(repo))
+    except Exception:
+        pass
+    finally:
+        monkeypatch.setattr(runtime_setup.subprocess, "Popen", real_popen)
+
+    script = (repo / ".venv_rebuild.sh").read_text(encoding="utf-8")
+    assert "sed -i" not in script, "it is editing the login file again"
+    assert 'rm -rf "$HOME/.venv"' not in script
+
+    # Run the part that touches the machine, and check what it left behind.
+    start = script.index("# --- Consolidate")
+    end = script.index('echo "Creating fresh venv ..."')
+    done = subprocess.run(["bash", "-c", script[start:end]],
+                          capture_output=True, text=True,
+                          env={"HOME": str(home), "PATH": os.environ["PATH"]})
+    assert done.returncode == 0, done.stderr
+
+    assert not (home / ".venv").exists(), "it should have been moved, not left"
+    moved = list(home.glob(".venv.before-delfin-*"))
+    assert len(moved) == 1
+    assert (moved[0] / "marker").read_text() == "somebody else's\n", (
+        "the environment was destroyed rather than put aside"
+    )
+
+    kept = list(home.glob(".bashrc.delfin-*"))
+    assert kept and kept[0].read_text() == "alias ll=ls\n"
+    now = (home / ".bashrc").read_text()
+    assert now.startswith("alias ll=ls\n"), "what was there stays there"
+    assert now.count("Added by DELFIN") == 1
+
+    # And again changes nothing further.
+    subprocess.run(["bash", "-c", script[start:end]], capture_output=True,
+                   text=True, env={"HOME": str(home), "PATH": os.environ["PATH"]})
+    assert (home / ".bashrc").read_text().count("Added by DELFIN") == 1
+
+
+def test_the_other_tool_families_are_looked_for_where_they_are_installed():
+    """csp_tools and mlp_tools had the same split as qm_tools: installed into
+    the user's own copy, looked for in the packaged one."""
+    from delfin import qm_runtime
+
+    for lister in (qm_runtime.iter_csp_tools_bin_dirs,
+                   qm_runtime.iter_mlp_tools_bin_dirs):
+        places = [str(p) for p in lister()]
+        assert any(".delfin" in p for p in places), places
+        assert any("delfin/csp_tools" in p or "delfin/mlp_tools" in p
+                   for p in places), places
+
+    # And their bins reach a subprocess, which they never did: env.sh named
+    # them and nothing in Python ever put them in front of a PATH.
+    env = qm_runtime._prepare_tool_environment()
+    first = env["PATH"].split(os.pathsep)
+    assert any("qm_tools" in part for part in first)
+
+
+def test_the_mlp_root_setting_actually_does_something(monkeypatch):
+    """It could be saved, it had a field in the Settings tab, and it was never
+    exported anywhere."""
+    from delfin.runtime_setup import apply_runtime_environment
+
+    monkeypatch.delenv("DELFIN_MLP_TOOLS_ROOT", raising=False)
+    apply_runtime_environment(mlp_tools_root="/tmp/delfin-mlp-demo")
+    assert os.environ.get("DELFIN_MLP_TOOLS_ROOT") == "/tmp/delfin-mlp-demo"

@@ -731,39 +731,56 @@ echo "Python: {python_bin}"
 echo "Repo:   {repo_root}"
 
 # --- Consolidate to single venv in the repo directory ---
+#
+# Two things this used to do to a machine that were not its to do.
+#
+# It rewrote the user's .bashrc with sed, deleting whatever lay between two
+# patterns -- and a login file is not ours to edit blind. The activation lives
+# in a file DELFIN owns now, and .bashrc gets at most one line, appended once,
+# after a copy of it has been put aside.
+#
+# And it deleted $HOME/.venv outright. That may be somebody's environment,
+# built for something else and sharing a name. It is moved aside now, with the
+# date on it, so a wrong guess costs a rename rather than a rebuild.
 BASHRC="{bashrc}"
 DELFIN_VENV="{repo_venv}"
-if [ -f "$BASHRC" ]; then
-    # Replace any old venv activation block with a robust one
-    if grep -q '.venv/bin/activate' "$BASHRC"; then
-        echo "Patching .bashrc venv activation block ..."
-        # Remove old block (between marker comments or the simple if-fi block)
-        sed -i '/# Auto-activate.*venv/,/^unset _DELFIN_VENV$/d' "$BASHRC"
-        sed -i '/# Auto-activate.*venv/,/^fi$/d' "$BASHRC"
-        # Append robust activation block
-        cat >> "$BASHRC" << 'BASHRC_BLOCK'
+ACTIVATE_FILE="$HOME/.delfin_venv.sh"
+STAMP="$(date +%Y%m%d-%H%M%S)"
 
-# Auto-activate DELFIN venv (skip if already the correct one)
+cat > "$ACTIVATE_FILE" << 'ACTIVATE_BLOCK'
+# Written by DELFIN. Activates the environment DELFIN was installed into.
 _DELFIN_VENV="{repo_venv}"
 if [ "$VIRTUAL_ENV" != "$_DELFIN_VENV" ] && [ -f "$_DELFIN_VENV/bin/activate" ]; then
     type deactivate &>/dev/null && deactivate
     source "$_DELFIN_VENV/bin/activate"
 fi
 unset _DELFIN_VENV
-BASHRC_BLOCK
-        echo ".bashrc updated."
+ACTIVATE_BLOCK
+echo "Wrote $ACTIVATE_FILE"
+
+if [ -f "$BASHRC" ]; then
+    if grep -q 'delfin_venv.sh' "$BASHRC"; then
+        echo ".bashrc already sources it; leaving it alone."
+    else
+        cp -p "$BASHRC" "$BASHRC.delfin-$STAMP"
+        echo "Kept a copy of .bashrc as $BASHRC.delfin-$STAMP"
+        printf '\\n# Added by DELFIN\\n[ -f "%s" ] && . "%s"\\n' \\
+            "$ACTIVATE_FILE" "$ACTIVATE_FILE" >> "$BASHRC"
+        echo "Added one line to .bashrc."
     fi
 fi
 
-# Remove old HOME-level venv if it exists (replaced by repo venv)
+# An environment of the same name that may not be ours: put aside, not removed.
 if [ -d "$HOME/.venv" ]; then
-    echo "Removing old \\$HOME/.venv (consolidated into repo) ..."
-    rm -rf "$HOME/.venv"
-    echo "Old \\$HOME/.venv removed."
+    echo "Moving \\$HOME/.venv aside to \\$HOME/.venv.before-delfin-$STAMP ..."
+    mv "$HOME/.venv" "$HOME/.venv.before-delfin-$STAMP"
 fi
 
-echo "Removing old repo .venv ..."
-rm -rf "{repo_root / '.venv'}"
+if [ -d "{repo_root}/.venv" ]; then
+    echo "Moving the previous repo .venv aside ..."
+    rm -rf "{repo_root}/.venv.before-$STAMP"
+    mv "{repo_root}/.venv" "{repo_root}/.venv.before-$STAMP"
+fi
 
 echo "Creating fresh venv ..."
 "{python_bin}" -m venv "{repo_root / '.venv'}"
@@ -778,6 +795,16 @@ echo "Packaging delfin_venv.tar ..."
 rm -f "{repo_root / 'delfin_venv.tar'}"
 tar -cf "{repo_root / 'delfin_venv.tar'}" -C "{repo_root}" .venv
 mkdir -p "{repo_root / '.runtime_cache'}"
+
+# It worked, so the copy that was put aside is not needed. Only ours: the
+# $HOME one keeps its new name, because it was never established that it was
+# DELFIN's to begin with.
+if [ -x "{repo_root}/.venv/bin/python" ]; then
+    rm -rf "{repo_root}/.venv.before-$STAMP"
+else
+    echo "The new venv did not come out usable; the previous one is still at"
+    echo "  {repo_root}/.venv.before-$STAMP"
+fi
 
 echo "=== venv rebuild finished at $(date) ==="
 touch "{done_marker}"
@@ -1378,7 +1405,7 @@ def _prepend_path_env_once(path_entry: str) -> None:
     )
 
 
-def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
+def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", mlp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
     qm_root = normalize_runtime_path(qm_tools_root)
     if qm_root:
         os.environ["DELFIN_QM_ROOT"] = qm_root
@@ -1397,6 +1424,15 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
         csp_bin = Path(csp_root) / "bin"
         if csp_bin.exists():
             _prepend_path_env_once(str(csp_bin))
+
+    # It was a setting that could be saved, had a field in the Settings tab,
+    # and was never exported anywhere -- so choosing it did nothing at all.
+    mlp_root = normalize_runtime_path(mlp_tools_root)
+    if mlp_root:
+        os.environ["DELFIN_MLP_TOOLS_ROOT"] = mlp_root
+        mlp_bin = Path(mlp_root) / "bin"
+        if mlp_bin.exists():
+            _prepend_path_env_once(str(mlp_bin))
 
     orca_root = normalize_runtime_path(orca_base)
     if orca_root:
