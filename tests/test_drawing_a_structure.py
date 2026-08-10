@@ -236,3 +236,54 @@ def test_it_is_offered_rather_than_fetched(editor):
 
     fetching = source.split("def on_submit_draw_update")[1].split("\n    def ")[0]
     assert "_ketcher.install(" in fetching
+
+
+def test_the_editor_stands_between_drawing_and_converting(tmp_path, monkeypatch):
+    """The order on screen is the order of the work: draw it, hand it over as a
+    SMILES, then turn that into coordinates.
+
+    With the editor open, the buttons that act on what it produced are below
+    it, where the eye arrives after the drawing rather than before it.
+    """
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+    from delfin.dashboard import tab_submit
+
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(tmp_path))
+    ctx = DashboardContext(
+        calc_dir=tmp_path / "calc",
+        archive_dir=tmp_path / "archive",
+        office_dir=tmp_path / "office",
+    )
+    ctx.run_js = lambda _script: None
+    tab, refs = tab_submit.create_tab(ctx)
+
+    def column(node):
+        kids = getattr(node, "children", ())
+        if any(kid is refs["coords_widget"] for kid in kids):
+            return node
+        for kid in kids:
+            found = column(kid)
+            if found is not None:
+                return found
+        return None
+
+    order = []
+    for child in column(tab).children:
+        if child is refs["coords_widget"]:
+            order.append("input")
+        elif child is refs["submit_draw_frame"]:
+            order.append("editor")
+        elif isinstance(child, widgets.HBox):
+            labels = [getattr(k, "description", "") for k in child.children]
+            if "DRAW" in labels:
+                order.append("draw")
+            elif "CONVERT SMILES" in labels:
+                order.append("convert")
+
+    assert order.index("input") < order.index("draw") < order.index("editor")
+    assert order.index("editor") < order.index("convert"), (
+        "the convert buttons belong below the editor, not above it"
+    )

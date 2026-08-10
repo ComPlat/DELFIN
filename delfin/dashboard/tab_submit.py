@@ -6682,13 +6682,18 @@ def create_tab(ctx):
         job_name_widget, spacer,
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
-        widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
-                      convert_smiles_quick_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        # Drawing comes before converting, and the editor stands between them:
+        # the order on screen is the order of the work -- draw it, hand it over
+        # as a SMILES, then turn that into coordinates.  With the editor open,
+        # the buttons that act on what it produced are below it, where the eye
+        # arrives after the drawing rather than before it.
         widgets.HBox([submit_draw_open_btn, submit_draw_get_btn,
                       submit_draw_update_btn],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         submit_draw_frame, submit_draw_sync,
+        widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
+                      convert_smiles_quick_button],
+                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         manta_settings_row,
