@@ -287,3 +287,108 @@ def test_the_editor_stands_between_drawing_and_converting(tmp_path, monkeypatch)
     assert order.index("editor") < order.index("convert"), (
         "the convert buttons belong below the editor, not above it"
     )
+
+
+# ---------------------------------------------------------------------------
+# a complex has to come out in the form the rest of DELFIN reads
+# ---------------------------------------------------------------------------
+def _molfile(atoms, bonds):
+    """A molfile written by hand, the way a drawing arrives.
+
+    The hydrogen field counts from one: 1 means no hydrogen, 4 means three.
+    """
+    head = f'{len(atoms):3d}{len(bonds):3d}  0  0  0  0            999 V2000'
+    rows = [f'    0.0000    0.0000    0.0000 {sym:<3s} 0  0  0  0  0  {h}'
+            for sym, h in atoms]
+    links = [f'{a:3d}{b:3d}{kind:3d}  0' for a, b, kind in bonds]
+    return '\n'.join(['', '  Ketcher', '', head] + rows + links + ['M  END', ''])
+
+
+def test_a_coordination_bond_comes_out_charge_separated():
+    """RDKit writes a coordination bond as an arrow, [n]->[Cd].  The structures
+    DELFIN is built around -- MANTA's inputs, the batch files, every internal
+    conversion -- write it as a plain bond with the charge on both ends: the
+    donor [N+] and the metal carrying one minus per bond it accepts.
+
+    Both describe the same molecule and only the second is understood
+    downstream, so a drawing is brought into it.
+    """
+    ammine = _molfile([("N", 4), ("Pt", 1), ("Cl", 1), ("Cl", 1)],
+                      [(1, 2, 1), (2, 3, 1), (2, 4, 1)])
+
+    outcome = ketcher.smiles_from_molfile(ammine)
+
+    assert outcome["ok"] is True, outcome["status"]
+    assert outcome["smiles"] == "[NH3+][Pt-]([Cl])[Cl]"
+    assert "->" not in outcome["smiles"], "the arrow form is not what is read"
+    assert outcome["dative"] == 1
+    assert "charge on both ends" in outcome["status"]
+
+
+def test_the_hydrogens_of_a_donor_survive_the_conversion():
+    """[NH3]->[Pt] came back as [N+][Pt-]: the count was frozen before it had
+    been written down, so the ammonia lost its hydrogens."""
+    drawn = _molfile([("N", 0), ("Pt", 1)], [(1, 2, 9)])
+
+    assert ketcher.smiles_from_molfile(drawn)["smiles"] == "[NH3+][Pt-]"
+
+
+def test_what_was_drawn_is_what_comes_out():
+    """An amine drawn with two hydrogens is an amide, not an ammine, and it
+    keeps its plain bond: the nitrogen has room for it.  Guessing otherwise
+    would be correcting the chemist rather than reading the drawing."""
+    amide = _molfile([("N", 3), ("Pt", 1), ("Cl", 1), ("Cl", 1)],
+                     [(1, 2, 1), (2, 3, 1), (2, 4, 1)])
+
+    outcome = ketcher.smiles_from_molfile(amide)
+
+    assert outcome["smiles"] == "[NH2][Pt]([Cl])[Cl]"
+    assert outcome["dative"] == 0
+    # and the halides stay plain covalent either way, as they are in the
+    # batch files: [Cl][Cd-3] -- the metal's charge counts the dative bonds
+    assert "[Cl-]" not in outcome["smiles"]
+
+
+def test_a_complex_drawn_naively_matches_the_batch_entry_for_it():
+    """The whole question in one test: draw a complex the natural way, without
+    charges, and get the molecule DELFIN's own data says it is.
+
+    ACUDOT in the batch file is
+    CC1=[N+]2NC(C3=CC=CC=N3)=[O+][Cd-3]2([Br])([Br])[N+]2=CC=CC=C12 -- and
+    drawing it with plain bonds gives the same molecule, 33 atoms either way.
+    """
+    from rdkit import Chem
+
+    naive = "CC1=N2NC(C3=CC=CC=N3)=O[Cd]2([Br])([Br])N2=CC=CC=C12"
+    entry = ("CC1=[N+]2NC(C3=CC=CC=N3)=[O+][Cd-3]2([Br])([Br])"
+             "[N+]2=CC=CC=C12")
+
+    drawn = ketcher.smiles_from_molfile(molblock(naive))
+
+    assert drawn["ok"] is True, drawn["status"]
+    assert drawn["dative"] == 3, "three donors, three minus on the metal"
+    assert drawn["smiles"] == Chem.MolToSmiles(Chem.MolFromSmiles(entry)), (
+        "a drawn complex must be the molecule the batch file says it is"
+    )
+
+
+def test_delfin_builds_coordinates_from_what_was_drawn():
+    """The point of the whole path: what comes out of the editor goes into the
+    converters the rest of DELFIN uses, and they make a structure of it."""
+    pytest.importorskip("rdkit")
+    from delfin.dashboard.input_processing import smiles_to_xyz_quick
+
+    naive = "CC1=N2NC(C3=CC=CC=N3)=O[Cd]2([Br])([Br])N2=CC=CC=C12"
+    drawn = ketcher.smiles_from_molfile(molblock(naive))
+
+    _xyz, atoms, _method, error = smiles_to_xyz_quick(drawn["smiles"])
+
+    assert error is None, error
+    assert atoms == 33, f"the batch entry is 33 atoms, this gave {atoms}"
+
+
+def test_a_molecule_without_a_metal_is_left_exactly_as_drawn():
+    outcome = ketcher.smiles_from_molfile(molblock("CC(=O)Oc1ccccc1C(=O)O"))
+
+    assert outcome["dative"] == 0
+    assert outcome["smiles"] == "CC(=O)Oc1ccccc1C(=O)O"

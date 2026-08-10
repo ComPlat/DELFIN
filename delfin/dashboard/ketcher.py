@@ -256,6 +256,48 @@ def install(
     }
 
 
+def _charge_separate_dative(mol: Any) -> int:
+    """Turn dative bonds into the charge-separated form DELFIN works in.
+
+    A coordination bond can be written two ways.  RDKit writes it as an arrow,
+    ``[n]->[Cd]``; the structures DELFIN is built around write it as a plain
+    bond with the charge shown on both ends -- the donor as ``[N+]`` and the
+    metal carrying one minus for each bond it accepts, ``[Cd-3]`` for three.
+    Both describe the same molecule and only the second one is understood by
+    everything downstream here, so a drawing is brought into it.
+
+    A drawn structure arrives as arrows either way: a dative bond drawn as one
+    is read as dative, and a plain bond to a metal that would leave the donor
+    hypervalent is read as dative too.  So this is the one conversion that
+    turns what a chemist draws into what the rest of DELFIN reads.
+
+    Returns how many bonds were converted.
+    """
+    from rdkit import Chem
+
+    editable = Chem.RWMol(mol)
+    moved = 0
+    for bond in editable.GetBonds():
+        if bond.GetBondType() != Chem.BondType.DATIVE:
+            continue
+        # The arrow points from the donor to what accepts it.
+        donor = bond.GetBeginAtom()
+        acceptor = bond.GetEndAtom()
+        bond.SetBondType(Chem.BondType.SINGLE)
+        donor.SetFormalCharge(donor.GetFormalCharge() + 1)
+        acceptor.SetFormalCharge(acceptor.GetFormalCharge() - 1)
+        # The hydrogens the drawing showed are the hydrogens meant.  They have
+        # to be written down before the count is frozen, or an ammonia donor
+        # comes back as a bare nitrogen: [NH3]->[Pt] became [N+][Pt-].
+        donor.SetNumExplicitHs(donor.GetTotalNumHs())
+        donor.SetNoImplicit(True)
+        moved += 1
+    if not moved:
+        return 0
+    mol.__init__(editable.GetMol())
+    return moved
+
+
 def smiles_from_molfile(molfile: str) -> Dict[str, Any]:
     """Turn what was drawn into a SMILES the rest of DELFIN will accept.
 
@@ -295,6 +337,14 @@ def smiles_from_molfile(molfile: str) -> Dict[str, Any]:
             pass
     if mol.GetNumAtoms() == 0:
         return {'ok': False, 'smiles': '', 'status': 'The drawing is empty.'}
+    dative = 0
+    try:
+        dative = _charge_separate_dative(mol)
+        if dative:
+            Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL
+                             ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+    except Exception:
+        pass
     try:
         smiles = Chem.MolToSmiles(mol)
     except Exception as exc:
@@ -303,5 +353,8 @@ def smiles_from_molfile(molfile: str) -> Dict[str, Any]:
     if not smiles:
         return {'ok': False, 'smiles': '',
                 'status': 'That drawing came out as an empty SMILES.'}
-    return {'ok': True, 'smiles': smiles,
-            'status': f'{mol.GetNumAtoms()} atoms drawn: {smiles}'}
+    said = f'{mol.GetNumAtoms()} atoms drawn: {smiles}'
+    if dative:
+        said += (f' ({dative} coordination bond(s) written with the charge on '
+                 'both ends, which is the form the rest of DELFIN reads.)')
+    return {'ok': True, 'smiles': smiles, 'dative': dative, 'status': said}
