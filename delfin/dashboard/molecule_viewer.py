@@ -3759,6 +3759,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setOverlayInteractive(scopeKey);
         redrawHighlights(scopeKey);
         if (state.mode === 'select') attachClickable(scopeKey);
+        // Say which editor is on the page. Every render of a structure used to
+        // carry a whole copy of this script -- 136 KiB of the 159 the picture
+        // weighs -- because nothing here could tell the kernel it already had
+        // one. Now it can, and the copy is only sent until it is confirmed.
+        pushCommandToPython(scopeKey, 'editor', MANIP_VERSION);
     }
 
     function setMode(scopeKey, mode) {
@@ -4384,6 +4389,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     })();
 })();
 """
+
+
+def submit_manip_version():
+    """The stamp the editor currently in this file carries.
+
+    The kernel needs it to know whether the copy on the page is the one it
+    would send, without sending it to find out.
+    """
+    full = SUBMIT_MANIP_BOOTSTRAP_JS.replace(
+        '__DELFIN_FF_WORKER_LOOP__', json.dumps(FF_WORKER_LOOP_JS))
+    return hashlib.sha256(full.encode('utf-8')).hexdigest()[:12]
 
 
 def submit_manip_bootstrap_js():

@@ -25,7 +25,9 @@ from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spel
 from . import gfn_optimize as _gfn
 from . import ketcher as _ketcher
 from . import separate_systems as _separate
-from .molecule_viewer import apply_molecule_view_style, submit_manip_bootstrap_js
+from .molecule_viewer import (
+    apply_molecule_view_style, submit_manip_bootstrap_js, submit_manip_version,
+)
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
     append_hapto_previews_to_isomers,
@@ -1317,9 +1319,19 @@ def create_tab(ctx):
         view.addModel(xyz_data, 'xyz')
         apply_molecule_view_style(view)
         scope_key_js = json.dumps(submit_scope_id)
+        # The editor rides along only until the page has said it has it. It is
+        # 136 KiB of the 159 a rendered structure weighs, and every conversion,
+        # every edit and every optimisation result sent it again -- to a page
+        # that had it already and threw the copy away on its version check.
+        # Sending it at all, the first time, is the belt: the separate script
+        # that installs it goes through an output widget whose content can be
+        # replaced before the page has run it, and a structure without an
+        # editor cannot be edited at all.
+        carry_editor = (state.get('manip_seen_version')
+                        != submit_manip_version())
         registration = (
             '\n'
-            + submit_manip_bootstrap_js()
+            + (submit_manip_bootstrap_js() if carry_editor else '')
             + '\n(function(){\n'
             '  try {\n'
             '    window._submitMolViewerByScope = window._submitMolViewerByScope || {};\n'
@@ -5857,6 +5869,12 @@ def create_tab(ctx):
         if len(parts) != 3:
             return
         verb, payload = parts[0], parts[2]
+
+        if verb == 'editor':
+            # The page saying which editor it is running. Until it has, every
+            # rendered structure carries a copy of the editor with it.
+            state['manip_seen_version'] = str(payload)
+            return
 
         if verb == 'gfnplay':
             # What the playback is doing, said by the page.  Without this the

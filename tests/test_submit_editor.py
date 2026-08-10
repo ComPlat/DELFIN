@@ -1643,3 +1643,70 @@ def test_the_worker_answers_with_the_positions_and_the_statistics():
     # goes on using its own array.
     assert 'new Float64Array(out)' in FF_WORKER_LOOP_JS
     assert '[answer.buffer]' in FF_WORKER_LOOP_JS
+
+
+def test_the_editor_is_not_sent_again_to_a_page_that_has_it():
+    """It is 136 KiB of the 159 a rendered structure weighs.
+
+    Every conversion, every edit and every optimisation result carried a whole
+    copy of the editor to a page that already had one and threw it away on its
+    version check -- because nothing could tell the kernel otherwise. Now the
+    page says which editor it is running, and the copy stops.
+
+    Sending it the first time is the belt: the separate script that installs it
+    goes through an output widget whose content can be replaced before the page
+    has run it, and a structure without an editor cannot be edited at all.
+    """
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.molecule_viewer import submit_manip_version
+
+    ready = _body('onViewerReady')
+    assert "pushCommandToPython(scopeKey, 'editor', MANIP_VERSION)" in ready
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    bundle = source.split('def _build_mol_output_bundle')[1].split('\n    def ')[0]
+    assert "carry_editor = (state.get('manip_seen_version')" in bundle
+    assert "submit_manip_bootstrap_js() if carry_editor else ''" in bundle
+
+    handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
+    assert "state['manip_seen_version'] = str(payload)" in handler
+
+    # The version is the editor's own content, so a page running an older one
+    # is not taken for a page that is up to date.
+    assert len(submit_manip_version()) == 12
+    assert submit_manip_version() in submit_manip_bootstrap_js()
+
+
+def test_a_confirmed_page_gets_a_much_smaller_picture(tmp_path):
+    """Measured through the tab itself, not asserted from the source."""
+    pytest.importorskip('ipywidgets')
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.context import DashboardContext
+    from delfin.dashboard.molecule_viewer import submit_manip_version
+
+    for name in ('calc', 'archive', 'office'):
+        (tmp_path / name).mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / 'calc',
+                           archive_dir=tmp_path / 'archive',
+                           office_dir=tmp_path / 'office')
+    ctx.run_js = lambda _script: None
+    _widget, refs = tab_submit.create_tab(ctx)
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+
+    def weight():
+        outputs = refs['mol_output'].outputs
+        return len(outputs[0]['data']['text/html']) if outputs else 0
+
+    refs['coords_widget'].value = water
+    before = weight()
+
+    refs['submit_cmd_sync'].value = f'editor:1:{submit_manip_version()}'
+    refs['coords_widget'].value = water.replace('0.96', '0.97')
+    after = weight()
+
+    assert after < before / 4, f'{before} -> {after} bytes'
+
+    # An editor from an older build is not one the kernel may rely on.
+    refs['submit_cmd_sync'].value = 'editor:2:000000000000'
+    refs['coords_widget'].value = water.replace('0.96', '0.98')
+    assert weight() > before / 2
