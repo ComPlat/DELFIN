@@ -294,3 +294,79 @@ def test_the_complaint_is_found_even_though_it_arrives_last():
     said = why_it_stopped(merged)
     assert 'no basis found' in said
     assert 'Bannwarth' not in said, 'the citation list is not a reason'
+
+
+# ---------------------------------------------------------------------------
+# installing means installing
+# ---------------------------------------------------------------------------
+def test_the_installer_builds_its_own_before_adopting_someone_elses():
+    """"Install" mostly did not install.
+
+    It looked for whatever xtb stood first on the PATH and made a symlink to
+    it, so two accounts on one cluster ran two different builds from the same
+    button -- one of them optimising and the other stopping with a Fortran
+    format error inside xtb's own optimiser, on the same structure. Pressing
+    Install again could not help: it adopted the same broken build again.
+
+    The managed environment now comes first and a system tool is the fallback,
+    which keeps the case that made adoption the default: a cluster with no
+    network and xtb behind a module.
+    """
+    from delfin.dashboard.gfn_optimize import install_script
+
+    script = install_script()
+    assert script is not None
+    text = script.read_text(encoding='utf-8')
+
+    assert 'PREFER_SYSTEM_TOOLS="${PREFER_SYSTEM_TOOLS:-0}"' in text, (
+        'adopting whatever is on the PATH is no longer the default'
+    )
+    assert 'install_managed_or_adopt' in text
+    for tool in ('install_xtb', 'install_crest', 'install_dftbplus'):
+        body = text.split(f'{tool}() {{')[1].split('\n}')[0]
+        assert 'install_managed_or_adopt' in body, tool
+        # And when it does adopt, it says so rather than calling it an install.
+    adopt = text.split('install_managed_or_adopt() {')[1].split('\n}')[0]
+    assert 'adopting the' in adopt
+    assert 'cannot vouch for it' in adopt
+
+
+def test_each_tool_gets_an_environment_of_its_own():
+    """One environment for all three installed the broken xtb.
+
+    Asked for xtb, crest and dftbplus together, conda-forge answers **xtb
+    6.6.1** -- whose optimiser dies with "Fortran runtime error: Missing comma
+    between descriptors" on a doublet optimisation that 6.7.1 finishes
+    normally -- because 6.6.1 is the newest xtb compatible with the other two
+    at the same time. Asked separately, each gets its own newest: xtb 6.7.1,
+    crest 3.0.2, dftbplus 25.1. Three dry runs of the solver, then the real
+    installer, which produced 6.7.1.
+
+    So a user could press Install and end up with a broken xtb while the
+    person beside them, whose xtb came from somewhere else, had no trouble.
+    """
+    from delfin.dashboard.gfn_optimize import install_script
+
+    text = install_script().read_text(encoding='utf-8')
+
+    assert 'install_conda_tool()' in text
+    # Never the three of them in one solve again.
+    assert 'conda-forge xtb crest dftbplus' not in text
+    assert '"xtb=${XTB_VERSION}" crest dftbplus' not in text
+
+    # And a floor under xtb, so the build that could not optimise cannot come
+    # back -- a floor rather than a pin, so newer ones are still taken.
+    assert 'XTB_MINIMUM="${XTB_MINIMUM:-' in text
+    assert '"xtb>=${XTB_MINIMUM}"' in text
+
+
+def test_a_failure_names_the_binary_that_produced_it():
+    """Two accounts on one cluster do not necessarily run the same xtb, and
+    without the path and version in the message there is nothing to compare."""
+    from delfin.dashboard.gfn_optimize import which_xtb_ran
+
+    said = which_xtb_ran('/opt/xtb/bin/xtb', 'xtb version 6.7.1 (edcfbbe)')
+    assert '/opt/xtb/bin/xtb' in said
+    assert '6.7.1' in said
+    assert 'that build' in said, 'it should say where the fault lives'
+    assert which_xtb_ran('', '') == ''

@@ -23,7 +23,23 @@ XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubuserco
 STD2_TAG="${STD2_TAG:-v2.0.1}"
 STD2_SRC_URL="${STD2_SRC_URL:-https://github.com/grimme-lab/std2/archive/refs/tags/${STD2_TAG}.tar.gz}"
 
+# Whether a tool already on this system may stand in for one of ours at all.
 USE_SYSTEM_TOOLS="${USE_SYSTEM_TOOLS:-1}"
+# Whether it is *preferred* over building the managed environment. Off: an
+# install should install. See install_xtb.
+PREFER_SYSTEM_TOOLS="${PREFER_SYSTEM_TOOLS:-0}"
+# The build we know answers. Unpinned, "install xtb" means whatever
+# conda-forge published this morning, so two machines set up a week apart run
+# two different programs -- and a fault inside xtb is a fault of one build, not
+# of the structure. Measured on this one: water GFN2 -5.070325081194 Eh,
+# GFN-FF -0.327252352397 Eh, and a doublet optimisation that finishes.
+# Override to move deliberately, not by accident.
+# The oldest xtb we are willing to run. 6.6.1 has a formatting fault inside
+# its own optimiser -- a doublet optimisation dies with "Fortran runtime
+# error: Missing comma between descriptors" at optimizer.f90:639 while 6.7.1
+# finishes the same job normally. A floor rather than a pin, so newer builds
+# are still taken.
+XTB_MINIMUM="${XTB_MINIMUM:-6.7.1}"
 INSTALL_STD2_FROM_SOURCE="${INSTALL_STD2_FROM_SOURCE:-0}"
 FORCE_REDOWNLOAD="${FORCE_REDOWNLOAD:-0}"
 FORCE_CONDA_UPDATE="${FORCE_CONDA_UPDATE:-0}"
@@ -133,48 +149,88 @@ ensure_micromamba() {
   return 1
 }
 
-install_conda_stack() {
+# One environment per tool, not one environment for all of them.
+#
+# Solved together, conda-forge answers **xtb 6.6.1** -- the build whose
+# optimiser dies with a Fortran format error -- because that is the newest xtb
+# compatible with crest and dftbplus *at the same time*. Solved apart, each
+# tool gets its own newest: xtb 6.7.1, crest 3.0.2, dftbplus 25.1. Measured
+# with three dry runs of the solver, and it is why a user could press Install
+# and end up with a broken xtb while the person beside them, whose xtb came
+# from somewhere else, had no trouble at all.
+#
+# Pinning xtb inside the joint environment would have worked too, and it costs
+# dftbplus 25.1 -> 21.1. Separate environments cost nothing but disk.
+install_conda_tool() {
+  local prog="$1" spec="$2" env_dir="${MAMBA_ENV}/$3" binary="${4:-$1}"
   local mamba
 
-  mamba="$(ensure_micromamba)" || die "micromamba/conda not found; cannot auto-install xtb/crest/dftb+"
+  mamba="$(ensure_micromamba)" || return 1
 
-  if [[ ! -x "${MAMBA_ENV}/bin/xtb" || ! -x "${MAMBA_ENV}/bin/crest" || ! -x "${MAMBA_ENV}/bin/dftb+" ]]; then
-    log "create local conda env at ${MAMBA_ENV}"
-    if [[ "$(basename "${mamba}")" == "micromamba" ]]; then
-      "${mamba}" create -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
-    else
-      "${mamba}" create -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
-    fi
+  if [[ ! -x "${env_dir}/bin/${binary}" ]]; then
+    log "create ${prog} environment at ${env_dir}"
+    "${mamba}" create -y -p "${env_dir}" -c conda-forge "${spec}" || return 1
   elif [[ "${FORCE_CONDA_UPDATE}" == "1" ]]; then
-    log "update local conda env at ${MAMBA_ENV}"
-    # Use 'update', not 'install': an unversioned 'install xtb' is a no-op
-    # when xtb is already present (the spec is already satisfied), so it
-    # never upgrades an outdated build.
-    #
-    # Update each tool INDIVIDUALLY. A joint 'update xtb crest dftbplus'
-    # can leave xtb at an old version when the newest builds of the three
-    # are not mutually compatible (the solver then keeps a compatible, but
-    # older, combination). Per-tool updates let each reach the latest
-    # conda-forge build on its own, mirroring a targeted 'install xtb=...'.
-    for _tool in xtb crest dftbplus; do
-      log "updating ${_tool}"
-      "${mamba}" update -y -p "${MAMBA_ENV}" -c conda-forge "${_tool}" \
-        || log "WARNING: update of ${_tool} did not complete"
-    done
+    log "update ${prog} in ${env_dir}"
+    # 'update', not 'install': an unversioned 'install xtb' is a no-op when
+    # xtb is already there -- the spec is satisfied -- so it never replaces an
+    # outdated build.
+    "${mamba}" update -y -p "${env_dir}" -c conda-forge "${spec}" \
+      || log "WARNING: update of ${prog} did not complete"
   fi
 
-  link_into_bin "${MAMBA_ENV}/bin/xtb" xtb
-  link_into_bin "${MAMBA_ENV}/bin/crest" crest
-  link_into_bin "${MAMBA_ENV}/bin/dftb+" dftb+
+  [[ -x "${env_dir}/bin/${binary}" ]] || return 1
+  link_into_bin "${env_dir}/bin/${binary}" "${prog}"
+}
+
+install_conda_stack() {
+  # Kept for callers that want all three; each still gets its own environment.
+  local failed=0
+  install_conda_tool xtb "xtb>=${XTB_MINIMUM}" xtb || failed=1
+  install_conda_tool crest crest crest || failed=1
+  install_conda_tool dftb+ dftbplus dftbplus "dftb+" || failed=1
+  return "${failed}"
+}
+
+# Install the build we know, and only adopt somebody else's if we cannot.
+#
+# Adopting first was the default, and it means "install" mostly did not
+# install: it found whatever xtb stood first on the PATH and made a symlink to
+# it. Two accounts on one cluster then run two different xtb builds from the
+# same button -- one of them optimises and the other stops with a Fortran
+# format error inside xtb's own optimiser, on the same structure. Pressing
+# Install again cannot help, because it adopts the same broken build again.
+#
+# So the managed environment comes first and the system tool is the fallback,
+# which keeps the case that made adoption the default in the first place: a
+# cluster with no network and xtb behind a module. Whichever happened is said
+# out loud, because "installed" and "adopted" are not the same claim.
+install_managed_or_adopt() {
+  local prog="$1" spec="$2" env_name="$3"
+  local path binary="${prog}"
+  if install_conda_tool "${prog}" "${spec}" "${env_name}" "${binary}"; then
+    return 0
+  fi
+  log "WARNING: no managed environment could be built for ${prog}"
+  if path="$(detect_existing_tool "${prog}")"; then
+    log "adopting the ${prog} already on this system: ${path}"
+    log "  (it was not installed by DELFIN, and DELFIN cannot vouch for it)"
+    link_into_bin "${path}" "${prog}"
+    return 0
+  fi
+  die "${prog} could not be installed and none was found on this system"
 }
 
 install_xtb() {
-  local path
-  if path="$(detect_existing_tool xtb)"; then
-    link_into_bin "${path}" xtb
-    return
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool xtb)"; then
+      log "using the xtb already on this system: ${path}"
+      link_into_bin "${path}" xtb
+      return
+    fi
   fi
-  install_conda_stack
+  install_managed_or_adopt xtb "xtb>=${XTB_MINIMUM}" xtb
 }
 
 install_gxtb() {
@@ -213,21 +269,27 @@ install_gxtb() {
 }
 
 install_crest() {
-  local path
-  if path="$(detect_existing_tool crest)"; then
-    link_into_bin "${path}" crest
-    return
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool crest)"; then
+      log "using the crest already on this system: ${path}"
+      link_into_bin "${path}" crest
+      return
+    fi
   fi
-  install_conda_stack
+  install_managed_or_adopt crest "crest" crest
 }
 
 install_dftbplus() {
-  local path
-  if path="$(detect_existing_tool dftb+)"; then
-    link_into_bin "${path}" dftb+
-    return
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool dftb+)"; then
+      log "using the dftb+ already on this system: ${path}"
+      link_into_bin "${path}" dftb+
+      return
+    fi
   fi
-  install_conda_stack
+  install_managed_or_adopt dftb+ "dftbplus" dftbplus
 }
 
 install_xtb4stda_bundle() {

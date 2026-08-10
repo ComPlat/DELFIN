@@ -2469,6 +2469,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                         '<pre style="font-size:12px;">' +
                         html.escape('\n'.join(told)) + '</pre>')
                     answer = qm_health.repair_tool(row.name, row.repair)
+                    # What the installer itself said. Without it a repair that
+                    # achieved nothing reads as "std2 still does not: not
+                    # found" and the reason -- a missing compiler, no network,
+                    # a prerequisite it refused over -- stays in a buffer
+                    # nobody sees.
+                    for line in (answer.get('lines') or [])[-40:]:
+                        told.append('    ' + str(line))
                     told.append('  ' + str(answer.get('status') or ''))
                 conditions = qm_health.probe_environment()
                 after = qm_health.check_tools(

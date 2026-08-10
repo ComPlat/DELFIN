@@ -274,6 +274,30 @@ def why_it_stopped(output: Any) -> str:
             'that the charge and multiplicity fit the structure.')
 
 
+def _said_version(output: Any) -> str:
+    found = _VERSION_RE.search(str(output or ''))
+    return found.group(1) if found else ''
+
+
+def which_xtb_ran(binary: Any, output: Any = '') -> str:
+    """Which program actually ran, named in the failure itself.
+
+    Two accounts on one cluster do not necessarily run the same xtb: a module,
+    a conda environment, a build in somebody's home directory. One of them
+    optimises and the other stops with a Fortran format error inside xtb's own
+    optimiser -- the same structure, the same DELFIN, a different binary. With
+    the path and version in the message the two can be compared; without them
+    there is nothing to compare.
+    """
+    said = _said_version(output)
+    where = str(binary or '')
+    if not where:
+        return ''
+    return (f'This ran {where}' + (f', xtb {said}' if said else '')
+            + ' -- a failure inside xtb itself is a fault of that build, not '
+              'of the structure, and another one may not have it.')
+
+
 def parameter_home(binary: Any) -> Optional[str]:
     """The parameter directory that belongs to this binary, if it has one.
 
@@ -925,8 +949,10 @@ def optimize_with_gfn(
         if relaxed is None:
             return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
                     'seconds': seconds, 'frames': [], 'output': output[-4000:],
+                    'binary': str(binary), 'version': _said_version(output),
                     'status': (f'{label}: {why_it_stopped(output)} The '
-                               'structure was left as it was.')}
+                               'structure was left as it was. '
+                               f'{which_xtb_ran(binary, output)}')}
 
         # Which program, which version, which Hamiltonian -- read out of the
         # run.  Passing --gfn 2 and being given GFN2 are two different claims,
@@ -975,10 +1001,10 @@ def optimize_with_gfn(
                 'seconds': time.perf_counter() - started, 'engine': 'xtb',
                 'version': version, 'hamiltonian': reported or wanted,
                 'frames': [],
-                'output': output[-4000:],
+                'output': output[-4000:], 'binary': str(binary),
                 'status': (f'{label} stopped with an error: '
                            f'{why_it_stopped(output)} The structure was left '
-                           'as it was.'),
+                           f'as it was. {which_xtb_ran(binary, output)}'),
             }
 
         converged = 'GEOMETRY OPTIMIZATION CONVERGED' in output
