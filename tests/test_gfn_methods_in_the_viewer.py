@@ -2816,7 +2816,9 @@ def test_the_installer_can_be_asked_for_gxtb():
 
     script = open(gfn.install_script(), encoding="utf-8").read()
     assert "install_gxtb()" in script
-    assert "gxtb|g-xtb)   install_gxtb ;;" in script
+    # The dispatch moved into install_one, where each tool is attempted on its
+    # own so that one failing does not take the rest of the list with it.
+    assert "gxtb|g-xtb)     install_gxtb ;;" in script
     assert "sha256sum" in script, (
         "a binary fetched from the network and run on a user's structures is "
         "worth the one line it costs to check it is the one that was published"

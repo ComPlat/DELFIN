@@ -508,3 +508,92 @@ def test_the_install_button_writes_where_the_resolver_reads(tmp_path,
     # told, which is why naming the directory changed nothing.
     text = gfn.install_script().read_text(encoding='utf-8')
     assert 'ROOT="${DELFIN_QM_TOOLS_ROOT:-${DELFIN_QM_ROOT:-' in text
+
+
+# ---------------------------------------------------------------------------
+# one tool failing is not the whole install failing
+# ---------------------------------------------------------------------------
+def test_a_tool_that_cannot_be_installed_does_not_stop_the_others():
+    """It all ran in one breath under ``set -e``.
+
+    No micromamba and the whole thing stopped at the first tool, so xtb4stda
+    and stda -- which need nothing but curl -- were never even attempted. And
+    std2, built from source and wanting a compiler, is last: on a machine
+    without one, four successful installs came back as "exit code 1" with no
+    summary at all. The reverse happened too, in the other installers: tools
+    that quietly installed nothing returned 0.
+
+    Run for real with micromamba out of the PATH, asking for xtb and xtb4stda:
+    xtb failed, xtb4stda and stda were installed anyway, and the run said
+    which was which.
+    """
+    from delfin.dashboard.gfn_optimize import install_script
+
+    text = install_script().read_text(encoding='utf-8')
+    body = text.split('attempt() {')[1].split('\n}')[0]
+    assert '( set +e; install_one' in body, 'one failure still takes the run down'
+    assert 'the others are still being tried' in body
+
+    main = text.split('\nmain() {')[1].split('\n}')[0]
+    assert 'FAILED' in main and 'INSTALLED' in main
+    # A partial install is not a success, and the summary says which parts are
+    # which -- both directions were wrong before.
+    assert 'Not installed:' in main
+    assert 'return 1' in main and 'return 0' in main
+
+
+def test_an_update_says_what_it_changed():
+    from delfin.dashboard.gfn_optimize import install_script
+
+    text = install_script().read_text(encoding='utf-8')
+    assert 'version_of() {' in text
+    assert '"${tool} ${was} -> ${now}"' in text, 'an update that says nothing'
+    assert '(unchanged)' in text
+
+
+def test_packages_land_in_the_interpreter_that_will_import_them():
+    """Taking the first python on the PATH put them somewhere else.
+
+    Measured: the installer chose 3.13 while the dashboard ran 3.11, so cclib,
+    nglview, censo, morfeus and torch were installed and missing at the same
+    time -- and the Settings tab's own help text said it used the active
+    environment.
+    """
+    import pathlib
+    import subprocess
+    import sys
+
+    from delfin import runtime_setup
+
+    root = pathlib.Path(runtime_setup.__file__).resolve().parent
+    installers = [
+        'qm_tools/install_qm_tools.sh',
+        'analysis_tools/install_analysis_tools.sh',
+        'csp_tools/install_csp_tools.sh',
+        'mlp_tools/install_mlp_tools.sh',
+        'ai_tools/install_ai_tools.sh',
+    ]
+    for name in installers:
+        script = root / name
+        if not script.is_file():
+            continue
+        text = script.read_text(encoding='utf-8')
+        assert 'DELFIN_PYTHON' in text, name
+        # It is asked before the PATH, or it would change nothing.
+        detect = text.split('detect_python() {')[1].split('\n}')[0]
+        assert detect.index('DELFIN_PYTHON') < detect.index('have python'), name
+
+    # And the callers say which interpreter that is.
+    source = pathlib.Path(runtime_setup.__file__).read_text(encoding='utf-8')
+    assert source.count('env.setdefault("DELFIN_PYTHON", sys.executable)') >= 5
+
+    # Proven by running the function itself.
+    detect = (root / 'qm_tools' / 'install_qm_tools.sh').read_text(encoding='utf-8')
+    body = detect.split('detect_python() {')[0] + '\n'
+    fragment = 'detect_python() {' + detect.split('detect_python() {')[1].split('\n}')[0] + '\n}\n'
+    told = subprocess.run(
+        ['bash', '-c',
+         'have() { command -v "$1" >/dev/null 2>&1; }\n' + fragment + 'detect_python'],
+        capture_output=True, text=True,
+        env={'PATH': os.environ.get('PATH', ''), 'DELFIN_PYTHON': sys.executable})
+    assert told.stdout.strip() == sys.executable, told.stdout

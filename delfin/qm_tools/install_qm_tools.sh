@@ -71,6 +71,18 @@ have() {
 }
 
 detect_python() {
+  # The interpreter DELFIN is actually running in, when the caller says so.
+  #
+  # Taking the first `python` on the PATH was the default, and on a machine
+  # where that is a different environment from the dashboard's -- which it
+  # usually is -- every package installed here landed somewhere the dashboard
+  # cannot import from. Measured: the installer chose Python 3.13 while the
+  # dashboard ran 3.11, so cclib, nglview, censo, morfeus and torch were all
+  # installed and all missing at the same time.
+  if [[ -n "${DELFIN_PYTHON:-}" && -x "${DELFIN_PYTHON}" ]]; then
+    printf "%s\n" "${DELFIN_PYTHON}"
+    return 0
+  fi
   if have python; then
     command -v python
     return 0
@@ -459,41 +471,98 @@ summary() {
   fi
 }
 
+# What each tool was before we touched it, so an update can say what it did.
+version_of() {
+  local prog="$1" binary="${BIN_DIR}/$1"
+  [[ -x "${binary}" ]] || { printf "absent\n"; return; }
+  case "${prog}" in
+    xtb|xtb-gxtb) "${binary}" --version 2>&1 | grep -oE "xtb version [0-9.]+" \
+                    | head -1 | awk '{print $3}' ;;
+    crest)        "${binary}" --version 2>&1 | grep -oiE "version [0-9.]+" \
+                    | head -1 | awk '{print $2}' ;;
+    dftb+)        "${binary}" --version 2>&1 | grep -oE "[0-9]+\.[0-9.]+" | head -1 ;;
+    *)            printf "present\n" ;;
+  esac
+}
+
+# One tool at a time, and one that fails takes only itself down.
+#
+# Everything used to run in one breath under `set -e`: no micromamba and the
+# whole thing stopped at the first tool, so xtb4stda and stda -- which need
+# nothing but curl -- were never even attempted. And std2, which is built from
+# source and wants a compiler, is last, so on a machine without one four
+# successful installs were reported as "exit code 1" with no summary at all.
+# The reverse happened too: tools that quietly installed nothing returned 0.
+#
+# So each one runs in a subshell, its outcome is recorded, and the run goes on.
+INSTALLED=()
+FAILED=()
+
+attempt() {
+  local tool="$1" was
+  was="$(version_of "${tool}")"
+  log "--- ${tool}"
+  if ( set +e; install_one "${tool}" ) ; then
+    local now
+    now="$(version_of "${tool}")"
+    if [[ "${was}" != "${now}" && "${was}" != "absent" ]]; then
+      INSTALLED+=("${tool} ${was} -> ${now}")
+    elif [[ "${was}" == "absent" ]]; then
+      INSTALLED+=("${tool} ${now}")
+    else
+      INSTALLED+=("${tool} ${now} (unchanged)")
+    fi
+  else
+    FAILED+=("${tool}")
+    warn "${tool} could not be installed; the others are still being tried"
+  fi
+}
+
+install_one() {
+  case "$1" in
+    xtb)            install_xtb ;;
+    gxtb|g-xtb)     install_gxtb ;;
+    crest)          install_crest ;;
+    dftb+|dftbplus) install_dftbplus ;;
+    xtb4stda|stda)  install_xtb4stda_bundle ;;
+    std2)           install_std2 ;;
+    *) die "Unknown tool: $1. Available: xtb, gxtb, crest, dftb+, xtb4stda, stda, std2, all" ;;
+  esac
+}
+
 main() {
   ensure_dirs
 
+  local wanted=()
   if [[ $# -eq 0 ]]; then
-    # No arguments: install everything (legacy behavior).
-    install_xtb
-    install_crest
-    install_dftbplus
-    install_xtb4stda_bundle
-    install_std2
+    wanted=(xtb crest dftb+ xtb4stda std2)
   else
-    # Selective install: only the requested tools.
     for tool in "$@"; do
-      case "${tool}" in
-        xtb)          install_xtb ;;
-        gxtb|g-xtb)   install_gxtb ;;
-        crest)        install_crest ;;
-        dftb+|dftbplus) install_dftbplus ;;
-        xtb4stda|stda) install_xtb4stda_bundle ;;
-        std2)         install_std2 ;;
-        all)
-          install_xtb
-          install_crest
-          install_dftbplus
-          install_xtb4stda_bundle
-          install_std2
-          ;;
-        *)
-          die "Unknown tool: ${tool}. Available: xtb, gxtb, crest, dftb+, xtb4stda, stda, std2, all"
-          ;;
-      esac
+      if [[ "${tool}" == "all" ]]; then
+        wanted+=(xtb crest dftb+ xtb4stda std2)
+      else
+        wanted+=("${tool}")
+      fi
     done
   fi
 
+  local tool
+  for tool in "${wanted[@]}"; do
+    attempt "${tool}"
+  done
+
   summary
+
+  if ((${#INSTALLED[@]})); then
+    printf "\nInstalled:\n"
+    printf "  %s\n" "${INSTALLED[@]}"
+  fi
+  if ((${#FAILED[@]})); then
+    printf "\nNot installed: %s\n" "${FAILED[*]}"
+    printf "The rest of the list was still installed -- see above.\n"
+    return 1
+  fi
+  return 0
 }
 
 main "$@"

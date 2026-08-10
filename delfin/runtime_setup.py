@@ -816,6 +816,13 @@ def run_bwunicluster_installer(
         raise FileNotFoundError("BwUniCluster installer script not found in repo or packaged resources.")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     if repo_path is not None:
         env["DELFIN_REPO"] = str(repo_path)
     if calc_dir:
@@ -1095,6 +1102,13 @@ def run_qm_tools_installer(
         raise FileNotFoundError(f"qm_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_QM_ROOT"] = str(target)
     env["DELFIN_QM_TOOLS_ROOT"] = str(target)
     if extra_env:
@@ -1144,6 +1158,13 @@ def run_csp_tools_installer(
         raise FileNotFoundError(f"csp_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_CSP_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1188,6 +1209,13 @@ def run_mlp_tools_installer(
         raise FileNotFoundError(f"mlp_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_MLP_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1232,6 +1260,13 @@ def run_analysis_tools_installer(
         raise FileNotFoundError(f"analysis_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_ANALYSIS_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1276,6 +1311,13 @@ def run_ai_tools_installer(
         raise FileNotFoundError(f"ai_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_AI_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
