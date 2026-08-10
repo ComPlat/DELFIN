@@ -691,3 +691,53 @@ def test_a_run_says_the_tool_cannot_do_it_rather_than_letting_it_try(monkeypatch
     assert not outcome['ok']
     assert '6.6.1' in outcome['status']
     assert outcome['xyz'] == water, 'the structure is left as it was'
+
+
+def test_anything_the_installer_knows_is_fetched_when_it_is_needed(monkeypatch):
+    """The rule that was written for xtb, applied to the rest.
+
+    A tool needed and not there is fetched once, with a word about why the
+    wait is happening, and never a second time in one session.
+    """
+    ran = []
+    monkeypatch.setattr(qm_health, '_TRIED', set())
+    monkeypatch.setattr(qm_health, 'check_tool', lambda name, **kw: qm_health.ToolHealth(
+        name=name, label='CREST', level='absent' if not ran else 'ok',
+        present=bool(ran), why='' if ran else 'not found'))
+
+    from delfin.dashboard import gfn_optimize as gfn
+
+    monkeypatch.setattr(gfn, 'install_xtb',
+                        lambda on_line=None, timeout=0, tool='': ran.append(tool))
+    monkeypatch.delenv('DELFIN_AUTO_INSTALL_QM_TOOLS', raising=False)
+
+    said = []
+    outcome = qm_health.ensure_tool('crest', on_line=said.append)
+    assert ran == ['crest']
+    assert outcome['ok'] and outcome['installed']
+    assert said and 'Installing it' in said[0]
+
+
+def test_a_licensed_program_is_never_fetched_on_the_users_behalf(monkeypatch):
+    """ORCA, Turbomole, Gaussian and Multiwfn are downloaded by whoever holds
+    the licence. A program that goes and gets one for them is not helping."""
+    monkeypatch.setattr(qm_health, '_TRIED', set())
+    monkeypatch.setattr(qm_health, 'check_tool', lambda name, **kw: qm_health.ToolHealth(
+        name=name, label='ORCA', level='absent', why='not found'))
+
+    for name in ('orca', 'turbomole', 'multiwfn'):
+        outcome = qm_health.ensure_tool(name)
+        assert not outcome['ok'] and not outcome['installed']
+        assert 'licence' in outcome['status'], name
+
+
+def test_running_a_tool_reaches_for_it_before_giving_up():
+    """run_tool is the one place the rest of DELFIN starts a QM tool, so it is
+    the one place worth asking."""
+    import inspect
+
+    from delfin import qm_runtime
+
+    body = inspect.getsource(qm_runtime.run_tool)
+    assert 'ensure_tool' in body
+    assert body.index('ensure_tool') < body.index('raise FileNotFoundError')

@@ -39,7 +39,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 __all__ = [
     'ToolHealth', 'PROBES', 'known_tools', 'probe_environment',
     'check_tool', 'check_tools', 'repair_actions', 'repair_command',
-    'repair_tool', 'format_health',
+    'repair_tool', 'ensure_tool', 'format_health',
 ]
 
 #: Three atoms, so a probe costs milliseconds rather than seconds.
@@ -632,6 +632,61 @@ def repair_tool(name: str, action: str = '', *,
         'action': action, 'lines': lines, 'health': after.as_dict(),
         'status': (f'{after.label} works now.' if after.healthy
                    else f'{after.label} still does not: {after.why}'),
+    }
+
+
+#: Tools this session has already tried to install by itself.
+_TRIED: set = set()
+
+
+def ensure_tool(name: str,
+                on_line: Optional[Callable[[str], None]] = None,
+                timeout: float = 1800.0) -> Dict[str, Any]:
+    """The tool, installed if it is not there -- for anything the installer knows.
+
+    The same rule as for xtb, applied to the rest: a tool that is needed and
+    is not there is fetched once, with a word about why the wait is happening,
+    and never a second time in one session.
+
+    Licensed programs are not in :data:`INSTALLABLE` and are never fetched:
+    ORCA, Turbomole, Gaussian and Multiwfn are downloaded by the person who
+    holds the licence, and a program that goes and gets one on their behalf is
+    not being helpful.
+    """
+    health = check_tool(name, depth='runs')
+    if health.level == 'ok' and health.present:
+        return {'ok': True, 'installed': False, 'health': health, 'status': ''}
+
+    from delfin.dashboard.gfn_optimize import auto_install_allowed, install_xtb
+
+    if name not in INSTALLABLE:
+        return {'ok': False, 'installed': False, 'health': health,
+                'status': (f'{health.label or name} is not there, and it is '
+                           'not one DELFIN installs -- it is licensed and is '
+                           'fetched by whoever holds the licence.')}
+    if not auto_install_allowed():
+        return {'ok': False, 'installed': False, 'health': health,
+                'status': (f'{health.label or name}: {health.why or "not found"}. '
+                           'Automatic installation is switched off.')}
+    if name in _TRIED:
+        return {'ok': False, 'installed': False, 'health': health,
+                'status': (f'{health.label or name}: {health.why or "not found"}. '
+                           'It was already installed once this session and is '
+                           'still not right -- Settings shows the installer\'s '
+                           'own output.')}
+
+    _TRIED.add(name)
+    if on_line is not None:
+        on_line(f'{health.label or name}: {health.why or "not installed"}. '
+                'Installing it -- a few minutes.')
+    install_xtb(on_line=on_line, timeout=timeout, tool=name)
+    after = check_tool(name, depth='runs')
+    return {
+        'ok': after.level == 'ok' and after.present, 'installed': True,
+        'health': after,
+        'status': (f'{after.label or name} was missing and has been installed.'
+                   if after.present else
+                   f'{after.label or name} could not be installed: {after.why}'),
     }
 
 

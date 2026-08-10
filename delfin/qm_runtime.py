@@ -543,6 +543,19 @@ def run_tool(
 ) -> subprocess.CompletedProcess:
     resolved = resolve_tool(name)
     if resolved is None:
+        # Needed and not there. For anything DELFIN installs, that is a wait
+        # rather than a wall -- and it is the moment to find out, because the
+        # caller is about to use it. Imported here, not at the top: the health
+        # layer asks this module where things are.
+        try:
+            from delfin.qm_health import ensure_tool
+
+            told = ensure_tool(name)
+            if told.get("ok"):
+                resolved = resolve_tool(name)
+        except Exception:
+            resolved = None
+    if resolved is None:
         raise FileNotFoundError(f"QM tool not found: {name}")
 
     if resolved.source.startswith("module:"):
