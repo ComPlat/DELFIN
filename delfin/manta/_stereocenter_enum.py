@@ -405,6 +405,48 @@ def expand_results(results):
     h_heavy_min = _env_float("DELFIN_STEREOCENTER_H_HEAVY_MIN", 1.45)
     h_h_min = _env_float("DELFIN_STEREOCENTER_H_H_MIN", 1.25)
 
+    # ===== FAMILY PARTITION (DELFIN_STEREOCENTER_FAMILY_PARTITION, default OFF -> byte-identical) =====
+    #
+    # THE BUG, measured 2026-08-10 on YANLEG (archive_tpr6abl10k_champ, 276 frames):
+    #     O-trans   60 frames   ALL anti,  0 syn
+    #     N0-trans  60 frames   ALL anti,  0 syn
+    #     all-cis   40 frames   ALL anti,  0 syn
+    # 160 frames carrying exactly ONE of the two diastereomers, and not one `_stereo-` suffix
+    # among them -- every fold this module added went to a family holding a SINGLE frame.
+    # The crystal (YANLEG/YANLIK, same SMILES) is the anti fold: O-Mn-O 178.5 deg, the two
+    # amine N cis at 84.6 deg, and each N-H pointing at a different phenolate O (H...O 2.65
+    # and 2.57 A).  So the built member is right and its (R,R)/(S,S) partner is simply absent.
+    #
+    # WHY.  ``_coord_iso_key`` is a purely GEOMETRIC signature -- donor elements plus a
+    # cis/trans bucket multiset plus a chirality sign.  Different arrangements can share it:
+    # YANLEG collapses 38 label families into 17 groups, one of them holding 106 frames from
+    # 22 families.  The module then sees the fold "already present" somewhere in the group and
+    # adds nothing to the other 21 families.  It reports completeness on a partition COARSER
+    # than the one it is completing -- the same failure shape as tier2 on 2026-08-08, where a
+    # gate term compared two different frames.
+    #
+    # THE FIX is to make the group key what the manifold is actually partitioned by: the
+    # coordination signature AND the arrangement family.  ``_arrangement_key`` is the codebase's
+    # own definition of that family (it strips -confN, the Delta/Lambda hand and the duplicate
+    # -N suffix), so this reuses it instead of inventing a second notion; it is imported lazily
+    # because smiles_converter imports THIS module, and by call time it is fully loaded.
+    #
+    # It also fixes the second half of the same bug: ``reps[g]`` is the representative whose
+    # LABEL the new fold inherits, so with the family in the key a fold built for O-trans is
+    # finally labelled O-trans instead of borrowing some other family's name.
+    #
+    # ⚠ Default OFF, and it must stay off until measured: it strictly INCREASES the number of
+    # folds built (more groups -> more missing targets), so it pushes against DELFIN_STEREOCENTER_
+    # MAX_ADDED and against the hard-frame proportion.  It makes the manifold more COMPLETE,
+    # which is not automatically more CLEAN.
+    _fam_part = _env_int("DELFIN_STEREOCENTER_FAMILY_PARTITION", 0)
+    _arrk = None
+    if _fam_part:
+        try:
+            from delfin.smiles_converter import _arrangement_key as _arrk
+        except Exception:
+            _arrk = None                               # cannot partition -> behave exactly as before
+
     # Pass 1: analyse every base frame; group by coordination isomer; seed the folds already present.
     reps: dict = {}                                    # group_key -> (analysis, base_label, order)
     present: set = set()                               # (group_key, base_sign_tuple) already in manifold
@@ -422,6 +464,11 @@ def expand_results(results):
         if A is None:
             continue
         g = A["group"]
+        if _arrk is not None:
+            try:
+                g = (g, _arrk(lbl))
+            except Exception:
+                pass                                   # unparseable label -> fall back to the geometric key
         present.add((g, tuple(A["base_signs"])))
         if g not in reps:                              # representative = FIRST (best-ranked) frame of the isomer
             reps[g] = (A, lbl, order)
