@@ -6501,7 +6501,12 @@ def create_tab(ctx):
             "title='Ketcher'></iframe>"
         )
 
-    def _refresh_draw_controls():
+    def _refresh_ketcher_controls():
+        # Named for what it is.  This was called _refresh_draw_controls, which
+        # is also the name of the one that shows the element dropdown for
+        # drawing atoms in the viewer -- the later definition replaced the
+        # earlier, so switching the viewer's Draw on stopped offering an
+        # element to draw with.
         drawn = bool(submit_draw_open_btn.value)
         ready = _ketcher.is_installed()
         submit_draw_frame.layout.display = '' if (drawn and ready) else 'none'
@@ -6516,7 +6521,7 @@ def create_tab(ctx):
             # application inside it, and with it whatever had been drawn --
             # so folding it shut and open again lost the structure, which is
             # the opposite of what folding something away means.
-            _refresh_draw_controls()
+            _refresh_ketcher_controls()
             return
         url = _ketcher.app_url()
         if url:
@@ -6525,7 +6530,7 @@ def create_tab(ctx):
             # reloaded editor is an empty one.
             if url not in (submit_draw_frame.value or ''):
                 submit_draw_frame.value = _draw_frame_html(url)
-            _refresh_draw_controls()
+            _refresh_ketcher_controls()
             _set_mol_status(
                 f'Ketcher {version}: draw the structure, then press TO SMILES '
                 'to put it in the input box.')
@@ -6533,7 +6538,7 @@ def create_tab(ctx):
         # Not there yet.  Offered rather than fetched: it is thirty-odd
         # megabytes, and on a machine without a network it is a wait that ends
         # in nothing.
-        _refresh_draw_controls()
+        _refresh_ketcher_controls()
         if _ketcher.app_directory() is None:
             submit_draw_open_btn.value = False
             _set_mol_status(
@@ -6589,14 +6594,14 @@ def create_tab(ctx):
                 submit_draw_update_btn.button_style = ''
                 if not outcome['ok']:
                     submit_draw_open_btn.value = False
-                    _refresh_draw_controls()
+                    _refresh_ketcher_controls()
                     _set_mol_status(outcome['status'])
                     return
                 url = _ketcher.app_url()
                 submit_draw_frame.value = _draw_frame_html(url) if url else ''
                 if not submit_draw_open_btn.value:
                     submit_draw_open_btn.value = True
-                _refresh_draw_controls()
+                _refresh_ketcher_controls()
                 _set_mol_status(outcome['status'],
                                 'Draw the structure, then press TO SMILES.')
 
@@ -6991,6 +6996,8 @@ def create_tab(ctx):
         'submit_gfn_autospin': submit_gfn_autospin,
         'submit_gfn_solvent': submit_gfn_solvent,
         'submit_dyn_bonds_btn': submit_dyn_bonds_btn,
+        'submit_draw_btn': submit_draw_btn,
+        'submit_element_dd': submit_element_dd,
         'submit_draw_open_btn': submit_draw_open_btn,
         'submit_draw_get_btn': submit_draw_get_btn,
         'submit_draw_update_btn': submit_draw_update_btn,

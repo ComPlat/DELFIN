@@ -45,12 +45,11 @@ def test_they_are_set_beside_each_other_rather_than_inside():
 
     row = separate.place_beside([first, second])
 
-    assert row.splitlines()[0] == "5"
+    lines = [l for l in row.splitlines() if l.strip()]
+    assert len(lines) == 5, "coordinate lines only, no header of its own"
     assert separate.closest_approach([first, second]) < 1.0, (
         "on top of each other before"
     )
-    # after placing, measured between the two groups of the row
-    lines = [l for l in row.splitlines()[2:] if l.strip()]
     assert separate.closest_approach(
         ["\n".join(lines[:3]), "\n".join(lines[3:])]) >= separate.GAP - 0.01
 
@@ -84,18 +83,26 @@ def test_one_arrangement_beside_many_does_not_multiply_into_many():
     """A metal complex may come back as twelve arrangements and the counter-ion
     beside it as one.  Every pairing would be twelve frames of the same
     counter-ion, which is what a combinatorial product buys here: nothing."""
-    many = [(f"1\niso{i}\nH {i} 0 0\n", f"label{i}") for i in range(12)]
-    one = [("1\nonly\nHe 0 0 0\n", "counter-ion")]
+    # (coordinates, how many atoms, what to call it) -- what every converter
+    # here answers with
+    many = [(f"H {i} 0 0\n", 1, f"label{i}") for i in range(12)]
+    one = [("He 0 0 0\n", 1, "counter-ion")]
 
     frames = separate.combine_isomers([many, one])
 
     assert len(frames) == 12, "the part with the most arrangements leads"
-    assert [f[1] for f in frames] == [f"label{i}" for i in range(12)], (
-        "and the labels come from it, not from the one that stands still"
+    assert all(f[2].startswith("2 systems") for f in frames), (
+        "the label says how many systems are in the picture"
+    )
+    assert [f[2].split(", ", 1)[1] for f in frames] == [
+        f"label{i}" for i in range(12)], (
+        "and the rest of it comes from the part that leads, not from the one "
+        "that stands still"
     )
     for frame in frames:
-        rows = [l for l in frame[0].splitlines()[2:] if l.strip()]
+        rows = [l for l in frame[0].splitlines() if l.strip()]
         assert len(rows) == 2, "both systems are in every frame"
+        assert frame[1] == 2, "and the count is the row's own"
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +123,8 @@ def test_hexaphenylbenzene_and_benzene_stop_being_inside_each_other():
     assert built["parts"] == 2
     assert built["atoms"] == 84, "no atom is lost by building them apart"
 
-    rows = [l for l in built["xyz"].splitlines()[2:] if l.strip()]
+    rows = [l for l in built["xyz"].splitlines() if l.strip()]
+    assert len(rows) == 84, "the block is coordinates and nothing else"
     big, small = "\n".join(rows[:72]), "\n".join(rows[72:])
     assert separate.closest_approach([big, small]) > 3.0, (
         "the two systems have to be far enough apart to be two systems"
@@ -185,3 +193,58 @@ def test_each_part_gets_the_hapticity_previews_of_its_own_ligands(editor=None):
     assert "made, part, include_quick=apply_uff" in manifold, (
         "from the part's own SMILES, not from the whole string"
     )
+
+
+def test_the_block_carries_no_header_of_its_own():
+    """The converters here answer with coordinate lines and the tab writes the
+    count and the comment itself.  A whole file handed back instead put a
+    second header inside the block, and whoever read the count took those two
+    lines for atoms and lost the last two -- two hydrogens off the end of a
+    benzene, in a structure that said 24 and had 24.
+    """
+    first = "2\na\nH 0 0 0\nH 1 0 0\n"
+    second = "1\nb\nHe 0 0 0\n"
+
+    row = separate.place_beside([first, second])
+
+    lines = [line for line in row.splitlines() if line.strip()]
+    assert len(lines) == 3, "three atoms, three lines, nothing else"
+    for line in lines:
+        assert len(line.split()) == 4, f"not a coordinate line: {line!r}"
+    assert not lines[0].strip().isdigit()
+
+    out = separate.convert_each("[H][H].[He]",
+                                lambda s: (first if "H][H" in s else second,
+                                           0, "quick", None))
+    assert out["atoms"] == 3
+    assert len([l for l in out["xyz"].splitlines() if l.strip()]) == 3, (
+        "the count and the block have to agree, or atoms fall off the end"
+    )
+
+
+def test_three_systems_work_as_well_as_two():
+    """Nothing in this is about there being two of them."""
+    blocks = ["1\na\nH 0 0 0\n", "1\nb\nHe 0 0 0\n", "1\nc\nLi 0 0 0\n"]
+
+    row = separate.place_beside(blocks)
+    lines = [l for l in row.splitlines() if l.strip()]
+
+    assert len(lines) == 3
+    xs = sorted(float(l.split()[1]) for l in lines)
+    assert xs[1] - xs[0] >= separate.GAP - 0.01
+    assert xs[2] - xs[1] >= separate.GAP - 0.01
+
+
+@pytest.mark.skipif(pytest.importorskip("rdkit") is None, reason="needs rdkit")
+def test_three_benzenes_come_out_as_three_benzenes():
+    from delfin.dashboard.input_processing import smiles_to_xyz_quick
+
+    out = separate.convert_each("c1ccccc1.c1ccccc1.c1ccccc1",
+                                smiles_to_xyz_quick)
+
+    assert out["ok"] is True and out["parts"] == 3
+    assert out["atoms"] == 36, "twelve atoms each, and none lost"
+    lines = [l for l in out["xyz"].splitlines() if l.strip()]
+    assert len(lines) == 36
+    groups = ["\n".join(lines[i * 12:(i + 1) * 12]) for i in range(3)]
+    assert separate.closest_approach(groups) > 3.0

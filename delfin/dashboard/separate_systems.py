@@ -107,14 +107,19 @@ def _radius(atoms: List[Tuple[str, float, float, float]],
     return max((math.dist(a[1:], centre) for a in atoms), default=0.0)
 
 
-def place_beside(blocks: List[str], gap: float = GAP,
-                 comment: str = 'built separately, set side by side') -> str:
+def place_beside(blocks: List[str], gap: float = GAP) -> str:
     """Put each block next to the last one instead of on top of it.
 
     Along one axis, each system centred on that axis and pushed out by its own
     reach plus the one before it: two spheres that just contain them, set apart
     by *gap*.  A row rather than a cloud, because a row is what a viewer shows
     without having to be turned.
+
+    Coordinate lines and nothing else, which is what the converters here
+    return and what the tab expects: it writes the count and the comment
+    itself.  Handing back a whole file instead put a second header inside the
+    block, and whoever read the count then took those two lines for atoms and
+    lost the last two -- two hydrogens off the end of a benzene.
     """
     groups = [_atoms(block) for block in blocks]
     groups = [g for g in groups if g]
@@ -131,7 +136,7 @@ def place_beside(blocks: List[str], gap: float = GAP,
                 f'{symbol} {x - centre[0] + offset:.8f} '
                 f'{y - centre[1]:.8f} {z - centre[2]:.8f}')
         edge = offset + reach + gap
-    return f'{len(placed)}\n{comment}\n' + '\n'.join(placed) + '\n'
+    return '\n'.join(placed) + '\n'
 
 
 def closest_approach(blocks: List[str]) -> float:
@@ -183,9 +188,7 @@ def convert_each(
             }
         blocks.append(xyz)
         methods.append(method)
-    joined = place_beside(
-        blocks, gap=gap,
-        comment=f'{len(parts)} systems, built separately and set side by side')
+    joined = place_beside(blocks, gap=gap)
     return {
         'ok': True, 'xyz': joined, 'atoms': len(_atoms(joined)),
         'parts': len(parts),
@@ -220,11 +223,16 @@ def combine_isomers(per_part: List[List[Any]], gap: float = GAP) -> List[Any]:
         for part in lists:
             item = part[min(index, len(part) - 1)]
             blocks.append(item[0] if isinstance(item, (tuple, list)) else item)
-        joined = place_beside(
-            blocks, gap=gap,
-            comment=f'{len(lists)} systems, built separately '
-                    f'(arrangement {index + 1} of {frames})')
+        joined = place_beside(blocks, gap=gap)
         head = lists[leader][min(index, len(lists[leader]) - 1)]
-        rest = tuple(head[1:]) if isinstance(head, (tuple, list)) else ()
-        out.append((joined,) + rest)
+        # (coordinates, how many atoms, what to call it) -- the shape every
+        # converter here answers in.  The count is the row's, not the leader's.
+        # (coordinates, count, label) is what the converters answer with, but
+        # a shorter tuple is not a reason to fall over.
+        label = ''
+        if isinstance(head, (tuple, list)) and len(head) > 2:
+            label = str(head[2] or '')
+        out.append((joined, len(_atoms(joined)),
+                    f'{len(lists)} systems, {label}' if label
+                    else f'{len(lists)} systems'))
     return out

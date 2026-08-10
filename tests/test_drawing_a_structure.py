@@ -400,3 +400,43 @@ def test_a_molecule_without_a_metal_is_left_exactly_as_drawn():
 
     assert outcome["dative"] == 0
     assert outcome["smiles"] == "CC(=O)Oc1ccccc1C(=O)O"
+
+
+def test_the_viewers_own_draw_still_offers_an_element(editor):
+    """Two functions of the same name in one scope: the later replaces the
+    earlier.  The drawing panel's refresh was called _refresh_draw_controls,
+    which is what the viewer's own Draw uses to show the element dropdown --
+    so switching Draw on stopped offering an element to draw with.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    assert source.count("    def _refresh_draw_controls():") == 1, (
+        "one name, one function"
+    )
+    assert "    def _refresh_ketcher_controls():" in source
+
+    editor["coords_widget"].value = "3\nw\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n"
+    assert editor["submit_element_dd"].layout.display == "none"
+
+    editor["submit_draw_btn"].value = True
+    assert editor["submit_element_dd"].layout.display == "", (
+        "Draw has to offer an element to draw with"
+    )
+
+    editor["submit_draw_btn"].value = False
+    assert editor["submit_element_dd"].layout.display == "none"
+
+
+def test_a_converted_structure_can_be_worked_on_at_once(editor):
+    """Showing a structure is what enables the editing toolbar -- there is no
+    second step between converting and being able to take hold of it."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    shower = source.split("def _replace_mol_output_view")[1].split("\n    def ")[0]
+    assert "_set_manip_toolbar_enabled(True)" in shower
+
+    editor["coords_widget"].value = "3\nw\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n"
+    assert editor["submit_ff_dd"].disabled is False
+    assert editor["submit_draw_btn"].disabled is False
