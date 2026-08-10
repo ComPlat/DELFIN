@@ -164,6 +164,138 @@ def find_binary(method: Any = None) -> Optional[str]:
     return find_xtb()
 
 
+#: Lines that say a run ended, not why it ended.  Chosen as the reason, every
+#: one of them leaves the user with nothing to act on -- which is exactly what
+#: happened: an optimisation came back as
+#: "GFN2-xTB: Error termination. Backtrace:." and the sentence above the
+#: backtrace, the one naming the cause, was thrown away with the rest.
+_TERMINATORS = (
+    'error termination',
+    'backtrace for this error',
+    'error stop',
+    'abnormal termination',
+    'program stopped due to fatal error',
+)
+
+#: Where the reason is written, in the order worth looking.  Two error paths
+#: run through xtb and they do not look alike: xtb's own handler prints an
+#: ``[ERROR]`` block with numbered detail lines, while a Fortran runtime error
+#: bypasses it entirely and prints ``At line N of file ...`` followed by
+#: ``Fortran runtime error: ...``.  Only the second kind ends in a bare
+#: backtrace, and that is the kind whose reason kept getting lost.
+_REASON_MARKERS = (
+    'fortran runtime error:',
+    'program received signal',
+)
+
+#: How xtb words a complaint when it is not going through its own error block.
+#: Every one of these was seen in a run that failed: a damaged parameter file
+#: says "no basis found for atom", a solvent it does not know is "not
+#: parametrized", an xyz whose count is wrong is a "missmatch", two atoms on
+#: top of each other are a "*very* short distance".
+_COMPLAINTS = (
+    'no basis found', 'not parametrized', 'missmatch', 'mismatch',
+    'short distance', 'cannot ', 'could not ', 'failed', 'is not ',
+    'error', 'warning',
+)
+
+
+def why_it_stopped(output: Any) -> str:
+    """The sentence in xtb's output that says what went wrong.
+
+    A run that failed leaves thousands of lines and one of them is the reason.
+    Picking the last line that contains the word "error" finds a terminator --
+    ``Error termination. Backtrace:`` -- every single time a Fortran runtime
+    error is what happened, because the numbered backtrace frames below it
+    contain no words at all.  The reason sits two lines higher and went into
+    the bin with the other thirteen kilobytes.
+
+    Returns a sentence, ending in a full stop, or a plain statement that xtb
+    said nothing usable -- never an empty string, and never a terminator.
+    """
+    lines = [line.rstrip() for line in str(output or '').splitlines()]
+    stripped = [line.strip() for line in lines]
+
+    def is_terminator(text: str) -> bool:
+        low = text.lower()
+        return any(mark in low for mark in _TERMINATORS)
+
+    def is_decoration(text: str) -> bool:
+        return not text.strip(' |-.:=*_#')
+
+    # A Fortran runtime error, with the file and line it came from: that pair
+    # is the whole diagnosis, so both are kept.
+    for index, text in enumerate(stripped):
+        low = text.lower()
+        for marker in _REASON_MARKERS:
+            if marker in low:
+                said = text
+                if index and stripped[index - 1].lower().startswith('at line '):
+                    said = f'{stripped[index - 1]}: {text}'
+                return said if said.endswith('.') else said + '.'
+
+    # xtb's own error block: the numbered lines under it are the detail, and
+    # all of them are worth having, not the last one.
+    detail: list = []
+    for index, text in enumerate(stripped):
+        if 'program stopped due to fatal error' in text.lower():
+            for follow in stripped[index + 1:]:
+                if not follow:
+                    if detail:
+                        break
+                    continue
+                if is_terminator(follow) or is_decoration(follow):
+                    break
+                detail.append(follow.lstrip('-0123456789 ').strip())
+            break
+    if detail:
+        said = '; '.join(part for part in detail if part)
+        return said if said.endswith('.') else said + '.'
+
+    # Otherwise: xtb's own words, wherever they ended up.
+    #
+    # Not "the line above the terminator", which is the tempting rule and the
+    # wrong one. The two streams are merged into one file and they are not
+    # buffered alike: the terminators go to stderr and arrive at once, while
+    # everything xtb printed to stdout is flushed when it exits and lands
+    # *after* them. Measured on a damaged parameter file -- "ERROR STOP" on
+    # line 73 of the captured output and the reason,
+    # "no basis found for atom 1 Z= 8", on line 102, the last line of all.
+    # Reading upwards from the terminator gave the citation list.
+    for text in reversed(stripped):
+        low = text.lower()
+        if not text or is_terminator(text) or is_decoration(text):
+            continue
+        if any(mark in low for mark in _COMPLAINTS):
+            return text if text.endswith('.') else text + '.'
+
+    return ('xtb stopped without writing a geometry and without saying why. '
+            'Check that there is room on the disk for its scratch files, and '
+            'that the charge and multiplicity fit the structure.')
+
+
+def parameter_home(binary: Any) -> Optional[str]:
+    """The parameter directory that belongs to this binary, if it has one.
+
+    A conda or system xtb keeps its parameters in ``share/xtb`` beside the
+    ``bin`` it lives in.  g-xTB has them compiled in and ships no such
+    directory -- running it with an empty home gives the identical energy --
+    so there is nothing to point at and nothing is returned.
+    """
+    try:
+        real = Path(str(binary)).resolve()
+    except Exception:
+        return None
+    for share in (real.parent.parent / 'share' / 'xtb',
+                  real.parent.parent / 'share'):
+        try:
+            if (share / 'param_gfn2-xtb.txt').is_file():
+                return str(share)
+        except OSError:
+            continue
+    return None
+
+
 def _where_it_looked() -> str:
     """The places tried, so a missing xtb is a fixable message, not a wall."""
     places = []
@@ -631,6 +763,21 @@ def optimize_with_gfn(
         # fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
                            OMP_STACKSIZE='1G')
+        # And the parameters that belong to this binary, not whatever is lying
+        # around. xtb reads a `param_gfn2-xtb.txt` from XTBPATH or from the
+        # home directory *instead of* the parameters compiled into it, and a
+        # truncated one there turns every GFN2 run into
+        #
+        #     no basis found for atom 1 Z= 8
+        #     ERROR STOP / Error termination. Backtrace:
+        #
+        # while GFN-FF, which does not read them, goes on working -- measured,
+        # and the exact report a user sent in. Pointing XTBPATH at the share
+        # directory beside the binary restored the right answer with the bad
+        # file still in place, so that is what is done here.
+        own_parameters = parameter_home(binary)
+        if own_parameters:
+            environment['XTBPATH'] = own_parameters
         # xtb's own output goes to a file rather than to a pipe.  A pipe that
         # nobody reads holds 64 KiB and then blocks the program writing to it,
         # and the loop below reads nothing until the process has ended: xtb
@@ -776,16 +923,10 @@ def optimize_with_gfn(
         seconds = time.perf_counter() - started
 
         if relaxed is None:
-            reason = 'xtb wrote no optimised geometry'
-            for line in reversed(output.splitlines()):
-                if 'error' in line.lower() or 'abnormal' in line.lower():
-                    reason = line.strip()
-                    break
             return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                    'seconds': seconds, 'frames': [],
-                    'status': (f'{label}: {reason}. The structure was left as '
-                               'it was -- check the charge, the multiplicity '
-                               'and whether any atoms overlap.')}
+                    'seconds': seconds, 'frames': [], 'output': output[-4000:],
+                    'status': (f'{label}: {why_it_stopped(output)} The '
+                               'structure was left as it was.')}
 
         # Which program, which version, which Hamiltonian -- read out of the
         # run.  Passing --gfn 2 and being given GFN2 are two different claims,
@@ -829,22 +970,15 @@ def optimize_with_gfn(
         # "something is totally wrong".  Reporting that as a partial success
         # hands over coordinates no one should use.
         if 'abnormal termination' in output or '[ERROR]' in output:
-            said = ''
-            for line in output.splitlines():
-                stripped = line.strip()
-                if stripped.startswith('-') and 'xtb' not in stripped[:4]:
-                    said = stripped.lstrip('-0123456789 ').strip()
-                    if said:
-                        break
             return {
                 'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
                 'seconds': time.perf_counter() - started, 'engine': 'xtb',
                 'version': version, 'hamiltonian': reported or wanted,
                 'frames': [],
+                'output': output[-4000:],
                 'status': (f'{label} stopped with an error: '
-                           f'{said or "abnormal termination"}. The structure '
-                           'was left as it was -- check the charge, the '
-                           'multiplicity and whether any atoms overlap.'),
+                           f'{why_it_stopped(output)} The structure was left '
+                           'as it was.'),
             }
 
         converged = 'GEOMETRY OPTIMIZATION CONVERGED' in output

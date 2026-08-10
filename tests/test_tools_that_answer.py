@@ -1,0 +1,296 @@
+"""Installed is not the same as working, and only one of the two matters.
+
+Every failure users of this dashboard actually hit came *after* a green
+banner: a binary that could not start, an xtb reading somebody else's
+parameter files, an ordinary xtb quietly pretending to be g-xTB, a program
+that segfaults on every call reported as ok. So the check asks the tools a
+question whose answer is known, rather than asking the filesystem whether a
+file is there.
+"""
+
+from __future__ import annotations
+
+import os
+import pathlib
+import shutil
+
+import pytest
+
+from delfin import qm_health
+
+_needs_xtb = pytest.mark.skipif(not shutil.which('xtb'), reason='xtb not installed')
+
+
+# ---------------------------------------------------------------------------
+# the conditions, read rather than tested
+# ---------------------------------------------------------------------------
+def test_a_parameter_file_in_the_home_directory_is_reported(tmp_path, monkeypatch):
+    """The one that actually happened.
+
+    xtb reads ``param_gfn2-xtb.txt`` from the home directory instead of the
+    parameters compiled into it. A damaged one there ends every GFN2 run in
+    ``Error termination. Backtrace:`` while GFN-FF, which does not read them,
+    goes on working -- so the user sees a tool that half works and a message
+    with nothing in it to act on.
+    """
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'param_gfn2-xtb.txt').write_text('not a real parameter file\n')
+    monkeypatch.setenv('HOME', str(home))
+
+    seen = qm_health.probe_environment()
+    assert seen['home_parameters'] == [str(home / 'param_gfn2-xtb.txt')]
+    assert any('instead of its own parameters' in w for w in seen['warnings'])
+
+    (home / 'param_gfn2-xtb.txt').unlink()
+    assert qm_health.probe_environment()['home_parameters'] == []
+
+
+def test_a_stack_limit_that_kills_a_hessian_is_reported(monkeypatch):
+    """It cannot be probed, so it is read.
+
+    A 122-atom GFN2 Hessian was measured dying with signal 11 and no message
+    at a 512 KiB soft limit and finishing at 2 MiB -- while a water single
+    point passes at 512 KiB. No cheap probe can tell the difference, so the
+    limit is reported rather than tested.
+    """
+    import resource
+
+    real = resource.getrlimit
+    monkeypatch.setattr(resource, 'getrlimit',
+                        lambda which: (512 * 1024, real(which)[1]))
+    warnings = qm_health.probe_environment()['warnings']
+    assert any('stack limit' in w for w in warnings)
+
+    monkeypatch.setattr(resource, 'getrlimit',
+                        lambda which: (8 * 1024 * 1024, real(which)[1]))
+    assert not any('stack limit' in w
+                   for w in qm_health.probe_environment()['warnings'])
+
+
+def test_an_unset_thread_count_is_reported(monkeypatch):
+    """Unset means one thread per core: on the 384-core machine this was
+    measured on, ``xtb --version`` alone spent 2.1 CPU seconds."""
+    monkeypatch.delenv('OMP_NUM_THREADS', raising=False)
+    assert any('thread count' in w
+               for w in qm_health.probe_environment()['warnings'])
+    monkeypatch.setenv('OMP_NUM_THREADS', '1')
+    assert not any('thread count' in w
+                   for w in qm_health.probe_environment()['warnings'])
+
+
+# ---------------------------------------------------------------------------
+# the tools themselves
+# ---------------------------------------------------------------------------
+@_needs_xtb
+def test_xtb_is_asked_a_question_whose_answer_is_known():
+    health = qm_health.check_tool('xtb', depth='answer')
+
+    assert health.present and health.runnable
+    assert health.healthy, health.why
+    assert health.level == 'ok'
+    assert health.version, 'it did not say which xtb it is'
+    # And the evidence is the run, not a claim about it.
+    assert health.evidence['energy'] == pytest.approx(-0.3273, abs=1e-3)
+    assert '--gfnff' in health.evidence['command']
+
+
+@_needs_xtb
+def test_the_probe_does_not_leave_its_litter_in_the_working_directory(tmp_path,
+                                                                     monkeypatch):
+    """xtb drops charges, wbo, xtbrestart and xtbtopo.mol where it runs, and
+    GFN-FF adds gfnff_topo. A check must not put those in a user's project."""
+    monkeypatch.chdir(tmp_path)
+    qm_health.check_tool('xtb', depth='answer')
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+@_needs_xtb
+def test_a_binary_that_cannot_start_is_told_apart_from_one_that_is_missing(
+        tmp_path, monkeypatch):
+    """A tool copied out of the environment holding its libraries is present,
+    executable, and unable to run. That is not the same problem as an absent
+    one and does not have the same answer."""
+    fake = tmp_path / 'xtb'
+    fake.write_text('#!/bin/sh\n'
+                    'echo "xtb: error while loading shared libraries: '
+                    'libmctc-lib.so.0: cannot open shared object file" >&2\n'
+                    'exit 127\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(qm_health, 'find_tool',
+                        lambda name: {'path': str(fake), 'source': 'qm_tools',
+                                      'dangling': ''})
+
+    health = qm_health.check_tool('xtb', depth='answer')
+    assert health.present, 'it is there'
+    assert not health.runnable and health.level == 'fail'
+    assert 'libmctc-lib.so.0' in health.why
+    assert health.repair, 'nothing was offered to put it right'
+
+
+def test_a_dead_link_says_so_instead_of_saying_nothing(monkeypatch):
+    """A dangling qm_tools/bin/xtb is what the installer leaves when the
+    environment it pointed into is removed. ``is_file()`` follows the link, so
+    it read as "xtb was not found" while ls plainly showed an xtb -- which a
+    user cannot act on. "It points at a path that is gone" they can."""
+    monkeypatch.setattr(
+        qm_health, 'find_tool',
+        lambda name: {'path': '', 'source': '', 'dangling': '/gone/bin/xtb'})
+
+    health = qm_health.check_tool('xtb', depth='present')
+    assert health.level == 'fail'
+    assert '/gone/bin/xtb' in health.why
+    assert health.repair == 'relink'
+
+
+def test_a_program_that_crashes_on_every_call_is_not_probed():
+    """anmr segfaults on --help. Running it proves nothing either way, so it
+    is never run and never called broken for crashing."""
+    assert qm_health.PROBES['anmr']['runnable'] is False
+    if shutil.which('anmr'):
+        health = qm_health.check_tool('anmr', depth='answer')
+        assert health.present and health.level == 'warn'
+        assert 'segmentation fault' in health.why
+
+
+@pytest.mark.skipif(not shutil.which('xtb'), reason='xtb not installed')
+def test_an_ordinary_xtb_cannot_pass_itself_off_as_gxtb(monkeypatch):
+    """An ordinary xtb takes --gxtb, warns once and runs GFN2. The energy is
+    the only thing that says so: -5.07 Eh against g-xTB's -76.44."""
+    monkeypatch.setattr(
+        qm_health, 'find_tool',
+        lambda name: {'path': shutil.which('xtb'), 'source': 'PATH',
+                      'dangling': ''})
+
+    health = qm_health.check_tool('gxtb', depth='answer')
+    assert not health.healthy
+    assert 'ordinary xtb' in health.why
+    assert health.evidence['energy'] == pytest.approx(-5.0703, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# putting it right
+# ---------------------------------------------------------------------------
+def test_a_repair_is_shown_before_it_is_run():
+    """The same contract the installer already keeps: nothing happens that the
+    user has not read first."""
+    for name, action in (('xtb', 'install'), ('xtb', 'relink'),
+                         ('xtb', 'xtbpath')):
+        command = qm_health.repair_command(name, action)
+        assert command is None or isinstance(command, list)
+    assert qm_health.repair_command('xtb', 'no such action') is None
+    for action in qm_health.REPAIRS:
+        assert qm_health.REPAIRS[action]
+
+
+def test_nothing_licensed_is_installed_behind_the_users_back():
+    """ORCA, Turbomole and Multiwfn are licensed and are fetched by hand."""
+    for name in ('orca', 'turbomole', 'multiwfn', 'gaussian'):
+        assert name not in qm_health.INSTALLABLE
+
+
+@_needs_xtb
+def test_a_repair_proves_itself_afterwards():
+    """A repair that is not re-checked is a claim."""
+    answer = qm_health.repair_tool('xtb', 'xtbpath')
+    assert 'health' in answer, 'it did not look again'
+    assert answer['health']['name'] == 'xtb'
+    assert answer['ok'] is True, answer['status']
+
+
+def test_several_tools_are_checked_at_once():
+    rows = qm_health.check_tools(['xtb', 'crest', 'orca'], depth='present')
+    assert [r.name for r in rows] == ['xtb', 'crest', 'orca']
+    text = qm_health.format_health(rows)
+    assert 'xtb' in text
+    # It ends with a count, so a glance is enough.
+    assert any(word in text.splitlines()[-1]
+               for word in ('ok', 'warn', 'fail', 'absent'))
+
+
+def test_locating_everything_is_cheap_enough_for_a_background_check():
+    """It may run while the dashboard starts, so it must not be felt."""
+    import time
+
+    started = time.perf_counter()
+    qm_health.check_tools(depth='present')
+    assert time.perf_counter() - started < 2.0
+
+
+# ---------------------------------------------------------------------------
+# saying what went wrong, rather than that something did
+# ---------------------------------------------------------------------------
+def test_the_reason_is_reported_and_not_the_announcement():
+    """A user got "GFN2-xTB: Error termination. Backtrace:." and nothing else.
+
+    That line says a run ended, not why. It was chosen by scanning the output
+    backwards for the last line containing the word "error" -- and for the
+    whole family of Fortran runtime errors that is always the terminator,
+    because the numbered backtrace frames below it contain no words at all.
+    The reason sat two lines higher and went in the bin with the other
+    thirteen kilobytes.
+    """
+    from delfin.dashboard.gfn_optimize import why_it_stopped
+
+    fabina = (
+        'At line 34 of file ../src/mctc/io/write/xyz.f90\n'
+        'Fortran runtime error: Unit number is negative and unit was not '
+        'already opened with OPEN(NEWUNIT=...)\n\n'
+        'Error termination. Backtrace:\n'
+        '#0  0x5fb4c3935926 in ???\n'
+        '#1  0x5fb4c3936aad in ???\n')
+    said = why_it_stopped(fabina)
+    assert 'Fortran runtime error' in said
+    assert 'xyz.f90' in said, 'the file and line are half the diagnosis'
+    assert 'Backtrace' not in said
+
+    # xtb's own error block: every detail line, not the last one.
+    block = ('[ERROR] Program stopped due to fatal error\n'
+             '-1- Found *very* short distance of 0.000E+00 for H2-H3\n'
+             '-2- geometry is not sane\n'
+             '####################################\n'
+             'abnormal termination of xtb\n')
+    said = why_it_stopped(block)
+    assert 'short distance' in said and 'not sane' in said
+    assert '#' not in said, 'a row of hashes is not a reason'
+
+    # A signal, which has no reason line of its own.
+    assert 'SIGABRT' in why_it_stopped(
+        'Program received signal SIGABRT: Process abort signal.\n'
+        'Backtrace for this error:\n#0 0x7f00 in ???\n')
+
+    # Nothing usable: say so, and say where to look.
+    empty = why_it_stopped('   |   banner   |\n')
+    assert 'without saying why' in empty
+    assert 'disk' in empty
+
+
+def test_a_terminator_is_never_offered_as_a_reason():
+    from delfin.dashboard.gfn_optimize import why_it_stopped
+
+    for terminator in ('Error termination. Backtrace:',
+                       'Backtrace for this error:',
+                       'ERROR STOP',
+                       'abnormal termination of xtb',
+                       '[ERROR] Program stopped due to fatal error'):
+        said = why_it_stopped(f'something happened\n{terminator}\n')
+        assert terminator.lower() not in said.lower(), terminator
+
+
+def test_the_complaint_is_found_even_though_it_arrives_last():
+    """The two streams are merged and are not buffered alike: the terminators
+    go to stderr and arrive at once, everything xtb printed to stdout is
+    flushed when it exits and lands after them. Measured on a damaged
+    parameter file: ERROR STOP on line 73 of the captured output and the
+    reason on line 102, the last line of all."""
+    from delfin.dashboard.gfn_optimize import why_it_stopped
+
+    merged = ('ERROR STOP \n'
+              'Error termination. Backtrace:\n'
+              '#0  0x7f11 in ???\n'
+              '   Cite this work as:\n'
+              '   * C. Bannwarth, S. Ehlert and S. Grimme.\n'
+              ' no basis found for atom           1  Z=            8\n')
+    said = why_it_stopped(merged)
+    assert 'no basis found' in said
+    assert 'Bannwarth' not in said, 'the citation list is not a reason'

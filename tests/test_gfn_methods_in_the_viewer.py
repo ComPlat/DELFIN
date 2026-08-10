@@ -597,7 +597,13 @@ def test_an_xtb_error_is_a_failure_not_a_partial_result():
         pytest.skip("this xtb build survived the overlap")
     assert result["xyz"] == broken, "the structure must be left as it was"
     assert result["frames"] == []
-    assert "charge" in result["status"] and "overlap" in result["status"]
+    # And it says what xtb said, not that a run ended. "Error termination.
+    # Backtrace:" is an announcement; the reason is a different line.
+    said = result["status"].lower()
+    assert "error termination" not in said, result["status"]
+    assert "backtrace" not in said, result["status"]
+    assert len(result["status"]) > 40, "there is more to say than this"
+    assert result.get("output"), "the output is kept, or nobody can look"
 
 
 def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
@@ -2892,3 +2898,73 @@ def test_gxtb_holds_what_the_editor_holds():
     second = [float(v) for v in rows[1][1:4]]
     length = sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
     assert abs(length - 1.05) < 0.01, f"the held O-H came out at {length:.3f} A"
+
+
+@_needs_xtb
+def test_xtb_uses_its_own_parameters_and_not_whatever_is_lying_around(tmp_path,
+                                                                     monkeypatch):
+    """A stray parameter file in the home directory killed every GFN2 run.
+
+    xtb reads ``param_gfn2-xtb.txt`` from XTBPATH or from the home directory
+    *instead of* the parameters compiled into it. A truncated one there gives
+
+        no basis found for atom 1 Z= 8
+        ERROR STOP / Error termination. Backtrace:
+
+    on every GFN2 run, while GFN-FF -- which does not read them -- goes on
+    working. That pair is the fingerprint, and it is the report that came in
+    from a user: an optimisation that failed with a backtrace and nothing to
+    act on. Pointing XTBPATH at the share directory beside the binary restores
+    the right answer with the bad file still in place.
+    """
+    from delfin.dashboard import gfn_optimize as gfn
+
+    real = gfn.parameter_home(gfn.find_xtb())
+    if not real:
+        pytest.skip('this xtb keeps its parameters compiled in')
+
+    home = tmp_path / 'home'
+    home.mkdir()
+    source = pathlib.Path(real) / 'param_gfn2-xtb.txt'
+    (home / 'param_gfn2-xtb.txt').write_bytes(source.read_bytes()[:400])
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.delenv('XTBPATH', raising=False)
+
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+
+    # As it was: xtb reads the broken file and stops.
+    monkeypatch.setattr(gfn, 'parameter_home', lambda _binary: None)
+    broken = gfn.optimize_with_gfn(water, method='gfn2', max_steps=1)
+    assert not broken['ok'], 'the poisoned parameter file did not bite'
+    # And the message names the cause rather than the announcement: the
+    # complaint is printed to stdout and lands *after* the terminators in the
+    # merged output, which is why reading upwards from them found the
+    # citation list.
+    assert 'no basis found' in str(broken['status']).lower(), broken['status']
+
+    # And GFN-FF is untouched, which is what makes the pair a fingerprint.
+    monkeypatch.undo()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.delenv('XTBPATH', raising=False)
+    monkeypatch.setattr(gfn, 'parameter_home', lambda _binary: None)
+    assert gfn.optimize_with_gfn(water, method='gfnff', max_steps=1)['ok']
+
+    # As it is now: the parameters that belong to the binary are used.
+    monkeypatch.undo()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.delenv('XTBPATH', raising=False)
+    fixed = gfn.optimize_with_gfn(water, method='gfn2', max_steps=1)
+    assert fixed['ok'], fixed['status']
+    assert fixed['energy'] == pytest.approx(-5.07, abs=0.05)
+
+
+@_needs_xtb
+def test_the_parameter_directory_is_the_one_beside_the_binary():
+    from delfin.dashboard import gfn_optimize as gfn
+
+    found = gfn.parameter_home(gfn.find_xtb())
+    if found:
+        assert (pathlib.Path(found) / 'param_gfn2-xtb.txt').is_file()
+    # Nothing sensible to point at is not an error: g-xTB has them built in.
+    assert gfn.parameter_home('/nowhere/at/all/xtb') is None
+    assert gfn.parameter_home(None) is None

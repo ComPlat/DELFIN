@@ -5,6 +5,7 @@ import logging
 import os
 import shlex
 import shutil
+import threading
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -161,6 +162,26 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         button_style='info',
         layout=widgets.Layout(width='155px', height='28px'),
     )
+    # Whether a tool is installed is not whether it works. Everything that has
+    # gone wrong for users here went wrong after a green banner, so this asks
+    # each tool a question whose answer is known and reports what came back.
+    check_tools_btn = widgets.Button(
+        description='Check tools',
+        icon='stethoscope',
+        button_style='primary',
+        tooltip=('Run each tool on a molecule whose answer is known, and say '
+                 'which ones answered correctly'),
+        layout=widgets.Layout(width='140px', height='28px'),
+    )
+    repair_tools_btn = widgets.Button(
+        description='Repair',
+        icon='wrench',
+        button_style='warning',
+        tooltip='Put right what the check found, one tool at a time',
+        layout=widgets.Layout(width='120px', height='28px'),
+        disabled=True,
+    )
+    tool_health_out = widgets.HTML(value='')
     csp_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
     refresh_csp_status_btn = widgets.Button(
         description='Refresh CSP status',
@@ -1149,7 +1170,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     current_tool,
                 ))
             dropdown.options = options
-            dropdown.value = current_tool if current_tool else ''
+            # Only if it is still on offer. Writing the text box above runs the
+            # dropdown's own refresh, and replacing the options here resets the
+            # selection, which writes the box again -- by the time this line is
+            # reached the configured entry can have been taken back out. It
+            # then raised, and a raise here means the whole Settings tab does
+            # not build: a saved path to a tool that has since been removed
+            # left the user with no page on which to correct it.
+            allowed = {value for _label, value in (dropdown.options or ())}
+            dropdown.value = current_tool if current_tool in allowed else ''
+            # The box is the setting; the dropdown only shows it. Whatever the
+            # refresh did to it on the way, it says what was saved.
+            tool_binary_inputs[tool_name].value = current_tool
             dropdown.disabled = True
 
     def _effective_paths_from_widgets():
@@ -2328,6 +2360,138 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 f'<span style="color:#d32f2f;">Could not load QM tools status: {html.escape(str(exc))}</span>'
             )]
 
+    # ------------------------------------------------------------------
+    # does it work, and if not, what would fix it
+    # ------------------------------------------------------------------
+    _health_state = {'rows': [], 'running': False}
+
+    def _health_html(rows, conditions, note=''):
+        """The check, said plainly enough to act on."""
+        marks = {'ok': ('#2e7d32', '&#10003;'), 'warn': ('#ef6c00', '!'),
+                 'fail': ('#c62828', '&#10007;'), 'absent': ('#757575', '&ndash;')}
+        lines = []
+        for row in rows:
+            colour, mark = marks.get(row.level, ('#757575', '?'))
+            said = html.escape(row.version or '')
+            where = html.escape(row.path or '')
+            lines.append(
+                f'<div style="margin:2px 0;"><span style="color:{colour};'
+                f'font-weight:600;">{mark} {html.escape(row.label or row.name)}'
+                f'</span> <span style="color:#546e7a;">{said}</span> '
+                f'<span style="color:#90a4ae;font-size:11px;">{where}</span>')
+            if row.why:
+                lines.append(
+                    f'<div style="margin-left:18px;color:#546e7a;">'
+                    f'{html.escape(row.why)}</div>')
+            if row.fix:
+                lines.append(
+                    f'<div style="margin-left:18px;color:#455a64;">&rarr; '
+                    f'{html.escape(row.fix)}</div>')
+            lines.append('</div>')
+        for warning in (conditions or {}).get('warnings', []):
+            lines.append(
+                f'<div style="margin:2px 0;color:#ef6c00;">! '
+                f'{html.escape(warning)}</div>')
+        if note:
+            lines.append(f'<div style="margin-top:6px;color:#455a64;">'
+                         f'{html.escape(note)}</div>')
+        return ('<div style="font-family:monospace;font-size:12px;'
+                'line-height:1.45;">' + '\n'.join(lines) + '</div>')
+
+    def _check_tools(button=None):
+        """Ask every tool a question whose answer is known.
+
+        On a thread, and the answer is put up when it arrives: the handlers in
+        this tab run on the kernel thread, so a check done inline would freeze
+        every tab of the dashboard while it ran.
+        """
+        if _health_state['running']:
+            return
+        _health_state['running'] = True
+        check_tools_btn.disabled = True
+        repair_tools_btn.disabled = True
+        tool_health_out.value = (
+            '<span style="color:#546e7a;">Asking each tool to answer '
+            'something &mdash; a second or two.</span>')
+
+        def work():
+            try:
+                from delfin import qm_health
+
+                conditions = qm_health.probe_environment()
+                rows = qm_health.check_tools(
+                    ['xtb', 'gxtb', 'crest', 'orca', 'dftb+', 'stda',
+                     'xtb4stda', 'std2', 'censo', 'anmr', 'packmol'],
+                    depth='answer', timeout=90.0)
+                broken = [r for r in rows if r.repair]
+                note = ('Everything that was asked, answered.' if not broken
+                        else f'{len(broken)} can be attempted with Repair.')
+                _health_state['rows'] = rows
+                tool_health_out.value = _health_html(rows, conditions, note)
+                repair_tools_btn.disabled = not broken
+            except Exception as problem:
+                logging.exception('tool health check failed')
+                tool_health_out.value = (
+                    f'<span style="color:#d32f2f;">The check itself failed: '
+                    f'{html.escape(str(problem))}</span>')
+            finally:
+                _health_state['running'] = False
+                check_tools_btn.disabled = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _repair_tools(button=None):
+        """Put right what the check found, and prove it afterwards.
+
+        Only what the check actually named: a repair is not a reinstall of
+        everything, and a tool that answered correctly is left alone.
+        """
+        if _health_state['running']:
+            return
+        rows = [r for r in _health_state.get('rows') or [] if r.repair]
+        if not rows:
+            return
+        _health_state['running'] = True
+        repair_tools_btn.disabled = True
+        check_tools_btn.disabled = True
+
+        def work():
+            from delfin import qm_health
+
+            told = []
+            try:
+                for row in rows:
+                    command = qm_health.repair_command(row.name, row.repair)
+                    told.append(f'{row.label}: {qm_health.REPAIRS.get(row.repair, row.repair)}')
+                    if command:
+                        told.append('  ' + ' '.join(str(part) for part in command))
+                    tool_health_out.value = (
+                        '<pre style="font-size:12px;">' +
+                        html.escape('\n'.join(told)) + '</pre>')
+                    answer = qm_health.repair_tool(row.name, row.repair)
+                    told.append('  ' + str(answer.get('status') or ''))
+                conditions = qm_health.probe_environment()
+                after = qm_health.check_tools(
+                    [r.name for r in rows], depth='answer', timeout=90.0)
+                _health_state['rows'] = after
+                tool_health_out.value = (
+                    _health_html(after, conditions,
+                                 'After the repair. Check tools again for the '
+                                 'whole list.')
+                    + '<pre style="font-size:11px;color:#607d8b;">'
+                    + html.escape('\n'.join(told)) + '</pre>')
+            except Exception as problem:
+                logging.exception('tool repair failed')
+                tool_health_out.value = (
+                    f'<span style="color:#d32f2f;">The repair failed: '
+                    f'{html.escape(str(problem))}</span>')
+            finally:
+                _health_state['running'] = False
+                check_tools_btn.disabled = False
+                repair_tools_btn.disabled = False
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _refresh_csp_status(button=None):
         """Refresh the CSP tools status box with checkmarks/crosses."""
         try:
@@ -3285,6 +3449,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     install_analysis_tools_btn.on_click(_with_buttons_disabled(_on_install_analysis_tools))
     update_analysis_tools_btn.on_click(_with_buttons_disabled(_on_update_analysis_tools))
     refresh_qm_status_btn.on_click(_refresh_qm_status)
+    check_tools_btn.on_click(_check_tools)
+    repair_tools_btn.on_click(_repair_tools)
     refresh_csp_status_btn.on_click(_refresh_csp_status)
     refresh_analysis_status_btn.on_click(_refresh_analysis_status)
     pip_install_btn.on_click(_with_buttons_disabled(_on_pip_install_editable))
@@ -3694,6 +3860,23 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 ],
                 layout=_row_layout,
             ),
+            widgets.HBox(
+                [
+                    check_tools_btn,
+                    repair_tools_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        'Runs each tool on a molecule whose answer is known. '
+                        'Installed is not the same as working: a binary can be '
+                        'there and unable to start, and an xtb reading the '
+                        'wrong parameter file fails every GFN2 run while '
+                        'GFN-FF still works.'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
+            ),
+            tool_health_out,
             widgets.HBox(
                 [
                     widgets.HTML('<b>Install individual:</b> '),
