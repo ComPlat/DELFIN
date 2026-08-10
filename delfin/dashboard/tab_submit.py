@@ -24,6 +24,7 @@ from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
 from . import gfn_optimize as _gfn
 from . import ketcher as _ketcher
+from . import separate_systems as _separate
 from .molecule_viewer import apply_molecule_view_style, submit_manip_bootstrap_js
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
@@ -1703,7 +1704,25 @@ def create_tab(ctx):
             _saved_env = {k: os.environ.get(k) for k in _best_env}
             os.environ.update(_best_env)
             try:
-                if quick:
+                separate = _separate.has_separate_systems(cleaned_data)
+                if quick and separate:
+                    # A dot in a SMILES means two molecules that are not bonded
+                    # to each other, and a converter handed both at once puts
+                    # them in one another: measured on a
+                    # hexaphenylbenzene.benzene, the benzene came out inside
+                    # the other molecule, 0.877 A at the closest.  Built apart
+                    # and set side by side they come out 5.1 A apart, which is
+                    # a picture somebody can work in.
+                    built = _separate.convert_each(
+                        cleaned_data, smiles_to_xyz_quick)
+                    result = {
+                        'error': built['error'],
+                        'xyz_string': built['xyz'],
+                        'num_atoms': built['atoms'],
+                        'preview_items': [],
+                        'separate_parts': built['parts'],
+                    }
+                elif quick:
                     xyz_string, num_atoms, _method, preview_items, error = (
                         smiles_to_xyz_quick_with_previews(cleaned_data)
                     )
@@ -1732,8 +1751,31 @@ def create_tab(ctx):
                         _iso_kwargs["max_isomers"] = int(max_isomers)
                     if num_confs:
                         _iso_kwargs["num_confs"] = int(num_confs)
-                    isomers, error = smiles_to_xyz_isomers(cleaned_data, **_iso_kwargs)
-                    if not error and isomers:
+                    if separate:
+                        # Every part gets its own manifold, and the part with
+                        # the most arrangements drives the navigation -- a
+                        # counter-ion with one form does not multiply the
+                        # complex's twelve into twelve of itself.
+                        per_part, error = [], None
+                        for position, part in enumerate(
+                                _separate.split_smiles(cleaned_data), start=1):
+                            made, error = smiles_to_xyz_isomers(
+                                part, **_iso_kwargs)
+                            if error or not made:
+                                error = (f'part {position} could not be built: '
+                                         f'{error or "nothing came back"}')
+                                break
+                            per_part.append(made)
+                        isomers = ([] if error
+                                   else _separate.combine_isomers(per_part))
+                    else:
+                        isomers, error = smiles_to_xyz_isomers(
+                            cleaned_data, **_iso_kwargs)
+                    # Hapticity previews are made from the SMILES they belong
+                    # to; handed the whole string they would describe a
+                    # molecule that is not any of the frames.  Each part could
+                    # have its own, which is a separate piece of work.
+                    if not error and isomers and not separate:
                         isomers = append_hapto_previews_to_isomers(
                             isomers,
                             cleaned_data,
@@ -6449,13 +6491,19 @@ def create_tab(ctx):
         if change.get('name') != 'value':
             return
         if not submit_draw_open_btn.value:
-            submit_draw_frame.value = ''      # stop the app when it is closed
+            # Folded away, not thrown away.  Emptying the frame ends the
+            # application inside it, and with it whatever had been drawn --
+            # so folding it shut and open again lost the structure, which is
+            # the opposite of what folding something away means.
             _refresh_draw_controls()
             return
         url = _ketcher.app_url()
         if url:
             version = _ketcher.installed_version()
-            submit_draw_frame.value = _draw_frame_html(url)
+            # Built once.  Setting the same frame again reloads it, and a
+            # reloaded editor is an empty one.
+            if url not in (submit_draw_frame.value or ''):
+                submit_draw_frame.value = _draw_frame_html(url)
             _refresh_draw_controls()
             _set_mol_status(
                 f'Ketcher {version}: draw the structure, then press TO SMILES '

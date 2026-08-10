@@ -190,9 +190,17 @@ def test_the_drawing_lands_in_the_box_the_rest_of_the_tab_reads(editor, tmp_path
     editor["submit_draw_sync"].value = "1\n" + molblock("CCO")
     assert editor["coords_widget"].value == "CCO"
 
+    drawn_frame = editor["submit_draw_frame"].value
     editor["submit_draw_open_btn"].value = False
-    assert editor["submit_draw_frame"].value == "", (
-        "a closed editor must not go on running in a hidden frame"
+    assert editor["submit_draw_frame"].layout.display == "none"
+    assert editor["submit_draw_frame"].value == drawn_frame, (
+        "folding it away must not end the editor: what was drawn has to still "
+        "be there when it is folded open again"
+    )
+
+    editor["submit_draw_open_btn"].value = True
+    assert editor["submit_draw_frame"].value == drawn_frame, (
+        "and opening it again must not reload it, which would empty it"
     )
 
 
