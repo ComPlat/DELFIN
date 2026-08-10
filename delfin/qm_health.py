@@ -467,6 +467,24 @@ def check_tool(name: str, *, depth: str = 'answer', timeout: float = 60.0,
                 runnable=True, version=told['version'], healthy=True,
                 level='ok', seconds=time.perf_counter() - started,
                 evidence=evidence)
+    if name == 'xtb' and health.healthy:
+        # It works -- but say if a broken one is standing in front of it,
+        # because that is a trap set for the next tool, the next session, or
+        # the colleague who resolves it differently.
+        try:
+            from delfin.dashboard.gfn_optimize import unusable_xtb_note
+
+            note = unusable_xtb_note()
+        except Exception:
+            note = ''
+        if note:
+            return ToolHealth(
+                name=name, label=health.label, present=True, path=health.path,
+                source=health.source, runnable=True, version=health.version,
+                healthy=True, level='warn', why=note,
+                fix='remove it, or install over it, so nothing can find it',
+                repair='install', seconds=health.seconds,
+                evidence=health.evidence)
     return health
 
 

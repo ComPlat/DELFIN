@@ -370,3 +370,78 @@ def test_a_failure_names_the_binary_that_produced_it():
     assert '6.7.1' in said
     assert 'that build' in said, 'it should say where the fault lives'
     assert which_xtb_ran('', '') == ''
+
+
+def test_an_xtb_that_cannot_optimise_is_stepped_over(monkeypatch):
+    """A tool directory is searched before the PATH, so one broken xtb left in
+    it beat the working one standing right behind it -- and every optimisation
+    failed for a user whose colleague on the same machine had no trouble.
+
+    6.6.1 dies with "Missing comma between descriptors" at optimizer.f90:639
+    on every optimisation, GFN2 and GFN-FF alike; 6.7.1 finishes the same job.
+    Only a single point without --opt survives on 6.6.1. So the version is a
+    fact about whether the tool can do the work, and it is now read before the
+    tool is used.
+    """
+    from delfin.dashboard import gfn_optimize as gfn
+
+    gfn._XTB_JUDGED.clear()
+    monkeypatch.setattr(gfn, 'judge_xtb', lambda path: {
+        'ok': '/good/' in str(path), 'version': '6.6.1' if '/old/' in str(path) else '6.7.1',
+        'why': 'this is xtb 6.6.1, and below 6.7.0 an optimisation dies',
+        'path': str(path)})
+    monkeypatch.setattr(gfn, '_xtb_candidates',
+                        lambda: ['/old/bin/xtb', '/good/bin/xtb'])
+
+    assert gfn.find_xtb() == '/good/bin/xtb', 'the broken one was used'
+    note = gfn.unusable_xtb_note()
+    assert '/old/bin/xtb' in note and 'not being used' in note
+
+    # None usable: still name a real binary rather than saying there is none.
+    monkeypatch.setattr(gfn, 'judge_xtb', lambda path: {
+        'ok': False, 'version': '6.6.1', 'why': 'too old', 'path': str(path)})
+    assert gfn.find_xtb() == '/old/bin/xtb'
+
+
+def test_the_judgement_is_made_once_and_remembered(tmp_path):
+    """One --version, about ten milliseconds, per binary per session. Not
+    asking cost a user an afternoon."""
+    import time
+
+    from delfin.dashboard import gfn_optimize as gfn
+
+    fake = tmp_path / 'xtb'
+    fake.write_text('#!/bin/sh\necho "   * xtb version 6.7.1 (abc) compiled"\n')
+    fake.chmod(0o755)
+    gfn._XTB_JUDGED.clear()
+
+    first = gfn.judge_xtb(str(fake))
+    assert first['ok'] and first['version'] == '6.7.1'
+
+    started = time.perf_counter()
+    for _ in range(200):
+        gfn.judge_xtb(str(fake))
+    assert time.perf_counter() - started < 0.2, 'it is asking every time'
+
+    # A reinstall at the same path is a different binary and is asked again.
+    fake.write_text('#!/bin/sh\necho "   * xtb version 6.6.1 (old) compiled"\n')
+    fake.chmod(0o755)
+    assert gfn.judge_xtb(str(fake))['ok'] is False
+
+
+def test_the_shared_environment_goes_once_nothing_uses_it():
+    """A binary still on disk can still be reached -- an explicit path saved in
+    the settings, a PATH somebody exported -- so the xtb that cannot optimise
+    goes on being the one that runs, long after a working one was installed
+    beside it. It is removed only after the replacement is in place, and only
+    when no link points into it."""
+    from delfin.dashboard.gfn_optimize import install_script
+
+    text = install_script().read_text(encoding='utf-8')
+    body = text.split('retire_legacy_env() {')[1].split('\n}')[0]
+    assert 'conda-meta' in body, 'it must be sure it is a conda environment'
+    assert 'still uses it' in body, 'a tool that needs it keeps it'
+    assert 'readlink -f' in body
+    # And it runs after the replacement, never before.
+    tool = text.split('install_conda_tool() {')[1].split('\n}')[0]
+    assert tool.index('link_into_bin') < tool.index('retire_legacy_env')

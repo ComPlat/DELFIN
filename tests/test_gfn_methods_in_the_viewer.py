@@ -255,12 +255,16 @@ def test_xtb_is_looked_for_the_way_the_rest_of_delfin_looks_for_it():
     from delfin.dashboard import gfn_optimize as module
 
     source = open(module.__file__, encoding="utf-8").read()
-    finder = source.split("def find_xtb")[1].split("\ndef ")[0]
-    assert "find_tool_executable" in finder, (
+    # The places are gathered in one list now, because the first of them is no
+    # longer taken on trust: one that cannot optimise is stepped over.
+    places = source.split("def _xtb_candidates")[1].split("\ndef ")[0]
+    assert "find_tool_executable" in places, (
         "DELFIN's own resolver knows about qm_tools and XTBHOME; ask it first"
     )
-    assert "shutil.which" in finder
-    assert "sys.prefix" in finder
+    assert "shutil.which" in places
+    assert "sys.prefix" in places
+    finder = source.split("def find_xtb")[1].split("\ndef ")[0]
+    assert "_xtb_candidates()" in finder and "judge_xtb" in finder
 
 
 def test_a_missing_xtb_says_where_it_looked():

@@ -103,33 +103,140 @@ def is_gfn_method(method: Any) -> bool:
     return str(method or '').strip().lower() in GFN_METHODS
 
 
-def find_xtb() -> Optional[str]:
-    """Where xtb is, asked the way the rest of DELFIN asks.
+#: The oldest xtb that can carry out an optimisation at all.  6.6.1 dies with
+#: "Fortran runtime error: Missing comma between descriptors" at
+#: optimizer.f90:639 on *every* optimisation -- GFN2 and GFN-FF alike, open
+#: shell and closed -- while 6.7.1 finishes the same job normally.  Only a
+#: single point without --opt survives on 6.6.1.  Measured on both builds.
+XTB_MINIMUM_VERSION = (6, 7, 0)
 
-    ``shutil.which`` alone is not enough and was the whole of the problem: the
-    kernel a dashboard runs in does not inherit the login shell's PATH, so an
-    xtb installed in the very environment the dashboard is running from was
-    reported as missing.  DELFIN already has a resolver that knows about
-    XTBHOME, its own tool directories and the cluster module paths; it is asked
-    first, and the interpreter's own bin directory stands behind it -- an xtb
-    beside the python that is running cannot sensibly be called absent.
+#: What each binary turned out to be, so the question is asked once a session
+#: rather than once a click.  Keyed by path and modification time, so a
+#: reinstall at the same path is noticed.
+_XTB_JUDGED: Dict[Any, Any] = {}
+
+
+def _version_tuple(said: str) -> tuple:
+    parts = []
+    for piece in str(said or '').split('.'):
+        digits = ''.join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def judge_xtb(path: Any) -> Dict[str, Any]:
+    """Whether this xtb can do the job, and what it is if it cannot.
+
+    Asking costs one ``--version`` -- about ten milliseconds, once per binary
+    per session.  Not asking cost a user a whole afternoon: the binary was
+    there, it started, it reported itself, and every optimisation it was given
+    died inside its own optimiser.
     """
+    where = str(path or '')
+    if not where:
+        return {'ok': False, 'version': '', 'why': 'no xtb'}
+    try:
+        stamp = (where, Path(where).stat().st_mtime)
+    except OSError:
+        return {'ok': False, 'version': '', 'why': 'it is not there'}
+    remembered = _XTB_JUDGED.get(stamp)
+    if remembered is not None:
+        return remembered
+
+    said, why, ok = '', '', False
+    try:
+        told = subprocess.run([where, '--version'], capture_output=True,
+                              text=True, timeout=30)
+        text = (told.stdout or '') + (told.stderr or '')
+        found = _VERSION_RE.search(text)
+        said = found.group(1) if found else ''
+        if 'error while loading shared libraries' in text:
+            why = ('it cannot start: '
+                   + text.split('shared libraries:')[-1].strip().split('\n')[0])
+        elif not said:
+            why = 'it does not say which version it is'
+        elif _version_tuple(said) < XTB_MINIMUM_VERSION:
+            wanted = '.'.join(str(part) for part in XTB_MINIMUM_VERSION)
+            why = (f'this is xtb {said}, and below {wanted} an optimisation '
+                   'dies inside xtb\'s own optimiser -- "Missing comma '
+                   'between descriptors" -- whatever method it is given')
+        else:
+            ok = True
+    except (OSError, subprocess.SubprocessError) as problem:
+        why = f'it would not run: {problem}'
+
+    verdict = {'ok': ok, 'version': said, 'why': why, 'path': where}
+    _XTB_JUDGED[stamp] = verdict
+    return verdict
+
+
+def _xtb_candidates() -> list:
+    """Every xtb worth considering, best-placed first."""
+    found = []
     try:
         from delfin.qm_runtime import find_tool_executable
 
-        found = find_tool_executable('xtb')
-        if found:
-            return str(found)
+        resolved = find_tool_executable('xtb')
+        if resolved:
+            found.append(str(resolved))
     except Exception:
         pass
-    found = shutil.which('xtb')
-    if found:
-        return found
+    on_path = shutil.which('xtb')
+    if on_path:
+        found.append(on_path)
     for prefix in (sys.prefix, getattr(sys, 'base_prefix', sys.prefix)):
         candidate = Path(prefix) / 'bin' / 'xtb'
         if candidate.is_file() and os.access(str(candidate), os.X_OK):
-            return str(candidate)
-    return None
+            found.append(str(candidate))
+    ordered = []
+    for item in found:
+        if item not in ordered:
+            ordered.append(item)
+    return ordered
+
+
+def find_xtb() -> Optional[str]:
+    """Where xtb is, asked the way the rest of DELFIN asks -- and whether it works.
+
+    ``shutil.which`` alone is not enough and was the first half of the problem:
+    the kernel a dashboard runs in does not inherit the login shell's PATH, so
+    an xtb installed in the very environment the dashboard is running from was
+    reported as missing.  DELFIN already has a resolver that knows about
+    XTBHOME, its own tool directories and the cluster module paths; it is asked
+    first, and the interpreter's own bin directory stands behind it.
+
+    The second half was taking the first answer on trust.  A tool directory is
+    searched before the PATH, so one broken xtb left in it -- by an installer
+    that used to solve xtb, crest and dftbplus together and got 6.6.1 -- beat
+    the working one standing right behind it, and every optimisation failed
+    for a user whose colleague on the same machine had no trouble at all.  So
+    each candidate is asked what it is, and one that cannot optimise is
+    stepped over rather than used.
+
+    If none can, the best-placed one is still returned: a message about a real
+    binary that cannot do the job is worth more than "no xtb found".
+    """
+    candidates = _xtb_candidates()
+    for candidate in candidates:
+        if judge_xtb(candidate)['ok']:
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def unusable_xtb_note() -> str:
+    """Why the xtb that was found first is not the one being used, if so."""
+    candidates = _xtb_candidates()
+    chosen = find_xtb()
+    for candidate in candidates:
+        if candidate == chosen:
+            return ''
+        verdict = judge_xtb(candidate)
+        if not verdict['ok']:
+            return (f'{candidate} was found first and is not being used: '
+                    f'{verdict["why"]}.')
+    return ''
 
 
 def find_gxtb() -> Optional[str]:

@@ -181,6 +181,48 @@ install_conda_tool() {
 
   [[ -x "${env_dir}/bin/${binary}" ]] || return 1
   link_into_bin "${env_dir}/bin/${binary}" "${prog}"
+  # Now that this tool has one of its own, the shared environment may have
+  # nothing left in it worth keeping.
+  retire_legacy_env
+}
+
+# The environment the tools used to share, once nothing points into it.
+#
+# Leaving it costs more than the disk. A binary that is still on disk can
+# still be reached: an explicit path saved in the settings, a PATH somebody
+# exported, a hard-coded fallback. So the xtb whose optimiser dies with
+# "Missing comma between descriptors" can go on being the one that runs, long
+# after a working one has been installed beside it.
+#
+# Removed only after the replacement is in place and only when no link in
+# bin/ resolves into it any more -- a cleanup that runs first would leave a
+# failed install with nothing at all.
+retire_legacy_env() {
+  local marker="${MAMBA_ENV}/conda-meta"
+  [[ -d "${marker}" ]] || return 0
+
+  local link resolved
+  for link in "${BIN_DIR}"/*; do
+    [[ -e "${link}" || -L "${link}" ]] || continue
+    resolved="$(readlink -f "${link}" 2>/dev/null)" || continue
+    case "${resolved}" in
+      "${MAMBA_ENV}/bin/"*)
+        log "keeping the shared environment: ${link##*/} still uses it"
+        return 0
+        ;;
+    esac
+  done
+
+  local freed=""
+  if have du; then
+    freed="$(du -sh "${MAMBA_ENV}/bin" "${MAMBA_ENV}/lib" "${MAMBA_ENV}/share" \
+             2>/dev/null | awk '{s+=$1} END {print ""}')"
+  fi
+  log "removing the shared environment nothing uses any more: ${MAMBA_ENV}"
+  local part
+  for part in bin lib share include conda-meta ssl etc libexec man sbin; do
+    rm -rf "${MAMBA_ENV:?}/${part}"
+  done
 }
 
 install_conda_stack() {
