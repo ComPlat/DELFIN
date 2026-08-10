@@ -1603,8 +1603,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // So a request marks the scope as needing a drawing and the drawing
     // happens once, on the next animation frame, which is the soonest anybody
     // could see it anyway.
-    function redrawHighlights(scopeKey) {
+    // *marksOnly* says that nothing about the molecule changed -- only which
+    // atoms are marked. Picking three atoms is that: rebuilding a
+    // four-hundred-atom model to draw three translucent spheres costs four
+    // times what drawing the frame costs (2.3 ms against 0.6 at 405 atoms).
+    // The default is the safe one: a caller that says nothing gets the
+    // rebuild, so a path that does move atoms cannot go wrong by forgetting.
+    function redrawHighlights(scopeKey, marksOnly) {
         var state = getState(scopeKey);
+        if (!marksOnly) state.highlightsOnly = false;
+        else if (!state.redrawPending) state.highlightsOnly = true;
         if (state.redrawPending) return;
         state.redrawPending = true;
         var run = function() {
@@ -1626,7 +1634,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // this is where the lines are made to follow the distances -- during a
         // manipulation as much as after one.
         if (state.dynamicBonds) perceiveBonds(viewer);
-        invalidateGeometry(viewer);
+        // The sticks and spheres are rebuilt only when the molecule has
+        // actually changed. Picking three atoms moves nothing -- only the
+        // translucent markers over them change -- and rebuilding a
+        // four-hundred-atom model to draw three spheres costs four times what
+        // drawing the frame costs: measured at 405 atoms, 2.3 ms against
+        // 0.6 ms. A drag sets the flag on every frame, because there it has.
+        if (!state.highlightsOnly || state.dynamicBonds) {
+            invalidateGeometry(viewer);
+        }
+        state.highlightsOnly = false;
         // Remove previous shapes
         state.shapes.forEach(function(s) {
             try { viewer.removeShape(s); } catch (e) {}
@@ -3965,7 +3982,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (!state.picks.length) return false;
         state.pickedAsBond = false;
         state.picks = [];
-        redrawHighlights(scopeKey);
+        redrawHighlights(scopeKey, true);
         return true;
     }
 
@@ -3984,7 +4001,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (!atom) return;
             state.picks.push({serial: atom.serial, elem: atom.elem || 'X'});
         });
-        redrawHighlights(scopeKey);
+        redrawHighlights(scopeKey, true);
         pushPicksToPython(scopeKey);
         /* The readout above filled the box with what the atoms measure right
          * now.  A held value is not that: it is what they are being pulled to,

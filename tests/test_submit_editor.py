@@ -989,7 +989,9 @@ def test_the_selection_is_released_once_a_value_has_been_set():
     to zero while the pivot and any held atoms stay."""
     body = _body('clearSelection')
     assert 'state.picks = [];' in body
-    assert 'redrawHighlights(scopeKey)' in body
+    # It asks for a drawing -- marks only, because dropping a selection
+    # moves nothing.
+    assert 'redrawHighlights(scopeKey, true)' in body
     # Narrower than Clear: the pivot and the held atoms are not touched.
     assert 'unpinAll' not in body
     assert 'state.pivot' not in body
@@ -1733,3 +1735,30 @@ def test_the_picture_is_drawn_once_a_frame_however_often_it_is_asked_for():
     ready = _body('onViewerReady')
     assert 'cancelAnimationFrame' in ready
     assert 'state.redrawPending = false;' in ready
+
+
+def test_marking_atoms_does_not_rebuild_the_whole_model():
+    """Picking three atoms moves nothing.
+
+    Only the translucent markers over them change, and rebuilding a
+    four-hundred-atom model to draw three spheres costs four times what
+    drawing the frame costs -- measured at 405 atoms, 2.3 ms against 0.6, and
+    the drawing of a selection fell from 3-5 ms to 1.
+
+    The default is the safe one: a caller that says nothing gets the rebuild,
+    so a path that does move atoms cannot go wrong by forgetting to ask.
+    """
+    ask = _body('redrawHighlights')
+    assert 'marksOnly' in ask
+    assert 'if (!marksOnly) state.highlightsOnly = false;' in ask
+
+    draw = _body('drawHighlightsNow')
+    assert 'if (!state.highlightsOnly || state.dynamicBonds) {' in draw
+    assert 'state.highlightsOnly = false;' in draw
+
+    # Only the selection functions claim it.
+    for marks_only in ('setPicks', 'clearSelection'):
+        assert 'redrawHighlights(scopeKey, true)' in _body(marks_only), marks_only
+    for moves in ('applyTranslate', 'setPositions'):
+        body = _body(moves)
+        assert 'redrawHighlights(scopeKey, true)' not in body, moves
