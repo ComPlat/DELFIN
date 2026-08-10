@@ -2636,6 +2636,21 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return changed;
     }
 
+    function linkOne(atoms, a, b) {
+        atoms[a].bonds = atoms[a].bonds || [];
+        atoms[a].bondOrder = atoms[a].bondOrder || [];
+        atoms[a].bonds.push(b);
+        atoms[a].bondOrder.push(1);
+    }
+
+    function unlinkOne(atoms, a, b) {
+        var list = atoms[a].bonds || [];
+        var at = list.indexOf(b);
+        if (at < 0) return;
+        list.splice(at, 1);
+        if (atoms[a].bondOrder) atoms[a].bondOrder.splice(at, 1);
+    }
+
     function editBond(scopeKey, first, second, connect) {
         var viewer = getViewer(scopeKey);
         if (!viewer) return {ok: false, error: 'no viewer'};
@@ -2648,19 +2663,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (connect && linked) return {ok: true, changed: false, bonded: true};
         if (!connect && !linked) return {ok: true, changed: false, bonded: false};
 
-        function connectOne(a, b) {
-            atoms[a].bonds = atoms[a].bonds || [];
-            atoms[a].bondOrder = atoms[a].bondOrder || [];
-            atoms[a].bonds.push(b);
-            atoms[a].bondOrder.push(1);
-        }
-        function disconnectOne(a, b) {
-            var list = atoms[a].bonds || [];
-            var at = list.indexOf(b);
-            if (at < 0) return;
-            list.splice(at, 1);
-            if (atoms[a].bondOrder) atoms[a].bondOrder.splice(at, 1);
-        }
+        function connectOne(a, b) { linkOne(atoms, a, b); }
+        function disconnectOne(a, b) { unlinkOne(atoms, a, b); }
         snapshotForUndo(scopeKey);
         if (connect) { connectOne(i, j); connectOne(j, i); }
         else { disconnectOne(i, j); disconnectOne(j, i); }
@@ -2671,6 +2675,54 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         pushXyzToPython(scopeKey, 'drag-end');
         return {ok: true, changed: true, bonded: !!connect,
                 distance: distV(atoms[i], atoms[j])};
+    }
+
+    function applyBondEdits(scopeKey, triples) {
+        // The hand corrections again, on a picture that has just been rebuilt.
+        // A rebuild draws what the distances say, and a bond drawn between two
+        // atoms that are not within bonding distance is not in them -- so the
+        // first drawn bond disappeared the moment a second edit rebuilt the
+        // view, while still being in force everywhere else. One that was taken
+        // away has to stay away for the same reason.
+        //
+        // Tried twice more afterwards because the rebuild is a widget update
+        // and this is a script: whichever arrives first, the later attempts
+        // find the new viewer. Each one checks before it changes anything, so
+        // repeating costs nothing, and a newer call cancels the older one's
+        // pending attempts rather than re-asserting a correction the user has
+        // meanwhile taken back.
+        window.__delfinBondEditGeneration =
+            (window.__delfinBondEditGeneration || 0) + 1;
+        var generation = window.__delfinBondEditGeneration;
+
+        function once() {
+            if (window.__delfinBondEditGeneration !== generation) return 0;
+            var viewer = getViewer(scopeKey);
+            if (!viewer) return 0;
+            var atoms = getAtoms(viewer);
+            var changed = 0;
+            for (var n = 0; n < (triples || []).length; n++) {
+                var i = triples[n][0] | 0, j = triples[n][1] | 0;
+                var connect = !!triples[n][2];
+                if (i === j || !atoms[i] || !atoms[j]) continue;
+                var linked = (atoms[i].bonds || []).indexOf(j) >= 0;
+                if (connect === linked) continue;
+                if (connect) { linkOne(atoms, i, j); linkOne(atoms, j, i); }
+                else { unlinkOne(atoms, i, j); unlinkOne(atoms, j, i); }
+                changed++;
+            }
+            if (changed) {
+                invalidateGeometry(viewer);
+                try { viewer.render(); } catch (e) {}
+                redrawHighlights(scopeKey);
+            }
+            return changed;
+        }
+
+        var now = once();
+        setTimeout(once, 120);
+        setTimeout(once, 400);
+        return now;
     }
 
     function bondsOf(scopeKey, index) {
@@ -4075,6 +4127,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
         editBond: editBond,
+        applyBondEdits: applyBondEdits,
         setBondOrders: setBondOrders,
         bondsOf: bondsOf,
         setSettleOnRelease: setSettleOnRelease,

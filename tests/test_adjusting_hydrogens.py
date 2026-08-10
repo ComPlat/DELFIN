@@ -188,8 +188,11 @@ def editor(tmp_path):
         archive_dir=tmp_path / "archive",
         office_dir=tmp_path / "office",
     )
-    ctx.run_js = lambda _script: None
+    sent = []
+    ctx.run_js = sent.append
     _widget, refs = tab_submit.create_tab(ctx)
+    refs = dict(refs)
+    refs["_js"] = sent        # everything the page was told, in order
     return refs
 
 
@@ -229,3 +232,78 @@ def test_the_switch_stands_beside_the_element_it_draws_with(editor):
     assert editor["submit_adjust_h_btn"].value is True, (
         "filling the valences is what is wanted most of the time"
     )
+
+
+# ---------------------------------------------------------------------------
+# and it still has to be there after the next edit
+# ---------------------------------------------------------------------------
+def _three_methanes():
+    rows = []
+    for k in range(3):
+        x = 4.0 * k
+        rows += [f"C {x} 0 0",
+                 f"H {x + 0.63} 0.63 0.63", f"H {x + 0.63} -0.63 -0.63",
+                 f"H {x - 0.63} 0.63 -0.63", f"H {x - 0.63} -0.63 0.63"]
+    return f"{len(rows)}\nthree methanes\n" + "\n".join(rows)
+
+
+def test_the_first_drawn_bond_survives_the_second(editor):
+    """Drawing the second bond rebuilds the picture, and a rebuild draws what
+    the distances say -- so the first bond, drawn between two atoms that are
+    nowhere near bonding distance, was simply gone from the view. It was still
+    in force everywhere else, which is why pressing Optimise brought it back.
+    """
+    sent = editor["_js"]
+    editor["coords_widget"].value = _three_methanes()
+
+    editor["submit_cmd_sync"].value = "bondorder:1:0,5,1"
+    rows = [line.split() for line in
+            editor["coords_widget"].value.splitlines()[2:] if line.strip()]
+    carbons = [i for i, row in enumerate(rows) if row[0] == "C"]
+    assert len(rows) == 13, "two hydrogens made room for the first bond"
+
+    sent.clear()
+    editor["submit_cmd_sync"].value = f"bondorder:2:{carbons[1]},{carbons[2]},1"
+
+    restored = [s for s in sent if "applyBondEdits" in s]
+    assert restored, "the rebuild forgot the bond that was already drawn"
+    # On the numbering of the structure that arrived, not the one left behind:
+    # a removed hydrogen moves every atom after it.
+    assert "[[0, 4, 1]]" in restored[0], restored[0]
+    assert editor["editor_state"]["hand_bonds"] == {(0, 4): True, (4, 7): True}
+
+
+def test_taking_the_edit_back_takes_its_bond_back_too(editor):
+    sent = editor["_js"]
+    editor["coords_widget"].value = _three_methanes()
+    editor["submit_cmd_sync"].value = "bondorder:1:0,5,1"
+    rows = [line.split() for line in
+            editor["coords_widget"].value.splitlines()[2:] if line.strip()]
+    carbons = [i for i, row in enumerate(rows) if row[0] == "C"]
+    editor["submit_cmd_sync"].value = f"bondorder:2:{carbons[1]},{carbons[2]},1"
+
+    sent.clear()
+    editor["submit_cmd_sync"].value = "undo:3:"
+
+    assert editor["editor_state"]["hand_bonds"] == {(0, 4): True}, (
+        "the second bond went with the edit that drew it"
+    )
+    restored = [s for s in sent if "applyBondEdits" in s]
+    assert restored and "[[0, 4, 1]]" in restored[0], (
+        "and the first one came back with the structure it belongs to"
+    )
+
+
+def test_the_fullscreen_status_does_not_keep_a_finished_message(editor):
+    """The overlay has its own status line, and it was only ever written to,
+    never cleared: it kept saying "Quick convert (single structure)..." with
+    the finished structure on screen beside it."""
+    editor["coords_widget"].value = _three_methanes()
+    editor["submit_cmd_sync"].value = "bondorder:1:0,99,1"   # says something
+    assert editor["mol_status_fs"].value, "nothing to clear -- test says nothing"
+
+    editor["coords_widget"].value = ETHANE                    # a new view
+    assert editor["mol_status_fs"].value == "", (
+        "the overlay is still showing the message the small view has dropped"
+    )
+    assert editor["mol_status"].value == ""

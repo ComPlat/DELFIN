@@ -1304,7 +1304,13 @@ def create_tab(ctx):
         mol_status_fs.value = '' if prompt else rendered_html
 
     def _clear_mol_status():
+        # Both copies, the way _set_mol_status writes both. Clearing only the
+        # small one left the overlay saying "Quick convert (single
+        # structure)..." long after the structure was on screen: the finished
+        # view comes through here, and in fullscreen that stale line was the
+        # only thing the user had to go by.
         mol_status.value = ''
+        mol_status_fs.value = ''
 
     def _build_mol_output_bundle(xyz_data):
         view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
@@ -1429,6 +1435,7 @@ def create_tab(ctx):
         _ensure_manip_bootstrap()
         mol_output.outputs = _build_mol_output_bundle(xyz_data)
         _set_manip_toolbar_enabled(True)
+        _push_hand_bonds()
 
     def _show_mol_busy(message):
         """Render the animated MANTA loader centered in the viewer.
@@ -1546,6 +1553,7 @@ def create_tab(ctx):
         if not state.get('structure_edit_inflight'):
             state['constraints'] = []
             state['bond_edits'] = {}
+            state['hand_bonds'] = {}
             state['hyb_overrides'] = {}
             state['structure_undo'] = []
             state['poly_applied'] = None
@@ -5550,6 +5558,13 @@ def create_tab(ctx):
         edits = {tuple(k): v for k, v in (state.get('bond_edits') or {}).items()}
         edits[pair] = bool(connect)
         state['bond_edits'] = edits
+        # Separately from the bond list, because after a structural edit that
+        # list is the whole structure and no longer says which bonds came from
+        # a hand rather than from perception -- and only the ones from a hand
+        # have to be put back into a picture that has been rebuilt.
+        hand = {tuple(k): v for k, v in (state.get('hand_bonds') or {}).items()}
+        hand[pair] = bool(connect)
+        state['hand_bonds'] = hand
         # The perception is cached by element sequence, which a bond edit does
         # not change -- so the cache has to be dropped explicitly, or the
         # correction would never reach the force field at all.
@@ -5593,8 +5608,22 @@ def create_tab(ctx):
         history.append({
             'coords': coords_widget.value,
             'bond_edits': dict(state.get('bond_edits') or {}),
+            'hand_bonds': dict(state.get('hand_bonds') or {}),
         })
         state['structure_undo'] = history[-_STRUCTURE_UNDO_LIMIT:]
+
+        # Before the coordinates are written, because writing them rebuilds the
+        # picture and the rebuild is where the hand corrections are re-applied:
+        # at that moment they have to name the atoms of the structure that is
+        # arriving, not of the one being left behind. A removed hydrogen moves
+        # every atom after it, so a bond re-applied on the old numbering would
+        # be drawn between the wrong two atoms.
+        moved = structure.renumbering()
+        state['hand_bonds'] = {
+            (min(moved[i], moved[j]), max(moved[i], moved[j])): connected
+            for (i, j), connected in (state.get('hand_bonds') or {}).items()
+            if i in moved and j in moved
+        }
 
         # An atom added or taken away is a different molecule from the one xtb
         # has in hand, down to the number of coordinates -- so a run under it
@@ -5718,6 +5747,10 @@ def create_tab(ctx):
         snapshot = history.pop()
         state['structure_edit_inflight'] = True
         _mark_structure_edit()
+        # Before the write, for the same reason as in _apply_structure: the
+        # write rebuilds the picture, and the corrections re-applied to it have
+        # to be the ones belonging to the structure coming back.
+        state['hand_bonds'] = dict(snapshot.get('hand_bonds') or {})
         try:
             coords_widget.value = snapshot['coords']
         finally:
@@ -5729,6 +5762,34 @@ def create_tab(ctx):
         _set_mol_status('Took back the last structural edit.')
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
+
+    def _push_hand_bonds():
+        """Put the bonds the user drew or cut back into a rebuilt picture.
+
+        A rebuild draws what the distances say, and a bond drawn between two
+        atoms that are not within bonding distance is not in them. So the first
+        drawn bond vanished from the view the moment a second edit rebuilt it,
+        while remaining in force everywhere else -- it was still there in the
+        force field, and an optimisation pulled the two atoms together and made
+        it visible again, which is exactly how it looked from outside: the bond
+        was gone, and then it was back.
+
+        Only what was corrected by hand, never the whole bond list: what
+        perception found is the viewer's own business and is left alone.
+        """
+        hand = state.get('hand_bonds') or {}
+        if not hand:
+            return
+        triples = [
+            [int(i), int(j), 1 if connected else 0]
+            for (i, j), connected in hand.items()
+        ]
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.applyBondEdits('
+            f'{json.dumps(submit_scope_id)},{json.dumps(triples)});'
+        )
 
     def _push_bond_orders(bonds=None):
         """Let the picture show what the bonds are.
@@ -6042,6 +6103,7 @@ def create_tab(ctx):
             return
         state['constraints'] = []
         state['bond_edits'] = {}
+        state['hand_bonds'] = {}
         state['hyb_overrides'] = {}
         state['structure_undo'] = []
         state['poly_applied'] = None
@@ -7095,6 +7157,7 @@ def create_tab(ctx):
         'submit_cmd_sync': submit_cmd_sync,
         'submit_manip_sync': submit_manip_sync,
         'mol_status': mol_status,
+        'mol_status_fs': mol_status_fs,
         'submit_pick_sync': submit_pick_sync,
         'submit_reset_btn': submit_reset_btn,
         'editor_state': state,

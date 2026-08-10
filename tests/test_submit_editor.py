@@ -879,10 +879,14 @@ def test_bonds_can_be_drawn_and_removed_by_hand():
     what a Pt(II) complex is."""
     edit = _body('editBond')
     # It edits the model's own bond list, which is what the sticks are drawn
-    # from and what every geometry operation here already reads.
-    assert 'atoms[a].bonds.push(b)' in edit
-    assert 'list.splice(at, 1)' in edit
-    assert 'atoms[a].bondOrder' in edit
+    # from and what every geometry operation here already reads. The two halves
+    # of a bond are linked and unlinked by their own functions, because putting
+    # a correction back after a rebuild does exactly the same thing.
+    assert 'connectOne(i, j); connectOne(j, i);' in edit
+    assert 'disconnectOne(i, j); disconnectOne(j, i);' in edit
+    assert 'atoms[a].bonds.push(b)' in _body('linkOne')
+    assert 'list.splice(at, 1)' in _body('unlinkOne')
+    assert 'atoms[a].bondOrder' in _body('linkOne')
     assert 'snapshotForUndo(scopeKey)' in edit
     assert "pushXyzToPython(scopeKey, 'drag-end')" in edit
 
@@ -1483,3 +1487,81 @@ def test_a_held_value_follows_the_atoms_through_an_edit():
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "if not state.get('structure_edit_inflight'):" in view
     assert view.index("structure_edit_inflight") < view.index("state['constraints'] = []")
+
+
+# ---------------------------------------------------------------------------
+# a bond drawn by hand has to survive the next rebuild of the picture
+# ---------------------------------------------------------------------------
+def test_hand_drawn_bonds_are_put_back_into_a_rebuilt_picture():
+    """A rebuild draws what the distances say.
+
+    A bond drawn between two atoms that are not within bonding distance is not
+    in the coordinates, so perception never finds it again: the first drawn
+    bond disappeared from the view the moment a second edit rebuilt it, while
+    still being in force everywhere else -- which is why an optimisation, which
+    pulled the two atoms together, made it visible again.
+    """
+    body = _body('applyBondEdits')
+
+    # It puts one back and takes one away, both directions of the correction.
+    assert 'linkOne(atoms, i, j); linkOne(atoms, j, i);' in body
+    assert 'unlinkOne(atoms, i, j); unlinkOne(atoms, j, i);' in body
+    # Nothing is touched that already agrees, so repeating it is free.
+    assert 'if (connect === linked) continue;' in body
+    # A newer call wins over an older one's pending attempts, so a correction
+    # the user has since taken back is not re-asserted.
+    assert 'window.__delfinBondEditGeneration !== generation' in body
+    assert body.count('setTimeout(once,') == 2
+
+    assert 'applyBondEdits: applyBondEdits,' in EDITOR
+
+
+def test_only_the_corrections_from_a_hand_are_put_back():
+    """Never the whole bond list: what perception found is the viewer's own
+    business, and after a structural edit the bond list is the whole structure
+    and no longer says which bonds came from a hand."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    push = source.split('def _push_hand_bonds')[1].split('\n    def ')[0]
+    assert "state.get('hand_bonds')" in push
+    assert 'bond_edits' not in push
+
+    # Recorded where a bond is drawn or cut, and nowhere else.
+    edit = source.split('def _edit_bond')[1].split('\n    def ')[0]
+    assert "hand[pair] = bool(connect)" in edit
+
+    # Carried across the renumbering an edit causes, before the coordinates
+    # are written -- writing them is what rebuilds the picture.
+    apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
+    assert "state['hand_bonds'] = {" in apply_
+    assert apply_.index("state['hand_bonds'] = {") < apply_.index('coords_widget.value =')
+
+    # And put back by the rebuild itself, so every path that rebuilds is covered.
+    replace = source.split('def _replace_mol_output_view')[1].split('\n    def ')[0]
+    assert '_push_hand_bonds()' in replace
+
+
+def test_a_different_molecule_keeps_none_of_the_corrections():
+    """They name atoms by index, which says nothing about another structure."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
+    assert "state['hand_bonds'] = {}" in view
+    assert view.index('structure_edit_inflight') < view.index("state['hand_bonds'] = {}")
+
+
+def test_the_fullscreen_status_is_cleared_with_the_small_one():
+    """Both copies say the same thing, or the overlay lies.
+
+    Clearing only the small one left fullscreen showing "Quick convert (single
+    structure)..." long after the structure was on screen -- and in fullscreen
+    that stale line is the only thing there is to go by.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    clear = source.split('def _clear_mol_status')[1].split('\n    def ')[0]
+    assert "mol_status.value = ''" in clear
+    assert "mol_status_fs.value = ''" in clear
