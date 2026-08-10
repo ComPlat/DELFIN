@@ -1030,6 +1030,23 @@ def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
         source,
         target,
         dirs_exist_ok=True,
+        # Symlinks are copied as symlinks, and a broken one is skipped rather
+        # than fatal.  Both matter, and both were measured on this tree:
+        #
+        # ``bin/xtb`` points into the conda environment xtb was installed in.
+        # Followed instead of copied, it became a 6.4 MB file on its own,
+        # outside the environment holding the libraries it is linked against,
+        # and it did not run at all -- "libmctc-lib.so.0: cannot open shared
+        # object file".  A resolved tool is looked for in this directory
+        # before anywhere else, so that copy then beat the working xtb on the
+        # PATH and the user had a tool chain that could not start.
+        #
+        # And a link whose target has been moved away -- an environment
+        # deleted, a tool uninstalled -- raised out of here before the
+        # installer had run a single line, which took every button on the
+        # page with it.
+        symlinks=True,
+        ignore_dangling_symlinks=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
     )
     return target

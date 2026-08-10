@@ -162,3 +162,49 @@ def test_collect_bwunicluster_verification_reports_expected_keys(tmp_path):
     assert "install-script" in by_name
     assert "submit-templates" in by_name
     assert "sbatch" in by_name
+
+
+def test_staging_the_tools_keeps_the_links_and_survives_a_broken_one(tmp_path):
+    """A copied binary is not the binary.
+
+    ``bin/xtb`` points into the environment xtb was installed in. Followed
+    instead of copied it became a 6.4 MB file of its own, outside the
+    environment holding the libraries it is linked against, and it did not run
+    at all: "libmctc-lib.so.0: cannot open shared object file". A resolved tool
+    is looked for in this directory before anywhere else, so that copy then
+    beat the working xtb on the PATH -- pressing Prepare left the user with a
+    tool chain that could not start.
+
+    And a link whose target has been moved away raised out of the staging
+    before the installer had run a line, which took every button with it.
+    """
+    import os
+    import shutil
+
+    from delfin import runtime_setup
+
+    source = tmp_path / "packaged"
+    (source / "bin").mkdir(parents=True)
+    real = tmp_path / "elsewhere" / "xtb"
+    real.parent.mkdir()
+    real.write_text("#!/bin/sh\necho xtb\n")
+    real.chmod(0o755)
+    os.symlink(real, source / "bin" / "xtb")
+    os.symlink(tmp_path / "gone" / "crest", source / "bin" / "crest")
+
+    monkey = tmp_path / "staged"
+    original = runtime_setup.get_packaged_qm_tools_dir
+    runtime_setup.get_packaged_qm_tools_dir = lambda: source
+    try:
+        staged = runtime_setup.stage_packaged_qm_tools(monkey)
+    finally:
+        runtime_setup.get_packaged_qm_tools_dir = original
+
+    linked = staged / "bin" / "xtb"
+    assert linked.is_symlink(), "the binary was copied out of its environment"
+    assert os.path.realpath(linked) == str(real)
+    assert (staged / "bin" / "crest").is_symlink(), "a dead link is not fatal"
+    # And the whole staging completed: the dangling one did not stop it.
+    assert linked.exists()
+
+    shutil.rmtree(staged, ignore_errors=True)
