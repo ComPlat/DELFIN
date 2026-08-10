@@ -85,6 +85,8 @@ FF_SMOOTHING = 0.7
 FF_MIN_CHUNK = 1
 FF_MAX_CHUNK = 200
 
+import json
+
 # Payload contract version, mirrored from molecule_forcefield.PAYLOAD_VERSION.
 FF_PAYLOAD_VERSION = 1
 
@@ -1396,5 +1398,17 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
 
 
 def molecule_ff_bootstrap_js():
-    """Return the one-time JS that installs the window.__delfinFF engine."""
-    return MOLECULE_FF_BOOTSTRAP_JS
+    """Return the one-time JS that installs the window.__delfinFF engine.
+
+    The same source is left behind as a string as well.  A relaxation batch
+    aims at a whole frame (``TARGET_MS``), and a whole frame spent here is a
+    whole frame the page does not have: measured in a browser on a 100-atom
+    peptide, one batch is 31 ms of the 17 ms a display frame lasts, so every
+    click, every widget update and every message from the kernel waits behind
+    the physics.  The viewer therefore runs the engine in a Worker, and a
+    Worker needs its program as text.  It is the same text, not a second
+    engine -- there is one place where the force field is written.
+    """
+    return (MOLECULE_FF_BOOTSTRAP_JS
+            + '\nwindow.__delfinFFSource = '
+            + json.dumps(MOLECULE_FF_BOOTSTRAP_JS) + ';\n')

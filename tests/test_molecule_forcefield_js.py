@@ -46,8 +46,32 @@ def test_bootstrap_is_a_guarded_iife_installing_the_engine():
     assert "window._delfinFFByScope" in _JS
 
 
-def test_accessor_returns_the_constant():
-    assert _MODULE.molecule_ff_bootstrap_js() is _JS
+def test_the_engine_ships_once_and_is_readable_as_text():
+    """The engine, and the same engine again as a string.
+
+    A relaxation batch aims at a whole frame, so run on the page it takes the
+    frame the page needed: measured in a browser on a 100-atom peptide, 411 ms
+    of every second of Dynamik Opt.  It runs in a Worker instead, and a Worker
+    needs its program as text -- the same text, so there is still one place
+    where the force field is written.
+    """
+    import json
+
+    shipped = _MODULE.molecule_ff_bootstrap_js()
+    assert shipped.startswith(_JS), 'the engine itself comes first, unchanged'
+    tail = shipped[len(_JS):]
+    assert tail.strip().startswith('window.__delfinFFSource =')
+    quoted = tail.strip()[len('window.__delfinFFSource ='):].strip().rstrip(';')
+    assert json.loads(quoted) == _JS, 'the worker would run a different engine'
+
+
+def test_the_engine_needs_nothing_a_worker_does_not_have():
+    """No document, no animation frames: only the globals it puts itself on,
+    which a worker calls ``self``."""
+    for absent in ('document', 'requestAnimationFrame', 'localStorage',
+                   'navigator', 'getComputedStyle'):
+        assert absent not in _JS, f'the engine reaches for {absent}'
+    assert 'window.__delfinFF' in _JS
 
 
 def test_public_api_is_complete():

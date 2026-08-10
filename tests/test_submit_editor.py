@@ -119,7 +119,7 @@ def test_dragging_an_atom_relaxes_the_rest_through_the_force_field():
     assert 'ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets))' in EDITOR
     # The relaxation runs after the grabbed atoms are placed, not before.
     grab_then_relax = EDITOR.index('applyTranslate(scopeKey, delta, d.targets)')
-    assert EDITOR.index('ffRelaxFrame(scopeKey)', grab_then_relax) > grab_then_relax
+    assert EDITOR.index('ffRelaxAsync(scopeKey', grab_then_relax) > grab_then_relax
     # Releasing is now expressed as re-applying the frozen set with nothing
     # extra held, so a drag and a pinned atom go through one code path.
     assert 'ffApplyFrozen(scopeKey, [])' in _body('ffEndDrag')
@@ -220,7 +220,8 @@ def test_optimize_toggle_runs_the_field_continuously():
     tick = _body('autoOptimizeTick')
     # A drag already relaxes in its own handler; a second batch here would
     # double the step budget for that frame.
-    assert 'if (!state.drag) {' in tick
+    assert 'if (state.drag) {' in tick
+    assert tick.index('if (state.drag) {') < tick.index('ffRelaxAsync')
     assert 'window.requestAnimationFrame' in tick
     # The coordinate box follows at a readable rate -- each push is a round trip.
     assert "state.autoPushed" in tick
@@ -1432,10 +1433,16 @@ def test_the_editor_version_is_its_own_content():
     assert '__DELFIN_MANIP_VERSION__' not in stamped
     match = re.search(r"var MANIP_VERSION = '([0-9a-f]{12})';", stamped)
     assert match, 'the version is not stamped in'
-    # And it moves when the script does.
+    # And it moves when the script does -- including the program the worker
+    # runs, which is part of the editor and goes into the same hash.
     import hashlib
-    assert match.group(1) == hashlib.sha256(
-        SUBMIT_MANIP_BOOTSTRAP_JS.encode('utf-8')).hexdigest()[:12]
+    import json
+
+    from delfin.dashboard.molecule_viewer import FF_WORKER_LOOP_JS
+
+    full = SUBMIT_MANIP_BOOTSTRAP_JS.replace(
+        '__DELFIN_FF_WORKER_LOOP__', json.dumps(FF_WORKER_LOOP_JS))
+    assert match.group(1) == hashlib.sha256(full.encode('utf-8')).hexdigest()[:12]
 
 
 def test_the_right_button_takes_things_away_in_draw_mode():
@@ -1565,3 +1572,74 @@ def test_the_fullscreen_status_is_cleared_with_the_small_one():
     clear = source.split('def _clear_mol_status')[1].split('\n    def ')[0]
     assert "mol_status.value = ''" in clear
     assert "mol_status_fs.value = ''" in clear
+
+
+# ---------------------------------------------------------------------------
+# the force field beside the page rather than in front of it
+# ---------------------------------------------------------------------------
+def test_the_relaxation_does_not_own_the_frame_the_page_needs():
+    """A batch aims at a whole frame, and a whole frame spent on the physics
+    is a whole frame the page does not have.
+
+    Measured in a browser with the shipped engine, one second of Dynamik Opt on
+    a 100-atom peptide: 411 ms of main-thread JavaScript, and a task that
+    wanted to run "now" waited 44 ms at the 95th percentile. Everything else --
+    a click, a widget update, a message from the kernel -- was behind that,
+    which is what made the whole dashboard drag while the optimisation ran.
+    Computed in a Worker instead: 2 ms and 2 ms, with the relaxation itself no
+    slower (977 -> 1012 steps/s, same energy after four seconds).
+    """
+    make = _body('getFFWorker')
+    assert 'new Worker(url)' in make
+    assert 'window.__delfinFFSource' in make
+    # An old browser, or a policy that forbids blob: -- everything then goes on
+    # being computed here, exactly as before.
+    assert 'ffWorkerRefused' in make
+    assert 'done(ffRelaxFrame(scopeKey));' in _body('ffRelaxAsync')
+    assert 'function ffRelaxFrame' in EDITOR, 'the fallback has to still exist'
+    # A source that has not arrived yet is not a browser that cannot do it:
+    # the engine's script and this one arrive separately.
+    assert 'if (!source) return null;' in make
+
+    relax = _body('ffRelaxAsync')
+    # One batch out at a time: a second would only queue work the picture has
+    # already moved past.
+    assert 'state.ffBusy' in relax
+    # And a batch that never comes back must not hold the loop for ever.
+    assert 'ffBusySince' in relax
+    # What the hand holds stays where the hand put it: the answer describes
+    # where it was when it was asked for, which under the cursor is the past.
+    assert 'var held = (state.drag && state.drag.targets) || null;' in relax
+    assert 'skipSerials' in _body('ffWritePositions')
+
+
+def test_both_copies_of_the_field_are_told_the_same_thing():
+    """The page keeps an engine for what cannot wait -- whether a field is
+    loaded at all, the energy of a geometry nobody has relaxed yet -- and the
+    worker does the work. Anything that is not a batch reaches both, or they
+    would relax different molecules."""
+    for command in ('load', 'configure', 'grab', 'dispose'):
+        assert f"cmd: '{command}'" in EDITOR, f'the worker never hears about {command}'
+    # Frozen atoms above all: a worker that has not been told would relax the
+    # atom the user is holding.
+    frozen = _body('ffApplyFrozen')
+    assert 'window.__delfinFF.grab(scopeKey, list)' in frozen
+    assert "ffTellWorker({cmd: 'grab', scope: scopeKey, list: list})" in frozen
+    # Statistics come back with every batch, so the energy badge and the
+    # settle's convergence test read one place.
+    assert 'function ffStatsOf' in EDITOR
+    assert 'state.ffStats' in _body('ffRelaxAsync')
+
+
+def test_the_worker_answers_with_the_positions_and_the_statistics():
+    """Both are read every frame; a second round trip for the second would
+    cost more than computing either."""
+    from delfin.dashboard.molecule_viewer import FF_WORKER_LOOP_JS
+
+    assert 'var window = self;' in EDITOR, 'the engine speaks of window'
+    assert 'FF.step(message.scope, message.positions || null' in FF_WORKER_LOOP_JS
+    assert 'stats: FF.stats(message.scope)' in FF_WORKER_LOOP_JS
+    # The buffer stops being ours the moment it is transferred, and the engine
+    # goes on using its own array.
+    assert 'new Float64Array(out)' in FF_WORKER_LOOP_JS
+    assert '[answer.buffer]' in FF_WORKER_LOOP_JS

@@ -1087,6 +1087,41 @@ def measurement_bootstrap_js():
     return MEASUREMENT_BOOTSTRAP_JS
 
 
+#: What the worker does with what it is sent.  It is appended to the engine's
+#: own source inside the Worker, so ``self.__delfinFF`` is already there.
+#: A batch answers with the positions *and* the statistics, because both are
+#: read every frame and a second round trip for the second one would cost more
+#: than computing either.
+FF_WORKER_LOOP_JS = r"""
+self.onmessage = function (e) {
+    var message = e.data || {};
+    var FF = self.__delfinFF;
+    if (!FF) { self.postMessage({seq: message.seq}); return; }
+    try {
+        if (message.cmd === 'load') {
+            FF.load(message.scope, message.payload);
+        } else if (message.cmd === 'configure') {
+            FF.configure(message.scope, message.opts);
+        } else if (message.cmd === 'grab') {
+            FF.grab(message.scope, message.list);
+        } else if (message.cmd === 'dispose') {
+            FF.dispose(message.scope);
+        } else if (message.cmd === 'step') {
+            var out = FF.step(message.scope, message.positions || null,
+                              message.frameMs);
+            // A copy, because the engine goes on using its own array and the
+            // buffer we hand over stops being ours the moment it is sent.
+            var answer = out ? new Float64Array(out) : null;
+            self.postMessage(
+                {seq: message.seq, positions: answer, stats: FF.stats(message.scope)},
+                answer ? [answer.buffer] : []);
+            return;
+        }
+    } catch (err) {}
+    self.postMessage({seq: message.seq});
+};
+"""
+
 SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 (function() {
     // A version, not a flag. It used to be a boolean, so a dashboard that
@@ -1955,8 +1990,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var badge = ensureEnergyBadge(scopeKey);
         if (!badge) return;
         if (!ffEnabled(state)) { badge.style.display = 'none'; return; }
-        var stats = null;
-        try { stats = window.__delfinFF.stats(scopeKey); } catch (e) {}
+        var stats = ffStatsOf(scopeKey);
         var energy = stats ? stats.energy : null;
         if (typeof energy !== 'number' || !isFinite(energy)) {
             // Nothing has been relaxed yet, so the engine holds no energy:
@@ -2865,13 +2899,128 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         return p;
     }
-    function ffWritePositions(viewer, pos) {
+    function ffWritePositions(viewer, pos, skipSerials) {
         var atoms = getAtoms(viewer);
         if (!pos || pos.length < 3 * atoms.length) return false;
+        // Atoms the page owns are not the answer's to give back. The answer
+        // describes where they were when it was asked for, and under the hand
+        // that is already the past: written back, the grabbed atom would be
+        // pulled to where the cursor was a frame ago, every frame.
+        var skip = null;
+        if (skipSerials && skipSerials.length) {
+            skip = {};
+            for (var s = 0; s < skipSerials.length; s++) skip[skipSerials[s]] = true;
+        }
         for (var i = 0; i < atoms.length; i++) {
+            if (skip && skip[atoms[i].serial]) continue;
             atoms[i].x = pos[3*i]; atoms[i].y = pos[3*i+1]; atoms[i].z = pos[3*i+2];
         }
         return true;
+    }
+
+    // --- the force field runs beside the page, not in front of it --------
+    //
+    // A relaxation batch aims at a whole frame, and a whole frame spent on the
+    // physics is a whole frame the page does not have: measured in a browser
+    // on a 100-atom peptide, one batch is 31 ms of the 17 ms a display frame
+    // lasts. Everything else -- a click, a widget update, a message from the
+    // kernel -- waits behind it, which is why the whole dashboard dragged
+    // while Dynamik Opt was running.
+    //
+    // So the batch is computed in a Worker. The page keeps its own copy of the
+    // engine for what has to be answered on the spot (whether a field is
+    // loaded at all, the energy of a geometry nobody has relaxed yet) and
+    // hands over every batch. If Workers cannot be made -- an old browser, a
+    // policy that forbids blob: -- everything falls back to computing it here,
+    // exactly as before.
+    var ffWorker = null, ffWorkerRefused = false, ffJobs = {}, ffJobSeq = 0;
+
+    function getFFWorker() {
+        if (ffWorker || ffWorkerRefused) return ffWorker;
+        var source = window.__delfinFFSource;
+        // Not yet loaded is not the same as not available: the engine's script
+        // and this one arrive separately, and refusing for good on the first
+        // ask would leave the physics on the page for the rest of the session.
+        if (!source) return null;
+        ffWorkerRefused = true;                 // until one is actually running
+        try {
+            if (typeof Worker !== 'function' ||
+                typeof Blob !== 'function' || !window.URL ||
+                typeof window.URL.createObjectURL !== 'function') {
+                return null;
+            }
+            // The engine speaks of `window`; a worker calls it `self`.
+            var program = 'var window = self;\n' + source + '\n' +
+                __DELFIN_FF_WORKER_LOOP__;
+            var url = window.URL.createObjectURL(
+                new Blob([program], {type: 'text/javascript'}));
+            var w = new Worker(url);
+            w.onmessage = function(e) {
+                var reply = e.data || {};
+                var job = ffJobs[reply.seq];
+                if (!job) return;
+                delete ffJobs[reply.seq];
+                try { job(reply); } catch (err) {}
+            };
+            w.onerror = function() {
+                // Whatever is in flight is answered as "nothing happened", so
+                // no loop is left waiting on a worker that has died. It is not
+                // built again either -- whatever stopped it once would stop it
+                // every frame -- and the page computes the batches itself from
+                // here on.
+                ffWorker = null;
+                ffWorkerRefused = true;
+                // Its last word is not the truth any more; the page's own
+                // engine takes the questions back.
+                var states = window._submitManipStateByScope || {};
+                Object.keys(states).forEach(function(key) {
+                    if (states[key]) { states[key].ffStats = null;
+                                       states[key].ffBusy = false; }
+                });
+                Object.keys(ffJobs).forEach(function(seq) {
+                    var job = ffJobs[seq];
+                    delete ffJobs[seq];
+                    try { job({}); } catch (err) {}
+                });
+            };
+            ffWorker = w;
+            ffWorkerRefused = false;
+        } catch (err) {
+            ffWorker = null;
+        }
+        return ffWorker;
+    }
+
+    // Anything that is not a batch is done in both places: the page's copy
+    // answers the questions that cannot wait, the worker's does the work.
+    function ffTellWorker(message, transfer) {
+        var w = getFFWorker();
+        if (!w) return false;
+        try { w.postMessage(message, transfer || []); } catch (err) { return false; }
+        return true;
+    }
+
+    function ffAskWorker(message, transfer, done) {
+        var w = getFFWorker();
+        if (!w) { done(null); return false; }
+        message.seq = ++ffJobSeq;
+        ffJobs[message.seq] = done;
+        try {
+            w.postMessage(message, transfer || []);
+        } catch (err) {
+            delete ffJobs[message.seq];
+            done(null);
+            return false;
+        }
+        return true;
+    }
+
+    function ffStatsOf(scopeKey) {
+        // What the worker last reported, or the page's own engine when there
+        // is no worker. Either way, one place to ask.
+        var state = getState(scopeKey);
+        if (state.ffStats) return state.ffStats;
+        try { return window.__delfinFF.stats(scopeKey); } catch (e) { return null; }
     }
     function ffEnabled(state) {
         return !!(state.ffActive && window.__delfinFF &&
@@ -2887,6 +3036,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             list.push(index);
         });
         try { window.__delfinFF.grab(scopeKey, list); } catch (e) {}
+        ffTellWorker({cmd: 'grab', scope: scopeKey, list: list});
     }
     function ffBeginDrag(scopeKey, targets) {
         var state = getState(scopeKey);
@@ -2925,6 +3075,64 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // same 33 ms, so it has to be measured together with the relaxation.
         state.ffFrameMs = nowMs() - t0;
         return true;
+    }
+
+    // The same batch, computed beside the page instead of in front of it.
+    // *done* is called with whether anything came back, either when the worker
+    // answers or straight away when there is none to ask.
+    //
+    // One batch is in flight at a time. Asking for a second while the first is
+    // still being computed would only queue work the page has already moved
+    // past -- the loop is paced by the answers, which is what keeps it honest
+    // on a slow machine as much as on a fast one.
+    function ffRelaxAsync(scopeKey, done) {
+        var state = getState(scopeKey);
+        if (!ffEnabled(state)) { done(false); return; }
+        var viewer = getViewer(scopeKey);
+        if (!viewer) { done(false); return; }
+        if (!getFFWorker()) {
+            // No worker: the page computes it, and answers about it too.
+            state.ffStats = null;
+            done(ffRelaxFrame(scopeKey));
+            return;
+        }
+        if (state.ffBusy) {
+            // Wait for the batch that is already out rather than answering
+            // "nothing happened" -- a settle asked while the last frame of a
+            // drag was still in flight would take that for converged and stop
+            // on the spot. A batch that never comes back must not hold the
+            // loop for ever either, so a stuck one is given up on.
+            if (nowMs() - (state.ffBusySince || 0) > 2000) {
+                state.ffBusy = false;
+            } else {
+                window.requestAnimationFrame(function() {
+                    ffRelaxAsync(scopeKey, done);
+                });
+                return;
+            }
+        }
+        state.ffBusy = true;
+        state.ffBusySince = nowMs();
+        var t0 = nowMs();
+        var positions = ffReadPositions(viewer);
+        var sent = ffAskWorker(
+            {cmd: 'step', scope: scopeKey, positions: positions,
+             frameMs: state.ffFrameMs || 16},
+            [positions.buffer],
+            function(reply) {
+                state.ffBusy = false;
+                if (!reply || !reply.positions) { done(false); return; }
+                state.ffFrameMs = nowMs() - t0;
+                state.ffStats = reply.stats || null;
+                var live = getViewer(scopeKey);
+                if (!live) { done(false); return; }
+                // Whatever the hand is holding stays where the hand put it.
+                var held = (state.drag && state.drag.targets) || null;
+                ffWritePositions(live, reply.positions, held);
+                applyFixedInternals(scopeKey);
+                done(true);
+            });
+        if (!sent) { state.ffBusy = false; }
     }
     // Avogadro's Auto Optimization tool: the force field keeps running on a
     // timer whether or not the mouse is down, so the structure visibly settles
@@ -2994,8 +3202,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (!viewer || !ffEnabled(state)) { stopAutoOptimize(scopeKey); return; }
         // While a drag is in flight its own handler already relaxes and
         // redraws; running a second batch here would double the step budget.
-        if (!state.drag) {
-            if (ffRelaxFrame(scopeKey)) {
+        if (state.drag) {
+            state.autoRaf = window.requestAnimationFrame(function() {
+                autoOptimizeTick(scopeKey);
+            });
+            return;
+        }
+        ffRelaxAsync(scopeKey, function(moved) {
+            if (moved) {
                 redrawHighlights(scopeKey);
                 var now = nowMs();
                 // The relaxation deliberately takes no snapshots. It used to
@@ -3013,9 +3227,13 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     pushXyzToPython(scopeKey);
                 }
             }
-        }
-        state.autoRaf = window.requestAnimationFrame(function() {
-            autoOptimizeTick(scopeKey);
+            // The next frame is asked for once this one has been answered, so
+            // the loop runs at whatever pace the machine can actually keep and
+            // never queues work the picture has already moved past.
+            if (!state.autoOpt) return;
+            state.autoRaf = window.requestAnimationFrame(function() {
+                autoOptimizeTick(scopeKey);
+            });
         });
     }
     function startAutoOptimize(scopeKey) {
@@ -3053,6 +3271,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             window._delfinFFByScope[scopeKey]) {
             try {
                 window.__delfinFF.configure(scopeKey, {maxChunk: state.ffStrength});
+                ffTellWorker({cmd: 'configure', scope: scopeKey,
+                              opts: {maxChunk: state.ffStrength}});
             } catch (e) {}
         }
         return state.ffStrength;
@@ -3125,15 +3345,15 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 pushXyzToPython(scopeKey, 'drag-end');
                 return;
             }
-            var moved = ffRelaxFrame(scopeKey);
-            redrawHighlights(scopeKey);
-            var stats = null;
-            try { stats = window.__delfinFF.stats(scopeKey); } catch (e) {}
-            state.settleFrames++;
-            var done = !moved || (stats && (stats.converged || stats.stalled)) ||
-                       state.settleFrames >= SETTLE_MAX_FRAMES;
-            if (done) { pushXyzToPython(scopeKey, 'drag-end'); return; }
-            state.settleRaf = window.requestAnimationFrame(tick);
+            ffRelaxAsync(scopeKey, function(moved) {
+                redrawHighlights(scopeKey);
+                var stats = ffStatsOf(scopeKey);
+                state.settleFrames++;
+                var done = !moved || (stats && (stats.converged || stats.stalled)) ||
+                           state.settleFrames >= SETTLE_MAX_FRAMES;
+                if (done) { pushXyzToPython(scopeKey, 'drag-end'); return; }
+                state.settleRaf = window.requestAnimationFrame(tick);
+            });
         };
         state.settleRaf = window.requestAnimationFrame(tick);
     }
@@ -3400,9 +3620,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     z: basis.right.z * dx * s - basis.up.z * dy * s
                 };
                 applyTranslate(scopeKey, delta, d.targets);
-                // The grabbed atoms are already where the cursor put them;
-                // the relaxation pulls everything else after them.
-                if (ffRelaxFrame(scopeKey)) redrawHighlights(scopeKey);
+                // The grabbed atoms are already where the cursor put them --
+                // applyTranslate has drawn that -- and the relaxation pulls
+                // everything else after them, drawn again when it answers.
+                ffRelaxAsync(scopeKey, function(moved) {
+                    if (moved) redrawHighlights(scopeKey);
+                });
             } else if (d.kind === 'rotate' && d.movedEnough) {
                 e.preventDefault();
                 if (!d.snapshotted) { snapshotForUndo(scopeKey); d.snapshotted = true; }
@@ -3528,6 +3751,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.ffActive = false;
         state.ffInfo = null;
         state.measureBox = null;
+        // Nothing from the picture that is going away may be waiting on an
+        // answer meant for it.
+        state.ffBusy = false;
+        state.ffStats = null;
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
         redrawHighlights(scopeKey);
@@ -4041,6 +4268,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             state.ffInfo = null;
             if (window.__delfinFF) {
                 try { window.__delfinFF.dispose(scopeKey); } catch (e) {}
+                ffTellWorker({cmd: 'dispose', scope: scopeKey});
+                state.ffStats = null;
             }
             updateStatus(scopeKey);
             return {ok: false, error: 'force field cleared'};
@@ -4051,6 +4280,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var result;
         try {
             result = window.__delfinFF.load(scopeKey, terms);
+            // The page's copy answers what cannot wait; the worker does the
+            // work. Both are given the same parameters, from the same call.
+            ffTellWorker({cmd: 'load', scope: scopeKey, payload: terms});
+            state.ffStats = null;
+            state.ffBusy = false;
         } catch (e) {
             return {ok: false, error: 'force field failed to load'};
         }
@@ -4162,8 +4396,12 @@ def submit_manip_bootstrap_js():
     was added to prevent.  Deriving it from the content cannot be forgotten:
     any change to this script is a new version by construction.
     """
-    stamp = hashlib.sha256(SUBMIT_MANIP_BOOTSTRAP_JS.encode('utf-8')).hexdigest()[:12]
-    return SUBMIT_MANIP_BOOTSTRAP_JS.replace('__DELFIN_MANIP_VERSION__', stamp)
+    full = SUBMIT_MANIP_BOOTSTRAP_JS.replace(
+        '__DELFIN_FF_WORKER_LOOP__', json.dumps(FF_WORKER_LOOP_JS))
+    # The worker's program is part of the editor, so a change to it is a new
+    # version like any other -- the hash is taken after it is in.
+    stamp = hashlib.sha256(full.encode('utf-8')).hexdigest()[:12]
+    return full.replace('__DELFIN_MANIP_VERSION__', stamp)
 
 
 # Shared fullscreen support for the ORCA Builder, Calculations Browser, and
