@@ -13,6 +13,13 @@ So each part is built on its own and they are then set beside each other, far
 enough apart to be two things and near enough to be one picture.  Which
 converter builds them is the caller's business; this only splits, places and
 joins.
+
+Splitting on the dot cannot take a complex apart, and that is checked rather
+than hoped: of the 185,549 structures in the batch file DELFIN and MANTA are
+built on, **not one contains a dot**.  Every complex there is written as a
+single connected SMILES -- hapto ligands included, through the ring closures
+and the charge-separated dative bonds.  A dot means what it says: two systems
+that are not bonded to each other.
 """
 
 from __future__ import annotations

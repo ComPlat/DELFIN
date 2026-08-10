@@ -131,9 +131,57 @@ def test_both_conversion_paths_build_the_parts_apart():
     source = open(tab_submit.__file__, encoding="utf-8").read()
     worker = source.split("def _start_smiles_conversion")[1].split("\n    def ")[0]
     assert "_separate.has_separate_systems(cleaned_data)" in worker
-    assert "_separate.convert_each(" in worker, "the quick path"
-    assert "_separate.combine_isomers(per_part)" in worker, "the manifold path"
+    assert "_separate.combine_isomers(per_part)" in worker, (
+        "both paths build the parts apart and then set them side by side"
+    )
+    assert worker.count("_separate.combine_isomers(per_part)") == 2, (
+        "the quick path and the manifold path, one each"
+    )
     assert "if not error and isomers and not separate:" in worker, (
         "a hapticity preview made from the whole string would describe a "
         "molecule that is not any of the frames"
+    )
+
+
+def test_a_hapto_ligand_is_never_written_with_a_dot():
+    """Splitting on the dot cannot take a complex apart.
+
+    Of the 185,549 structures in the batch file DELFIN and MANTA are built on,
+    not one contains a dot: every complex is written as a single connected
+    SMILES, hapto ligands included, through the ring closures and the
+    charge-separated dative bonds.  So a dot means what it says.
+    """
+    for connected in (
+        "CC1=[N+]2NC(C3=CC=CC=N3)=[O+][Cd-3]2([Br])([Br])[N+]2=CC=CC=C12",
+        "[I][Cd-3]123[N+](=CC4=CC=CC=[N+]41)CCC[N+]2=CC1=CC=CC=[N+]13",
+        "[Cl][Cd-3]12([Cl])[N+]3=C(C=CC=C3C3=[N+]1C1=CC=CC=C1N3C1=CC=CC=C1)"
+        "C1=[N+]2C2=CC=CC=C2N1C1=CC=CC=C1",
+    ):
+        assert "." not in connected
+        assert separate.has_separate_systems(connected) is False, (
+            "a complex must never be split into pieces"
+        )
+
+    source = open(separate.__file__, encoding="utf-8").read()
+    assert "185,549" in source, "the count that makes this safe belongs here"
+
+
+def test_each_part_gets_the_hapticity_previews_of_its_own_ligands(editor=None):
+    """They are the ways a ligand can sit on its metal -- a question about the
+    part that has the metal, and about no other part."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    worker = source.split("def _start_smiles_conversion")[1].split("\n    def ")[0]
+
+    quick = worker.split("if quick and separate:")[1].split("elif quick:")[0]
+    assert "smiles_to_xyz_quick_with_previews(part)" in quick, (
+        "the quick path makes them per part"
+    )
+    assert "combine_isomers(per_part)" in quick
+
+    manifold = worker.split("if separate:")[1].split("else:")[0]
+    assert "append_hapto_previews_to_isomers(\n" in manifold
+    assert "made, part, include_quick=apply_uff" in manifold, (
+        "from the part's own SMILES, not from the whole string"
     )

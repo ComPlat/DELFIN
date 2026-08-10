@@ -1713,14 +1713,31 @@ def create_tab(ctx):
                     # the other molecule, 0.877 A at the closest.  Built apart
                     # and set side by side they come out 5.1 A apart, which is
                     # a picture somebody can work in.
-                    built = _separate.convert_each(
-                        cleaned_data, smiles_to_xyz_quick)
+                    #
+                    # The hapticity previews are made per part and travel with
+                    # it.  They are the alternative ways a ligand can sit on
+                    # its metal, so they belong to the part that has the metal;
+                    # made from the whole string they would describe a molecule
+                    # that is none of the frames.
+                    per_part, error = [], None
+                    for position, part in enumerate(
+                            _separate.split_smiles(cleaned_data), start=1):
+                        made, count, _m, previews, error = (
+                            smiles_to_xyz_quick_with_previews(part))
+                        if error or not made:
+                            error = (f'part {position} could not be built: '
+                                     f'{error or "nothing came back"}')
+                            break
+                        per_part.append([(made, count, 'quick')]
+                                        + list(previews or []))
+                    frames = ([] if error
+                              else _separate.combine_isomers(per_part))
                     result = {
-                        'error': built['error'],
-                        'xyz_string': built['xyz'],
-                        'num_atoms': built['atoms'],
-                        'preview_items': [],
-                        'separate_parts': built['parts'],
+                        'error': error,
+                        'xyz_string': frames[0][0] if frames else None,
+                        'num_atoms': frames[0][1] if frames else 0,
+                        'preview_items': frames[1:],
+                        'separate_parts': len(per_part),
                     }
                 elif quick:
                     xyz_string, num_atoms, _method, preview_items, error = (
@@ -1765,16 +1782,20 @@ def create_tab(ctx):
                                 error = (f'part {position} could not be built: '
                                          f'{error or "nothing came back"}')
                                 break
+                            # Its own hapticity previews, from its own SMILES:
+                            # the ways this ligand can sit on this metal, which
+                            # is a question about this part and no other.
+                            made = append_hapto_previews_to_isomers(
+                                made, part, include_quick=apply_uff)
                             per_part.append(made)
                         isomers = ([] if error
                                    else _separate.combine_isomers(per_part))
                     else:
                         isomers, error = smiles_to_xyz_isomers(
                             cleaned_data, **_iso_kwargs)
-                    # Hapticity previews are made from the SMILES they belong
-                    # to; handed the whole string they would describe a
-                    # molecule that is not any of the frames.  Each part could
-                    # have its own, which is a separate piece of work.
+                    # For a split input each part has had its own already,
+                    # from its own SMILES.  Handed the whole string here they
+                    # would describe a molecule that is none of the frames.
                     if not error and isomers and not separate:
                         isomers = append_hapto_previews_to_isomers(
                             isomers,
