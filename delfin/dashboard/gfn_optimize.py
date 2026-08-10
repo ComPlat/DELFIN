@@ -39,7 +39,8 @@ __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
            'install_script',
            'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
            'solvent_note',
-           'xtb_available', 'optimize_with_gfn', 'optimize_autospin',
+           'xtb_available', 'ensure_binary', 'auto_install_allowed',
+           'optimize_with_gfn', 'optimize_autospin',
            'electron_parity']
 
 #: What the dropdown offers, and the flags each one means to xtb.
@@ -494,6 +495,74 @@ def install_command(tool: str = 'xtb') -> Optional[list]:
     return command
 
 
+#: Tools this session has already tried to put right by itself, so a machine
+#: with no network spends the wait once rather than on every press.
+_AUTO_TRIED: set = set()
+
+
+def auto_install_allowed() -> bool:
+    """Whether DELFIN may install a missing or broken tool by itself.
+
+    On unless switched off. Fetching a few hundred megabytes is not nothing,
+    but neither is the alternative that was measured on a real user: an xtb
+    that could not optimise, a message that named no cause, and a day lost --
+    with a working build one button press away that nobody knew to press.
+    """
+    said = str(os.environ.get('DELFIN_AUTO_INSTALL_QM_TOOLS', '1')).strip().lower()
+    return said not in ('0', 'no', 'off', 'false')
+
+
+def ensure_binary(method: Any = None,
+                  on_line: Optional[Callable[[str], None]] = None,
+                  timeout: float = 1800.0) -> Dict[str, Any]:
+    """The program this method needs, installed if it is not there or cannot work.
+
+    Three states are told apart, because they do not have the same answer:
+    there is none, there is one that cannot start or cannot optimise, and
+    there is one that is fine. Only the first two lead anywhere.
+
+    Once per tool per session: a machine with no network must not spend the
+    wait again on every press, and an installer that did not help the first
+    time will not help the second.
+    """
+    tool = 'gxtb' if (GFN_METHODS.get(str(method or '').strip().lower()) or {}
+                      ).get('binary') == 'gxtb' else 'xtb'
+    found = find_binary(method)
+    verdict = judge_xtb(found) if (found and tool == 'xtb') else {
+        'ok': bool(found), 'why': '' if found else 'it is not installed'}
+    if found and verdict['ok']:
+        return {'path': found, 'installed': False, 'ok': True, 'status': ''}
+
+    why = verdict.get('why') or 'it is not installed'
+    if not auto_install_allowed():
+        return {'path': found, 'installed': False, 'ok': False,
+                'status': f'{tool}: {why}. Automatic installation is switched off.'}
+    if tool in _AUTO_TRIED:
+        return {'path': found, 'installed': False, 'ok': False,
+                'status': (f'{tool}: {why}. It was already installed once this '
+                           'session and is still not right -- install it from '
+                           'Settings, where the installer\'s own output is shown.')}
+    if install_script() is None:
+        return {'path': found, 'installed': False, 'ok': False,
+                'status': f'{tool}: {why}, and DELFIN\'s installer is not here.'}
+
+    _AUTO_TRIED.add(tool)
+    if on_line is not None:
+        on_line(f'{tool}: {why}. Installing a working one -- a few minutes.')
+    outcome = install_xtb(on_line=on_line, timeout=timeout, tool=tool)
+    # Ask again from scratch: the answer kept about the old binary says
+    # nothing about the one that has just replaced it.
+    _XTB_JUDGED.clear()
+    now = find_binary(method)
+    fixed = judge_xtb(now) if (now and tool == 'xtb') else {'ok': bool(now), 'why': ''}
+    if now and fixed['ok']:
+        return {'path': now, 'installed': True, 'ok': True,
+                'status': f'{tool} was not usable and has been installed: {now}.'}
+    return {'path': now, 'installed': True, 'ok': False,
+            'status': (f'{tool}: {why}. Installing one did not put it right: '
+                       f'{fixed.get("why") or outcome.get("status") or "no reason given"}')}
+
+
 def install_xtb(
     on_line: Optional[Callable[[str], None]] = None,
     timeout: float = 1800.0,
@@ -887,7 +956,13 @@ def optimize_with_gfn(
                        + ', '.join(n for n in SOLVENTS if n) + '.'),
         }
 
-    binary = find_binary(key)
+    ready = ensure_binary(key)
+    binary = ready['path'] if ready['ok'] else find_binary(key)
+    if binary is not None and not ready['ok'] and ready.get('status'):
+        # It is there and it cannot do the job -- say so before it is used,
+        # rather than after it has failed in its own words.
+        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': 0.0, 'frames': [], 'status': ready['status']}
     if binary is None:
         wanted = ('its own xtb build, xtb-gxtb -- an ordinary xtb accepts '
                   '--gxtb and silently runs GFN2 instead'
@@ -895,7 +970,8 @@ def optimize_with_gfn(
         return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
                 'seconds': 0.0, 'frames': [],
                 'status': (f'{label} needs {wanted}, which was not found in '
-                           f'{_where_it_looked()}.')}
+                           f'{_where_it_looked()}.'
+                           + (f' {ready["status"]}' if ready.get('status') else ''))}
 
     started = time.perf_counter()
     folder = Path(tempfile.mkdtemp(prefix='delfin-gfn-'))

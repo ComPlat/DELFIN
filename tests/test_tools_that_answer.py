@@ -597,3 +597,97 @@ def test_packages_land_in_the_interpreter_that_will_import_them():
         capture_output=True, text=True,
         env={'PATH': os.environ.get('PATH', ''), 'DELFIN_PYTHON': sys.executable})
     assert told.stdout.strip() == sys.executable, told.stdout
+
+
+# ---------------------------------------------------------------------------
+# it puts itself right when a run needs it
+# ---------------------------------------------------------------------------
+def test_a_tool_that_cannot_do_the_job_is_installed_when_it_is_needed(monkeypatch):
+    """Fetching a few hundred megabytes is not nothing. Neither is the
+    alternative that was measured on a real user: an xtb that could not
+    optimise, a message that named no cause, and a day lost -- with a working
+    build one button press away that nobody knew to press.
+
+    So it happens when the tool is actually needed, once per tool per session,
+    and it says what it is doing while it does it.
+    """
+    from delfin.dashboard import gfn_optimize as gfn
+
+    gfn._AUTO_TRIED.clear()
+    gfn._XTB_JUDGED.clear()
+    monkeypatch.delenv('DELFIN_AUTO_INSTALL_QM_TOOLS', raising=False)
+    monkeypatch.setattr(gfn, '_xtb_candidates', lambda: ['/old/xtb'])
+    monkeypatch.setattr(gfn, 'judge_xtb', lambda path: {
+        'ok': '/new/' in str(path), 'version': '6.6.1',
+        'why': 'this is xtb 6.6.1, and below 6.7.0 an optimisation dies'})
+
+    ran = []
+
+    def fake_install(on_line=None, timeout=0, tool='xtb'):
+        ran.append(tool)
+        monkeypatch.setattr(gfn, '_xtb_candidates', lambda: ['/new/xtb'])
+        if on_line:
+            on_line('[qm_tools] create xtb environment ...')
+        return {'ok': True, 'binary': '/new/xtb', 'status': 'installed'}
+
+    monkeypatch.setattr(gfn, 'install_xtb', fake_install)
+
+    said = []
+    outcome = gfn.ensure_binary('gfn2', on_line=said.append)
+
+    assert ran == ['xtb']
+    assert outcome['ok'] and outcome['installed']
+    assert outcome['path'] == '/new/xtb'
+    # It says why before it starts, because the wait is minutes long.
+    assert said and '6.6.1' in said[0] and 'Installing' in said[0]
+
+    # And not a second time in the same session: a machine with no network
+    # must not spend the wait on every press, and an installer that did not
+    # help once will not help twice.
+    monkeypatch.setattr(gfn, '_xtb_candidates', lambda: ['/old/xtb'])
+    gfn._XTB_JUDGED.clear()
+    second = gfn.ensure_binary('gfn2')
+    assert ran == ['xtb'], 'it went and fetched it again'
+    assert not second['ok']
+    assert 'already installed once this session' in second['status']
+    assert 'Settings' in second['status'], 'say where the output can be read'
+
+
+def test_the_automatic_install_can_be_switched_off(monkeypatch):
+    """On a cluster with no network it is only a wait."""
+    from delfin.dashboard import gfn_optimize as gfn
+
+    gfn._AUTO_TRIED.clear()
+    gfn._XTB_JUDGED.clear()
+    monkeypatch.setattr(gfn, '_xtb_candidates', lambda: ['/old/xtb'])
+    monkeypatch.setattr(gfn, 'judge_xtb', lambda path: {
+        'ok': False, 'version': '6.6.1', 'why': 'too old to optimise'})
+    monkeypatch.setattr(gfn, 'install_xtb', lambda **kw: pytest.fail(
+        'it installed although it was switched off'))
+
+    monkeypatch.setenv('DELFIN_AUTO_INSTALL_QM_TOOLS', '0')
+    assert not gfn.auto_install_allowed()
+    outcome = gfn.ensure_binary('gfn2')
+    assert not outcome['ok']
+    assert 'switched off' in outcome['status']
+
+    monkeypatch.setenv('DELFIN_AUTO_INSTALL_QM_TOOLS', '1')
+    assert gfn.auto_install_allowed()
+
+
+def test_a_run_says_the_tool_cannot_do_it_rather_than_letting_it_try(monkeypatch):
+    """It is there and it cannot do the job. Saying so before it is used is
+    worth more than the Fortran backtrace it would produce after."""
+    from delfin.dashboard import gfn_optimize as gfn
+
+    monkeypatch.setattr(gfn, 'ensure_binary', lambda *a, **k: {
+        'path': '/old/xtb', 'installed': False, 'ok': False,
+        'status': 'xtb: this is xtb 6.6.1, and it cannot optimise.'})
+    monkeypatch.setattr(gfn, 'find_binary', lambda *a, **k: '/old/xtb')
+
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+    outcome = gfn.optimize_with_gfn(water, method='gfn2', max_steps=1)
+
+    assert not outcome['ok']
+    assert '6.6.1' in outcome['status']
+    assert outcome['xyz'] == water, 'the structure is left as it was'
