@@ -618,6 +618,71 @@ def rearrange_hydrogens(structure: Structure, index: int) -> int:
     return len(hydrogens)
 
 
+def displaced_hydrogens(structure: Structure, first: int, second: int,
+                        order: int = 1) -> List[int]:
+    """Which hydrogens a new bond between these two atoms takes the place of.
+
+    One per unit of valence the bond costs an end, and the ones it takes are
+    the ones pointing most nearly at the new partner -- the hydrogens that
+    were standing where the bond now is.
+
+    An end with no valence of ours -- a metal -- gives up nothing, and neither
+    does the other end of a bond to one: ammonia coordinating to platinum
+    keeps all three of its hydrogens, and so does the platinum keep whatever
+    it was given.
+    """
+    ends = (int(first), int(second))
+    if not all(0 <= i < len(structure) for i in ends) or ends[0] == ends[1]:
+        return []
+    if any(default_valence(structure.symbols[i]) is None for i in ends):
+        return []
+    doomed: List[int] = []
+    for index, partner in (ends, ends[::-1]):
+        symbol = structure.symbols[index]
+        if symbol == 'H':
+            continue
+        wanted = default_valence(symbol)
+        excess = structure.used_valence(index) + max(1, int(order)) - wanted
+        if excess <= 0:
+            continue
+        centre = structure.coords[index]
+        towards = _unit(_sub(structure.coords[partner], centre))
+        spare = [j for j in structure.hydrogens_on(index)
+                 if j not in doomed and j not in ends]
+        spare.sort(key=lambda j: -_dot(
+            _unit(_sub(structure.coords[j], centre)), towards))
+        doomed.extend(spare[:min(len(spare), excess)])
+    return doomed
+
+
+def connect_atoms(structure: Structure, first: int, second: int,
+                  order: int = 1, adjust_h: bool = True) -> Dict[int, int]:
+    """Bond two atoms that are both already there.
+
+    Drawing a bond where there was none is the one edit that has to make room
+    for itself: two methanes bonded at their carbons are not C2H8.  So with
+    *adjust_h* on each end gives up the hydrogen the bond replaces, and with it
+    off nothing goes -- which is what somebody wants who is correcting a
+    perception rather than building.
+
+    Nothing moves.  Only the topology changes and the displaced hydrogens go;
+    pulling the two ends to a bond length and re-placing the hydrogens around
+    them drags whole fragments through each other in a coordination sphere,
+    which is why the Bond button never did it and still does not.
+
+    Returns:
+        The old-index to new-index map, empty when no hydrogen was displaced.
+    """
+    if not all(0 <= int(i) < len(structure) for i in (first, second)):
+        return {}
+    first, second = int(first), int(second)
+    if first == second or structure.order(first, second):
+        return {}
+    doomed = displaced_hydrogens(structure, first, second, order) if adjust_h else []
+    structure.set_bond(first, second, max(1, min(3, int(order))))
+    return structure.remove_atoms(doomed) if doomed else {}
+
+
 def set_bond_order(structure: Structure, first: int, second: int,
                    order: int, adjust_h: bool = True) -> bool:
     """Retype a bond and re-satisfy both ends.

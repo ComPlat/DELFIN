@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 
 from delfin.dashboard.molecule_builder import (
-    delete_atoms, grow_from, place_atom, set_bond_order, set_element,
-    structure_from_xyz,
+    connect_atoms, delete_atoms, displaced_hydrogens, grow_from, place_atom,
+    set_bond_order, set_element, structure_from_xyz,
 )
 
 ETHANE = (
@@ -21,6 +21,18 @@ ETHANE = (
     "C 0 0 0\nC 1.53 0 0\n"
     "H -0.36 1.02 0\nH -0.36 -0.51 0.88\nH -0.36 -0.51 -0.88\n"
     "H 1.89 1.02 0\nH 1.89 -0.51 0.88\nH 1.89 -0.51 -0.88\n"
+)
+
+#: Two of them, far enough apart that nothing perceives a bond between the
+#: carbons -- so drawing one is a real edit and not a correction.
+TWO_METHANES = (
+    "10\ntwo methanes\n"
+    "C 0 0 0\n"
+    "H 0.63 0.63 0.63\nH 0.63 -0.63 -0.63\n"
+    "H -0.63 0.63 -0.63\nH -0.63 -0.63 0.63\n"
+    "C 4.0 0 0\n"
+    "H 4.63 0.63 0.63\nH 4.63 -0.63 -0.63\n"
+    "H 3.37 0.63 -0.63\nH 3.37 -0.63 0.63\n"
 )
 
 
@@ -49,12 +61,84 @@ def test_changing_the_element_re_satisfies_it_only_when_asked():
     assert hydrogens(off) == 6
 
 
+def test_a_drawn_bond_takes_the_place_of_a_hydrogen():
+    """Two methanes bonded at the carbons are ethane, not C2H8."""
+    on = structure_from_xyz(TWO_METHANES, {})
+    assert on is not None and hydrogens(on) == 8
+
+    mapping = connect_atoms(on, 0, 5, adjust_h=True)
+    assert hydrogens(on) == 6, "one hydrogen from each end made room"
+    assert len(on) == 8
+    assert on.order(mapping.get(0, 0), mapping.get(5, 5)) == 1
+
+    off = structure_from_xyz(TWO_METHANES, {})
+    assert connect_atoms(off, 0, 5, adjust_h=False) == {}
+    assert hydrogens(off) == 8, "switched off, the hydrogens stay"
+    assert off.order(0, 5) == 1, "and the bond is drawn either way"
+
+
+def test_the_hydrogen_that_goes_is_the_one_the_bond_replaces():
+    """Not just any hydrogen: the one that was standing in the bond's way."""
+    structure = structure_from_xyz(TWO_METHANES, {})
+    doomed = displaced_hydrogens(structure, 0, 5)
+
+    assert len(doomed) == 2
+    # The first carbon sits at x=0 and its partner at x=4, so the hydrogen it
+    # gives up is the one with the largest x; the other carbon's is the one
+    # with the smallest.
+    first = [j for j in doomed if structure.coords[j][0] < 2.0]
+    second = [j for j in doomed if structure.coords[j][0] > 2.0]
+    assert len(first) == len(second) == 1, "one from each end"
+    assert structure.coords[first[0]][0] > 0, "it pointed at the partner"
+    assert structure.coords[second[0]][0] < 4.0, "and so did that one"
+
+
+def test_a_bond_to_a_metal_displaces_nothing():
+    """Ammonia coordinating to platinum keeps all three of its hydrogens."""
+    ammine = (
+        "5\nammonia and a platinum\n"
+        "N 0 0 0\nH 0.94 0 0.33\nH -0.47 0.81 0.33\nH -0.47 -0.81 0.33\n"
+        "Pt 0 0 -2.4\n"
+    )
+    structure = structure_from_xyz(ammine, {})
+    assert structure is not None
+
+    assert displaced_hydrogens(structure, 0, 4) == []
+    assert connect_atoms(structure, 0, 4, adjust_h=True) == {}
+    assert hydrogens(structure) == 3
+    assert structure.order(0, 4) == 1
+
+
+def test_a_bond_that_is_already_there_takes_nothing():
+    """Pressing Bond on a bond that exists is a correction, not an edit."""
+    structure = structure_from_xyz(ETHANE, {})
+    assert structure.order(0, 1) == 1
+
+    assert connect_atoms(structure, 0, 1, adjust_h=True) == {}
+    assert hydrogens(structure) == 6
+
+
+def test_closing_a_ring_costs_both_ends_a_hydrogen():
+    """Hexane's two ends joined is cyclohexane: C6H14 becomes C6H12."""
+    chain = structure_from_xyz(ETHANE, {})
+    # Grow it out to hexane, one carbon at a time.
+    tail = 1
+    for _ in range(4):
+        tail = grow_from(chain, tail, "C")
+    assert sum(1 for s in chain.symbols if s == "C") == 6
+    assert hydrogens(chain) == 14
+
+    head = 0
+    connect_atoms(chain, min(head, tail), max(head, tail), adjust_h=True)
+    assert hydrogens(chain) == 12
+
+
 def test_every_edit_takes_the_switch():
     """One switch, and no edit that quietly ignores it."""
     import inspect
 
     for edit in (place_atom, grow_from, set_element, delete_atoms,
-                 set_bond_order):
+                 set_bond_order, connect_atoms):
         parameters = inspect.signature(edit).parameters
         assert "adjust_h" in parameters, f"{edit.__name__} ignores the switch"
         assert parameters["adjust_h"].default is True, (
@@ -70,6 +154,21 @@ def test_the_toolbar_hands_it_to_every_edit():
     assert "keep_h = not bool(submit_adjust_h_btn.value)" in handler
     assert handler.count("adjust_h=not keep_h") >= 6, (
         "place, grow, set element, delete and both bond edits"
+    )
+
+
+def test_the_bond_button_reads_the_switch_too():
+    """Bond is the other way a bond gets drawn, and it has to make room."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding="utf-8").read()
+    handler = source.split("def _edit_bond")[1].split("\n    def ")[0]
+    assert "connect_atoms" in handler, "the Bond button ignores Adjust H"
+    assert "if connect and bool(submit_adjust_h_btn.value):" in handler, (
+        "only a bond being drawn makes room, and only with the switch on"
+    )
+    assert "_apply_structure(" in handler, (
+        "losing an atom is a structural edit and has to be undoable"
     )
 
 

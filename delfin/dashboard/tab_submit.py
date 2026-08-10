@@ -5523,6 +5523,30 @@ def create_tab(ctx):
             _set_mol_status('Select exactly two atoms to change a bond.')
             return
         pair = (min(indices), max(indices))
+        # A bond drawn where there was none costs both ends a valence, and with
+        # Adjust H on the hydrogen standing in its way goes: two methanes
+        # bonded at the carbons are ethane, not C2H8. With it off nothing goes,
+        # which is what correcting a perception needs -- the bond was always
+        # there, so nothing has to make room for it. Removing an atom is a
+        # structural edit and takes the structural path; the bond itself is
+        # still only recorded and drawn, never relaxed into place.
+        made_room = 0
+        if connect and bool(submit_adjust_h_btn.value):
+            from .molecule_builder import connect_atoms
+
+            structure = _structure_now()
+            if structure is not None:
+                before = len(structure)
+                ends = [structure.symbols[i] if i < len(structure) else '?'
+                        for i in pair]
+                mapping = connect_atoms(structure, pair[0], pair[1])
+                if mapping:
+                    made_room = before - len(structure)
+                    _apply_structure(
+                        structure,
+                        f'Bonded {ends[0]}{pair[0]} and {ends[1]}{pair[1]}.')
+                    pair = (mapping.get(pair[0], pair[0]),
+                            mapping.get(pair[1], pair[1]))
         edits = {tuple(k): v for k, v in (state.get('bond_edits') or {}).items()}
         edits[pair] = bool(connect)
         state['bond_edits'] = edits
@@ -5544,7 +5568,9 @@ def create_tab(ctx):
         state['poly_assignment'] = None
         _enable_live_forcefield()
         verb = 'Bonded' if connect else 'Unbonded'
-        _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.')
+        room = (f' {made_room} hydrogen(s) made room for it.'
+                if made_room else '')
+        _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.{room}')
         _clear_selection()
 
     def _apply_structure(structure, note):
