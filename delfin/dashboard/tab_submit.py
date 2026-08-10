@@ -23,6 +23,7 @@ from delfin.smiles_converter import contains_metal
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
 from . import gfn_optimize as _gfn
+from . import ketcher as _ketcher
 from .molecule_viewer import apply_molecule_view_style, submit_manip_bootstrap_js
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
@@ -464,6 +465,35 @@ def create_tab(ctx):
         description='CONVERT SMILES + UFF', button_style='info',
         layout=widgets.Layout(width='185px'),
     )
+
+    # Draw the structure instead of typing it.  Ketcher is a browser
+    # application of thirty-odd megabytes, so it is fetched when it is first
+    # wanted rather than carried in the repository -- see dashboard/ketcher.py.
+    submit_draw_open_btn = widgets.ToggleButton(
+        value=False, description='DRAW', icon='pencil', button_style='info',
+        tooltip=('Draw the structure in Ketcher and hand it back as a SMILES. '
+                 'The editor is fetched the first time it is opened.'),
+        layout=widgets.Layout(width='110px'),
+    )
+    submit_draw_get_btn = widgets.Button(
+        description='TO SMILES', icon='arrow-down', button_style='success',
+        tooltip='Put what is drawn into the input box above, as a SMILES.',
+        layout=widgets.Layout(width='130px', display='none'),
+    )
+    submit_draw_update_btn = widgets.Button(
+        description='Update', icon='refresh',
+        tooltip='Fetch the newest published Ketcher.',
+        layout=widgets.Layout(width='100px', display='none'),
+    )
+    submit_draw_frame = widgets.HTML(value='', layout=widgets.Layout(
+        width='100%', display='none'))
+    submit_draw_frame.add_class('submit-ketcher-frame')
+    # What the editor hands back, on the same kind of channel the viewer uses:
+    # a widget value is ordered and survives a background thread, where a
+    # script sent through run_js can be replaced before the page has run it.
+    submit_draw_sync = widgets.Textarea(
+        value='', layout=widgets.Layout(display='none'))
+    submit_draw_sync.add_class('submit-ketcher-sync')
 
     build_complex_button = widgets.Button(
         description='BUILD COMPLEX', button_style='warning',
@@ -6392,6 +6422,184 @@ def create_tab(ctx):
             # out from where the ligands actually are now.
             _schedule_ui_update(_enable_live_forcefield)
 
+    # -- drawing the structure ------------------------------------------
+    def _draw_frame_html(url):
+        """The editor itself, in a frame of its own.
+
+        A frame rather than the page: Ketcher is a React application that owns
+        its own globals, and the dashboard is another one.  Same origin, so the
+        page may reach in and ask it for the drawing -- across origins there
+        would be nothing to ask with, because Ketcher speaks no messages.
+        """
+        return (
+            "<iframe src='" + html.escape(url, quote=True) + "' "
+            "style='width:100%; height:560px; border:1px solid #d0d0d0; "
+            "border-radius:6px; background:#fff;' "
+            "title='Ketcher'></iframe>"
+        )
+
+    def _refresh_draw_controls():
+        drawn = bool(submit_draw_open_btn.value)
+        ready = _ketcher.is_installed()
+        submit_draw_frame.layout.display = '' if (drawn and ready) else 'none'
+        submit_draw_get_btn.layout.display = '' if (drawn and ready) else 'none'
+        submit_draw_update_btn.layout.display = '' if (drawn and ready) else 'none'
+
+    def on_submit_draw_open(change):
+        if change.get('name') != 'value':
+            return
+        if not submit_draw_open_btn.value:
+            submit_draw_frame.value = ''      # stop the app when it is closed
+            _refresh_draw_controls()
+            return
+        url = _ketcher.app_url()
+        if url:
+            version = _ketcher.installed_version()
+            submit_draw_frame.value = _draw_frame_html(url)
+            _refresh_draw_controls()
+            _set_mol_status(
+                f'Ketcher {version}: draw the structure, then press TO SMILES '
+                'to put it in the input box.')
+            return
+        # Not there yet.  Offered rather than fetched: it is thirty-odd
+        # megabytes, and on a machine without a network it is a wait that ends
+        # in nothing.
+        _refresh_draw_controls()
+        if _ketcher.app_directory() is None:
+            submit_draw_open_btn.value = False
+            _set_mol_status(
+                'The drawing editor needs a directory the browser can load it '
+                'from, and this dashboard is not serving one.')
+            return
+        state['draw_installing'] = True
+        _set_mol_status('Looking up the newest Ketcher...', spinner=True)
+
+        def _work():
+            newest = _ketcher.latest_release()
+
+            def _ask():
+                state['draw_installing'] = False
+                if not newest['ok']:
+                    submit_draw_open_btn.value = False
+                    _set_mol_status(newest['status'])
+                    return
+                state['draw_offer'] = newest
+                submit_draw_get_btn.layout.display = 'none'
+                submit_draw_update_btn.description = 'Fetch it'
+                submit_draw_update_btn.button_style = 'warning'
+                submit_draw_update_btn.layout.display = ''
+                _set_mol_status(
+                    f'Ketcher {newest["version"]} is not here yet: '
+                    f'{newest["size"] / 1e6:.0f} MB from '
+                    'github.com/epam/ketcher, unpacked to about 32 MB beside '
+                    'the dashboard. Press Fetch it to get it.')
+
+            _schedule_ui_update(_ask)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def on_submit_draw_update(_button=None):
+        """Fetch the newest build -- the first time, or over an older one."""
+        if state.get('draw_installing'):
+            return
+        state['draw_installing'] = True
+        submit_draw_update_btn.layout.display = 'none'
+        _set_mol_status('Fetching Ketcher...', spinner=True)
+
+        def _work():
+            def _line(text):
+                _schedule_ui_update(_set_mol_status, f'Ketcher: {text}',
+                                    spinner=True)
+
+            outcome = _ketcher.install(on_line=_line)
+
+            def _done():
+                state['draw_installing'] = False
+                state['draw_offer'] = None
+                submit_draw_update_btn.description = 'Update'
+                submit_draw_update_btn.button_style = ''
+                if not outcome['ok']:
+                    submit_draw_open_btn.value = False
+                    _refresh_draw_controls()
+                    _set_mol_status(outcome['status'])
+                    return
+                url = _ketcher.app_url()
+                submit_draw_frame.value = _draw_frame_html(url) if url else ''
+                if not submit_draw_open_btn.value:
+                    submit_draw_open_btn.value = True
+                _refresh_draw_controls()
+                _set_mol_status(outcome['status'],
+                                'Draw the structure, then press TO SMILES.')
+
+            _schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def on_submit_draw_get(_button=None):
+        """Ask the editor for what has been drawn.
+
+        The molfile, not the SMILES the editor could write itself: everything
+        downstream here reads structures with RDKit, and a SMILES RDKit wrote
+        is one RDKit will certainly read back.
+        """
+        _set_mol_status('Reading the drawing...', spinner=True)
+        ctx.run_js(
+            "(function(){\n"
+            "  var box=document.querySelector('.submit-ketcher-sync');\n"
+            "  var input=box&&box.querySelector('textarea, input');\n"
+            "  function hand(text){\n"
+            "    if(!input) return;\n"
+            "    var proto=(input.tagName==='TEXTAREA')\n"
+            "      ? window.HTMLTextAreaElement.prototype\n"
+            "      : window.HTMLInputElement.prototype;\n"
+            "    var setter=Object.getOwnPropertyDescriptor(proto,'value');\n"
+            "    /* A serial in front, so drawing the same thing twice reads\n"
+            "       as two answers rather than as one that never came. */\n"
+            "    var line=(Date.now())+'\\n'+text;\n"
+            "    if(setter&&setter.set) setter.set.call(input,line);\n"
+            "    else input.value=line;\n"
+            "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
+            "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
+            "  }\n"
+            "  var host=document.querySelector('.submit-ketcher-frame');\n"
+            "  var frame=host&&host.querySelector('iframe');\n"
+            "  var api=null;\n"
+            "  try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
+            "  catch(e){ api=null; }\n"
+            "  if(!api){ hand('!no-editor'); return; }\n"
+            "  try{\n"
+            "    Promise.resolve(api.getMolfile()).then(function(mol){\n"
+            "      hand(mol||''); }, function(err){ hand('!'+err); });\n"
+            "  }catch(e){ hand('!'+e); }\n"
+            "})();"
+        )
+
+    def on_submit_draw_sync(change):
+        """What the editor handed back."""
+        if change.get('name') != 'value':
+            return
+        raw = submit_draw_sync.value or ''
+        if '\n' not in raw:
+            return
+        molfile = raw.split('\n', 1)[1]
+        if molfile.startswith('!'):
+            trouble = molfile[1:]
+            _set_mol_status(
+                'The editor is not open yet, so there is nothing to read.'
+                if trouble == 'no-editor' else
+                f'The drawing could not be read: {trouble}')
+            return
+        outcome = _ketcher.smiles_from_molfile(molfile)
+        if not outcome['ok']:
+            _set_mol_status(outcome['status'])
+            return
+        # Into the box the rest of the tab reads, so Convert, Build and every
+        # other button downstream sees it exactly as a typed SMILES.
+        coords_widget.value = outcome['smiles']
+        _set_mol_status(f'Drawn: {outcome["smiles"]}',
+                        'It is in the input box -- Convert turns it into '
+                        'coordinates.')
+
     # -- wiring ---------------------------------------------------------
     xyz_copy_btn.on_click(on_xyz_copy)
     coords_widget.observe(update_molecule_view, names='value')
@@ -6438,6 +6646,10 @@ def create_tab(ctx):
     submit_optimize_all_btn.add_class('submit-optimize-switch')
     submit_optimize_all_btn.observe(on_submit_optimize_all, names='value')
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
+    submit_draw_open_btn.observe(on_submit_draw_open, names='value')
+    submit_draw_get_btn.on_click(on_submit_draw_get)
+    submit_draw_update_btn.on_click(on_submit_draw_update)
+    submit_draw_sync.observe(on_submit_draw_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
@@ -6473,6 +6685,10 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        widgets.HBox([submit_draw_open_btn, submit_draw_get_btn,
+                      submit_draw_update_btn],
+                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        submit_draw_frame, submit_draw_sync,
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         manta_settings_row,
@@ -6701,6 +6917,11 @@ def create_tab(ctx):
         'submit_gfn_autospin': submit_gfn_autospin,
         'submit_gfn_solvent': submit_gfn_solvent,
         'submit_dyn_bonds_btn': submit_dyn_bonds_btn,
+        'submit_draw_open_btn': submit_draw_open_btn,
+        'submit_draw_get_btn': submit_draw_get_btn,
+        'submit_draw_update_btn': submit_draw_update_btn,
+        'submit_draw_frame': submit_draw_frame,
+        'submit_draw_sync': submit_draw_sync,
         'submit_xtb_install_btn': submit_xtb_install_btn,
         'submit_xtb_confirm_btn': submit_xtb_confirm_btn,
         'submit_xtb_cancel_btn': submit_xtb_cancel_btn,
