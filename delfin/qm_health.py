@@ -29,6 +29,7 @@ import re
 import resource
 import shutil
 import subprocess
+import threading
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -39,7 +40,9 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 __all__ = [
     'ToolHealth', 'PROBES', 'known_tools', 'probe_environment',
     'check_tool', 'check_tools', 'repair_actions', 'repair_command',
-    'repair_tool', 'ensure_tool', 'format_health',
+    'repair_tool', 'ensure_tool', 'ensure_package', 'provide', 'history',
+    'PACKAGES',
+    'format_health',
 ]
 
 #: Three atoms, so a probe costs milliseconds rather than seconds.
@@ -688,6 +691,199 @@ def ensure_tool(name: str,
                    if after.present else
                    f'{after.label or name} could not be installed: {after.why}'),
     }
+
+
+#: Python packages DELFIN can fetch, and what it takes to fetch each.
+#:
+#: ``family`` picks the installer, ``flag`` the switch inside it -- those
+#: installers do every package they know unless told which one -- and ``size``
+#: is said out loud before the wait, because "a few minutes" and "two
+#: gigabytes over this network" are not the same sentence to a user on a
+#: metered or slow connection.
+PACKAGES: Dict[str, Dict[str, str]] = {
+    'cclib':      {'family': 'analysis', 'flag': 'INSTALL_CCLIB',   'label': 'cclib'},
+    'nglview':    {'family': 'analysis', 'flag': 'INSTALL_NGLVIEW', 'label': 'nglview'},
+    'morfeus':    {'family': 'analysis', 'flag': 'INSTALL_MORFEUS', 'label': 'morfeus'},
+    'torchani':   {'family': 'mlp', 'flag': 'INSTALL_TORCHANI', 'label': 'TorchANI',
+                   'size': 'it brings PyTorch with it, which is a large download'},
+    'aimnet2calc': {'family': 'mlp', 'flag': 'INSTALL_AIMNET2', 'label': 'AIMNet2',
+                    'size': 'it brings PyTorch with it, which is a large download'},
+    'mace':       {'family': 'mlp', 'flag': 'INSTALL_MACE', 'label': 'MACE',
+                   'size': 'it brings PyTorch with it, which is a large download'},
+    'chgnet':     {'family': 'mlp', 'flag': 'INSTALL_CHGNET', 'label': 'CHGNet',
+                   'size': 'it brings PyTorch with it, which is a large download'},
+}
+
+_PACKAGES_TRIED: set = set()
+
+
+def package_present(module: str) -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def ensure_package(module: str,
+                   on_line: Optional[Callable[[str], None]] = None,
+                   timeout: float = 3600.0) -> Dict[str, Any]:
+    """A Python package DELFIN can use, installed if it is not there.
+
+    Into the interpreter that will import it -- which is the whole point, and
+    was the bug: the installers took the first python on the PATH, so packages
+    were installed and missing at the same time.
+
+    Never from a listing.  These are asked for where a package is about to be
+    used, not where a status panel is drawn: a page that installs two
+    gigabytes because somebody opened it is not a page anybody wants.
+    """
+    import importlib
+
+    if package_present(module):
+        return {'ok': True, 'installed': False, 'status': ''}
+
+    spec = PACKAGES.get(module)
+    label = (spec or {}).get('label', module)
+    if spec is None:
+        return {'ok': False, 'installed': False,
+                'status': f'{label} is not one DELFIN installs.'}
+
+    from delfin.dashboard.gfn_optimize import auto_install_allowed
+
+    if not auto_install_allowed():
+        return {'ok': False, 'installed': False,
+                'status': f'{label} is not installed, and automatic '
+                          'installation is switched off.'}
+    if module in _PACKAGES_TRIED:
+        return {'ok': False, 'installed': False,
+                'status': (f'{label} was already installed once this session '
+                           'and still cannot be imported -- Settings shows the '
+                           'installer\'s own output.')}
+    _PACKAGES_TRIED.add(module)
+
+    size = spec.get('size')
+    if on_line is not None:
+        on_line(f'{label} is needed and not installed. Fetching it'
+                + (f' -- {size}.' if size else ' -- a few minutes.'))
+
+    from delfin.runtime_setup import (run_analysis_tools_installer,
+                                      run_mlp_tools_installer)
+
+    # Only the one that is wanted: these installers do everything they know
+    # unless each switch is turned off by name.
+    others = {other['flag']: '0' for other in PACKAGES.values()
+              if other['family'] == spec['family']}
+    others[spec['flag']] = '1'
+    runner = (run_analysis_tools_installer if spec['family'] == 'analysis'
+              else run_mlp_tools_installer)
+    try:
+        _target, result = runner(extra_env=others)
+        output = getattr(result, 'stdout', '') or ''
+    except Exception as problem:
+        return {'ok': False, 'installed': True,
+                'status': f'{label} could not be installed: {problem}'}
+
+    # A package that has just arrived is not on the import path this process
+    # already worked out.
+    importlib.invalidate_caches()
+    if package_present(module):
+        return {'ok': True, 'installed': True,
+                'status': f'{label} was missing and has been installed.'}
+    return {'ok': False, 'installed': True,
+            'status': (f'{label} could not be installed. '
+                       + (output.strip().splitlines() or [''])[-1][:200])}
+
+
+#: One lock per name, and a record of what was done under it.
+#:
+#: The dashboard answers on threads, and two of them wanting the same tool at
+#: the same moment would have started two conda solves into one prefix -- which
+#: does not end in two installs, it ends in a broken one. The second caller
+#: waits for the first and then finds the work already done.
+_LOCKS: Dict[str, Any] = {}
+_LOCKS_GUARD = threading.Lock()
+_HISTORY: List[Dict[str, Any]] = []
+
+
+def _lock_for(name: str):
+    with _LOCKS_GUARD:
+        if name not in _LOCKS:
+            _LOCKS[name] = threading.Lock()
+        return _LOCKS[name]
+
+
+def history() -> List[Dict[str, Any]]:
+    """What was installed or repaired this session, in order.
+
+    So the dashboard can say what it did on the user's behalf rather than
+    leaving them to guess why something once took four minutes.
+    """
+    return list(_HISTORY)
+
+
+def provide(what: str,
+            on_line: Optional[Callable[[str], None]] = None,
+            timeout: float = 3600.0) -> Dict[str, Any]:
+    """Whatever is needed, made ready -- or a sentence saying why it cannot be.
+
+    The one entry point.  A caller that is about to use something asks for it
+    by name and gets back whether it can go ahead; what that took -- a binary
+    fetched, a link repointed, a package installed into this interpreter, or
+    nothing at all because it was already fine -- is this module's business
+    and not the caller's.
+
+    Three things can be wrong and they do not have the same answer, which is
+    why asking "is it there" was never enough:
+
+    * it is not there -- fetch it, if it is ours to fetch;
+    * it is there and cannot do the job -- a binary that will not start, a
+      link into an environment that has been deleted, an xtb too old to run an
+      optimisation -- repair it, and prove the repair;
+    * it is there and it works -- say so and get out of the way.
+
+    Returns ``{'ok', 'action', 'status'}``.  ``action`` is one of ``''``,
+    ``'installed'``, ``'repaired'`` -- what actually happened, so a caller can
+    tell the user why it waited.
+    """
+    name = str(what or '').strip()
+    if not name:
+        return {'ok': False, 'action': '', 'status': 'nothing was asked for'}
+    with _lock_for(name):
+        answer = _provide_once(name, on_line, timeout)
+    if answer.get('action'):
+        _HISTORY.append({'what': name, 'action': answer['action'],
+                         'status': answer.get('status', '')})
+    return answer
+
+
+def _provide_once(name: str, on_line, timeout: float) -> Dict[str, Any]:
+
+    if name in PACKAGES or (name not in PROBES and name not in PRESENCE_ONLY
+                            and package_present(name)):
+        answer = ensure_package(name, on_line=on_line, timeout=timeout)
+        return {'ok': answer['ok'],
+                'action': 'installed' if answer.get('installed') else '',
+                'status': answer.get('status', '')}
+
+    health = check_tool(name, depth='runs')
+    if health.level == 'ok' and health.present:
+        return {'ok': True, 'action': '', 'status': ''}
+
+    # There and unable: repair before reaching for the network. A repointed
+    # link costs nothing and fixes the commonest of these outright.
+    if health.present and health.repair and health.repair != 'install':
+        if on_line is not None:
+            on_line(f'{health.label or name}: {health.why} -- {health.fix}')
+        done = repair_tool(name, health.repair, on_line=on_line)
+        if done.get('ok'):
+            return {'ok': True, 'action': 'repaired', 'status': done['status']}
+
+    answer = ensure_tool(name, on_line=on_line, timeout=timeout)
+    return {'ok': answer['ok'],
+            'action': 'installed' if answer.get('installed') else '',
+            'status': answer.get('status', '')}
 
 
 def format_health(rows: Sequence[ToolHealth]) -> str:

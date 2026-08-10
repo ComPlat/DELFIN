@@ -741,3 +741,96 @@ def test_running_a_tool_reaches_for_it_before_giving_up():
     body = inspect.getsource(qm_runtime.run_tool)
     assert 'ensure_tool' in body
     assert body.index('ensure_tool') < body.index('raise FileNotFoundError')
+
+
+# ---------------------------------------------------------------------------
+# one entry point for all of it
+# ---------------------------------------------------------------------------
+def test_one_call_covers_a_binary_a_package_and_a_repair(monkeypatch):
+    """A caller about to use something asks for it by name.
+
+    What that took -- a binary fetched, a link repointed, a package installed
+    into this interpreter, or nothing because it was already fine -- is not
+    the caller's business, and three different ways of asking is how a
+    codebase ends up with nine of them.
+    """
+    # Already fine: nothing happens and nothing is claimed.
+    monkeypatch.setattr(qm_health, 'check_tool', lambda name, **kw: qm_health.ToolHealth(
+        name=name, label=name, present=True, level='ok', path='/usr/bin/' + name))
+    answer = qm_health.provide('xtb')
+    assert answer['ok'] and answer['action'] == ''
+
+    # There and unable: repaired, and the repair is proven before it is claimed.
+    fixed = {'n': 0}
+    monkeypatch.setattr(qm_health, 'check_tool', lambda name, **kw: qm_health.ToolHealth(
+        name=name, label=name, present=True, level='fail',
+        why='the link points at a path that is gone', fix='point it somewhere real',
+        repair='relink'))
+    def fake_repair(name, action, **kw):
+        fixed['n'] += 1
+        return {'ok': True, 'action': action, 'status': 'relinked', 'lines': []}
+    monkeypatch.setattr(qm_health, 'repair_tool', fake_repair)
+
+    answer = qm_health.provide('xtb')
+    assert answer['ok'] and answer['action'] == 'repaired'
+    assert fixed['n'] == 1, 'it went and reinstalled instead of relinking'
+
+    # A package is the same question with a different answer.
+    monkeypatch.setattr(qm_health, 'package_present', lambda module: module == 'cclib')
+    assert qm_health.provide('cclib')['ok']
+
+
+def test_two_callers_at_once_do_not_install_twice(monkeypatch):
+    """The dashboard answers on threads. Two of them wanting the same tool at
+    the same moment would have started two conda solves into one prefix, which
+    does not end in two installs -- it ends in a broken one."""
+    import threading
+    import time
+
+    started = []
+
+    def slow(name, on_line, timeout):
+        started.append(time.perf_counter())
+        time.sleep(0.2)
+        return {'ok': True, 'action': 'installed', 'status': ''}
+
+    monkeypatch.setattr(qm_health, '_provide_once', slow)
+    monkeypatch.setattr(qm_health, '_LOCKS', {})
+
+    threads = [threading.Thread(target=lambda: qm_health.provide('xtb'))
+               for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(started) == 2
+    assert started[1] - started[0] >= 0.15, 'they ran at the same time'
+
+
+def test_it_says_afterwards_what_it_did_on_the_users_behalf(monkeypatch):
+    """Otherwise a wait of four minutes is unexplained."""
+    monkeypatch.setattr(qm_health, '_HISTORY', [])
+    monkeypatch.setattr(qm_health, '_LOCKS', {})
+    monkeypatch.setattr(qm_health, '_provide_once', lambda *a: {
+        'ok': True, 'action': 'installed', 'status': 'xtb was installed.'})
+
+    qm_health.provide('xtb')
+    told = qm_health.history()
+    assert told and told[0]['what'] == 'xtb'
+    assert told[0]['action'] == 'installed'
+
+
+def test_a_backend_is_fetched_rather_than_a_pip_command_printed():
+    """It printed three pip commands and stopped. Printing a command that the
+    user then has to run themselves, into the right interpreter, is the thing
+    this whole layer exists to remove."""
+    import inspect
+
+    from delfin import mlp_tools
+
+    body = inspect.getsource(mlp_tools.require_any_mlp)
+    assert 'provide(' in body
+    assert body.index('provide(') < body.index('raise ImportError')
+    # And the instructions stay, for when it could not be done.
+    assert 'pip install' in body

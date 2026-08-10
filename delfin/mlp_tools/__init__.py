@@ -232,7 +232,20 @@ ALIGNN_ELEMENTS = frozenset()
 # ── requirement helpers ────────────────────────────────────────────────
 
 def require_any_mlp(feature: str = "ML potential evaluation") -> None:
-    """Raise an informative error if no MLP backend is installed."""
+    """Make sure a backend is there, and say what is wrong when none can be.
+
+    It used to print three pip commands and stop. Printing a command a user
+    then has to run themselves, into the right interpreter, is the thing this
+    is for -- so one is fetched instead, and the instructions are what is left
+    when that could not be done.
+    """
+    if not available_backends():
+        try:
+            from delfin.qm_health import provide
+
+            provide("torchani")
+        except Exception:
+            pass
     if not available_backends():
         raise ImportError(
             f"{feature} requires at least one ML potential backend.\n"
