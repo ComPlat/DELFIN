@@ -626,12 +626,64 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
             # ligand on the matching mer/fac arrangement (metallacycle embed + best-
             # permutation Kabsch) and the self-gate prunes geometrically infeasible
             # subsets, so the combinatorial enumeration need not know mer-vs-fac.
+            #
+            # ARM PERMUTATION (DELFIN_FFFREE_KAPPA3_ARM_PERM, default OFF -> byte-identical).
+            #
+            # THE HOLE.  itertools.combinations yields each vertex subset ONCE, in sorted
+            # order, and enumerate() then glues arm 0,1,2,... onto it in that same fixed
+            # order.  For a SYMMETRIC kappa>=3 ligand that is right and complete.  For an
+            # ASYMMETRIC one it is neither: which arm sits on which vertex is exactly what
+            # distinguishes the isomers (a tridentate N,N,O has three inequivalent ways to
+            # meet the same vertex triple), and dent!-1 of them were never generated.  The
+            # enumerator is the completeness reference -- the docstring above calls it "the
+            # denominator for Layer-2 coverage" -- so an isomer it never proposes cannot be
+            # built, cannot be missed by the eye, and silently lowers the ceiling.
+            #
+            # WHY THIS IS ADDITIVE, NOT A REPLACEMENT.  itertools.permutations yields the
+            # IDENTITY first, so the very first assignment built for each combo is the one
+            # this branch builds today; every config the flag-off path emits is still
+            # emitted, in the same order, and the flag can only APPEND.  place() dedups via
+            # canon_key/seen, and out.append keeps the FIRST config per key -- so the frames
+            # that exist today keep their identity and the additions land beside them.  That
+            # is the shape that has landed here (RING_PUCKER/LP_SIBLING/SIGMA_ENSEMBLE/TPR6)
+            # and the shape that replacing anything has not.
+            #
+            # SCOPED TO asym, AND THAT IS A PROOF, NOT A GUESS.  For a non-asym spec
+            # canon_key reads tuple(sorted(v for v, a in vs)) -- it drops the arm index
+            # entirely, so all dent! permutations of one vertex subset collapse to ONE key
+            # and only the identity (generated first) survives.  Permuting them would cost
+            # dent! times the work to reproduce the same list.  So the permutation runs
+            # exactly where it can change the answer.
+            #
+            # ⚠ IT INHERITS THE asym BOOL, AND THAT BOOL IS KNOWN TOO COARSE.
+            # asym is set in converter_backend.py:1485 as len(set(donor_elems)) > 1 -- a
+            # single bit over donor ELEMENTS, blind to the ligand's automorphism orbits.
+            # Where it is over-inclusive (two donors of different elements that are
+            # nonetheless symmetry-equivalent through the backbone) canon_key trusts it,
+            # the permutations do NOT collapse, and this branch will emit chemically
+            # identical frames as if they were isomers -- manifolds get BIGGER without
+            # getting truer.  The fix is the arm partition over automorphism orbits
+            # (the constrained arm_adj enumerator already exists on the eye side,
+            # weddell/detectors/_polya_isomer_count.py:565 + find_isomer_coverage.py:567),
+            # and it is a SEPARATE, subtractive change that must be measured on its own.
+            # Until it lands, read a rise in frame count from this flag as unproven.
             free = [v for v in range(n) if v not in assign]
+            # The arm->vertex orders to try.  OFF (and for every symmetric spec) this is the
+            # single identity order, and zip() below then reproduces enumerate(combo) exactly
+            # -- byte-identical, no extra dict, no extra place() call.  The env read is hoisted
+            # out of the combo loop on purpose, so the line below is a BLOCK THAT ONLY RUNS
+            # WHEN THE SWITCH IS ON: that is the line a fire census must trace (tracing the
+            # read itself would report "fires everywhere", since the read runs when OFF too).
+            _orders = [tuple(range(dent))]
+            if (spec.get("asym")
+                    and os.environ.get("DELFIN_FFFREE_KAPPA3_ARM_PERM", "0") == "1"):
+                _orders = list(itertools.permutations(range(dent)))   # identity is FIRST
             for combo in itertools.combinations(free, dent):
-                a = dict(assign)
-                for arm, v in enumerate(combo):
-                    a[v] = (k, arm)
-                place(a)
+                for _order in _orders:
+                    a = dict(assign)
+                    for _arm, v in zip(_order, combo):
+                        a[v] = (k, _arm)
+                    place(a)
 
     place({})
     return out
