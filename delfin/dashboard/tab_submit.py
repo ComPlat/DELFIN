@@ -721,10 +721,52 @@ def create_tab(ctx):
         layout=widgets.Layout(width='88px', height='30px'),
         disabled=True,
     )
+    # Every element, with the ones a molecule editor reaches for first at the
+    # top.  A native select types ahead by label and matches in the order the
+    # options stand in, so pressing P lands on phosphorus rather than on
+    # palladium, and I on iodine rather than on indium -- which is why the
+    # common ones come first rather than the list being sorted by number.
+    # Typing two letters quickly still finds Pd or In wherever they are.
+    # Each one-letter symbol before its two-letter relatives, or pressing B
+    # lands on bromine and P on palladium.
+    _COMMON_ELEMENTS = [
+        'C', 'H', 'N', 'O', 'S', 'P', 'F', 'B', 'I',
+        'Cl', 'Br', 'Si',
+        'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ru', 'Rh', 'Pd', 'Ag', 'Ir', 'Pt', 'Au',
+    ]
+    _ALL_ELEMENTS = [
+        'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
+        'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca',
+        'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
+        'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr', 'Rb', 'Sr', 'Y', 'Zr',
+        'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn',
+        'Sb', 'Te', 'I', 'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd',
+        'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb',
+        'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg',
+        'Tl', 'Pb', 'Bi', 'Po', 'At', 'Rn', 'Fr', 'Ra', 'Ac', 'Th',
+        'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf', 'Es', 'Fm',
+        'Md', 'No', 'Lr', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds',
+        'Rg', 'Cn', 'Nh', 'Fl', 'Mc', 'Lv', 'Ts', 'Og',
+    ]
+    _ELEMENT_CHOICES = _COMMON_ELEMENTS + [
+        e for e in _ALL_ELEMENTS if e not in set(_COMMON_ELEMENTS)]
     submit_element_dd = widgets.Dropdown(
-        options=list(DRAW_ELEMENTS), value='C',
-        layout=widgets.Layout(width='78px', display='none'),
-        disabled=True,
+        options=_ELEMENT_CHOICES,
+        value='C',
+        tooltip=('What a click draws. Every element is here; the common ones '
+                 'are at the top, and typing the symbol jumps to it.'),
+        layout=widgets.Layout(width='72px', display='none'),
+    )
+    submit_adjust_h_btn = widgets.ToggleButton(
+        value=True, description='Adjust H', icon='tint', button_style='info',
+        tooltip=(
+            'Fill or trim the hydrogens on the atoms an edit touches, so a '
+            'carbon that has just lost a bond gets one back. Switch it off to '
+            'leave them exactly as they are -- which is what a radical, an '
+            'open coordination site, or a fragment about to be joined to '
+            'something else needs.'
+        ),
+        layout=widgets.Layout(width='96px', height='30px'),
     )
     submit_manip_clear_btn = widgets.Button(
         description='Clear', button_style='warning',
@@ -1038,7 +1080,7 @@ def create_tab(ctx):
         [
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
-            submit_element_dd,
+            submit_element_dd, submit_adjust_h_btn,
             submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent,
@@ -1358,6 +1400,7 @@ def create_tab(ctx):
         submit_manip_btn.disabled = not enabled
         submit_draw_btn.disabled = not enabled
         submit_element_dd.disabled = not enabled
+        submit_adjust_h_btn.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
@@ -5790,6 +5833,9 @@ def create_tab(ctx):
             _set_mol_status('Load a structure first.')
             return
         fields = payload.split(',')
+        # Whether an edit fills or trims the hydrogens around it, or leaves
+        # them exactly as they are.
+        keep_h = not bool(submit_adjust_h_btn.value)
         try:
             if verb == 'addatom' and len(fields) == 4:
                 element = normalise_element(fields[0])
@@ -5797,7 +5843,8 @@ def create_tab(ctx):
                     _set_mol_status(f'{fields[0]} is not an element.')
                     return
                 place_atom(structure, element,
-                           [float(v) for v in fields[1:4]])
+                           [float(v) for v in fields[1:4]],
+                           adjust_h=not keep_h)
                 _apply_structure(structure, f'Placed {element}.')
             elif verb == 'grow' and len(fields) == 6:
                 element = normalise_element(fields[1])
@@ -5806,7 +5853,8 @@ def create_tab(ctx):
                     return
                 grow_from(structure, int(fields[0]), element,
                           order=int(fields[2]),
-                          direction=[float(v) for v in fields[3:6]])
+                          direction=[float(v) for v in fields[3:6]],
+                          adjust_h=not keep_h)
                 _apply_structure(structure, f'Grew {element}.')
             elif verb == 'setelement' and len(fields) == 2:
                 element = normalise_element(fields[1])
@@ -5815,7 +5863,7 @@ def create_tab(ctx):
                     return
                 index = int(fields[0])
                 was = structure.symbols[index] if index < len(structure) else '?'
-                if set_element(structure, index, element):
+                if set_element(structure, index, element, adjust_h=not keep_h):
                     _apply_structure(structure, f'{was}{index} is now {element}.')
             elif verb == 'bondcycle' and len(fields) == 2:
                 first, second = (int(v) for v in fields)
@@ -5826,7 +5874,8 @@ def create_tab(ctx):
                     candidate = (current - 1 + step) % 3 + 1
                     if candidate == current:
                         break
-                    if set_bond_order(structure, first, second, candidate):
+                    if set_bond_order(structure, first, second, candidate,
+                                      adjust_h=not keep_h):
                         stepped = candidate
                         break
                 if stepped is None:
@@ -5852,7 +5901,8 @@ def create_tab(ctx):
                     # always worked.
                     state['picked'] = [first, second]
                     _edit_bond(True)
-                elif set_bond_order(structure, first, second, order):
+                elif set_bond_order(structure, first, second, order,
+                                    adjust_h=not keep_h):
                     _apply_structure(
                         structure,
                         f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')
@@ -5863,7 +5913,7 @@ def create_tab(ctx):
                     )
             elif verb == 'delatoms':
                 doomed = [int(p) for p in fields if p.strip().lstrip('-').isdigit()]
-                gone = delete_atoms(structure, doomed)
+                gone = delete_atoms(structure, doomed, adjust_h=not keep_h)
                 if gone:
                     _apply_structure(structure, f'Deleted {gone} atom(s).')
         except Exception as exc:
@@ -6998,6 +7048,7 @@ def create_tab(ctx):
         'submit_dyn_bonds_btn': submit_dyn_bonds_btn,
         'submit_draw_btn': submit_draw_btn,
         'submit_element_dd': submit_element_dd,
+        'submit_adjust_h_btn': submit_adjust_h_btn,
         'submit_draw_open_btn': submit_draw_open_btn,
         'submit_draw_get_btn': submit_draw_get_btn,
         'submit_draw_update_btn': submit_draw_update_btn,

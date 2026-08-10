@@ -436,14 +436,21 @@ def adjust_hydrogens(structure: Structure,
 
 
 def place_atom(structure: Structure, element: str, position: Sequence[float],
-               bonded_to: Optional[int] = None, order: int = 1) -> int:
-    """Put a new atom down, optionally bonded to an existing one."""
+               bonded_to: Optional[int] = None, order: int = 1,
+               adjust_h: bool = True) -> int:
+    """Put a new atom down, optionally bonded to an existing one.
+
+    *adjust_h* is the toolbar's Adjust H switch.  With it off the hydrogens
+    are left exactly as they are, which is what somebody wants who is drawing
+    a radical, an open coordination site, or a fragment that is going to be
+    joined to something else in a moment.
+    """
     index = structure.add_atom(element, position)
     touched = [index]
     if bonded_to is not None and 0 <= int(bonded_to) < len(structure) - 1:
         structure.set_bond(int(bonded_to), index, max(1, int(order)))
         touched.append(int(bonded_to))
-    mapping = adjust_hydrogens(structure, touched)
+    mapping = adjust_hydrogens(structure, touched) if adjust_h else {}
     if mapping:
         touched = [mapping.get(i, i) for i in touched if i in mapping]
         index = mapping.get(index, index)
@@ -454,7 +461,8 @@ def place_atom(structure: Structure, element: str, position: Sequence[float],
 
 def grow_from(structure: Structure, anchor: int, element: str,
               order: int = 1,
-              direction: Optional[Sequence[float]] = None) -> Optional[int]:
+              direction: Optional[Sequence[float]] = None,
+              adjust_h: bool = True) -> Optional[int]:
     """Hang a new atom off ``anchor`` at a sensible length and angle.
 
     A hydrogen already sitting in the way is consumed rather than pushed
@@ -483,7 +491,7 @@ def grow_from(structure: Structure, anchor: int, element: str,
     position = _add(centre, _scale(_unit(direction), distance))
     index = structure.add_atom(element, position)
     structure.set_bond(anchor, index, max(1, int(order)))
-    mapping = adjust_hydrogens(structure, [anchor, index])
+    mapping = adjust_hydrogens(structure, [anchor, index]) if adjust_h else {}
     if mapping:
         anchor, index = mapping.get(anchor, anchor), mapping.get(index, index)
     # Both ends, or the hydrogens that were already on the anchor stay where
@@ -495,8 +503,15 @@ def grow_from(structure: Structure, anchor: int, element: str,
     return index
 
 
-def set_element(structure: Structure, index: int, element: str) -> bool:
-    """Change one atom's element and re-satisfy its valence."""
+def set_element(structure: Structure, index: int, element: str,
+                adjust_h: bool = True) -> bool:
+    """Change one atom's element and re-satisfy its valence.
+
+    *adjust_h* is the toolbar's Adjust H switch.  With it off the hydrogens
+    are left exactly as they are, which is what somebody wants who is drawing
+    a radical, an open coordination site, or a fragment that is going to be
+    joined to something else in a moment.
+    """
     if not 0 <= int(index) < len(structure):
         return False
     index = int(index)
@@ -516,7 +531,7 @@ def set_element(structure: Structure, index: int, element: str) -> bool:
             structure.coords[neighbour] = _add(
                 structure.coords[index], _scale(offset, wanted / length))
     before = len(structure)
-    mapping = adjust_hydrogens(structure, [index])
+    mapping = adjust_hydrogens(structure, [index]) if adjust_h else {}
     moved = mapping.get(index, index) if mapping else index
     rearrange_hydrogens(structure, moved)
     if same and len(structure) == before:
@@ -524,8 +539,15 @@ def set_element(structure: Structure, index: int, element: str) -> bool:
     return True
 
 
-def delete_atoms(structure: Structure, indices: Iterable[int]) -> int:
-    """Remove atoms with their bonds, then tidy the valences left behind."""
+def delete_atoms(structure: Structure, indices: Iterable[int],
+                 adjust_h: bool = True) -> int:
+    """Remove atoms with their bonds, then tidy the valences left behind.
+
+    *adjust_h* is the toolbar's Adjust H switch.  With it off the hydrogens
+    are left exactly as they are, which is what somebody wants who is drawing
+    a radical, an open coordination site, or a fragment that is going to be
+    joined to something else in a moment.
+    """
     drop = {int(i) for i in indices if 0 <= int(i) < len(structure)}
     if not drop:
         return 0
@@ -554,7 +576,9 @@ def delete_atoms(structure: Structure, indices: Iterable[int]) -> int:
         neighbours.update(structure.neighbours(index))
     neighbours -= drop | kept_open
     mapping = structure.remove_atoms(drop)
-    adjust_hydrogens(structure, [mapping[n] for n in neighbours if n in mapping])
+    if adjust_h:
+        adjust_hydrogens(
+            structure, [mapping[n] for n in neighbours if n in mapping])
     return len(drop)
 
 
@@ -595,7 +619,7 @@ def rearrange_hydrogens(structure: Structure, index: int) -> int:
 
 
 def set_bond_order(structure: Structure, first: int, second: int,
-                   order: int) -> bool:
+                   order: int, adjust_h: bool = True) -> bool:
     """Retype a bond and re-satisfy both ends.
 
     Setting a bond to double is not just a label: ethane becomes ethene, and
@@ -631,7 +655,7 @@ def set_bond_order(structure: Structure, first: int, second: int,
         if length > 1e-6:
             structure.coords[second] = _add(
                 structure.coords[first], _scale(offset, wanted / length))
-    mapping = adjust_hydrogens(structure, [first, second])
+    mapping = adjust_hydrogens(structure, [first, second]) if adjust_h else {}
     for index in (first, second):
         rearrange_hydrogens(structure, mapping.get(index, index) if mapping else index)
     return True
