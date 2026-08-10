@@ -207,4 +207,27 @@ def test_staging_the_tools_keeps_the_links_and_survives_a_broken_one(tmp_path):
     # And the whole staging completed: the dangling one did not stop it.
     assert linked.exists()
 
+    # Again, over itself. Creating a link whose name is already taken is an
+    # error, and on the second install every one of them is -- which came back
+    # as "[Errno 17] File exists" for every tool at once, so nothing could be
+    # installed a second time at all.
+    runtime_setup.get_packaged_qm_tools_dir = lambda: source
+    try:
+        again = runtime_setup.stage_packaged_qm_tools(monkey)
+    finally:
+        runtime_setup.get_packaged_qm_tools_dir = original
+    assert (again / "bin" / "xtb").is_symlink()
+    assert os.path.realpath(again / "bin" / "xtb") == str(real)
+
+    # And whatever else stands in the way makes way: a real file left by an
+    # older install, for one.
+    (staged / "bin" / "xtb").unlink()
+    (staged / "bin" / "xtb").write_text("in the way\n")
+    runtime_setup.get_packaged_qm_tools_dir = lambda: source
+    try:
+        runtime_setup.stage_packaged_qm_tools(monkey)
+    finally:
+        runtime_setup.get_packaged_qm_tools_dir = original
+    assert (staged / "bin" / "xtb").is_symlink()
+
     shutil.rmtree(staged, ignore_errors=True)

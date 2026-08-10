@@ -1019,6 +1019,55 @@ def prepare_bwunicluster_user_setup(
     }
 
 
+def _stage_tree(source: Path, target: Path, ignore=None) -> None:
+    """Copy a tool directory over another, links kept as links.
+
+    ``shutil.copytree`` cannot do this.  Following the links is wrong: the
+    ``bin/xtb`` in this tree points into the conda environment xtb was
+    installed in, and copied out of it the binary is 6.4 MB standing on its
+    own, outside the libraries it is linked against -- "libmctc-lib.so.0:
+    cannot open shared object file".  A resolved tool is looked for in this
+    directory before anywhere else, so that copy then beat the working xtb on
+    the PATH and the user had a tool chain that could not start.
+
+    But ``symlinks=True`` creates each link with ``os.symlink``, which refuses
+    a name that is already taken -- and on the second install every one of
+    them is, so the whole staging ended as
+
+        [Errno 17] File exists: '.../.mamba_env/bin/xtb' -> '.../bin/xtb'
+
+    for every tool at once.  ``dirs_exist_ok`` does not help: it overwrites
+    files and says nothing about links.
+
+    So the walk is done here, where a link that is in the way is replaced
+    rather than complained about, and a link whose target has been moved away
+    is carried across as the broken link it is -- for the installer to fix,
+    not for the staging to fall over.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    entries = sorted(source.iterdir(), key=lambda item: item.name)
+    skip = set(ignore(str(source), [item.name for item in entries])) if ignore else set()
+    for item in entries:
+        if item.name in skip:
+            continue
+        destination = target / item.name
+        if item.is_symlink():
+            # Whatever stands there now -- a link from the last install, a
+            # file, a directory of the same name -- makes way.
+            if destination.is_symlink() or destination.exists():
+                if destination.is_dir() and not destination.is_symlink():
+                    shutil.rmtree(destination, ignore_errors=True)
+                else:
+                    destination.unlink(missing_ok=True)
+            os.symlink(os.readlink(item), destination)
+        elif item.is_dir():
+            _stage_tree(item, destination, ignore)
+        else:
+            if destination.is_symlink():
+                destination.unlink(missing_ok=True)
+            shutil.copy2(item, destination)
+
+
 def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
     source = get_packaged_qm_tools_dir()
     if not source.is_dir():
@@ -1026,28 +1075,10 @@ def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
 
     target = get_user_qm_tools_dir(target_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
+    _stage_tree(
         source,
         target,
-        dirs_exist_ok=True,
-        # Symlinks are copied as symlinks, and a broken one is skipped rather
-        # than fatal.  Both matter, and both were measured on this tree:
-        #
-        # ``bin/xtb`` points into the conda environment xtb was installed in.
-        # Followed instead of copied, it became a 6.4 MB file on its own,
-        # outside the environment holding the libraries it is linked against,
-        # and it did not run at all -- "libmctc-lib.so.0: cannot open shared
-        # object file".  A resolved tool is looked for in this directory
-        # before anywhere else, so that copy then beat the working xtb on the
-        # PATH and the user had a tool chain that could not start.
-        #
-        # And a link whose target has been moved away -- an environment
-        # deleted, a tool uninstalled -- raised out of here before the
-        # installer had run a single line, which took every button on the
-        # page with it.
-        symlinks=True,
-        ignore_dangling_symlinks=True,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
+        shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
     )
     return target
 
