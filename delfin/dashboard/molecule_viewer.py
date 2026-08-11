@@ -4599,6 +4599,8 @@ def submit_manip_bootstrap_js():
 # left untouched: only the marked viewer/header/control members are moved into
 # a body-level overlay, then restored to their exact original DOM positions.
 STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
+/* The empty "Out[7]:" gutter that used to hold the picture off its own frame
+   is taken away page-wide, in create_page_css. */
 body.delfin-structure-fs-open {
     overflow: hidden !important;
 }
