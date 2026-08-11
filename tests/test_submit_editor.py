@@ -277,6 +277,34 @@ def test_value_box_says_what_it_sets_and_shows_the_current_value():
     assert 'press <b>Set</b>' not in status
 
 
+def test_optimise_starts_a_second_row_in_fullscreen():
+    """A screen-wide toolbar put Optimise at the far end of one long line.
+
+    Flexbox cannot be told to break, so the break is an element that takes a
+    whole line and no height, sitting in front of Optimise.  Measured in a
+    browser: at 1440 wide inside the overlay the toolbar is two rows, the
+    second beginning with Optimise; at 760 wide outside it the element is
+    display:none and the toolbar wraps where it always did -- three rows, not
+    four, so the break costs nothing where it is not wanted.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    children = source.split('submit_manip_toolbar = widgets.HBox')[1].split(']')[0]
+    order = ['submit_strength_slider', 'submit_fs_row_break',
+             'submit_optimize_btn', 'submit_optimize_all_btn']
+    positions = [children.index(name) for name in order]
+    assert positions == sorted(positions), children
+
+    made = source.split('submit_fs_row_break = widgets.Box')[1].split(')\n')[0]
+    assert "display='none'" in made, 'it must be inert outside the overlay'
+    rule = source.split('.submit-fs-overlay .submit-fs-row-break {')[1]
+    rule = rule.split('}')[0]
+    assert 'display: block' in rule
+    assert 'flex: 1 0 100%' in rule
+    assert 'height: 0' in rule
+
+
 def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     """On a laptop the row was wider than the panel, and nowrap plus
     overflow hidden simply cut off whatever did not fit."""

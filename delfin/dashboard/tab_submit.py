@@ -1115,6 +1115,17 @@ def create_tab(ctx):
         ),
     )
 
+    #: A line break for a wrapping toolbar.  Flexbox has no "break here", so
+    #: the break is an element: nothing wide, taking a whole line, which
+    #: pushes everything after it onto the next row.  It is inert in the
+    #: ordinary view -- where the toolbar sits beside the rest of the tab and
+    #: wraps where it must -- and only takes effect inside the overlay, where
+    #: the row is as wide as the screen and would otherwise put the two
+    #: Optimise buttons at the far end of a very long first line.
+    submit_fs_row_break = widgets.Box(
+        [], layout=widgets.Layout(display='none'))
+    submit_fs_row_break.add_class('submit-fs-row-break')
+
     submit_manip_toolbar = widgets.HBox(
         [
             submit_fullscreen_btn,
@@ -1127,6 +1138,7 @@ def create_tab(ctx):
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider,
+            submit_fs_row_break,
             submit_optimize_btn, submit_optimize_all_btn,
             submit_relax_btn, submit_settle_btn,
             submit_poly_dd, submit_poly_turn_btn,
@@ -7414,6 +7426,21 @@ def create_tab(ctx):
         }
         .submit-fs-overlay .submit-fs-member-status {
             display: block !important;
+        }
+        /* Everything from Optimise onward starts a second row. Flexbox cannot
+           be told to break, so the break is an element that takes a whole
+           line and no height. Hidden outside the overlay: the ordinary
+           toolbar is narrow enough to wrap where it needs to on its own, and
+           a forced break there would waste a row. */
+        .submit-fs-overlay .submit-fs-row-break {
+            display: block !important;
+            flex: 1 0 100% !important;
+            width: 100% !important;
+            height: 0 !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
         }
         .submit-fs-overlay .submit-fs-member-viewer {
             flex: 1 1 auto !important;
