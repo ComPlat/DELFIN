@@ -13,6 +13,7 @@ leaves behind.
 """
 from __future__ import annotations
 from typing import List, Set, Tuple
+import math
 import os
 import numpy as np
 import delfin.manta._bond_decollapse as bd
@@ -45,6 +46,13 @@ _RIGID_H_DRAG = os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
 # the current behaviour.  This is the metal-path lever the post-hoc corrector
 # (_arom_bond_length, which now skips all coordinated rings) cannot reach.
 _AROM_SEAT = os.environ.get("DELFIN_FFFREE_AROM_SEAT", "0") == "1"
+# Planaritaets-Verschlechterungsverbot im Abstieg (Vorgabe AUS -> bit-identisch).
+# Begruendung und Messung stehen am Term selbst in _violations().
+_PLANAR_KEEP = os.environ.get("DELFIN_FFFREE_PLANAR_KEEP", "0") == "1"
+try:
+    _PLANAR_TOL = float(os.environ.get("DELFIN_FFFREE_PLANAR_KEEP_TOL", "2.0"))
+except Exception:
+    _PLANAR_TOL = 2.0
 _AROM_SEAT_TOL = 0.02      # Å — a ring bond is seated once |d − target| ≤ this
 _AROM_SEAT_GAIN = 0.4      # per-pass correction fraction (matches the distort gain)
 
@@ -98,7 +106,39 @@ def _bonds_adj(syms, P):
     return b, bonded, adj
 
 
-def _violations(syms, P, bonded, adj, arom_targets=None):
+def _walsh_sums(syms, P, adj):
+    """Per-atom Walsh angle sum (deg) for every non-metal atom with EXACTLY three
+    non-metal heavy neighbours.  360 = planar, ~328 = tetrahedral-pyramidal.
+
+    Pure geometry: no bond orders, no hybridisation, no SMILES.  That is deliberate --
+    the caller uses this to forbid DEGRADATION, not to impose planarity, so it must not
+    need to know whether a centre is sp2 or sp3.
+    """
+    out = {}
+    for i, nb in enumerate(adj):
+        if syms[i] == "H" or bd._is_metal(syms[i]):
+            continue
+        h = [k for k in nb if syms[k] != "H" and not bd._is_metal(syms[k])]
+        if len(h) != 3:
+            continue
+        s = 0.0
+        ok = True
+        for a in range(3):
+            for b_ in range(a + 1, 3):
+                u = P[h[a]] - P[i]; v = P[h[b_]] - P[i]
+                nu = float(np.linalg.norm(u)); nv = float(np.linalg.norm(v))
+                if nu < 1e-6 or nv < 1e-6:
+                    ok = False; break
+                c = float(np.dot(u, v)) / (nu * nv)
+                s += math.degrees(math.acos(max(-1.0, min(1.0, c))))
+            if not ok:
+                break
+        if ok:
+            out[i] = s
+    return out
+
+
+def _violations(syms, P, bonded, adj, arom_targets=None, planar_ref=None):
     """Return (loss, moves) where moves = list of (atom_idx, displacement) that
     would relieve a violation.  loss = #clashes + #collapses + #h_overcoord.
 
@@ -165,6 +205,64 @@ def _violations(syms, P, bonded, adj, arom_targets=None):
     # in Å — always far smaller than a unit clash/collapse/H-overcoord defect, so
     # it never overrides coordination integrity, and any partial seating strictly
     # lowers the loss so the accept-if-better gate settles it monotonically.
+    # ===== PLANARITAETS-VERSCHLECHTERUNGSVERBOT (planar_ref; None -> bit-identisch) =====
+    #
+    # DER BEFUND, gemessen 11.08.2026 ueber 9586 Systeme (rows_foldrev, 49-Adapter-Batterie):
+    #   smiles_hyb-angle  48109 Frames / 3791 Systeme
+    #   pyramidal_sp2     37122 Frames / 3013 Systeme
+    # zusammen die groesste Defektfamilie ueberhaupt, und beide messen dasselbe: ein sp2-Zentrum
+    # steht pyramidal statt flach (pyramidal_sp2 ist der Walsh-Winkel eines JEDEN sp2-Zentrums).
+    #
+    # WARUM ES NICHT AM FEHLENDEN FLATTENER LIEGT.  Der Bauer hat laengst einen UNIVERSELLEN
+    # sp2-Flattener: smiles_converter._flatten_sp2_atoms_xyz projiziert jedes nicht-metallische
+    # 3-bindige sp2-Atom auf die Ebene seiner Nachbarn, und assemble_complex ruft ihn auf BEIDEN
+    # Spuren. Er laeuft also. Nur laeuft DANACH dieser Verfeinerer -- und dessen Verlustfunktion
+    # kennt genau vier Terme: Zusammenstoesse, kollabierte Bindungen, Bindungsverzerrung,
+    # H-Ueberkoordination. KEINEN Planaritaetsterm. Der gedaempfte Abstieg darf ein flachgelegtes
+    # Zentrum also frei wieder aus der Ebene schieben, um einen Zusammenstoss zu entspannen, und
+    # niemand haelt dagegen. Das ist die Wurzel vom 31.07. in ihrer konkretesten Form: nicht die
+    # Konstruktion ist schuld, sondern dass NACH ihr optimiert wird.
+    #
+    # WARUM ES EIN VERBOT IST UND KEIN ANSPRUCH.  Der Term fordert NICHT, dass ein Zentrum flach
+    # wird -- er verbietet nur, dass es flacher ANKOMMT und pyramidaler GEHT. Deshalb braucht er
+    # keine Hybridisierung, keine Bindungsordnung, kein SMILES: ein echtes sp3-Amin, ein
+    # Sulfoxid-S, ein pyramidaler Donor behalten ihren Winkel, weil ihr Referenzwert ihr eigener
+    # Startwert ist. Ein Term, der Planaritaet FORDERT, haette genau die Kollateralschaeden
+    # erzeugt, gegen die _flatten_sp2_atoms_xyz seine zwei Schutzschalter braucht
+    # (DONOR_PYRAMIDAL, DONOR_SIGMA_COUNT).
+    #
+    # Die Strafe ist wie beim Aromaten-Term ein STETIGER Betrag in Grad/180, also strukturell
+    # kleiner als ein ganzer Zusammenstoss- oder Kollaps-Defekt: Koordinationsintegritaet
+    # gewinnt weiter, die Planaritaet entscheidet nur zwischen sonst gleichwertigen Schritten.
+    if planar_ref:
+        for i, ref in planar_ref.items():
+            nb = [k for k in adj[i] if syms[k] != "H" and not bd._is_metal(syms[k])]
+            if len(nb) != 3:
+                continue                      # Bindungsbild hat sich geaendert -> nicht vergleichbar
+            cur = 0.0
+            ok = True
+            for a in range(3):
+                for b_ in range(a + 1, 3):
+                    u = P[nb[a]] - P[i]; v = P[nb[b_]] - P[i]
+                    nu = float(np.linalg.norm(u)); nv = float(np.linalg.norm(v))
+                    if nu < 1e-6 or nv < 1e-6:
+                        ok = False; break
+                    c = float(np.dot(u, v)) / (nu * nv)
+                    cur += math.degrees(math.acos(max(-1.0, min(1.0, c))))
+                if not ok:
+                    break
+            if not ok or cur >= ref - _PLANAR_TOL:
+                continue                      # nicht schlechter als angekommen -> kein Defekt
+            loss += (ref - cur) / 180.0       # stetig, immer < 1 -> nie ueber einem harten Defekt
+            # Zurueck in Richtung Nachbarebene: entlang der Normalen um den Ueberstand.
+            e1 = P[nb[1]] - P[nb[0]]; e2 = P[nb[2]] - P[nb[0]]
+            nrm = np.cross(e1, e2)
+            ln = float(np.linalg.norm(nrm))
+            if ln < 1e-9:
+                continue
+            nrm = nrm / ln
+            oop = float(np.dot(P[i] - P[nb[0]], nrm))
+            moves.append((i, -0.5 * oop * nrm))
     if arom_targets:
         for (i, j), tgt in arom_targets.items():
             if (i, j) not in bonded:
@@ -360,12 +458,16 @@ def _refine_core(syms, P, fixed, arom_targets, max_passes: int, damp: float):
     P = np.array(P, float).copy()
     n = len(syms)
     _, bonded, adj = _bonds_adj(syms, P)
-    best_loss, _ = _violations(syms, P, bonded, adj, arom_targets)
+    # Referenz EINMAL, auf dem EINGANGSframe: das ist der Zustand, den der Abstieg nicht
+    # verschlechtern darf.  Pro Durchgang neu zu messen hiesse, jede erreichte Verschlechterung
+    # sofort zur neuen Norm zu erklaeren -- dann verbietet der Term gar nichts mehr.
+    planar_ref = _walsh_sums(syms, P, adj) if _PLANAR_KEEP else None
+    best_loss, _ = _violations(syms, P, bonded, adj, arom_targets, planar_ref)
     if best_loss == 0:
         return P
     for _ in range(max_passes):
         _, bonded, adj = _bonds_adj(syms, P)
-        loss, moves = _violations(syms, P, bonded, adj, arom_targets)
+        loss, moves = _violations(syms, P, bonded, adj, arom_targets, planar_ref)
         if loss == 0:
             break
         disp = np.zeros((n, 3))
@@ -396,7 +498,12 @@ def _refine_core(syms, P, fixed, arom_targets, max_passes: int, damp: float):
                     disp[hi] = disp[par]      # rigid drag: H rides with its heavy parent
         trial = P + damp * disp
         _, tb, ta = _bonds_adj(syms, trial)
-        tloss, _ = _violations(syms, trial, tb, ta, arom_targets)
+        # ⚠ planar_ref MUSS hier mit: das Annahmetor entscheidet ueber den Schritt, und ein Tor,
+        # das gegen ein anderes Ziel misst als der Abstieg, nimmt genau die Schritte an, die der
+        # neue Term verhindern soll -- ein Zusammenstoss weniger, ein flachgelegtes Zentrum
+        # verdreht, Verlust gesunken, angenommen.  Dann waere der Term wirkungslos und wuerde als
+        # "gemessen ohne Effekt" durchgehen.
+        tloss, _ = _violations(syms, trial, tb, ta, arom_targets, planar_ref)
         if tloss < best_loss:          # accept-if-better gate
             P = trial; best_loss = tloss
         else:
