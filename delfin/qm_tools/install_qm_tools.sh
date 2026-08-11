@@ -273,7 +273,11 @@ install_managed_or_adopt() {
   if install_conda_tool "${prog}" "${spec}" "${env_name}" "${binary}"; then
     return 0
   fi
-  log "WARNING: no managed environment could be built for ${prog}"
+  if ! ensure_micromamba >/dev/null 2>&1; then
+    log "WARNING: no micromamba or conda, so no environment can be built for ${prog}"
+  else
+    log "WARNING: no managed environment could be built for ${prog}"
+  fi
   if path="$(detect_existing_tool "${prog}")"; then
     log "adopting the ${prog} already on this system: ${path}"
     log "  (it was not installed by DELFIN, and DELFIN cannot vouch for it)"

@@ -713,14 +713,54 @@ def ensure_tool(name: str,
     if on_line is not None:
         on_line(f'{health.label or name}: {health.why or "not installed"}. '
                 'Installing it -- a few minutes.')
-    install_xtb(on_line=on_line, timeout=timeout, tool=name)
+    outcome = install_xtb(on_line=on_line, timeout=timeout, tool=name) or {}
     after = check_tool(name, depth='runs')
+    if after.present and after.level == 'ok':
+        return {'ok': True, 'installed': True, 'health': after,
+                'lines': outcome.get('lines') or [],
+                'status': f'{after.label or name} was missing and has been installed.'}
+
+    # Why it failed, in the installer's own words. "could not be installed:
+    # not found" is true and useless -- it repeats the question. The reason is
+    # in the lines the installer printed, and the commonest of them is that
+    # there is no micromamba to build an environment with, which is a thing
+    # the user can act on.
+    lines = [str(line).strip() for line in (outcome.get('lines') or [])]
+    said = ''
+    # The cause before the consequence. The installer says both -- "no
+    # micromamba or conda, so no environment can be built" and then "could not
+    # be installed; the others are still being tried" -- and the second is the
+    # one a reverse scan finds first while being the one that explains
+    # nothing.
+    for wanted in ('no micromamba', 'no managed environment', 'checksum',
+                   'permission', 'network', 'download', 'compiler'):
+        for line in lines:
+            if wanted in line.lower():
+                said = line.split(']', 1)[-1].strip() or line
+                break
+        if said:
+            break
+    said = said.removeprefix('WARNING:').strip() if said else said
+    if not said:
+        for line in reversed(lines):
+            low = line.lower()
+            if 'the others are still being tried' in low:
+                continue
+            if any(mark in low for mark in ('not found', 'error', 'cannot',
+                                            'could not', 'failed')):
+                said = line.split(']', 1)[-1].strip() or line
+                break
+    if not said:
+        said = str(outcome.get('status') or after.why or 'no reason given')
+    hint = ''
+    if 'micromamba' in said.lower() or 'conda' in said.lower():
+        hint = (' Settings can install micromamba, and then this will '
+                'work without asking again.')
     return {
-        'ok': after.level == 'ok' and after.present, 'installed': True,
-        'health': after,
-        'status': (f'{after.label or name} was missing and has been installed.'
-                   if after.present else
-                   f'{after.label or name} could not be installed: {after.why}'),
+        'ok': False, 'installed': True, 'health': after,
+        'lines': lines,
+        'status': (f'{after.label or name} could not be installed: '
+                   + said.rstrip('.') + '.' + hint),
     }
 
 

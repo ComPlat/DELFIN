@@ -834,3 +834,50 @@ def test_a_backend_is_fetched_rather_than_a_pip_command_printed():
     assert body.index('provide(') < body.index('raise ImportError')
     # And the instructions stay, for when it could not be done.
     assert 'pip install' in body
+
+
+def test_a_failed_install_says_why_in_the_installer_s_own_words(monkeypatch):
+    """"could not be installed: not found" repeats the question.
+
+    Reported from a cluster: a PM6-D3H4 optimisation came back with exactly
+    that and nothing else. The reason was in the lines the installer printed
+    and was thrown away -- and the commonest of them is that there is no
+    micromamba to build an environment with, which is a thing the user can
+    act on.
+    """
+    monkeypatch.setattr(qm_health, '_TRIED', set())
+    monkeypatch.setattr(qm_health, 'check_tool', lambda name, **kw: qm_health.ToolHealth(
+        name=name, label='MOPAC', level='absent', why='not found'))
+    monkeypatch.delenv('DELFIN_AUTO_INSTALL_QM_TOOLS', raising=False)
+
+    from delfin.dashboard import gfn_optimize as gfn
+
+    # What the installer really prints on a machine without micromamba.
+    monkeypatch.setattr(gfn, 'install_xtb', lambda **kw: {
+        'ok': False, 'binary': None, 'status': 'failed',
+        'lines': [
+            '[qm_tools] --- mopac',
+            '[qm_tools] WARNING: no micromamba or conda, so no environment '
+            'can be built for mopac',
+            '[qm_tools] WARNING: mopac could not be installed; the others are '
+            'still being tried',
+        ]})
+
+    said = qm_health.ensure_tool('mopac')['status']
+    assert 'no micromamba or conda' in said, said
+    # The cause, not the consequence that a reverse scan finds first.
+    assert 'the others are still being tried' not in said
+    assert 'WARNING' not in said
+    # And what to do about it.
+    assert 'Settings can install micromamba' in said
+
+
+def test_the_installer_names_the_thing_that_is_missing():
+    """It said "no managed environment could be built", which is the
+    consequence. Whether there is a micromamba at all is the cause."""
+    from delfin.dashboard.gfn_optimize import install_script
+
+    text = install_script().read_text(encoding='utf-8')
+    adopt = text.split('install_managed_or_adopt() {')[1].split('\n}')[0]
+    assert 'ensure_micromamba' in adopt
+    assert 'no micromamba or conda' in adopt
