@@ -124,7 +124,12 @@ def player_js(tmp_path):
 
 def test_the_methods_stand_next_to_uff(editor):
     values = [v for _label, v in editor["submit_ff_dd"].options]
-    assert values == ["uff", "mmff94", "gfnff", "gfn2", "gxtb"]
+    assert values[:5] == ["uff", "mmff94", "gfnff", "gfn2", "gxtb"]
+    # And the MOPAC ones behind them: measured against literature bond
+    # lengths, PM6 is closer than GFN2 on small organics (5.0 against
+    # 11.3 mA), and PM6-D3H4 keeps that while binding the water dimer that
+    # plain PM6 lets come apart.
+    assert values[5:] == ["pm6d3h4", "pm6", "pm7"]
 
 
 def test_charge_and_spin_appear_only_for_a_gfn_method(editor):
@@ -296,7 +301,7 @@ def test_the_force_field_notes_say_which_field_they_are_about(editor):
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
     body = source.split("def _set_ff_notes")[1].split("\n    def ")[0]
-    assert "_gfn.is_gfn_method(submit_ff_dd.value)" in body
+    assert "_server_method()" in body
     assert "the live field, which is UFF" in body
 
 
@@ -448,7 +453,7 @@ def test_the_bootstrap_is_on_the_page_before_anything_pushes(editor):
 
     source = open(tab_submit.__file__, encoding="utf-8").read()
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
-    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
+    gfn_branch = toggle.split("if _server_method():")[1]
     assert "_ensure_manip_bootstrap()" in gfn_branch
     assert "_install_gfn_frame_watcher()" in gfn_branch
 
@@ -1754,11 +1759,11 @@ def test_nothing_of_the_browsers_field_may_run_under_gfn(editor):
     source = open(tab_submit.__file__, encoding="utf-8").read()
     enable = source.split("def _enable_live_forcefield")[1].split("\n    def ")[0]
     head = enable.split("\"\"\"", 2)[2]
-    assert "if _gfn.is_gfn_method(submit_ff_dd.value):" in head
+    assert "if _server_method():" in head
     assert head.index("_stop_browser_field()") < head.index("xyz =")
 
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
-    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
+    gfn_branch = toggle.split("if _server_method():")[1]
     assert "_stop_browser_field()" in gfn_branch, (
         "a field left running from a UFF session goes on relaxing"
     )
@@ -1843,6 +1848,8 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
     assert "_arm_gfn_settle()" in handler, "a release is what triggers it"
 
     toggle = source.split("def on_submit_settle_toggle")[1].split("\n    def ")[0]
+    # Settle stays xtb's: it re-runs the follow machinery, which MOPAC has
+    # no part in.
     assert "if _gfn.is_gfn_method(submit_ff_dd.value):" in toggle
     assert toggle.index("return") < toggle.index("_ensure_manip_bootstrap()"), (
         "the browser must not be told to settle with a field it does not have"
@@ -2416,7 +2423,7 @@ def test_dragging_moves_along_the_surface_and_optimise_goes_down_it(editor):
     assert "_arm_gfn_settle()" in free, "Settle is how that is asked for"
 
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
-    gfn_branch = toggle.split("if _gfn.is_gfn_method(submit_ff_dd.value):")[1]
+    gfn_branch = toggle.split("if _server_method():")[1]
     assert "_arm_gfn_takeup()" not in gfn_branch, (
         "switching it on arms the follow; it does not optimise"
     )

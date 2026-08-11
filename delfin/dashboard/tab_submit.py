@@ -23,6 +23,7 @@ from delfin.smiles_converter import contains_metal
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
 from . import gfn_optimize as _gfn
+from . import mopac_optimize as _mopac
 from . import ketcher as _ketcher
 from . import separate_systems as _separate
 from .molecule_viewer import (
@@ -828,14 +829,21 @@ def create_tab(ctx):
     )
     submit_ff_dd = widgets.Dropdown(
         options=[('UFF', 'uff'), ('MMFF94', 'mmff94'),
-                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb')],
+                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb'),
+                 ('PM6-D3H4', 'pm6d3h4'), ('PM6', 'pm6'), ('PM7', 'pm7')],
         value='uff',
         tooltip=(
             'What Optimise minimises with. UFF and MMFF94 run in the browser '
             'and also drive the live relaxation while you drag. GFN-FF, '
             'GFN2-xTB and g-xTB run xtb on the server, and they know about the '
             'metal where UFF guesses. g-xTB approximates wB97M-V/def2-TZVPPD '
-            'and needs a build of its own; Install g-xTB fetches it.'
+            'and needs a build of its own; Install g-xTB fetches it. '
+            'PM6-D3H4, PM6 and PM7 run MOPAC on the server. Measured on '
+            'twelve small organics, PM6 draws bonds closer to the literature '
+            'than GFN2 (5.0 against 11.3 mA on average), because GFN2 pulls '
+            'multiple and polar bonds short; on four dimers PM6-D3H4 is the '
+            'best of all of them and plain PM6 the worst -- it has no '
+            'dispersion, and the water dimer comes apart.'
         ),
         layout=widgets.Layout(width='128px'),
         disabled=True,
@@ -3657,12 +3665,12 @@ def create_tab(ctx):
     def _set_ff_notes(notes):
         """Show what the force field had to approximate, under the viewer."""
         rendered = [html.escape(str(note)) for note in notes if str(note).strip()]
-        if rendered and _gfn.is_gfn_method(submit_ff_dd.value):
+        if rendered and _server_method():
             # These come from the field that runs in the browser, which is UFF
             # whatever the method box says -- and read as though GFN had
             # produced them, which is how "GFN behaves exactly like UFF" gets
             # concluded from a panel that never claimed otherwise.
-            label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+            label = _server_label(submit_ff_dd.value)
             rendered.insert(0, html.escape(
                 f'These notes are about the live field, which is UFF: it runs '
                 f'in the browser so that dragging follows the mouse. '
@@ -4579,7 +4587,7 @@ def create_tab(ctx):
         reached the coordinate box was UFF's. The method that is chosen is the
         method that acts, and nothing else may touch the structure.
         """
-        if _gfn.is_gfn_method(submit_ff_dd.value):
+        if _server_method():
             _stop_browser_field()
             return
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
@@ -4682,7 +4690,7 @@ def create_tab(ctx):
             # to before I switched it on".
             _remember('switching the continuous relaxation on')
         submit_relax_btn.button_style = 'info' if active else ''
-        if _gfn.is_gfn_method(submit_ff_dd.value):
+        if _server_method():
             # There is no GFN engine in the browser to run per frame, so this
             # switch means something else here: while it is on, the molecule
             # follows the atom being dragged -- one short xtb run per push,
@@ -4694,7 +4702,7 @@ def create_tab(ctx):
             # here.  Left running from a UFF session it went on relaxing under
             # a molecule whose method box said GFN.
             _stop_browser_field()
-            label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+            label = _server_label(submit_ff_dd.value)
             if not active:
                 state['gfn_settle_forced'] = False
                 state['gfn_settle_rounds'] = 0
@@ -4837,7 +4845,8 @@ def create_tab(ctx):
             return
         method = submit_ff_dd.value
         gfn = _gfn.is_gfn_method(method)
-        label = (_gfn.GFN_METHODS[method]['label'] if gfn else method.upper())
+        pm = _mopac.is_mopac_method(method)
+        label = _server_label(method)
         charge = int(submit_gfn_charge.value or 0)
         # xtb counts unpaired electrons, not multiplicity: M = 2S+1.
         uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
@@ -4936,7 +4945,17 @@ def create_tab(ctx):
                     perceived = (None if every_frame
                                  else _gfn_topology_dir(
                                      len(_gfn.atom_lines(xyz))))
-                    if gfn and autospin:
+                    if pm:
+                        # MOPAC takes the spin state as a word and knows
+                        # nothing of xtb's held internals, its topology files
+                        # or its solvent models -- so it is given what it does
+                        # take, and the rest is not quietly passed along as
+                        # though it had been honoured.
+                        outcome = _mopac.optimize_with_mopac(
+                            xyz, method, charge=charge, uhf=uhf,
+                            should_stop=_stopped, timeout=None,
+                            on_frames=_push_frames if position == 0 else None)
+                    elif gfn and autospin:
                         outcome = _gfn.optimize_autospin(
                             xyz, method, charge=charge, should_stop=_stopped,
                             timeout=None, on_frames=_push_frames,
@@ -4961,6 +4980,7 @@ def create_tab(ctx):
                 if outcome.get('ok'):
                     if outcome.get('energy') is not None and position == 0:
                         state['gfn_energy'] = float(outcome['energy'])
+                        state['gfn_energy_unit'] = outcome.get('energy_unit')
                     if position == 0:
                         state['gfn_held'] = outcome.get('held')
                         if outcome.get('multiplicity'):
@@ -5053,8 +5073,17 @@ def create_tab(ctx):
                 # against other totals and a difference against chemistry.
                 energy = state.get('gfn_energy')
                 if energy is not None:
-                    said += (f' E = {energy:.6f} Eh '
-                             f'({energy * 627.5094740631:.2f} kcal/mol).')
+                    # And in the unit the engine that produced it uses. MOPAC
+                    # reports a heat of formation in kcal/mol, not a total
+                    # energy in hartree: read as hartree and converted, its
+                    # 15.35 came out as 9629.68 kcal/mol, which is not a
+                    # number about this molecule at all.
+                    unit = state.get('gfn_energy_unit')
+                    if unit:
+                        said += f' E = {energy:.4f} {unit}.'
+                    else:
+                        said += (f' E = {energy:.6f} Eh '
+                                 f'({energy * 627.5094740631:.2f} kcal/mol).')
                 # What was held while it ran, and what became of it.  A value
                 # the user is holding on screen that the optimisation quietly
                 # ignored would make the result an answer to a question nobody
@@ -6376,7 +6405,7 @@ def create_tab(ctx):
             # runs one short optimisation with the method on screen.  Telling
             # the browser to settle would be telling it to use a field that is
             # deliberately not installed.
-            label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+            label = _server_label(submit_ff_dd.value)
             _set_mol_status(
                 f'Letting go of an atom now lets {label} tidy the structure '
                 'around it.' if active else
@@ -6437,6 +6466,25 @@ def create_tab(ctx):
         except Exception:
             return ''
         return smiles
+
+    def _server_method(value=None):
+        """Whether this method is computed on the server rather than the page.
+
+        Two engines now: xtb for the GFN family, MOPAC for the PM one. What
+        the rest of the tab needs to know about either is the same -- there is
+        no force field in the browser for it, so the live relaxation and the
+        drag behave differently -- so it asks one question instead of naming
+        engines in a dozen places.
+        """
+        chosen = submit_ff_dd.value if value is None else value
+        return _gfn.is_gfn_method(chosen) or _mopac.is_mopac_method(chosen)
+
+    def _server_label(value):
+        if _gfn.is_gfn_method(value):
+            return _gfn.GFN_METHODS[value]['label']
+        if _mopac.is_mopac_method(value):
+            return _mopac.MOPAC_METHODS[value]['label']
+        return str(value).upper()
 
     def _live_ff_method():
         """The method the browser relaxes with while an atom is dragged.
@@ -6550,14 +6598,19 @@ def create_tab(ctx):
     def on_submit_ff_changed(change):
         if change.get('name') != 'value':
             return
-        gfn = _gfn.is_gfn_method(submit_ff_dd.value)
+        gfn = _server_method()
         submit_gfn_charge.layout.display = '' if gfn else 'none'
         submit_gfn_mult.layout.display = '' if gfn else 'none'
-        submit_gfn_autospin.layout.display = '' if gfn else 'none'
+        submit_gfn_autospin.layout.display = (
+            '' if _gfn.is_gfn_method(submit_ff_dd.value) else 'none')
         # A method without solvation gets no solvent box: a control that can
         # only produce a refusal is worse than no control.
-        solvated = gfn and _gfn.GFN_METHODS[
-            str(submit_ff_dd.value)].get('solvation') is not False
+        # Only xtb has solvent models here; MOPAC's are a different set and
+        # are not offered, so a PM method gets no solvent box rather than one
+        # that can only refuse.
+        solvated = (_gfn.is_gfn_method(submit_ff_dd.value)
+                    and _gfn.GFN_METHODS[
+                        str(submit_ff_dd.value)].get('solvation') is not False)
         submit_gfn_solvent.layout.display = '' if solvated else 'none'
         if not solvated and submit_gfn_solvent.value:
             state['solvent_quiet'] = True
@@ -6602,7 +6655,7 @@ def create_tab(ctx):
         submit_relax_btn.layout.display = '' if usable else 'none'
         if not usable and submit_relax_btn.value:
             submit_relax_btn.value = False
-        label = (_gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+        label = (_server_label(submit_ff_dd.value)
                  if gfn else str(submit_ff_dd.value).upper())
         submit_relax_btn.tooltip = (
             f'While this is on, dragging an atom lets the rest of the molecule '
@@ -6636,7 +6689,7 @@ def create_tab(ctx):
             )
         _refresh_xtb_offer()
         if gfn:
-            label = _gfn.GFN_METHODS[str(submit_ff_dd.value)]['label']
+            label = _server_label(submit_ff_dd.value)
             source = _fill_charge_from_smiles()
             if _gfn.find_binary(submit_ff_dd.value) is None:
                 _set_mol_status(

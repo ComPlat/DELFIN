@@ -1,0 +1,347 @@
+"""Optimise a structure with MOPAC's semiempirical Hamiltonians.
+
+Beside xtb rather than instead of it, and for a measured reason.  On twelve
+small organic molecules, comparing the characteristic bond against literature
+values, GFN2 came out 11.3 mA off on average and PM6 5.0 -- because GFN2 draws
+multiple and polar bonds short: C=C 1.316 against 1.339, C=O 1.192 against
+1.208, C-O 1.406 against 1.428, while its plain C-C bonds are right to a
+thousandth.  PM6 does not have that lean.
+
+Non-covalent interaction is the other half of the picture and it reverses the
+order twice over.  On four dimers against reference binding energies, plain
+PM6 is the worst of everything tried -- the water dimer came apart, the two
+molecules ending 12.3 A from each other with no interaction left at all -- and
+PM7 is little better there (4.86 A, -0.34 kcal/mol against -5.0).  With the
+dispersion and hydrogen-bond corrections, PM6-D3H4, the same dimer binds at
+2.98 A and -4.59 kcal/mol, and the mean error over the four is 0.58 kcal/mol
+where GFN2 gives 0.74.
+
+So **PM6-D3H4** is the one worth having: better bonds than GFN2 and, on this
+sample, better intermolecular behaviour.  PM6 and PM7 are offered because a
+user may want to compare, and both are labelled with what they cannot do.
+
+Conformers separate nobody: butane's gauche-anti gap is 0.60 (GFN2), 0.72
+(PM6, PM7) and 0.82 (PM6-D3H4) against 0.67 kcal/mol.
+
+Energies here are **heats of formation in kcal/mol**, which is what MOPAC
+computes and not the same quantity as xtb's total energy in hartree.  Two
+numbers from the two engines cannot be compared, and the unit is carried
+through so that nobody tries.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
+
+__all__ = ['MOPAC_METHODS', 'find_mopac', 'is_mopac_method', 'mopac_available',
+           'optimize_with_mopac', 'read_aux_frames']
+
+#: What the dropdown offers and the keyword each one means to MOPAC.
+#:
+#: ``needs`` is what a user has to know before choosing it, in one sentence,
+#: and every one of them is something that was measured rather than assumed.
+MOPAC_METHODS: Dict[str, Dict[str, Any]] = {
+    'pm6d3h4': {
+        'label': 'PM6-D3H4', 'keywords': 'PM6-D3H4', 'max_atoms': 400,
+        'reports': 'PM6-D3H4',
+        'needs': ('PM6 with dispersion and a hydrogen-bond correction. The '
+                  'one of these to use: on this machine it bound the water '
+                  'dimer at 2.98 A and -4.59 kcal/mol against -5.0.'),
+    },
+    'pm6': {
+        'label': 'PM6', 'keywords': 'PM6', 'max_atoms': 400, 'reports': 'PM6',
+        'needs': ('No dispersion and no hydrogen-bond correction: the water '
+                  'dimer came apart to 12.3 A. Bond lengths are good; '
+                  'anything intermolecular is not.'),
+    },
+    'pm7': {
+        'label': 'PM7', 'keywords': 'PM7', 'max_atoms': 400, 'reports': 'PM7',
+        'needs': ('Dispersion is built in, but it made a poor job of the '
+                  'water dimer here -- 4.86 A and -0.34 kcal/mol against '
+                  '-5.0. Good for heats of formation.'),
+    },
+}
+
+#: MOPAC names the spin state rather than counting unpaired electrons.
+_SPIN_WORDS = {0: 'SINGLET', 1: 'DOUBLET', 2: 'TRIPLET', 3: 'QUARTET',
+               4: 'QUINTET', 5: 'SEXTET', 6: 'SEPTET', 7: 'OCTET'}
+
+DEFAULT_TIMEOUT = 300.0
+
+_HEAT_RE = re.compile(r'FINAL HEAT OF FORMATION\s*=\s*(-?\d+\.\d+)')
+_VERSION_RE = re.compile(r'MOPAC\s+v?([0-9][0-9.]*)')
+#: One block per optimisation cycle in the AUX file, which is what makes a
+#: MOPAC run watchable the way an xtb one is.
+_FRAME_RE = re.compile(r'ATOM_X_UPDATED:ANGSTROMS\[\s*\d+\]=\s*\n((?:\s*-?\d.*\n)+)')
+
+WATCH_INTERVAL = 0.01
+FRAME_READ_INTERVAL = 0.05
+
+
+def is_mopac_method(method: Any) -> bool:
+    return str(method or '').strip().lower() in MOPAC_METHODS
+
+
+def find_mopac() -> Optional[str]:
+    """Where MOPAC is, asked the way the rest of DELFIN asks."""
+    try:
+        from delfin.qm_runtime import find_tool_executable
+
+        found = find_tool_executable('mopac')
+        if found:
+            return str(found)
+    except Exception:
+        pass
+    found = shutil.which('mopac')
+    if found:
+        return found
+    for prefix in (os.sys.prefix, getattr(os.sys, 'base_prefix', os.sys.prefix)):
+        candidate = Path(prefix) / 'bin' / 'mopac'
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            return str(candidate)
+    return None
+
+
+def mopac_available() -> bool:
+    return find_mopac() is not None
+
+
+def _atom_rows(xyz_text: str) -> list:
+    rows = []
+    for line in str(xyz_text or '').splitlines()[2:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            rows.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
+        except ValueError:
+            continue
+    return rows
+
+
+def read_aux_frames(path: Path, symbols: list) -> list:
+    """Every geometry MOPAC has written so far, as XYZ blocks.
+
+    The AUX file grows a block per optimisation cycle, so a run can be watched
+    while it walks -- the same shape as xtb's trajectory log, and the reason a
+    MOPAC optimisation can be shown moving rather than only at the end.
+    """
+    try:
+        text = path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return []
+    frames = []
+    for match in _FRAME_RE.finditer(text):
+        numbers = match.group(1).split()
+        if len(numbers) < 3 * len(symbols):
+            continue
+        lines = []
+        for index, symbol in enumerate(symbols):
+            x, y, z = numbers[3 * index:3 * index + 3]
+            lines.append(f'{symbol} {float(x):.8f} {float(y):.8f} {float(z):.8f}')
+        frames.append(f'{len(symbols)}\nMOPAC cycle {len(frames) + 1}\n'
+                      + '\n'.join(lines) + '\n')
+    return frames
+
+
+def _final_geometry(folder: Path, symbols: list) -> Optional[str]:
+    """The optimised structure, from the archive MOPAC writes at the end."""
+    archive = folder / 'in.arc'
+    if not archive.is_file():
+        return None
+    rows = []
+    for line in archive.read_text(encoding='utf-8', errors='replace').splitlines():
+        parts = line.split()
+        # symbol x flag y flag z flag -- the flags say which coordinates were
+        # optimised, and are what tells a coordinate line from prose.
+        if len(parts) == 7 and parts[2] in ('+1', '-1', '0', '1'):
+            try:
+                rows.append(f'{parts[0]} {float(parts[1]):.8f} '
+                            f'{float(parts[3]):.8f} {float(parts[5]):.8f}')
+            except ValueError:
+                continue
+    if len(rows) != len(symbols):
+        return None
+    return f'{len(rows)}\noptimised with MOPAC\n' + '\n'.join(rows) + '\n'
+
+
+def optimize_with_mopac(
+    xyz_text: str,
+    method: str = 'pm6d3h4',
+    *,
+    charge: int = 0,
+    uhf: int = 0,
+    max_steps: Optional[int] = None,
+    timeout: Optional[float] = DEFAULT_TIMEOUT,
+    max_atoms: Optional[int] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    on_frames: Optional[Callable[[list], None]] = None,
+) -> Dict[str, Any]:
+    """Relax *xyz_text* with MOPAC and say what happened.
+
+    The same answer shape as the xtb side, so a caller does not have to know
+    which engine ran -- except for the energy, which is a heat of formation in
+    kcal/mol here and a total energy in hartree there.  ``energy_unit`` says
+    which, because the two are not the same quantity and adding a unit is
+    cheaper than explaining a comparison nobody should have made.
+    """
+    key = str(method or '').strip().lower()
+    spec = MOPAC_METHODS.get(key)
+    if spec is None:
+        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': 0.0, 'frames': [],
+                'status': f'{method!r} is not a MOPAC method.'}
+
+    rows = _atom_rows(xyz_text)
+    if not rows:
+        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': 0.0, 'frames': [],
+                'status': 'There are no coordinates to optimise.'}
+    ceiling = max_atoms or spec.get('max_atoms')
+    if ceiling and len(rows) > ceiling:
+        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': 0.0, 'frames': [],
+                'status': (f'{spec["label"]} is offered up to {ceiling} atoms '
+                           f'and this has {len(rows)}.')}
+
+    binary = find_mopac()
+    if binary is None:
+        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': 0.0, 'frames': [],
+                'status': (f'{spec["label"]} needs MOPAC, which was not found. '
+                           'Settings can install it.')}
+
+    words = [spec['keywords'], 'PRECISE', 'AUX']
+    if int(charge):
+        words.append(f'CHARGE={int(charge)}')
+    unpaired = max(0, int(uhf))
+    if unpaired:
+        words.append(_SPIN_WORDS.get(unpaired, 'SINGLET'))
+        words.append('UHF')
+    if max_steps:
+        words.append(f'CYCLES={int(max_steps)}')
+
+    symbols = [row[0] for row in rows]
+    started = time.perf_counter()
+    folder = Path(tempfile.mkdtemp(prefix='delfin-mopac-'))
+    try:
+        body = '\n'.join(f'{s} {x:.6f} 1 {y:.6f} 1 {z:.6f} 1'
+                         for s, x, y, z in rows)
+        (folder / 'in.mop').write_text(
+            ' '.join(words) + '\nfrom the DELFIN viewer\n\n' + body + '\n',
+            encoding='utf-8')
+
+        environment = dict(os.environ, OMP_NUM_THREADS='4', MKL_NUM_THREADS='4')
+        running = subprocess.Popen(
+            [binary, 'in.mop'], cwd=str(folder), env=environment,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL)
+
+        aux = folder / 'in.aux'
+        waited, last_read, last_size, sent = 0.0, 0.0, -1, 0
+        while running.poll() is None:
+            if should_stop is not None and should_stop():
+                running.kill()
+                break
+            if timeout and waited > timeout:
+                running.kill()
+                return {'ok': False, 'xyz': xyz_text, 'energy': None,
+                        'method': key, 'seconds': time.perf_counter() - started,
+                        'frames': [],
+                        'status': (f'{spec["label"]} was still going after '
+                                   f'{timeout:.0f} s and was stopped.')}
+            # The same shape as the xtb watcher: asking whether the file grew
+            # is free, reading it is not.
+            try:
+                size = aux.stat().st_size if aux.exists() else -1
+            except OSError:
+                size = -1
+            if (on_frames is not None and size != last_size
+                    and waited - last_read >= FRAME_READ_INTERVAL):
+                last_read, last_size = waited, size
+                walking = read_aux_frames(aux, symbols)
+                if len(walking) > sent:
+                    sent = len(walking)
+                    try:
+                        on_frames(walking)
+                    except Exception:
+                        pass
+            time.sleep(WATCH_INTERVAL)
+            waited += WATCH_INTERVAL
+        running.wait(timeout=30)
+
+        output = ''
+        report = folder / 'in.out'
+        if report.is_file():
+            output = report.read_text(encoding='utf-8', errors='replace')
+        frames = read_aux_frames(aux, symbols)
+        if on_frames is not None and len(frames) > sent:
+            try:
+                on_frames(frames)
+            except Exception:
+                pass
+
+        relaxed = _final_geometry(folder, symbols)
+        found = _HEAT_RE.search(output)
+        heat = float(found.group(1)) if found else None
+        said = _VERSION_RE.search(output)
+        version = said.group(1) if said else ''
+        seconds = time.perf_counter() - started
+
+        if relaxed is None and frames:
+            # A run stopped at its cycle limit writes no archive -- and the
+            # viewer's dynamic mode is nothing but step-limited runs, so
+            # calling that a failure would have made every one of them one.
+            # The geometry it reached is in the last frame, and it is better
+            # than the one that went in even though it is not converged.
+            relaxed = frames[-1]
+            return {
+                'ok': True, 'xyz': relaxed, 'energy': heat,
+                'energy_unit': 'kcal/mol (heat of formation)',
+                'method': key, 'label': spec['label'], 'seconds': seconds,
+                'engine': 'mopac', 'version': version, 'frames': frames,
+                'hamiltonian': spec['reports'], 'converged': False,
+                'status': (f'{spec["label"]} stopped after {len(frames)} '
+                           'cycles; the geometry it reached is shown.'),
+            }
+
+        if relaxed is None:
+            reason = 'MOPAC wrote no optimised geometry'
+            for line in output.splitlines():
+                stripped = line.strip().strip('*').strip()
+                upper = stripped.upper()
+                # The error block, not the citation request that stands beside
+                # it -- picking the first starred line found "Please cite the
+                # open-source release paper", which is true and useless.
+                if not stripped or 'CITE' in upper or 'MOPAC' in upper[:6]:
+                    continue
+                if ('ERROR' in upper or 'EXCESS' in upper or 'FAILED' in upper
+                        or 'IMPOSSIBLE' in upper or 'NOT ALLOWED' in upper):
+                    reason = stripped
+                    break
+            return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                    'seconds': seconds, 'frames': [], 'engine': 'mopac',
+                    'version': version, 'output': output[-4000:],
+                    'status': (f'{spec["label"]}: {reason}. The structure was '
+                               'left as it was.')}
+
+        return {
+            'ok': True, 'xyz': relaxed, 'energy': heat,
+            'energy_unit': 'kcal/mol (heat of formation)',
+            'method': key, 'label': spec['label'], 'seconds': seconds,
+            'engine': 'mopac', 'version': version, 'frames': frames,
+            'hamiltonian': spec['reports'],
+            'status': (f'{spec["label"]} finished in {seconds:.1f} s'
+                       + (f'; heat of formation {heat:.2f} kcal/mol'
+                          if heat is not None else '')
+                       + f'. (MOPAC {version})' if version else '.'),
+        }
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)

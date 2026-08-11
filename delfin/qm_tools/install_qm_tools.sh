@@ -295,6 +295,20 @@ install_xtb() {
   install_managed_or_adopt xtb "xtb>=${XTB_MINIMUM}" xtb
 }
 
+# MOPAC: PM6, PM7 and PM6-D3H4. Two megabytes from conda-forge, its own
+# environment like the others.
+install_mopac() {
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool mopac)"; then
+      log "using the mopac already on this system: ${path}"
+      link_into_bin "${path}" mopac
+      return
+    fi
+  fi
+  install_managed_or_adopt mopac mopac mopac
+}
+
 install_gxtb() {
   local archive="${DOWNLOAD_DIR}/${GXTB_ASSET}"
   local sums="${archive}.sha256"
@@ -445,7 +459,7 @@ summary() {
   local python_bin=""
 
   log "installation summary"
-  for prog in xtb xtb-gxtb crest std2 stda xtb4stda dftb+; do
+  for prog in xtb xtb-gxtb crest std2 stda xtb4stda dftb+ mopac; do
     if [[ -x "${BIN_DIR}/${prog}" ]]; then
       printf "  %-12s %s\n" "${prog}" "${BIN_DIR}/${prog}"
     else
@@ -521,6 +535,7 @@ attempt() {
 install_one() {
   case "$1" in
     xtb)            install_xtb ;;
+    mopac)          install_mopac ;;
     gxtb|g-xtb)     install_gxtb ;;
     crest)          install_crest ;;
     dftb+|dftbplus) install_dftbplus ;;

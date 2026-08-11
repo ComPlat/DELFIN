@@ -130,6 +130,25 @@ PROBES: Dict[str, Dict[str, Any]] = {
         'absolute_path': True,   # a parallel ORCA refuses a bare name
         'measured_with': 'ORCA 6.1.1',
     },
+    'mopac': {
+        'label': 'MOPAC',
+        'version_args': [],
+        'version_re': re.compile(r'MOPAC\s+v?([0-9][0-9.]*)'),
+        # It wants an input file and writes its answer beside it, so the probe
+        # is a whole tiny job -- which also proves it can write where it runs.
+        'answers': [
+            {'args': ['in.mop'], 'energy': -50.06,
+             'what': 'PM6-D3H4 on water', 'marker': 'FINAL HEAT OF FORMATION'},
+        ],
+        'files': {'in.mop': ('PM6-D3H4 PRECISE\nprobe\n\n'
+                             'O 0.00000 1 0.00000 1 0.00000 1\n'
+                             'H 0.96000 1 0.00000 1 0.00000 1\n'
+                             'H -0.24000 1 0.93000 1 0.00000 1\n')},
+        'energy_re': re.compile(r'FINAL HEAT OF FORMATION\s*=\s*(-?\d+\.\d+)'),
+        'reads': 'in.out',
+        'tolerance': 5.0,
+        'measured_with': 'MOPAC 23.2.5',
+    },
     'anmr': {
         'label': 'ANMR',
         'runnable': False,
@@ -145,7 +164,8 @@ PROBES: Dict[str, Dict[str, Any]] = {
 #: What the DELFIN installer can fetch, and therefore what a missing one can
 #: be offered a repair for. ORCA, Turbomole and Multiwfn are not here on
 #: purpose: they are licensed and are installed by hand.
-INSTALLABLE = ('xtb', 'gxtb', 'crest', 'dftb+', 'xtb4stda', 'stda', 'std2')
+INSTALLABLE = ('xtb', 'gxtb', 'crest', 'dftb+', 'xtb4stda', 'stda', 'std2',
+                'mopac')
 
 #: Tools that are found rather than probed: present or not, and nothing is
 #: claimed about them beyond that.
@@ -427,6 +447,17 @@ def check_tool(name: str, *, depth: str = 'answer', timeout: float = 60.0,
             command = [path] + list(question['args'])
             answer = _run(command, cwd=scratch, timeout=timeout, env=env)
             text = (answer.get('stdout') or '') + '\n' + (answer.get('stderr') or '')
+            # Some of them answer in a file rather than on the terminal --
+            # MOPAC writes its whole report beside the input and says nothing
+            # on stdout, so reading only what was printed found nothing and
+            # called a working install broken.
+            written = question.get('reads') or probe.get('reads')
+            if written:
+                try:
+                    text += '\n' + Path(scratch, written).read_text(
+                        encoding='utf-8', errors='replace')
+                except OSError:
+                    pass
             evidence = {
                 'command': ' '.join(command), 'exit': answer.get('exit'),
                 'what': question.get('what', ''),
