@@ -4025,6 +4025,7 @@ def create_tab(ctx):
         _mol3d_counter[0] += 1
         viewer_id = f"mol3d_{_mol3d_counter[0]}"
         wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
+        wrapper_seq = _mol3d_counter[0]
         data_json = json.dumps(data)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
@@ -4059,6 +4060,10 @@ def create_tab(ctx):
                 if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
                 if (!el || typeof $3Dmol === "undefined"
                     || !mv || mv.offsetParent === null) {{
+                    /* Superseded: a newer render removed this one's stage, so there is
+                       nothing left to initialise. Without this it kept polling for an
+                       element that will never come back. */
+                    if ("{wrapper_id}" && !document.getElementById("{wrapper_id}")) return;
                     tries += 1;
                     if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                     return;
@@ -4160,7 +4165,17 @@ def create_tab(ctx):
                     ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
                     : document.querySelectorAll('.calc-mol-stage-wrapper');
                 wrappers.forEach(function(w) {{
-                    if (w.id !== "{wrapper_id}") w.remove();
+                    var _s = /(\\d+)$/.exec(w.id || "");
+                    /* Only wrappers older than this one. A script that is
+                       still waiting for $3Dmol -- or for its viewer to stop
+                       being offsetParent-null, which is what it is during
+                       the move into fullscreen -- wakes up after newer
+                       renders have added theirs, and used to delete those
+                       too. Their scripts then polled 400 times for an
+                       element that no longer existed, and no structure
+                       ever appeared. */
+                    if (w.id !== "{wrapper_id}"
+                        && _s && parseInt(_s[1], 10) < {wrapper_seq}) w.remove();
                 }});
                 if (window["{calc_resize_mol_fn}"]) {{
                     setTimeout(window["{calc_resize_mol_fn}"], 200);
@@ -7010,6 +7025,7 @@ def create_tab(ctx):
         _mol3d_counter[0] += 1
         viewer_id = f'mol3d_rmsd_{_mol3d_counter[0]}'
         wrapper_id = f'calc_mol_wrap_{_mol3d_counter[0]}'
+        wrapper_seq = _mol3d_counter[0]
         ref_json = json.dumps(reference_xyz)
         target_json = json.dumps(target_xyz)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
@@ -7036,6 +7052,10 @@ def create_tab(ctx):
                 var scopeRoot = el ? el.closest('.{calc_scope_id}') : null;
                 if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
                 if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
+                    /* Superseded: a newer render removed this one's stage, so there is
+                       nothing left to initialise. Without this it kept polling for an
+                       element that will never come back. */
+                    if ("{wrapper_id}" && !document.getElementById("{wrapper_id}")) return;
                     tries += 1;
                     if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                     return;
@@ -7138,7 +7158,17 @@ def create_tab(ctx):
                     ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
                     : document.querySelectorAll('.calc-mol-stage-wrapper');
                 wrappers.forEach(function(w) {{
-                    if (w.id !== "{wrapper_id}") w.remove();
+                    var _s = /(\\d+)$/.exec(w.id || "");
+                    /* Only wrappers older than this one. A script that is
+                       still waiting for $3Dmol -- or for its viewer to stop
+                       being offsetParent-null, which is what it is during
+                       the move into fullscreen -- wakes up after newer
+                       renders have added theirs, and used to delete those
+                       too. Their scripts then polled 400 times for an
+                       element that no longer existed, and no structure
+                       ever appeared. */
+                    if (w.id !== "{wrapper_id}"
+                        && _s && parseInt(_s[1], 10) < {wrapper_seq}) w.remove();
                 }});
                 if (window["{calc_resize_mol_fn}"]) {{
                     setTimeout(window["{calc_resize_mol_fn}"], 200);
@@ -7172,6 +7202,7 @@ def create_tab(ctx):
         if in_main_mol_viewer:
             viewer_id = f'3dmolviewer_rmsd_{_mol3d_counter[0]}'
             wrapper_id = f'calc_mol_wrap_rmsd_{_mol3d_counter[0]}'
+            wrapper_seq = _mol3d_counter[0]
             viewer_container = (
                 f'<div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">'
                 f'<div id="{viewer_id}" style="width:100%;height:{viewer_height};position:relative;"></div>'
@@ -7194,7 +7225,14 @@ def create_tab(ctx):
                 f'var scopeRoot = document.querySelector(".{calc_scope_selector}");'
                 'var wrappers = scopeRoot ? scopeRoot.querySelectorAll(".calc-mol-stage-wrapper")'
                 ' : document.querySelectorAll(".calc-mol-stage-wrapper");'
-                f'wrappers.forEach(function(w) {{ if (w.id !== "{wrapper_id}") w.remove(); }});'
+                # Only wrappers older than this one. A script still waiting for
+                # $3Dmol -- or for its viewer to stop being offsetParent-null,
+                # which is what it is while it is moved into fullscreen -- wakes
+                # up after newer renders have added theirs, and used to delete
+                # those too. Their scripts then polled for an element that no
+                # longer existed, and no structure ever appeared.
+                f'wrappers.forEach(function(w) {{ var _s = /(\\d+)$/.exec(w.id || "");'
+                f' if (w.id !== "{wrapper_id}" && _s && parseInt(_s[1], 10) < {wrapper_seq}) w.remove(); }});'
                 f'if (window["{calc_resize_mol_fn}"]) {{'
                 f' setTimeout(window["{calc_resize_mol_fn}"], 120);'
                 f' setTimeout(window["{calc_resize_mol_fn}"], 360);'
@@ -7215,6 +7253,10 @@ def create_tab(ctx):
             function initViewer() {{
                 var el = document.getElementById("{viewer_id}");
                 if (!el || typeof $3Dmol === "undefined") {{
+                    /* Superseded: a newer render removed this one's stage, so there is
+                       nothing left to initialise. Without this it kept polling for an
+                       element that will never come back. */
+                    if ("{wrapper_id}" && !document.getElementById("{wrapper_id}")) return;
                     tries += 1;
                     if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                     return;
@@ -7295,6 +7337,7 @@ def create_tab(ctx):
                 _mol3d_counter[0] += 1
                 viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
                 wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
+                wrapper_seq = _mol3d_counter[0]
                 traj_style_js = profile['style_js']
                 viewer_config_js = profile['viewer_config_js']
                 view_scope_json = json.dumps(
@@ -7321,6 +7364,10 @@ def create_tab(ctx):
                             if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
                             if (!el || typeof $3Dmol === "undefined"
                                 || !mv || mv.offsetParent === null) {{
+                                /* Superseded: a newer render removed this one's stage, so there is
+                                   nothing left to initialise. Without this it kept polling for an
+                                   element that will never come back. */
+                                if ("{wrapper_id}" && !document.getElementById("{wrapper_id}")) return;
                                 tries += 1;
                                 if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                                 return;
@@ -7423,7 +7470,17 @@ def create_tab(ctx):
                                 ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
                                 : document.querySelectorAll('.calc-mol-stage-wrapper');
                             wrappers.forEach(function(w) {{
-                                if (w.id !== "{wrapper_id}") w.remove();
+                                var _s = /(\\d+)$/.exec(w.id || "");
+                    /* Only wrappers older than this one. A script that is
+                       still waiting for $3Dmol -- or for its viewer to stop
+                       being offsetParent-null, which is what it is during
+                       the move into fullscreen -- wakes up after newer
+                       renders have added theirs, and used to delete those
+                       too. Their scripts then polled 400 times for an
+                       element that no longer existed, and no structure
+                       ever appeared. */
+                    if (w.id !== "{wrapper_id}"
+                        && _s && parseInt(_s[1], 10) < {wrapper_seq}) w.remove();
                             }});
                             if (window["{calc_resize_mol_fn}"]) {{
                                 setTimeout(window["{calc_resize_mol_fn}"], 200);
