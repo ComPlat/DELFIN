@@ -23,6 +23,20 @@ user may want to compare, and both are labelled with what they cannot do.
 Conformers separate nobody: butane's gauche-anti gap is 0.60 (GFN2), 0.72
 (PM6, PM7) and 0.82 (PM6-D3H4) against 0.67 kcal/mol.
 
+Transition metals were the case where PM was expected to lose, and on five
+closed-shell compounds started at their gas-phase geometries it does not:
+mean deviations of 30.7 mA (PM6), 31.4 (PM6-D3H4), 51.8 (GFN2), 56.2 (GFN-FF)
+and 60.5 (PM7).  GFN2 leans short here as it does with organics -- TiCl4
+2.111 against 2.170, Cr(CO)6 1.881 against 1.918 -- and is 93 mA long on
+ferrocene, where PM6 lands within 5.
+
+The average hides the case that matters, though: on Fe(CO)5, PM6 is 103 mA
+short where GFN2 is 48.  A method that is better on average and much worse
+sometimes is a second opinion, not a replacement, and five neutral
+closed-shell carbonyls and halides are not the open-shell charged complexes
+most coordination chemistry is made of.  Which is why both are offered and
+neither is the default.
+
 Energies here are **heats of formation in kcal/mol**, which is what MOPAC
 computes and not the same quantity as xtb's total energy in hartree.  Two
 numbers from the two engines cannot be compared, and the unit is carried
