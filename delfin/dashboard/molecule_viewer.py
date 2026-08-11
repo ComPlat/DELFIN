@@ -4599,6 +4599,19 @@ def submit_manip_bootstrap_js():
 # left untouched: only the marked viewer/header/control members are moved into
 # a body-level overlay, then restored to their exact original DOM positions.
 STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
+/* The gutter a notebook keeps for "Out[7]:". An Output widget is laid out as a
+   table: .jp-OutputArea-child is display:table, its first cell is the prompt,
+   its second holds the picture. The prompt is empty here and always will be,
+   but the theme still gives its column --jp-cell-prompt-width, so the structure
+   starts 64px in from its own blue frame. Measured in the running dashboard:
+   64px in fullscreen, 0 in the ordinary view where the column gets squeezed
+   out -- which is why it only ever looked like a fullscreen problem. */
+.delfin-structure-fs-viewer .jp-OutputPrompt,
+.delfin-structure-fs-viewer .jp-OutputArea-prompt,
+.delfin-structure-fs-overlay .jp-OutputPrompt,
+.delfin-structure-fs-overlay .jp-OutputArea-prompt {
+    display: none !important;
+}
 body.delfin-structure-fs-open {
     overflow: hidden !important;
 }
