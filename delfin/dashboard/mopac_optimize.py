@@ -213,10 +213,25 @@ def optimize_with_mopac(
 
     binary = find_mopac()
     if binary is None:
-        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-                'seconds': 0.0, 'frames': [],
-                'status': (f'{spec["label"]} needs MOPAC, which was not found. '
-                           'Settings can install it.')}
+        # Needed and not there is a wait, not a wall -- the same rule the rest
+        # of the tools follow. Telling a user that Settings can install it,
+        # and then not installing it, is the worst of both.
+        told = {}
+        try:
+            from delfin.qm_health import provide
+
+            told = provide('mopac')
+        except Exception:
+            told = {}
+        binary = find_mopac()
+        if binary is None:
+            reason = str(told.get('status') or '') if told else ''
+            return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                    'seconds': 0.0, 'frames': [],
+                    'status': (f'{spec["label"]} needs MOPAC. '
+                               + (reason or 'It was not found and could not be '
+                                  'installed; Settings shows the installer\'s '
+                                  'own output.'))}
 
     words = [spec['keywords'], 'PRECISE', 'AUX']
     if int(charge):

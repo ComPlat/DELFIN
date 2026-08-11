@@ -1570,7 +1570,7 @@ def collect_runtime_diagnostics(
 
     with temporary_environment(env_updates):
         qm_results = check_tools(
-            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+"]
+            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+", "mopac"]
         )
     for name, resolved in qm_results:
         status, detail = _resolved_tool_status(resolved)

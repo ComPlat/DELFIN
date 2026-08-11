@@ -98,6 +98,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     install_dftbplus_btn = widgets.Button(description='dftb+', button_style='warning', layout=_qm_tool_btn_layout)
     install_stda_btn = widgets.Button(description='xtb4stda', button_style='warning', layout=_qm_tool_btn_layout)
     install_std2_btn = widgets.Button(description='std2', button_style='warning', layout=_qm_tool_btn_layout)
+    # PM6, PM7 and PM6-D3H4 in the viewer are MOPAC. Two megabytes, and it was
+    # installable from everywhere except the page that lists the installs.
+    install_mopac_btn = widgets.Button(description='mopac', button_style='warning', layout=_qm_tool_btn_layout)
     install_micromamba_btn = widgets.Button(
         description='Install micromamba',
         button_style='',
@@ -2289,7 +2292,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
             )
 
-            _QM_TOOL_NAMES = {'xtb', 'crest', 'censo', 'anmr', 'c2anmr', 'nmrplot', 'std2', 'stda', 'xtb4stda', 'dftb+'}
+            _QM_TOOL_NAMES = {'xtb', 'crest', 'censo', 'anmr', 'c2anmr', 'nmrplot', 'std2', 'stda', 'xtb4stda', 'dftb+', 'mopac'}
             _QM_DESCRIPTIONS = {
                 'xtb': 'Extended tight-binding semi-empirical method (GFN-xTB)',
                 'crest': 'Conformer-Rotamer Ensemble Sampling Tool',
@@ -2310,6 +2313,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 'stda': 'xtb4stda',
                 'xtb4stda': 'xtb4stda',
                 'std2': 'std2',
+                'mopac': 'mopac',
             }
 
             rows = []
@@ -3449,6 +3453,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     install_dftbplus_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('dftb+')))
     install_stda_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('xtb4stda')))
     install_std2_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('std2')))
+    install_mopac_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('mopac')))
     install_micromamba_btn.on_click(_with_buttons_disabled(_on_install_micromamba))
     install_csp_tools_btn.on_click(_with_buttons_disabled(_on_install_csp_tools))
     update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
@@ -3893,6 +3898,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     install_dftbplus_btn,
                     install_stda_btn,
                     install_std2_btn,
+                    install_mopac_btn,
                     install_micromamba_btn,
                 ],
                 layout=_row_layout,

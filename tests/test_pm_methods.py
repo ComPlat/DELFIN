@@ -134,3 +134,38 @@ def test_a_missing_mopac_can_be_installed_like_the_rest():
     text = install_script().read_text(encoding='utf-8')
     assert 'install_mopac()' in text
     assert 'mopac)          install_mopac ;;' in text
+
+
+def test_a_missing_mopac_is_fetched_rather_than_talked_about(monkeypatch):
+    """It said "Settings can install it" and then did not install it -- the
+    worst of both, and Settings had no button for it either.
+
+    Proven for real on this machine: with MOPAC nowhere on the PATH, a
+    PM6-D3H4 optimisation fetched it and finished in ten seconds.
+    """
+    import inspect
+
+    body = inspect.getsource(mopac.optimize_with_mopac)
+    assert "from delfin.qm_health import provide" in body
+    assert "provide('mopac')" in body
+    # And the message says why when it could not, rather than pointing at a
+    # page the user has already looked at.
+    assert 'Automatic installation' not in body   # that sentence comes from provide
+    assert "reason or" in body
+
+
+def test_settings_lists_it_with_the_other_tools():
+    from delfin.dashboard import tab_settings
+
+    source = open(tab_settings.__file__, encoding='utf-8').read()
+    assert "install_mopac_btn = widgets.Button(description='mopac'" in source
+    assert "_make_single_qm_tool_handler('mopac')" in source
+    assert 'install_mopac_btn,\n                    install_micromamba_btn,' in source
+    # And it appears in the status list, or it would be installable and
+    # invisible.
+    assert "'dftb+', 'mopac'}" in source
+
+    from delfin import runtime_setup
+
+    diagnostics = open(runtime_setup.__file__, encoding='utf-8').read()
+    assert '"dftb+", "mopac"]' in diagnostics
