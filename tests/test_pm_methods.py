@@ -221,3 +221,43 @@ def test_the_geometry_it_reached_is_written_out_properly():
     for line in lines[2:]:
         assert len(line.split()) == 4
         [float(v) for v in line.split()[1:]]
+
+
+def test_the_continuous_relaxation_reaches_both_engines():
+    """Dynamik Opt means one short run per push while an atom is being
+    dragged, and it asked xtb for it whatever the method box said.
+
+    Measured on benzophenone, one follow step each: GFN-FF 75 ms, PM7 83,
+    PM6-D3H4 103, GFN2 206. The PM methods sit between the two xtb ones, which
+    is what makes them usable for dragging at all.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    follow = source.split('def _gfn_follow_step')[1].split('\n    def ')[0]
+    assert 'if _mopac.is_mopac_method(method):' in follow
+    assert 'optimize_with_mopac(' in follow
+    assert '_gfn.relax_steps(' in follow
+    # And MOPAC is given only what it takes, as everywhere else.
+    mine = follow.split('if _mopac.is_mopac_method(method):')[1].split('else:')[0]
+    for xtb_only in ('constraints=', 'topology=', 'solvent='):
+        assert xtb_only not in mine, xtb_only
+
+    # The switch, the live check and the settle all ask "is this on the
+    # server", not "is this xtb".
+    assert 'def _server_binary(' in source
+    live = source.split('def _gfn_live_is_on')[1].split('\n    def ')[0]
+    assert '_server_method()' in live and '_server_binary(' in live
+    settle = source.split('def on_submit_settle_toggle')[1].split('\n    def ')[0]
+    assert '_server_method()' in settle
+
+
+def test_the_label_never_names_the_wrong_engine():
+    """It read the label out of the GFN table, which has no PM entry -- a
+    KeyError in the middle of a drag."""
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    follow = source.split('def _gfn_follow_step')[1].split('\n    def ')[0]
+    assert '_server_label(method)' in follow
+    assert '_gfn.GFN_METHODS[method]' not in follow

@@ -1848,9 +1848,9 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
     assert "_arm_gfn_settle()" in handler, "a release is what triggers it"
 
     toggle = source.split("def on_submit_settle_toggle")[1].split("\n    def ")[0]
-    # Settle stays xtb's: it re-runs the follow machinery, which MOPAC has
-    # no part in.
-    assert "if _gfn.is_gfn_method(submit_ff_dd.value):" in toggle
+    # Settle belongs to whichever engine computes on the server: it re-runs
+    # the follow machinery, and MOPAC has one too now.
+    assert "if _server_method():" in toggle
     assert toggle.index("return") < toggle.index("_ensure_manip_bootstrap()"), (
         "the browser must not be told to settle with a field it does not have"
     )

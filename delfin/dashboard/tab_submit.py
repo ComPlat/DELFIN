@@ -4120,7 +4120,7 @@ def create_tab(ctx):
     def _begin_gfn_follow():
         """A drag has started and the molecule is to follow it."""
         if not (submit_relax_btn.value
-                and _gfn.is_gfn_method(submit_ff_dd.value)):
+                and _server_method()):
             return False
         # The method on screen is the method that runs.  It used to be GFN-FF
         # whatever the box said, which is a picture of a calculation nobody
@@ -4166,7 +4166,7 @@ def create_tab(ctx):
             return
         state['gfn_follow_busy'] = True
         method = str(state.get('gfn_follow_method') or submit_ff_dd.value)
-        label = _gfn.GFN_METHODS[method]['label']
+        label = _server_label(method)
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         constraints = list(state.get('constraints') or [])
@@ -4180,13 +4180,24 @@ def create_tab(ctx):
                         return
                     current, holding = newest
                     began = time.perf_counter()
-                    outcome = _gfn.relax_steps(
-                        current, method=method, charge=charge, uhf=uhf,
-                        cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
-                        constraints=constraints, solvent=wet,
-                        topology=_gfn_topology_dir(
-                            len(_gfn.atom_lines(current))),
-                    )
+                    if _mopac.is_mopac_method(method):
+                        # MOPAC takes no held internals, no topology files and
+                        # no solvent from here, so it is given what it does
+                        # take. A few cycles, the same as the xtb side: enough
+                        # to move towards the hand, not so many that the
+                        # answer is stale when it arrives. Measured at 63 to
+                        # 105 ms a run against GFN-FF's 36.
+                        outcome = _mopac.optimize_with_mopac(
+                            current, method, charge=charge, uhf=uhf,
+                            max_steps=_GFN_FOLLOW_CYCLES, timeout=30.0)
+                    else:
+                        outcome = _gfn.relax_steps(
+                            current, method=method, charge=charge, uhf=uhf,
+                            cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
+                            constraints=constraints, solvent=wet,
+                            topology=_gfn_topology_dir(
+                                len(_gfn.atom_lines(current))),
+                        )
                     if not outcome.get('ok'):
                         note = str(outcome.get('status') or 'it did not run')
                         _schedule_ui_update(
@@ -4333,9 +4344,8 @@ def create_tab(ctx):
 
     def _gfn_live_is_on():
         """Whether something on screen is meant to act on a change at once."""
-        return (submit_relax_btn.value
-                and _gfn.is_gfn_method(submit_ff_dd.value)
-                and _gfn.find_binary(submit_ff_dd.value) is not None)
+        return (submit_relax_btn.value and _server_method()
+                and _server_binary(submit_ff_dd.value) is not None)
 
     def _arm_gfn_takeup(note=''):
         """Take up a change to what is held, straight away.
@@ -4368,8 +4378,8 @@ def create_tab(ctx):
             # tidy-up to be skipped when something else is in the air; it is
             # the answer to something the user just did, and it has to happen.
             state['gfn_settle_forced'] = True
-        if not (_gfn.is_gfn_method(submit_ff_dd.value)
-                and _gfn.find_binary(submit_ff_dd.value) is not None
+        if not (_server_method()
+                and _server_binary(submit_ff_dd.value) is not None
                 and (submit_settle_btn.value
                      or state.get('gfn_settle_forced'))):
             return
@@ -4708,7 +4718,7 @@ def create_tab(ctx):
                 state['gfn_settle_rounds'] = 0
                 _set_mol_status('The structure is no longer being relaxed.')
                 return
-            if _gfn.find_binary(submit_ff_dd.value) is None:
+            if _server_binary(submit_ff_dd.value) is None:
                 _set_mol_status(f'{label} needs a program that was not found.')
                 submit_relax_btn.value = False
                 return
@@ -6400,8 +6410,8 @@ def create_tab(ctx):
             return
         active = bool(submit_settle_btn.value)
         submit_settle_btn.button_style = 'info' if active else ''
-        if _gfn.is_gfn_method(submit_ff_dd.value):
-            # Under GFN this is the server's job, not the browser's: a release
+        if _server_method():
+            # On the server this is the server's job, not the browser's: a release
             # runs one short optimisation with the method on screen.  Telling
             # the browser to settle would be telling it to use a field that is
             # deliberately not installed.
@@ -6478,6 +6488,12 @@ def create_tab(ctx):
         """
         chosen = submit_ff_dd.value if value is None else value
         return _gfn.is_gfn_method(chosen) or _mopac.is_mopac_method(chosen)
+
+    def _server_binary(value):
+        """The program this method needs, whichever engine it belongs to."""
+        if _mopac.is_mopac_method(value):
+            return _mopac.find_mopac()
+        return _gfn.find_binary(value)
 
     def _server_label(value):
         if _gfn.is_gfn_method(value):
