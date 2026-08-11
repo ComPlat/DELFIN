@@ -578,6 +578,10 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'if(viewer.intwatcher&&typeof viewer.intwatcher.disconnect==="function"){\n'
     'try{viewer.intwatcher.disconnect();}catch(e){}\n'
     '}\n'
+    'if(viewer.__delfinSizeObserver&&typeof viewer.__delfinSizeObserver.disconnect==="function"){\n'
+    'try{viewer.__delfinSizeObserver.disconnect();}catch(e){}\n'
+    'viewer.__delfinSizeObserver=null;\n'
+    '}\n'
     'if(typeof viewer.pauseAnimate==="function"){try{viewer.pauseAnimate();}catch(e){}}\n'
     'if(viewer.spinInterval){try{clearInterval(viewer.spinInterval);}catch(e){}}\n'
     'var canvas=null;\n'
@@ -845,11 +849,54 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'window.__delfinViewerCreatedHooks.push(fn);\n'
     'return true;\n'
     '};\n'
+    # A viewer resized while its box measures nothing sizes its drawing buffer
+    # to nothing, and every frame after that goes to a framebuffer of zero
+    # size -- the browser reports "Attachment has zero size" and the picture is
+    # simply gone. That is what happens on the way into fullscreen: the widgets
+    # are moved into an overlay at body level, and for a moment the box has no
+    # size yet. Nothing put it right afterwards either, because the tab's own
+    # resize helper looks the viewer up under the tab root, and while
+    # fullscreen is open the viewer no longer lives there.
+    #
+    # So the viewer watches its own box instead of waiting to be told. The
+    # observer fires whenever the box actually changes -- entering fullscreen,
+    # leaving it, dragging the splitter, resizing the window -- and a size of
+    # zero is ignored rather than baked into the buffer.
+    'window.__delfinKeepSized = function(viewer, el){\n'
+    'try {\n'
+    'if(!viewer || !el || viewer.__delfinSizeBound) return false;\n'
+    'if(typeof ResizeObserver === "undefined") return false;\n'
+    'viewer.__delfinSizeBound = true;\n'
+    'var pending = null;\n'
+    'var last = {w: 0, h: 0};\n'
+    'var apply = function(){\n'
+    'pending = null;\n'
+    'var r = el.getBoundingClientRect();\n'
+    'var w = Math.round(r.width), h = Math.round(r.height);\n'
+    'if(w < 1 || h < 1) return;\n'
+    'if(w === last.w && h === last.h) return;\n'
+    'last.w = w; last.h = h;\n'
+    'try { if(typeof viewer.resize === "function") viewer.resize(); } catch(e) {}\n'
+    'try { if(typeof viewer.render === "function") viewer.render(); } catch(e) {}\n'
+    '};\n'
+    'var schedule = function(){\n'
+    'if(pending !== null) return;\n'
+    'pending = (typeof window.requestAnimationFrame === "function")\n'
+    '? window.requestAnimationFrame(apply) : window.setTimeout(apply, 16);\n'
+    '};\n'
+    'var obs = new ResizeObserver(schedule);\n'
+    'obs.observe(el);\n'
+    'viewer.__delfinSizeObserver = obs;\n'
+    'schedule();\n'
+    'return true;\n'
+    '} catch(e) { return false; }\n'
+    '};\n'
     'window.__delfinCreateViewer = function(element, config){\n'
     'var ratio = window.__delfinViewerPixelRatio || 0;\n'
     'var viewer = window.__delfinWithPixelRatio(ratio, function(){\n'
     'return $3Dmol.createViewer(element, config);\n'
     '});\n'
+    'window.__delfinKeepSized(viewer, element);\n'
     # This funnel is the only reliable place to notice that a viewer appeared.
     # Patching the factory cannot work: 3Dmol exposes createViewer as a
     # non-configurable getter, so assigning over it fails silently and the
@@ -4816,7 +4863,17 @@ STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS = r"""
                 var viewer = viewerFor(entry.type, entry.scopeKey);
                 if (!viewer) return;
                 try {
-                    if (typeof viewer.resize === 'function') viewer.resize();
+                    // Never resize against a box that has no size yet: 3Dmol
+                    // would size its drawing buffer to nothing, and every
+                    // frame after that draws into a framebuffer of zero size.
+                    // The move into the overlay leaves the box measuring zero
+                    // for a moment, which is exactly when this used to fire.
+                    var el = window.__delfinResolveViewerElement(viewer, null);
+                    var rect = el ? el.getBoundingClientRect() : null;
+                    if (rect && rect.width >= 1 && rect.height >= 1
+                        && typeof viewer.resize === 'function') {
+                        viewer.resize();
+                    }
                     if (entry.view && typeof viewer.setView === 'function') {
                         viewer.setView(entry.view);
                     }
