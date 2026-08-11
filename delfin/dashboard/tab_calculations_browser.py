@@ -36,6 +36,7 @@ from . import docx_view as _docx
 from . import pdf_view as _pdf
 from . import formula_engine as _formula_engine
 from . import spreadsheet_view as _sheet
+from . import text_view as _text_view
 from .molecule_viewer import (
     VIEWER_CONTAINER_DYNAMIC_SCALE,
     VIEWER_CONTAINER_HEIGHT_PX,
@@ -5590,7 +5591,8 @@ def create_tab(ctx):
         safe_end = safe_start + len(raw)
         return raw.decode('utf-8', errors='ignore'), safe_start, safe_end
 
-    def _calc_update_chunk_dom(content, size_bytes, chunk_start, chunk_end):
+    def _calc_update_chunk_dom(content, size_bytes, chunk_start, chunk_end,
+                               trailing_js=''):
         total_size = max(1, int(size_bytes))
         c_start = max(0, int(chunk_start))
         c_end = max(c_start, int(chunk_end))
@@ -5613,7 +5615,7 @@ def create_tab(ctx):
             txt.style.opacity = '0';
             topSpacer.style.height = '__TOP_PX__px';
             bottomSpacer.style.height = '__BOTTOM_PX__px';
-            txt.textContent = __TEXT_JSON__;
+            __SET_TEXT__
             const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
             window.__calcChunkProgrammaticScroll = true;
             box.scrollTop = Math.floor(targetRatio * maxScroll);
@@ -5631,9 +5633,9 @@ def create_tab(ctx):
             js.replace('__TOP_PX__', str(top_px))
               .replace('__BOTTOM_PX__', str(bottom_px))
               .replace('__FALLBACK_RATIO__', f'{fallback_ratio:.12f}')
-              .replace('__TEXT_JSON__', json.dumps(content))
+              .replace('__SET_TEXT__', _text_view.set_text_js('txt', content))
         )
-        _run_js(js)
+        _run_js(js + (trailing_js or ''))
 
     def _calc_load_text_preview_chunk(path, size_bytes, start_byte, rerun_search=False, scroll_to=None):
         content, chunk_start, chunk_end = _calc_read_text_chunk(path, size_bytes, start_byte)
@@ -5643,9 +5645,12 @@ def create_tab(ctx):
         state['file_chunk_end'] = chunk_end
         state['file_preview_note'] = ''
         if state.get('chunk_dom_initialized'):
-            _calc_update_chunk_dom(content, size_bytes, chunk_start, chunk_end)
-            if scroll_to:
-                calc_scroll_to(scroll_to)
+            # The scroll travels with the update: two run_js calls would race,
+            # and the second one clears the first before the browser runs it.
+            _calc_update_chunk_dom(
+                content, size_bytes, chunk_start, chunk_end,
+                trailing_js=_calc_scroll_js(scroll_to) if scroll_to else '',
+            )
         else:
             calc_render_content(scroll_to=scroll_to)
         _calc_update_chunk_controls()
@@ -5808,35 +5813,18 @@ def create_tab(ctx):
             return fallback_start, fallback_end
 
     def _calc_apply_highlight_span(local_start, local_end):
+        # Only the block holding the hit is rewritten, not the whole chunk.
         js = r"""
         setTimeout(function() {
             const box = document.getElementById('calc-content-box');
             const el = document.getElementById('calc-content-text');
             if (!el) return;
-            const text = el.textContent || '';
-            const s = __START__;
-            const e = __END__;
-            if (s < 0 || e <= s || s >= text.length) return;
-            function esc(v) {
-                return v.replace(/[&<>"]/g, function(c) {
-                    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
-                });
-            }
-            const end = Math.min(e, text.length);
-            el.innerHTML =
-                esc(text.slice(0, s))
-                + '<mark class="calc-match current calc-current-match">'
-                + esc(text.slice(s, end))
-                + '</mark>'
-                + esc(text.slice(end));
-            const mark = document.getElementById('calc-current-match');
+            const mark = window.__delfinTextView.markSpan(
+                el, __START__, __END__, {currentId: 'calc-current-match'});
             if (!box || !mark) return;
-            const boxRect = box.getBoundingClientRect();
-            const markRect = mark.getBoundingClientRect();
-            const delta = (markRect.top - boxRect.top) - (box.clientHeight / 2);
             window.__calcChunkIgnoreScrollUntil = Date.now() + 350;
             window.__calcChunkProgrammaticScroll = true;
-            box.scrollTop += delta;
+            window.__delfinTextView.centreOn(box, mark);
             setTimeout(function() {
                 window.__calcChunkProgrammaticScroll = false;
             }, 120);
@@ -5848,82 +5836,35 @@ def create_tab(ctx):
     def _calc_clear_plain_match_marker():
         _run_js("""
         setTimeout(function() {
-            const old = document.getElementById('calc-current-match');
-            if (!old) return;
-            const parent = old.parentNode;
-            if (!parent) return;
-            parent.replaceChild(document.createTextNode(old.textContent || ''), old);
-            parent.normalize();
+            const el = document.getElementById('calc-content-text');
+            if (el) window.__delfinTextView.clearMarks(el);
         }, 0);
         """)
 
     def _calc_focus_plain_match(start_pos, end_pos):
+        """Show one hit in a file too big to highlight every hit in.
+
+        This used to walk the text nodes to find the offset and wrap a Range
+        around it. The block viewer knows which block an offset falls in, so
+        the walk is a lookup and only that block is touched.
+        """
         js = r"""
         setTimeout(function() {
             const box = document.getElementById('calc-content-box');
             const el = document.getElementById('calc-content-text');
             if (!box || !el) return;
-
-            function unwrapCurrent() {
-                const old = document.getElementById('calc-current-match');
-                if (!old) return;
-                const parent = old.parentNode;
-                if (!parent) return;
-                parent.replaceChild(document.createTextNode(old.textContent || ''), old);
-                parent.normalize();
-            }
-
-            function scrollByRatio(startIndex, textLength) {
-                if (textLength <= 0) return;
-                const ratio = Math.max(0, Math.min(1, startIndex / Math.max(1, textLength - 1)));
-                const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
-                box.scrollTop = Math.floor(ratio * maxScroll);
-            }
-
-            unwrapCurrent();
-            const text = el.textContent || '';
             const s = __START__;
             const e = __END__;
-            if (s < 0 || e <= s || s >= text.length) return;
-
-            function locate(root, index) {
-                let remaining = index;
-                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-                let node = walker.nextNode();
-                while (node) {
-                    const len = (node.nodeValue || '').length;
-                    if (remaining <= len) {
-                        return {node: node, offset: remaining};
-                    }
-                    remaining -= len;
-                    node = walker.nextNode();
-                }
-                return null;
-            }
-
-            const endBound = Math.min(e, text.length);
-            const startLoc = locate(el, s);
-            const endLoc = locate(el, endBound);
-            if (!startLoc || !endLoc) {
-                scrollByRatio(s, text.length);
+            const mark = window.__delfinTextView.markSpan(
+                el, s, e, {currentId: 'calc-current-match'});
+            if (mark) {
+                window.__delfinTextView.centreOn(box, mark);
                 return;
             }
-
-            const range = document.createRange();
-            range.setStart(startLoc.node, startLoc.offset);
-            range.setEnd(endLoc.node, endLoc.offset);
-
-            const mark = document.createElement('mark');
-            mark.className = 'calc-match current';
-            mark.className = 'calc-match current calc-current-match';
-            try {
-                range.surroundContents(mark);
-            } catch (_err) {
-                scrollByRatio(s, text.length);
-                return;
-            }
-
-            mark.scrollIntoView({block: 'center'});
+            const len = window.__delfinTextView.length(el);
+            if (len <= 0) return;
+            const ratio = Math.max(0, Math.min(1, s / Math.max(1, len - 1)));
+            box.scrollTop = Math.floor(ratio * Math.max(0, box.scrollHeight - box.clientHeight));
         }, 0);
         """
         js = js.replace('__START__', str(int(start_pos))).replace('__END__', str(int(end_pos)))
@@ -6060,26 +6001,34 @@ def create_tab(ctx):
             top_spacer_html = f"<div class='calc-chunk-top-spacer' style='height:{top_px}px;'></div>"
             bottom_spacer_html = f"<div class='calc-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
             text_opacity = '0'
+        # The text does NOT go into the widget value. Sending it as markup
+        # means ipywidgets carries a second copy of the file, the browser
+        # parses megabytes of HTML, and the layout that follows blocks the
+        # main thread for seconds. The box goes up empty and the text is
+        # handed to the block viewer, which lays out only what is on screen.
         calc_content_area.value = (
-            "<style>"
-            ".calc-match { background: #fff59d; padding: 0 2px; }"
-            ".calc-match.current { background: #ffcc80; }"
-            "</style>"
             "<div class='calc-content-box' style='height:100%;"
             " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd; padding:6px;"
             " background:#fafafa; width:100%; box-sizing:border-box;'>"
             f"{top_spacer_html}"
-            "<div class='calc-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
-            f" word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3; opacity:{text_opacity};'>"
-            f"{_html.escape(text)}"
-            "</div>"
+            "<div class='calc-content-text dtv-text'"
+            f" style='opacity:{text_opacity};'></div>"
             f"{bottom_spacer_html}"
             "</div>"
         )
+        # One _run_js call for both scripts: run_js clears its output first, so
+        # a second call would wipe this one before the browser ran it.
+        fill_js = (
+            "setTimeout(function() {"
+            "  const txt = document.getElementById('calc-content-text');"
+            "  if (txt) " + _text_view.set_text_js('txt', text) +
+            "}, 0);"
+        )
+        scroll_js = _calc_scroll_js(scroll_to) if scroll_to else ''
         if chunk_mode:
             file_size_js = int(state.get('selected_file_size') or 0)
             chunk_start_js = int(state.get('file_chunk_start') or 0)
-            _run_js("""
+            _run_js(fill_js + """
             setTimeout(function() {
                 const box = document.getElementById('calc-content-box');
                 const topSpacer = document.getElementById('calc-chunk-top-spacer');
@@ -6254,32 +6203,38 @@ def create_tab(ctx):
             }, 0);
             """.replace('__FILE_SIZE__', str(file_size_js))
               .replace('__CHUNK_BYTES__', str(CALC_TEXT_CHUNK_BYTES))
-              .replace('__CURRENT_START__', str(chunk_start_js)))
+              .replace('__CURRENT_START__', str(chunk_start_js))
+              + scroll_js)
             state['chunk_dom_initialized'] = True
         else:
+            _run_js(fill_js + scroll_js)
             state['chunk_dom_initialized'] = False
-        if scroll_to:
-            calc_scroll_to(scroll_to)
 
-    def calc_scroll_to(target):
+    def _calc_scroll_js(target):
+        """The scroll as a script, so a caller can send it with its own.
+
+        run_js clears its output before each call, so two calls in a row race:
+        the second wipes the first before the browser has run it. Anything that
+        renders and then scrolls has to send one script.
+        """
         # Whichever view is up: a text file, a Word document or the grid.
         scroller = f'window.__delfinCalcScroller({json.dumps(calc_scope_id)})'
         if target == 'top':
-            _run_js(f"""
+            return f"""
             setTimeout(function(){{
                 const box = {scroller};
                 if (box) {{ box.scrollTop = 0; box.scrollLeft = 0; }}
             }}, 0);
-            """)
-        elif target == 'bottom':
-            _run_js(f"""
+            """
+        if target == 'bottom':
+            return f"""
             setTimeout(function(){{
                 const box = {scroller};
                 if (box) {{ box.scrollTop = box.scrollHeight; }}
             }}, 0);
-            """)
-        elif target == 'match' and state['current_match'] >= 0:
-            _run_js("""
+            """
+        if target == 'match' and state['current_match'] >= 0:
+            return """
             setTimeout(function(){
                 const box = document.getElementById('calc-content-box');
                 const el = document.getElementById('calc-current-match');
@@ -6289,9 +6244,16 @@ def create_tab(ctx):
                 const delta = (elRect.top - boxRect.top) - (box.clientHeight / 2);
                 box.scrollTop += delta;
             }, 0);
-            """)
+            """
+        return ''
+
+    def calc_scroll_to(target):
+        script = _calc_scroll_js(target)
+        if script:
+            _run_js(script)
 
     def calc_apply_highlight(query, current_index):
+        """Mark every hit, for the files small enough to be worth it."""
         if query is None:
             query = ''
         js = r"""
@@ -6299,44 +6261,21 @@ def create_tab(ctx):
             const box = document.getElementById('calc-content-box');
             const el = document.getElementById('calc-content-text');
             if (!box || !el) return;
-            const text = el.textContent || '';
             const q = __QUERY__;
             if (!q) {
-                el.textContent = text;
+                window.__delfinTextView.clearMarks(el);
                 return;
             }
-            function esc(s) {
-                return s.replace(/[&<>"]/g, function(c) {
-                    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
-                });
-            }
-            function escapeRegExp(s) {
-                return s.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
-            }
-            const re = new RegExp(escapeRegExp(q), 'gi');
-            let html = '';
-            let last = 0;
-            let i = 0;
-            let m;
-            while ((m = re.exec(text)) !== null) {
-                html += esc(text.slice(last, m.index));
-                const cls = (i === __INDEX__) ? 'calc-match current' : 'calc-match';
-                const id = (i === __INDEX__) ? 'calc-current-match' : '';
-                html += `<mark class="${cls}" ${id ? 'id="' + id + '"' : ''}>${esc(m[0])}</mark>`;
-                last = m.index + m[0].length;
-                i++;
-            }
-            html += esc(text.slice(last));
-            el.innerHTML = html;
-            if (__INDEX__ >= 0) {
+            const mark = window.__delfinTextView.markAll(
+                el, q, __INDEX__, {currentId: 'calc-current-match'});
+            if (__INDEX__ >= 0 && mark) {
                 setTimeout(function() {
-                    const mark = document.getElementById('calc-current-match');
-                    if (mark) { mark.scrollIntoView({block: 'center'}); }
+                    window.__delfinTextView.centreOn(box, mark);
                 }, 0);
             }
         })();
         """
-        js = js.replace('__QUERY__', repr(query)).replace('__INDEX__', str(current_index))
+        js = js.replace('__QUERY__', json.dumps(query)).replace('__INDEX__', str(current_index))
         _run_js(js)
 
     # -- XYZ helpers --------------------------------------------------------
@@ -8576,8 +8515,7 @@ def create_tab(ctx):
                 _run_js("""
                 (function() {
                     const el = document.getElementById('calc-content-text');
-                    if (!el) return;
-                    el.textContent = el.textContent || '';
+                    if (el) window.__delfinTextView.clearMarks(el);
                 })();
                 """)
             elif _calc_should_highlight():
@@ -8611,8 +8549,7 @@ def create_tab(ctx):
                 _run_js("""
                 (function() {
                     const el = document.getElementById('calc-content-text');
-                    if (!el) return;
-                    el.textContent = el.textContent || '';
+                    if (el) window.__delfinTextView.clearMarks(el);
                 })();
                 """)
                 return
@@ -14427,6 +14364,7 @@ def create_tab(ctx):
 
     calc_css = widgets.HTML(
         '<style>'
+        + _text_view.text_view_css() +
         '.calc-content-box { overflow-x:hidden !important; }'
         # Fullscreen. The tab lifts out of the page instead of moving its
         # children into an overlay: everything inside already sizes itself
@@ -14743,7 +14681,11 @@ def create_tab(ctx):
     """
 
     _init_js = (
-        _scope_resolvers_js
+        # Must be first: the content renderer calls into it, and the tab can
+        # render a file before anything else on the page has run.
+        _text_view.text_view_bootstrap_js()
+        + "\n"
+        + _scope_resolvers_js
         + "\n"
         + _explorer_interactions_js
         + "\n"
