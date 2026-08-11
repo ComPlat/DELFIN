@@ -881,3 +881,50 @@ def test_the_installer_names_the_thing_that_is_missing():
     adopt = text.split('install_managed_or_adopt() {')[1].split('\n}')[0]
     assert 'ensure_micromamba' in adopt
     assert 'no micromamba or conda' in adopt
+
+
+def test_micromamba_is_found_where_it_actually_lives():
+    """It is commonly installed as a shell function.
+
+    That is what its own installer sets up, so ``command -v micromamba``
+    answers in an interactive shell and answers nothing in a script -- while
+    the binary sits in the home directory the whole time. Reported from a
+    cluster where xtb, crest and dftb+ were all installed and MOPAC would not
+    be: "no managed environment could be built", with a perfectly good
+    micromamba at ~/micromamba/bin/micromamba.
+
+    Run for real with a PATH that has none: the installer now builds the
+    environment and links the binary.
+    """
+    from delfin.dashboard.gfn_optimize import install_script
+
+    body = install_script().read_text(encoding='utf-8')
+    look = body.split('ensure_micromamba() {')[1].split('\n}')[0]
+    # The variables its own installer exports, then the places it is put.
+    assert '${MAMBA_EXE:-}' in look and '${CONDA_EXE:-}' in look
+    assert '${HOME}/micromamba/bin/micromamba' in look
+    assert '${HOME}/.local/bin/micromamba' in look
+    assert 'MAMBA_ROOT_PREFIX' in look
+    # And conda as the fallback it always was.
+    assert 'miniforge3/bin/conda' in look or 'miniconda3/bin/conda' in look
+
+
+def test_a_prerequisite_that_has_since_arrived_gets_another_try(monkeypatch):
+    """Being told "it was already installed once this session" after doing
+    exactly what the last message asked for is how a user gives up.
+
+    The once-per-session rule keeps a machine with no network from spending
+    the same wait on every press. It must not outlast the reason for it.
+    """
+    monkeypatch.setattr(qm_health, '_TRIED', {'mopac'})
+    monkeypatch.setattr(qm_health, '_BLOCKED_BY',
+                        {'mopac': 'WARNING: no micromamba or conda, so no '
+                                  'environment can be built'})
+    monkeypatch.setattr(qm_health, 'shutil', qm_health.shutil)
+    monkeypatch.setattr(qm_health.shutil, 'which', lambda name: '/usr/bin/micromamba')
+    assert qm_health._blocker_has_gone('mopac') is True
+
+    # Something else -- a checksum, a compiler -- is not a thing that fixed
+    # itself, and the wait is not spent again.
+    monkeypatch.setattr(qm_health, '_BLOCKED_BY', {'mopac': 'checksum mismatch'})
+    assert qm_health._blocker_has_gone('mopac') is False

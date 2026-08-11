@@ -157,15 +157,56 @@ detect_existing_tool() {
   return 1
 }
 
+# Where micromamba actually is, which is not always on the PATH.
+#
+# It is commonly installed as a **shell function** -- that is what its own
+# installer sets up -- so `command -v micromamba` answers in an interactive
+# shell and answers nothing in a script, while the binary sits in the home
+# directory the whole time. Measured on a machine where xtb, crest and dftb+
+# were all installed and mopac would not be: the function was there, the
+# binary was at ~/micromamba/bin/micromamba, and this function found neither.
+#
+# So the places it is usually put are looked in as well, and the variables its
+# own installer exports are honoured.
 ensure_micromamba() {
+  local candidate
+  for candidate in "${MAMBA_EXE:-}" "${CONDA_EXE:-}"; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
   if have micromamba; then
     printf "%s\n" "$(command -v micromamba)"
     return 0
   fi
+  for candidate in \
+      "${MAMBA_ROOT_PREFIX:-${HOME}/micromamba}/bin/micromamba" \
+      "${HOME}/micromamba/bin/micromamba" \
+      "${HOME}/.local/bin/micromamba" \
+      "${HOME}/bin/micromamba" \
+      "/opt/micromamba/bin/micromamba" \
+      "/usr/local/bin/micromamba"; do
+    if [[ -x "${candidate}" ]]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
   if have conda; then
     printf "%s\n" "$(command -v conda)"
     return 0
   fi
+  for candidate in \
+      "${CONDA_PREFIX:-}/bin/conda" \
+      "${HOME}/miniforge3/bin/conda" \
+      "${HOME}/miniconda3/bin/conda" \
+      "${HOME}/anaconda3/bin/conda" \
+      "/opt/conda/bin/conda"; do
+    if [[ -x "${candidate}" ]]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
   return 1
 }
 

@@ -669,8 +669,38 @@ def repair_tool(name: str, action: str = '', *,
     }
 
 
-#: Tools this session has already tried to install by itself.
+#: Tools this session has already tried to install by itself, and why the
+#: attempt failed when the reason was something that can change.
 _TRIED: set = set()
+_BLOCKED_BY: Dict[str, str] = {}
+
+
+def _blocker_has_gone(name: str) -> bool:
+    """Whether what stopped the last attempt has since been put right.
+
+    The once-per-session rule keeps a machine with no network from spending
+    the same wait on every press. It should not keep somebody who has just
+    installed the missing prerequisite from trying again -- being told "it was
+    already installed once this session" after doing exactly what the last
+    message asked for is the kind of thing that makes a user give up.
+    """
+    blocker = _BLOCKED_BY.get(name, '')
+    if 'micromamba' not in blocker and 'conda' not in blocker:
+        return False
+    for place in ('MAMBA_EXE', 'CONDA_EXE'):
+        candidate = os.environ.get(place, '')
+        if candidate and os.access(candidate, os.X_OK):
+            return True
+    if shutil.which('micromamba') or shutil.which('conda'):
+        return True
+    home = Path.home()
+    for candidate in (Path(os.environ.get('MAMBA_ROOT_PREFIX',
+                                          home / 'micromamba')) / 'bin' / 'micromamba',
+                      home / 'micromamba' / 'bin' / 'micromamba',
+                      home / '.local' / 'bin' / 'micromamba'):
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            return True
+    return False
 
 
 def ensure_tool(name: str,
@@ -702,12 +732,13 @@ def ensure_tool(name: str,
         return {'ok': False, 'installed': False, 'health': health,
                 'status': (f'{health.label or name}: {health.why or "not found"}. '
                            'Automatic installation is switched off.')}
-    if name in _TRIED:
+    if name in _TRIED and not _blocker_has_gone(name):
         return {'ok': False, 'installed': False, 'health': health,
                 'status': (f'{health.label or name}: {health.why or "not found"}. '
                            'It was already installed once this session and is '
                            'still not right -- Settings shows the installer\'s '
                            'own output.')}
+    _TRIED.discard(name)
 
     _TRIED.add(name)
     if on_line is not None:
@@ -727,6 +758,7 @@ def ensure_tool(name: str,
     # the user can act on.
     lines = [str(line).strip() for line in (outcome.get('lines') or [])]
     said = ''
+    _BLOCKED_BY[name] = ' '.join(lines)[-2000:]
     # The cause before the consequence. The installer says both -- "no
     # micromamba or conda, so no environment can be built" and then "could not
     # be installed; the others are still being tried" -- and the second is the
