@@ -123,6 +123,34 @@ def build_calc_nmr_input(coord_lines, *, pal: int, maxcore: int, solvent: str) -
 _mol3d_counter = [0]
 
 
+#: The user's process list, kept for a moment, and shared by every build of
+#: this tab.  Calculations, Archive and Office are three builds of this one
+#: builder, and each of them lists its directory as it is created -- three
+#: identical ``ps`` runs for one answer.  ``ps`` reads all of /proc whatever
+#: filter it is given, so on a shared login node that is 0.39 s each.
+_USER_PROCESS_TTL = 2.0
+_user_process_snapshot: list = [0.0, None]
+
+
+def _recent_user_processes(user):
+    """``ps -u`` output, or None if it could not be read."""
+    now = time.monotonic()
+    if _user_process_snapshot[1] is not None and \
+            now - _user_process_snapshot[0] < _USER_PROCESS_TTL:
+        return _user_process_snapshot[1]
+    try:
+        result = subprocess.run(
+            ['ps', '-u', user, '-o', 'pid=,command='],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    _user_process_snapshot[:] = [now, result.stdout or '']
+    return _user_process_snapshot[1]
+
+
 def create_tab(ctx):
     """Create the Calculations Browser tab.
 
@@ -7657,21 +7685,12 @@ def create_tab(ctx):
             calc_root_resolved = _calc_dir()
 
         keywords = ('orca', 'delfin', 'xtb', 'crest')
-        try:
-            result = subprocess.run(
-                ['ps', '-u', user, '-o', 'pid=,command='],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-        except Exception:
-            return set()
-        if result.returncode != 0:
+        listing = _recent_user_processes(user)
+        if listing is None:
             return set()
 
         running_root_dirs = set()
-        for line in (result.stdout or '').splitlines():
+        for line in listing.splitlines():
             line = line.strip()
             if not line:
                 continue
