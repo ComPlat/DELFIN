@@ -2359,8 +2359,11 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "topology=_gfn_topology_dir(" in follow
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
-    assert "perceived = _gfn_topology_dir(" in settle
+    assert "_gfn_topology_dir(len(_gfn.atom_lines(xyz)))" in settle
     assert "topology=perceived" in settle
+    # And asking for one makes a directory, so the engine that has no topology
+    # does not ask: MOPAC works the bonding out for itself every run.
+    assert "if _gfn.is_gfn_method(method) else None" in settle
 
 
 def test_only_gfnff_has_a_topology_to_keep():
@@ -2556,9 +2559,8 @@ def test_the_solvents_are_the_ones_this_xtb_is_parametrised_for():
     """Asked of the binary, not taken from a manual: every name here came back
     parametrised from xtb 6.7.1, for GFN2 and GFN-FF alike.
 
-    ALPB is the model because it is xtb's own recommendation and covers all of
-    them; the older GBSA knows a subset -- no ethanol, no dioxane, no aniline,
-    no ester, no alcohol beyond methanol.
+    Which model wraps them is a separate choice -- ALPB, GBSA or ddCOSMO --
+    and it is no longer hard-coded here; see test_solvation_models.py.
     """
     assert gfn.SOLVENTS[""] == "none (gas phase)"
     for name in ("water", "dmso", "thf", "toluene", "ethanol", "ch2cl2"):
@@ -2568,14 +2570,18 @@ def test_the_solvents_are_the_ones_this_xtb_is_parametrised_for():
 
     source = open(gfn.__file__, encoding="utf-8").read()
     runner = source.split("def optimize_with_gfn")[1].split("\ndef ")[0]
-    assert "command += ['--alpb', wet]" in runner
+    # The flags come from the shared table, so that MOPAC can be told about
+    # the same liquids; hard-coding --alpb here is what made the model
+    # unchooseable in the first place.
+    assert "_solvents.xtb_flags(model, wet)" in runner
+    assert "'--alpb'" not in runner
 
 
 def test_a_solvent_it_does_not_know_is_refused_with_the_list():
     refused = gfn.optimize_with_gfn(_WATER, "gfn2", solvent="schnaps")
 
     assert refused["ok"] is False
-    assert "not a solvent this xtb is parametrised for" in refused["status"]
+    assert "is not a solvent that is known here" in refused["status"]
     assert "acetone" in refused["status"], "the ones it does know have to be named"
 
 

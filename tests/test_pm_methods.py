@@ -114,11 +114,14 @@ def test_the_viewer_offers_them_and_runs_the_right_engine():
     # One question for "is this computed on the server", two engines behind it.
     assert 'def _server_method(' in source
     assert 'def _server_label(' in source
-    # And MOPAC is given only what it takes -- not xtb's held internals,
-    # topology files or solvent models passed along as though honoured.
+    # And MOPAC is given only what it takes -- not xtb's held internals or
+    # topology files passed along as though honoured -- but it *is* given the
+    # solvent, because its COSMO takes one.  Setting Water and choosing PM7
+    # used to produce a gas-phase answer without saying so.
     run = source.split('if pm:')[1].split('elif gfn and autospin:')[0]
     assert 'optimize_with_mopac' in run
-    for xtb_only in ('constraints=', 'topology=', 'solvent='):
+    assert 'solvent=wet' in run, 'the chosen solvent has to reach MOPAC'
+    for xtb_only in ('constraints=', 'topology='):
         assert xtb_only not in run, xtb_only
 
 
@@ -238,9 +241,11 @@ def test_the_continuous_relaxation_reaches_both_engines():
     assert 'if _mopac.is_mopac_method(method):' in follow
     assert 'optimize_with_mopac(' in follow
     assert '_gfn.relax_steps(' in follow
-    # And MOPAC is given only what it takes, as everywhere else.
+    # And MOPAC is given only what it takes, as everywhere else -- with the
+    # solvent among the things it takes, so a drag in water stays in water.
     mine = follow.split('if _mopac.is_mopac_method(method):')[1].split('else:')[0]
-    for xtb_only in ('constraints=', 'topology=', 'solvent='):
+    assert 'solvent=wet' in mine
+    for xtb_only in ('constraints=', 'topology='):
         assert xtb_only not in mine, xtb_only
 
     # The switch, the live check and the settle all ask "is this on the

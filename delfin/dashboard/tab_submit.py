@@ -24,6 +24,7 @@ from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
 from . import gfn_optimize as _gfn
 from . import mopac_optimize as _mopac
+from . import solvents as _solvents
 from . import ketcher as _ketcher
 from . import separate_systems as _separate
 from .molecule_viewer import (
@@ -881,13 +882,31 @@ def create_tab(ctx):
         options=[(label, name) for name, label in _gfn.SOLVENTS.items()],
         value='',
         tooltip=(
-            'Optimise with an implicit solvent around the structure, using '
-            'ALPB -- xtb\'s own recommendation, and the model that covers '
-            'every solvent it is parametrised for. A geometry optimised in '
-            'the gas phase and one optimised in water are different answers; '
-            'the status line says which you got.'
+            'Optimise with an implicit solvent around the structure. A '
+            'geometry optimised in the gas phase and one optimised in water '
+            'are different answers; the status line says which you got. Which '
+            'solvents are offered depends on the model beside this: ALPB '
+            'covers all 25, GBSA fewer, and how many fewer depends on the '
+            'method.'
         ),
         layout=widgets.Layout(width='140px', display='none'),
+    )
+    #: The continuum itself.  Its options are rebuilt whenever the method
+    #: changes, because what is available is a property of the method: GFN-FF
+    #: has ALPB and GBSA, GFN1 and GFN2 add ddCOSMO, and the PM methods have
+    #: MOPAC's COSMO and nothing else.  A dropdown that offers a model the
+    #: chosen method cannot run is a dropdown that can only produce a refusal.
+    submit_gfn_solv_model = widgets.Dropdown(
+        options=[('ALPB', 'alpb')], value='alpb',
+        tooltip=(
+            'Which continuum stands in for the solvent. ALPB costs nothing '
+            'and covers every solvent; ddCOSMO is five to six times the price '
+            'and is what COSMO-RS wants; GBSA is the older model, kept '
+            'because published numbers were computed with it. PM methods get '
+            'MOPAC\'s COSMO, given the dielectric constant of the same '
+            'solvent, so the two engines are asked about the same liquid.'
+        ),
+        layout=widgets.Layout(width='108px', display='none'),
     )
     submit_gfn_autospin = widgets.Checkbox(
         value=False, description='auto M', indent=False,
@@ -1104,7 +1123,7 @@ def create_tab(ctx):
             submit_manip_clear_btn, submit_centre_btn,
             submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
-            submit_gfn_autospin, submit_gfn_solvent,
+            submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider,
@@ -4171,6 +4190,7 @@ def create_tab(ctx):
         uhf = _gfn_uhf_now()
         constraints = list(state.get('constraints') or [])
         wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
 
         def _work():
             try:
@@ -4181,20 +4201,24 @@ def create_tab(ctx):
                     current, holding = newest
                     began = time.perf_counter()
                     if _mopac.is_mopac_method(method):
-                        # MOPAC takes no held internals, no topology files and
-                        # no solvent from here, so it is given what it does
-                        # take. A few cycles, the same as the xtb side: enough
-                        # to move towards the hand, not so many that the
-                        # answer is stale when it arrives. Measured at 63 to
-                        # 105 ms a run against GFN-FF's 36.
+                        # MOPAC takes no held internals and no topology file,
+                        # so it is given what it does take. A few cycles, the
+                        # same as the xtb side: enough to move towards the
+                        # hand, not so many that the answer is stale when it
+                        # arrives. Measured on a benzophenone at 105 ms a run
+                        # against GFN-FF's 36, and COSMO takes that to 155 for
+                        # PM7 and 175 for PM6-D3H4 -- half again, and still
+                        # inside the budget for a drag.
                         outcome = _mopac.optimize_with_mopac(
                             current, method, charge=charge, uhf=uhf,
-                            max_steps=_GFN_FOLLOW_CYCLES, timeout=30.0)
+                            max_steps=_GFN_FOLLOW_CYCLES, timeout=30.0,
+                            solvent=wet)
                     else:
                         outcome = _gfn.relax_steps(
                             current, method=method, charge=charge, uhf=uhf,
                             cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
                             constraints=constraints, solvent=wet,
+                            solvation_model=model,
                             topology=_gfn_topology_dir(
                                 len(_gfn.atom_lines(current))),
                         )
@@ -4425,14 +4449,19 @@ def create_tab(ctx):
         generation = int(state.get('gfn_generation', 0))
         method = str(submit_ff_dd.value)
         xyz = (state.get('current_xyz_for_copy') or {}).get('content')
-        if not xyz or not _gfn.is_gfn_method(method):
+        # Either engine, not only xtb.  Settle was armed for the PM methods
+        # along with the follow, but this gate let only GFN through -- so
+        # letting go of an atom under PM7 with Settle on did nothing, and said
+        # nothing about doing nothing.
+        if not xyz or not _server_method(method):
             return
-        label = _gfn.GFN_METHODS[method]['label']
+        label = _server_label(method)
         state['gfn_settle_busy'] = True
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         constraints = list(state.get('constraints') or [])
         wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
         rounds = int(state.get('gfn_settle_rounds') or 0) + 1
         state['gfn_settle_rounds'] = rounds
         # One run number for the whole relaxation, not one per round.  A new
@@ -4450,10 +4479,15 @@ def create_tab(ctx):
             (f'{note}: {label} is moving the structure to it...' if note
              else f'{label} is settling the structure...')
             + (f' (round {rounds})' if rounds > 1 else ''), spinner=True)
-        perceived = _gfn_topology_dir(len(_gfn.atom_lines(xyz)))
+        # Only GFN-FF has a topology to keep, and asking for one makes a
+        # directory -- so a PM settle does not ask.
+        perceived = (_gfn_topology_dir(len(_gfn.atom_lines(xyz)))
+                     if _gfn.is_gfn_method(method) else None)
         # Auto M, and no scan has happened yet: this run does the scanning, so
-        # that it and Optimise are asking about the same molecule.
+        # that it and Optimise are asking about the same molecule.  Only xtb
+        # can be asked to scan; under PM the multiplicity on screen is used.
         scanning = bool(submit_gfn_autospin.value
+                        and _gfn.is_gfn_method(method)
                         and state.get('gfn_scanned_uhf') is None)
 
         def _settle_stopped():
@@ -4479,7 +4513,15 @@ def create_tab(ctx):
 
         def _work():
             began = time.perf_counter()
-            if scanning:
+            if _mopac.is_mopac_method(method):
+                # No held internals and no topology to carry, but the solvent
+                # is carried: a settle in water after a drag in water is the
+                # same question the drag was asking.
+                outcome = _mopac.optimize_with_mopac(
+                    xyz, method, charge=charge, uhf=uhf,
+                    max_steps=None, timeout=None, on_frames=_push,
+                    should_stop=_settle_stopped, solvent=wet)
+            elif scanning:
                 # Auto M with nothing scanned yet.  Optimise would scan and
                 # keep the lowest; running the box's M here instead makes the
                 # two answer about different molecules, and pressing Optimise
@@ -4488,7 +4530,8 @@ def create_tab(ctx):
                 outcome = _gfn.optimize_autospin(
                     xyz, method, charge=charge, constraints=constraints,
                     on_frames=_push, topology=perceived, timeout=None,
-                    solvent=wet, should_stop=_settle_stopped,
+                    solvent=wet, solvation_model=model,
+                    should_stop=_settle_stopped,
                 )
                 if outcome.get('uhf') is not None:
                     state['gfn_scanned_uhf'] = int(outcome['uhf'])
@@ -4503,6 +4546,7 @@ def create_tab(ctx):
                     xyz, method, charge=charge, uhf=uhf,
                     max_steps=None, timeout=None,
                     constraints=constraints, on_frames=_push, solvent=wet,
+                    solvation_model=model,
                     topology=perceived, should_stop=_settle_stopped,
                 )
 
@@ -4726,14 +4770,30 @@ def create_tab(ctx):
                 submit_manip_btn.value = True  # dragging is what it is for
             _ensure_manip_bootstrap()
             _install_gfn_frame_watcher()
-            _set_mol_status(
+            said = [
                 f'Drag an atom and the rest of the molecule follows it with '
                 f'{label}. Letting go leaves it where you put it -- Optimise '
                 'is what takes it downhill, and Settle asks for that on every '
                 'release.'
-                + ('' if submit_ff_dd.value == 'gfnff' else
-                   f' {label} is the slow one -- if it drags heavily, '
-                   'GFN-FF answers about twenty times faster.'))
+            ]
+            if submit_ff_dd.value != 'gfnff':
+                said.append(f'{label} is the slow one -- if it drags heavily, '
+                            'GFN-FF answers about twenty times faster.')
+            # A solvent is free to drag in, except for the one that is not.
+            # Measured on a benzophenone, one follow step: GFN2 167 ms in
+            # vacuum, 117 with ALPB, 168 with GBSA -- and 1020 with ddCOSMO.
+            # Said here rather than left to be discovered, because what six
+            # times the cost per step looks like is a drag that is broken.
+            wet_now = str(submit_gfn_solvent.value or '')
+            if wet_now and _solv_model() == 'ddcosmo':
+                said.append('ddCOSMO costs about six times what the other '
+                            'models do per step -- a second each on 24 atoms '
+                            '-- so this will move like a slideshow. ALPB is '
+                            'the one to drag in.')
+            elif wet_now:
+                said.append(f'Following in {_solvents.label_of(wet_now)} '
+                            f'({_solvents.model_label(_solv_model())}).')
+            _set_mol_status(' '.join(said))
             return
         if not active:
             _ensure_manip_bootstrap()
@@ -4928,6 +4988,7 @@ def create_tab(ctx):
         # being quietly given up the moment GFN is chosen.
         held = list(state.get('constraints') or [])
         wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
 
         def _work():
             from .molecule_forcefield import relax_xyz
@@ -4957,24 +5018,28 @@ def create_tab(ctx):
                                      len(_gfn.atom_lines(xyz))))
                     if pm:
                         # MOPAC takes the spin state as a word and knows
-                        # nothing of xtb's held internals, its topology files
-                        # or its solvent models -- so it is given what it does
-                        # take, and the rest is not quietly passed along as
-                        # though it had been honoured.
+                        # nothing of xtb's held internals or its topology
+                        # files -- so it is given what it does take, and the
+                        # rest is not quietly passed along as though it had
+                        # been honoured.  The solvent it does take: its COSMO
+                        # is handed the dielectric constant of the same
+                        # liquid the GFN side is given by name.
                         outcome = _mopac.optimize_with_mopac(
                             xyz, method, charge=charge, uhf=uhf,
-                            should_stop=_stopped, timeout=None,
+                            should_stop=_stopped, timeout=None, solvent=wet,
                             on_frames=_push_frames if position == 0 else None)
                     elif gfn and autospin:
                         outcome = _gfn.optimize_autospin(
                             xyz, method, charge=charge, should_stop=_stopped,
                             timeout=None, on_frames=_push_frames,
-                            constraints=held, topology=perceived, solvent=wet)
+                            constraints=held, topology=perceived, solvent=wet,
+                            solvation_model=model)
                     elif gfn:
                         outcome = _gfn.optimize_with_gfn(
                             xyz, method, charge=charge, uhf=uhf,
                             should_stop=_stopped, timeout=None,
                             constraints=held, topology=perceived, solvent=wet,
+                            solvation_model=model,
                             on_frames=_push_frames if position == 0 else None)
                     else:
                         outcome = relax_xyz(
@@ -5098,7 +5163,7 @@ def create_tab(ctx):
                 # the user is holding on screen that the optimisation quietly
                 # ignored would make the result an answer to a question nobody
                 # asked.
-                said += _gfn.solvent_note(submit_gfn_solvent.value)
+                said += _solvents.note(_solv_model(), submit_gfn_solvent.value)
                 said += _gfn.held_note(state.get('gfn_held') or {
                     'held': 0, 'dropped': [], 'mixed': False, 'force': None})
                 state['gfn_last_status'] = said
@@ -6438,13 +6503,87 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
         )
 
+    def _solv_model():
+        """The continuum to run with, or '' when the method has none.
+
+        Read from the dropdown, but never trusted past the method: the two are
+        set separately and a stale model is how a run ends up asking for
+        ddCOSMO under GFN-FF, which does not fail -- it returns a destroyed
+        structure.
+        """
+        offered = _solvents.models_for(submit_ff_dd.value)
+        if not offered:
+            return ''
+        chosen = str(submit_gfn_solv_model.value or '')
+        return chosen if chosen in offered else offered[0]
+
+    def _refresh_solvation_controls():
+        """Put the two solvent controls in step with the chosen method.
+
+        Both lists are properties of the method, not of the tab: GFN-FF has no
+        ddCOSMO, GBSA has eleven fewer solvents than ALPB under GFN-FF and
+        thirteen fewer under GFN1, and a PM method has COSMO alone.  Whatever
+        was chosen is kept if the new method can still do it, and dropped with
+        a word if it cannot -- silently keeping it would leave the control
+        showing one thing and the run doing another.
+        """
+        offered = _solvents.models_for(submit_ff_dd.value)
+        submit_gfn_solvent.layout.display = '' if offered else 'none'
+        # One model is not a choice; it is a label, and the tooltip on the
+        # solvent box already says which it is.
+        submit_gfn_solv_model.layout.display = '' if len(offered) > 1 else 'none'
+        state['solvent_quiet'] = True
+        try:
+            if not offered:
+                submit_gfn_solvent.value = ''
+                return
+            model_options = [(_solvents.model_label(name), name)
+                             for name in offered]
+            if list(submit_gfn_solv_model.options) != model_options:
+                keeping = str(submit_gfn_solv_model.value or '')
+                submit_gfn_solv_model.options = model_options
+                submit_gfn_solv_model.value = (
+                    keeping if keeping in offered else offered[0])
+            model = _solv_model()
+            wet = str(submit_gfn_solvent.value or '')
+            names = _solvents.solvents_for(model, submit_ff_dd.value)
+            wanted = [('none (gas phase)', '')] + [
+                (_solvents.label_of(name), name) for name in names]
+            if list(submit_gfn_solvent.options) != wanted:
+                submit_gfn_solvent.options = wanted
+                submit_gfn_solvent.value = wet if wet in names else ''
+                if wet and wet not in names:
+                    _set_mol_status(
+                        f'{_solvents.model_label(model)} is not parametrised '
+                        f'for {_solvents.label_of(wet)} here, so the solvent '
+                        'was cleared. ALPB covers every solvent in the list.')
+        finally:
+            state['solvent_quiet'] = False
+
+    def on_submit_solv_model(change):
+        if change.get('name') != 'value' or state.get('solvent_quiet'):
+            return
+        _refresh_solvation_controls()
+        wet = str(submit_gfn_solvent.value or '')
+        model = _solv_model()
+        if not wet:
+            return
+        _set_mol_status(
+            f'{_solvents.label_of(wet)} with '
+            f'{_solvents.model_label(model)} from now on. The structure on '
+            'screen was optimised under the previous model, and the two do '
+            'not agree -- on a glycine in water ALPB and ddCOSMO differed by '
+            '2.8 kcal/mol -- so it is worth optimising again.')
+
     def on_submit_solvent(change):
         if change.get('name') != 'value' or state.get('solvent_quiet'):
             return
         wet = str(submit_gfn_solvent.value or '')
+        model = _solv_model()
         _set_mol_status(
-            f'Optimising in {_gfn.SOLVENTS[wet]} from now on (ALPB). The '
-            'structure on screen was not, so it is worth optimising again.'
+            f'Optimising in {_solvents.label_of(wet)} from now on '
+            f'({_solvents.model_label(model)}). The structure on screen was '
+            'not, so it is worth optimising again.'
             if wet else
             'Optimising in the gas phase from now on.')
 
@@ -6620,20 +6759,11 @@ def create_tab(ctx):
         submit_gfn_autospin.layout.display = (
             '' if _gfn.is_gfn_method(submit_ff_dd.value) else 'none')
         # A method without solvation gets no solvent box: a control that can
-        # only produce a refusal is worse than no control.
-        # Only xtb has solvent models here; MOPAC's are a different set and
-        # are not offered, so a PM method gets no solvent box rather than one
-        # that can only refuse.
-        solvated = (_gfn.is_gfn_method(submit_ff_dd.value)
-                    and _gfn.GFN_METHODS[
-                        str(submit_ff_dd.value)].get('solvation') is not False)
-        submit_gfn_solvent.layout.display = '' if solvated else 'none'
-        if not solvated and submit_gfn_solvent.value:
-            state['solvent_quiet'] = True
-            try:
-                submit_gfn_solvent.value = ''
-            finally:
-                state['solvent_quiet'] = False
+        # only produce a refusal is worse than no control.  Which models and
+        # which solvents a method does have is the solvents module's answer,
+        # and it differs for every one of them -- so both boxes are rebuilt
+        # here rather than merely shown or hidden.
+        _refresh_solvation_controls()
         # Relax means the browser's own field running once per frame, and there
         # is no GFN engine in the browser to run.  Under GFN it means the other
         # half of the same idea: while an atom is being dragged, the rest of
@@ -7038,6 +7168,7 @@ def create_tab(ctx):
     submit_xtb_cancel_btn.on_click(on_submit_xtb_cancel)
     submit_gfn_autospin.observe(on_submit_autospin, names='value')
     submit_gfn_solvent.observe(on_submit_solvent, names='value')
+    submit_gfn_solv_model.observe(on_submit_solv_model, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
@@ -7365,6 +7496,7 @@ def create_tab(ctx):
         'submit_gfn_mult': submit_gfn_mult,
         'submit_gfn_autospin': submit_gfn_autospin,
         'submit_gfn_solvent': submit_gfn_solvent,
+        'submit_gfn_solv_model': submit_gfn_solv_model,
         'submit_dyn_bonds_btn': submit_dyn_bonds_btn,
         'submit_draw_btn': submit_draw_btn,
         'submit_element_dd': submit_element_dd,

@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from . import solvents as _solvents
+
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
            'find_binary', 'find_gxtb',
            'held_note', 'hold_atoms_at', 'install_command', 'install_root',
@@ -64,25 +66,16 @@ GFN_METHODS: Dict[str, Dict[str, Any]] = {
 
 #: The solvents this xtb accepts, asked of the binary rather than taken from a
 #: manual: every name here was tried against xtb 6.7.1 and came back
-#: parametrised, for GFN2 and for GFN-FF alike.  ALPB is the model -- it is
-#: xtb's own recommendation, and the older GBSA knows only a subset of these
-#: (no ethanol, no dioxane, no aniline, no ester, no alcohols beyond methanol).
-#: Aliases xtb also takes are left out: h2o is water, n-hexane is hexane.
-SOLVENTS: Dict[str, str] = {
-    '': 'none (gas phase)',
-    'acetone': 'acetone', 'acetonitrile': 'acetonitrile',
-    'aniline': 'aniline', 'benzaldehyde': 'benzaldehyde',
-    'benzene': 'benzene', 'ch2cl2': 'dichloromethane',
-    'chcl3': 'chloroform', 'cs2': 'carbon disulfide',
-    'dioxane': 'dioxane', 'dmf': 'DMF', 'dmso': 'DMSO',
-    'ether': 'diethyl ether', 'ethanol': 'ethanol',
-    'ethylacetate': 'ethyl acetate', 'furane': 'furan',
-    'hexadecane': 'hexadecane', 'hexane': 'hexane',
-    'methanol': 'methanol', 'nitromethane': 'nitromethane',
-    'octanol': 'octanol', 'woctanol': 'octanol (wet)',
-    'phenol': 'phenol', 'thf': 'THF', 'toluene': 'toluene',
-    'water': 'water',
-}
+#: parametrised, for GFN2 and for GFN-FF alike.  Aliases xtb also takes are
+#: left out: h2o is water, n-hexane is hexane.
+#:
+#: Which *model* wraps them -- ALPB, GBSA or ddCOSMO -- and which of the three
+#: each method can be run with, lives in :mod:`delfin.dashboard.solvents`,
+#: because MOPAC has to be told about the same liquids and cannot be told in
+#: xtb's words.  This mapping stays for callers that only want the names.
+SOLVENTS: Dict[str, str] = dict(
+    [('', 'none (gas phase)')]
+    + [(name, spec['label']) for name, spec in _solvents.SOLVENTS.items()])
 
 #: For callers that cannot be stopped by hand.  The dashboard passes None:
 #: Optimise is a switch there, so the person watching decides when a run has
@@ -830,17 +823,16 @@ def _read_optimised(folder: Path, fallback: str) -> Optional[str]:
     return None if fallback is None else None
 
 
-def solvent_note(solvent: Any) -> str:
-    """Which solvent a result is about, or that it is about none.
+def solvent_note(solvent: Any, model: Any = 'alpb') -> str:
+    """Which solvent a result is about, and under which model.
 
     A geometry optimised in the gas phase and one optimised in water are two
     different answers to two different questions, and a result that does not
-    say which it is invites them to be compared.
+    say which it is invites them to be compared.  So is a geometry from ALPB
+    and one from ddCOSMO: on a glycine in water the two disagreed by 2.8
+    kcal/mol, which is more than most of what they are used to decide.
     """
-    wet = str(solvent or '').strip().lower()
-    if not wet or wet not in SOLVENTS or wet == '':
-        return ''
-    return f' In {SOLVENTS[wet]} (ALPB).'
+    return _solvents.note(model, solvent)
 
 
 def held_note(held: Dict[str, Any]) -> str:
@@ -901,6 +893,7 @@ def optimize_with_gfn(
     constraints: Any = (),
     topology: Optional[Path] = None,
     solvent: Optional[str] = None,
+    solvation_model: str = 'alpb',
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -924,10 +917,12 @@ def optimize_with_gfn(
     Given a directory, the perception made at the start is reused: at a C-C of
     2.33 A it still pulls back, to 1.51.
 
-    *solvent* is one of :data:`SOLVENTS`, run with ALPB.  A geometry optimised
-    in the gas phase and one optimised in water are different answers, and
-    which was asked for belongs in the result rather than in the operator's
-    memory -- so it is named in the status.
+    *solvent* is one of :data:`SOLVENTS` and *solvation_model* one of ALPB,
+    GBSA or ddCOSMO -- see :mod:`delfin.dashboard.solvents` for which method
+    can be run with which, and what each was measured to cost.  A geometry
+    optimised in the gas phase and one optimised in water are different
+    answers, and so are two optimised under different models, so both are
+    named in the status rather than left in the operator's memory.
     """
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
@@ -975,6 +970,7 @@ def optimize_with_gfn(
         }
 
     wet = str(solvent or '').strip().lower()
+    model = str(solvation_model or 'alpb').strip().lower()
     if wet and spec.get('solvation') is False:
         return {
             'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
@@ -984,14 +980,14 @@ def optimize_with_gfn(
                        'writes a file. Optimise it in the gas phase, or '
                        'choose GFN2-xTB or GFN-FF for a solvent.'),
         }
-    if wet and wet not in SOLVENTS:
-        return {
-            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
-            'seconds': 0.0, 'frames': [],
-            'status': (f'{wet!r} is not a solvent this xtb is parametrised '
-                       f'for. It knows: '
-                       + ', '.join(n for n in SOLVENTS if n) + '.'),
-        }
+    # Every way this combination can be wrong, said before the run.  Three of
+    # the four produce no error from xtb itself: an unparametrised GBSA solvent
+    # stops it with a message about a file, and ddCOSMO under GFN-FF does not
+    # stop it at all -- it returns a destroyed structure.
+    no = _solvents.refusal(model, wet, key)
+    if no:
+        return {'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': 0.0, 'frames': [], 'status': f'{label}: {no}'}
 
     ready = ensure_binary(key)
     binary = ready['path'] if ready['ok'] else find_binary(key)
@@ -1024,8 +1020,7 @@ def optimize_with_gfn(
                    '-P', str(cores)]
         if max_steps:
             command += ['--cycles', str(int(max_steps))]
-        if wet:
-            command += ['--alpb', wet]
+        command += _solvents.xtb_flags(model, wet)
         held = constraint_input(constraints, atoms=len(body))
         if held['text']:
             (folder / 'xtb.inp').write_text(held['text'], encoding='utf-8')
@@ -1278,20 +1273,20 @@ def optimize_with_gfn(
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
-                'converged': False, 'solvent': wet,
+                'converged': False, 'solvent': wet, 'solvation_model': model,
                 'status': (f'{label} stopped before converging after '
                            f'{seconds:.1f} s; the geometry it reached is shown. '
                            f'(xtb {version}, {reported or wanted or label})'
-                           + solvent_note(wet) + held_note(held)),
+                           + solvent_note(wet, model) + held_note(held)),
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
-            'converged': True, 'solvent': wet,
+            'converged': True, 'solvent': wet, 'solvation_model': model,
             'status': (f'{label} converged in {seconds:.1f} s '
                        f'(xtb {version}, {reported or wanted or label}).'
-                       + solvent_note(wet) + held_note(held)),
+                       + solvent_note(wet, model) + held_note(held)),
         }
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -1381,6 +1376,7 @@ def relax_steps(
     constraints: Any = (),
     topology: Optional[Path] = None,
     solvent: Optional[str] = None,
+    solvation_model: str = 'alpb',
 ) -> Dict[str, Any]:
     """A few optimisation cycles, for a loop that shows the structure settling.
 
@@ -1401,6 +1397,7 @@ def relax_steps(
         xyz_text, method, charge=charge, uhf=uhf,
         max_steps=max(1, int(cycles)), timeout=timeout,
         constraints=constraints, topology=topology, solvent=solvent,
+        solvation_model=solvation_model,
     )
     result['converged'] = bool(
         result.get('ok') and 'converged in' in str(result.get('status') or '')
