@@ -745,20 +745,26 @@ def main(argv=None):
         "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
-        # MathJax's default entry point is a loader shim: it works out which
-        # version is newest, then appends a script tag for it. On a host that
-        # cannot reach the CDN -- a compute cluster, most of the time -- it
-        # never stops trying. Measured on the running dashboard: that loop held
-        # 98% of the main thread while the page sat idle, 4.90 s of busy in
-        # every 5 s, against 0.07 s once the request is answered either way.
-        # The rendered document is identical, 7626 elements and 15 script tags
-        # with it and without it. Naming the versioned bundle removes the shim:
-        # with a network it is the same MathJax, without one it fails once and
-        # is quiet. It goes through tornado_settings because the dashboard runs
-        # Voila as a jupyter-server extension, where the Voila app's own trait
-        # is never read.
-        '--ServerApp.tornado_settings={"mathjax_url": "https://cdnjs.'
-        'cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.js"}',
+        # MathJax's default entry point is a loader shim, and it never stops
+        # loading: it removes and re-appends its own script tag for as long as
+        # the page is open. Measured on the running dashboard, five idle
+        # seconds: 4.90 s of the main thread busy, against 0.06 s once the
+        # request is answered. That is 98% of one core held by a page doing
+        # nothing, which is what every later click had to queue behind.
+        #
+        # This asks for nothing at all rather than for a working MathJax,
+        # because nothing is what the dashboard has today: window.MathJax is
+        # undefined here and no output is typeset. Pointing at a real bundle
+        # would fix the spin and *start* typesetting where there is a network
+        # -- a $ in a job log becoming mathematics is a change in what the
+        # dashboard shows, and this is a speed fix. The rendered document is
+        # identical either way: 7626 elements, 15 script tags.
+        #
+        # The trailing // is load-bearing: Voila appends ?config=... and the
+        # comment swallows it. And it goes through tornado_settings because
+        # the dashboard runs Voila as a jupyter-server extension, where the
+        # Voila app's own mathjax_url trait is never read.
+        '--ServerApp.tornado_settings={"mathjax_url": "data:text/javascript,//"}',
     ]
 
     # DELFIN-branded login page: drop our own login.html (logo inlined) onto

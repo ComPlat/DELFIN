@@ -47,8 +47,12 @@ def test_the_launcher_names_a_bundle_and_not_the_loader():
     source = _dewrapped(open(cli_voila.__file__, encoding='utf-8').read())
 
     assert 'mathjax_url' in source, 'the launcher must say which MathJax it wants'
-    assert 'tex-mml-chtml.js' in source
     assert 'latest.min.js' not in source, 'that is the shim that spins'
+    # Nothing at all, not a working MathJax: window.MathJax is undefined in
+    # this dashboard today and no output is typeset, so a real bundle would
+    # start typesetting where there is a network -- a change in what is shown.
+    assert 'data:text/javascript,//' in source
+    assert source.count('data:text/javascript,//') == 1
 
 
 def test_it_is_set_where_this_deployment_reads_it():
@@ -69,4 +73,6 @@ def test_the_setting_is_valid_json_tornado_can_read():
     assert found, 'the argument should be one JSON object'
     payload = json.loads(found.group(1))
     assert set(payload) == {'mathjax_url'}
-    assert payload['mathjax_url'].endswith('tex-mml-chtml.js')
+    # The trailing // is load-bearing: Voila appends ?config=... to whatever
+    # it is given, and the comment swallows it.
+    assert payload['mathjax_url'] == 'data:text/javascript,//'
