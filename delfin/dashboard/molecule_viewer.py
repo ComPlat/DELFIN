@@ -4732,6 +4732,18 @@ body.delfin-structure-fs-open {
 .delfin-structure-fs-overlay .delfin-structure-fs-viewer .output_area,
 .delfin-structure-fs-overlay .delfin-structure-fs-viewer .output_subarea,
 .delfin-structure-fs-overlay .delfin-structure-fs-viewer .output_wrapper,
+/* Only the view that is current. Opening a structure leaves the one before it
+   in the output area on purpose, so the panel does not flash empty while the
+   next one draws; that leftover is emptied and collapses to no height, which
+   is why the ordinary view looks right. Here every child is given the full
+   height, so the emptied one filled the frame and pushed the live viewer out
+   below it -- measured at 1900x1000: stale child 980px tall, the structure
+   starting at y=990 in a frame ending at 992. Two pixels of it were left and
+   overflow:hidden took the rest, so fullscreen showed nothing. */
+.delfin-structure-fs-overlay .delfin-structure-fs-viewer
+    .jp-OutputArea-child:not(:last-child) {
+    display: none !important;
+}
 .delfin-structure-fs-overlay .delfin-structure-fs-viewer .jp-OutputArea,
 .delfin-structure-fs-overlay .delfin-structure-fs-viewer .jp-OutputArea-child,
 .delfin-structure-fs-overlay .delfin-structure-fs-viewer .jp-OutputArea-output {
