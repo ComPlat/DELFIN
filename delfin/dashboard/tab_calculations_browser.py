@@ -111,6 +111,18 @@ def build_calc_nmr_input(coord_lines, *, pal: int, maxcore: int, solvent: str) -
     )
 
 
+# Numbers the ids of the 3D stages, and shared by every instance of this tab.
+# Calculations, Archive and Office are three builds of this one builder, and
+# they render into one document: with a counter each, all three started at one
+# and all three emitted mol3d_1, calc_mol_wrap_1, calc_trj_viewer_1. The
+# viewer scripts look their stage up with a bare getElementById, which answers
+# with the first in the document -- Calculations, built first -- so opening a
+# structure in Archive initialised it into the Calculations viewer, and
+# Calculations was left with nothing. Which tab lost its structure depended on
+# which one had rendered last, which is why it only happened sometimes.
+_mol3d_counter = [0]
+
+
 def create_tab(ctx):
     """Create the Calculations Browser tab.
 
@@ -4010,8 +4022,6 @@ def create_tab(ctx):
             }})();
             """
         )
-
-    _mol3d_counter = [0]
 
     def _render_3dmol(data, fmt='xyz', extra_fn=None):
         """Render a 3D molecule via JS with correct initial sizing."""
