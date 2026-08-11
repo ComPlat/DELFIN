@@ -928,3 +928,35 @@ def test_a_prerequisite_that_has_since_arrived_gets_another_try(monkeypatch):
     # itself, and the wait is not spent again.
     monkeypatch.setattr(qm_health, '_BLOCKED_BY', {'mopac': 'checksum mismatch'})
     assert qm_health._blocker_has_gone('mopac') is False
+
+
+def test_micromamba_itself_is_fetched_when_there_is_none():
+    """The bottom of the chain.
+
+    Reported from a cluster account: no micromamba anywhere -- `type` says not
+    found, MAMBA_EXE is empty -- while xtb, crest and dftb+ sat in an
+    environment built when there had been one. Nothing new could be installed,
+    and the message asked the user to press a button in Settings, which is the
+    shape of problem this whole layer exists to remove.
+
+    Run for real with every place it could be hiding made unreachable: it
+    fetched one, ten megabytes into the tool directory, built the environment
+    and linked the binary.
+    """
+    from delfin.dashboard.gfn_optimize import install_script
+
+    text = install_script().read_text(encoding='utf-8')
+    assert 'bootstrap_micromamba() {' in text
+    boot = text.split('bootstrap_micromamba() {')[1].split('\n}')[0]
+    # Beside the tools rather than in the home directory, so it is as
+    # removable as what it builds.
+    assert '${ROOT}/bin/micromamba' in boot
+    assert 'AUTO_MICROMAMBA' in boot
+    # Its answer is the path; everything else goes to stderr, or the caller
+    # runs the explanation -- which is exactly what happened.
+    assert 'log >&2 "' in boot
+    assert 'log "' not in boot.replace('log >&2 "', '')
+
+    # And it is reached for only when the search has failed.
+    tool = text.split('install_conda_tool() {')[1].split('\n}')[0]
+    assert 'ensure_micromamba)" || mamba="$(bootstrap_micromamba)"' in tool

@@ -197,6 +197,7 @@ ensure_micromamba() {
     return 0
   fi
   for candidate in \
+      "${ROOT}/bin/micromamba" \
       "${CONDA_PREFIX:-}/bin/conda" \
       "${HOME}/miniforge3/bin/conda" \
       "${HOME}/miniconda3/bin/conda" \
@@ -226,7 +227,7 @@ install_conda_tool() {
   local prog="$1" spec="$2" env_dir="${MAMBA_ENV}/$3" binary="${4:-$1}"
   local mamba
 
-  mamba="$(ensure_micromamba)" || return 1
+  mamba="$(ensure_micromamba)" || mamba="$(bootstrap_micromamba)" || return 1
 
   if [[ ! -x "${env_dir}/bin/${binary}" ]]; then
     log "create ${prog} environment at ${env_dir}"
@@ -308,6 +309,42 @@ install_conda_stack() {
 # which keeps the case that made adoption the default in the first place: a
 # cluster with no network and xtb behind a module. Whichever happened is said
 # out loud, because "installed" and "adopted" are not the same claim.
+# Fetch micromamba itself, when there is none and one is needed.
+#
+# Telling a user that Settings can install it, and then not installing it, is
+# the shape of problem this whole layer exists to remove. It is ten megabytes
+# and one file; it goes into the tool directory beside everything else rather
+# than into the home directory, so it is as removable as the tools it builds.
+MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
+AUTO_MICROMAMBA="${AUTO_MICROMAMBA:-1}"
+
+bootstrap_micromamba() {
+  # Whatever this function prints to stdout is its answer -- the path. Every
+  # word of explanation goes beside it, or the caller runs the explanation:
+  # measured, "[qm_tools] no micromamba on this machine; fetching one" was
+  # captured into the variable and then executed as a command.
+  [[ "${AUTO_MICROMAMBA}" == "1" ]] || return 1
+  have curl || { log >&2 "no curl, so micromamba cannot be fetched either"; return 1; }
+  local target="${ROOT}/bin/micromamba"
+  if [[ -x "${target}" ]]; then
+    printf "%s\n" "${target}"
+    return 0
+  fi
+  log >&2 "no micromamba on this machine; fetching one (about 10 MB)"
+  local work="${ROOT}/downloads/micromamba-$$"
+  mkdir -p "${work}" "${ROOT}/bin"
+  if ! curl -fsSL "${MICROMAMBA_URL}" | tar -xj -C "${work}" bin/micromamba 2>/dev/null; then
+    rm -rf "${work}"
+    log >&2 "micromamba could not be fetched"
+    return 1
+  fi
+  install -m 755 "${work}/bin/micromamba" "${target}"
+  rm -rf "${work}"
+  log >&2 "micromamba is at ${target}"
+  printf "%s\n" "${target}"
+  return 0
+}
+
 install_managed_or_adopt() {
   local prog="$1" spec="$2" env_name="$3"
   local path binary="${prog}"
