@@ -745,6 +745,20 @@ def main(argv=None):
         "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
+        # MathJax's default entry point is a loader shim: it works out which
+        # version is newest, then appends a script tag for it. On a host that
+        # cannot reach the CDN -- a compute cluster, most of the time -- it
+        # never stops trying. Measured on the running dashboard: that loop held
+        # 98% of the main thread while the page sat idle, 4.90 s of busy in
+        # every 5 s, against 0.07 s once the request is answered either way.
+        # The rendered document is identical, 7626 elements and 15 script tags
+        # with it and without it. Naming the versioned bundle removes the shim:
+        # with a network it is the same MathJax, without one it fails once and
+        # is quiet. It goes through tornado_settings because the dashboard runs
+        # Voila as a jupyter-server extension, where the Voila app's own trait
+        # is never read.
+        '--ServerApp.tornado_settings={"mathjax_url": "https://cdnjs.'
+        'cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.js"}',
     ]
 
     # DELFIN-branded login page: drop our own login.html (logo inlined) onto
