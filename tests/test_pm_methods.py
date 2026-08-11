@@ -77,7 +77,9 @@ def test_the_path_is_handed_over_while_it_is_walked():
     assert outcome['frames'], 'no trajectory at all'
     assert seen, 'nothing was handed over until it had finished'
     assert seen == sorted(seen), 'the path went backwards'
-    assert len(outcome['frames'].__iter__().__next__().splitlines()) == 5
+    # Flat coordinate lists, the shape the player takes: three atoms, nine
+    # numbers -- not a block of text.
+    assert len(outcome['frames'][0]) == 9
 
 
 @_needs_mopac
@@ -169,3 +171,53 @@ def test_settings_lists_it_with_the_other_tools():
 
     diagnostics = open(runtime_setup.__file__, encoding='utf-8').read()
     assert '"dftb+", "mopac"]' in diagnostics
+
+
+@_needs_mopac
+def test_a_frame_is_the_same_thing_whichever_engine_made_it():
+    """The viewer tore the molecule to pieces, and the coordinates in the box
+    were perfectly correct.
+
+    A frame is a flat coordinate list everywhere here -- [x1, y1, z1, x2, ...]
+    -- because that is what the page's player hands straight to setPositions.
+    These came back as XYZ text, so the player was given strings where numbers
+    belonged and drew the molecule in fragments. Only the PM methods were
+    affected, which is what pointed at the one that was different.
+    """
+    import shutil as _shutil
+
+    from delfin.dashboard import gfn_optimize as gfn
+
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+    mine = mopac.optimize_with_mopac(water, 'pm6d3h4', max_steps=5)
+
+    assert mine['frames'], 'no trajectory'
+    frame = mine['frames'][0]
+    assert not isinstance(frame, str), 'a frame is not text'
+    assert len(frame) == 9, 'three atoms are nine numbers'
+    assert all(isinstance(v, float) for v in frame)
+
+    if _shutil.which('xtb'):
+        theirs = gfn.optimize_with_gfn(water, 'gfnff', max_steps=5)
+        if theirs.get('frames'):
+            assert type(theirs['frames'][0]) is type(frame), (
+                'the two engines disagree about what a frame is'
+            )
+            assert len(theirs['frames'][0]) == len(frame)
+
+
+@_needs_mopac
+def test_the_geometry_it_reached_is_written_out_properly():
+    """The cycle-limited run answers with its last frame, and a frame is
+    numbers -- so it has to be written back into a coordinate block rather
+    than handed over as one."""
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+    outcome = mopac.optimize_with_mopac(water, 'pm6d3h4', max_steps=3)
+
+    assert outcome['ok'] and outcome.get('converged') is False
+    lines = [line for line in outcome['xyz'].splitlines() if line.strip()]
+    assert lines[0].strip() == '3'
+    assert [line.split()[0] for line in lines[2:]] == ['O', 'H', 'H']
+    for line in lines[2:]:
+        assert len(line.split()) == 4
+        [float(v) for v in line.split()[1:]]

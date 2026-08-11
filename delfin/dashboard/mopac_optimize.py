@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 __all__ = ['MOPAC_METHODS', 'find_mopac', 'is_mopac_method', 'mopac_available',
-           'optimize_with_mopac', 'read_aux_frames']
+           'optimize_with_mopac', 'read_aux_frames', 'frame_as_xyz']
 
 #: What the dropdown offers and the keyword each one means to MOPAC.
 #:
@@ -141,28 +141,41 @@ def _atom_rows(xyz_text: str) -> list:
 
 
 def read_aux_frames(path: Path, symbols: list) -> list:
-    """Every geometry MOPAC has written so far, as XYZ blocks.
+    """Every geometry MOPAC has written so far, as flat coordinate lists.
 
     The AUX file grows a block per optimisation cycle, so a run can be watched
-    while it walks -- the same shape as xtb's trajectory log, and the reason a
-    MOPAC optimisation can be shown moving rather than only at the end.
+    while it walks -- the same as xtb's trajectory log, and the reason a MOPAC
+    optimisation can be shown moving rather than only at the end.
+
+    **Flat lists, not XYZ text**, because that is what a frame is everywhere
+    else here: ``[x1, y1, z1, x2, y2, z2, ...]``, the shape the page's player
+    hands straight to setPositions.  Returning text instead put strings where
+    numbers belonged, and the viewer drew the molecule in pieces while the
+    coordinates in the box were perfectly correct -- which is exactly how it
+    looked to the user who reported it.
     """
     try:
         text = path.read_text(encoding='utf-8', errors='replace')
     except OSError:
         return []
+    wanted = 3 * len(symbols)
     frames = []
     for match in _FRAME_RE.finditer(text):
         numbers = match.group(1).split()
-        if len(numbers) < 3 * len(symbols):
+        if len(numbers) < wanted:
             continue
-        lines = []
-        for index, symbol in enumerate(symbols):
-            x, y, z = numbers[3 * index:3 * index + 3]
-            lines.append(f'{symbol} {float(x):.8f} {float(y):.8f} {float(z):.8f}')
-        frames.append(f'{len(symbols)}\nMOPAC cycle {len(frames) + 1}\n'
-                      + '\n'.join(lines) + '\n')
+        try:
+            frames.append([float(v) for v in numbers[:wanted]])
+        except ValueError:
+            continue
     return frames
+
+
+def frame_as_xyz(frame: list, symbols: list, comment: str = 'MOPAC') -> str:
+    """One flat frame written out as a coordinate block."""
+    lines = [f'{symbol} {frame[3*i]:.8f} {frame[3*i+1]:.8f} {frame[3*i+2]:.8f}'
+             for i, symbol in enumerate(symbols)]
+    return f'{len(symbols)}\n{comment}\n' + '\n'.join(lines) + '\n'
 
 
 def _final_geometry(folder: Path, symbols: list) -> Optional[str]:
@@ -330,7 +343,8 @@ def optimize_with_mopac(
             # calling that a failure would have made every one of them one.
             # The geometry it reached is in the last frame, and it is better
             # than the one that went in even though it is not converged.
-            relaxed = frames[-1]
+            relaxed = frame_as_xyz(frames[-1], symbols,
+                                   f'stopped after {len(frames)} cycles')
             return {
                 'ok': True, 'xyz': relaxed, 'energy': heat,
                 'energy_unit': 'kcal/mol (heat of formation)',
