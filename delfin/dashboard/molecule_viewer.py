@@ -4693,6 +4693,22 @@ body.delfin-structure-fs-open {
     margin: 0 !important;
     overflow: visible !important;
 }
+/* A row of controls or results that belongs to the picture and travels with
+   it: the RMSD pair in the Calculations tab, the Fukui numbers in both it and
+   the Archive.  They stayed on the page while the viewer went to the overlay,
+   which is what made fullscreen there show only the visualisation.
+   Bounded and scrolling, because the picture is still what fullscreen is for:
+   a filled Fukui table is taller than the screen and would leave nothing. */
+.delfin-structure-fs-overlay > .delfin-structure-fs-panel {
+    flex: 0 1 auto !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    max-height: 30vh !important;
+    margin: 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
 .delfin-structure-fs-overlay > .delfin-structure-fs-view-row {
     display: flex !important;
     flex: 1 1 0 !important;
@@ -4702,7 +4718,11 @@ body.delfin-structure-fs-open {
     height: auto !important;
     max-width: none !important;
     min-width: 0 !important;
-    min-height: 0 !important;
+    /* A floor under the picture.  The panels above and below can each take a
+       third of the screen, and with both open the picture was left with 44%
+       of it -- measured at 1440x900 with the RMSD pair and a filled Fukui
+       table.  They shrink and scroll instead; fullscreen is for the picture. */
+    min-height: 45vh !important;
     margin: 0 !important;
     overflow: hidden !important;
 }
@@ -4799,6 +4819,11 @@ body.delfin-structure-fs-open {
 @media (max-width: 800px) {
     .delfin-structure-fs-overlay > .delfin-structure-fs-view-row {
         flex-direction: column !important;
+    }
+    /* Narrow enough that a panel and a picture cannot both be worth seeing:
+       the panel gives up more of the height. */
+    .delfin-structure-fs-overlay > .delfin-structure-fs-panel {
+        max-height: 24vh !important;
     }
     .delfin-structure-fs-overlay .delfin-structure-fs-controls {
         flex: 0 0 auto !important;

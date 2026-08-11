@@ -4795,6 +4795,10 @@ def create_tab(ctx):
         [],
         layout=widgets.Layout(display="none", margin="8px 0 0 0", width="100%"),
     )
+    # As in the Calculations tab: the numbers that belong to the picture go
+    # fullscreen with it rather than staying behind on the page.
+    remote_fukui_panel_container.add_class("delfin-structure-fs-member")
+    remote_fukui_panel_container.add_class("delfin-structure-fs-panel")
     viewer_container = widgets.VBox(
         [viewer_header, viewer_row, remote_fukui_panel_container],
         layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),

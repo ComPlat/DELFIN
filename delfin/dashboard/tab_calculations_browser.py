@@ -1135,6 +1135,12 @@ def create_tab(ctx):
         ),
     )
     calc_rmsd_controls.add_class('calc-rmsd-controls')
+    # Fullscreen takes the whole molecule panel with it, not only the picture.
+    # These stayed behind on the page while the viewer went to the overlay, so
+    # going fullscreen to look closely at an overlay of two structures took
+    # away the controls that had put them there.
+    calc_rmsd_controls.add_class('delfin-structure-fs-member')
+    calc_rmsd_controls.add_class('delfin-structure-fs-panel')
     calc_rmsd_input_col.add_class('calc-rmsd-input-col')
 
     # Copy / path / report buttons
@@ -1637,6 +1643,10 @@ def create_tab(ctx):
         [],
         layout=widgets.Layout(display='none', margin='8px 0 0 0', width='100%'),
     )
+    # The numbers that belong to the picture travel with it.  Empty and hidden
+    # it costs nothing to carry; filled, it is the reason the viewer is open.
+    calc_fukui_panel_container.add_class('delfin-structure-fs-member')
+    calc_fukui_panel_container.add_class('delfin-structure-fs-panel')
     calc_mol_container = widgets.VBox(
         [
             calc_mol_header,
