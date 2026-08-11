@@ -282,6 +282,23 @@ def _refuse_insecure_no_token(ip: str) -> str:
     )
 
 
+#: Frontend extensions the browser is not asked to load.  See the comment at
+#: the ``--VoilaConfiguration.extension_denylist`` argument for the measurement.
+DEFAULT_EXTENSION_DENYLIST = ('nglview-js-widgets',)
+
+
+def _extension_denylist() -> list:
+    """Which frontend extensions to leave out, honouring an override.
+
+    ``DELFIN_VOILA_EXTENSION_DENYLIST`` is a comma-separated list; empty means
+    leave everything in.
+    """
+    raw = os.environ.get('DELFIN_VOILA_EXTENSION_DENYLIST')
+    if raw is None:
+        return list(DEFAULT_EXTENSION_DENYLIST)
+    return [name.strip() for name in raw.split(',') if name.strip()]
+
+
 def _validate_access_token(token: str) -> str:
     """Return a validated dashboard token or raise ValueError."""
     value = str(token or "").strip()
@@ -765,6 +782,19 @@ def main(argv=None):
         # the dashboard runs Voila as a jupyter-server extension, where the
         # Voila app's own mathjax_url trait is never read.
         '--ServerApp.tornado_settings={"mathjax_url": "data:text/javascript,//"}',
+        # The nglview frontend extension is 4.55 MB the browser fetches,
+        # parses and runs at every load, for a widget this dashboard never
+        # makes: the structure viewers are py3Dmol, and there is no
+        # `import nglview` anywhere in the source. The four mentions of it are
+        # Python-side package probes for the Settings tab, which this does not
+        # touch. Measured, four interleaved loads each way: main-thread
+        # blocking 1581 -> 1227 ms, long tasks 5.5 -> 4.2, transfer 14.7 ->
+        # 10.2 MB. On loopback the bytes are free; through an SSH tunnel they
+        # are most of the wait.
+        #
+        # DELFIN_VOILA_EXTENSION_DENYLIST overrides it, so a machine that does
+        # want an NGL widget can have one back without editing this file.
+        f"--VoilaConfiguration.extension_denylist={_extension_denylist()!r}",
     ]
 
     # DELFIN-branded login page: drop our own login.html (logo inlined) onto
