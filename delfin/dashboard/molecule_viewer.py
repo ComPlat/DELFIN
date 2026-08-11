@@ -3679,6 +3679,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     var inSelection = state.picks.some(function(p) {
                         return p.serial === atom.serial;
                     });
+                    // Say so before anything moves: the history is kept on
+                    // the kernel side, and a step it is to be able to take
+                    // back has to be recorded from the state before the drag,
+                    // not from whatever the drag has already made of it.
+                    pushCommandToPython(scopeKey, 'grabbed', '');
                     state.drag = {
                         kind: 'translate',
                         targets: inSelection
@@ -3714,6 +3719,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     // Modifier on empty space keeps the old behaviour: drag the
                     // whole selection from anywhere in the viewport.
                     e.preventDefault(); e.stopPropagation();
+                    // Say so before anything moves: the history is kept on
+                    // the kernel side, and a step it is to be able to take
+                    // back has to be recorded from the state before the drag,
+                    // not from whatever the drag has already made of it.
+                    pushCommandToPython(scopeKey, 'grabbed', '');
                     state.drag = {
                         kind: 'translate',
                         targets: state.picks.map(function(p) { return p.serial; }),

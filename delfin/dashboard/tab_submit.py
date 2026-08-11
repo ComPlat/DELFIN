@@ -1455,6 +1455,11 @@ def create_tab(ctx):
                 submit_manip_btn.value = False
 
     def _replace_mol_output_view(xyz_data):
+        # The structure as it arrived, once: the first thing in the history,
+        # the thing Reset returns to, and the thing Undo stops at.
+        if state.pop('history_seed_pending', False):
+            state['history'] = []
+            _remember('the structure as it was loaded')
         _clear_mol_status()
         _ensure_manip_bootstrap()
         mol_output.outputs = _build_mol_output_bundle(xyz_data)
@@ -1580,6 +1585,11 @@ def create_tab(ctx):
             state['hand_bonds'] = {}
             state['hyb_overrides'] = {}
             state['structure_undo'] = []
+            # A different molecule starts a different history, and its first
+            # entry is the structure as it arrived -- which is what Reset goes
+            # back to and what Undo stops at.
+            state['history'] = []
+            state['history_seed_pending'] = True
             state['poly_applied'] = None
             state['poly_metal'] = None
             state['poly_assignment'] = None
@@ -4665,6 +4675,12 @@ def create_tab(ctx):
         if change.get('name') != 'value':
             return
         active = bool(submit_relax_btn.value)
+        if active:
+            # Where the continuous relaxation started, kept as one step. It
+            # runs for as long as it is on and moves the structure the whole
+            # time; one entry for the whole run is what a user means by "back
+            # to before I switched it on".
+            _remember('switching the continuous relaxation on')
         submit_relax_btn.button_style = 'info' if active else ''
         if _gfn.is_gfn_method(submit_ff_dd.value):
             # There is no GFN engine in the browser to run per frame, so this
@@ -4866,6 +4882,11 @@ def create_tab(ctx):
                     {'run': run_id, 'from': first, 'frames': t})
 
             _schedule_ui_update(_write)
+
+        # Where the optimisation started from, as one step: pressing Undo
+        # after it comes back should return the geometry that was handed to
+        # it, not one of the frames along the way.
+        _remember('an optimisation')
 
         token = object()
         state['optimize_run'] = token
@@ -5401,6 +5422,10 @@ def create_tab(ctx):
     #: How many structural edits can be taken back.  The browser keeps 50
     #: coordinate snapshots; there is no reason for this to be shorter.
     _STRUCTURE_UNDO_LIMIT = 50
+    #: How many steps back a session keeps. Generous, because each is a
+    #: coordinate block and a hundred of a 400-atom structure is a few
+    #: megabytes -- against a user who cannot get back to where they started.
+    _HISTORY_LIMIT = 200
 
     _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
 
@@ -5626,15 +5651,7 @@ def create_tab(ctx):
         """
         from .molecule_builder import to_xyz
 
-        # Remember what it looked like first: a structural edit changes the
-        # atom count, which the browser's coordinate snapshots cannot express.
-        history = list(state.get('structure_undo') or [])
-        history.append({
-            'coords': coords_widget.value,
-            'bond_edits': dict(state.get('bond_edits') or {}),
-            'hand_bonds': dict(state.get('hand_bonds') or {}),
-        })
-        state['structure_undo'] = history[-_STRUCTURE_UNDO_LIMIT:]
+        _remember(note.rstrip('.') or 'an edit')
 
         # Before the coordinates are written, because writing them rebuilds the
         # picture and the rebuild is where the hand corrections are re-applied:
@@ -5757,35 +5774,86 @@ def create_tab(ctx):
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
 
-    def _undo_structure():
-        """Take back the last structural edit.
+    def _remember(what):
+        """Put the state as it is now into the history, under a name.
 
-        Reached when the browser's own stack is empty, which after any
-        structural edit it always is: the re-render clears it. So the two
-        stacks stay in order without either side keeping a clock.
+        One history for everything the viewer can do, and one entry per
+        action. There used to be three -- a stack in the browser for drags, a
+        stack here for structural edits, and a single slot for the geometry
+        before an optimisation -- and none of them knew about the others. Undo
+        walked whichever it found first, so it stopped part way back and there
+        was no way to the beginning; and a re-render clears the browser's,
+        which is to say every draw threw away every drag before it.
+
+        Called *before* the thing it names happens, because what is worth
+        keeping is the state that is about to be left.
         """
-        history = list(state.get('structure_undo') or [])
-        if not history:
-            _set_mol_status('Nothing left to undo.')
-            return
-        snapshot = history.pop()
+        history = list(state.get('history') or [])
+        current = coords_widget.value
+        if history and history[-1].get('coords') == current:
+            # Two actions from the same picture are one step back, and the
+            # step is named after the first of them: going back to that state
+            # undoes everything since, and the earliest is what the user would
+            # look for. Overwriting the name here lost "the structure as it
+            # was loaded" the first time anything happened at all.
+            pass
+        else:
+            history.append({
+                'coords': current,
+                'bond_edits': dict(state.get('bond_edits') or {}),
+                'hand_bonds': dict(state.get('hand_bonds') or {}),
+                'constraints': list(state.get('constraints') or []),
+                'what': str(what),
+            })
+        # The first entry is the structure as it arrived and is never dropped:
+        # it is what Reset goes back to, and a long session must not lose it.
+        if len(history) > _HISTORY_LIMIT:
+            history = history[:1] + history[-(_HISTORY_LIMIT - 1):]
+        state['history'] = history
+
+    def _restore(entry, note):
+        """Put a remembered state back on screen."""
         state['structure_edit_inflight'] = True
         _mark_structure_edit()
-        # Before the write, for the same reason as in _apply_structure: the
-        # write rebuilds the picture, and the corrections re-applied to it have
-        # to be the ones belonging to the structure coming back.
-        state['hand_bonds'] = dict(snapshot.get('hand_bonds') or {})
+        # Before the write, because the write rebuilds the picture and the
+        # hand corrections re-applied to it have to be the ones belonging to
+        # the structure coming back.
+        state['hand_bonds'] = dict(entry.get('hand_bonds') or {})
         try:
-            coords_widget.value = snapshot['coords']
+            coords_widget.value = entry['coords']
         finally:
             state['structure_edit_inflight'] = False
-        state['structure_undo'] = history
-        state['bond_edits'] = dict(snapshot.get('bond_edits') or {})
+        state['bond_edits'] = dict(entry.get('bond_edits') or {})
+        state['constraints'] = list(entry.get('constraints') or [])
         state['perceived'] = None
         state['perceived_for'] = None
-        _set_mol_status('Took back the last structural edit.')
+        _refresh_constraints()
+        _set_mol_status(note)
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
+
+    def _undo_structure():
+        """One step back, whatever kind of step it was.
+
+        A drag, a drawn atom, a bond, an optimisation, switching the
+        continuous relaxation on: each is one entry, so pressing Undo four
+        times walks back through four actions rather than stopping at the
+        first kind it does not recognise.
+        """
+        history = list(state.get('history') or [])
+        if len(history) < 1:
+            _set_mol_status('Nothing left to undo.')
+            return
+        # The last entry is the state before the most recent action, so going
+        # back to it is undoing that action. The first entry stays: it is the
+        # structure as it arrived, and Reset is what returns to it.
+        at_start = len(history) == 1
+        entry = history[0] if at_start else history.pop()
+        state['history'] = history
+        left = 0 if at_start else len(history)
+        _restore(entry, f'Took back: {entry.get("what") or "the last step"}.'
+                        + (f' {left} more to go back through.' if left
+                           else ' That is the structure as it was loaded.'))
 
     def _push_hand_bonds():
         """Put the bonds the user drew or cut back into a rebuilt picture.
@@ -5901,6 +5969,15 @@ def create_tab(ctx):
             _set_mol_status(*[line for line in (
                 state.get('gfn_last_status') or '', f'Trajectory: {payload}.'
             ) if line])
+            return
+
+        if verb == 'grabbed':
+            # A hand on the structure. The step is recorded here rather than
+            # when it is let go of, because by then the coordinate box already
+            # holds what the drag made -- the relaxation pushes into it while
+            # the mouse is still down -- and "before the drag" would not be
+            # anywhere any more.
+            _remember('a drag')
             return
 
         if verb == 'gfngrab':
@@ -6154,7 +6231,13 @@ def create_tab(ctx):
         one step at a time, and a structure that has been pulled apart over
         twenty of them has no way home short of pasting the coordinates again.
         """
-        pristine = state.get('pristine_coords')
+        # The first thing in the history is the structure as it arrived. It
+        # was a second remembered place before, set in the render path, and
+        # the two could disagree -- which is how Reset came back to something
+        # that was not the beginning.
+        history = list(state.get('history') or [])
+        pristine = (history[0].get('coords') if history
+                    else state.get('pristine_coords'))
         if not pristine:
             _set_mol_status('Nothing to go back to yet.')
             return
@@ -6163,6 +6246,10 @@ def create_tab(ctx):
         state['hand_bonds'] = {}
         state['hyb_overrides'] = {}
         state['structure_undo'] = []
+        # The history goes back to its first entry rather than being thrown
+        # away: what Reset undid is one more thing that happened, and a user
+        # who presses it by accident has to be able to come back.
+        state['history'] = history[:1] if history else []
         state['poly_applied'] = None
         state['poly_metal'] = None
         state['poly_assignment'] = None
@@ -6585,20 +6672,15 @@ def create_tab(ctx):
         )
 
     def on_submit_manip_undo(_button=None):
-        snapshot = state.pop('pre_optimize_frames', None)
-        if snapshot:
-            if snapshot['isomers']:
-                state['isomers'] = snapshot['isomers']
-                _show_isomer_at_index(state.get('isomer_index', 0))
-            else:
-                coords_widget.value = snapshot['coords']
-            _set_mol_status('Reverted to the geometries from before the optimisation.')
-            return
-        _ensure_manip_bootstrap()
-        _run_manip_js(
-            f'if(window.__delfinSubmitManip) '
-            f'window.__delfinSubmitManip.undo({json.dumps(submit_scope_id)});'
-        )
+        """One step back through everything that has been done.
+
+        Through the one history, never the browser's own stack: that one is
+        cleared by every re-render, so a drawn atom used to throw away every
+        drag before it, and Undo then stopped where the history it happened to
+        be reading ran out.
+        """
+        state.pop('pre_optimize_frames', None)
+        _undo_structure()
 
     def on_submit_manip_sync(change):
         if change.get('name') != 'value':

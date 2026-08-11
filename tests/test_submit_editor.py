@@ -207,8 +207,12 @@ def test_optimisation_covers_every_frame_and_is_undoable():
     assert 'results.append(item)' in body
 
     undo = source.split('def on_submit_manip_undo')[1].split('\n    def ')[0]
+    # One history now: the geometry before an optimisation is an entry in it
+    # like any other step, rather than a slot of its own that Undo had to look
+    # in first and that nothing could get past.
     assert "state.pop('pre_optimize_frames', None)" in undo
-    assert "state['isomers'] = snapshot['isomers']" in undo
+    assert '_undo_structure()' in undo
+    assert "_remember('an optimisation')" in source
 
 
 def test_optimize_toggle_runs_the_field_continuously():
@@ -1322,13 +1326,16 @@ def test_undo_reaches_structural_edits_too():
     assert "if verb == 'undo':" in handler
 
     step = source.split('def _undo_structure')[1].split('\n    def ')[0]
-    assert "state['structure_undo']" in step
-    assert 'coords_widget.value = snapshot' in step
+    assert "state['history']" in step
+    # The putting-back is its own function now, because Reset does it too.
+    assert '_restore(entry' in step
+    restore = source.split('def _restore')[1].split('\n    def ')[0]
+    assert "coords_widget.value = entry['coords']" in restore
 
     apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
     # The previous structure is remembered before the new one is written, and
     # the write must not be mistaken for a different molecule arriving.
-    assert "state['structure_undo'] = history[-_STRUCTURE_UNDO_LIMIT:]" in apply_
+    assert '_remember(' in apply_, 'the edit is not in the history'
     assert "state['structure_edit_inflight'] = True" in apply_
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "if not state.get('structure_edit_inflight'):" in view
@@ -1865,3 +1872,113 @@ def test_a_button_brings_the_system_back_into_view():
     # It lives with the other viewer controls and switches with them.
     assert 'submit_manip_clear_btn, submit_centre_btn,' in source
     assert 'submit_centre_btn.disabled = not enabled' in source
+
+
+# ---------------------------------------------------------------------------
+# one history, and a way back to the beginning
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def tab(tmp_path):
+    pytest.importorskip('ipywidgets')
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.context import DashboardContext
+
+    for name in ('calc', 'archive', 'office'):
+        (tmp_path / name).mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / 'calc',
+                           archive_dir=tmp_path / 'archive',
+                           office_dir=tmp_path / 'office')
+    ctx.run_js = lambda _script: None
+    _widget, refs = tab_submit.create_tab(ctx)
+    return refs
+
+
+def _atoms(refs):
+    return [line for line in refs['coords_widget'].value.splitlines()[2:]
+            if line.strip()]
+
+
+def test_undo_walks_back_through_every_kind_of_step(tab):
+    """It could not reach the beginning, and it is plain why.
+
+    There were three histories: a stack in the browser for drags, one here for
+    structural edits, and a single slot for the geometry before an
+    optimisation. None knew about the others, so Undo walked whichever it
+    found first and stopped where that one ran out -- and a re-render clears
+    the browser's, which is to say every drawn atom threw away every drag
+    before it.
+    """
+    refs = tab
+    water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+    refs['coords_widget'].value = water
+
+    # a drag, a drawn atom, and the continuous relaxation switched on
+    refs['submit_cmd_sync'].value = 'grabbed:1:'
+    refs['submit_manip_sync'].value = (
+        '3\nDELFIN drag-end\nO 0 0 0\nH 1.40 0 0\nH -0.24 0.93 0\n')
+    refs['submit_cmd_sync'].value = 'addatom:2:C,3.0,0.0,0.0'
+    refs['submit_relax_btn'].value = True
+
+    named = [entry['what'] for entry in refs['editor_state']['history']]
+    assert named[0] == 'the structure as it was loaded'
+    assert 'Placed C' in named
+    assert any('continuous relaxation' in name for name in named)
+
+    assert len(_atoms(refs)) == 8
+
+    refs['submit_cmd_sync'].value = 'undo:10:'
+    assert len(_atoms(refs)) == 8, 'the relaxation switch, not the atom'
+
+    refs['submit_cmd_sync'].value = 'undo:11:'
+    assert len(_atoms(refs)) == 3, 'the drawn atom is gone'
+    assert '1.40' in _atoms(refs)[1], 'and the drag is still there'
+
+    refs['submit_cmd_sync'].value = 'undo:12:'
+    assert '0.96' in _atoms(refs)[1], 'now the drag too'
+
+    # And it stays there rather than falling off the end.
+    refs['submit_cmd_sync'].value = 'undo:13:'
+    assert '0.96' in _atoms(refs)[1]
+    assert 'as it was loaded' in refs['mol_status'].value
+
+
+def test_reset_goes_to_the_structure_that_was_loaded(tab):
+    """It jumped to a second remembered place, set in the render path, and the
+    two could disagree -- which is how Reset came back to something that was
+    not the beginning."""
+    refs = tab
+    refs['coords_widget'].value = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
+    refs['submit_cmd_sync'].value = 'addatom:1:C,3.0,0.0,0.0'
+    refs['submit_cmd_sync'].value = 'addatom:2:N,5.0,0.0,0.0'
+    assert len(_atoms(refs)) > 3
+
+    refs['submit_reset_btn'].click()
+    assert len(_atoms(refs)) == 3
+    assert refs['editor_state']['history'][0]['what'] == (
+        'the structure as it was loaded')
+    # And what Reset undid is one more thing that happened: the first entry is
+    # kept so somebody who pressed it by accident can still get back.
+    assert len(refs['editor_state']['history']) == 1
+
+
+def test_a_step_is_recorded_before_it_happens_not_after(tab):
+    """A drag is recorded when the atom is picked up. By the time it is let
+    go of, the coordinate box already holds what the drag made -- the
+    relaxation pushes into it while the mouse is still down -- and "before the
+    drag" would not be anywhere any more."""
+    from delfin.dashboard import tab_submit
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    editor = submit_manip_bootstrap_js()
+    assert editor.count("pushCommandToPython(scopeKey, 'grabbed', '')") == 2, (
+        'both ways of starting a drag have to say so'
+    )
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
+    assert "if verb == 'grabbed':" in handler
+    assert "_remember('a drag')" in handler
+    # And an optimisation is remembered before it is started.
+    assert "_remember('an optimisation')" in source
+    optimise = source.split("_remember('an optimisation')")[1][:200]
+    assert 'state[\'optimize_run\'] = token' in optimise
