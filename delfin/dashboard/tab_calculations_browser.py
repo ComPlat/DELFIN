@@ -4023,6 +4023,26 @@ def create_tab(ctx):
             """
         )
 
+    def _calc_show_stage(html):
+        """Put a new 3D stage up, keeping only the one before it.
+
+        The previous view stays on screen until the new one has drawn, so the
+        panel never flashes empty between files. Nothing removed the ones
+        before that, though: every structure opened left another output child
+        behind, each carrying its own <script> that goes on polling for a stage
+        a later render has already taken away. Switching between an xyz, a text
+        file and an xyz again a few times was enough to pile up a stack of
+        them, all racing for the same viewer -- which is why the structure went
+        missing only sometimes, and why the panel grew slower the longer the
+        tab had been open.
+        """
+        try:
+            calc_mol_viewer.outputs = calc_mol_viewer.outputs[-1:]
+        except Exception:
+            pass
+        with calc_mol_viewer:
+            display(HTML(html))
+
     def _render_3dmol(data, fmt='xyz', extra_fn=None):
         """Render a 3D molecule via JS with correct initial sizing."""
         import json
@@ -4195,9 +4215,7 @@ def create_tab(ctx):
         }})();
         </script>
         """
-        with calc_mol_viewer:
-            display(HTML(html))
-        _calc_set_png_button_mode(main=True)
+        _calc_show_stage(html)
         _calc_set_png_button_mode(main=True)
 
     def _set_view_toggle(value, disabled=None):
@@ -7188,8 +7206,7 @@ def create_tab(ctx):
         }})();
         </script>
         """
-        with calc_mol_viewer:
-            display(HTML(html))
+        _calc_show_stage(html)
 
     def _render_rmsd_preview_dual_xyz(
         reference_xyz,
@@ -7354,153 +7371,152 @@ def create_tab(ctx):
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )
                 scope_id_json = json.dumps(calc_scope_id)
-                with calc_mol_viewer:
-                    html_content = f"""
-                    <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
-                        <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
-                    </div>
-                    <script>
-                    if (typeof $3Dmol === "undefined") {{
-                        var _s = document.createElement("script");
-                        _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-                        document.head.appendChild(_s);
-                    }}
-                    (function() {{
-                        var tries = 0;
-                        function initViewer() {{
-                            var el = document.getElementById("{viewer_id}");
-                            var mv = el ? el.closest('.calc-mol-viewer') : null;
-                            var scopeRoot = el ? el.closest('.{calc_scope_id}') : null;
-                            if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
-                            if (!el || typeof $3Dmol === "undefined"
-                                || !mv || mv.offsetParent === null) {{
-                                /* Superseded: a newer render removed this one's stage, so there is
-                                   nothing left to initialise. Without this it kept polling for an
-                                   element that will never come back. */
-                                if ("{wrapper_id}" && !document.getElementById("{wrapper_id}")) return;
-                                tries += 1;
-                                if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
-                                return;
-                            }}
-                            /* Pre-size to actual free space in right panel */
-                            var rightPanel = scopeRoot ? scopeRoot.querySelector('.calc-right') : null;
-                            if (rightPanel) {{
-                                var mvRect = mv.getBoundingClientRect();
-                                if (mvRect.top > 0 || mvRect.height > 0) {{
-                                    var rightRect = rightPanel.getBoundingClientRect();
-                                    var topChildren = Array.prototype.slice.call(rightPanel.children || []);
-                                    var host = null;
-                                    for (var i = 0; i < topChildren.length; i++) {{
-                                        if (topChildren[i].contains(mv)) {{
-                                            host = topChildren[i];
-                                            break;
-                                        }}
-                                    }}
-                                    var reservedBelow = 0;
-                                    if (host) {{
-                                        var passed = false;
-                                        for (var j = 0; j < topChildren.length; j++) {{
-                                            var child = topChildren[j];
-                                            if (child === host) {{
-                                                passed = true;
-                                                continue;
-                                            }}
-                                            if (!passed) continue;
-                                            var style = window.getComputedStyle(child);
-                                            if (!style || style.display === 'none' || style.visibility === 'hidden') {{
-                                                continue;
-                                            }}
-                                            var childRect = child.getBoundingClientRect();
-                                            if (childRect.height > 0) reservedBelow += childRect.height;
-                                        }}
-                                    }}
-                                    var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
-                                    var row = mv.closest('.calc-mol-view-row');
-                                    var rowRect = row ? row.getBoundingClientRect() : rightRect;
-                                    var tray = scopeRoot ? scopeRoot.querySelector('.calc-xyz-tray-controls') : null;
-                                    var trayStyle = tray ? window.getComputedStyle(tray) : null;
-                                    var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
-                                    var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
-                                    var availW = Math.max(120, rowRect.width - trayWidth - 16);
-                                    var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
-                                    var w = Math.floor(Math.min(h * 1.2, availW));
-                                    if (h >= 80 && w >= 120) {{
-                                        mv.style.width = w + 'px';
-                                        mv.style.height = h + 'px';
-                                        el.style.width = w + 'px';
-                                        el.style.height = h + 'px';
+                html_content = f"""
+                <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
+                    <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
+                </div>
+                <script>
+                if (typeof $3Dmol === "undefined") {{
+                    var _s = document.createElement("script");
+                    _s.src = "https://3Dmol.org/build/3Dmol-min.js";
+                    document.head.appendChild(_s);
+                }}
+                (function() {{
+                    var tries = 0;
+                    function initViewer() {{
+                        var el = document.getElementById("{viewer_id}");
+                        var mv = el ? el.closest('.calc-mol-viewer') : null;
+                        var scopeRoot = el ? el.closest('.{calc_scope_id}') : null;
+                        if (!scopeRoot) scopeRoot = document.querySelector('.{calc_scope_id}');
+                        if (!el || typeof $3Dmol === "undefined"
+                            || !mv || mv.offsetParent === null) {{
+                            /* Superseded: a newer render removed this one's stage, so there is
+                               nothing left to initialise. Without this it kept polling for an
+                               element that will never come back. */
+                            if ("{wrapper_id}" && !document.getElementById("{wrapper_id}")) return;
+                            tries += 1;
+                            if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
+                            return;
+                        }}
+                        /* Pre-size to actual free space in right panel */
+                        var rightPanel = scopeRoot ? scopeRoot.querySelector('.calc-right') : null;
+                        if (rightPanel) {{
+                            var mvRect = mv.getBoundingClientRect();
+                            if (mvRect.top > 0 || mvRect.height > 0) {{
+                                var rightRect = rightPanel.getBoundingClientRect();
+                                var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+                                var host = null;
+                                for (var i = 0; i < topChildren.length; i++) {{
+                                    if (topChildren[i].contains(mv)) {{
+                                        host = topChildren[i];
+                                        break;
                                     }}
                                 }}
-                            }}
-                            window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
-                            window._calcMolViewerByScope = window._calcMolViewerByScope || {{}};
-                            window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
-                            window._calcTrajViewerByScope = window._calcTrajViewerByScope || {{}};
-                            var scopeKey = {scope_id_json};
-                            var viewScope = {view_scope_json};
-                            var previousViewer =
-                                window._calcMolViewerByScope[scopeKey]
-                                || window._calcTrajViewerByScope[scopeKey]
-                                || null;
-                            var previousScope =
-                                window._calcMolViewScopeKeyByScope[scopeKey] || viewScope;
-                            if (previousViewer && typeof previousViewer.getView === 'function') {{
-                                try {{
-                                    window._calcMolViewStateByScope[previousScope] = previousViewer.getView();
-                                }} catch (_e) {{}}
-                            }}
-                            var savedView = window._calcMolViewStateByScope[viewScope] || null;
-                            if (previousViewer && window.__delfinDisposeViewer) {{
-                                window.__delfinDisposeViewer(previousViewer);
-                            }}
-                            var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
-                            {VIEWER_MOUSE_PATCH_JS}
-                            var xyz = `{full_xyz}`;
-                            viewer.addModelsAsFrames(xyz, "xyz");
-                            viewer.setStyle({{}}, {traj_style_js});
-                            if (savedView && typeof viewer.setView === 'function') {{
-                                try {{
-                                    viewer.setView(savedView);
-                                }} catch (_e) {{
-                                    viewer.zoomTo();
-                                    viewer.center();
-                                    viewer.zoom({CALC_MOL_ZOOM});
+                                var reservedBelow = 0;
+                                if (host) {{
+                                    var passed = false;
+                                    for (var j = 0; j < topChildren.length; j++) {{
+                                        var child = topChildren[j];
+                                        if (child === host) {{
+                                            passed = true;
+                                            continue;
+                                        }}
+                                        if (!passed) continue;
+                                        var style = window.getComputedStyle(child);
+                                        if (!style || style.display === 'none' || style.visibility === 'hidden') {{
+                                            continue;
+                                        }}
+                                        var childRect = child.getBoundingClientRect();
+                                        if (childRect.height > 0) reservedBelow += childRect.height;
+                                    }}
                                 }}
-                            }} else {{
+                                var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
+                                var row = mv.closest('.calc-mol-view-row');
+                                var rowRect = row ? row.getBoundingClientRect() : rightRect;
+                                var tray = scopeRoot ? scopeRoot.querySelector('.calc-xyz-tray-controls') : null;
+                                var trayStyle = tray ? window.getComputedStyle(tray) : null;
+                                var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+                                var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+                                var availW = Math.max(120, rowRect.width - trayWidth - 16);
+                                var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
+                                var w = Math.floor(Math.min(h * 1.2, availW));
+                                if (h >= 80 && w >= 120) {{
+                                    mv.style.width = w + 'px';
+                                    mv.style.height = h + 'px';
+                                    el.style.width = w + 'px';
+                                    el.style.height = h + 'px';
+                                }}
+                            }}
+                        }}
+                        window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+                        window._calcMolViewerByScope = window._calcMolViewerByScope || {{}};
+                        window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+                        window._calcTrajViewerByScope = window._calcTrajViewerByScope || {{}};
+                        var scopeKey = {scope_id_json};
+                        var viewScope = {view_scope_json};
+                        var previousViewer =
+                            window._calcMolViewerByScope[scopeKey]
+                            || window._calcTrajViewerByScope[scopeKey]
+                            || null;
+                        var previousScope =
+                            window._calcMolViewScopeKeyByScope[scopeKey] || viewScope;
+                        if (previousViewer && typeof previousViewer.getView === 'function') {{
+                            try {{
+                                window._calcMolViewStateByScope[previousScope] = previousViewer.getView();
+                            }} catch (_e) {{}}
+                        }}
+                        var savedView = window._calcMolViewStateByScope[viewScope] || null;
+                        if (previousViewer && window.__delfinDisposeViewer) {{
+                            window.__delfinDisposeViewer(previousViewer);
+                        }}
+                        var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
+                        {VIEWER_MOUSE_PATCH_JS}
+                        var xyz = `{full_xyz}`;
+                        viewer.addModelsAsFrames(xyz, "xyz");
+                        viewer.setStyle({{}}, {traj_style_js});
+                        if (savedView && typeof viewer.setView === 'function') {{
+                            try {{
+                                viewer.setView(savedView);
+                            }} catch (_e) {{
                                 viewer.zoomTo();
                                 viewer.center();
                                 viewer.zoom({CALC_MOL_ZOOM});
                             }}
-                            viewer.setFrame({idx});
-                            viewer.render();
-                            window._calcTrajViewerByScope[scopeKey] = viewer;
-                            window._calcMolViewerByScope[scopeKey] = viewer;
-                            window._calcMolViewScopeKeyByScope[scopeKey] = viewScope;
-                            var wrappers = scopeRoot
-                                ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
-                                : document.querySelectorAll('.calc-mol-stage-wrapper');
-                            wrappers.forEach(function(w) {{
-                                var _s = /(\\d+)$/.exec(w.id || "");
-                    /* Only wrappers older than this one. A script that is
-                       still waiting for $3Dmol -- or for its viewer to stop
-                       being offsetParent-null, which is what it is during
-                       the move into fullscreen -- wakes up after newer
-                       renders have added theirs, and used to delete those
-                       too. Their scripts then polled 400 times for an
-                       element that no longer existed, and no structure
-                       ever appeared. */
-                    if (w.id !== "{wrapper_id}"
-                        && _s && parseInt(_s[1], 10) < {wrapper_seq}) w.remove();
-                            }});
-                            if (window["{calc_resize_mol_fn}"]) {{
-                                setTimeout(window["{calc_resize_mol_fn}"], 200);
-                            }}
+                        }} else {{
+                            viewer.zoomTo();
+                            viewer.center();
+                            viewer.zoom({CALC_MOL_ZOOM});
                         }}
-                        setTimeout(initViewer, 0);
-                    }})();
-                    </script>
-                    """
-                    display(HTML(html_content))
+                        viewer.setFrame({idx});
+                        viewer.render();
+                        window._calcTrajViewerByScope[scopeKey] = viewer;
+                        window._calcMolViewerByScope[scopeKey] = viewer;
+                        window._calcMolViewScopeKeyByScope[scopeKey] = viewScope;
+                        var wrappers = scopeRoot
+                            ? scopeRoot.querySelectorAll('.calc-mol-stage-wrapper')
+                            : document.querySelectorAll('.calc-mol-stage-wrapper');
+                        wrappers.forEach(function(w) {{
+                            var _s = /(\\d+)$/.exec(w.id || "");
+                /* Only wrappers older than this one. A script that is
+                   still waiting for $3Dmol -- or for its viewer to stop
+                   being offsetParent-null, which is what it is during
+                   the move into fullscreen -- wakes up after newer
+                   renders have added theirs, and used to delete those
+                   too. Their scripts then polled 400 times for an
+                   element that no longer existed, and no structure
+                   ever appeared. */
+                if (w.id !== "{wrapper_id}"
+                    && _s && parseInt(_s[1], 10) < {wrapper_seq}) w.remove();
+                        }});
+                        if (window["{calc_resize_mol_fn}"]) {{
+                            setTimeout(window["{calc_resize_mol_fn}"], 200);
+                        }}
+                    }}
+                    setTimeout(initViewer, 0);
+                }})();
+                </script>
+                """
+                _calc_show_stage(html_content)
                 _calc_set_png_button_mode(main=True)
                 state['traj_viewer_ready'] = True
             else:
