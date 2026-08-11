@@ -3150,7 +3150,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (nowMs() - (state.ffBusySince || 0) > 2000) {
                 state.ffBusy = false;
             } else {
+                // One waiting, never a queue. A mouse reports faster than a
+                // batch comes back -- at 405 atoms a thirty-step drag asked
+                // for 263 animation frames to draw 30 -- and each request
+                // that found the worker busy used to hang another retry on
+                // the end, which then hung another. The atom is already where
+                // the cursor put it and the next batch reads the positions
+                // as they are then, so a second request has nothing to add.
+                if (state.ffWaiting) { done(false); return; }
+                state.ffWaiting = true;
                 window.requestAnimationFrame(function() {
+                    state.ffWaiting = false;
                     ffRelaxAsync(scopeKey, done);
                 });
                 return;
@@ -3799,6 +3809,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // Nothing from the picture that is going away may be waiting on an
         // answer meant for it.
         state.ffBusy = false;
+        state.ffWaiting = false;
         state.ffStats = null;
         if (state.redrawRaf) {
             try { window.cancelAnimationFrame(state.redrawRaf); } catch (e) {}

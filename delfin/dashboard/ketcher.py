@@ -64,24 +64,89 @@ def _voila_root() -> Optional[Path]:
 
 
 def app_directory() -> Optional[Path]:
-    """Where the drawing editor lives, once it has been fetched."""
+    """Where the browser loads the editor from, which is under the served root.
+
+    That root is whatever the dashboard was started in, so this path moves
+    with the launch directory -- which is why a Ketcher that had been fetched
+    was gone the next time somebody started the dashboard from somewhere else,
+    and why one fetched into the cache directory disappeared when /tmp was
+    swept.  It is where the editor has to be *served* from; it is not where it
+    should be *kept*.  See :func:`stored_directory`.
+    """
     root = _voila_root()
     return None if root is None else root / '.delfin' / 'ketcher'
 
 
-def installed_version() -> Optional[str]:
-    """Which build is installed, or None if none is."""
-    folder = app_directory()
+def stored_directory() -> Path:
+    """Where the editor is kept, which does not move.
+
+    One place per user, beside everything else DELFIN installs for them.  The
+    served copy is made from this one, and making it is a local file copy of
+    thirty megabytes -- under a second -- against fetching the same thirty
+    over the network again.
+    """
+    return Path.home() / '.delfin' / 'ketcher'
+
+
+def _version_in(folder: Optional[Path]) -> Optional[str]:
     if folder is None:
         return None
-    stamp = folder / _STAMP
-    page = folder / 'index.html'
+    stamp, page = folder / _STAMP, folder / 'index.html'
     if not (stamp.is_file() and page.is_file()):
         return None
     try:
         return stamp.read_text(encoding='utf-8').strip() or None
     except OSError:
         return None
+
+
+def place_from_store() -> Optional[str]:
+    """Put the kept copy where the browser can load it, if it is not there.
+
+    Returns the version now being served, or None when there is nothing to
+    place.  Copied rather than linked: a server that refuses to follow a
+    symlink out of the directory it serves is doing the right thing, and
+    thirty megabytes of local copy is not worth arguing with it about.
+    """
+    served = app_directory()
+    if served is None:
+        return None
+    there = _version_in(served)
+    if there:
+        # Already being served, and if it is not kept anywhere yet then this
+        # is the copy that was fetched before there was a place to keep it.
+        # Taken in rather than left to be lost with the next launch directory.
+        if not _version_in(stored_directory()):
+            try:
+                stored_directory().parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(served, stored_directory())
+            except OSError:
+                pass
+        return there
+    kept = stored_directory()
+    if not _version_in(kept):
+        return None
+    try:
+        served.parent.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(served, ignore_errors=True)
+        shutil.copytree(kept, served)
+    except OSError:
+        return None
+    return _version_in(served)
+
+
+def installed_version() -> Optional[str]:
+    """Which build is there, placing the kept copy first if it has to.
+
+    Asking used to mean asking the served directory alone, so an editor that
+    had been fetched once looked absent the moment the dashboard was started
+    somewhere else -- and the answer to that was to fetch thirty megabytes
+    again, into a place that would lose it just as easily.
+    """
+    # Always through place_from_store: it is the one that both serves what is
+    # kept and takes in what is only served, and short-circuiting on the
+    # served copy meant an existing install was never taken in at all.
+    return place_from_store()
 
 
 def is_installed() -> bool:
@@ -238,9 +303,14 @@ def install(
         # renaming a directory onto a path refuses with EISDIR on some
         # filesystems, and this one is going into whatever the user launched
         # the dashboard in.
+        # Kept where it will still be next time, and served from a copy.
+        kept = stored_directory()
+        shutil.rmtree(kept, ignore_errors=True)
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(unpacked), str(kept))
         shutil.rmtree(folder, ignore_errors=True)
         folder.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(unpacked), str(folder))
+        shutil.copytree(kept, folder)
     except (OSError, zipfile.BadZipFile, urllib.error.URLError) as exc:
         return {'ok': False, 'version': None,
                 'status': f'Ketcher could not be installed: {exc}'}

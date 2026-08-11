@@ -84,6 +84,11 @@ def test_it_is_put_where_the_browser_can_reach_it(tmp_path, monkeypatch):
     everything below its root at /voila/files/, which is the same route the
     literature tab already uses for PDFs."""
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(tmp_path))
+    # A home of its own: the editor is kept there now, and a copy on the
+    # machine running the tests would otherwise be served into this root.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(pathlib.Path, "home", lambda: home)
 
     folder = ketcher.app_directory()
     assert folder == tmp_path / ".delfin" / "ketcher"
@@ -440,3 +445,74 @@ def test_a_converted_structure_can_be_worked_on_at_once(editor):
     editor["coords_widget"].value = "3\nw\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n"
     assert editor["submit_ff_dd"].disabled is False
     assert editor["submit_draw_btn"].disabled is False
+
+
+def test_the_editor_is_kept_somewhere_that_does_not_move(tmp_path, monkeypatch):
+    """It was installed beside the launch directory, and so it was not
+    installed at all.
+
+    Voila serves whatever the dashboard was started in, and the editor has to
+    live under that for a browser to load it -- but it was also *kept* there.
+    Start the dashboard from somewhere else and a Ketcher that had been
+    fetched looked absent, so the answer was to fetch thirty megabytes again,
+    into a place that would lose it just as easily. One of those places is the
+    cache directory under /tmp, which the system sweeps.
+    """
+    from delfin.dashboard import ketcher
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(pathlib.Path, "home", lambda: home)
+
+    kept = ketcher.stored_directory()
+    kept.mkdir(parents=True)
+    (kept / "index.html").write_text("<html>ketcher</html>")
+    (kept / ketcher._STAMP).write_text("2.31.0")
+
+    for name in ("first", "second"):
+        root = tmp_path / name
+        root.mkdir()
+        monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root))
+        assert ketcher.installed_version() == "2.31.0", name
+        assert (root / ".delfin" / "ketcher" / "index.html").is_file()
+
+
+def test_an_editor_that_is_already_there_is_taken_in(tmp_path, monkeypatch):
+    """Somebody who fetched it before there was a place to keep it must not
+    have to fetch it again."""
+    from delfin.dashboard import ketcher
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(pathlib.Path, "home", lambda: home)
+
+    old_root = tmp_path / "where it was"
+    served = old_root / ".delfin" / "ketcher"
+    served.mkdir(parents=True)
+    (served / "index.html").write_text("<html>ketcher</html>")
+    (served / ketcher._STAMP).write_text("2.30.0")
+
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(old_root))
+    assert ketcher.installed_version() == "2.30.0"
+    assert (ketcher.stored_directory() / ketcher._STAMP).is_file(), (
+        "it was left where the next launch directory would lose it"
+    )
+
+    new_root = tmp_path / "where it is started next time"
+    new_root.mkdir()
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(new_root))
+    assert ketcher.installed_version() == "2.30.0", "it asked to fetch again"
+
+
+def test_the_download_keeps_a_copy_that_outlives_the_launch_directory():
+    import inspect
+
+    from delfin.dashboard import ketcher
+
+    body = inspect.getsource(ketcher.install)
+    assert "stored_directory()" in body
+    # Kept first, served from a copy of it -- not the other way round.
+    assert body.index("shutil.move(str(unpacked), str(kept))") < body.index(
+        "shutil.copytree(kept, folder)")

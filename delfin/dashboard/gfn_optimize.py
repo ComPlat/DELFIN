@@ -850,6 +850,30 @@ def held_note(held: Dict[str, Any]) -> str:
     return (' ' + '; '.join(said) + '.') if said else ''
 
 
+#: How many cores one interactive run may use.
+#:
+#: One was the rule, on the grounds that a login node is shared -- and it is,
+#: but a single Optimise press is seconds of one person's waiting rather than
+#: a job. Measured on a 74-atom cholesterol: a GFN2 single point 133 ms on one
+#: core and 81 on four, five optimisation steps 669 ms and 510. GFN-FF gains
+#: nothing -- 23 ms against 19, and worse at eight -- because at that size 12
+#: of those milliseconds are the program starting up.
+#:
+#: Four, not all of them: the same machine is running everybody's dashboard,
+#: and beyond four the curve is flat anyway.
+INTERACTIVE_CORES = 4
+
+
+def interactive_cores() -> int:
+    """Cores for one interactive run, never more than the machine has."""
+    said = str(os.environ.get('DELFIN_GFN_CORES', '')).strip()
+    if said.isdigit() and int(said) > 0:
+        wanted = int(said)
+    else:
+        wanted = INTERACTIVE_CORES
+    return max(1, min(wanted, os.cpu_count() or 1))
+
+
 def optimize_with_gfn(
     xyz_text: str,
     method: str = 'gfnff',
@@ -981,9 +1005,10 @@ def optimize_with_gfn(
         body = atom_lines(xyz_text)
         source.write_text(f'{len(body)}\nfrom the DELFIN viewer\n'
                           + '\n'.join(body) + '\n', encoding='utf-8')
+        cores = interactive_cores()
         command = [binary, source.name, *spec['flags'], '--opt',
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
-                   '-P', '1']
+                   '-P', str(cores)]
         if max_steps:
             command += ['--cycles', str(int(max_steps))]
         if wet:
@@ -1002,10 +1027,10 @@ def optimize_with_gfn(
                 source_file = Path(topology) / name
                 if source_file.is_file():
                     shutil.copy2(str(source_file), str(folder / name))
-        # One core, and a scratch directory of its own: two of these must not
-        # fight over xtbopt.xyz.
-        environment = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
-                           OMP_STACKSIZE='1G')
+        # A few cores, and a scratch directory of its own: two of these must
+        # not fight over xtbopt.xyz.
+        environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
+                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G')
         # And the parameters that belong to this binary, not whatever is lying
         # around. xtb reads a `param_gfn2-xtb.txt` from XTBPATH or from the
         # home directory *instead of* the parameters compiled into it, and a

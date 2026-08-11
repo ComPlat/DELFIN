@@ -1762,3 +1762,44 @@ def test_marking_atoms_does_not_rebuild_the_whole_model():
     for moves in ('applyTranslate', 'setPositions'):
         body = _body(moves)
         assert 'redrawHighlights(scopeKey, true)' not in body, moves
+
+
+def test_a_drag_does_not_queue_relaxations_it_cannot_use():
+    """A mouse reports faster than a batch comes back.
+
+    Every request that found the worker busy hung another retry on the end,
+    and that retry hung another: measured at 405 atoms, a thirty-step drag
+    asked for 263 animation frames to draw 30, and the pile grew with the
+    length of the drag -- which is what made dragging under Dynamik Opt feel
+    like wading. One waiting, never a queue: 263 became 58.
+
+    Nothing is lost by dropping the extra requests. The atom is already where
+    the cursor put it, and the next batch reads the positions as they are
+    then.
+    """
+    relax = _body('ffRelaxAsync')
+    assert 'if (state.ffWaiting) { done(false); return; }' in relax
+    assert 'state.ffWaiting = true;' in relax
+    assert 'state.ffWaiting = false;' in relax
+
+    # And a rebuilt picture starts with nothing pending on the old one.
+    ready = _body('onViewerReady')
+    assert 'state.ffWaiting = false;' in ready
+
+
+def test_no_gutter_is_kept_for_an_output_number_that_will_never_come():
+    """A notebook reserves a column on the left for "Out[7]:".
+
+    There is no Out[7] here and never will be, but the column is reserved all
+    the same -- and in fullscreen it is a white band down the left of the
+    picture, inside the blue frame. The viewer should start where its frame
+    starts.
+    """
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    for scope in ('.submit-mol-output', '.submit-fs-overlay'):
+        assert f'{scope} .jp-OutputPrompt' in source, scope
+        assert f'{scope} .jp-OutputArea-prompt' in source, scope
+    # And the child it sat in keeps no padding where it was.
+    assert '.submit-fs-overlay .jp-OutputArea-child' in source

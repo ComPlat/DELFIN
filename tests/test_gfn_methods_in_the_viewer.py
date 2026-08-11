@@ -8,6 +8,7 @@ a charge and a spin: the charge can be read off a SMILES, the spin never can.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 
@@ -2983,3 +2984,26 @@ def test_the_parameter_directory_is_the_one_beside_the_binary():
     # Nothing sensible to point at is not an error: g-xTB has them built in.
     assert gfn.parameter_home('/nowhere/at/all/xtb') is None
     assert gfn.parameter_home(None) is None
+
+
+def test_an_interactive_run_may_use_more_than_one_core():
+    """One core was the rule, on the grounds that a login node is shared.
+
+    It is -- but a press of Optimise is one person waiting, not a job. Measured
+    through the dashboard on a 74-atom cholesterol, five optimisation steps:
+    719 ms on one core, 569 on four, and flat beyond that. GFN-FF gains
+    nothing, 69 ms either way, because at that size it is mostly the program
+    starting up -- 12 ms of it.
+    """
+    assert gfn.INTERACTIVE_CORES == 4
+    assert gfn.interactive_cores() >= 1
+    assert gfn.interactive_cores() <= (os.cpu_count() or 1)
+
+
+def test_the_core_count_can_be_set_and_never_exceeds_the_machine(monkeypatch):
+    monkeypatch.setenv('DELFIN_GFN_CORES', '2')
+    assert gfn.interactive_cores() == 2
+    monkeypatch.setenv('DELFIN_GFN_CORES', '100000')
+    assert gfn.interactive_cores() == (os.cpu_count() or 1)
+    monkeypatch.setenv('DELFIN_GFN_CORES', 'nonsense')
+    assert gfn.interactive_cores() == min(gfn.INTERACTIVE_CORES, os.cpu_count() or 1)

@@ -7118,6 +7118,29 @@ def create_tab(ctx):
             height: 100% !important;
             width: 100% !important;
         }
+        /* The gutter a notebook keeps for "Out[7]:". There is no Out[7] here
+           and never will be, but the column is reserved all the same -- and in
+           fullscreen it is a white band down the left of the picture, inside
+           the blue frame. It is taken away in the ordinary view as well: the
+           viewer should start where its frame starts. */
+        .submit-mol-output .jp-OutputPrompt,
+        .submit-mol-output .jp-OutputArea-prompt,
+        .submit-mol-output .prompt,
+        .submit-fs-overlay .jp-OutputPrompt,
+        .submit-fs-overlay .jp-OutputArea-prompt,
+        .submit-fs-overlay .prompt {
+            display: none !important;
+            width: 0 !important;
+            min-width: 0 !important;
+            flex: 0 0 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+        }
+        .submit-mol-output .jp-OutputArea-child,
+        .submit-fs-overlay .jp-OutputArea-child {
+            padding-left: 0 !important;
+            margin-left: 0 !important;
+        }
         .submit-fs-overlay .submit-fs-member-viewer [id^="3dmolviewer_"] {
             width: 100% !important;
             height: 100% !important;
