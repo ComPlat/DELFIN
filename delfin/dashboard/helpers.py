@@ -280,28 +280,6 @@ def create_page_css():
         "margin-top: 0 !important; margin-bottom: 0 !important; }"
         # JupyterLab puts a 4px gap above each output area.
         "#rendered_cells .jp-Cell-outputWrapper { margin-top: 0 !important; }"
-        # The gutter a notebook keeps for "Out[7]:". An Output widget is laid
-        # out as a table -- .jp-OutputArea-child is display:table with
-        # table-layout:fixed -- whose first cell is the prompt and whose second
-        # holds the content. Nothing in this dashboard ever writes a prompt,
-        # but the theme gives that empty cell --jp-cell-prompt-width, so every
-        # Output panel starts 64px in from its own frame: a white band down the
-        # left of the picture, inside the blue border, and worst in fullscreen
-        # where there is nothing beside it to explain the gap. The content is
-        # pushed the same 64px past the right edge and clipped there.
-        #
-        # Page-level rather than per viewer: this is an app, there is no Out[7]
-        # anywhere in it, and the viewers that most need it are the ones least
-        # likely to be remembered in a list of selectors.
-        ".jp-OutputPrompt, .jp-OutputArea-prompt {"
-        " display: none !important; width: 0 !important; min-width: 0 !important;"
-        " flex: 0 0 0 !important; padding: 0 !important; margin: 0 !important; }"
-        # With the prompt cell gone the content cell is the only one left, so
-        # it takes the full width -- but the table still carries the padding
-        # and the transparent border a notebook uses to separate outputs.
-        ".jp-OutputArea-child { width: 100% !important; }"
-        ".jp-OutputArea-child > .jp-OutputArea-output {"
-        " width: 100% !important; border-top: 0 !important; }"
         "</style>"
     )
 
