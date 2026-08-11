@@ -3456,6 +3456,81 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         };
     }
 
+    // Atomic masses, enough of them for a centre of mass. Anything not named
+    // counts as carbon, which is closer than counting it as nothing.
+    var ATOMIC_MASS = {
+        H: 1.008, He: 4.003, Li: 6.94, Be: 9.012, B: 10.81, C: 12.011,
+        N: 14.007, O: 15.999, F: 18.998, Ne: 20.18, Na: 22.99, Mg: 24.305,
+        Al: 26.982, Si: 28.085, P: 30.974, S: 32.06, Cl: 35.45, Ar: 39.95,
+        K: 39.098, Ca: 40.078, Sc: 44.956, Ti: 47.867, V: 50.942, Cr: 51.996,
+        Mn: 54.938, Fe: 55.845, Co: 58.933, Ni: 58.693, Cu: 63.546, Zn: 65.38,
+        Ga: 69.723, Ge: 72.63, As: 74.922, Se: 78.971, Br: 79.904, Kr: 83.798,
+        Rb: 85.468, Sr: 87.62, Y: 88.906, Zr: 91.224, Nb: 92.906, Mo: 95.95,
+        Ru: 101.07, Rh: 102.906, Pd: 106.42, Ag: 107.868, Cd: 112.414,
+        In: 114.818, Sn: 118.71, Sb: 121.76, Te: 127.6, I: 126.904,
+        Xe: 131.293, Cs: 132.905, Ba: 137.327, La: 138.905, Ce: 140.116,
+        Hf: 178.486, Ta: 180.948, W: 183.84, Re: 186.207, Os: 190.23,
+        Ir: 192.217, Pt: 195.084, Au: 196.967, Hg: 200.592, Tl: 204.38,
+        Pb: 207.2, Bi: 208.98, Th: 232.038, U: 238.029
+    };
+
+    function systemCentre(viewer) {
+        var atoms = getAtoms(viewer);
+        if (!atoms.length) return null;
+        var mx = 0, my = 0, mz = 0, total = 0, far = 0;
+        for (var i = 0; i < atoms.length; i++) {
+            var m = ATOMIC_MASS[atoms[i].elem] || 12.011;
+            mx += m * atoms[i].x; my += m * atoms[i].y; mz += m * atoms[i].z;
+            total += m;
+        }
+        var centre = {x: mx / total, y: my / total, z: mz / total};
+        for (var j = 0; j < atoms.length; j++) {
+            var dx = atoms[j].x - centre.x, dy = atoms[j].y - centre.y,
+                dz = atoms[j].z - centre.z;
+            var d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (d > far) far = d;
+        }
+        centre.radius = far;
+        return centre;
+    }
+
+    // Turn the picture about the system, not about wherever it happened to be
+    // centred when it was loaded.
+    //
+    // The camera orbits a point, and that point was set once, at load. Drag an
+    // atom a long way, or let a relaxation carry the molecule, and the point
+    // is no longer in the molecule -- so turning the view swings the whole
+    // thing off the screen and into the white. What is wanted is what every
+    // molecular viewer does: orbit the middle of the thing being looked at.
+    //
+    // Only when it has actually drifted, and never during a turn. Re-centring
+    // on every press would undo a deliberate pan -- somebody who has moved in
+    // on a corner wants to stay there -- so the picture is left alone until
+    // the centre is a quarter of the molecule's own reach away from where the
+    // camera is turning, which is the point at which turning starts to throw
+    // it out of view.
+    function centreOnSystem(scopeKey, force) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer || typeof viewer.getView !== 'function') return false;
+        var centre = systemCentre(viewer);
+        if (!centre) return false;
+        var view;
+        try { view = viewer.getView(); } catch (e) { return false; }
+        if (!view || view.length < 4) return false;
+        // The first three are the model's translation, which is the negated
+        // point the camera turns about -- measured against 3Dmol's own
+        // center(): a centroid of (0.55, -0.23, -0.12) gives (-0.55, 0.23,
+        // 0.12) and leaves the zoom and the orientation untouched.
+        var dx = -view[0] - centre.x, dy = -view[1] - centre.y,
+            dz = -view[2] - centre.z;
+        var drift = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        var allowed = 0.25 * Math.max(centre.radius, 1.0);
+        if (!force && drift <= allowed) return false;
+        view[0] = -centre.x; view[1] = -centre.y; view[2] = -centre.z;
+        try { viewer.setView(view); } catch (e) { return false; }
+        return true;
+    }
+
     function applyRotate(scopeKey, dxPx, dyPx) {
         var viewer = getViewer(scopeKey);
         var state = getState(scopeKey);
@@ -3608,6 +3683,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 // 3Dmol binds its mouse handlers on the canvas, and the overlay
                 // is the canvas's sibling, not its ancestor.
                 if (!(e.shiftKey || e.ctrlKey || e.metaKey)) {
+                    // About to turn the camera: put the point it turns about
+                    // back on the molecule if it has wandered off it.
+                    centreOnSystem(scopeKey, false);
                     var v = getViewer(scopeKey);
                     if (v && typeof v._handleMouseDown === 'function') {
                         try { v._handleMouseDown(e); } catch (_e) {}
@@ -4431,6 +4509,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setOptimizerStrength: setOptimizerStrength,
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
+        centreOnSystem: centreOnSystem,
         editBond: editBond,
         applyBondEdits: applyBondEdits,
         setBondOrders: setBondOrders,

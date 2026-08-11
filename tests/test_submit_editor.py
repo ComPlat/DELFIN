@@ -1803,3 +1803,34 @@ def test_no_gutter_is_kept_for_an_output_number_that_will_never_come():
         assert f'{scope} .jp-OutputArea-prompt' in source, scope
     # And the child it sat in keeps no padding where it was.
     assert '.submit-fs-overlay .jp-OutputArea-child' in source
+
+
+def test_the_camera_turns_about_the_system_not_about_where_it_was_loaded():
+    """The camera orbits a point, and that point was set once, at load.
+
+    Drag an atom a long way, or let a relaxation carry the molecule, and the
+    point is no longer in the molecule -- so turning the view swings the whole
+    thing off the screen and into the white. Measured: with the structure 18 A
+    off the old centre, none of its atoms were on screen after half a turn;
+    re-centred first, all of them were.
+    """
+    centre = _body('systemCentre')
+    # Mass-weighted, as a chemist means it -- not the middle of the box.
+    assert 'ATOMIC_MASS[atoms[i].elem]' in centre
+    assert 'mx / total' in centre
+    assert 'centre.radius' in centre, 'it needs the reach to judge the drift'
+
+    keep = _body('centreOnSystem')
+    # The first three of getView are the negated point the camera turns about.
+    assert 'view[0] = -centre.x;' in keep
+    assert 'viewer.setView(view)' in keep
+    # Only when it has drifted: re-centring on every press would undo a
+    # deliberate pan.
+    assert 'if (!force && drift <= allowed) return false;' in keep
+    assert '0.25 * Math.max(centre.radius, 1.0)' in keep
+
+    # And it happens as a turn begins, never during one.
+    assert 'centreOnSystem(scopeKey, false);' in EDITOR
+    assert 'centreOnSystem: centreOnSystem,' in EDITOR
+    turn = EDITOR[EDITOR.index('centreOnSystem(scopeKey, false);'):][:400]
+    assert '_handleMouseDown' in turn, 'it must run before the camera is given the press'
