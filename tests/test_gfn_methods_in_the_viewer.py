@@ -3007,3 +3007,30 @@ def test_the_core_count_can_be_set_and_never_exceeds_the_machine(monkeypatch):
     assert gfn.interactive_cores() == (os.cpu_count() or 1)
     monkeypatch.setenv('DELFIN_GFN_CORES', 'nonsense')
     assert gfn.interactive_cores() == min(gfn.INTERACTIVE_CORES, os.cpu_count() or 1)
+
+
+def test_the_trajectory_is_shown_as_fast_as_it_is_computed():
+    """The limit was the watching, not the calculating.
+
+    The log was read five times a second, so a GFN-FF optimisation put five
+    frames on screen per second while it was computing a step every fourteen
+    milliseconds. Asking whether the file grew costs 0.002 ms and reading it
+    1.73 ms for a 211 KiB log of 37 frames -- so the question is asked every
+    pass and only the reading is limited.
+
+    Measured end to end: at 74 atoms one delivery became three and the run
+    itself finished in 0.14 s instead of 0.30; at 405 atoms, 27 deliveries
+    became 64 of the 66 frames that exist, which is every frame as it is
+    computed.
+    """
+    assert gfn.WATCH_INTERVAL <= 0.01
+    assert gfn.FRAME_READ_INTERVAL <= 0.05
+
+    import inspect
+
+    body = inspect.getsource(gfn.optimize_with_gfn)
+    # The size is checked outside the rate limit, the reading inside it.
+    watch = body.split('xtb writes the log as it optimises')[1]
+    assert watch.index('log.stat().st_size') < watch.index('FRAME_READ_INTERVAL')
+    assert 'time.sleep(WATCH_INTERVAL)' in body
+    assert '0.2' not in watch.split('read_trajectory')[0]

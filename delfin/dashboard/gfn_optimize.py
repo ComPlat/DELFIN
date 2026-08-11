@@ -90,6 +90,19 @@ SOLVENTS: Dict[str, str] = {
 #: an arbitrary second is worse than one that never stops it.
 DEFAULT_TIMEOUT = 180.0
 
+#: How often the watching loop looks at a running xtb.  It bounds two things:
+#: how quickly a Stop is noticed, and how soon a finished frame can be shown.
+#: Ten milliseconds of sleeping costs nothing and was fifty.
+WATCH_INTERVAL = 0.01
+
+#: And how often the trajectory may be read when it has grown.  Reading it
+#: costs 1.73 ms for a 211 KiB log of 37 frames and the whole file is parsed
+#: each time, so the work grows with the run; twenty times a second bounds
+#: that at a few percent of one core.  It was five times a second, which held
+#: a GFN-FF optimisation to five frames on screen while it was computing a
+#: step every fourteen milliseconds.
+FRAME_READ_INTERVAL = 0.05
+
 _ENERGY_RE = re.compile(r'TOTAL ENERGY\s+(-?\d+\.\d+)')
 _VERSION_RE = re.compile(r'xtb version\s+([0-9.]+)')
 # What the run says it did, taken from its own output rather than from the
@@ -1121,29 +1134,35 @@ def optimize_with_gfn(
                         raise subprocess.TimeoutExpired(command, timeout)
                     # xtb writes the log as it optimises, so the path is handed
                     # over while it is still being walked -- but only when the
-                    # file has actually grown, and no more than five times a
-                    # second.  Parsing it on every pass is what starved the
-                    # stop check.
-                    if on_frames is not None and waited - last_read >= 0.2:
+                    # file has actually grown.
+                    #
+                    # Asking whether it grew costs 0.002 ms, so it is asked
+                    # every pass; reading it costs 1.73 ms for a 211 KiB log of
+                    # 37 frames, so that is what the rate limit is for. It used
+                    # to be five times a second, which held a GFN-FF
+                    # optimisation to five frames on screen per second while it
+                    # was computing a step every fourteen milliseconds -- the
+                    # limit was the watching, not the calculating.
+                    try:
+                        size = log.stat().st_size if log.exists() else -1
+                    except OSError:
+                        size = -1
+                    if (on_frames is not None and size != last_size
+                            and waited - last_read >= FRAME_READ_INTERVAL):
                         last_read = waited
+                        last_size = size
                         try:
-                            size = log.stat().st_size if log.exists() else -1
-                        except OSError:
-                            size = -1
-                        if size != last_size:
-                            last_size = size
+                            walking = read_trajectory(folder)
+                        except Exception:
+                            walking = []
+                        if len(walking) > sent:
+                            sent = len(walking)
                             try:
-                                walking = read_trajectory(folder)
+                                on_frames(walking)
                             except Exception:
-                                walking = []
-                            if len(walking) > sent:
-                                sent = len(walking)
-                                try:
-                                    on_frames(walking)
-                                except Exception:
-                                    pass
-                    time.sleep(0.05)
-                    waited += 0.05
+                                pass
+                    time.sleep(WATCH_INTERVAL)
+                    waited += WATCH_INTERVAL
                 running.wait()
         except subprocess.TimeoutExpired:
             return {
