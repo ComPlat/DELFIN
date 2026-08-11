@@ -21,11 +21,6 @@ from .helpers import parse_time_to_seconds
 class LocalJobBackend(JobBackend):
     """Local server backend using a JSON job queue and subprocess execution."""
 
-    #: How long a process snapshot may be reused; see :meth:`_list_processes`.
-    #: Short enough that no caller can tell, long enough that the burst of
-    #: identical requests a dashboard build makes costs one reading.
-    _PROCESS_SNAPSHOT_TTL = 2.0
-
     def __init__(self, orca_base=None,
                  jobs_file=None, tool_binaries=None,
                  max_cores=384, max_ram_mb=1_400_000,
@@ -59,8 +54,6 @@ class LocalJobBackend(JobBackend):
             live_min_ram = 64_000
         self.live_min_free_ram_mb = max(1, live_min_ram)
         self._next_job_id_key = '_next_job_id'
-        #: ``(taken_at, table)`` from the last :meth:`_list_processes`.
-        self._process_snapshot = None
         self._lock = threading.Lock()
         self._worker_running = True
         self._worker_thread = threading.Thread(
@@ -115,34 +108,18 @@ class LocalJobBackend(JobBackend):
     # Status helpers
     # ------------------------------------------------------------------
     def _list_processes(self):
-        """A snapshot of current processes, reused for a moment.
+        """A snapshot of the running processes.
 
-        Reading one costs a whole ``ps`` plus a readlink per process. That is
-        cheap on a workstation and not on a shared login node: measured on a
-        384-core host with 6351 processes, one ``ps`` is 0.396 s -- and ``ps``
-        reads all of /proc whatever filter it is given -- while the readlinks
-        add 0.944 s across 57806 calls, of which 242 succeed and the rest are
-        another user's directory.
+        It costs a whole ``ps`` -- which reads all of /proc whatever filter it
+        is given -- plus a readlink per process. Cheap on a workstation and
+        not on a shared login node: measured on a 384-core host with 6465
+        processes, 0.67 s a reading.
 
-        Building the dashboard asked for nine of these in a row, once per tab
-        that lists jobs, for 5.4 s of the 9.2 s a cold start takes. They all
-        ask the same question of the same instant. A snapshot is already a
-        moment in the past by the time it has been parsed, so reusing it for a
-        moment longer answers exactly the same question -- and it is dropped
-        outright the moment this backend starts something itself, so a job
-        that has just been launched is never judged against a table from
-        before it existed.
+        Building the dashboard took nine of them, once per tab that lists
+        jobs, and every one was asked only so that RUNNING jobs could be
+        checked. With no job running there was nothing to check and the
+        reading was thrown away, which is why the callers ask first now.
         """
-        now = _time.monotonic()
-        cached = self._process_snapshot
-        if cached is not None and now - cached[0] < self._PROCESS_SNAPSHOT_TTL:
-            return cached[1]
-        table = self._read_processes()
-        self._process_snapshot = (now, table)
-        return table
-
-    def _read_processes(self):
-        """Ask the system, without looking at the snapshot."""
         try:
             result = subprocess.run(
                 ['ps', '-eo', 'pid=,pgid=,args='],
@@ -173,6 +150,15 @@ class LocalJobBackend(JobBackend):
             processes.append((proc_pid, proc_pgid, parts[2], cwd))
         return processes
 
+    @staticmethod
+    def _any_running(jobs):
+        """Whether any of *jobs* still claims to be running.
+
+        Only a RUNNING job is ever checked against the process table, so with
+        none of them running there is nothing the reading could answer.
+        """
+        return any(job.get('status') == 'RUNNING' for job in (jobs or ()))
+
     def _job_has_active_processes(self, job, process_table=None):
         """Detect live descendants or subprocesses that still belong to a job."""
         job_dir = str(job.get('job_dir') or '').strip()
@@ -190,7 +176,9 @@ class LocalJobBackend(JobBackend):
             wrapper_pgid = None
 
         current_pid = os.getpid()
-        for proc_pid, proc_pgid, args, cwd in (process_table or self._list_processes()):
+        if process_table is None:
+            process_table = self._list_processes()
+        for proc_pid, proc_pgid, args, cwd in process_table:
             if proc_pid == current_pid:
                 continue
             if wrapper_pid is not None and proc_pid == wrapper_pid:
@@ -354,9 +342,6 @@ class LocalJobBackend(JobBackend):
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            # There is now a process the snapshot does not know about, and the
-            # next thing that happens is a status check against it.
-            self._process_snapshot = None
             job['pid'] = proc.pid
             job['pgid'] = os.getpgid(proc.pid)
             job['status'] = 'RUNNING'
@@ -372,7 +357,8 @@ class LocalJobBackend(JobBackend):
         with self._lock:
             data = self._load_jobs()
             jobs = data.get('jobs', [])
-            process_table = self._list_processes()
+            process_table = (
+                self._list_processes() if self._any_running(jobs) else [])
 
             changed = False
             for job in jobs:
@@ -450,7 +436,9 @@ class LocalJobBackend(JobBackend):
 
         with self._lock:
             data = self._load_jobs()
-            process_table = self._list_processes()
+            process_table = (
+                self._list_processes()
+                if self._any_running(data.get('jobs', [])) else [])
             changed = False
             for job in data.get('jobs', []):
                 if job.get('status') == 'RUNNING':
@@ -563,7 +551,8 @@ class LocalJobBackend(JobBackend):
         with self._lock:
             data = self._load_jobs()
             jobs = data.get('jobs', [])
-            process_table = self._list_processes()
+            process_table = (
+                self._list_processes() if self._any_running(jobs) else [])
             for job in jobs:
                 if job['status'] == 'RUNNING':
                     self._update_job_status(job, process_table=process_table)
