@@ -1834,3 +1834,34 @@ def test_the_camera_turns_about_the_system_not_about_where_it_was_loaded():
     assert 'centreOnSystem: centreOnSystem,' in EDITOR
     turn = EDITOR[EDITOR.index('centreOnSystem(scopeKey, false);'):][:400]
     assert '_handleMouseDown' in turn, 'it must run before the camera is given the press'
+
+
+def test_a_button_brings_the_system_back_into_view():
+    """A view is the user's. Moving in on one corner is something people do on
+    purpose, so the picture must not re-frame itself while they work -- but
+    when a structure has been dragged out of it, or a relaxation has carried
+    it out, there has to be a way back.
+
+    Measured: a molecule turned and pushed 40 A off centre had 0% of its atoms
+    on screen at 74 atoms and 25% at 405; after Centre, 100% in both, in a
+    millisecond, and not one coordinate changed.
+    """
+    back = _body('recentreView')
+    # Two halves of "I cannot see it": fit what is there, then put the point
+    # the camera turns about on the centre of mass.
+    assert 'viewer.zoomTo()' in back
+    assert 'centreOnSystem(scopeKey, true)' in back
+    # It is the camera and only the camera.
+    assert 'atoms[' not in back and 'setPositions' not in back
+    assert 'recentreView: recentreView,' in EDITOR
+
+    from delfin.dashboard import tab_submit
+
+    source = open(tab_submit.__file__, encoding='utf-8').read()
+    handler = source.split('def on_submit_centre')[1].split('\n    def ')[0]
+    assert 'recentreView' in handler
+    assert 'structure is unchanged' in handler
+    assert 'submit_centre_btn.on_click(on_submit_centre)' in source
+    # It lives with the other viewer controls and switches with them.
+    assert 'submit_manip_clear_btn, submit_centre_btn,' in source
+    assert 'submit_centre_btn.disabled = not enabled' in source

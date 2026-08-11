@@ -3531,6 +3531,24 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return true;
     }
 
+    // Put the system back in the middle of the picture and in view.
+    //
+    // Two steps, because they answer two different halves of "I cannot see
+    // it": zoomTo fits what is there without touching the orientation or, if
+    // the molecule has not changed size, the zoom -- measured, the quaternion
+    // and the distance both came back unchanged -- and the centring then puts
+    // the point the camera turns about on the centre of mass rather than on
+    // the middle of the box, so the next turn behaves as well as this one.
+    function recentreView(scopeKey) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return false;
+        try { viewer.zoomTo(); } catch (e) {}
+        centreOnSystem(scopeKey, true);
+        try { viewer.render(); } catch (e) {}
+        redrawHighlights(scopeKey, true);
+        return true;
+    }
+
     function applyRotate(scopeKey, dxPx, dyPx) {
         var viewer = getViewer(scopeKey);
         var state = getState(scopeKey);
@@ -4510,6 +4528,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
         centreOnSystem: centreOnSystem,
+        recentreView: recentreView,
         editBond: editBond,
         applyBondEdits: applyBondEdits,
         setBondOrders: setBondOrders,

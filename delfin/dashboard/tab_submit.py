@@ -776,6 +776,16 @@ def create_tab(ctx):
         layout=widgets.Layout(width='66px', height='30px'),
         disabled=True,
     )
+    # When a structure has been dragged out of the picture -- or a relaxation
+    # has carried it out -- this puts it back: the camera on the centre of
+    # mass, and everything in view. It changes nothing about the molecule.
+    submit_centre_btn = widgets.Button(
+        description='Centre', button_style='', icon='crosshairs',
+        tooltip=('Put the system back in the middle of the view. '
+                 'Nothing about the structure changes.'),
+        layout=widgets.Layout(width='90px', height='30px'),
+        disabled=True,
+    )
     submit_manip_undo_btn = widgets.Button(
         description='Undo', button_style='info', icon='undo',
         tooltip='Undo last move/rotate (Ctrl-Z)',
@@ -1083,7 +1093,8 @@ def create_tab(ctx):
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
             submit_element_dd, submit_adjust_h_btn,
-            submit_manip_clear_btn, submit_manip_undo_btn, submit_reset_btn,
+            submit_manip_clear_btn, submit_centre_btn,
+            submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
@@ -1434,6 +1445,7 @@ def create_tab(ctx):
         submit_hold_btn.disabled = not enabled
         submit_hold_mode.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
+        submit_centre_btn.disabled = not enabled
         submit_reset_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
         if not enabled:
@@ -6035,6 +6047,22 @@ def create_tab(ctx):
         except Exception as exc:
             _set_mol_status(f'That edit did not work: {exc}')
 
+    def on_submit_centre(_button=None):
+        """Put the system back in the middle of the picture.
+
+        Nothing about the structure changes -- this is the camera and only the
+        camera. It is a button rather than something that happens by itself
+        because a view is the user's: moving in on one corner is a thing
+        people do on purpose, and a picture that re-frames itself while they
+        work is worse than one they have to bring back now and then.
+        """
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            f'window.__delfinSubmitManip.recentreView({json.dumps(submit_scope_id)});'
+        )
+        _set_mol_status('Back in the middle. The structure is unchanged.')
+
     def on_submit_bond(_button=None):
         _edit_bond(True)
 
@@ -6848,6 +6876,7 @@ def create_tab(ctx):
     submit_manip_btn.observe(on_submit_manip_toggle, names='value')
     submit_manip_clear_btn.on_click(on_submit_manip_clear)
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
+    submit_centre_btn.on_click(on_submit_centre)
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     # On the page from the start: a player installed at click time races the
     # run it is meant to show.
@@ -7189,6 +7218,7 @@ def create_tab(ctx):
         'submit_draw_btn': submit_draw_btn,
         'submit_element_dd': submit_element_dd,
         'submit_adjust_h_btn': submit_adjust_h_btn,
+        'submit_centre_btn': submit_centre_btn,
         'submit_draw_open_btn': submit_draw_open_btn,
         'submit_draw_get_btn': submit_draw_get_btn,
         'submit_draw_update_btn': submit_draw_update_btn,
