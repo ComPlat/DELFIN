@@ -1140,7 +1140,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
     def _coll_floor(a, b):
         if _xh and (a == "H" or b == "H"):
             return _xh_frac * _bd._ideal_bond(a, b)
-        return 0.82 * _bd._ideal_bond(a, b)
+        return _bd.COLLAPSE_FLOOR * _bd._ideal_bond(a, b)   # war Literal 0.82; siehe _bond_decollapse
 
     # exempt_pairs (#279/#281, DELFIN_FFFREE_MULTIBOND_EXEMPT): heavy-heavy bonds whose
     # SHORT length is chemically correct (genuine double/triple/aromatic bonds such as a

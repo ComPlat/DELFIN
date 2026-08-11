@@ -35,6 +35,50 @@ _COV = {'C':0.76,'N':0.71,'O':0.66,'H':0.31,'S':1.05,'Cl':1.02,'P':1.07,'F':0.57
 _MD_TOL = 0.05          # M-D invariant tolerance (Å)
 _MD_FACTOR = 1.30       # M-D bond detection factor
 _NONBOND_FLOOR = 0.78   # non-bonded heavy pair < this·Σcov → push apart
+# ===== DER KOLLAPS-BODEN, AB 2026-08-11 AN EINER STELLE UND SCHALTBAR =====
+# Er stand als Literal 0.82 an DREI Stellen (hier in _count_collapsed, in
+# converter_backend._coll_floor, als Vorgabe von assemble_complex._collapsed_heavy_bonds_strict)
+# und war damit weder auffindbar noch messbar.  Vorgabe unveraendert 0.82 -> byte-identisch.
+#
+# WARUM ER GEMESSEN GEHOERT.  Gemessen am 11.08. an 8974 CCDC-Kristallen mit 287043
+# Schweratom-Bindungen (Radien und Bindungserkennung exakt wie hier):
+#     Verteilung d/Sigma_cov   p0.1 = 0.768   p1 = 0.808   Median 0.919   Minimum 0.511
+# Der Selbstgate verwirft ein GANZES Config, sobald EINE Bindung darunter liegt.  Je
+# Kristall gerechnet heisst das:
+#     Boden 0.82 -> 1558 von 8974 Kristallen betroffen = 17,4 %
+#           0.78 ->  549 = 6,1 %      0.75 -> 77 = 0,9 %      0.72 -> 34 = 0,4 %
+# Der Boden wuerde also jeden sechsten EXPERIMENTELL BESTIMMTEN Kristall als kollabiert
+# verwerfen -- gegen die stehende Regel, dass das Auge auf sauberen CCDC-Strukturen
+# schweigt.  Dazu passen zwei unabhaengige Messungen derselben Woche: 94,5 % ALLER
+# Selbstgate-Ablehnungen sind COLLAPSED_BOND, und 193 von 996 Systemen sterben an dieser
+# einen Zahl.  17,4 % gegen 19,4 % -- das deckt sich.
+#
+# ⚠ UND DER CODE WIDERSPRACH SICH SELBST: refine.py:93 baut gegen _COLLAPSE = 0.70, der
+# Nichtbindungsboden hier steht auf 0.78, geurteilt wurde mit 0.82.  Der Bauer wurde
+# strenger gemessen, als er gebaut hat.
+#
+# ⚠ DIE 0.82 IST DAMIT NICHT WIDERLEGT.  Die Kristallmessung sagt, wie viele ECHTE
+# Bindungen der Boden trifft -- nicht, wie viele FALSCHE er noch faengt.  Ihn allein
+# darauf abzusenken waere genau der Goodhart-Fehler, den dieses Repo sonst jagt.  Die
+# Entscheidung faellt ein A/B 0.82 gegen 0.75 unter UNION, Kriterium ccdc_isomer_realized
+# und defektfreie Manifolds -- nicht die Frameanzahl.
+#
+# ZWEI SCHALTER, und der Grund ist die Harness-Mechanik: `loop.py --on FLAG` setzt einen
+# Schalter immer auf "1" und kann deshalb keinen WERT schalten.  Ein A/B ueber einen
+# Zahlenwert braucht darum eine BOOLESCHE Achse -- sonst muesste der Wert in BEIDEN Armen
+# stehen, und genau daran ist cap10swingunion gescheitert ("UNDECLARED AXIS: beide Arme
+# tragen ihn, das A/B kann ihn nicht sehen").
+#   DELFIN_FFFREE_COLLAPSE_FLOOR_CAL=1  -> der kristallkalibrierte Boden 0.75  (A/B-Achse)
+#   DELFIN_FFFREE_COLLAPSE_FLOOR=<zahl> -> ueberschreibt beides  (Sweep von Hand)
+# 0.75 ist nicht frei gewaehlt: es ist die Schwelle mit 0,9 % Falsch-Positiven auf den
+# 8974 Kristallen UND zugleich die untere Grenze des Verzerrungsbandes in refine.py:139
+# (dev < -0.25).  Bei diesem Wert sagt der Code an drei Stellen dasselbe.
+_CAL = os.environ.get("DELFIN_FFFREE_COLLAPSE_FLOOR_CAL", "0") == "1"
+try:
+    COLLAPSE_FLOOR = float(os.environ.get("DELFIN_FFFREE_COLLAPSE_FLOOR",
+                                          "0.75" if _CAL else "0.82"))
+except Exception:
+    COLLAPSE_FLOOR = 0.75 if _CAL else 0.82
 _MAX_STEP = 0.30        # max per-atom displacement per relaxation pass (Å) — keeps
                         # the vdw-aware repulsion from blowing coordinates up to NaN
 
@@ -120,7 +164,7 @@ def _count_collapsed(syms, P, bonds) -> int:
     for i, j in bonds:
         if _is_metal(syms[i]) or _is_metal(syms[j]):
             continue
-        if float(np.linalg.norm(P[i] - P[j])) < 0.82 * _ideal_bond(syms[i], syms[j]):
+        if float(np.linalg.norm(P[i] - P[j])) < COLLAPSE_FLOOR * _ideal_bond(syms[i], syms[j]):
             n += 1
     return n
 

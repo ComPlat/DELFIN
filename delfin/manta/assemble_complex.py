@@ -736,12 +736,14 @@ def _donor_follow_weights(syms, P, donor_idxs, span):
     return out
 
 
-def _collapsed_heavy_bonds_strict(syms, P, factor=0.82):
+def _collapsed_heavy_bonds_strict(syms, P, factor=None):   # None -> _bd.COLLAPSE_FLOOR (war 0.82)
     """True if any BONDED heavy-heavy non-metal pair sits below ``factor`` × the
     covalent-sum ideal — same logic as ``_has_collapsed_heavy_bonds`` but NOT env-
     gated (always active).  Used to reject the few DG-metallacycle conformers of a
     RIGID PLANAR tridentate that carry a collapsed donor-backbone bond, so a clean
     conformer is selected from the pool.  Universal, geometry-only, deterministic."""
+    if factor is None:
+        factor = _bd.COLLAPSE_FLOOR   # EINE Quelle fuer den Kollaps-Boden, siehe _bond_decollapse
     n = len(syms)
     for i in range(n):
         if syms[i] == "H" or _bd._is_metal(syms[i]):
