@@ -5119,8 +5119,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                  max_isomers=None, opt_topn=None, construction=None,
                                  method="gfn2", num_confs=None, collapse=None, spin="auto",
                                  deterministic: bool = True):
+        # What is in the box wins whenever it is a SMILES.
+        #
+        # The quick conversion remembers the SMILES it last built, so that
+        # pressing it again rolls another embedding of the same molecule --
+        # by then the box holds coordinates and has nothing to offer. But it
+        # took the remembered one even when the box held a different SMILES:
+        # draw something new in Ketcher, hand it back with TO SMILES, press
+        # convert, and the structure that came out was the one before it.
+        typed = (read_input() or '').strip()
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
-        raw_input = (cached_smiles or read_input() or '').strip()
+        if typed and clean_input_data(typed)[1] == 'smiles':
+            raw_input = typed
+        else:
+            raw_input = (cached_smiles or typed or '').strip()
         if not raw_input:
             _replace_mol_output_text('Please enter SMILES in the input box.')
             return

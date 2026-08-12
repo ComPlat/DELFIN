@@ -871,3 +871,32 @@ def test_settle_is_on_to_begin_with_in_both_tabs():
     defaults = source.split('_CONTROL_DEFAULTS = (')[1].split('\n    )')[0]
     assert 'submit_settle_btn, True' in defaults
     assert 'submit_relax_btn, False' in defaults
+
+
+def test_converting_again_builds_what_is_in_the_box_now(builder):
+    """Draw more in Ketcher, hand it back, convert -- and the structure that
+    came out was the one before it.
+
+    The quick conversion remembers the SMILES it last built, so that pressing
+    it again rolls another embedding of the same molecule: by then the box
+    holds coordinates and has nothing to offer. It took the remembered one
+    even when the box held a different SMILES. What is in the box wins
+    whenever it is a SMILES.
+
+    Measured in both tabs: a four-carbon chain converts to fourteen atoms,
+    drawing four more on and converting again gives twenty-six.
+    """
+    refs, _sent = builder
+    state = refs['editor_state']
+
+    state['converted_xyz_cache'] = {'smiles': 'CCCC', 'xyz': 'stale'}
+    refs['orca_coords'].value = 'CCCCCCCC'
+
+    # what the conversion would read, without running it
+    assert refs['read_input']() == 'CCCCCCCC'
+    source = open(structure_editor.__file__, encoding='utf-8').read()
+    body = source.split('def _start_smiles_conversion')[1].split('\n    def ')[0]
+    assert "if typed and clean_input_data(typed)[1] == 'smiles':" in body
+    assert 'raw_input = typed' in body
+    # ...and the remembered one is still there for a box holding coordinates.
+    assert 'raw_input = (cached_smiles or typed' in body
