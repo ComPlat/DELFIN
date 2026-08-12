@@ -119,14 +119,22 @@ def test_the_estimate_reads_the_persisted_size_not_the_text():
 # ---------------------------------------------------------------------------
 
 def test_the_saver_accepts_every_field_the_exporter_produces():
-    """export_state gaining a field is useless if save_session cannot take it."""
+    """export_state gaining a field is useless if save_session cannot take it.
+
+    A named parameter is one way; a catch-all that persists the key
+    verbatim is the other, and it is the one that cannot fall behind. What
+    must never happen is a TypeError inside a best-effort save, which is a
+    silently unwritten session.
+    """
     from delfin.agent import session_store
 
     exported = set(_bare_engine().export_state())
-    accepted = set(inspect.signature(session_store.save_session).parameters)
-    # route/mode/role_index and friends are named identically on both sides.
+    params = inspect.signature(session_store.save_session).parameters
+    accepted = set(params)
+    catch_all = any(p.kind is inspect.Parameter.VAR_KEYWORD
+                    for p in params.values())
     missing = {k for k in exported if k not in accepted}
-    assert not missing, (
+    assert catch_all or not missing, (
         f'save_session cannot store {sorted(missing)} -- the exporter '
         'produces it and the saver would drop it on the floor')
 

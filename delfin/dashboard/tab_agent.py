@@ -7706,30 +7706,35 @@ def create_tab(ctx):
             if not engine or not engine.messages:
                 _append_system_message("Nothing to compact.")
                 return True
-            # Keep only the last 4 messages (2 turns) to reduce context
+            # Routed to the engine's own compactor. What stood here was a
+            # second, cruder implementation: a 200-character excerpt of the
+            # dropped messages, no pinned-message exemption, no archive and
+            # no elided store — so anything it cut had no retrieval path at
+            # all. The engine's version summarises (LLM or extractive),
+            # keeps pins verbatim, archives the pre-compaction transcript
+            # and leaves a history_get ref behind for every elided body.
             n_before = len(engine.messages)
-            if n_before > 4:
-                # Summarize old messages into a single context note
-                old_msgs = engine.messages[:-4]
-                summary_parts = []
-                for m in old_msgs:
-                    role = m["role"]
-                    content = m["content"][:200]
-                    summary_parts.append(f"[{role}]: {content}...")
-                summary = "\n".join(summary_parts[-6:])  # last 6 entries
-                engine.messages = [
-                    {"role": "user", "content":
-                     f"[Context summary of {n_before - 4} earlier messages:\n"
-                     f"{summary}\n... End of summary]"},
-                    {"role": "assistant", "content": "Understood, I have the context."},
-                ] + engine.messages[-4:]
+            try:
+                engine._compact_history(force=True)
+            except Exception as exc:
+                _append_system_message(f"Compaction failed: {exc}")
+                return True
+            info = getattr(engine, "last_compaction_info", None) or {}
+            note = str(info.get("note") or "")
+            n_after = len(engine.messages)
+            if n_after < n_before:
                 _append_system_message(
-                    f"Compacted: {n_before} messages → {len(engine.messages)} "
-                    f"(older context summarized)"
+                    f"Compacted: {n_before} messages → {n_after} "
+                    f"(~{info.get('tokens_saved', 0)} tokens saved; full "
+                    f"history in the archive — /session archive ls)"
+                    + (f"\n{note}" if note else "")
                 )
+            elif note:
+                _append_system_message(f"Nothing compacted — {note}")
             else:
                 _append_system_message(
-                    f"Only {n_before} messages — too few to compact."
+                    f"Nothing compacted: {n_before} message(s) is too short "
+                    f"to have a compactable middle."
                 )
             return True
 
@@ -9689,13 +9694,21 @@ def create_tab(ctx):
                     f"  Last compaction: {last_compact.get('messages_compacted', '?')} msgs, "
                     f"saved ~{last_compact.get('tokens_saved', 0)} tokens"
                 )
+                # The record's diagnosis field. Printing only the counts
+                # rendered "? msgs, saved ~0 tokens" in the one state where
+                # the counts are meaningless and the note says exactly what
+                # the user has to change.
+                _note = str(last_compact.get("note") or "")
+                if _note:
+                    lc += f"\n  ⚠️ {_note}"
             else:
                 lc = "  Last compaction: (none this session)"
             _append_system_message(
                 "Context status:\n"
                 f"  Messages:    {n_msgs}\n"
                 f"  Est. tokens: {tokens:,} ({pct:.1f}% of {window:,} window)\n"
-                f"  Auto-compact trigger: ≥12 msgs OR ≥{compact_pct*100:.0f}% of window\n"
+                f"  Auto-compact trigger: ≥{compact_pct*100:.0f}% of window "
+                f"(pressure only — never message count)\n"
                 f"{lc}\n"
                 f"  Mode:        {engine.mode}\n"
                 f"  Model:       {model_dropdown.value}\n"
@@ -12792,30 +12805,6 @@ def create_tab(ctx):
         else:
             _append_system_message("Could not find a user message to retry.")
 
-    def _check_auto_compact():
-        """Check if context is getting large and auto-compact or warn."""
-        engine = state["engine"]
-        if not engine:
-            return
-        total_tokens = engine.token_usage.get("input", 0)
-        n_msgs = len(engine.messages)
-        # The CLI backend auto-compacts internally, so we only do a silent
-        # fallback compact on our engine messages if they get very large.
-        if n_msgs > 30:
-            old_count = n_msgs
-            old_msgs = engine.messages[:-6]
-            summary_parts = []
-            for m in old_msgs[-8:]:
-                content = m["content"][:200]
-                summary_parts.append(f"[{m['role']}]: {content}...")
-            summary = "\n".join(summary_parts)
-            engine.messages = [
-                {"role": "user", "content":
-                 f"[Auto-compacted {old_count - 6} earlier messages:\n"
-                 f"{summary}\n... End]"},
-                {"role": "assistant", "content": "Understood, continuing with context."},
-            ] + engine.messages[-6:]
-
     def _format_tool_description(raw):
         """Parse a raw permission denial string into a readable description."""
         import ast as _ast
@@ -14738,7 +14727,22 @@ def create_tab(ctx):
                     # full transcript is archived).  Fires once per turn.
                     _lci = getattr(engine, "last_compaction_info", None) or {}
                     if _lci.get("archived_at") and _lci["archived_at"] != _compact_before:
-                        if _lci.get("kind") == "sliding_window":
+                        # ``note`` is the record's DIAGNOSIS field: the trim
+                        # could not reach its target (the system prompt
+                        # alone is over the budget), or the summariser came
+                        # back empty. It is the one compaction outcome the
+                        # USER has to act on, and it was written into a
+                        # record that no reader here ever rendered — the
+                        # notice keyed on a field that record did not carry,
+                        # so the single state only the user can fix was the
+                        # single state never shown.
+                        _cnote = str(_lci.get("note") or "")
+                        _did = (int(_lci.get("messages_compacted", 0) or 0)
+                                + int(_lci.get("messages_trimmed", 0) or 0))
+                        if _cnote and not _did:
+                            _append_system_message(
+                                f"⚠️ Context NOT compacted — {_cnote}")
+                        elif _lci.get("kind") == "sliding_window":
                             _n = _lci.get("messages_trimmed", 0)
                             _append_system_message(
                                 f"🗜️ Context trimmed: {_n} older message(s) "
@@ -14752,6 +14756,7 @@ def create_tab(ctx):
                                 f"summarized (~{_saved} tokens saved). "
                                 f"Full history kept in the transcript archive "
                                 f"(/session archive ls)."
+                                + (f"\n⚠️ {_cnote}" if _cnote else "")
                             )
 
                     # If the output was repaired (harmony leak / glitch tokens),
@@ -15812,7 +15817,17 @@ def create_tab(ctx):
                     _update_status()
                     _update_button_states()
                     _auto_save_session()
-                    _check_auto_compact()
+                    # No second compactor here. The one that used to run
+                    # after every turn keyed on message COUNT alone: over 30
+                    # messages it kept the last 6 and a 200-character excerpt
+                    # of only the newest 8 of the ones it dropped — no
+                    # budget, no pinned-message exemption, no archive, no
+                    # elided store, nothing to retrieve any of it from. On a
+                    # 31-message session that is everything before index 17,
+                    # gone, at roughly 15% window usage: precisely the
+                    # failure the engine's own compaction comment records as
+                    # fixed. The engine compacts inside the turn, under
+                    # pressure, with the archive and the retrieval path.
                     # Stalled-task detector — once per turn check
                     # whether any in-progress task has gone untouched
                     # for too long and suggest /mode plan.  Best-effort,

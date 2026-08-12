@@ -70,13 +70,13 @@ def test_a_prompt_larger_than_the_budget_does_not_shred_the_history():
     """The reproduction above: 22.5k of prompt against a 22.4k budget."""
     eng = _engine(window=32_000, prompt_chars=90_000)
     before = _assistant_lengths(eng)
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     assert _assistant_lengths(eng) == before
 
 
 def test_it_says_why_instead_of_trimming_silently():
     eng = _engine(window=32_000, prompt_chars=90_000)
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     info = getattr(eng, "last_compaction_info", None) or {}
     text = str(info.get("note") or info.get("reason") or "")
     assert "prompt" in text.lower(), (
@@ -85,7 +85,7 @@ def test_it_says_why_instead_of_trimming_silently():
 
 def test_it_reports_that_it_trimmed_nothing():
     eng = _engine(window=32_000, prompt_chars=90_000)
-    assert eng._slide_window_trim() == 0
+    assert eng._shorten_oldest_non_goal_messages() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -96,14 +96,14 @@ def test_a_small_prompt_still_trims_the_history():
     eng = _engine(window=200_000, prompt_chars=4_000, n_msgs=250,
                   msg_chars=6_000)
     before = sum(_assistant_lengths(eng))
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     assert sum(_assistant_lengths(eng)) < before
 
 
 def test_trimming_stops_once_the_history_fits():
     eng = _engine(window=200_000, prompt_chars=4_000, n_msgs=250,
                   msg_chars=6_000)
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     budget = int(eng.context_window_tokens * AgentEngine._SLIDING_WINDOW_PCT)
     assert eng._estimate_context_tokens() <= budget
 
@@ -111,7 +111,7 @@ def test_trimming_stops_once_the_history_fits():
 def test_the_most_recent_messages_are_still_protected():
     eng = _engine(window=200_000, prompt_chars=4_000, n_msgs=250,
                   msg_chars=6_000)
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     kept = _assistant_lengths(eng)[-AgentEngine._KEEP_RECENT:]
     assert all(n > 3_000 for n in kept)
 
@@ -120,14 +120,14 @@ def test_a_history_that_already_fits_is_untouched():
     eng = _engine(window=200_000, prompt_chars=4_000, n_msgs=3,
                   msg_chars=500)
     before = _assistant_lengths(eng)
-    assert eng._slide_window_trim() == 0
+    assert eng._shorten_oldest_non_goal_messages() == 0
     assert _assistant_lengths(eng) == before
 
 
 def test_the_user_goal_is_never_trimmed():
     eng = _engine(window=200_000, prompt_chars=4_000, n_msgs=250,
                   msg_chars=6_000)
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     assert eng.messages[0]["content"] == "the goal"
 
 
@@ -143,7 +143,7 @@ def test_the_hard_clear_still_runs_when_only_the_tighter_budget_is_out_of_reach(
     eng = _engine(window=32_000, prompt_chars=90_000, n_msgs=60,
                   msg_chars=6_000)
     before = sum(_assistant_lengths(eng))
-    eng._hard_clear_old_tool_results(eng.messages[:-AgentEngine._KEEP_RECENT])
+    eng._stub_oldest_non_goal_messages(eng.messages[:-AgentEngine._KEEP_RECENT])
     assert sum(_assistant_lengths(eng)) < before, (
         "it refused a target it could actually have reached")
 
@@ -152,7 +152,7 @@ def test_the_hard_clear_refuses_a_target_out_of_reach_for_it_too():
     """Prompt over 95% of the window: now nothing it stubs can help."""
     eng = _engine(window=32_000, prompt_chars=130_000)
     before = _assistant_lengths(eng)
-    eng._hard_clear_old_tool_results(eng.messages[:-AgentEngine._KEEP_RECENT])
+    eng._stub_oldest_non_goal_messages(eng.messages[:-AgentEngine._KEEP_RECENT])
     assert _assistant_lengths(eng) == before
 
 
@@ -160,5 +160,5 @@ def test_the_hard_clear_still_works_when_it_can_help():
     eng = _engine(window=200_000, prompt_chars=4_000, n_msgs=250,
                   msg_chars=6_000)
     before = sum(_assistant_lengths(eng))
-    eng._hard_clear_old_tool_results(eng.messages[:-AgentEngine._KEEP_RECENT])
+    eng._stub_oldest_non_goal_messages(eng.messages[:-AgentEngine._KEEP_RECENT])
     assert sum(_assistant_lengths(eng)) <= before

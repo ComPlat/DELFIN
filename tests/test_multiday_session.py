@@ -129,7 +129,7 @@ def test_sliding_window_trims_large_assistant_message():
         {"role": "assistant", "content": "newest reply"},
     ]
     assert eng._should_slide()
-    n = eng._slide_window_trim()
+    n = eng._shorten_oldest_non_goal_messages()
     assert n >= 1
     # User goals survive verbatim
     assert eng.messages[0]["content"] == "we need to test the flux capacitor"
@@ -151,7 +151,7 @@ def test_sliding_window_protects_recent_messages():
         {"role": "assistant", "content": "c" * 5000},   # recent
         {"role": "user", "content": "u" * 100},          # recent
     ]
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     # The last 4 messages must be untouched
     for m in eng.messages[-4:]:
         assert "trimmed by sliding window" not in m["content"]

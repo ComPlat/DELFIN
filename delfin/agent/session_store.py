@@ -16,6 +16,62 @@ from pathlib import Path
 from typing import Any
 
 
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+# The version stamped into every session file this build writes. The files
+# had carried twenty-two keys and no version at all, so a reader had no way
+# to tell an old file missing half its fields from a complete one, and a
+# file from a newer build was read with today's loaders — silently dropping
+# whatever the newer build had added.
+#
+#   v1  unversioned: no run clock, no outcome-cost baseline
+#   v2  run_elapsed_s + last_outcome_cost carried across a resume
+SESSION_SCHEMA_VERSION = 2
+
+
+class SessionSchemaError(Exception):
+    """A session file this build must not read.
+
+    Raised for a schema version NEWER than ``SESSION_SCHEMA_VERSION``.
+    Refusing is the point: loading it anyway would drop the fields this
+    build does not know about and then present the result as a complete
+    restore.
+    """
+
+
+def migrate_session_data(
+    data: dict[str, Any], from_version: int,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Bring an older session dict up to the current schema.
+
+    Returns the upgraded copy (the input is never mutated) and the names of
+    the migrations that ran, so the restore report can say which ones did.
+    """
+    out = dict(data)
+    applied: list[str] = []
+    if from_version < 2:
+        # v1 files predate the run clock and the outcome-cost baseline.
+        # Neither can be reconstructed: the elapsed time of the earlier run
+        # was never recorded. The resumed run therefore starts its
+        # wall-clock budget from zero — stated here rather than left to be
+        # discovered as a budget that never expires.
+        out.setdefault("run_elapsed_s", 0.0)
+        out.setdefault("last_outcome_cost", float(out.get("cost_usd") or 0.0))
+        applied.append("v1_to_v2_run_clock_and_cost_baseline")
+    out["schema_version"] = SESSION_SCHEMA_VERSION
+    return out, tuple(applied)
+
+
+def _is_json_safe(value: Any) -> bool:
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _chmod_user_only(path: Path) -> None:
     try:
         os.chmod(path, 0o600)
@@ -538,6 +594,13 @@ def save_session(
     # empty record, and corrects the agent for restating what it verified
     # before the save.
     evidence: dict[str, Any] | None = None,
+    # Everything else the engine's exporter produces, persisted verbatim.
+    # The headless path forwards ``export_state()`` wholesale; without a
+    # catch-all here, a field added to the exporter would raise TypeError
+    # inside a best-effort save and the whole session would silently not be
+    # written. Persisting it unrecognised is strictly better than losing it,
+    # and the restore side reads the file by key.
+    **extra: Any,
 ) -> Path:
     """Save a session to disk.
 
@@ -598,6 +661,13 @@ def save_session(
                 break
 
     data = {
+        # Unrecognised exporter keys first, so a named parameter always
+        # wins over a same-named passthrough. Anything that would not
+        # survive json.dumps is dropped here rather than taking the whole
+        # save down with it.
+        **{str(k): v for k, v in (extra or {}).items()
+           if not str(k).startswith("_") and _is_json_safe(v)},
+        "schema_version": SESSION_SCHEMA_VERSION,
         "session_id": session_id,
         "mode": mode,
         "role_index": role_index,
@@ -1025,6 +1095,11 @@ def save_handoff_brief(session_id: str, brief: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
+# Bundle envelope format — independent of the session schema inside it.
+BUNDLE_KIND = "delfin-session-bundle"
+BUNDLE_FORMAT_VERSION = 1
+
+
 def _bundles_dir() -> Path:
     p = Path.home() / ".delfin" / "bundles"
     p.mkdir(parents=True, exist_ok=True)
@@ -1056,10 +1131,13 @@ def export_bundle(session_id: str) -> Path | None:
                 z.writestr("transcript.jsonl", archive.read_text(encoding="utf-8"))
             except OSError:
                 pass
-        # A tiny manifest so importers can sanity-check the bundle.
+        # A tiny manifest so importers can sanity-check the bundle. The
+        # importer now actually opens it — for its first two releases it
+        # did not, so the version written here was decoration.
         z.writestr("manifest.json", json.dumps({
-            "kind": "delfin-session-bundle",
-            "version": 1,
+            "kind": BUNDLE_KIND,
+            "version": BUNDLE_FORMAT_VERSION,
+            "schema_version": SESSION_SCHEMA_VERSION,
             "session_id": session_id,
             "exported_at": time.time(),
         }))
@@ -1073,6 +1151,13 @@ def import_bundle(bundle_path: Path | str, *, new_id: str | None = None) -> str 
     The session lands under a FRESH id (so it never clobbers an existing
     local session) and the transcript archive is restored alongside it.
     Returns the new session id, or ``None`` on failure.
+
+    The manifest the exporter writes is READ here. It carried a version
+    from the first release and nothing ever opened it, so a bundle from a
+    newer build — or a zip that merely happened to contain a session.json —
+    was ingested as if it were ours. A newer envelope or a newer session
+    schema is a stated refusal (``SessionSchemaError``), not a silent
+    partial import.
     """
     p = Path(bundle_path)
     if not p.is_file():
@@ -1082,6 +1167,13 @@ def import_bundle(bundle_path: Path | str, *, new_id: str | None = None) -> str 
             names = set(z.namelist())
             if "session.json" not in names:
                 return None
+            manifest: dict[str, Any] = {}
+            if "manifest.json" in names:
+                try:
+                    manifest = json.loads(
+                        z.read("manifest.json").decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    manifest = {}
             data = json.loads(z.read("session.json").decode("utf-8"))
             transcript = (
                 z.read("transcript.jsonl").decode("utf-8")
@@ -1089,6 +1181,30 @@ def import_bundle(bundle_path: Path | str, *, new_id: str | None = None) -> str 
             )
     except (zipfile.BadZipFile, json.JSONDecodeError, OSError, KeyError):
         return None
+
+    if isinstance(manifest, dict) and manifest:
+        kind = str(manifest.get("kind") or "")
+        if kind and kind != BUNDLE_KIND:
+            raise SessionSchemaError(
+                f"not a session bundle: manifest kind {kind!r}")
+        try:
+            fmt = int(manifest.get("version") or BUNDLE_FORMAT_VERSION)
+        except (TypeError, ValueError):
+            fmt = BUNDLE_FORMAT_VERSION
+        if fmt > BUNDLE_FORMAT_VERSION:
+            raise SessionSchemaError(
+                f"bundle envelope v{fmt}; this build understands "
+                f"v{BUNDLE_FORMAT_VERSION}. Refusing to import it.")
+    try:
+        inner = int(data.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        inner = 1
+    if inner > SESSION_SCHEMA_VERSION:
+        raise SessionSchemaError(
+            f"bundle carries a session of schema v{inner}; this build "
+            f"understands v{SESSION_SCHEMA_VERSION}. Refusing to import it.")
+    if inner < SESSION_SCHEMA_VERSION:
+        data, _applied = migrate_session_data(data, inner)
 
     sid = new_id or f"import-{int(time.time())}-{(data.get('session_id') or 'x')[-6:]}"
     data["session_id"] = sid

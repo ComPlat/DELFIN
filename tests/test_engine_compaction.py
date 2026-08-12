@@ -227,12 +227,12 @@ def test_pinned_message_survives_slide_trim_and_unpin_restores():
         {"role": "assistant", "content": "r4"},
     ]
     assert eng.pin_message(1) is True
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     assert eng.messages[1]["content"] == pinned_body          # verbatim
     assert "trimmed by sliding window" in eng.messages[2]["content"]
     # Unpin -> the message becomes trimmable again.
     assert eng.unpin_message(1) is True
-    eng._slide_window_trim()
+    eng._shorten_oldest_non_goal_messages()
     assert "trimmed by sliding window" in eng.messages[1]["content"]
 
 
@@ -244,7 +244,7 @@ def test_pinned_message_survives_hard_clear():
         {"role": "assistant", "content": pinned_body, "_pinned": True},
         {"role": "assistant", "content": "w" * 4000},
     ]
-    n = eng._hard_clear_old_tool_results(eng.messages)
+    n = eng._stub_oldest_non_goal_messages(eng.messages)
     assert n == 1
     assert eng.messages[0]["content"] == pinned_body          # verbatim
     assert eng.messages[1]["content"].startswith("[cleared:")
@@ -352,7 +352,7 @@ def test_slide_trim_writes_elided_record_with_matching_ref(fake_home):
         {"role": "user", "content": "r3"},
         {"role": "assistant", "content": "r4"},
     ]
-    assert eng._slide_window_trim() == 1
+    assert eng._shorten_oldest_non_goal_messages() == 1
     marker = eng.messages[0]["content"]
     m = _re.search(_REF_RE, marker)
     assert m, f"marker lacks retrieval ref: {marker[:200]}"
@@ -374,7 +374,7 @@ def test_hard_clear_writes_elided_record_with_matching_ref(fake_home):
     eng.context_window_tokens = 100
     original = "CLEARED BODY " + "c" * 3000
     eng.messages = [{"role": "assistant", "content": original}]
-    assert eng._hard_clear_old_tool_results(eng.messages) == 1
+    assert eng._stub_oldest_non_goal_messages(eng.messages) == 1
     marker = eng.messages[0]["content"]
     assert marker.startswith("[cleared:")
     m = _re.search(_REF_RE, marker)
@@ -400,7 +400,7 @@ def test_elision_store_failure_never_breaks_compaction(fake_home, monkeypatch):
         {"role": "user", "content": "r3"},
         {"role": "assistant", "content": "r4"},
     ]
-    assert eng._slide_window_trim() == 1          # trim still happened
+    assert eng._shorten_oldest_non_goal_messages() == 1          # trim still happened
     marker = eng.messages[0]["content"]
     assert "trimmed by sliding window" in marker
     assert "elided:" not in marker                 # no dangling ref
@@ -409,7 +409,7 @@ def test_elision_store_failure_never_breaks_compaction(fake_home, monkeypatch):
     eng2.session_id = "sess-broken"
     eng2.context_window_tokens = 100
     eng2.messages = [{"role": "assistant", "content": "y" * 3000}]
-    assert eng2._hard_clear_old_tool_results(eng2.messages) == 1
+    assert eng2._stub_oldest_non_goal_messages(eng2.messages) == 1
     assert "elided:" not in eng2.messages[0]["content"]
 
 
