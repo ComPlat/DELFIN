@@ -1025,14 +1025,13 @@ class AgentEngine:
         except Exception:
             return ""
         events: list[str] = []
-        drained: list[dict] = []
+        rendered: list[dict] = []
         try:
             # The sweep, not the single-folder drain: a job belongs to the
             # workspace it was started in, which is not always the one the
             # session is in now.
             from delfin.agent.bash_jobs import drain_all_finished_events
-            drained = drain_all_finished_events(ws) or []
-            for ev in drained:
+            for ev in drain_all_finished_events(ws) or []:
                 rc = ev.get("exit_code")
                 state = "ok" if rc == 0 else (
                     f"exit {rc}" if rc is not None else "finished (exit unknown)")
@@ -1051,6 +1050,7 @@ class AgentEngine:
                     + (f" → {tail}" if tail else "")
                     + (f" (submitted cluster job(s) {', '.join(submitted)}; "
                        f"now watched)" if submitted else ""))
+                rendered.append(ev)
         except Exception:
             pass
         try:
@@ -1071,14 +1071,14 @@ class AgentEngine:
         block = "\n".join(
             ["# Background jobs finished since your last turn "
              "(act on these results now)"] + events)
-        # Phase two: the notice now exists in the block being returned, so
-        # the claim can become a permanent acknowledgement. Confirming here
-        # rather than inside the drain is what makes a turn that dies
+        # Phase two: each event that actually reached the block being
+        # returned can now become a permanent acknowledgement. Confirming
+        # here rather than inside the drain is what makes a turn that dies
         # BEFORE this point re-deliver instead of losing the only word a
         # twelve-hour calculation ever gets.
         try:
             from delfin.agent.bash_jobs import confirm_finished_events
-            confirm_finished_events(drained)
+            confirm_finished_events(rendered)
         except Exception:
             pass
         return block

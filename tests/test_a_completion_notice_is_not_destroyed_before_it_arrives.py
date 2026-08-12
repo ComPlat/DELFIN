@@ -293,3 +293,105 @@ def test_all_three_teardown_paths_ask_the_same_question():
         body = wt_src[wt_src.index(fn):]
         body = body[:body.index("\n\ndef ")] if "\n\ndef " in body else body
         assert "jobs_holding_worktree" in body, f"{fn} does not check"
+
+
+# ---------------------------------------------------------------------------
+# The engine confirms only what actually reached the prompt
+# ---------------------------------------------------------------------------
+
+def _engine(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from delfin.agent import engine as E
+    with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+        return E.AgentEngine(repo_dir=tmp_path, backend="api", provider="kit",
+                             model="kit.qwen3.5-397b-A17b", mode="solo")
+
+
+def test_the_engine_confirms_the_events_it_put_in_the_prompt(
+        tmp_path, monkeypatch):
+    confirmed: list = []
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.confirm_finished_events",
+        lambda events: confirmed.extend(e["job_id"] for e in events))
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.drain_all_finished_events",
+        lambda ws: [{"job_id": "4711", "workspace": str(ws),
+                     "command": "sbatch opt.slurm", "exit_code": 0,
+                     "runtime_s": 3600.0, "stdout_tail": "done",
+                     "stderr_tail": ""}])
+    monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
+                        lambda ws: [])
+
+    block = _engine(tmp_path)._build_finished_jobs_block()
+
+    assert "4711" in block
+    assert confirmed == ["4711"], (
+        "the notice exists now, so the claim may become permanent")
+
+
+def test_a_turn_that_never_built_the_block_confirms_nothing(
+        tmp_path, monkeypatch):
+    """Nothing was delivered, so nothing may be retired."""
+    confirmed: list = []
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.confirm_finished_events",
+        lambda events: confirmed.extend(events))
+    monkeypatch.setattr("delfin.agent.bash_jobs.drain_all_finished_events",
+                        lambda ws: [])
+    monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
+                        lambda ws: [])
+
+    assert _engine(tmp_path)._build_finished_jobs_block() == ""
+    assert confirmed == []
+
+
+def test_a_wrapper_shell_that_left_children_says_so_in_the_prompt(
+        tmp_path, monkeypatch):
+    """'ok, 2s' for a twelve-hour cluster job is the failure this prevents."""
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.drain_all_finished_events",
+        lambda ws: [{"job_id": "4711", "workspace": str(ws),
+                     "command": "sbatch opt.slurm", "exit_code": 0,
+                     "runtime_s": 2.0, "stdout_tail": "", "stderr_tail": "",
+                     "children_running": True,
+                     "watched_slurm_jobs": ["99123"]}])
+    monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
+                        lambda ws: [])
+
+    block = _engine(tmp_path)._build_finished_jobs_block()
+
+    assert "children still running" in block
+    assert "99123" in block and "now watched" in block
+
+
+def test_a_job_killed_at_its_cap_is_not_reported_as_a_clean_exit(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "delfin.agent.bash_jobs.drain_all_finished_events",
+        lambda ws: [{"job_id": "4711", "workspace": str(ws),
+                     "command": "orca big.inp", "exit_code": None,
+                     "runtime_s": 86400.0, "stdout_tail": "",
+                     "stderr_tail": "", "timed_out": True}])
+    monkeypatch.setattr("delfin.agent.job_monitor.check_agent_jobs",
+                        lambda ws: [])
+
+    assert "wall-clock cap" in _engine(tmp_path)._build_finished_jobs_block()
+
+
+def test_an_unreachable_queue_reaches_the_prompt_as_a_degradation(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr("delfin.agent.bash_jobs.drain_all_finished_events",
+                        lambda ws: [])
+    monkeypatch.setattr(
+        "delfin.agent.job_monitor.check_agent_jobs",
+        lambda ws: [{"job_id": "555", "kind": "slurm", "state": "UNAVAILABLE",
+                     "description": "twelve-hour opt", "ok": False,
+                     "exit_code": None, "signatures": [],
+                     "degraded": "the scheduler could not be asked about "
+                                 "this job — its state is unknown, not "
+                                 "unchanged"}])
+
+    block = _engine(tmp_path)._build_finished_jobs_block()
+
+    assert "unknown, not unchanged" in block
