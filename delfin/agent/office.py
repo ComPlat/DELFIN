@@ -442,6 +442,38 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+_CLIP_MARK = "…"
+
+
+def _clip_cell(text: str, limit: int) -> str:
+    """Shorten a cell and say that it was shortened.
+
+    The grid is the only representation of a cell the model ever sees, so
+    a silent cut made "Rechnung 2026-0001 Storno wegen Rücksend" —
+    the first forty characters of a purpose line — indistinguishable
+    from a value that really ends there. The model could then quote it
+    back as the cell's content, or write it into an edit.
+    """
+    if limit <= 1 or len(text) <= limit:
+        return text
+    return text[:limit - 1] + _CLIP_MARK
+
+
+def clipped_cell_count(rows: list[list[Any]], limit: int = 40) -> int:
+    """How many cells the grid had to shorten — for the reader's notes.
+
+    The per-cell mark says THAT a value is cut; this says how much of the
+    table is affected, which is what decides whether the window can be
+    trusted for anything but orientation.
+    """
+    n = 0
+    for row in rows:
+        for value in row:
+            if len(_fmt(value)) > limit:
+                n += 1
+    return n
+
+
 def render_grid(
     rows: list[list[Any]],
     *,
@@ -459,7 +491,8 @@ def render_grid(
         return "(empty)"
     width = max(len(r) for r in rows)
     cells = [
-        [_fmt(r[i])[:max_cell_chars] if i < len(r) else "" for i in range(width)]
+        [_clip_cell(_fmt(r[i]), max_cell_chars) if i < len(r) else ""
+         for i in range(width)]
         for r in rows
     ]
     headers = [column_letter(first_col + i) for i in range(width)]
@@ -901,8 +934,62 @@ def sniff_delimiter(text: str, suffix: str = "") -> str:
     return best
 
 
+def _window_notes(
+    window: list[list[Any]], *, total_cols: int, start_col: int,
+    max_cols: int, cell_limit: int = 40,
+) -> list[str]:
+    """What the caller is NOT seeing, and how to see it.
+
+    Row truncation was signposted with a remedy from the start; the two
+    other cuts were not. Columns said "showing 40 of 87" and named
+    nothing the caller could do — the slice always began at column 1, so
+    columns 41 to 87 were unreachable through this tool. And cells were
+    cut at forty characters in silence.
+
+    A limit stated without a remedy is worse than no limit: it tells the
+    model something is missing and leaves it to guess, which in practice
+    means answering from the part it has.
+    """
+    out: list[str] = []
+    shown = len(window[0]) if window else 0
+    last = start_col + shown - 1
+    if total_cols > shown or start_col > 1:
+        out.append(
+            f"showing columns {start_col}-{last} of {total_cols} — pass "
+            f"start_col to page across")
+    clipped = clipped_cell_count(window, cell_limit)
+    if clipped:
+        out.append(
+            f"{clipped} cell(s) are longer than {cell_limit} characters and "
+            f"end with '{_CLIP_MARK}' in the grid above — that is the display "
+            f"being cut, not the value. Narrow the window to read one in "
+            f"full before quoting or copying it.")
+    return out
+
+
+def _profile_scope_note(profiled_rows: int, total_rows: int) -> list[str]:
+    """A profile is a fact about the rows it saw, not about the file.
+
+    The column profiles — the type, the decimal convention, the date
+    order, the count of values that would not parse — are computed from
+    the window and rendered under a header stating the file's full row
+    count. So "Betrag: number (decimal_comma), 3 of 200 not parseable"
+    sat directly under "40000 rows", and read as a property of the
+    column. Worse, the convention it decides there is then applied to
+    the whole file by the summing and comparing tools.
+    """
+    if profiled_rows >= total_rows or total_rows <= 0:
+        return []
+    return [
+        f"the column profiles below are computed from rows 1-{profiled_rows} "
+        f"of {total_rows}. The conventions they report — decimal comma, date "
+        f"order, what counts as a number — and every count in them describe "
+        f"that range, not the whole file."]
+
+
 def _read_csv(
-    path: Path, *, max_rows: int, max_cols: int, start_row: int
+    path: Path, *, max_rows: int, max_cols: int, start_row: int,
+    start_col: int = 1,
 ) -> dict:
     import io
 
@@ -931,7 +1018,9 @@ def _read_csv(
     total_rows = len(all_rows)
     total_cols = max((len(r) for r in all_rows), default=0)
     begin = max(0, start_row - 1)
-    window = [r[:max_cols] for r in all_rows[begin:begin + max_rows]]
+    col_begin = max(0, start_col - 1)
+    window = [r[col_begin:col_begin + max_cols]
+              for r in all_rows[begin:begin + max_rows]]
     notes = []
     if delimiter != ",":
         notes.append(f"delimiter detected: {delimiter!r}")
@@ -944,8 +1033,8 @@ def _read_csv(
         notes.append(
             f"showing rows {begin + 1}-{begin + len(window)} of {total_rows} "
             f"— pass start_row to page further")
-    if total_cols > max_cols:
-        notes.append(f"showing {max_cols} of {total_cols} columns")
+    notes.extend(_window_notes(
+        window, total_cols=total_cols, start_col=start_col, max_cols=max_cols))
     # Rows that do not have the header's width. An unquoted separator
     # inside a value — "Digitalwaage 0,1 mg" in a comma-separated file —
     # shifts every field after it by one, so a personnel number column
@@ -962,7 +1051,10 @@ def _read_csv(
             "inside an unquoted value shifts every field after it, so the "
             "columns of those rows do not mean what their header says.")
 
-    profiles = profile_table(all_rows[:2000])
+    _PROFILE_ROWS = 2000
+    profiles = profile_table(all_rows[:_PROFILE_ROWS])
+    notes.extend(_profile_scope_note(min(_PROFILE_ROWS, total_rows),
+                                     total_rows))
     notes.extend(column_notes(profiles))
     return {
         "path": str(path),
@@ -971,8 +1063,10 @@ def _read_csv(
         "sheet": "",
         "rows": total_rows,
         "columns": total_cols,
-        "grid": render_grid(window, first_row=begin + 1),
+        "grid": render_grid(window, first_row=begin + 1,
+                            first_col=start_col),
         "column_profile": profiles,
+        "profile_rows": min(_PROFILE_ROWS, total_rows),
         "notes": notes,
     }
 
@@ -1259,11 +1353,12 @@ def _ods_window(entries: list, start_row: int, max_rows: int) -> list[list]:
 
 def _read_ods(
     p: Path, *, max_rows: int, max_cols: int, start_row: int,
-    sheet: Optional[str] = None,
+    sheet: Optional[str] = None, start_col: int = 1,
 ) -> dict:
     names, chosen, entries, total_rows, total_cols, hidden = _ods_sheet(
         p, sheet)
-    window = [row[:max_cols] for row in
+    _col_begin = max(0, start_col - 1)
+    window = [row[_col_begin:_col_begin + max_cols] for row in
               _ods_window(entries, start_row, max_rows)]
 
     notes: list[str] = []
@@ -1283,8 +1378,9 @@ def _read_ods(
         notes.append(
             f"showing rows {start_row}-{start_row + len(window) - 1} of "
             f"{total_rows} — pass start_row to page further")
-    if total_cols > max_cols:
-        notes.append(f"showing {max_cols} of {total_cols} columns")
+    notes.extend(_window_notes(
+        window, total_cols=total_cols, start_col=start_col,
+        max_cols=max_cols))
     if hidden:
         notes.append(
             f"{hidden} row(s) of this sheet are hidden or filtered out. "
@@ -1292,6 +1388,7 @@ def _read_ods(
             "differ from what the file shows on screen.")
 
     profiles = profile_table(window, header=(start_row == 1))
+    notes.extend(_profile_scope_note(len(window), total_rows))
     notes.extend(column_notes(profiles))
     return {
         "path": str(p),
@@ -1305,8 +1402,10 @@ def _read_ods(
         "sheet": chosen,
         "rows": total_rows,
         "columns": total_cols,
-        "grid": render_grid(window, first_row=start_row),
+        "grid": render_grid(window, first_row=start_row,
+                            first_col=start_col),
         "column_profile": profiles,
+        "profile_rows": len(window),
         "notes": notes,
     }
 
@@ -1318,6 +1417,7 @@ def read_sheet(
     max_rows: int = DEFAULT_MAX_ROWS,
     max_cols: int = DEFAULT_MAX_COLS,
     start_row: int = 1,
+    start_col: int = 1,
 ) -> dict:
     """Read a window of a spreadsheet or CSV as an addressable grid.
 
@@ -1333,13 +1433,16 @@ def read_sheet(
     max_rows = max(1, min(int(max_rows), 2000))
     max_cols = max(1, min(int(max_cols), 200))
     start_row = max(1, int(start_row))
+    start_col = max(1, int(start_col))
 
     if kind == "csv":
         return _read_csv(
-            p, max_rows=max_rows, max_cols=max_cols, start_row=start_row)
+            p, max_rows=max_rows, max_cols=max_cols, start_row=start_row,
+            start_col=start_col)
     if kind == "opendocument_sheet":
         return _read_ods(p, max_rows=max_rows, max_cols=max_cols,
-                         start_row=start_row, sheet=sheet)
+                         start_row=start_row, sheet=sheet,
+                         start_col=start_col)
     if kind != "spreadsheet":
         raise OfficeError(
             f"{p.name} is not a spreadsheet (suffix {p.suffix!r})")
@@ -1368,7 +1471,8 @@ def read_sheet(
         for row in ws.iter_rows(
             min_row=start_row,
             max_row=min(total_rows, start_row + max_rows - 1),
-            max_col=min(total_cols, max_cols),
+            min_col=start_col,
+            max_col=min(total_cols, start_col + max_cols - 1),
             values_only=True,
         ):
             window.append(list(row))
@@ -1412,7 +1516,8 @@ def read_sheet(
                 for r_idx, row in enumerate(ws_values.iter_rows(
                     min_row=start_row,
                     max_row=min(total_rows, start_row + max_rows - 1),
-                    max_col=min(total_cols, max_cols),
+                    min_col=start_col,
+                    max_col=min(total_cols, start_col + max_cols - 1),
                     values_only=True,
                 )):
                     if r_idx >= len(window):
@@ -1445,8 +1550,9 @@ def read_sheet(
             notes.append(
                 f"showing rows {start_row}-{start_row + len(window) - 1} of "
                 f"{total_rows} — pass start_row to page further")
-        if total_cols > max_cols:
-            notes.append(f"showing {max_cols} of {total_cols} columns")
+        notes.extend(_window_notes(
+            window, total_cols=total_cols, start_col=start_col,
+            max_cols=max_cols))
         if xlsx_hidden:
             # The .ods reader has said this for a long time; the .xlsx branch
             # never looked at row_dimensions or auto_filter. A finance workbook
@@ -1479,6 +1585,7 @@ def read_sheet(
         # header only when it really is one (paging into the middle of a
         # sheet must not promote a data row to a column name).
         profiles = profile_table(window, header=(start_row == 1))
+        notes.extend(_profile_scope_note(len(window), total_rows))
         notes.extend(column_notes(profiles))
 
         return {
@@ -1488,8 +1595,10 @@ def read_sheet(
             "sheet": ws.title,
             "rows": total_rows,
             "columns": total_cols,
-            "grid": render_grid(window, first_row=start_row),
+            "grid": render_grid(window, first_row=start_row,
+                                first_col=start_col),
             "column_profile": profiles,
+            "profile_rows": len(window),
             "notes": notes,
         }
     finally:
@@ -4661,6 +4770,7 @@ def read_document(path: Any, **kwargs: Any) -> dict:
             max_rows=int(kwargs.get("max_rows") or DEFAULT_MAX_ROWS),
             max_cols=int(kwargs.get("max_cols") or DEFAULT_MAX_COLS),
             start_row=int(kwargs.get("start_row") or 1),
+            start_col=int(kwargs.get("start_col") or 1),
         )
     if kind == "pdf":
         if kwargs.get("fields"):

@@ -49,7 +49,20 @@ _BASELINE_TOKENS = 11_422
 # work would trade clarity for capacity. The tool is also named in
 # _POST_COMPACTION_TOOLS below, so the diet ratchet still measures the
 # compacted surface on its own and cannot be quietly undone by additions.
-_TOKEN_BUDGET = 9_125
+#
+# Raised a second time, 9_125 -> 9_133, for column paging: `start_col` on
+# read_document. The reader used to say "showing 40 of 87 columns" and
+# name nothing the caller could do — the slice always began at column 1,
+# so columns 41 to 87 were unreachable through the tool and absent from
+# the column profile without that being said. A limit announced without a
+# remedy is worse than no limit; it tells the model something is missing
+# and leaves it to answer from the part it has.
+#
+# Paid for as far as it can be: the new parameter costs 20 tokens, and
+# read_document's own description plus two of its parameter texts were
+# tightened to return 12. The ceiling moves by the measured remainder,
+# 8, and not by a round number.
+_TOKEN_BUDGET = 9_133
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

@@ -193,4 +193,14 @@ def test_office_may_use_it_and_the_surface_still_fits():
                                          tool_schema_token_report)
 
     assert not _tool_denied_for_role("office_agent", "draft_email")
-    assert tool_schema_token_report()["total_tokens"] <= 9_125
+    # 9_125 -> 9_133. Column paging (`start_col` on read_document) is the
+    # capability that raised it, and it is paid for as far as it can be:
+    # read_document's own description and two of its parameter texts were
+    # tightened, returning 12 of the 20 tokens the new parameter costs.
+    # The remaining 8 are the measured price of the change, so the ceiling
+    # moves by 8 and not by a round number.
+    #
+    # It buys the remedy for a limit that previously had none: the reader
+    # said "showing 40 of 87 columns" and there was no way to reach the
+    # other 47 — the slice always began at column 1.
+    assert tool_schema_token_report()["total_tokens"] <= 9_133

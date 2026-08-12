@@ -2687,10 +2687,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "read_document",
             "description": (
                 "Read a spreadsheet (.xlsx/.ods/.csv), PDF, .docx or .odt — "
-                "read_file cannot, these are containers. Sheets come back as "
-                "a grid with column letters and row numbers to cite in "
-                "edit_sheet. fields=true lists a PDF form's fields instead "
-                "of its text."
+                "read_file cannot, these are containers. Sheets come back "
+                "as an addressable grid to cite in edit_sheet. fields=true "
+                "lists a PDF form's fields instead of its text."
             ),
             "parameters": {
                 "type": "object",
@@ -2698,11 +2697,15 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "path": {"type": "string"},
                     "sheet": {
                         "type": "string",
-                        "description": "Default: the active one.",
+                        "description": "Default: active.",
                     },
                     "start_row": {
                         "type": "integer",
-                        "description": "1-based, for paging.",
+                        "description": "1-based, pages down.",
+                    },
+                    "start_col": {
+                        "type": "integer",
+                        "description": "1-based, pages across.",
                     },
                     "max_rows": {"type": "integer"},
                     "max_cols": {"type": "integer"},
@@ -2713,7 +2716,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "fields": {"type": "boolean"},
                     "ocr": {
                         "type": "boolean",
-                        "description": "Scanned PDF pages only.",
+                        "description": "Scanned PDFs only.",
                     },
                 },
                 "required": ["path"],
@@ -7159,6 +7162,7 @@ class _DocToolExecutor:
                 max_cols=_as_int(arguments.get("max_cols"),
                                  _office.DEFAULT_MAX_COLS),
                 start_row=_as_int(arguments.get("start_row"), 1),
+                start_col=_as_int(arguments.get("start_col"), 1),
                 pages=arguments.get("pages"),
                 fields=bool(arguments.get("fields")),
                 ocr=bool(arguments.get("ocr")),
