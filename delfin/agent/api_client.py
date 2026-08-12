@@ -1232,7 +1232,21 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"git\s+tag\s+-d\b",                   # tag delete
     r"git\s+tag\s+--delete\b",
     r"git\s+worktree\s+remove\b",
-    r"git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d",
+    # `-fd` was the only spelling this caught. `git clean -f -d` and
+    # `git clean -xdf` — the forms people actually type, and the more
+    # destructive ones — matched nothing and fell through to the confirm
+    # gate, which under an unattended profile means they ran. Match the
+    # FLAGS instead of one spelling of them: force, plus either recursing
+    # into directories or including ignored files, in any order and
+    # across any number of tokens.
+    r"git\s+clean\b"
+    r"(?=[^;|&]*(?:\s-[a-zA-Z]*f[a-zA-Z]*\b|\s--force\b))"
+    r"(?=[^;|&]*\s-[a-zA-Z]*[dx][a-zA-Z]*\b)",
+    # Committing under someone else's name, or with a forged date. The
+    # auto-allow entry for `git commit -m` anchors on the message flag
+    # and ignores the rest of the line, so this ran unattended.
+    r"git\s+commit\b[^;|&]*--author[=\s]",
+    r"git\s+commit\b[^;|&]*--date[=\s]",
     r"git\s+update-ref\s+-d\b",
     r"git\s+filter-(?:branch|repo)\b",     # history rewriting
     r">\s*/dev/(sd|nvme|hd|xvd)",
@@ -1274,13 +1288,32 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*awk\s+",                                           # awk has no destructive default
     r"^\s*jq\b", r"^\s*yq\b",
     r"^\s*git\s+(?:status|diff|log|show|branch(?!\s+-D)|remote|config\s+--get|"
-    r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+list|tag\s*$|"
-    r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|switch|checkout|add|"
+    r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+(?:list|show)|tag\s*$|"
+    r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|"
+    r"switch(?![^;|&]*--discard-changes)|"
     # NOTE: 'push' is deliberately NOT here. Pushing publishes to a remote — an
     # outward-facing, hard-to-undo action (it can hit a shared/protected branch
     # like main). Per this list's own policy ("Anything that pushes to remote …
     # must NOT be here") it must go through the confirm gate, never auto-run.
-    r"restore(?!\s+--source)|commit\s+-m|commit\s+--message|stash|init)\b",
+    #
+    # 'add', 'checkout', 'restore' and bare 'stash' were here and are not any
+    # more. Each of them can destroy work that this session did not create,
+    # and the list's own policy already excluded that class — see the two
+    # entries below, which put back the harmless half of 'add' and 'checkout'.
+    r"commit\s+-m|commit\s+--message|init)\b",
+    # Staging NAMED paths is routine. Staging everything is a different act:
+    # in a tree that also holds work this session did not do — a colleague's
+    # edits, another agent's, the user's own — a bulk stage sweeps it into
+    # the agent's commit, and afterwards nothing can say which hunks were
+    # whose. So `git add delfin/agent/office.py` runs, and `git add -A`,
+    # `git add .`, `git add -u` go to the confirm gate.
+    r"^\s*git\s+add\s+(?!(?:-A|--all|-u|--update|\.|:/)(?:\s|$))[^-\s]",
+    # Moving to a branch is routine; `git checkout -- <path>` and
+    # `git checkout .` overwrite uncommitted work in place and cannot be
+    # undone. The project's own git rules name `checkout --` as destructive
+    # in the same breath as `reset --hard` — and it was auto-allowed while
+    # `reset --hard` was denied.
+    r"^\s*git\s+checkout\s+(?:-b\s+)?(?!\.\s*$)(?!-)[\w./@+-]+\s*$",
     r"^\s*tar\s+-?t",                                        # tar list-only
     r"^\s*unzip\s+-l\b",
     # -- (b) coding workflow ---------------------------------------------

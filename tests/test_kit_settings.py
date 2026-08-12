@@ -186,7 +186,12 @@ def test_corrupt_file_falls_back_to_defaults(tmp_user_path):
     ("pytest -xvs tests/foo.py", r"^\s*pytest\b"),
     ("ruff check .",            r"^\s*ruff\b"),
     ("git status",              r"^\s*git\s+status\b"),
-    ("git commit -m 'msg'",     r"^\s*git\s+commit\b"),
+    # `git commit` used to generalise to two tokens like `git status`.
+    # It does not any more: the subcommands whose invocations differ in
+    # what they can break generalise to the exact command, so approving
+    # one push or one commit cannot become a standing grant for a
+    # heavier one. See test_the_git_gate_matches_the_git_rules.py.
+    ("git commit -m 'msg'",     r"^\s*git\ commit\ \-m\ 'msg'\s*$"),
     ("python3 -m delfin.cli x", r"^\s*python3\s+-m\s+delfin\.cli\b"),
     ("",                        ""),
 ])

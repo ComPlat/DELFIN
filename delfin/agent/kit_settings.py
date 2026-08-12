@@ -354,6 +354,19 @@ _NO_BARE_HEAD = frozenset({
     "truncate", "shred", "eval", "exec", "sh", "bash", "zsh",
 })
 
+# The same idea one level down: `<head> <verb>` is a fair generalisation
+# only when every invocation of that verb carries the same weight. These
+# do not — `git push` to a feature branch and `git push` to main differ by
+# what they can break, and `git commit -m` differs from `git commit
+# --author=`. Approving one must not persist a rule covering the other, so
+# they generalise to the exact command.
+_NARROW_SUBCOMMANDS = frozenset({
+    "git push", "git commit", "git merge", "git rebase", "git reset",
+    "git clean", "git checkout", "git restore",
+    "pip install", "pip uninstall", "conda remove", "npm publish",
+    "cargo publish", "cargo install", "uv publish",
+})
+
 
 def suggest_pattern_for_command(cmd: str) -> str:
     """Translate a shell command into a re-usable auto-allow regex.
@@ -373,6 +386,16 @@ def suggest_pattern_for_command(cmd: str) -> str:
     head = parts[0]
     if head in ("git", "uv", "pip", "conda", "npm", "yarn", "cargo") and len(parts) >= 2:
         verb = parts[1]
+        # Two tokens are the right granularity only when every invocation
+        # of that subcommand carries the same blast radius. For these it
+        # does not: approving `git push -u origin feature` once would
+        # persist `^\s*git\s+push\b`, and from then on `git push origin
+        # main` and `git push --force-with-lease origin main` auto-run in
+        # every future session — the invariant that pushing always goes
+        # through the gate, revoked by a click that asked about a feature
+        # branch. Fall through to the exact-command form instead.
+        if f"{head} {verb}" in _NARROW_SUBCOMMANDS:
+            return r"^\s*" + _re.escape(cmd) + r"\s*$"
         return rf"^\s*{head}\s+{verb}\b"
     if head in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
         mod = parts[2].replace(".", r"\.")

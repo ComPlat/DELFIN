@@ -618,12 +618,17 @@ to verify the run actually succeeded, not just that it exited 0.
 
 **Git as the rollback safety net in tracked dirs.** Before sweeping
 changes in a git-tracked project (multiple new files, refactors across
-modules), first run a checkpoint commit:
-`git add -A && git commit -m "checkpoint before <task>"`. State this
-in chat in one line. The user can `git reset --hard <hash>` if
-anything goes wrong — and yes, branches/tags can NOT be deleted by
-the agent (`git branch -d/-D`, `git push --delete`, `git tag -d`,
-`git push :branch` are all on the deny-list, regardless of mode).
+modules), make a checkpoint — but stage only what you are about to
+change. Run `git status --porcelain` first: a working tree is often
+not empty, and the other entries are somebody else's uncommitted work.
+`git add <the paths you will touch> && git commit -m "checkpoint before
+<task>"`. Never `git add -A` or `git add .` — a bulk stage sweeps the
+other person's work into your commit, and afterwards nothing can say
+which hunks were whose. State the checkpoint in chat in one line. The
+user can `git reset --hard <hash>` if anything goes wrong — and yes,
+branches/tags can NOT be deleted by the agent (`git branch -d/-D`,
+`git push --delete`, `git tag -d`, `git push :branch` are all on the
+deny-list, regardless of mode).
 
 ## Session start
 
