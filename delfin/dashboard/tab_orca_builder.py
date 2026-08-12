@@ -982,20 +982,28 @@ def create_tab(ctx):
         index = int(state.get('xyz_view_idx', 0))
         here = blocks[index][0] if 0 <= index < len(blocks) else ''
         there = state.get('editor_block')
-        if there != here:
-            memory = state.setdefault('editor_memory', {})
-            if there is not None:
-                memory[there] = orca_editor.remember_structure()
-            orca_editor.restore_structure(memory.get(here))
-            state['editor_block'] = here
+        memory = state.setdefault('editor_memory', {})
+        if there != here and there is not None:
+            memory[there] = orca_editor.remember_structure()
+        # The coordinates first, then the memory: giving the memory back while
+        # the box still held the block being left made the editor perceive that
+        # one again under the new block's name, and the bonding that was being
+        # handed back was overwritten in the same breath.
         state['editor_quiet'] = True
         try:
             orca_editor_coords.value = full_xyz or ''
         finally:
             state['editor_quiet'] = False
+        if there != here:
+            orca_editor.restore_structure(memory.get(here))
+            state['editor_block'] = here
         if full_xyz:
             orca_editor._ensure_manip_bootstrap()
         orca_editor._set_manip_toolbar_enabled(bool(full_xyz))
+        if there != here and full_xyz:
+            # The block on screen changed, so a running force field has to be
+            # worked out again for it.
+            orca_editor.structure_changed()
 
     def _take_structures(isomers, quick=False):
         """Every structure a conversion produced, as named blocks.

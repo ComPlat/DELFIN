@@ -25,6 +25,7 @@ One real bug came with the second editor, and it is in this file's second half:
 the browser looked its toolbar parts up by falling back to the whole page.
 """
 
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -1066,3 +1067,65 @@ def test_all_optimises_every_block(builder):
     assert sum(1 for a, b in zip(before, after) if a != b) == 5
     assert [name for name, _xyz in state['xyz_blocks']] == [
         'conf-%d.xyz' % i for i in range(1, 6)]
+
+
+def test_the_live_field_follows_the_frame(builder):
+    """Dynamik Opt was pulling at a molecule it had never been told about.
+
+    A live force field is a set of parameters worked out for one structure.
+    Stepping from one block to another swapped the model in the viewer and left
+    the previous block's parameters running under it -- with the wrong number of
+    atoms, even.
+
+    Measured through the real tab on a water and an ethane: the field has three
+    terms on the water, twenty-eight after stepping to the ethane, and three
+    again on the way back.
+    """
+    refs, sent = builder
+    water = "O 0.000 0.000 0.000\nH 0.960 0.000 0.000\nH -0.240 0.930 0.000"
+    ethane = ("C 0.000 0.000 0.000\nC 1.530 0.000 0.000\nH -0.360 1.020 0.000\n"
+              "H -0.360 -0.510 0.880\nH -0.360 -0.510 -0.880\n"
+              "H 1.890 1.020 0.000\nH 1.890 -0.510 0.880\nH 1.890 -0.510 -0.880")
+    refs['orca_coords'].value = (
+        'wat.xyz;\n3\n\n' + water + '\n*\n\neth.xyz;\n8\n\n' + ethane + '\n*')
+
+    def terms():
+        fields = [s for s in sent if 'setForceField' in s]
+        return len(re.findall(r'"k"', fields[-1])) if fields else None
+
+    sent.clear()
+    refs['submit_relax_btn'].value = True
+    assert terms() == 3
+
+    sent.clear()
+    refs['orca_mol_next_btn'].click()
+    assert any('setForceField' in s for s in sent), 'no field for the new frame'
+    assert terms() == 28
+
+    sent.clear()
+    refs['orca_mol_prev_btn'].click()
+    assert terms() == 3
+
+
+def test_a_comment_line_is_not_an_atom(builder):
+    """What makes an XYZ the same molecule is its element column, and a row
+    counts only if what follows the symbol are three numbers.
+
+    Four whitespace-separated words were enough, and an XYZ comment is free
+    text: "Edited in DELFIN viewer" is four words, so it went into the
+    fingerprint as an atom called Edited. The molecule then looked like a
+    different one every time the comment changed -- which it does on every
+    edit and every optimisation -- so the bonding was perceived again from the
+    coordinates, and a bond stretched by dragging an atom away was gone.
+    """
+    refs, _sent = builder
+    refs['orca_coords'].value = 'eth.xyz;\n8\n\n' + ETHANE + '\n*'
+    refs['submit_relax_btn'].value = True
+    state = refs['editor_state']
+
+    assert state['perceived_for'] == ('C', 'C', 'H', 'H', 'H', 'H', 'H', 'H')
+    assert 'Edited' not in state['perceived_for']
+
+    state['manip_inflight'] = True
+    refs['editor_coords'].value = '8\nEdited in DELFIN viewer\n' + ETHANE
+    assert state['perceived_for'] == ('C', 'C', 'H', 'H', 'H', 'H', 'H', 'H')

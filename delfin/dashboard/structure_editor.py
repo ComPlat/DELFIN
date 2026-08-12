@@ -1262,9 +1262,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             pass
 
     def _structure_fingerprint(xyz):
-        """Element column of an XYZ block -- what makes it the same molecule."""
-        rows = [line.split() for line in (xyz or '').splitlines() if line.strip()]
-        return tuple(r[0] for r in rows if len(r) >= 4)
+        """Element column of an XYZ block -- what makes it the same molecule.
+
+        A row counts only if what follows the symbol are three numbers. Four
+        whitespace-separated words were enough before, and an XYZ comment line
+        is free text: "Edited in DELFIN viewer" is four words, so it went into
+        the fingerprint as though it were an atom called Edited. The molecule
+        then looked like a different one every time a comment changed, the
+        bonding was perceived again from the coordinates, and a bond stretched
+        by dragging an atom away was gone.
+        """
+        out = []
+        for line in (xyz or '').splitlines():
+            row = line.split()
+            if len(row) < 4:
+                continue
+            try:
+                float(row[1]), float(row[2]), float(row[3])
+            except ValueError:
+                continue
+            out.append(row[0])
+        return tuple(out)
 
     def _perception_for(xyz):
         """Perceive the bonding once per structure and keep it.
@@ -5061,6 +5079,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state.setdefault(key, empty)
         _refresh_constraints()
 
+    def structure_changed():
+        """A different structure is on screen now.
+
+        A live force field is a set of parameters worked out for one molecule.
+        Stepping from one block to another left the previous one's running
+        under the new structure -- with the wrong number of atoms, even, so
+        Dynamik Opt pulled at a molecule it had never been told about. The
+        parameters are worked out again for what is being shown, and only
+        while the switch is on.
+        """
+        if submit_relax_btn.value:
+            _enable_live_forcefield()
+
     def reset_controls():
         """Back to how the editor starts, for a structure it has not seen.
 
@@ -5146,6 +5177,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f'{num_atoms}\nConverted from SMILES (isomer: {label})\n{xyz_string}')
         finally:
             state['editor_quiet'] = False
+        # Another isomer is another structure: a running field belongs to the
+        # one its parameters were worked out for.
+        structure_changed()
 
     def handle_isomer_prev(button):
         if state['isomers']:
