@@ -12996,8 +12996,19 @@ def create_tab(ctx):
         )
         if not full_path.is_file():
             return
-        # keyed by folder, so the same name in another directory still opens
-        state['last_opened_label'] = (state['current_path'], label)
+        # Keyed by the file name, not by the label the click carried. One
+        # press is reported twice -- by the browser's click bridge and by the
+        # selection change it causes -- and the two do not spell the label
+        # alike: the bridge keeps the non-breaking space the list draws with
+        # ("\U0001f52c\xa0second.xyz") where the selection change hands over a
+        # plain one. So the guard never matched, both reports opened the file,
+        # and opening a structure builds a whole 3Dmol viewer: measured, two
+        # fresh stages per click and 232-309 ms of blocked main thread, one of
+        # the two thrown away as soon as it existed. The name is what the path
+        # is built from a few lines up, so keying on it makes the two agree by
+        # construction. Still keyed by folder as well, so the same name in
+        # another directory still opens.
+        state['last_opened_label'] = (state['current_path'], name)
         _calc_open_item(label)
 
     def calc_on_open_request(change):
@@ -13020,7 +13031,8 @@ def create_tab(ctx):
             # The click bridge above has usually opened this one already.  This
             # path still serves keyboard navigation, and stands in whenever the
             # bridge is not installed.
-            if (state['current_path'], labels[0]) == state.get('last_opened_label'):
+            if ((state['current_path'], _calc_label_to_name(labels[0]))
+                    == state.get('last_opened_label')):
                 return
             _calc_open_file_label(labels[0])
 
