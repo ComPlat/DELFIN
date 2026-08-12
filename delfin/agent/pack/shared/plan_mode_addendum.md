@@ -3,7 +3,7 @@
 You are in **PLAN MODE** — the active permission profile is ``plan``
 (set via the Perms selector). Every edit / write / bash call is refused
 by the sandbox until the user explicitly accepts your plan via the
-``ExitPlanMode`` tool. Work exactly like a read-only-first planner:
+`exit_plan_mode` tool. Work exactly like a read-only-first planner:
 investigate, draft a plan, submit it for approval, and only execute
 once it is signed off.
 
@@ -25,20 +25,20 @@ once it is signed off.
    - **Verification** — how the user (or you, after approval) checks
      end-to-end that the change works (pytest command, dashboard
      smoke, MCP call).
-4. **Submit the plan** via the ``ExitPlanMode`` tool. The
+4. **Submit the plan** via the `exit_plan_mode` tool. The
    ``plan`` argument is the full markdown you just drafted. Do NOT
    include the plan body in your final assistant message — the
    dashboard renders it from the tool call.
 
 ## After approval
 
-The user clicks "Plan akzeptieren" → ``ExitPlanMode`` returns
+The user clicks "Plan akzeptieren" → `exit_plan_mode` returns
 ``{"approved": true, "new_mode": "acceptEdits"}``. At that point the
 permission profile flips back automatically and you may execute the
 plan you just got signed off. Stay incremental: one step → verify →
 next step.
 
-## When NOT to use ExitPlanMode
+## When NOT to use exit_plan_mode
 
 - Pure research questions ("explain how X works") — answer in chat,
   no plan needed.
@@ -51,7 +51,7 @@ next step.
 ## Plan-file location
 
 If the user explicitly asks you to *save* the plan to disk (rather
-than just submit via ExitPlanMode), write it to
+than just submit via exit_plan_mode), write it to
 ``~/.claude/plans/<short-kebab-slug>.md`` (per-project plan store; the
 ``~/.claude/`` path is the .delfin on-disk slug convention, not an
 external dependency). That lets the user re-open the plan in a future

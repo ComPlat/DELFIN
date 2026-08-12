@@ -28,9 +28,6 @@ _DISTILL_SYSTEM = (
     "dates, not 'next week')\n"
     "  reference: a pointer to an external resource (URL, ticket, dashboard)\n"
     "  user: who the user is (role, expertise, durable preference)\n"
-    "Add a leading 'global: ' before the type when the fact holds for this "
-    "user across ALL projects (identity, standing preferences), e.g. "
-    "'global: feedback: ...'.\n"
     "One fact per line, no numbering, no commentary. Skip anything the repo "
     "already records (code structure, git history, past fixes). English. "
     "If nothing durable, return exactly: NONE"
@@ -44,8 +41,7 @@ _DISTILL_SYSTEM_STRUCTURED = (
     "You extract durable memories from an assistant work session. "
     "Produce up to {max_facts} short, self-contained facts worth keeping "
     "for FUTURE sessions. PREFIX each fact with its type (feedback: / "
-    "project: / reference: / user:), with a leading 'global: ' when it "
-    "holds for this user across ALL projects. Skip anything the repo "
+    "project: / reference: / user:). Skip anything the repo "
     "already records (code structure, git history, past fixes). English. "
     "Return the facts in the 'facts' array; an empty array when nothing "
     "durable emerged."
@@ -241,24 +237,21 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
     When ``repo_root`` is given, each fact is written to the TYPED project
     memory store (``save_typed_memory`` → ``<type>_<slug>.md`` + MEMORY.md
     pointer, the same store the prompt recalls) — classified by its
-    ``feedback:/project:/reference:/user:`` prefix or the heuristic. Facts
-    prefixed ``global:`` route to the user-wide ``~/.delfin/memory`` store
-    instead (even without a repo_root), so identity/standing-feedback facts
-    cross repos. Without a repo_root the rest falls back to the legacy flat
-    JSON store.
+    ``feedback:/project:/reference:/user:`` prefix or the heuristic.
+    Everything distilled lands in the PROJECT store: a ``global:`` prefix in
+    the model's reply is stripped, not honoured (see the write call below).
+    Without a repo_root the facts fall back to the legacy flat JSON store.
     """
     if not facts:
         return 0
     existing = _existing_memory_texts(repo_root)
     try:
         from delfin.agent.memory_store import (
-            parse_memory_scope, parse_memory_type, save_memory,
-            save_typed_memory,
+            parse_memory_type, save_memory, save_typed_memory,
         )
     except Exception:
         return 0
     saved = 0
-    saved_global = False
     for f in facts:
         body = f.strip()
         if not body:
@@ -271,27 +264,26 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
         if body.lower() in existing or stripped.strip().lower() in existing:
             continue
         try:
-            is_global = parse_memory_scope(body)[0] == "user"
-        except Exception:
-            is_global = False
-        try:
-            if repo_root is not None or is_global:
-                # save_typed_memory parses the "global:" prefix itself and
-                # routes to ~/.delfin/memory; the repo_root is only used
-                # for project-scoped facts.
+            if repo_root is not None:
                 # Distilled by the model from the conversation, so it is
                 # marked as the model's and decays if it is never recalled.
-                # The "global:" prefix stays honoured here: automatic memory
-                # is opt-in, and crossing repositories with standing facts
-                # is the feature the user switched on.
-                save_typed_memory(body, repo_root=repo_root or ".",
-                                  source="agent", allow_scope_prefix=True)
+                #
+                # ``allow_scope_prefix`` stays OFF. The distill briefing
+                # actively SOLICITS a leading "global: " and the reply is
+                # model-generated text, so honouring it let a sentence read
+                # in one repository file itself into the user-wide store
+                # that every other workspace recalls — a reach the user was
+                # never shown a choice about. Opting into automatic memory
+                # is consent to remember THIS project, not to widen the
+                # blast radius of what a session happened to say.
+                # save_typed_memory strips the prefix and files the fact in
+                # the project store instead.
+                save_typed_memory(body, repo_root=repo_root, source="agent")
             else:
                 save_memory(body, source="auto-distill")
             existing.add(body.lower())
             existing.add(stripped.strip().lower())
             saved += 1
-            saved_global = saved_global or is_global
         except Exception:
             continue
     # Self-limit the stores after writing so prunable types (project/
@@ -304,12 +296,6 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
             from delfin.agent.memory_store import prune_memories
             cfg = auto_memory_settings()
             prune_memories(repo_root, max_age_days=cfg.get("max_age_days"))
-        except Exception:
-            pass
-    if saved_global:
-        try:
-            from delfin.agent.memory_store import prune_memories
-            prune_memories(repo_root or ".", scope="user")
         except Exception:
             pass
     return saved

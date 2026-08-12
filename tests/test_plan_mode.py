@@ -1,7 +1,7 @@
 """Tests for plan-mode wiring: addendum injection + dropdown surfacing.
 
 Plan-mode is solo_agent role + permission_profile="plan" (read-only)
-+ a markdown addendum that tells the model to use ExitPlanMode for
++ a markdown addendum that tells the model to use exit_plan_mode for
 approval. The addendum file lives at
 ``delfin/agent/pack/shared/plan_mode_addendum.md`` and the prompt
 loader picks it up when ``mode_id == "plan"`` OR the active
@@ -23,7 +23,7 @@ def test_plan_mode_addendum_file_exists():
     assert p.is_file(), f"missing addendum: {p}"
     body = p.read_text(encoding="utf-8")
     assert "Plan Mode" in body
-    assert "ExitPlanMode" in body
+    assert "exit_plan_mode" in body
 
 
 def test_solo_prompt_includes_plan_addendum_when_mode_is_plan():
@@ -35,12 +35,12 @@ def test_solo_prompt_includes_plan_addendum_when_mode_is_plan():
         task_text="figure out how to add feature X",
     )
     assert "Plan Mode" in prompt
-    assert "ExitPlanMode" in prompt
+    assert "exit_plan_mode" in prompt
 
 
 def test_solo_prompt_includes_plan_addendum_when_permission_is_plan():
     # Plan is a permission profile now: Code mode + Perms=plan must still get
-    # the full plan addendum (read-only-first → ExitPlanMode).
+    # the full plan addendum (read-only-first → exit_plan_mode).
     loader = PromptLoader()
     prompt = loader.build_system_prompt(
         role_id="solo_agent",
@@ -49,7 +49,7 @@ def test_solo_prompt_includes_plan_addendum_when_permission_is_plan():
         task_text="figure out how to add feature X",
     )
     assert "Plan Mode" in prompt
-    assert "ExitPlanMode" in prompt
+    assert "exit_plan_mode" in prompt
 
 
 def test_solo_prompt_skips_plan_addendum_in_other_modes():
@@ -69,7 +69,7 @@ def test_plan_mode_addendum_documents_exit_plan_mode_handoff():
     p = Path(__file__).resolve().parent.parent / "delfin" / "agent" / "pack" / "shared" / "plan_mode_addendum.md"
     body = p.read_text(encoding="utf-8")
     # Key contract elements must be present
-    assert "ExitPlanMode" in body
+    assert "exit_plan_mode" in body
     assert "approve" in body.lower()
     assert "acceptEdits" in body
 

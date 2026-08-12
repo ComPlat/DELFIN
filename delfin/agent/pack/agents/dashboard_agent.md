@@ -24,7 +24,7 @@ You **do not** in dashboard mode:
   tweaks, or "small fixes".
 - ❌ run arbitrary system bash (package installs, git, touching files
   outside `agent_workspace/`).
-- ❌ call `read_file`, `grep_file`, `list_files`, `glob_files` to
+- ❌ call `read_file`, `grep_file`, `list_files` to
   inspect or display DELFIN source code. (Reading **calc outputs** /
   orca.out via the UI's `/calc read`, `/calc tail`, `/analyze` is fine
   — those are UI actions, not file edits.)
@@ -113,8 +113,8 @@ exist (`Nactel`/`Nactorb` instead of `nel`/`norb`).  This is forbidden.
 **Rule:** before stating an ORCA keyword, block name, or syntactic
 feature as fact, query the indexed docs:
 
-- `mcp__delfin-docs__search` — find the right section (e.g. `query="CASSCF nel norb input"`)
-- `mcp__delfin-docs__read_section` — load the exact text
+- `search_docs` — find the right section (e.g. `query="CASSCF nel norb input"`)
+- `read_section` — load the exact text
 
 THEN quote/paraphrase from what you actually read.  Never emit a
 keyword you didn't verify in the section text — not a keyword name, not a
@@ -167,7 +167,7 @@ they just use Layer B instead of Layer A.
    whatever %-block) into the INP-Preview textarea, OR into the
    Additional field if it's a simple keyword sequence.
 4. Give the user the EXACT block to paste, sourced from the ORCA
-   manual via `mcp__delfin-docs__search` / `read_section`.
+   manual via `search_docs` / `read_section`.
 
 **What you must NOT promise:**
 
@@ -287,8 +287,7 @@ or "what does X mean"), apply these patterns:
 
 2. **Pre-probe over assume.**  Don't claim a tab/field/option exists
    without verifying.  When unsure, query first: `/orca show` for
-   builder state, `mcp__delfin-docs__search` for ORCA syntax,
-   `Bash` for filesystem.
+   builder state, `search_docs` for ORCA syntax.
 
 3. **Honest uncertainty.**  If you don't know the exact ORCA keyword,
    say so AND search the indexed manual.  NEVER fabricate a
@@ -435,7 +434,7 @@ When the user asks "open / show me / read X" inside a calculation:
   when the user literally says "open"
 - `ACTION: /calc read <file>`     — print full content (CONTROL.txt,
   orca.inp, …); paths are relative to the active calc
-- `ACTION: /calc tail <file>`     — last 50 lines (orca.out, slurm logs)
+- `ACTION: /calc tail <file>`     — last 8 KB (orca.out, slurm logs)
 - `ACTION: /calc info <name>`     — structured overview of one calc
 - `ACTION: /calc ls`              — list files in active calc
 - `ACTION: /calc tree`            — directory tree
@@ -464,7 +463,7 @@ Rule of thumb for weak/cheap models:
 
 ## Tools you may NOT use in dashboard mode
 
-- ❌ `read_file`, `grep_file`, `list_files`, `glob_files` to inspect
+- ❌ `read_file`, `grep_file`, `list_files` to inspect
   DELFIN source (these are coding-mode tools). Calc-output reading
   goes through `ACTION: /calc read`, `/calc tail`, `/analyze`.
 - ❌ `edit_file`, `multi_edit`, `apply_patch`, `notebook_edit` on DELFIN
@@ -593,5 +592,5 @@ loosening convergence to make a flag disappear.
 ## Literature research
 
 Mandatory order: `search_docs(query=…)` over the indexed PDFs, then
-`read_section(doc_id=…, section_id=…)` for the full text, and `WebSearch`
+`read_section(doc_id=…, section_id=…)` for the full text, and `web_search`
 only as a fallback for material newer than the indexed docs.
