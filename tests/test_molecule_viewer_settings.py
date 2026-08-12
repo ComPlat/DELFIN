@@ -302,13 +302,36 @@ def test_deferred_recentering_never_overrides_the_user():
 
 
 def test_orca_label_occlusion_is_deferred_until_mouse_interaction_ends():
-    assert "grid=Object.create(null)" in _ORCA_VIEWER_SOURCE
-    assert "hideForInteraction" not in _ORCA_VIEWER_SOURCE
-    assert "__delfinInteractionEndHandlers" in _ORCA_VIEWER_SOURCE
-    assert "schedule(0)" in _ORCA_VIEWER_SOURCE
-    assert "v.render=function()" not in _ORCA_VIEWER_SOURCE
-    assert "raf(loop)" not in _ORCA_VIEWER_SOURCE
+    """The numbers are a property of a viewer, not of the ORCA Builder.
+
+    They lived in that tab and were reachable from nowhere else: the size
+    control resolved the viewer as window._orcaBuildViewer, one global for one
+    tab. The occlusion pass moved to the shared editor part unchanged, so it
+    is asserted where it now is -- the tab still gets its labels from it, and
+    the Submit tab can have them too.
+    """
+    editor = (
+        Path(__file__).resolve().parents[1]
+        / 'delfin' / 'dashboard' / 'structure_editor.py'
+    ).read_text(encoding='utf-8')
+
+    assert "grid=Object.create(null)" in editor
+    assert "hideForInteraction" not in editor
+    assert "__delfinInteractionEndHandlers" in editor
+    assert "schedule(0)" in editor
+    assert "v.render=function()" not in editor
+    assert "raf(loop)" not in editor
+    # The disposal of the previous viewer is the tab's own business.
     assert "window.__delfinDisposeViewer(prev)" in _ORCA_VIEWER_SOURCE
+    # And nothing the shared part *emits* may name one tab's viewer -- the
+    # prose above it says what it used to be, which is not the same thing.
+    from delfin.dashboard import structure_editor
+
+    emitted = (structure_editor.atom_number_labels_js(
+                   '2\n\nO 0 0 0\nH 1 0 0\n', var='v')
+               + structure_editor.label_scale_setter_js())
+    assert '_orcaBuildViewer' not in emitted
+    assert 'function(scale, viewer)' in structure_editor.label_scale_setter_js()
 
 
 def test_trajectory_playback_yields_rendering_while_viewer_is_dragged():
