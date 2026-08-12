@@ -29,6 +29,9 @@ def test_helper_filters_to_open_foreign_only(tmp_path):
     started = s.create("theirs running", session_id="old2")
     s.update(started["id"], status="in_progress")         # foreign, open
     done = s.create("theirs finished", session_id="old1")
+    # completed only ever follows in_progress — the store refuses the
+    # silent pending → completed jump.
+    s.update(done["id"], status="in_progress")
     s.update(done["id"], status="completed")              # closed → excluded
     gone = s.create("theirs dropped", session_id="old1")
     s.update(gone["id"], status="deleted")                # deleted → excluded
@@ -218,5 +221,6 @@ def test_blocked_by_round_trip_via_store(tmp_path):
     assert s.get(b["id"])["blocked_by"] == [a["id"]]
     assert s.get(a["id"])["blocks"] == [b["id"]]
     # Completing the parent unblocks the child.
+    s.update(a["id"], status="in_progress")
     s.update(a["id"], status="completed")
     assert s.update(b["id"], status="in_progress")["status"] == "in_progress"

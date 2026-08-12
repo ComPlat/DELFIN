@@ -920,20 +920,24 @@ class AgentEngine:
             # (part of the fix for bug 20260708-092217).
             if getattr(perms, "mode", "") == "plan":
                 return ""
-            from delfin.agent.agent_tasks import get_store
+            from delfin.agent.agent_tasks import (
+                OPEN_STATUSES, get_store, resolve_session_scope,
+            )
             sid = getattr(perms, "task_session_id", "") or ""
+            # The shared resolver, so this block and the user's ticker
+            # describe the same store the same way for the same id.
             tasks = get_store(perms.workspace).list(
-                session_id=sid if sid else None, with_seq=True)
+                session_id=resolve_session_scope(sid), with_seq=True)
         except Exception:
             return ""
         open_tasks = [
-            t for t in (tasks or [])
-            if t.get("status") in ("pending", "in_progress")
+            t for t in (tasks or []) if t.get("status") in OPEN_STATUSES
         ]
         if not open_tasks:
             return ""
         in_prog = [t for t in open_tasks if t.get("status") == "in_progress"]
         pending = [t for t in open_tasks if t.get("status") == "pending"]
+        blocked = [t for t in open_tasks if t.get("status") == "blocked"]
         lines = ["# Open tasks (auto-injected each turn — keep this list honest)"]
         shown = 0
         _CAP = 8
@@ -945,6 +949,17 @@ class AgentEngine:
             return f"task {_seq} (id {_id})" if _seq is not None else f"#{_id}"
         for t in in_prog:
             lines.append(f"- [in_progress] {_label(t)} {str(t.get('subject', ''))[:80]}")
+            shown += 1
+        # Blocked before pending: it is the bucket that needs a decision
+        # rather than a next step, and burying it under the backlog is
+        # how a task waiting on the user goes unmentioned for a day.
+        for t in blocked:
+            if shown >= _CAP:
+                break
+            reason = str(t.get("blocked_reason", ""))[:60]
+            lines.append(
+                f"- [blocked]     {_label(t)} {str(t.get('subject', ''))[:80]}"
+                + (f" — waiting on {reason}" if reason else ""))
             shown += 1
         for t in pending:
             if shown >= _CAP:
@@ -959,6 +974,11 @@ class AgentEngine:
                 "→ If any in_progress task above is actually finished, call "
                 "task_update(task_id, status='completed') NOW — don't batch it "
                 "to the end."
+            )
+        if blocked:
+            lines.append(
+                "→ A blocked task is not progress: either the block is "
+                "resolved now, or say so to the user."
             )
         return "\n".join(lines)
 
@@ -1088,6 +1108,24 @@ class AgentEngine:
                 return ""
             used = any("task_create" in str(t or "") for t in
                        (getattr(self, "_session_tool_names", None) or ()))
+            if not used:
+                # A tool-name ledger is per session; the task store is
+                # not. After a resume, or after adopting a task from a
+                # previous session, the list the user asked for already
+                # exists and the reminder was still demanding it be
+                # created. Ask the store, which is what "a task exists"
+                # actually means.
+                try:
+                    from delfin.agent.agent_tasks import (
+                        get_store, resolve_session_scope,
+                    )
+                    perms = self.kit_permissions
+                    if perms is not None:
+                        used = bool(get_store(perms.workspace).list(
+                            session_id=resolve_session_scope(
+                                getattr(perms, "task_session_id", ""))))
+                except Exception:
+                    pass
             if used:
                 self._tasklist_satisfied = True
                 return ""

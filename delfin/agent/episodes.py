@@ -163,8 +163,9 @@ def build_episode_from_state(
       when the chat list is empty, e.g. headless CLI saves)
     - outcome: tail (last paragraph) of the last assistant message
     - decisions: first paragraph of each of the last 3 assistant messages
-    - open_items: pending / in-progress entries from the persisted task
-      list (``todo_payload``), when available in the state
+    - open_items: pending / in-progress / blocked entries from the
+      persisted task list (``todo_payload``), falling back to the task
+      store the state points at
     - cost_usd: taken straight from the state
 
     Extractive and LLM-free by design; mirrors the handoff-brief
@@ -205,14 +206,30 @@ def build_episode_from_state(
         if first_para:
             decisions.append(first_para)
 
+    # The task list, from the state when a caller put it there and from
+    # the real store otherwise. The engine's exported state carries no
+    # task field, so on the headless path this was always empty and
+    # every episode recorded "no open items" for work still in progress.
+    todos = state.get("todo_payload")
+    if not todos:
+        try:
+            from .session_store import tasks_as_todo_payload
+            todos = tasks_as_todo_payload(
+                state.get("workspace") or state.get("project_dir") or "",
+                state.get("session_id") or "")
+        except Exception:
+            todos = []
     open_items: list[str] = []
-    for t in state.get("todo_payload") or []:
+    for t in todos or []:
         if not isinstance(t, dict):
             continue
         status = t.get("status", "")
-        if status in ("pending", "in_progress"):
+        if status in ("pending", "in_progress", "blocked"):
+            reason = str(t.get("blocked_reason", "") or "")
             open_items.append(
-                f"#{t.get('id', '?')} {t.get('subject', '')} ({status})"
+                f"#{t.get('id', '?')} {t.get('subject', '')} ({status}"
+                + (f": {reason}" if status == "blocked" and reason else "")
+                + ")"
             )
 
     try:

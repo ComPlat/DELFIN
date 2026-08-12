@@ -23,6 +23,41 @@ def _chmod_user_only(path: Path) -> None:
         pass
 
 
+def tasks_as_todo_payload(workspace: Any, session_id: Any) -> list[dict]:
+    """The real task store, in the shape ``todo_payload`` consumers read.
+
+    ``todo_payload`` had exactly one producer: the dashboard branch that
+    handles an external CLI's todo tool. On every other path -- the
+    open-weights backend, the headless CLI -- it stayed empty, so each
+    saved episode and every handoff brief told a fresh agent that
+    nothing was outstanding while the store still held in_progress
+    work. The task store is the list; this is how it reaches the brief.
+
+    Returns [] on any failure — a save must never break on bookkeeping.
+    """
+    if not workspace:
+        return []
+    try:
+        from .agent_tasks import get_store, resolve_session_scope
+        tasks = get_store(Path(workspace)).list(
+            session_id=resolve_session_scope(session_id), with_seq=True)
+    except Exception:
+        return []
+    out: list[dict] = []
+    for t in tasks or []:
+        try:
+            out.append({
+                "id": t.get("id"),
+                "seq": t.get("seq"),
+                "subject": str(t.get("subject", "")),
+                "status": str(t.get("status", "")),
+                "blocked_reason": str(t.get("blocked_reason", "") or ""),
+            })
+        except Exception:
+            continue
+    return out
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
 
@@ -623,7 +658,12 @@ def save_session(
         "last_compaction_info": last_compaction_info or None,
         "subagent_calls": subagent_calls or [],
         "pending_plan_body": pending_plan_body or "",
-        "todo_payload": todo_payload or [],
+        # Fall back to the real task store when the caller passes nothing:
+        # only one of the several save paths ever had a payload to pass,
+        # and the two consumers ("Open items" in the handoff brief and in
+        # the episode) read this key and nothing else.
+        "todo_payload": (todo_payload
+                         or tasks_as_todo_payload(workspace, session_id)),
         "transcript_archive_path": transcript_archive_path or "",
         "project_dir": str(project_dir or ""),
         "last_input_tokens": int(last_input_tokens or 0),
@@ -929,13 +969,23 @@ def build_handoff_brief(data: dict[str, Any]) -> str:
     # Files touched
     files = _extract_files_touched(engine_msgs)
 
-    # Open items: pending / in_progress tasks from the persisted payload
+    # Open items: pending / in_progress / blocked tasks from the persisted
+    # payload — or, when the session was saved without one, from the task
+    # store itself. A brief whose "Open items" is empty because nobody
+    # filled the field reads exactly like a brief for finished work.
+    todos = data.get("todo_payload") or tasks_as_todo_payload(
+        data.get("workspace") or data.get("project_dir") or "",
+        data.get("session_id") or "")
     open_items: list[str] = []
-    for t in data.get("todo_payload") or []:
+    for t in todos:
         status = t.get("status", "")
-        if status in ("pending", "in_progress"):
-            mark = "▶" if status == "in_progress" else "○"
-            open_items.append(f"{mark} #{t.get('id','?')} {t.get('subject','')}")
+        if status in ("pending", "in_progress", "blocked"):
+            mark = {"in_progress": "▶", "blocked": "⛔"}.get(status, "○")
+            reason = str(t.get("blocked_reason", "") or "")
+            open_items.append(
+                f"{mark} #{t.get('id','?')} {t.get('subject','')}"
+                + (f" (waiting on {reason})" if status == "blocked" and reason
+                   else ""))
     # Active gate is also an open item
     gate = data.get("active_gate")
     if isinstance(gate, dict) and gate.get("type"):
