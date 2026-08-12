@@ -385,6 +385,13 @@ def test_panel_only_and_allowed_events_raise_nothing():
         se.clear()
 
 
+def test_the_panel_only_list_names_real_kinds():
+    """A renamed kind would silently start raising alerts for a routine
+    event; the list has to keep naming kinds the panel actually knows."""
+    from delfin.agent import security_events as se
+    assert se._PANEL_ONLY_KINDS <= se.known_kinds()
+
+
 def test_security_alert_failure_never_breaks_the_gate(monkeypatch):
     from delfin.agent import security_events as se
     se.clear()

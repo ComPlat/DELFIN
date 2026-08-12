@@ -615,7 +615,7 @@ def drain_resolved(
     *,
     workspace: Optional[str | Path] = None,
     kinds: Optional[frozenset[str] | set[str] | tuple[str, ...]] = None,
-    include_unrouted: bool = True,
+    include_unrouted: bool = True,   # accepted for call-site compatibility
 ) -> list[dict]:
     """Answered events for this agent — exactly once.
 
