@@ -886,7 +886,7 @@ _REL_PATH_RE = re.compile(r"(?<![\w/])([\w.][\w.\-]*(?:/[\w.\-]+)+/?)")
 # even under a locked scope.
 _INTERPRETER_RE = re.compile(
     r"(?:^|[;&|`$(]\s*)\s*"
-    r"(?:[\w.~+-]*/)*"
+    r"(?:[\w./~+-]*/)?"          # one flat group: no nested quantifier
     r"(?:"
     r"python[0-9.]*\s+-c|python[0-9.]*\s*<|"
     r"perl\s+-e|ruby\s+-e|node\s+-e|php\s+-r|"
