@@ -61,14 +61,22 @@ def test_browsing_does_not_move_the_camera(tab):
 
 
 def test_switching_the_numbers_off_keeps_the_viewer(tab):
+    """And keeps the model, too.
+
+    The numbers used to go away by swapping the model for the same
+    coordinates. That is how the Submit tab's editor lost its bonds -- a model
+    rebuilt from coordinates has them perceived from distances again -- and
+    the Builder is getting that editor. So the sprites go and nothing else.
+    """
     widgets_map, scripts = tab
 
     widgets_map["orca_mol_labels_btn"].value = False
 
     assert len(scripts) == 1
     script = scripts[0]
-    assert "removeAllLabels" in script
-    assert "addLabel" not in script, "the numbers were switched off, not redrawn"
+    assert "__delfinAtomNumbers.set(window._orcaBuildViewer,false," in script
+    assert "removeAllModels" not in script
+    assert "addModel" not in script
     assert "__delfinCreateViewer" not in script
 
 
@@ -80,7 +88,8 @@ def test_switching_the_numbers_back_on_keeps_the_viewer(tab):
     widgets_map["orca_mol_labels_btn"].value = True
 
     assert len(scripts) == 1
-    assert "addLabel" in scripts[0]
+    assert "__delfinAtomNumbers.set(window._orcaBuildViewer,true," in scripts[0]
+    assert "removeAllModels" not in scripts[0]
     assert "__delfinCreateViewer" not in scripts[0]
 
 

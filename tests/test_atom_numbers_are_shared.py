@@ -102,18 +102,33 @@ def test_resizing_does_not_rebuild_the_molecule():
     assert 'update_molecule_view' not in handler
 
 
-def test_the_sizes_start_where_they_used_to_end():
-    """0.28 was XL and was still too small to read; it is the bottom now."""
-    sizes = dict(structure_editor.LABEL_SIZES)
+def test_the_size_is_asked_for_in_pixels():
+    """Five rungs were not enough, and 'L' says nothing about how big that is.
 
-    assert [name for name, _ in structure_editor.LABEL_SIZES] == [
-        'S', 'M', 'L', 'XL', 'XXL']
-    assert sizes['S'] == 0.28
-    assert structure_editor.LABEL_SCALE_DEFAULT == sizes['L']
-    assert sorted(sizes.values()) == list(sizes.values())
-    # Both tabs offer the one ladder, so changing it changes it everywhere.
-    assert 'options=list(_structure_editor.LABEL_SIZES)' in SUBMIT
-    assert 'options=list(_structure_editor.LABEL_SIZES)' in ORCA
+    A digit comes out 34 px tall per unit of the scale factor -- measured in a
+    browser at 0.28, 0.38, 0.50, 0.66 and 0.86, which gave 9.5, 13, 17, 22 and
+    30 px. The device pixel ratio cancels out of that, so it is the same
+    number on any screen and at any viewer size, and the control can simply
+    ask for pixels.
+    """
+    assert structure_editor.scale_for_px(17) == 0.5
+    assert structure_editor.scale_for_px(34) == 1.0
+    assert structure_editor.LABEL_SCALE_DEFAULT == structure_editor.scale_for_px(
+        structure_editor.LABEL_PX_DEFAULT)
+
+    # Anything unusable falls back rather than making the numbers vanish.
+    assert structure_editor.scale_for_px('') == structure_editor.LABEL_SCALE_DEFAULT
+    assert structure_editor.scale_for_px(None) == structure_editor.LABEL_SCALE_DEFAULT
+    assert structure_editor.scale_for_px(0) == structure_editor.scale_for_px(
+        structure_editor.LABEL_PX_MIN)
+    assert structure_editor.scale_for_px(10_000) == structure_editor.scale_for_px(
+        structure_editor.LABEL_PX_MAX)
+
+    # Both tabs ask the same way, so changing it changes it everywhere.
+    for source in (SUBMIT, ORCA):
+        assert 'widgets.BoundedIntText(' in source
+        assert 'min=_structure_editor.LABEL_PX_MIN' in source
+        assert 'max=_structure_editor.LABEL_PX_MAX' in source
 
 
 def test_nothing_is_numbered_until_it_is_asked_for():

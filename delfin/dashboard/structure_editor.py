@@ -21,15 +21,34 @@ a frame, and leaves the model -- and with it the bonds -- untouched.
 from __future__ import annotations
 
 
+#: How tall a digit comes out, in CSS pixels, per unit of the scale factor.
+#: The label texture is 68 px tall and a digit fills about half of it; the
+#: sprite is scaled against the drawing buffer and then divided by the device
+#: pixel ratio again, so the two cancel and this holds whatever the viewer is
+#: sized at. Measured in a browser at five settings: 9.5, 13, 17, 22 and 30 px
+#: for 0.28, 0.38, 0.50, 0.66 and 0.86.
+LABEL_PX_PER_SCALE = 34.0
+
+#: What a size control offers: the height of a number in pixels, typed or
+#: stepped. Five fixed rungs were not enough -- a crowded structure and a
+#: three-atom one want different numbers, and neither wants the rung between.
+LABEL_PX_DEFAULT = 17
+LABEL_PX_MIN = 6
+LABEL_PX_MAX = 48
+
 #: On-screen size of the numbers: the factor the high-resolution label texture
 #: is down-scaled by, so a larger number stays sharp instead of blurring.
-LABEL_SCALE_DEFAULT = 0.50
+LABEL_SCALE_DEFAULT = LABEL_PX_DEFAULT / LABEL_PX_PER_SCALE
 
-#: What a size control offers, smallest first. The smallest is what used to be
-#: the largest but one: read at arm's length from a laptop screen, the old
-#: ladder started far below useful and only its top rung could be read at all.
-LABEL_SIZES = (('S', 0.28), ('M', 0.38), ('L', 0.50), ('XL', 0.66),
-               ('XXL', 0.86))
+
+def scale_for_px(px):
+    """The scale factor that makes a digit *px* pixels tall."""
+    try:
+        wanted = float(px)
+    except (TypeError, ValueError):
+        return LABEL_SCALE_DEFAULT
+    wanted = max(LABEL_PX_MIN, min(LABEL_PX_MAX, wanted))
+    return wanted / LABEL_PX_PER_SCALE
 
 
 def _atom_numbers_js():

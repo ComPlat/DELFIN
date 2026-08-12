@@ -800,11 +800,14 @@ def create_tab(ctx):
         layout=widgets.Layout(width='46px', height='30px'),
         disabled=True,
     )
-    submit_label_size = widgets.Dropdown(
-        options=list(_structure_editor.LABEL_SIZES),
-        value=_structure_editor.LABEL_SCALE_DEFAULT,
-        tooltip='Size of the atom numbers',
-        layout=widgets.Layout(width='72px', height='30px', display='none'),
+    submit_label_size = widgets.BoundedIntText(
+        value=_structure_editor.LABEL_PX_DEFAULT,
+        min=_structure_editor.LABEL_PX_MIN,
+        max=_structure_editor.LABEL_PX_MAX,
+        step=1,
+        tooltip=('How tall the numbers are, in pixels. Type one or step it; '
+                 'the numbers resize as you go.'),
+        layout=widgets.Layout(width='62px', height='30px', display='none'),
     )
     submit_manip_undo_btn = widgets.Button(
         description='Undo', button_style='info', icon='undo',
@@ -1480,7 +1483,8 @@ def create_tab(ctx):
         labels = ''
         if submit_labels_btn.value:
             labels = _structure_editor.show_atom_numbers_js(
-                var='viewer_UNIQUEID', scale=float(submit_label_size.value))
+                var='viewer_UNIQUEID',
+                scale=_structure_editor.scale_for_px(submit_label_size.value))
         if hasattr(view, 'startjs'):
             view.startjs += registration
             if labels:
@@ -6594,7 +6598,7 @@ def create_tab(ctx):
         _run_manip_js(
             _structure_editor.show_atom_numbers_js(
                 var=_submit_viewer_js(), on=on,
-                scale=float(submit_label_size.value))
+                scale=_structure_editor.scale_for_px(submit_label_size.value))
         )
 
     def on_submit_label_size(change):
@@ -6607,8 +6611,9 @@ def create_tab(ctx):
             return
         _run_manip_js(
             _structure_editor.atom_numbers_js()
-            + 'window.__delfinAtomNumbers.setScale(%s,%.3f);'
-            % (_submit_viewer_js(), float(submit_label_size.value))
+            + 'window.__delfinAtomNumbers.setScale(%s,%.4f);'
+            % (_submit_viewer_js(),
+               _structure_editor.scale_for_px(submit_label_size.value))
         )
 
     def on_submit_strength_changed(change):

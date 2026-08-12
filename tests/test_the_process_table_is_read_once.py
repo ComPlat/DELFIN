@@ -66,8 +66,12 @@ def test_a_running_job_is_still_judged_against_a_fresh_reading(jobs_file, tmp_pa
                                  'job_dir': str(tmp_path)}])
     readings = []
     # A live child of the job, so it stays RUNNING and is asked about again.
+    # Any pid but this process's own: the reading skips itself, and a fixed
+    # "surely nobody has this" number is not safe -- 999999 is a perfectly
+    # ordinary pid where pid_max is four million, which is where this failed.
+    other_pid = os.getpid() + 1
     made._list_processes = lambda: (
-        readings.append(1) or [(999999, 999999, 'orca', str(tmp_path))])
+        readings.append(1) or [(other_pid, other_pid, 'orca', str(tmp_path))])
 
     made.list_jobs()
     after_one = len(readings)

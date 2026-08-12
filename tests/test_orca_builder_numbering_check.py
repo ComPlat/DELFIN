@@ -11,10 +11,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from delfin.dashboard.tab_orca_builder import (
-    _LABEL_SCALE_DEFAULT,
-    _orca_kabsch_align,
-)
+from delfin.dashboard import structure_editor
+from delfin.dashboard.tab_orca_builder import _orca_kabsch_align
 
 
 def _z_rotation(angle):
@@ -85,11 +83,12 @@ def test_atom_number_size_resizes_without_redrawing_the_molecule(tmp_path):
     widgets_map, executed_js = _build_tab(tmp_path)
     size = widgets_map["orca_mol_label_size"]
 
-    assert size.value == _LABEL_SCALE_DEFAULT
-    assert dict(size.options)["XXL"] > dict(size.options)["S"]
+    assert size.value == structure_editor.LABEL_PX_DEFAULT
+    assert size.min == structure_editor.LABEL_PX_MIN
+    assert size.max == structure_editor.LABEL_PX_MAX
 
     executed_js.clear()
-    size.value = dict(size.options)["XXL"]
+    size.value = structure_editor.LABEL_PX_MAX
 
     # one call into the page that rescales the existing labels -- no new viewer
     assert len(executed_js) == 1
