@@ -569,6 +569,16 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'if(typeof viewer.__delfinCleanup==="function"){\n'
     'try{viewer.__delfinCleanup();}catch(e){}\n'
     '}\n'
+    # What the constructor put on window and body, taken back off. Noted in
+    # __delfinCreateViewer; a viewer built past that funnel simply has none.
+    'var noted = viewer.__delfinNotedListeners;\n'
+    'if(Array.isArray(noted)){\n'
+    'for(var n=0;n<noted.length;n++){\n'
+    'try{noted[n][0].removeEventListener(noted[n][1],noted[n][2],noted[n][3]);}\n'
+    'catch(e){}\n'
+    '}\n'
+    'viewer.__delfinNotedListeners=null;\n'
+    '}\n'
     'if(typeof viewer.__delfinRightDragTranslateCleanup==="function"){\n'
     'try{viewer.__delfinRightDragTranslateCleanup();}catch(e){}\n'
     '}\n'
@@ -891,11 +901,58 @@ RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     'return true;\n'
     '} catch(e) { return false; }\n'
     '};\n'
+    # 3Dmol's viewer constructor adds three listeners it never takes back: one
+    # window resize, one body mouseup, one body touchend, each .bind()-ed so no
+    # handle survives to remove them by, and the bundle contains no matching
+    # removeEventListener. Three per viewer adds up: measured over 12 structure
+    # opens, handling one window resize event went from 0.14 ms to 2.44 ms and
+    # kept climbing. It only bites while the window or the splitter is being
+    # dragged, which is exactly when a picture should follow the hand.
+    #
+    # So what the constructor adds is noted while it runs, and dropped when the
+    # viewer is disposed. addEventListener is inherited from EventTarget, so
+    # putting one back by assignment would leave a permanent own property
+    # shadowing it -- the descriptor is saved and restored the same way
+    # __delfinWithPixelRatio handles devicePixelRatio.
+    'window.__delfinNotingListeners = function(build){\n'
+    'var noted = [];\n'
+    'var targets = [window, document.body].filter(Boolean);\n'
+    'var saved = targets.map(function(t){\n'
+    'return Object.getOwnPropertyDescriptor(t, "addEventListener");\n'
+    '});\n'
+    'var patched = [];\n'
+    'try {\n'
+    'targets.forEach(function(t){\n'
+    'var original = t.addEventListener;\n'
+    'Object.defineProperty(t, "addEventListener", {configurable: true,\n'
+    'writable: true, value: function(type, fn, opts){\n'
+    'noted.push([t, type, fn, opts]);\n'
+    'return original.call(t, type, fn, opts);\n'
+    '}});\n'
+    'patched.push(t);\n'
+    '});\n'
+    '} catch(e) {}\n'
+    'try {\n'
+    'return {made: build(), noted: noted};\n'
+    '} finally {\n'
+    'patched.forEach(function(t, i){\n'
+    'try {\n'
+    'if (saved[i]) Object.defineProperty(t, "addEventListener", saved[i]);\n'
+    'else delete t.addEventListener;\n'
+    '} catch(e) {}\n'
+    '});\n'
+    '}\n'
+    '};\n'
     'window.__delfinCreateViewer = function(element, config){\n'
     'var ratio = window.__delfinViewerPixelRatio || 0;\n'
-    'var viewer = window.__delfinWithPixelRatio(ratio, function(){\n'
+    'var caught = window.__delfinWithPixelRatio(ratio, function(){\n'
+    'return window.__delfinNotingListeners(function(){\n'
     'return $3Dmol.createViewer(element, config);\n'
     '});\n'
+    '});\n'
+    'var viewer = caught && caught.made;\n'
+    'try { if (viewer) viewer.__delfinNotedListeners = (caught.noted || []); }\n'
+    'catch(e) {}\n'
     'window.__delfinKeepSized(viewer, element);\n'
     # This funnel is the only reliable place to notice that a viewer appeared.
     # Patching the factory cannot work: 3Dmol exposes createViewer as a
