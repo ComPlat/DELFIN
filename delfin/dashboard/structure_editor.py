@@ -1475,8 +1475,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _gfn_new_generation()
         # What the molecule looked like before this drag: the bonding is read
         # from here, not from a frame that has already been pulled about.
-        state['gfn_topology_source'] = (
-            state.get('current_xyz_for_copy') or {}).get('content')
+        state['gfn_topology_source'] = _current_xyz()
         state['gfn_follow'] = True
         state['gfn_follow_steps'] = 0
         state['gfn_follow_frames'] = []
@@ -1642,7 +1641,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # one with the bond missing.  Measured: a propane whose C-C had been
         # pulled to 2.1 A perceived that way came back at 3.57 A.
         seed = (state.get('gfn_topology_source')
-                or (state.get('current_xyz_for_copy') or {}).get('content'))
+                or _current_xyz())
         if seed and len(_gfn.atom_lines(seed)) == atoms:
             try:
                 _gfn.relax_steps(seed, cycles=1, timeout=30.0,
@@ -1772,7 +1771,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return                      # Optimise is doing this already
         generation = int(state.get('gfn_generation', 0))
         method = str(submit_ff_dd.value)
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        xyz = _current_xyz()
         # Either engine, not only xtb.  Settle was armed for the PM methods
         # along with the follow, but this gate let only GFN through -- so
         # letting go of an atom under PM7 with Settle on did nothing, and said
@@ -1968,7 +1967,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if _server_method():
             _stop_browser_field()
             return
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        xyz = _current_xyz()
         if not xyz:
             _set_mol_status('Load a structure before enabling Relax.')
             submit_relax_btn.value = False
@@ -2236,7 +2235,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Python and re-render the viewer.
         """
         frames = list(state.get('isomers') or []) if every_frame else []
-        single = (state.get('current_xyz_for_copy') or {}).get('content')
+        single = _current_xyz()
         if not frames and not single:
             _set_mol_status('Load a structure before optimising.')
             return
@@ -2588,7 +2587,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['picked'] = indices
         _step_for_selection(indices)
         _refresh_swap(indices)
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        xyz = _current_xyz()
         options = None
         perceived = None
         if xyz and indices:
@@ -2769,7 +2768,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """Step to the next way the ligands can sit on this polyhedron."""
         geometry = state.get('poly_applied')
         metal = state.get('poly_metal')
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        xyz = _current_xyz()
         if not geometry or metal is None or not xyz:
             _set_mol_status('Choose a polyhedron for a metal first.')
             return
@@ -2809,7 +2808,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     def on_submit_hyb_auto(_button=None):
         """Derive the carbon types from the connectivity and hold them."""
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        xyz = _current_xyz()
         if not xyz:
             _set_mol_status('Load a structure first.')
             return
@@ -3323,7 +3322,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         model knows, so the orders are handed over after every render.
         """
         if bonds is None:
-            xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+            xyz = _current_xyz()
             if not xyz:
                 return
             try:
@@ -3358,10 +3357,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _ensure_manip_bootstrap()
         _run_manip_js('window.__delfinStructureEdit = true;')
 
+    def _current_xyz():
+        """The structure the editor is working on, header and all.
+
+        The Submit tab keeps it in ``state['current_xyz_for_copy']`` because
+        its copy button wants it there too, and every force field here read it
+        straight out of that key. A second tab has no reason to fill it, so in
+        the ORCA Builder the editor believed there was no structure at all and
+        Optimize, Dynamik Opt and Settle all answered "load a structure" over a
+        molecule that was plainly on screen.
+
+        So the coordinates box the editor was given is asked when the key is
+        empty -- that box is the one thing every host has to keep pointed at
+        what is being shown. Only when it holds a real XYZ header, since the
+        Submit tab's box also holds SMILES, and a SMILES string read as
+        coordinates is worse than no answer.
+        """
+        held = (state.get('current_xyz_for_copy') or {}).get('content')
+        if held:
+            return held
+        lines = [line for line in (coords_widget.value or '').split('\n')
+                 if line.strip()]
+        if len(lines) < 3:
+            return None
+        head = lines[0].split()
+        if len(head) != 1 or not head[0].isdigit():
+            return None
+        return coords_widget.value
+
     def _structure_now():
         from .molecule_builder import structure_from_xyz
 
-        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        xyz = _current_xyz()
         if not xyz:
             return None
         return structure_from_xyz(xyz, state.get('bond_edits') or {})

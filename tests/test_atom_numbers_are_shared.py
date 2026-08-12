@@ -126,11 +126,12 @@ def test_the_size_is_asked_for_in_pixels():
         structure_editor.LABEL_PX_MAX)
 
     # Both tabs ask the same way, so changing it changes it everywhere.
+    # One control, written once, in the part both tabs build their editor
+    # from -- the Builder used to keep a second pair of its own.
     assert 'widgets.BoundedIntText(' in SUBMIT
     assert 'min=LABEL_PX_MIN' in SUBMIT and 'max=LABEL_PX_MAX' in SUBMIT
-    assert 'widgets.BoundedIntText(' in ORCA
-    assert 'min=_structure_editor.LABEL_PX_MIN' in ORCA
-    assert 'max=_structure_editor.LABEL_PX_MAX' in ORCA
+    assert 'widgets.BoundedIntText(' not in ORCA
+    assert 'orca_mol_labels_btn' not in ORCA
 
 
 def test_nothing_is_numbered_until_it_is_asked_for():

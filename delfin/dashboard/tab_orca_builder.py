@@ -273,21 +273,6 @@ def create_tab(ctx):
         layout=widgets.Layout(width='36px', height='28px'),
     )
     orca_mol_nav_label = widgets.HTML(value='')
-    orca_mol_labels_btn = widgets.ToggleButton(
-        value=True, description='#', tooltip='Show / hide atom numbers',
-        layout=widgets.Layout(width='40px', height='28px'),
-    )
-    # On-screen size of the atom numbers.  The value is the factor the
-    # high-resolution label texture is down-scaled by, so larger stays sharp.
-    orca_mol_label_size = widgets.BoundedIntText(
-        value=_structure_editor.LABEL_PX_DEFAULT,
-        min=_structure_editor.LABEL_PX_MIN,
-        max=_structure_editor.LABEL_PX_MAX,
-        step=1,
-        tooltip=('How tall the numbers are, in pixels. Type one or step it; '
-                 'the numbers resize as you go.'),
-        layout=widgets.Layout(width='62px', height='28px'),
-    )
     orca_mol_fullscreen_btn = widgets.Button(
         description='', icon='expand', tooltip='Toggle fullscreen (Esc to exit)',
         layout=widgets.Layout(width='40px', height='28px'),
@@ -299,8 +284,6 @@ def create_tab(ctx):
             orca_mol_prev_btn,
             orca_mol_nav_label,
             orca_mol_next_btn,
-            orca_mol_labels_btn,
-            orca_mol_label_size,
             orca_mol_fullscreen_btn,
         ],
         layout=widgets.Layout(display='none', align_items='center', gap='6px'),
@@ -318,7 +301,6 @@ def create_tab(ctx):
         'numbering_check_results': {},
         'numbering_check_block_idx': 1,
         'numbering_view_step': 0,
-        'show_atom_labels': True,
         # the viewer currently on screen: its div, and whether it is still the
         # thing the Output widget holds (see _update_molecule_js)
         'viewer_div': None,
@@ -357,6 +339,9 @@ def create_tab(ctx):
         get_smiles_charge=lambda *a, **k: None,
     )
     orca_editor_scope = orca_editor.submit_scope_id
+    # This tab has always shown its numbers straight away; the editor's own
+    # default is off, because the Submit tab starts from a blank box.
+    orca_editor.submit_labels_btn.value = True
     # This tab has a fullscreen button of its own, beside the block stepper.
     orca_editor.submit_fullscreen_btn.layout.display = 'none'
     orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-member')
@@ -859,7 +844,7 @@ def create_tab(ctx):
     # grid limits the settled occlusion pass to nearby candidates instead of
     # comparing every atom with every other atom.
     def _label_scale():
-        return _structure_editor.scale_for_px(orca_mol_label_size.value)
+        return _structure_editor.scale_for_px(orca_editor.submit_label_size.value)
 
     def _labels_js(var='viewer'):
         """Atom numbers, gated by the preview's labels on/off toggle.
@@ -871,7 +856,7 @@ def create_tab(ctx):
         the numbers are read off the atoms the viewer holds, which is also
         what keeps them on the cores when those move.
         """
-        if not state.get('show_atom_labels', True):
+        if not orca_editor.submit_labels_btn.value:
             return ''
         return _structure_editor.show_atom_numbers_js(
             var=var, scale=_label_scale())
@@ -1253,36 +1238,6 @@ def create_tab(ctx):
         if 0 <= idx < len(blocks) and _show_molecule_in_place(blocks[idx][1]):
             return
         _refresh_mol_view(reset_view=False)  # keep orientation
-
-    def on_mol_labels_toggle(change):
-        """Numbers on or off, in the viewer that is already there.
-
-        Nothing about the molecule changes, so nothing about it is rebuilt --
-        not the viewer and not the model. Swapping the model was what cost the
-        Submit tab's editor its bonds, and the Builder is about to have the
-        same editor.
-        """
-        state['show_atom_labels'] = bool(orca_mol_labels_btn.value)
-        if state.get('viewer_live'):
-            ctx.run_js(_structure_editor.show_atom_numbers_js(
-                var='window._orcaBuildViewer',
-                on=state['show_atom_labels'], scale=_label_scale()))
-            return
-        # The overlay of a numbering check is two models in one viewer, which
-        # nothing updates in place; that one is drawn again.
-        _refresh_mol_view(reset_view=False)
-
-    def on_mol_label_size(change):
-        """Resize the numbers in the live viewer.
-
-        The molecule is not re-rendered: the browser only rescales the label
-        sprites it already has, so the size changes as the dropdown closes.
-        """
-        ctx.run_js(
-            _structure_editor.atom_numbers_js()
-            + 'window.__delfinAtomNumbers.setScale(window._orcaBuildViewer,%.4f);'
-            % _label_scale()
-        )
 
     def handle_orca_convert_smiles(button):
         raw_input = orca_coords.value.strip()
@@ -1696,8 +1651,6 @@ def create_tab(ctx):
     orca_coords.observe(update_orca_molecule_view, names='value')
     orca_mol_prev_btn.on_click(on_mol_prev)
     orca_mol_next_btn.on_click(on_mol_next)
-    orca_mol_labels_btn.observe(on_mol_labels_toggle, names='value')
-    orca_mol_label_size.observe(on_mol_label_size, names='value')
     orca_editor_coords.observe(_orca_editor_wrote, names='value')
     update_orca_molecule_view()
     update_orca_preview()
@@ -2229,8 +2182,6 @@ def create_tab(ctx):
         'orca_mol_prev_btn': orca_mol_prev_btn,
         'orca_mol_next_btn': orca_mol_next_btn,
         'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
-        'orca_mol_labels_btn': orca_mol_labels_btn,
-        'orca_mol_label_size': orca_mol_label_size,
         'update_orca_preview': update_orca_preview,
         # The structure editor this tab holds, under the names it uses.
         **orca_editor.exported,

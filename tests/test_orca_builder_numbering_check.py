@@ -81,7 +81,7 @@ def _build_tab(tmp_path):
 def test_atom_number_size_resizes_without_redrawing_the_molecule(tmp_path):
     pytest.importorskip("ipywidgets")
     widgets_map, executed_js = _build_tab(tmp_path)
-    size = widgets_map["orca_mol_label_size"]
+    size = widgets_map["submit_label_size"]
 
     assert size.value == structure_editor.LABEL_PX_DEFAULT
     assert size.min == structure_editor.LABEL_PX_MIN
@@ -92,5 +92,6 @@ def test_atom_number_size_resizes_without_redrawing_the_molecule(tmp_path):
 
     # one call into the page that rescales the existing labels -- no new viewer
     assert len(executed_js) == 1
-    assert "__delfinAtomNumbers.setScale(window._orcaBuildViewer," in executed_js[0]
+    assert "__delfinAtomNumbers.setScale(" in executed_js[0]
+    assert "_submitMolViewerByScope" in executed_js[0]
     assert "addModel" not in executed_js[0]
