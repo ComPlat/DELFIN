@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
+from . import pricing
 from . import text_files as _text_files
 
 
@@ -564,12 +565,11 @@ class APIClient(_BaseClient):
 
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
-    # Pricing per million tokens (USD).
-    _PRICING: dict[str, tuple[float, float]] = {
-        "claude-opus-4-20250514": (15.0, 75.0),
-        "claude-sonnet-4-20250514": (3.0, 15.0),
-        "claude-haiku-4-5-20251001": (0.80, 4.0),
-    }
+    # Pricing lives in delfin.agent.pricing -- one table for the whole
+    # repo, and no fallback rate. The table that used to sit here was
+    # keyed by dated ids while the dropdown hands this client "opus" /
+    # "sonnet" / "haiku", so not one of its three keys was reachable and
+    # every call silently took the (3.0, 15.0) fallback.
 
     def __init__(self, api_key: str = "", model: str = ""):
         try:
@@ -605,11 +605,16 @@ class APIClient(_BaseClient):
         return ""
 
     def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
-        pricing = self._PRICING.get(self.model)
-        if not pricing:
-            # Fallback: assume Sonnet pricing
-            pricing = (3.0, 15.0)
-        return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
+        """USD for this turn, or 0.0 when no USD spend can be measured.
+
+        There is no fallback rate any more. When ``pricing`` has no entry
+        for the model, this turn contributes nothing to the running total
+        instead of contributing an invented number -- and consumers ask
+        ``pricing.resolve`` whether that zero is a measured zero or an
+        absent measurement before showing it as money.
+        """
+        return pricing.cost_usd(self.model, "claude",
+                                input_tokens, output_tokens) or 0.0
 
     def stream_message(
         self,
@@ -12355,29 +12360,11 @@ class OpenAIClient(_BaseClient):
 
     DEFAULT_MODEL = "gpt-4.1"
 
-    # Pricing per million tokens (USD).
-    # Keys are base model names; _estimate_cost strips "azure." prefix.
-    _PRICING: dict[str, tuple[float, float]] = {
-        # GPT-5 family
-        "gpt-5.4": (2.0, 8.0),
-        "gpt-5.4-mini": (0.40, 1.60),
-        "gpt-5.3-codex": (2.0, 8.0),
-        "gpt-5.2-codex": (2.0, 8.0),
-        "gpt-5.2": (2.0, 8.0),
-        "gpt-5.1": (2.0, 8.0),
-        "gpt-5.1-codex-max": (2.0, 8.0),
-        "gpt-5.1-codex-mini": (0.40, 1.60),
-        "gpt-5": (2.0, 8.0),
-        "gpt-5-mini": (0.40, 1.60),
-        "gpt-5-nano": (0.10, 0.40),
-        # GPT-4 family
-        "gpt-4.1": (2.0, 8.0),
-        "gpt-4.1-mini": (0.40, 1.60),
-        "gpt-4.1-nano": (0.10, 0.40),
-        # o-series reasoning
-        "o4-mini": (1.10, 4.40),
-        "o3": (2.0, 8.0),
-    }
+    # Pricing lives in delfin.agent.pricing. The table that used to sit
+    # here stripped a "kit."/"azure." prefix and looked the rest up, so
+    # every KIT-served and every locally served model missed and took an
+    # invented (2.0, 8.0) -- charging quota-funded and on-premise runs for
+    # money nobody spent.
 
     def __init__(self, api_key: str = "", model: str = "",
                  base_url: str = "", key_env_var: str = "OPENAI_API_KEY",
@@ -12610,12 +12597,14 @@ class OpenAIClient(_BaseClient):
         return ""
 
     def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
-        # Strip provider prefix (e.g. "azure.gpt-5.1" -> "gpt-5.1")
-        base = self.model.split(".", 1)[-1] if self.model.startswith(("azure.", "kit.")) else self.model
-        pricing = self._PRICING.get(base) or self._PRICING.get(self.model)
-        if not pricing:
-            pricing = (2.0, 8.0)
-        return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
+        """USD for this turn, or 0.0 when no USD spend can be measured.
+
+        The provider decides first: a KIT-served or locally served turn
+        costs zero USD however its model is named, so it no longer accrues
+        a fabricated total that the run-budget refusal then acts on.
+        """
+        return pricing.cost_usd(self.model, self._provider,
+                                input_tokens, output_tokens) or 0.0
 
     def stream_message(
         self,
@@ -14218,8 +14207,7 @@ class CodexCLIClient(_BaseClient):
 
     DEFAULT_MODEL = "gpt-5.4"
 
-    # Reuse OpenAI pricing table.
-    _PRICING = OpenAIClient._PRICING
+    # Pricing lives in delfin.agent.pricing (shared with OpenAIClient).
 
     # Map permission-mode names → Codex CLI flags
     _PERM_TO_CODEX_FLAGS: dict[str, list[str]] = {
@@ -14247,10 +14235,9 @@ class CodexCLIClient(_BaseClient):
         self._thread_id: str = ""
 
     def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
-        pricing = self._PRICING.get(self.model)
-        if not pricing:
-            pricing = (2.0, 8.0)
-        return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
+        """USD for this turn, or 0.0 when no USD spend can be measured."""
+        return pricing.cost_usd(self.model, "openai",
+                                input_tokens, output_tokens) or 0.0
 
     def stream_message(
         self,
