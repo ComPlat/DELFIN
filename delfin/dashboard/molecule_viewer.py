@@ -5080,6 +5080,15 @@ STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS = r"""
         var overlay = document.createElement('div');
         overlay.className = 'delfin-structure-fs-overlay delfin-structure-fs-' + type;
         if (scopeKey) overlay.classList.add(scopeKey);
+        // A structure editor addresses its own controls through the class on
+        // the part that holds them, and those controls are about to leave it
+        // for the overlay. Whatever editor scope the module carries comes
+        // along, or the toolbar goes dead the moment it is enlarged.
+        for (var c = 0; c < module.classList.length; c++) {
+            if (module.classList[c].indexOf('submit-scope-') === 0) {
+                overlay.classList.add(module.classList[c]);
+            }
+        }
         var restore = members.map(function(el) {
             return {el: el, parent: el.parentNode, next: el.nextSibling};
         });
