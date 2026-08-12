@@ -117,19 +117,40 @@ def test_resolve_and_drain_exactly_once_across_restart(_fake_home):
     assert fresh2.drain_resolved("s1") == []               # still once
 
 
-def test_drain_routes_by_session_and_includes_unrouted(_fake_home):
-    routed = attention.emit_attention(
-        "question_pending", session_id="s1", title="routed")
+def test_drain_ignores_the_session_id_the_event_was_parked_with(_fake_home):
+    """The session id is not stable, so it must not gate delivery.
+
+    It is re-minted on a new cycle, cleared when the CLI backend restarts
+    its process, and overwritten mid-turn by the backend's own id. Exact
+    matching meant the user answered, the agent never saw it, and the
+    record was invisible to every surface."""
+    parked = attention.emit_attention(
+        "question_pending", session_id="session-of-the-day", title="parked")
     unrouted = attention.emit_attention(
         "confirm_pending", title="unrouted confirm")
-    attention.resolve(routed, answer="yes")
+    attention.resolve(parked, answer="yes")
     attention.resolve(unrouted, answer="approved")
-    # Wrong session: gets only the unrouted event, never s1's.
-    got = attention.drain_resolved("s2")
-    assert [ev["id"] for ev in got] == [unrouted]
-    got = attention.drain_resolved("s1")
-    assert [ev["id"] for ev in got] == [routed]
-    assert attention.drain_resolved("s1") == []
+    got = attention.drain_resolved("a-completely-different-id")
+    assert [ev["id"] for ev in got] == [parked, unrouted]
+    assert attention.drain_resolved("a-completely-different-id") == []
+
+
+def test_drain_can_be_scoped_by_workspace_and_kind(_fake_home):
+    mine = attention.emit_attention(
+        "question_pending", title="mine", workspace="/ws/a")
+    theirs = attention.emit_attention(
+        "question_pending", title="theirs", workspace="/ws/b")
+    homeless = attention.emit_attention("confirm_pending", title="no ws")
+    for eid in (mine, theirs, homeless):
+        attention.resolve(eid, answer="ok")
+    # An event without a workspace belongs to whoever drains first.
+    got = attention.drain_resolved(workspace="/ws/a")
+    assert [ev["id"] for ev in got] == [mine, homeless]
+    got = attention.drain_resolved(workspace="/ws/b",
+                                   kinds=("run_finished",))
+    assert got == []                                       # kind filtered
+    got = attention.drain_resolved(workspace="/ws/b")
+    assert [ev["id"] for ev in got] == [theirs]
 
 
 def test_drain_skips_pending_and_resolve_missing_is_false(_fake_home):

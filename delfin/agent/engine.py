@@ -452,6 +452,12 @@ class AgentEngine:
         self._non_billing_turns: int = 0
         self._unpriced_turns: int = 0
         self._unmeasured_budget_notice_shown: bool = False
+        # Budget notices already raised in the durable attention inbox,
+        # by level. The prompt block below reaches the MODEL and the
+        # per-turn breaker writes to the CHAT STREAM, so a run that hit
+        # its ceiling at 03:00 left an empty inbox and a doctor reporting
+        # PASS -- the two surfaces a user checks in the morning.
+        self._budget_attention_levels: set = set()
         # Exact system prompt of the most recent turn (for bug reports).
         # Kept for the running process only -- it carries the injected
         # memory, so it is not written into every session file.
@@ -1740,6 +1746,10 @@ class AgentEngine:
                     "run in this session. State is saved — raise "
                     "agent.run_budget_usd / run_budget_s or start a new run "
                     "to continue.")
+                self._emit_budget_attention(
+                    "hard_stop",
+                    "Run stopped: budget ceiling reached",
+                    _msg)
                 if on_token:
                     try:
                         on_token(_msg)
@@ -2204,6 +2214,13 @@ class AgentEngine:
                             f"${_cap:.0f} per-turn hard cap and was stopped so "
                             f"the loop can't run away. (Per turn, NOT a session "
                             f"budget — raise via agent.cost_hard_limit_usd.)")
+                        # The stream is the only place this was ever said.
+                        # One event per broken turn, so a run that trips it
+                        # repeatedly is visible as repetition, not as one line.
+                        self._emit_budget_attention(
+                            f"cost_breaker:{_turn_id}",
+                            "Turn stopped by the cost circuit-breaker",
+                            _note.strip())
                         chunks.append(_note)
                         if on_token:
                             try:
@@ -4513,6 +4530,34 @@ class AgentEngine:
                 frac = max(frac, (_t.time() - started) / secs)
         return frac, frac >= 1.0
 
+    def _emit_budget_attention(self, level: str, title: str,
+                               detail: str) -> None:
+        """Raise ONE durable budget event per level for this run.
+
+        ``budget_warning`` was declared, labelled and ranked in the
+        attention inbox with nothing anywhere that emitted it. Everything
+        the budget machinery says goes either into the system prompt (the
+        model reads it, nobody else) or into the chat stream (gone with
+        the scrollback), so an unattended run that stopped on its ceiling
+        overnight showed a silent desktop, an empty inbox and a green
+        doctor. Best-effort: a notice must never break the turn it
+        describes.
+        """
+        try:
+            if level in self._budget_attention_levels:
+                return
+            self._budget_attention_levels.add(level)
+            from delfin.agent.attention import emit_attention
+            emit_attention(
+                "budget_warning",
+                session_id=str(getattr(self, "session_id", "") or ""),
+                title=title[:200],
+                detail=detail[:400],
+                workspace=str(getattr(self, "repo_dir", "") or ""),
+            )
+        except Exception:
+            pass
+
     def _build_budget_block(self) -> str:
         """Per-turn budget status for the prompt: silent when unconfigured
         or comfortably below the wind-down threshold; from 80% it instructs
@@ -4533,6 +4578,10 @@ class AgentEngine:
             frac, exhausted = 0.0, False
         if frac >= 0.8:
             pct = min(999, int(frac * 100))
+            usd, secs = self._run_budget()
+            ceiling = ", ".join(
+                [p for p in (f"${usd:.2f}" if usd > 0 else "",
+                             f"{secs:.0f}s" if secs > 0 else "") if p])
             if exhausted:
                 parts.append(
                     "# Run budget EXHAUSTED\n"
@@ -4541,6 +4590,13 @@ class AgentEngine:
                     "statuses honestly, and summarise what remains. No new "
                     "work."
                 )
+                self._emit_budget_attention(
+                    "exhausted",
+                    "Run budget exhausted — the agent is wrapping up",
+                    f"{pct}% of the run budget ({ceiling}) is spent. The "
+                    f"agent finishes the current step and starts no new "
+                    f"work. Raise agent.run_budget_usd / run_budget_s or "
+                    f"start a new run to continue.")
             else:
                 parts.append(
                     "# Run budget wind-down (auto-injected)\n"
@@ -4550,6 +4606,11 @@ class AgentEngine:
                     "If a follow-up run makes sense, note exactly where to "
                     "resume. Do not start new large work items."
                 )
+                self._emit_budget_attention(
+                    "wind_down",
+                    "Run budget at 80% — the agent is winding down",
+                    f"{pct}% of the run budget ({ceiling}) is spent. The "
+                    f"agent is checkpointing and will stop soon.")
         return "\n\n".join(p for p in parts if p)
 
     def _cost_hard_cap(self) -> float:
