@@ -255,25 +255,51 @@ def test_the_editor_seeds_the_keys_it_reads_without_asking():
 # ---------------------------------------------------------------------------
 
 
+class _Drawn(list):
+    """What is in the preview, as text.
+
+    Read off the Output widget rather than caught at display(): the preview is
+    filled by assigning its outputs, because a conversion answers from a thread
+    where ``with output:`` reaches nothing.
+    """
+
+    def __init__(self, widget):
+        super().__init__()
+        self._widget = widget
+
+    def _current(self):
+        out = []
+        for item in self._widget.outputs or ():
+            data = item.get('data') or {}
+            out.append(str(data.get('text/html') or item.get('text') or ''))
+        return out
+
+    def __len__(self):
+        return len(self._current())
+
+    def __getitem__(self, index):
+        return self._current()[index]
+
+    def __bool__(self):
+        return bool(self._current())
+
+    def clear(self):
+        return None
+
+
 def _shown(monkeypatch):
-    """Whatever the tab hands to display(), as text."""
-    drawn = []
-    monkeypatch.setattr(
-        tab_orca_builder, 'display',
-        lambda *a, **k: drawn.append(getattr(a[0], 'data', str(a[0])) if a else ''))
-    return drawn
+    return None
 
 
 SWAPPED = "O 0.000 0.000 0.000\nH -0.757 0.586 0.000\nH 0.757 0.586 0.000"
 
 
 @pytest.fixture
-def compared(builder, monkeypatch, capsys):
+def compared(builder, capsys):
     refs, sent = builder
-    drawn = _shown(monkeypatch)
+    drawn = _Drawn(refs['orca_mol_output'])
     refs['orca_coords'].value = (f"a.xyz;\n3\n\n{WATER}\n*\n\n"
                                  f"b.xyz;\n3\n\n{SWAPPED}\n*")
-    drawn.clear()
     refs['orca_check_numbering_btn'].click()
     capsys.readouterr()
     return refs, sent, drawn
@@ -631,3 +657,44 @@ def test_to_smiles_reads_its_own_drawing(builder):
     assert "'.submit-ketcher-sync.'+scope" in script
     assert scope in script
     assert "document.querySelector('.submit-ketcher-frame')" not in script
+
+
+def _preview(refs):
+    out = []
+    for item in refs['orca_mol_output'].outputs or ():
+        data = item.get('data') or {}
+        out.append('viewer' if data.get('text/html') else (item.get('text') or '').strip())
+    return out
+
+
+def test_a_converted_structure_reaches_the_preview(builder):
+    """It did not, and the reason is where the preview is filled from.
+
+    ``with output: display(...)`` only reaches the widget while the kernel is
+    running the cell it belongs to. A conversion answers from a thread, through
+    the interface loop, and there is no cell there -- so the coordinates landed
+    in the box, the preview was asked to draw them, and nothing happened. The
+    viewer kept what it had, which after a SMILES was a one-atom model of its
+    first letter. Assigning the outputs works wherever the call comes from,
+    which is how the Submit tab has always done it.
+
+    Driven in a real dashboard: c1ccccc1, QUICK CONVERT, and within three
+    seconds the viewer holds twelve atoms with twelve numbers on them.
+    """
+    refs, _sent = builder
+
+    refs['orca_coords'].value = 'c1ccccc1'
+    assert _preview(refs) and 'SMILES detected' in _preview(refs)[0], (
+        'a SMILES is not coordinates, and drawing it as some was the other '
+        'half of "it does not show it"')
+
+    refs['offer_structures'](
+        [('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'quick')], True)
+
+    assert _preview(refs) == ['viewer']
+    assert refs['orca_coords'].value.startswith('3\nConverted from SMILES\n')
+
+
+def test_the_preview_is_filled_by_assignment_not_by_capture():
+    assert 'orca_mol_output.outputs = tuple(items)' in BUILDER
+    assert 'with orca_mol_output:' not in BUILDER

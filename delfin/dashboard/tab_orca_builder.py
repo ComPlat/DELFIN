@@ -1231,81 +1231,103 @@ def create_tab(ctx):
             # nothing to show.
             orca_mol_nav_row.layout.display = 'none'
 
+    def _show_in_viewer(*items):
+        """Put *items* in the preview, by assignment rather than by capture.
+
+        ``with output: display(...)`` only reaches the widget while the kernel
+        is running the cell it belongs to. A conversion answers from a thread,
+        through the interface loop, and there is no cell there: the coordinates
+        arrived in the box, the preview was asked to draw them, and nothing
+        appeared -- the viewer kept whatever it had, which after a SMILES was a
+        one-atom model of the letters. Assigning the outputs works wherever the
+        call comes from, which is how the Submit tab has always done it.
+        """
+        orca_mol_output.outputs = tuple(items)
+
+    def _as_html(markup):
+        return {'output_type': 'display_data',
+                'data': {'text/html': markup}, 'metadata': {}}
+
+    def _as_text(message):
+        return {'output_type': 'stream', 'name': 'stdout',
+                'text': str(message) + '\n'}
+
     def _refresh_mol_view(reset_view=False):
         """Re-render the molecule viewer, preserving orientation unless *reset_view*."""
         blocks = state['xyz_blocks']
         _update_nav_label()
         _update_numbering_fix_button()
-        if state.get('numbering_check_active'):
-            orca_mol_output.layout.height = '560px'
-            orca_mol_output.layout.min_height = '560px'
-        else:
-            orca_mol_output.layout.height = '560px'
-            orca_mol_output.layout.min_height = '560px'
-        with orca_mol_output:
-            clear_output(wait=True)
-            state['viewer_live'] = False   # nothing on screen until we draw it
-            if blocks:
-                idx = state['xyz_view_idx']
-                _block_name, full_xyz = blocks[idx]
-                try:
-                    overlay_idx = int(state.get('numbering_check_block_idx', 1))
-                    overlay_result = (state.get('numbering_check_results') or {}).get(overlay_idx)
-                    if (
-                        state.get('numbering_check_active')
-                        and overlay_idx > 0
-                        and overlay_result
-                        and overlay_result.get('aligned_reference_xyz')
-                    ):
-                        target_xyz = blocks[overlay_idx][1]
-                        reordered_target_xyz = overlay_result.get('reordered_target_xyz') or target_xyz
-                        step = int(state.get('numbering_view_step', 0))
-                        display(
-                            HTML(
-                                _numbering_check_view_html(
-                                    overlay_result['aligned_reference_xyz'],
-                                    target_xyz,
-                                    reordered_target_xyz,
-                                    step,
-                                    reset_view=reset_view,
-                                )
-                            )
-                        )
-                        # Two of the three check views are a single structure,
-                        # and the editor can work on those like any other. The
-                        # overlay is both at once, which is nothing to edit --
-                        # the numbers still come up on it, from its own model.
-                        _hand_to_editor(
-                            overlay_result['aligned_reference_xyz'] if step == 1
-                            else reordered_target_xyz if step == 2 else '')
-                        if step == 0:
-                            orca_editor._set_mol_status(
-                                'Overlay: reference in red, target in blue. '
-                                'Step to a single structure to edit it.')
-                    else:
-                        label_js = _labels_js()
-                        display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
-                        _hand_to_editor(full_xyz)
-                except Exception as e:
-                    print(f'Could not visualize: {e}')
-            else:
-                raw = orca_coords.value.strip()
-                if not raw:
-                    print('Paste XYZ coordinates to see 3D preview.')
-                    return
-                coords = strip_xyz_header(raw)
-                if not coords:
-                    print('No valid coordinates.')
-                    return
-                try:
-                    atom_lines = [l for l in coords.split('\n') if l.strip()]
-                    n = len(atom_lines)
-                    xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
-                    label_js = _labels_js()
-                    display(HTML(_viewer_html(xyz_data, label_js, reset_view=reset_view)))
-                    _hand_to_editor(xyz_data)
-                except Exception as e:
-                    print(f'Could not visualize: {e}')
+        orca_mol_output.layout.height = '560px'
+        orca_mol_output.layout.min_height = '560px'
+        state['viewer_live'] = False   # nothing on screen until we draw it
+        if blocks:
+            idx = state['xyz_view_idx']
+            _block_name, full_xyz = blocks[idx]
+            try:
+                overlay_idx = int(state.get('numbering_check_block_idx', 1))
+                overlay_result = (state.get('numbering_check_results') or {}).get(overlay_idx)
+                if (
+                    state.get('numbering_check_active')
+                    and overlay_idx > 0
+                    and overlay_result
+                    and overlay_result.get('aligned_reference_xyz')
+                ):
+                    target_xyz = blocks[overlay_idx][1]
+                    reordered_target_xyz = overlay_result.get('reordered_target_xyz') or target_xyz
+                    step = int(state.get('numbering_view_step', 0))
+                    _show_in_viewer(_as_html(_numbering_check_view_html(
+                        overlay_result['aligned_reference_xyz'],
+                        target_xyz,
+                        reordered_target_xyz,
+                        step,
+                        reset_view=reset_view,
+                    )))
+                    # Two of the three check views are a single structure, and
+                    # the editor can work on those like any other. The overlay
+                    # is both at once, which is nothing to edit -- the numbers
+                    # still come up on it, from its own model.
+                    _hand_to_editor(
+                        overlay_result['aligned_reference_xyz'] if step == 1
+                        else reordered_target_xyz if step == 2 else '')
+                    if step == 0:
+                        orca_editor._set_mol_status(
+                            'Overlay: reference in red, target in blue. '
+                            'Step to a single structure to edit it.')
+                else:
+                    _show_in_viewer(_as_html(
+                        _viewer_html(full_xyz, _labels_js(), reset_view=reset_view)))
+                    _hand_to_editor(full_xyz)
+            except Exception as e:
+                _show_in_viewer(_as_text(f'Could not visualize: {e}'))
+            return
+        raw = orca_coords.value.strip()
+        if not raw:
+            _show_in_viewer(_as_text('Paste XYZ coordinates to see 3D preview.'))
+            _hand_to_editor('')
+            return
+        # A SMILES is not coordinates. Read as some, "c1ccccc1" became a
+        # one-atom model of its own first letter, and after a conversion had
+        # plainly filled the box the viewer still showed that atom -- which is
+        # what "it does not show it" looked like from the outside.
+        if clean_input_data(raw)[1] == 'smiles':
+            _show_in_viewer(_as_text(
+                'SMILES detected. Use CONVERT SMILES, QUICK CONVERT or '
+                'CONVERT SMILES + UFF to turn it into coordinates.'))
+            _hand_to_editor('')
+            return
+        coords = strip_xyz_header(raw)
+        if not coords:
+            _show_in_viewer(_as_text('No valid coordinates.'))
+            _hand_to_editor('')
+            return
+        try:
+            atom_lines = [l for l in coords.split('\n') if l.strip()]
+            xyz_data = f'{len(atom_lines)}\nORCA Builder Preview\n{coords}'
+            _show_in_viewer(_as_html(
+                _viewer_html(xyz_data, _labels_js(), reset_view=reset_view)))
+            _hand_to_editor(xyz_data)
+        except Exception as e:
+            _show_in_viewer(_as_text(f'Could not visualize: {e}'))
 
     def update_orca_molecule_view(change=None):
         # An edit from the editor has already put itself in the box and told
@@ -2297,6 +2319,7 @@ def create_tab(ctx):
         'orca_mol_next_btn': orca_mol_next_btn,
         'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
         'orca_mol_nav_row': orca_mol_nav_row,
+        'orca_mol_output': orca_mol_output,
         'update_orca_preview': update_orca_preview,
         # The structure editor this tab holds, under the names it uses.
         **orca_editor.exported,
