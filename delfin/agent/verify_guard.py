@@ -33,6 +33,7 @@ Nothing here touches the network or RDKit; it only reads the committed
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
 from dataclasses import dataclass
@@ -589,19 +590,125 @@ def quantity_claim_feedback(flags: list[QuantityClaimFlag]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Claim scoping — a disarm excuses the claim it stands next to, nothing else
+# ---------------------------------------------------------------------------
+#
+# Every exemption in this module (a hedge, a question, a conditional, a
+# negation) has to be LOCAL to the claim it excuses. Scoped to the line, a
+# markdown paragraph is one line, so one adverb three sentences later
+# silenced a confident number at the top of it. Measured on the shipped
+# code: "The S1 energy is 2.31 eV. The geometry is around the minimum."
+# was not flagged, and nothing about the energy had changed.
+#
+# The boundary is deliberately CONSERVATIVE — it splits only where the next
+# sentence unmistakably begins, so an abbreviation ("ca. 2.31 eV"), a file
+# name ("app.py läuft"), a decimal and a version string never separate a
+# disarm from the claim it belongs to. Erring here costs a missed flag, and
+# the opposite error costs a correct answer being caveated, which is the
+# one this project has been bitten by twice.
+#
+# There is deliberately NO "terminator at end of text" alternative: the
+# backward scan runs over a bounded region, and inside one a `$` anchors to
+# the region's end, so every abbreviation immediately left of the claim
+# read as a sentence end. "Der Wert liegt bei ca. 2.31 eV" then split right
+# between the hedge and the number it hedges. A missing boundary at the end
+# of the text costs nothing — the window already stops there.
+_CLAIM_SENT_BOUND_RE = re.compile(
+    r"[.!?]+(?=\s+[\"'“(\[]?[A-ZÄÖÜ])"   # ". Next" / ". „Next"
+    r"|\n"                                 # a line break always separates
+)
+
+# Clause boundary INSIDE a sentence. Used where the order matters: a
+# subordinate clause that follows a claim does not retract it.
+_CLAUSE_BOUND_RE = re.compile(r"[,;:]|\s[-–—]\s")
+
+
+@lru_cache(maxsize=8)
+def _sentence_bounds(text: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """(starts, ends) of every sentence boundary in ``text``.
+
+    Computed once per answer and reused by every claim in it. The scanners
+    ask for a sentence per match, and a long answer has thousands of
+    matches — rescanning the text around each of them cost 15 s on 100 kB.
+    Python caches a string's hash after the first use, so the lookup here
+    is a dict probe plus an identity check.
+    """
+    found = [(m.start(), m.end()) for m in _CLAIM_SENT_BOUND_RE.finditer(text)]
+    return tuple(s for s, _ in found), tuple(e for _, e in found)
+
+
+def _claim_sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Span of the sentence containing ``text[start:end]``."""
+    starts, ends = _sentence_bounds(text)
+    i = bisect.bisect_right(ends, start) - 1
+    lo = ends[i] if i >= 0 else 0
+    j = bisect.bisect_left(starts, end)
+    return lo, (starts[j] if j < len(starts) else len(text))
+
+
+def _claim_sentence(text: str, start: int, end: int) -> str:
+    lo, hi = _claim_sentence_span(text, start, end)
+    return text[lo:hi]
+
+
+def _claim_scope_with_lead_in(text: str, start: int, end: int) -> str:
+    """The claim's sentence plus the one BEFORE it.
+
+    Some disclosures are written as a lead-in — "Die Spalte ist mehrdeutig
+    — welche Lesart gilt? Summe wäre 25.136 EUR." — and that order is the
+    honest one. A disclosure that follows the figure is not: it is the
+    note that gets left behind when somebody copies the number out, which
+    is the failure the guard exists for. So the window reaches backwards
+    only.
+    """
+    lo, hi = _claim_sentence_span(text, start, end)
+    if lo > 0:
+        pos = max(lo - 1, 0)
+        lo = _claim_sentence_span(text, pos, pos)[0]
+    return text[lo:hi]
+
+
+def _clause_index(sentence: str, pos: int) -> int:
+    """How many clause boundaries precede ``pos`` inside ``sentence``."""
+    return sum(1 for _ in _CLAUSE_BOUND_RE.finditer(sentence, 0, max(pos, 0)))
+
+
+def _governs(sentence: str, rx: "re.Pattern[str]", pos: int) -> bool:
+    """True when ``rx`` matches in the clause holding ``pos`` or in one that
+    PRECEDES it.
+
+    Order carries meaning: "Wenn Python 3.11 installiert ist, läuft das
+    Skript" states a condition, while "Das Skript läuft jetzt fehlerfrei,
+    wenn Python 3.11 installiert ist" asserts the present state and then
+    names a precondition. Both contain the same word; only the first is a
+    non-assertion. A whole-sentence search could not tell them apart.
+    """
+    here = _clause_index(sentence, pos)
+    for m in rx.finditer(sentence):
+        if _clause_index(sentence, m.start()) <= here:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Hedge detection — explicitly uncertain claims are never enforcement targets
 # ---------------------------------------------------------------------------
 #
 # Every claim scanner below (and the quantity scanner above) skips claims
-# whose containing line carries an explicit uncertainty marker: enforcement
-# exists to stop CONFIDENT fabrication, and an answer that says it is
-# guessing has already disclosed its grounding status.
+# whose containing SENTENCE carries an explicit uncertainty marker:
+# enforcement exists to stop CONFIDENT fabrication, and an answer that says
+# it is guessing has already disclosed its grounding status.
 
 _HEDGE_MARKERS = re.compile(
-    r"(?i)\b(?:"
+    # Abbreviated hedges END in a period, and a trailing \b after "." never
+    # matches (both sides are non-word), so the German "ca." — the most
+    # ordinary hedge there is — was in the list and could not fire. It
+    # therefore stands OUTSIDE the \b-wrapped alternation.
+    r"(?i)\bca\.|\bz\.\s?T\.|"
+    r"\b(?:"
     # German
     r"vermutlich|wahrscheinlich|m(?:ö|oe)glicherweise|vielleicht|"
-    r"ungef(?:ä|ae)hr|etwa|circa|ca\.|sch(?:ä|ae)tzungsweise|grob|"
+    r"ungef(?:ä|ae)hr|etwa|circa|sch(?:ä|ae)tzungsweise|grob|"
     r"unsicher|ungepr(?:ü|ue)ft|unverifiziert|"
     r"nicht\s+(?:gepr(?:ü|ue)ft|verifiziert|(?:ü|ue)berpr(?:ü|ue)ft|sicher|"
     r"nachgesehen|nachgeschaut)|"
@@ -621,15 +728,28 @@ _HEDGE_MARKERS = re.compile(
 )
 
 
+@lru_cache(maxsize=8)
+def _hedge_positions(text: str) -> tuple[int, ...]:
+    """Where every uncertainty marker in ``text`` starts.
+
+    Collected once per answer, like the sentence bounds: an answer with
+    thousands of numbers in it asks this question thousands of times, and
+    each answer used to cost a fresh scan of the surrounding text."""
+    return tuple(m.start() for m in _HEDGE_MARKERS.finditer(text))
+
+
 def _is_hedged(text: str, start: int, end: int) -> bool:
-    """True when the line containing ``text[start:end]`` carries an explicit
-    uncertainty marker. Line-scoped on purpose: a hedge in one sentence must
-    not blanket-immunize confident claims elsewhere in the answer."""
-    lo = text.rfind("\n", 0, start) + 1
-    hi = text.find("\n", end)
-    if hi == -1:
-        hi = len(text)
-    return _HEDGE_MARKERS.search(text[lo:hi]) is not None
+    """True when the SENTENCE containing ``text[start:end]`` carries an
+    explicit uncertainty marker.
+
+    Sentence-scoped, not line-scoped: a markdown paragraph is a single
+    line, so "around" in the third sentence used to clear a bare number in
+    the first. The hedge has to stand next to the claim it excuses.
+    """
+    lo, hi = _claim_sentence_span(text, start, end)
+    marks = _hedge_positions(text)
+    i = bisect.bisect_left(marks, lo)
+    return i < len(marks) and marks[i] < hi
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +977,32 @@ def location_claim_feedback(flags: list[LocationClaimFlag]) -> str:
     )
 
 
+def verification_marker(new_files) -> str:
+    """The line printed when a forced correction turn actually verified.
+
+    Derived from the RE-SCAN of the correction, never from a flag: the
+    flag that used to drive the dashboard's "✓ Self-verification …" was
+    assigned BEFORE the correction turn was even attempted, so the
+    checkmark also appeared after a correction that raised a NEW claim,
+    directly above the caveat saying the claims stayed unverified, and
+    when the model had done nothing but add hedges.
+
+    Emitted by the engine rather than a UI layer, so the CLI and headless
+    paths — where a guard-forced retry was previously invisible — see it
+    too.
+    """
+    names = sorted({str(p).replace("\\", "/").rsplit("/", 1)[-1]
+                    for p in (new_files or ()) if str(p).strip()})
+    if not names:
+        return ""
+    shown = ", ".join(names[:3])
+    more = f" (+{len(names) - 3})" if len(names) > 3 else ""
+    return (
+        f"\n\n[verify] Self-check: the claims above were re-checked against "
+        f"{shown}{more}, read during the correction turn."
+    )
+
+
 def grounding_caveat(
     location_flags: list[LocationClaimFlag],
     quantity_flags: list[QuantityClaimFlag],
@@ -1048,6 +1194,14 @@ _FUNC_DISCLOSURE_RE = re.compile(
     # German
     r"nicht\s+(?:verifiziert|verifizierbar|getestet|(?:ü|ue)berpr(?:ü|ue)ft|"
     r"gepr(?:ü|ue)ft|best(?:ä|ae)tigt|nachgewiesen|belegt)|"
+    # …and the same disclosure with German verb-second word order:
+    # "getestet habe ich es allerdings nicht". The negation sits at the end
+    # of the clause, which is where German puts it, so the "nicht <verb>"
+    # form above cannot see it.
+    r"(?:verifiziert|getestet|gepr(?:ü|ue)ft|(?:ü|ue)berpr(?:ü|ue)ft|"
+    r"best(?:ä|ae)tigt|nachgewiesen|belegt)\s+"
+    r"(?:habe|hab|haben|hat|hatte|wurde|wurden|ist|sind|war|waren)\b"
+    r"[^\n]{0,40}?\bnicht\b|"
     r"(?:konnte|kann|konnten|k(?:ö|oe)nnen)\s+(?:ich|wir)?\s*nicht\s+"
     r"[^\n]{0,40}?(?:verifizieren|(?:ü|ue)berpr(?:ü|ue)fen|pr(?:ü|ue)fen|"
     r"testen|best(?:ä|ae)tigen|nachweisen)|"
@@ -1231,6 +1385,32 @@ def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
     return lo, hi
 
 
+# Exemptions that hold wherever they stand in the sentence, because they
+# are the honest disclosure this guard exists to elicit ("I could not
+# verify it") or an attribution to the user's own report. Retracting those
+# for standing after the predicate would punish exactly the phrasing the
+# framework asks for.
+_FUNC_SENTENCE_WIDE = (_FUNC_DISCLOSURE_RE, _FUNC_USER_SOURCE_RE)
+
+# Exemptions that only hold when they GOVERN the predicate — same clause,
+# or a clause before it. A trailing "…, wenn Python 3.11 installiert ist"
+# names a precondition; it does not withdraw the assertion in front of it.
+_FUNC_CLAUSE_LOCAL = (_FUNC_NEGATION_RE, _FUNC_CONDITIONAL_RE,
+                      _FUNC_EXPLANATORY_RE)
+
+
+def _func_disarmed(sentence: str, offset: int) -> bool:
+    """True when ``sentence`` retracts the functional claim at ``offset``
+    (an offset relative to the start of the sentence)."""
+    for rx in _FUNC_SENTENCE_WIDE:
+        if rx.search(sentence):
+            return True
+    for rx in _FUNC_CLAUSE_LOCAL:
+        if _governs(sentence, rx, offset):
+            return True
+    return False
+
+
 def scan_for_unexercised_functional_claims(
     text: str,
     *,
@@ -1274,11 +1454,7 @@ def scan_for_unexercised_functional_claims(
                 continue
             if _is_hedged(scrubbed, m.start(), m.end()):
                 continue
-            if (_FUNC_DISCLOSURE_RE.search(sentence)
-                    or _FUNC_NEGATION_RE.search(sentence)
-                    or _FUNC_CONDITIONAL_RE.search(sentence)
-                    or _FUNC_EXPLANATORY_RE.search(sentence)
-                    or _FUNC_USER_SOURCE_RE.search(sentence)):
+            if _func_disarmed(sentence, m.start() - span[0]):
                 continue
             if scrubbed[span[1]:span[1] + 1] == "?":
                 continue
@@ -1306,11 +1482,7 @@ def scan_for_unexercised_functional_claims(
             # unverified — never an enforcement target.
             if _is_hedged(scrubbed, m.start(), m.end()):
                 continue
-            if (_FUNC_DISCLOSURE_RE.search(sentence)
-                    or _FUNC_NEGATION_RE.search(sentence)
-                    or _FUNC_CONDITIONAL_RE.search(sentence)
-                    or _FUNC_EXPLANATORY_RE.search(sentence)
-                    or _FUNC_USER_SOURCE_RE.search(sentence)):
+            if _func_disarmed(sentence, m.start() - span[0]):
                 continue
             tail = scrubbed[span[1]:span[1] + 1]
             if tail == "?":
@@ -1412,12 +1584,50 @@ _TOTAL_CLAIM_RE = re.compile(
     r"(?i)(gesamt(?:wert|summe|betrag)?|summe|insgesamt|total|zusammen)"
     r"[^.\n]{0,40}?(\d[\d.,]{2,})")
 
-# Signs the answer is offering the reading rather than asserting it: a
-# question, or both readings named. These are the GOOD answer, and the
-# scanner must not fire on them.
+# Signs the answer is offering the reading rather than asserting it. These
+# are the GOOD answer, and the scanner must not fire on them.
+#
+# TYPED, and read in the total's own sentence. A bare "?" used to be in
+# this set and was searched over the WHOLE answer, so
+#
+#     "Gesamtsumme der Spalte Anschaffungswert: 45.231,50 EUR.
+#      Soll ich noch nach Kostenstelle gruppieren?"
+#
+# passed while the same text without the trailing offer was flagged.
+# Nothing about the total had changed — only the closing pleasantry. A
+# question mark alone therefore no longer disarms anything; the sentence
+# has to name the ambiguity, or state both readings (see
+# ``_states_both_readings``).
+# Naming the assumption is deliberately NOT in here: a note saying which
+# reading was picked travels with the answer, not with the number, and the
+# reader who copies the figure out leaves it behind. The answer has to
+# present the ambiguity or ask.
 _OFFERS_THE_CHOICE_RE = re.compile(
-    r"(?i)(\?|mehrdeutig|zwei(?:erlei)? (?:lesart|deutung)|beide lesarten"
-    r"|welche (?:lesart|konvention)|ambiguous|which reading)")
+    r"(?i)(mehrdeutig|uneindeutig|nicht eindeutig|"
+    r"zwei(?:erlei)? (?:lesart|deutung)|beide lesarten|"
+    r"welche[srmn]? (?:lesart|konvention|format|schreibweise)|"
+    r"ambiguous|which reading|which convention|both readings)")
+
+# Number tokens inside one sentence, used to spot an answer that puts BOTH
+# readings of the same figure side by side ("8.986 = 8986", "25.136 EUR /
+# 25,136 EUR"). Two spellings of one digit sequence are the ambiguity made
+# visible, which is the answer this guard is asking for.
+_NUMBER_TOKEN_RE = re.compile(r"\d[\d.,]*\d|\d")
+
+
+def _states_both_readings(sentence: str) -> bool:
+    """True when the sentence spells one digit sequence two different ways."""
+    seen: dict[str, str] = {}
+    for m in _NUMBER_TOKEN_RE.finditer(sentence):
+        raw = m.group(0).rstrip(".,")
+        digits = raw.replace(".", "").replace(",", "")
+        if not digits:
+            continue
+        previous = seen.get(digits)
+        if previous is not None and previous != raw:
+            return True
+        seen.setdefault(digits, raw)
+    return False
 
 
 def extract_ambiguous_columns(tool_output: str) -> list[str]:
@@ -1443,9 +1653,18 @@ def scan_for_totals_over_ambiguous_columns(
     """
     if not text or not ambiguous_columns:
         return []
-    if _OFFERS_THE_CHOICE_RE.search(text):
-        return []
-    if not _TOTAL_CLAIM_RE.search(text):
+    # A total whose OWN sentence presents the ambiguity is the good answer.
+    # One that does not is asserted, whatever the rest of the reply says.
+    asserted = False
+    for m in _TOTAL_CLAIM_RE.finditer(text):
+        scope = _claim_scope_with_lead_in(text, m.start(), m.end())
+        if _OFFERS_THE_CHOICE_RE.search(scope):
+            continue
+        if _states_both_readings(scope):
+            continue
+        asserted = True
+        break
+    if not asserted:
         return []
     hit = []
     lowered = text.lower()
@@ -1461,11 +1680,95 @@ def scan_for_totals_over_ambiguous_columns(
 
 
 # A count in an answer: "31 PDF-Dateien", "31 files", "29 rows".
+#
+# A CLOSED noun list was the whole guard, and it decided the outcome on a
+# word the user never chose. Over one and the same 29-item listing, "31
+# PDF-Dateien" was caught and "31 Rechnungen" was not; "Belege",
+# "Formulare", "Datensätze" and "Positionen" walked through as well. So the
+# shape is general — a two-plus-digit integer followed by a plural noun —
+# and only the things that are MEASURES rather than items are excluded.
 _COUNT_CLAIM_RE = re.compile(
-    r"(?i)\b(\d{2,})\s+"
-    r"(?:pdf|docx?|xlsx?|csv|dateien|files?|zeilen|rows?|eintr[äa]ge|"
-    r"entries|dokumente|documents?|antr[äa]ge)\b"
+    r"(?<![\w.,])(\d{2,6})\s+"
+    r"([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß]*(?:-[\wÄÖÜäöüß]+)*)\b"
 )
+
+# What a counted thing looks like, without a list of which things.
+#
+# German nouns are capitalised, and a count of them is plural: "31 Belege",
+# never "31 Beleg". English plurals end in "s". Both halves are needed —
+# on the German rule alone, "8.986 liest sich als 8986 oder als 8,986"
+# produced the count claim "8986 oder als", because "oder" ends in a German
+# plural suffix and "als" in an English one. Function words are short and
+# lowercase; the two rules together exclude them without naming any.
+_PLURAL_SUFFIXES_DE = ("en", "er", "se", "ze", "e", "n")
+_ENGLISH_NON_PLURAL_ENDINGS = ("ss", "us", "is")
+
+# Words that pass the shape but count no ITEMS: durations, sizes, money,
+# physical units, and the chars/lines vocabulary the truncation markers
+# themselves use. Compared against the last hyphen segment, lower-cased.
+_COUNT_STOPWORDS = frozenset({
+    # time
+    "sekunden", "minuten", "stunden", "tage", "wochen", "monate", "jahre",
+    "millisekunden", "seconds", "minutes", "hours", "days", "weeks",
+    "months", "years", "milliseconds",
+    # size / measure
+    "zeichen", "chars", "characters", "bytes", "kilobytes", "megabytes",
+    "gigabytes", "pixel", "pixels", "meter", "metern", "kilometer",
+    "zentimeter", "millimeter", "meters", "metres", "kilometers", "miles",
+    "gramm", "kilogramm", "grams", "kilograms", "tonnen", "liter", "litres",
+    "liters", "grade", "degrees", "prozente", "percent",
+    # money
+    "euros", "euro", "cents", "dollars", "franken", "pfund",
+    # frequency / vague
+    "male", "times", "mal", "prozentpunkte",
+})
+
+
+# A second qualifying word after the noun, so an adjective in front of the
+# real noun is reported whole ("31 neue Dateien", not "31 neue").
+_COUNT_NEXT_WORD_RE = re.compile(
+    r"[ \t]+([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß]*(?:-[\wÄÖÜäöüß]+)*)\b")
+
+
+def _is_countable_noun(word: str) -> bool:
+    """True when ``word`` names things one can count."""
+    head = word.rsplit("-", 1)[-1]
+    tail = head.lower()
+    if len(tail) < 3 or not tail.isalpha() or tail in _COUNT_STOPWORDS:
+        return False
+    if head[:1].isupper():                      # German noun
+        return tail.endswith(_PLURAL_SUFFIXES_DE) or tail.endswith("s")
+    return (len(tail) >= 4 and tail.endswith("s")   # English plural
+            and not tail.endswith(_ENGLISH_NON_PLURAL_ENDINGS))
+
+
+def _count_claims(text: str) -> list[tuple[int, str]]:
+    """(number, claim text) for every counted-things claim in ``text``.
+
+    Shared by both count guards so the two can never disagree about what
+    counts as a count. A modifier is allowed between the number and the
+    noun, so "31 neue Dateien" reads back as itself and not as "31 neue".
+    """
+    out: list[tuple[int, str]] = []
+    body = text or ""
+    for m in _COUNT_CLAIM_RE.finditer(body):
+        first = m.group(2)
+        if first.rsplit("-", 1)[-1].lower() in _COUNT_STOPWORDS:
+            continue                    # "45 Minuten Videos" counts minutes
+        nxt = _COUNT_NEXT_WORD_RE.match(body, m.end())
+        if _is_countable_noun(first):
+            claim = m.group(0)
+            if nxt is not None and _is_countable_noun(nxt.group(1)):
+                claim = body[m.start():nxt.end()]
+        elif nxt is not None and _is_countable_noun(nxt.group(1)):
+            claim = body[m.start():nxt.end()]
+        else:
+            continue
+        try:
+            out.append((int(m.group(1)), " ".join(claim.split())))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def scan_for_counts_over_truncated_output(
@@ -1486,18 +1789,10 @@ def scan_for_counts_over_truncated_output(
     if not text or not truncated_tools:
         return []
     try:
-        return [m.group(0).strip() for m in _COUNT_CLAIM_RE.finditer(text)][:4]
+        return [claim for _n, claim in _count_claims(text)][:4]
     except Exception:
         return []
 
-
-# "31 PDF-Dateien", "29 Einträge", "all 31 files" — the claimed size.
-_ENUMERATION_COUNT_RE = re.compile(
-    r"(?i)\b(?:alle|all|insgesamt|total(?:ly)?|es\s+(?:sind|wurden))?\s*"
-    r"(\d{2,})\s+"
-    r"(?:pdf|docx?|xlsx?|csv|dateien|files?|zeilen|rows?|eintr[äa]ge|"
-    r"entries|dokumente|documents?|antr[äa]ge|requests?)\b"
-)
 
 # A numbered or bulleted list item at the start of a line.
 _LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d{1,3}[.)]\s+|[-*•]\s+)\S")
@@ -1525,11 +1820,7 @@ def scan_for_count_vs_enumeration(text: str) -> list[tuple[int, int]]:
         if listed < 3:
             return []
         out: list[tuple[int, int]] = []
-        for match in _ENUMERATION_COUNT_RE.finditer(text):
-            try:
-                claimed = int(match.group(1))
-            except (TypeError, ValueError):
-                continue
+        for claimed, _claim in _count_claims(text):
             if claimed <= listed or claimed - listed <= 1:
                 continue
             # A count far larger than the list is a summary, not an

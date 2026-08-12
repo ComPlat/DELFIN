@@ -519,12 +519,18 @@ class AgentEngine:
         # Claim-grounding guard state (see _enforce_claim_grounding).
         # _claim_guard_active is the reentrancy latch: True only while the
         # single forced correction turn runs, so that turn can never spawn
-        # another one. _claim_guard_corrected marks that this user turn
-        # already got its one correction (also read by UI layers to skip
-        # redundant scan passes). The ledger flag records whether the
+        # another one. _claim_guard_spent records that this user turn has
+        # used up its one correction — the budget, and nothing else.
+        # _claim_guard_corrected is the VERDICT: True only after a re-scan
+        # of the correction found the claims actually resolved by evidence
+        # read during it. The two used to be one flag, assigned before the
+        # correction turn was even attempted, so "answer corrected" was
+        # reported for corrections that raised a new claim and for ones
+        # that only added hedges. The ledger flag records whether the
         # backend client exposes an observed-files ledger at all — without
         # one, ungrounded-location detection cannot judge and stays off.
         self._claim_guard_active: bool = False
+        self._claim_guard_spent: bool = False
         self._claim_guard_corrected: bool = False
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
@@ -1521,9 +1527,17 @@ class AgentEngine:
             The complete assistant response text.
         """
         # New user turn: re-arm the one-correction budget — unless this IS
-        # the correction turn (nested call), which must not re-arm itself.
-        if not self._claim_guard_active:
+        # a correction turn, which must not re-arm itself. Two shapes of
+        # that: the engine's own nested call (guard active), and a
+        # verification retry a UI layer drives as a fresh top-level call.
+        # Both carry the "[Verify]" feedback prefix; re-arming on the
+        # second would let one answer be corrected twice over, and would
+        # drop the very evidence ledgers the retry is judged against.
+        _is_guard_feedback = str(
+            user_message or "").lstrip().startswith("[Verify]")
+        if not self._claim_guard_active and not _is_guard_feedback:
             self._claim_guard_corrected = False
+            self._claim_guard_spent = False
             # The ambiguity ledger is per TURN: the question is whether
             # THIS answer totals a column THIS turn was told it could not
             # read. Carrying it across turns would caveat a later, unrelated
@@ -1531,6 +1545,11 @@ class AgentEngine:
             # ledger, or the retry would lose the very evidence it is being
             # judged against.
             self._ambiguous_columns_turn = []
+            # Same rule, same reason, and it was documented as per-turn
+            # while never being cleared: once ANY tool truncated in a
+            # session, every later answer carrying a two-digit count got
+            # the caveat, however unrelated.
+            self._truncated_tools_turn = []
 
         # UserPromptSubmit hooks — fire BEFORE the message is appended so a
         # blocking hook can short-circuit the turn entirely. Stop hooks are
@@ -1867,12 +1886,24 @@ class AgentEngine:
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
                     # cannot disagree about what is in question.
-                    self._note_ambiguous_columns(event.tool_output or "")
+                    #
+                    # tool_output is a HEAD slice, and read_document writes
+                    # its notes after the grid — on a 200-row sheet the note
+                    # is ~10 kB in and never arrived. The notes therefore
+                    # ride along as their own field.
+                    _out = event.tool_output or ""
+                    _notes = str(getattr(event, "output_notes", "") or "")
+                    self._note_ambiguous_columns(
+                        _out + ("\n" + _notes if _notes else ""))
                     # And whether the model saw the whole result. A count
                     # taken from output that was cut short is an estimate
-                    # wearing the clothes of a measurement.
-                    _out = event.tool_output or ""
-                    if "truncated," in _out and "chars" in _out:
+                    # wearing the clothes of a measurement. The backend
+                    # reports the cut as a field, because the marker itself
+                    # is written past the slice this event carries. Backends
+                    # that pass the result through whole (the CLI path) set
+                    # no field and still have the marker in the text.
+                    if getattr(event, "output_truncated", False) or (
+                            "truncated," in _out and "chars" in _out):
                         self._note_truncated_tool(event.tool_name or "a tool")
                     # Whether it worked is decided by the result, not
                     # asserted. ok=True was hardcoded here, and the only
@@ -2478,6 +2509,7 @@ class AgentEngine:
     def _append_self_consistency_caveat(
         self, text: str,
         on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
     ) -> str:
         """Mark an answer that contradicts its own list.
 
@@ -2490,10 +2522,16 @@ class AgentEngine:
         Caveat and not correction, and naming BOTH numbers rather than
         picking one. A retry cannot fix a counting error the model just
         made twice, and the framework does not know which figure is the
-        right one -- only that they disagree."""
+        right one -- only that they disagree.
+
+        ``source`` is the text to SCAN when it differs from the text to
+        append to: at the single exit the earlier caveats are already on
+        the answer, and a guard must never read another guard's output as
+        if the model had written it."""
         try:
             from . import verify_guard as _vg
-            pairs = _vg.scan_for_count_vs_enumeration(text)
+            pairs = _vg.scan_for_count_vs_enumeration(
+                source if source is not None else text)
             caveat = _vg.count_vs_enumeration_caveat(pairs)
         except Exception:
             return text
@@ -2509,6 +2547,7 @@ class AgentEngine:
     def _append_truncated_count_caveat(
         self, text: str,
         on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
     ) -> str:
         """Mark a count whose only source was cut short.
 
@@ -2518,9 +2557,13 @@ class AgentEngine:
         in context, so a retry would count the same truncated output
         again. In the field this produced "31 PDF-Dateien verifiziert"
         followed by a list of 29, after the framework's own verify nudge
-        had already fired once."""
+        had already fired once.
+
+        ``source`` is the text to SCAN when it differs from the text to
+        append to — see _append_self_consistency_caveat."""
         try:
-            counts = self._scan_truncated_counts(text)
+            counts = self._scan_truncated_counts(
+                source if source is not None else text)
             if not counts:
                 return text
             from . import verify_guard as _vg
@@ -2621,6 +2664,30 @@ class AgentEngine:
             pass
         return text + caveat
 
+    def _append_answer_caveats(
+        self, text: str, *, functional: list, ambiguous: list,
+        on_token: Callable[[str], None] | None = None,
+        scan_source: str | None = None,
+    ) -> str:
+        """Apply the whole caveat chain ONCE, at the guard's single exit.
+
+        Each of the four exits used to append its own subset, so a single
+        location or quantity flag silently suppressed the truncated-count
+        and the count-vs-own-enumeration guards — the two least related to
+        it. ``ambiguous`` was even computed and then dropped on two of
+        them. An answer is caveated for what it says, not for which branch
+        of the guard happened to return it.
+
+        The later scanners read the model's own text, never the caveats
+        added ahead of them in this chain — ``scan_source`` names it when
+        a guard note is already appended to ``text``."""
+        source = scan_source if scan_source is not None else text
+        out = self._append_functional_caveat(text, functional, on_token)
+        out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
+        out = self._append_truncated_count_caveat(out, on_token, source=source)
+        out = self._append_self_consistency_caveat(out, on_token, source=source)
+        return out
+
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,
     ) -> tuple[list, list]:
@@ -2665,6 +2732,12 @@ class AgentEngine:
         Functional claims ("it works now") run through the SAME gate but
         take the other consequence: a visible caveat naming what was never
         exercised, and no correction turn — see _append_functional_caveat.
+
+        Whether the correction WORKED is decided by re-scanning it against
+        the observed-files ledger, never by the fact that a correction ran:
+        a retry that only rephrased the claim with hedges leaves it exactly
+        as unverified as it was, and is reported as such.
+
         Returns the (possibly extended) answer text."""
         from . import verify_guard as _vg
         loc, qty = self._scan_claim_grounding(
@@ -2675,29 +2748,26 @@ class AgentEngine:
         # it is unfounded, and a retry is free to guess the same way again.
         ambiguous = self._scan_ambiguous_column_totals(response_text)
         if not loc and not qty:
-            return self._append_self_consistency_caveat(
-                self._append_truncated_count_caveat(
-                    self._append_ambiguous_column_caveat(
-                        self._append_functional_caveat(
-                            response_text, func, on_token),
-                        ambiguous, on_token),
-                    on_token),
-                on_token)
-        if self._claim_guard_corrected:
+            return self._append_answer_caveats(
+                response_text, functional=func, ambiguous=ambiguous,
+                on_token=on_token)
+        if self._claim_guard_spent:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
-            return self._append_ambiguous_column_caveat(
-                self._append_functional_caveat(
-                    response_text + _vg.grounding_caveat(loc, qty), func,
-                    on_token),
-                ambiguous, on_token)
+            return self._append_answer_caveats(
+                response_text + _vg.grounding_caveat(loc, qty),
+                functional=func, ambiguous=ambiguous, on_token=on_token)
         parts: list[str] = []
         if loc:
             parts.append(_vg.location_claim_feedback(loc))
         if qty:
             parts.append(_vg.quantity_claim_feedback(qty))
         feedback = "[Verify] " + " ".join(parts)
-        self._claim_guard_corrected = True
+        # What the session had observed BEFORE the retry. The retry either
+        # reads something new or it does not, and that is the only thing
+        # that can turn an unverified claim into a verified one.
+        observed_before = set(getattr(self, "_last_observed_files", None) or ())
+        self._claim_guard_spent = True
         self._claim_guard_active = True
         if on_token:
             try:
@@ -2721,35 +2791,54 @@ class AgentEngine:
         finally:
             self._claim_guard_active = False
         if not correction:
-            return self._append_functional_caveat(
-                response_text + _vg.grounding_caveat(loc, qty), func, on_token)
+            return self._append_answer_caveats(
+                response_text + _vg.grounding_caveat(loc, qty),
+                functional=func, ambiguous=ambiguous, on_token=on_token)
         combined = response_text + "\n\n" + correction
-        # Re-scan the correction only: the recursive turn refreshed the
-        # observed-files snapshot and _last_turn_tools, so a correction
-        # that verified via tools (or restated with hedges) passes clean.
+        # Re-scan the correction: the recursive turn refreshed the
+        # observed-files snapshot and _last_turn_tools.
         loc2, qty2 = self._scan_claim_grounding(
             correction, getattr(self, "_last_turn_tools", None))
         # The correction may restate the functional claim — scan it too and
         # merge (order-stable, de-duplicated: the flags are frozen).
         func = list(dict.fromkeys(
             func + self._scan_functional_claims(correction)))
-        caveat = _vg.grounding_caveat(loc2, qty2) if (loc2 or qty2) else ""
-        if caveat:
+        ambiguous = self._scan_ambiguous_column_totals(combined)
+        new_files = set(
+            getattr(self, "_last_observed_files", None) or ()) - observed_before
+        if loc2 or qty2:
+            # The retry produced its own ungrounded claims.
+            caveat = _vg.grounding_caveat(loc2, qty2)
+        elif not new_files:
+            # It read nothing. The scanners are silent because the wording
+            # changed, not because anything was checked — so the ORIGINAL
+            # claims are named, exactly as unverified as before. The
+            # feedback offers "restate as unverified" as a way out, and
+            # taking it must not be indistinguishable from verifying.
+            caveat = _vg.grounding_caveat(loc, qty)
+        else:
+            caveat = ""
+            self._claim_guard_corrected = True
+        marker = _vg.verification_marker(new_files) if caveat == "" else ""
+        note = caveat or marker
+        if note:
             if on_token:
                 try:
-                    on_token(caveat)
+                    on_token(note)
                 except Exception:
                     pass
-            # Record the caveat in the transcript too, so later turns see
-            # the claim marked unconfirmed rather than standing bare.
+            # Record it in the transcript too, so later turns see the claim
+            # marked rather than standing bare.
             try:
                 if (self.messages
                         and self.messages[-1].get("role") == "assistant"
                         and isinstance(self.messages[-1].get("content"), str)):
-                    self.messages[-1]["content"] += caveat
+                    self.messages[-1]["content"] += note
             except Exception:
                 pass
-        return self._append_functional_caveat(combined + caveat, func, on_token)
+        return self._append_answer_caveats(
+            combined + note, functional=func, ambiguous=ambiguous,
+            on_token=on_token, scan_source=combined)
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session
