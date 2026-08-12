@@ -878,8 +878,16 @@ _REL_PATH_RE = re.compile(r"(?<![\w/])([\w.][\w.\-]*(?:/[\w.\-]+)+/?)")
 
 
 # Commands whose real target is not in the command text.
+#
+# The interpreter may be named through a PATH: `.venv/bin/python -c …` and
+# `/usr/bin/python3 -c …` are the same capability as a bare `python -c`, and
+# without the prefix group they read as an ordinary word to this regex — the
+# venv fallback in ``_segment_auto_allowed`` then auto-allowed the first form
+# even under a locked scope.
 _INTERPRETER_RE = re.compile(
-    r"(?:^|[;&|`$(]\s*)\s*(?:"
+    r"(?:^|[;&|`$(]\s*)\s*"
+    r"(?:[\w.~+-]*/)*"
+    r"(?:"
     r"python[0-9.]*\s+-c|python[0-9.]*\s*<|"
     r"perl\s+-e|ruby\s+-e|node\s+-e|php\s+-r|"
     r"eval|exec|source|\.\s|"
@@ -895,8 +903,8 @@ def _is_interpreter_invocation(cmd: str) -> bool:
 
     Not a judgement about danger -- `python -c "print(1)"` is harmless. It
     is a judgement about VISIBILITY: a scanner that decides on the command
-    string cannot decide about these, so under a locked scope they belong
-    in front of the user rather than on the auto-allow list.
+    string cannot decide about these, so they belong in front of the user
+    rather than on the auto-allow list.
     """
     try:
         text = cmd or ""
@@ -1324,6 +1332,18 @@ _DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*delfin(?:-\w+)?\b",         # delfin CLI wrappers
 )
 
+# The patterns nobody chose. Everything else in
+# ``bash_auto_allow_patterns`` was written by the USER — settings.json, or
+# ``remember_permission(kind='allow_pattern')``, which always confirms
+# first. The distinction matters for one rule only: an interpreter is not
+# auto-allowed by a shipped default, but a rule the user wrote for it is
+# their informed decision and still applies. Without that hatch the block
+# message ("ask them to approve it with remember_permission") would send
+# the agent into a loop it cannot leave.
+_BUILTIN_BASH_AUTO_ALLOW: frozenset[str] = (
+    frozenset(_DEFAULT_BASH_AUTO_ALLOW) | frozenset(_DELFIN_BASH_AUTO_ALLOW)
+)
+
 # Shell-executing MCP tools (by their un-namespaced base name). An MCP
 # backend such as KIT-Toolbox exposes ``mcp__kit-coding__bash``, which runs
 # the command REMOTELY and therefore never reaches the native bash executor
@@ -1645,6 +1665,21 @@ def _bare_tool_name(name: str) -> str:
     return text.rsplit("__", 1)[-1] if text.startswith("mcp__") else text
 
 
+def _tool_action_signature(name: str, args: dict) -> str:
+    """A stable key for a tool call that is neither a path nor a command.
+
+    The bare tool name plus the arguments, so a refusal covers exactly the
+    call the user was shown — and covers it whether it comes back native or
+    namespaced through an MCP server.
+    """
+    base = _bare_tool_name(name)
+    try:
+        payload = json.dumps(args or {}, sort_keys=True, default=str)
+    except Exception:
+        payload = str(args)
+    return f"{base}|{payload[:400]}"
+
+
 def _tool_denied_for_role(role: str, name: str) -> bool:
     """Deny-by-default per-role execution check (pure, testable).
 
@@ -1770,6 +1805,42 @@ def _is_forbidden_workspace_root(path: Path | str | None) -> bool:
     except Exception:
         return False
     return p == home or p in home.parents
+
+
+# Directories a single approved READ never widens into. Reading
+# /etc/hostname must not open all of /etc for the session, and a file in a
+# key directory must not open the key directory. ``/home`` and ``/Users``
+# are absent on purpose: a project folder under home is the normal case and
+# ``_is_forbidden_workspace_root`` already refuses $HOME itself.
+_NON_GRANTABLE_READ_DIRS: frozenset[str] = frozenset({
+    "/", "/etc", "/root", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/var", "/sys", "/proc", "/dev", "/boot", "/run", "/srv", "/cdrom",
+    "/opt",
+})
+_SECRET_DIR_NAMES: frozenset[str] = frozenset({
+    ".ssh", ".gnupg", ".gpg", ".aws", ".azure", ".kube", ".docker",
+})
+
+
+def _is_grantable_read_dir(path: Path | str | None) -> bool:
+    """Whether one approved read may open *path* for the session's reads.
+
+    The approved file is read either way — this governs only whether the
+    directory around it comes with it. Fails closed on any error.
+    """
+    if path is None:
+        return False
+    try:
+        p = Path(path).expanduser().resolve()
+        if _is_forbidden_workspace_root(p):
+            return False
+        if str(p) in _NON_GRANTABLE_READ_DIRS:
+            return False
+        if len(p.parts) >= 2 and ("/" + p.parts[1]) in _NON_GRANTABLE_READ_DIRS:
+            return False
+        return not (set(p.parts) & _SECRET_DIR_NAMES)
+    except Exception:
+        return False
 
 
 # Path globs (relative to workspace) where writes/edits are forbidden.
@@ -1943,6 +2014,21 @@ class KitToolPermissions:
     # trivially reproduced with `bash cat <same path>`, which defeats the
     # whole point of asking.
     denied_paths: set[str] = field(default_factory=set)
+    # The same idea for everything that is not a read: writes, shell
+    # commands and namespaced tool calls. Only READS were remembered, so a
+    # denied write and a denied command returned prose asking the model not
+    # to retry -- and nothing else. The identical call could be re-emitted
+    # verbatim and simply prompted the user again, which turns a refusal
+    # into a retry loop and buries the second dialog in a wall of them.
+    # Keyed by ``<kind>:<normalised target>``; the value is the target as it
+    # was written, for the message. Sub-agents SHARE this dict by reference
+    # (``dataclasses.replace`` copies field values) -- deliberately: a child
+    # must not be a way around what the parent was refused.
+    denied_actions: dict[str, str] = field(default_factory=dict)
+    # Directories a single approved outside-workspace READ opened for the
+    # rest of the session. Readable, never writable, never persisted -- see
+    # ``add_session_read_dir``.
+    session_read_dirs: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).expanduser().resolve()
@@ -1999,6 +2085,8 @@ class KitToolPermissions:
             self.read_only_workspace_dirs, drop_writable=True)
         self.confirm_write_dirs = _resolve_dirs(
             self.confirm_write_dirs, drop_writable=False)
+        self.session_read_dirs = _resolve_dirs(
+            self.session_read_dirs, drop_writable=True)
         self.is_delfin_workspace = _is_delfin_workspace(self.workspace)
         # Merge in DELFIN-only bash patterns only inside the DELFIN repo so
         # generic projects don't get an auto-allowed ``xtb`` / ``delfin``
@@ -2049,12 +2137,19 @@ class KitToolPermissions:
         return (self.workspace,) + tuple(self.extra_workspace_dirs)
 
     def add_extra_dir(self, path) -> Path:
-        """Add ``path`` to the allowed workspace roots.
+        """Add ``path`` to the WRITABLE workspace roots.
 
         Returns the resolved path. Raises ValueError if the path does not
-        exist or is not a directory. Idempotent: re-adding is a no-op.
-        Refused outright when the scope is locked — otherwise the agent
-        could widen its own sandbox by asking for a grant.
+        exist, is not a directory, or is too broad to be a workspace root.
+        Idempotent: re-adding is a no-op. Refused outright when the scope
+        is locked — otherwise the agent could widen its own sandbox by
+        asking for a grant.
+
+        The floor is the constructor's: $HOME, its ancestors and the system
+        directories are refused. It was checked when the workspace was
+        built and when extra dirs were passed in, but not here — so a root
+        the constructor refuses to accept could still be added at runtime,
+        and a session grant made $HOME writable exactly that way.
         """
         if self.scope_locked:
             raise ValueError(
@@ -2065,10 +2160,81 @@ class KitToolPermissions:
             raise ValueError(f"path does not exist: {p}")
         if not p.is_dir():
             raise ValueError(f"path is not a directory: {p}")
+        if _is_forbidden_workspace_root(p):
+            raise ValueError(
+                f"refusing {p} as a workspace root — it is your home "
+                "directory or a system root, which would let the agent "
+                "write anywhere. Grant a project sub-directory instead.")
         if p == self.workspace or p in self.extra_workspace_dirs:
             return p
         self.extra_workspace_dirs = tuple(self.extra_workspace_dirs) + (p,)
         return p
+
+    def add_session_read_dir(self, path) -> Path:
+        """Open ``path`` for READING for the rest of this session.
+
+        What an approved outside-workspace read grants. It used to grant a
+        writable root: the click added the file's parent to
+        ``extra_workspace_dirs``, which every write gate treats as inside
+        the sandbox — while the dialog said the approval covered one read.
+        Approving a read of a file in $HOME therefore made $HOME writable,
+        the one root the constructor explicitly refuses.
+
+        Reachable for reads (``all_readable_roots``), never writable
+        (``find_root_for`` skips it, ``is_read_only_path`` claims it), never
+        persisted. Raises ValueError when the directory is not grantable.
+        """
+        if self.scope_locked:
+            raise ValueError(
+                f"this session is limited to {self.workspace}; nothing "
+                "outside it can be opened, not even for reading")
+        p = Path(path).expanduser().resolve()
+        if not p.is_dir():
+            raise ValueError(f"path is not a directory: {p}")
+        if not _is_grantable_read_dir(p):
+            raise ValueError(
+                f"refusing to open {p} for the session — a single approved "
+                "read does not widen into a system, home or secret "
+                "directory. The approved file itself is still read.")
+        if (p == self.workspace or p in self.extra_workspace_dirs
+                or p in self.session_read_dirs):
+            return p
+        self.session_read_dirs = tuple(self.session_read_dirs) + (p,)
+        return p
+
+    # -- Refusal ledger ---------------------------------------------------
+    #
+    # ``kind`` is "write" (a path), "bash" (a command) or "tool" (a tool
+    # signature). Normalisation is per kind so the identical action is
+    # recognised however it is spelled, and nothing wider than that is:
+    # a refusal covers what the user was shown, not a family of guesses.
+
+    @staticmethod
+    def _denied_action_key(kind: str, target: str) -> str:
+        text = str(target or "")
+        if kind == "bash":
+            text = " ".join(text.split()).rstrip(";").strip()
+        elif kind == "write":
+            try:
+                text = str(Path(text).expanduser().resolve(strict=False))
+            except Exception:
+                pass
+        return f"{kind}:{text}"
+
+    def record_denied_action(self, kind: str, target: str) -> None:
+        """Remember that the user refused this exact action. Never raises."""
+        try:
+            self.denied_actions.setdefault(
+                self._denied_action_key(kind, target), str(target)[:300])
+        except Exception:
+            pass
+
+    def action_denied_earlier(self, kind: str, target: str) -> bool:
+        """True when the user already refused this exact action."""
+        try:
+            return self._denied_action_key(kind, target) in self.denied_actions
+        except Exception:
+            return False
 
     def find_root_for(self, resolved: Path) -> Optional[Path]:
         """Return the WRITABLE workspace root that contains ``resolved``, or None."""
@@ -2103,7 +2269,8 @@ class KitToolPermissions:
             return (self.workspace,)
         return (self.all_workspace_roots()
                 + tuple(self.read_only_workspace_dirs)
-                + tuple(self.confirm_write_dirs))
+                + tuple(self.confirm_write_dirs)
+                + tuple(self.session_read_dirs))
 
     def find_readable_root_for(self, resolved: Path) -> Optional[Path]:
         """Return any reachable (readable) root containing ``resolved``, or None."""
@@ -2116,12 +2283,21 @@ class KitToolPermissions:
         return None
 
     def is_read_only_path(self, resolved: Path) -> bool:
-        """True if a WRITE here must be hard-denied (archive / delfin checkout).
+        """True if a WRITE here must be hard-denied (archive / delfin checkout
+        / a directory a read approval opened).
         A path also under a writable root is NOT read-only (writable wins — e.g.
         the delfin checkout when you launched there is the writable workspace)."""
         if self.find_root_for(resolved) is not None:
             return False
-        return self._under_any(resolved, self.read_only_workspace_dirs)
+        return self._under_any(
+            resolved,
+            tuple(self.read_only_workspace_dirs) + tuple(self.session_read_dirs))
+
+    def is_session_read_path(self, resolved: Path) -> bool:
+        """True if this path is only reachable through a read approval."""
+        if self.find_root_for(resolved) is not None:
+            return False
+        return self._under_any(resolved, self.session_read_dirs)
 
     def is_confirm_write_path(self, resolved: Path) -> bool:
         """True if a WRITE here must go through an explicit confirm (calc).
@@ -2146,17 +2322,57 @@ class KitToolPermissions:
                 return pat
         return None
 
+    def _custom_allow_matches(self, text: str) -> bool:
+        """True when a pattern the USER added matches *text*.
+
+        Built-in defaults are skipped: they are what the interpreter rule
+        overrides, so consulting them here would answer its own question.
+        """
+        for pat in self.bash_auto_allow_patterns:
+            if pat in _BUILTIN_BASH_AUTO_ALLOW:
+                continue
+            try:
+                if re.search(pat, text, re.IGNORECASE):
+                    return True
+            except re.error:
+                continue
+        return False
+
+    def _interpreter_needs_confirm(self, cmd: str) -> bool:
+        """True when *cmd* hides its target and no user rule covers it.
+
+        The auto-allow list is checked BEFORE any confirmation and without
+        regard to the boundary, and the boundary is enforced by reading the
+        command text -- which is exactly what an interpreter hides.
+        `python -c` can build a path from chr(47), `base64 -d | bash`
+        carries one encoded, `xargs` reads targets from a file, `make` runs
+        whatever the Makefile says. None of that is visible to a scanner.
+
+        This used to hold only under a locked scope, and everywhere else
+        `python -c` was on the auto-allow list. That made every write gate
+        optional: a write_file the user had just DENIED came back as
+        `python3 -c "open('<same path>','a').write(...)"` with no dialog,
+        no record, and no path for ``_bash_write_targets`` to recognise --
+        one route past the read-before-write contract, the protected-path
+        globs, the self-modification guard and the calc confirm at once.
+
+        A payload that merely LOOKS read-only is not an exception: an
+        `import` in the payload runs a file the agent may have written a
+        moment earlier, so "no open( in the text" proves nothing.
+
+        A locked scope refuses regardless. Elsewhere a pattern the user
+        wrote themselves still applies -- see ``_custom_allow_matches``.
+        """
+        if not _is_interpreter_invocation(cmd):
+            return False
+        if self.scope_locked:
+            return True
+        hidden = [s for s in _split_shell_segments(cmd)
+                  if _is_interpreter_invocation(s)] or [cmd]
+        return not all(self._custom_allow_matches(s) for s in hidden)
+
     def matches_bash_auto_allow(self, cmd: str) -> bool:
-        # Under a locked scope, an interpreter is never auto-allowed. The
-        # auto-allow list is checked BEFORE any confirmation and without
-        # regard to the boundary, and the boundary is enforced by reading
-        # the command text -- which is exactly what an interpreter hides.
-        # `python -c` can build a path from chr(47), `base64 -d | bash`
-        # carries one encoded, `xargs` reads targets from a file, `make`
-        # runs whatever the Makefile says. None of that is visible to a
-        # scanner, so where the folder IS the promise these have to reach
-        # the user instead of running unattended.
-        if self.scope_locked and _is_interpreter_invocation(cmd):
+        if self._interpreter_needs_confirm(cmd):
             return False
         # A command is auto-allowed only if EVERY shell segment is individually
         # auto-allowed. Start-anchored patterns alone would trust a compound by
@@ -8626,12 +8842,23 @@ class _DocToolExecutor:
                 "Add the directory via 'Erlaubte Verzeichnisse' or "
                 "remember_permission(kind='extra_dir', ...) to read it."
             )
+        # Say what the click actually does. The old wording promised "only
+        # this single read" while the approval added the file's PARENT to
+        # the writable workspace roots — so approving a read of a file in
+        # $HOME made $HOME writable for the session. The grant is now
+        # read-only (see ``add_session_read_dir``) and described as it is.
+        _grantable = _is_grantable_read_dir(resolved.parent)
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
             f"The agent wants to read a file outside the allowed roots:\n"
             f"  {resolved}\n\n"
-            "Approving this read does NOT add the directory to the "
-            "permanent workspace list — it only allows this single read."
+            + ("Approving allows READING this file and other files in\n"
+               f"  {resolved.parent}\n"
+               "for the rest of this session. It grants NO write access "
+               "there, and nothing is saved — a later session asks again."
+               if _grantable else
+               "Approving allows READING this one file. Its directory is a "
+               "system, home or key directory and is not opened.")
         )
         try:
             ok = bool(perms.confirm_callback(
@@ -8661,7 +8888,29 @@ class _DocToolExecutor:
                 "NOT a denial. Continue with work inside your workspace and "
                 "ask again later."
             )
+        # Approved: open the directory for READS so the next file in it does
+        # not raise a second dialog, which is what the writable grant was
+        # for. Best-effort — a refused grant leaves the approved read intact.
+        if _grantable:
+            try:
+                _granted = perms.add_session_read_dir(resolved.parent)
+                _record_security_event(
+                    "read_grant", "read_file", str(_granted), blocked=False)
+            except Exception:
+                pass
         return None
+
+    @staticmethod
+    def _confirm_timed_out(perms: "KitToolPermissions") -> bool:
+        """True when the last dialog EXPIRED rather than being refused.
+
+        Absence is not a decision: an unattended window must not be
+        recorded as a refusal, or every 300 s timeout would permanently
+        close a path the user never looked at.
+        """
+        return bool(getattr(
+            getattr(perms.confirm_callback, "__self__", None),
+            "last_timed_out", False))
 
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
@@ -8685,11 +8934,35 @@ class _DocToolExecutor:
             _record_security_event(
                 "read_only_write", name, self._display_path(resolved, perms),
                 blocked=True)
+            if perms.is_session_read_path(resolved):
+                # A directory an approved READ opened. The user allowed the
+                # agent to look at it; nobody offered it a pen.
+                return (
+                    f"'{path_arg}' is in a directory that was opened for "
+                    "READING only, by approving a read earlier in this "
+                    "session. That approval grants no write access. To "
+                    "change a file there, ask the user to add the directory "
+                    "as a workspace directory."
+                )
             return (
                 f"'{path_arg}' is in a READ-ONLY location (the archive of "
                 f"stored calculations, or the DELFIN checkout). It is fixed "
                 f"— to work on it, COPY it into calc or agent_workspace and "
                 f"edit the copy. Refusing to modify it in place."
+            )
+        # Already refused this session. The prose the refusal returns asks
+        # the model not to retry; nothing enforced it, so the identical
+        # write simply raised the dialog again — and, through the shell,
+        # reached the file with no dialog at all.
+        if perms.action_denied_earlier("write", str(resolved)):
+            _record_security_event(
+                "denied_again", name, self._display_path(resolved, perms),
+                blocked=True)
+            return (
+                f"the user already refused a write to '{path_arg}' in this "
+                "session, so it stays refused and is not asked again. Do "
+                "not reach the file through another tool or a shell command "
+                "either — ask the user what they want changed instead."
             )
         try:
             rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
@@ -8731,8 +9004,12 @@ class _DocToolExecutor:
                 ok = bool(perms.confirm_callback(name, args, preview))
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
+            if ok:
+                return None
             _w = "protected path" if is_protected else "calc file"
-            return None if ok else f"user denied '{name}' on {_w} '{rel_str}'"
+            if not self._confirm_timed_out(perms):
+                perms.record_denied_action("write", str(resolved))
+            return f"user denied '{name}' on {_w} '{rel_str}'"
 
         # Inside a writable root. "default" asks before the change; that is
         # what makes acceptEdits mean something — a mode that turns off a
@@ -8754,6 +9031,8 @@ class _DocToolExecutor:
                 return f"confirm_callback raised: {exc}"
             if not ok:
                 _record_security_event("denied_by_user", name, rel_str)
+                if not self._confirm_timed_out(perms):
+                    perms.record_denied_action("write", str(resolved))
                 return (
                     f"user denied '{name}' on '{rel_str}'. Do NOT retry it or "
                     "write the same content by another route — ask the user "
@@ -8795,6 +9074,15 @@ class _DocToolExecutor:
             # protection belongs where the user has NOT opted out.
             target = str(args.get("url") or args.get("query")
                          or args.get("payload") or args.get("message") or "")
+            if perms.action_denied_earlier(
+                    "tool", _tool_action_signature(name, args)):
+                _record_security_event("denied_again", name, target[:120])
+                return (
+                    f"the user already refused '{name}' with these arguments "
+                    "in this session. It stays refused and is not asked "
+                    "again — do not retry it or reach the same destination "
+                    "another way."
+                )
             if perms.confirm_callback is None:
                 _record_security_event("egress", name, target[:120], blocked=True)
                 return (
@@ -8810,6 +9098,9 @@ class _DocToolExecutor:
                 return f"confirm_callback raised: {exc}"
             _record_security_event("egress", name, target[:120], blocked=not ok)
             if not ok:
+                if not self._confirm_timed_out(perms):
+                    perms.record_denied_action(
+                        "tool", _tool_action_signature(name, args))
                 return (f"user denied '{name}'. Do NOT retry it or reach the "
                         "same destination another way.")
             return None
@@ -8919,6 +9210,22 @@ class _DocToolExecutor:
                         f"({egress}). Sending data to a remote host is not "
                         "allowed without a human in the loop."
                     )
+            # A command the user already refused. Checked with the hard
+            # tiers rather than next to the dialog, because it IS one: the
+            # answer was given, and re-asking in a later mode would make
+            # the refusal depend on which mode the model chose to try
+            # again in. Only READS were remembered before, so the same
+            # bash call could be re-emitted verbatim and simply prompted
+            # again.
+            if perms.action_denied_earlier("bash", cmd):
+                _record_security_event("denied_again", "bash", cmd[:80])
+                return (
+                    f"the user already refused this exact command "
+                    f"('{cmd[:120]}') in this session. It stays refused and "
+                    "is not asked again. Do not retry it, and do not reach "
+                    "the same result another way — ask the user what to do "
+                    "instead."
+                )
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
@@ -8956,9 +9263,7 @@ class _DocToolExecutor:
                 # Timeout is ABSENCE, not refusal — the two need different
                 # guidance (a "user denied, never retry" after every
                 # unattended 300s window poisoned whole sessions).
-                _timed_out = bool(getattr(
-                    getattr(perms.confirm_callback, "__self__", None),
-                    "last_timed_out", False))
+                _timed_out = self._confirm_timed_out(perms)
                 if _timed_out:
                     _record_security_event("approval_timeout", "bash", cmd[:80])
                     return (
@@ -8970,6 +9275,7 @@ class _DocToolExecutor:
                         "respond when back."
                     )
                 _record_security_event("denied_by_user", "bash", cmd[:80])
+                perms.record_denied_action("bash", cmd)
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
                     "it or work around it — ask the user what to do instead."
@@ -9040,6 +9346,38 @@ class _DocToolExecutor:
                     "its execution allow-list does not include this tool, "
                     "including via an MCP backend."
                 )
+
+        # (0b) Plan mode, deny-by-default. ``execute()`` enforces this for
+        # every native tool, and the streaming loop routes mcp__* names
+        # around ``execute()`` into this gate — which knew three families
+        # and returned None for everything else. So in the profile labelled
+        # read-only, mcp__github__create_pull_request,
+        # mcp__jira__create_issue and mcp__db__delete_row all dispatched.
+        # Judged on the bare name, like the native check, so a namespaced
+        # read (mcp__coding__read_file) still works.
+        if perms is not None and getattr(perms, "mode", "") == "plan":
+            if (_bare_tool_name(name) not in _PLAN_READONLY_TOOLS
+                    and not bool((args or {}).get("check_only"))):
+                _record_security_event("plan_mode_mcp", name, "", blocked=True)
+                return (
+                    f"plan mode (read-only) — '{_bare_tool_name(name)}' "
+                    "rejected because it can change something, and an MCP "
+                    "server is not a way around that. Finish investigating, "
+                    "then call exit_plan_mode with the plan; execution "
+                    "begins after the user approves it."
+                )
+
+        # (0c) An action the user already refused, re-emitted through a
+        # server. The ledger is keyed on the BARE name, so a native refusal
+        # holds for the namespaced call and the other way round.
+        if perms is not None and perms.action_denied_earlier(
+                "tool", _tool_action_signature(name, args or {})):
+            _record_security_event("denied_again", name, "", blocked=True)
+            return (
+                f"the user already refused '{_bare_tool_name(name)}' with "
+                "these arguments in this session. It stays refused and is "
+                "not asked again, through any server."
+            )
 
         # (1) Shell executors → the bash gate (command payload remapped).
         if base in _MCP_BASH_TOOL_BASES:
@@ -9944,6 +10282,38 @@ class _DocToolExecutor:
             return None
         return None
 
+    @staticmethod
+    def _interpreter_names_denied_write(
+        cmd: str, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """The refused file an opaque command mentions, or None.
+
+        Iterates the refusals rather than parsing the command: the ledger
+        holds only what the user actually declined, so matching by name is
+        cheap and cannot invent a target the user never saw.
+        """
+        try:
+            if not _is_interpreter_invocation(cmd):
+                return None
+            for key in list(getattr(perms, "denied_actions", {}) or {}):
+                if not key.startswith("write:"):
+                    continue
+                path = key[len("write:"):]
+                if not path:
+                    continue
+                if path in cmd:
+                    return path
+                try:
+                    rel = str(Path(path).relative_to(perms.workspace))
+                except (ValueError, OSError):
+                    continue
+                if rel and re.search(
+                        rf"(?<![\w/.]){re.escape(rel)}(?![\w])", cmd):
+                    return path
+        except Exception:
+            return None
+        return None
+
     def _gate_bash_write_targets(
         self, cmd: str, arguments: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -9961,6 +10331,22 @@ class _DocToolExecutor:
         Returns a JSON error string to block, or None to allow.
         """
         try:
+            # A command whose write targets cannot be read from its text at
+            # all -- `python -c "open('<path>','a').write(…)"`. The loop
+            # below has nothing to hand the write gate, so the refusal is
+            # matched against the file NAMED in the command instead. Only
+            # for interpreters: everywhere else the targets are visible and
+            # go through the gate one by one, and a denied WRITE must not
+            # stop an ordinary `cat` of the same file.
+            named = self._interpreter_names_denied_write(cmd, perms)
+            if named is not None:
+                _record_security_event("denied_again", "bash", cmd[:80])
+                return json.dumps({"error": (
+                    f"blocked: the user refused a write to '{named}' in this "
+                    "session, and this command names it while hiding what it "
+                    "does with it. The refusal covers the file, not the tool "
+                    "that asked — ask the user what they want changed."
+                )})
             targets = _bash_write_targets(cmd)
             if not targets:
                 return None

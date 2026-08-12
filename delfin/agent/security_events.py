@@ -20,16 +20,45 @@ from typing import Deque, Optional
 
 # Severity-ish category. "block" = the gate refused; "ask" = it routed to a
 # user confirmation; "info" = noteworthy but allowed.
+#
+# Every kind the gate records needs an entry here. An unknown kind renders
+# as an unlabelled bullet, and the kinds nobody had added were the loudest
+# ones: a refusal the agent tried to walk around, and every escape from a
+# locked scope, appeared blanker in the panel than an ordinary denied
+# command. ``tests/test_the_containment_panel_labels_what_it_records.py``
+# fails when a new kind is recorded without a label.
 _KINDS = {
     "deny_pattern":   ("⛔", "Denied command"),
     "secret_path":    ("🔑", "Secret-path access blocked"),
     "script_payload": ("📜", "Script payload blocked"),
     "self_mod":       ("🛡", "Self-modification guarded"),
+    "calc_edit":      ("🧪", "Stored-calculation edit"),
+    "read_only_write": ("📕", "Write into a read-only location"),
     "outside_ws":     ("📁", "Outside-workspace access"),
     "denied_by_user": ("✋", "User denied"),
+    "denied_again":   ("🚫", "Refusal circumvented"),
+    "denied_path_via_bash": ("🚫", "Refused path reached via shell"),
+    "read_grant":     ("👁", "Directory opened for reading"),
+    "approval_timeout": ("⌛", "Approval window expired"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "egress":         ("🌐", "Outbound data transfer"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
+    "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
+    "test_tamper":    ("🧪", "Failing test edited"),
+    # Locked scope: the folder IS the promise, so each way out is named.
+    "locked_scope_read":    ("🔒", "Locked scope: read outside the folder"),
+    "locked_scope_bash":    ("🔒", "Locked scope: command outside the folder"),
+    "locked_scope_symlink": ("🔒", "Locked scope: link out of the folder"),
+    "locked_scope_exec":    ("🔒", "Locked scope: execution outside the folder"),
+    "locked_scope_widen":   ("🔒", "Locked scope: attempt to widen it"),
+    "locked_scope_parse":   ("🔒", "Locked scope: command could not be checked"),
+    # MCP dispatch bypasses the native executor, so its refusals are their
+    # own kinds.
+    "plan_mode_mcp":     ("📝", "Plan mode: MCP tool refused"),
+    "role_denied_mcp":   ("🎭", "Role: MCP tool refused"),
+    "mcp_bash_no_perms": ("🔌", "MCP shell without permissions"),
+    "mcp_write_no_perms": ("🔌", "MCP write without permissions"),
+    "mcp_budget":        ("🔌", "MCP tool surface over budget"),
 }
 
 
@@ -89,6 +118,11 @@ def clear() -> None:
         _EVENTS.clear()
 
 
+def known_kinds() -> frozenset:
+    """Event kinds this panel can label. Recorded kinds must be a subset."""
+    return frozenset(_KINDS)
+
+
 def format_panel_html(limit: int = 12) -> str:
     """Newest-first HTML feed for the dashboard containment panel."""
     evs = recent(limit)
@@ -125,5 +159,5 @@ def format_panel_html(limit: int = 12) -> str:
 
 __all__ = [
     "SecurityEvent", "record", "recent", "counts", "clear",
-    "set_listener", "format_panel_html",
+    "known_kinds", "set_listener", "format_panel_html",
 ]
