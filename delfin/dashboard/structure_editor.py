@@ -5007,6 +5007,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ctx.run_js(js_code)
         xyz_copy_status.value = '<span style="color:#388e3c;">Copied to clipboard</span>'
 
+    #: What the editor's switches read on a structure it has not seen. Not all
+    #: of them off: Settle is on to begin with, because letting go of an atom
+    #: and leaving the strain of the drag in the structure is the surprising
+    #: answer, not the useful one.
+    _CONTROL_DEFAULTS = (
+        (lambda: submit_relax_btn, False),
+        (lambda: submit_settle_btn, True),
+        (lambda: submit_select_btn, False),
+        (lambda: submit_manip_btn, False),
+        (lambda: submit_draw_btn, False),
+        (lambda: submit_dyn_bonds_btn, False),
+    )
+
     def reset_controls():
         """Back to how the editor starts, for a structure it has not seen.
 
@@ -5015,11 +5028,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Dynamik Opt running across a change of structure means the next one is
         relaxed by the last one's parameters, and leaving Manipulate on means
         the first click lands on an atom nobody meant to move.
+
+        To the defaults, not to off -- switching Settle off here took away
+        something the editor is supposed to start with.
         """
-        for control in (submit_relax_btn, submit_settle_btn, submit_select_btn,
-                        submit_manip_btn, submit_draw_btn, submit_dyn_bonds_btn):
-            if control.value:
-                control.value = False
+        for control, default in _CONTROL_DEFAULTS:
+            widget = control()
+            if widget.value != default:
+                widget.value = default
 
     def _offer_isomers(isomers, quick=False):
         """Every structure a conversion produced, to wherever they belong.
