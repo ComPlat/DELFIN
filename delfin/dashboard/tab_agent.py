@@ -3001,8 +3001,14 @@ def _record_turn_outcome(
     the LAST outcome — we bump that outcome's retries counter and
     update its verdict in place instead of writing a fresh row.
     """
-    if not (user_task or "").strip() or not (response_text or "").strip():
+    # A turn with no answer is recorded, not skipped: that is the failure
+    # this history exists to hold, and dropping it is what made the pass
+    # rate a survivorship statistic. Only a turn with no QUESTION is
+    # nothing to record.
+    if not (user_task or "").strip():
         return {}
+    if not (response_text or "").strip() and not error_type:
+        error_type = "no_output"
 
     denied_commands: list[str] = []
     if isinstance(state, dict):
@@ -15118,16 +15124,27 @@ def create_tab(ctx):
                     # cycle gate's record_cycle_outcome; this captures the
                     # interactive dashboard / solo / quick / reviewed / etc.
                     # turns the user actually drives.
-                    if chunks and engine.mode in (
-                        "solo", "dashboard", "quick", "reviewed",
-                        "tdd", "cluster", "full",
-                    ):
+                    # No `if chunks`. A turn that produced no token is the
+                    # failure this record exists to capture, and gating on
+                    # output removed exactly those rows: a watchdog kill, a
+                    # raise out of the stream loop, a silent exit. The same
+                    # turn IS written to agent_metrics with silent_exit=True,
+                    # so the two logs described the same event differently
+                    # and only the flattering one was read back — into the
+                    # system prompt, as "History: N outcomes, 96% pass rate",
+                    # and into the adaptive router. The worse the backend
+                    # behaved, the cleaner the record looked.
+                    #
+                    # office was missing from the mode list as well, so the
+                    # mode this user works in was recorded nowhere at all.
+                    if engine.mode in ("solo", "dashboard", "office"):
                         _record_turn_outcome(
                             engine,
                             user_task=original_task,
                             response_text="".join(chunks),
                             state=state,
                             start_time=_turn_start_time,
+                            error_type=("no_output" if not chunks else None),
                         )
 
                     # Per-turn spend belongs in the status bar, not in the
