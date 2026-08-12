@@ -55,10 +55,11 @@ byte-exact pre-image so the change can be undone.
 
 from __future__ import annotations
 
+import contextvars as _contextvars
 import csv
 import re
 import threading as _threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field as _field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -5249,20 +5250,105 @@ def draft_email(
 # unmarked number; a false one costs a caveat on a correct answer, and a
 # caveat on every answer is a caveat nobody reads.
 #
-# The ledger is process-wide and per turn, not per session. Two sessions
-# running at once therefore share it, and the effect of that is one-way:
-# a figure another session's tool produced can only GROUND a claim, never
-# create a flag. Erring towards silence is the direction this mechanism
-# is allowed to err in.
+# The ledger is keyed by the TURN that produced the figures. It was one
+# module-level list, described as safe on the grounds that a figure from
+# elsewhere in the process "can only GROUND a claim, never create a
+# flag". Both halves of that were false, and both were measured:
+#
+#   * the clear is driven by ONE turn boundary, so anything else in the
+#     process starting a turn wiped the evidence the first one was still
+#     collecting;
+#   * the cap is a shared 2000, and a single document read contributes up
+#     to 600 figures, so four reads by a background sub-agent filled it
+#     and the parent's own sum_column result was dropped on the floor.
+#
+# Both ended in the same place — a correct, tool-computed total carrying
+# the caveat that says no tool produced it, which is precisely the false
+# positive that makes a guard unreadable. And a figure a sub-agent
+# recorded after the parent's reset survived into the parent's next turn,
+# which is the stale grounding the reset exists to prevent.
+#
+# So every turn records and reads under its own token: a figure recorded
+# under one token is invisible under another, and a foreign scope filling
+# its own cap cannot evict anybody else's figures.
 
 _LEDGER_LOCK = _threading.Lock()
-_LEDGER: list["ToolFigure"] = []
-_LEDGER_PATHS: list[str] = []
 
 # Figures kept per turn. A read contributes its whole window, so this is
 # sized for a few reads and then bounded — an unbounded ledger in a long
-# session is a memory leak with a guard attached to it.
+# session is a memory leak with a guard attached to it. The cap is per
+# SCOPE: shared, it is an eviction channel between unrelated turns.
 MAX_LEDGER_FIGURES = 2000
+# Documents named per turn, same reasoning.
+MAX_LEDGER_PATHS = 200
+# Turns held at once. Only the live ones are ever read; the rest are the
+# tail of a long session and go oldest-first.
+MAX_LEDGER_SCOPES = 32
+
+
+@dataclass
+class _ScopeLedger:
+    """One turn's figures, under one token."""
+
+    figures: list["ToolFigure"] = _field(default_factory=list)
+    paths: list[str] = _field(default_factory=list)
+    seq: int = 0
+
+
+_LEDGERS: dict[str, _ScopeLedger] = {}
+_LEDGER_TICK = 0        # recency counter for scope eviction
+_LEDGER_TURN = 0        # turn counter, so one session's tokens stay distinct
+
+# The scope the current thread records under. The engine sets it at the
+# turn boundary; anything recording without one — a background sub-agent
+# on its own thread — falls back to its thread, which is what keeps its
+# reads out of the parent's ledger instead of evicting them.
+_LEDGER_SCOPE: "_contextvars.ContextVar[str]" = _contextvars.ContextVar(
+    "delfin_figure_ledger_scope", default="")
+
+
+def figure_ledger_scope() -> str:
+    """The token this thread's figures are recorded and read under."""
+    return _LEDGER_SCOPE.get() or f"thread-{_threading.get_ident()}"
+
+
+def _scope(token: str = "") -> str:
+    return str(token or "") or figure_ledger_scope()
+
+
+def _bucket(token: str, *, create: bool) -> Optional["_ScopeLedger"]:
+    """This scope's ledger, oldest scopes evicted. Caller holds the lock."""
+    global _LEDGER_TICK
+    entry = _LEDGERS.get(token)
+    if entry is None:
+        if not create:
+            return None
+        entry = _LEDGERS[token] = _ScopeLedger()
+    _LEDGER_TICK += 1
+    entry.seq = _LEDGER_TICK
+    if len(_LEDGERS) > MAX_LEDGER_SCOPES:
+        stale = sorted(_LEDGERS, key=lambda key: _LEDGERS[key].seq)
+        for key in stale[:len(_LEDGERS) - MAX_LEDGER_SCOPES]:
+            if key != token:
+                _LEDGERS.pop(key, None)
+    return entry
+
+
+def begin_figure_turn(session_id: str = "") -> str:
+    """Open a ledger for a new turn and make it this thread's scope.
+
+    Returns the token. The caller keeps it and hands it back when the
+    finished answer is checked, so the check reads the ledger this turn's
+    own tools wrote to and no other one.
+    """
+    global _LEDGER_TURN
+    with _LEDGER_LOCK:
+        _LEDGER_TURN += 1
+        token = f"{str(session_id or '').strip() or 'session'}#{_LEDGER_TURN}"
+        _LEDGERS.pop(token, None)
+        _bucket(token, create=True)
+    _LEDGER_SCOPE.set(token)
+    return token
 
 
 @dataclass(frozen=True)
@@ -5278,29 +5364,35 @@ class ToolFigure:
         return f"{self.label} ({self.tool})"
 
 
-def reset_figure_ledger() -> None:
-    """Forget the figures of the previous turn.
+def reset_figure_ledger(token: str = "") -> str:
+    """Forget the figures of the previous turn — in ONE scope.
 
     Per TURN, like the other evidence ledgers in this framework: the
     question is whether THIS answer states a figure THIS turn produced.
     Carried across turns, a stale total would ground a later, unrelated
     number — which is the failure this exists to catch, one turn late.
+
+    Only the named scope is cleared. It used to clear the whole process,
+    so one turn boundary anywhere destroyed evidence every other turn in
+    flight was still collecting. Returns the token it cleared.
     """
+    scope = _scope(token)
     with _LEDGER_LOCK:
-        _LEDGER.clear()
-        _LEDGER_PATHS.clear()
+        _LEDGERS.pop(scope, None)
+    return scope
 
 
-def figure_ledger() -> list["ToolFigure"]:
-    """The figures the office tools returned this turn.
+def figure_ledger(token: str = "") -> list["ToolFigure"]:
+    """The figures the office tools returned this turn, in this scope.
 
     The number of documents touched rides along as a figure of its own, so
     an answer that says "4 Dateien geprüft" is grounded by the reads that
     happened rather than flagged for a number no single tool returned.
     """
     with _LEDGER_LOCK:
-        out = list(_LEDGER)
-        paths = list(_LEDGER_PATHS)
+        entry = _bucket(_scope(token), create=False)
+        out = list(entry.figures) if entry is not None else []
+        paths = list(entry.paths) if entry is not None else []
     if paths:
         out.append(ToolFigure(
             value=float(len(paths)), kind="count",
@@ -5309,13 +5401,15 @@ def figure_ledger() -> list["ToolFigure"]:
     return out
 
 
-def _note_ledger_path(path: str) -> None:
+def _note_ledger_path(path: str, token: str = "") -> None:
     name = str(path or "")
     if not name:
         return
     with _LEDGER_LOCK:
-        if name not in _LEDGER_PATHS and len(_LEDGER_PATHS) < 200:
-            _LEDGER_PATHS.append(name)
+        entry = _bucket(_scope(token), create=True)
+        if (entry is not None and name not in entry.paths
+                and len(entry.paths) < MAX_LEDGER_PATHS):
+            entry.paths.append(name)
 
 
 def _figures_from_result(tool: str, result: dict) -> list["ToolFigure"]:
@@ -5387,25 +5481,30 @@ def _figures_from_result(tool: str, result: dict) -> list["ToolFigure"]:
     return out
 
 
-def record_tool_figures(tool: str, result: Any) -> list["ToolFigure"]:
+def record_tool_figures(tool: str, result: Any,
+                        token: str = "") -> list["ToolFigure"]:
     """Record the figures one office tool returned. Never raises.
 
     Called by the tool layer with the tool's own result dict, so the
     ledger holds what the tool computed rather than what its report
-    happened to print.
+    happened to print. Recorded under this scope's token only: a
+    sub-agent reading documents in the same process fills its own cap,
+    not the cap of the turn that is waiting on its own total.
     """
     try:
         if not isinstance(result, dict):
             return []
+        scope = _scope(token)
         found = _figures_from_result(str(tool or "office"), result)
         for key in ("path", "left", "right", "output", "table", "template"):
             value = result.get(key)
             if isinstance(value, str) and value:
-                _note_ledger_path(value)
+                _note_ledger_path(value, scope)
         with _LEDGER_LOCK:
-            room = MAX_LEDGER_FIGURES - len(_LEDGER)
+            entry = _bucket(scope, create=True)
+            room = MAX_LEDGER_FIGURES - len(entry.figures)
             if room > 0:
-                _LEDGER.extend(found[:room])
+                entry.figures.extend(found[:room])
         return found
     except Exception:
         return []
@@ -5755,6 +5854,7 @@ def scan_answer_for_unledgered_figures(
     user_text: str = "",
     prior_text: str = "",
     max_flags: int = 3,
+    token: str = "",
 ) -> list[FigureFlag]:
     """Figures an answer states that nothing this turn produced.
 
@@ -5784,7 +5884,7 @@ def scan_answer_for_unledgered_figures(
     try:
         if not text or not str(text).strip() or max_flags <= 0:
             return []
-        known = list(ledger) if ledger is not None else figure_ledger()
+        known = list(ledger) if ledger is not None else figure_ledger(token)
         money_only = not known
         candidates: list[tuple[str, str, str]] = []
         for sentence in _sentences(_claimable_text(text)):
@@ -5863,15 +5963,17 @@ def figure_caveat(flags: list[FigureFlag]) -> str:
 
 def figure_coverage_caveat(
     text: str, *, user_text: str = "", prior_text: str = "",
+    token: str = "",
 ) -> str:
     """The whole check for one finished answer, as one call.
 
     The caller appends the return value and is done: it is "" for an
     answer whose figures the tools produced, which is nearly every
-    answer. Never raises.
+    answer. ``token`` is the one ``begin_figure_turn`` returned, so the
+    answer is checked against the ledger ITS turn wrote. Never raises.
     """
     try:
         return figure_caveat(scan_answer_for_unledgered_figures(
-            text, user_text=user_text, prior_text=prior_text))
+            text, user_text=user_text, prior_text=prior_text, token=token))
     except Exception:
         return ""

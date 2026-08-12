@@ -1698,12 +1698,17 @@ class AgentEngine:
             self._truncated_tools_turn = []
             # The office figure ledger is per-turn for the same reason: a
             # total the tools produced two turns ago must not ground a
-            # figure stated now.
+            # figure stated now. The turn gets its OWN token — the ledger
+            # was one process-wide list, so a second engine's turn
+            # boundary cleared this one's evidence mid-flight and a
+            # sub-agent's document reads filled its cap. Both flagged a
+            # correct, tool-computed total.
             try:
                 from . import office as _office_ledger
-                _office_ledger.reset_figure_ledger()
+                self._figure_ledger_token = _office_ledger.begin_figure_turn(
+                    self.session_id)
             except Exception:
-                pass
+                self._figure_ledger_token = ""
 
         # UserPromptSubmit hooks — fire BEFORE the message is appended so a
         # blocking hook can short-circuit the turn entirely. Stop hooks are
@@ -2907,6 +2912,10 @@ class AgentEngine:
             note = _office_ledger.figure_coverage_caveat(
                 source,
                 user_text=getattr(self, "_last_user_message", "") or "",
+                # This turn's ledger, named: the answer is checked against
+                # what ITS tools produced, never against whatever else the
+                # process happened to record.
+                token=getattr(self, "_figure_ledger_token", "") or "",
             )
         except Exception:
             return text

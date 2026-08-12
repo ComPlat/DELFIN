@@ -46,6 +46,7 @@ core contract) propagates errors to the caller.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -93,6 +94,24 @@ _LAST_NOTIFY_THREAD: Optional[threading.Thread] = None
 def _inbox_path() -> Path:
     # Resolved per call (not at import) so tests can monkeypatch Path.home.
     return Path.home() / ".delfin" / _INBOX_FILENAME
+
+
+@contextlib.contextmanager
+def _inbox_locked():
+    """Serialize a whole load → mutate → write cycle on the inbox.
+
+    ``_FILE_LOCK`` is a thread lock and this file is per USER: the
+    dashboard, a headless run and a second CLI session all append to it
+    from different PROCESSES. The atomic write kept them from reading a
+    torn file and did nothing about the lost update — measured, four
+    processes emitting forty events each left 48 of 160, and the events
+    that vanished are exactly the ones telling the user the agent is
+    blocked on them.
+    """
+    from .bash_jobs import cross_process_lock
+
+    with _FILE_LOCK, cross_process_lock(_inbox_path()):
+        yield
 
 
 def _load_events() -> list[dict]:
@@ -312,7 +331,7 @@ def emit_attention(
         "resolved_at": None,
         "acknowledged": False,
     }
-    with _FILE_LOCK:
+    with _inbox_locked():
         events = _load_events()
         events.append(event)
         _write_events(_prune(events, now))
@@ -323,7 +342,7 @@ def emit_attention(
 def list_pending(kind: Optional[str] = None) -> list[dict]:
     """Unresolved events (oldest first) — what the user still has to act
     on, across restarts. Optionally filtered by kind."""
-    with _FILE_LOCK:
+    with _inbox_locked():
         events = _load_events()
     pending = [
         dict(ev) for ev in events
@@ -346,7 +365,7 @@ def resolve(
     answer was already delivered in-band (e.g. a live confirm click), so
     ``drain_resolved`` does not replay it to the model. Returns True when
     a pending event with this id was resolved."""
-    with _FILE_LOCK:
+    with _inbox_locked():
         events = _load_events()
         for ev in events:
             if ev.get("id") == event_id and ev.get("status") == "pending":
@@ -370,7 +389,7 @@ def drain_resolved(session_id: str, *, include_unrouted: bool = True) -> list[di
     routing them to the first session that drains beats losing them."""
     sid = str(session_id or "")
     out: list[dict] = []
-    with _FILE_LOCK:
+    with _inbox_locked():
         events = _load_events()
         changed = False
         for ev in events:
