@@ -1171,14 +1171,14 @@ def running_jobs_for_workspace(workspace: str | Path) -> list[dict]:
         return out
     for jid, rec in (jobs or {}).items():
         try:
-            if (rec or {}).get("finished_at") is not None:
-                continue
-            pid = int((rec or {}).get("pid") or 0)
-            if not _pid_alive(pid, (rec or {}).get("proc_start_ticks")):
+            # Deliberately not deadline-filtered: a job past its wall clock
+            # is still a live process holding this directory until someone
+            # actually ends it, and removing the tree under it is the harm.
+            if not _record_alive(rec):
                 continue
             out.append({
                 "job_id": jid,
-                "pid": pid,
+                "pid": int((rec or {}).get("pid") or 0),
                 "command": str((rec or {}).get("command") or "")[:200],
                 "cwd": str((rec or {}).get("cwd") or ""),
             })
