@@ -46,11 +46,28 @@ def _backend(jobs_file, jobs):
     return made
 
 
-def test_nothing_running_means_nothing_is_asked(jobs_file, tmp_path):
-    made = _backend(jobs_file, [{'job_id': 1, 'status': 'COMPLETED',
-                                 'job_dir': str(tmp_path)}])
+def _backend_reading(jobs_file, jobs, monkeypatch, table=()):
+    """A backend whose reading of the process table is ours from the first
+    instant, and the list of readings taken.
+
+    Not patched on the instance afterwards: the constructor starts the queue
+    worker, and that worker's first act -- before it sleeps, and before the
+    test body has run a line -- is a round of _try_start_pending_jobs. On a
+    loaded machine it wins that race, reads the real process table, finds
+    nothing belonging to a job that was never started, and writes FAILED to
+    the jobs file. The test then reads a job it never got to judge. Patching
+    the class before there is an instance leaves no gap to lose.
+    """
     readings = []
-    made._list_processes = lambda: readings.append(1) or []
+    monkeypatch.setattr(LocalJobBackend, '_list_processes',
+                        lambda self: readings.append(1) or list(table))
+    return _backend(jobs_file, jobs), readings
+
+
+def test_nothing_running_means_nothing_is_asked(jobs_file, tmp_path, monkeypatch):
+    made, readings = _backend_reading(
+        jobs_file, [{'job_id': 1, 'status': 'COMPLETED',
+                     'job_dir': str(tmp_path)}], monkeypatch)
 
     for _ in range(9):
         made.list_jobs()
@@ -58,20 +75,19 @@ def test_nothing_running_means_nothing_is_asked(jobs_file, tmp_path):
     assert readings == [], 'the table has no consumer when nothing is RUNNING'
 
 
-def test_a_running_job_is_still_judged_against_a_fresh_reading(jobs_file, tmp_path):
+def test_a_running_job_is_still_judged_against_a_fresh_reading(jobs_file, tmp_path,
+                                                              monkeypatch):
     """Not a cached one. The table decides whether a job that no longer answers
     to its own pid is alive through its children; a stale one marks it FAILED,
     and that is written to disk."""
-    made = _backend(jobs_file, [{'job_id': 2, 'status': 'RUNNING',
-                                 'job_dir': str(tmp_path)}])
-    readings = []
     # A live child of the job, so it stays RUNNING and is asked about again.
     # Any pid but this process's own: the reading skips itself, and a fixed
     # "surely nobody has this" number is not safe -- 999999 is a perfectly
-    # ordinary pid where pid_max is four million, which is where this failed.
+    # ordinary pid where pid_max is four million.
     other_pid = os.getpid() + 1
-    made._list_processes = lambda: (
-        readings.append(1) or [(other_pid, other_pid, 'orca', str(tmp_path))])
+    made, readings = _backend_reading(
+        jobs_file, [{'job_id': 2, 'status': 'RUNNING', 'job_dir': str(tmp_path)}],
+        monkeypatch, table=[(other_pid, other_pid, 'orca', str(tmp_path))])
 
     made.list_jobs()
     after_one = len(readings)
