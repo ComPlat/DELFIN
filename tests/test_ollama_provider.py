@@ -111,17 +111,35 @@ def test_ollama_model_fallback_present_in_dashboard():
 
 
 def test_ollama_pricing_treated_as_free():
-    """Local-model models must not be charged at cloud prices in the
-    /cost / /usage output."""
-    src = Path(__file__).resolve().parent.parent / "delfin" / "dashboard" / "tab_agent.py"
-    text = src.read_text(encoding="utf-8")
-    # The free-pricing branch must exist
-    assert 'provider_dropdown.value == "ollama"' in text
-    # Free pricing means input=0, output=0
-    free_block_idx = text.find('provider_dropdown.value == "ollama"')
-    snippet = text[free_block_idx: free_block_idx + 500]
-    assert '"input": 0.0' in snippet
-    assert '"output": 0.0' in snippet
+    """Local models must not be charged at cloud prices in the
+    /cost / /usage output.
+
+    This used to be checked by looking for the literal source line
+    ``provider_dropdown.value == "ollama"`` and the ``0.0`` rates beside
+    it. That branch only covered the dashboard, and the client behind it
+    was meanwhile charging every local model an invented (2.0, 8.0) --
+    so the assertion passed while the property it names was false. The
+    rates now live in ``delfin.agent.pricing`` for every consumer, and
+    this asks the consumers what they actually report.
+    """
+    from delfin.agent import pricing
+    from delfin.agent.api_client import OpenAIClient
+    from delfin.dashboard import tab_agent
+
+    price = pricing.resolve("qwen3-coder:32b", "ollama")
+    assert price.state == pricing.NON_BILLING
+    assert price.rates == (0.0, 0.0)
+
+    client = OpenAIClient.__new__(OpenAIClient)
+    client.model = "qwen3-coder:32b"
+    client._provider = "ollama"
+    assert client._estimate_cost(1_000_000, 1_000_000) == 0.0
+
+    shown = tab_agent._estimate_cost_str(
+        "api", 1_000, 500, provider="ollama", model="qwen3-coder:32b",
+    )
+    assert "$" not in shown
+    assert "1,500 tokens" in shown
 
 
 # ---------------------------------------------------------------------------

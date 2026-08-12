@@ -91,9 +91,14 @@ def _analyse_outcomes(
             if parts:
                 denied_counts[parts[0]] += 1
 
-    # Cost stats
+    # Cost stats. The mean is taken over the outcomes that reported a
+    # cost, which is NOT the average cost per task: an outcome with no
+    # recorded cost is unmeasured, not free, and silently dropping it
+    # inflates the number. Carry the denominator alongside the mean so
+    # the briefing can say which of the two it is showing.
     costs = [o.cost_usd for o in class_outcomes if o.cost_usd > 0]
     avg_cost = sum(costs) / len(costs) if costs else 0.0
+    cost_n = len(costs)
 
     # Mode success rates
     mode_stats: dict[str, dict[str, int]] = {}
@@ -117,6 +122,7 @@ def _analyse_outcomes(
         "error_counts": dict(error_counts.most_common(3)),
         "denied_counts": dict(denied_counts.most_common(3)),
         "avg_cost": avg_cost,
+        "cost_n": cost_n,
         "mode_stats": mode_stats,
         "recent_failures": recent_failures,
     }
@@ -184,7 +190,12 @@ def generate_briefing(
     lines.append(f"Task class: {task_class} | History: {stats['total']} outcomes, {stats['pass_rate']:.0%} pass rate")
 
     if stats["avg_cost"] > 0:
-        lines.append(f"Avg cost: ${stats['avg_cost']:.2f}/task")
+        # Name the denominator when it is not every outcome. "Avg cost"
+        # over the priced subset reads as the cost of a task; it is the
+        # cost of a task whose cost happened to be recorded.
+        _n, _total = stats.get("cost_n", 0), stats.get("total", 0)
+        _over = "" if _n >= _total else f" (of {_n}/{_total} with a recorded cost)"
+        lines.append(f"Avg cost: ${stats['avg_cost']:.2f}/task{_over}")
 
     # Mode advice
     mode_advice = _format_mode_advice(stats.get("mode_stats", {}))

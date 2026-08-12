@@ -13,6 +13,11 @@ from typing import NamedTuple, Sequence
 
 import ipywidgets as widgets
 
+# The one place model prices are written down. Imported at module level
+# rather than lazily like the rest of delfin.agent because it is a pure
+# data module with no imports of its own beyond the stdlib.
+from delfin.agent import pricing as _pricing
+
 
 _PLAN_HINT_VERBS = re.compile(
     r"(?i)\b(setze|setz|stelle|ändere|wechsle?|wechsel|öffne|öffnen|"
@@ -7110,6 +7115,10 @@ def create_tab(ctx):
                 s["output_tokens"],
                 s["cost_usd"],
                 provider=s.get("provider", provider_dropdown.value),
+                # The cost estimate needs the model, not just the
+                # provider: within one provider the rate differs per
+                # model, and for some models there is no rate at all.
+                model=s.get("model", model_dropdown.value),
                 perm_profile=state.get("_perm_profile", "ask_all"),
                 cached_tokens=s.get("cached_tokens", 0),
                 active_gate_type=active_gate.get("type", ""),
@@ -7121,6 +7130,7 @@ def create_tab(ctx):
             status_html.value = _render_status(
                 mode_dropdown.value, backend, "", 0, 0, 0, 0, 0.0,
                 provider=provider_dropdown.value,
+                model=model_dropdown.value,
                 perm_profile=state.get("_perm_profile", "ask_all"),
                 active_gate_type=active_gate.get("type", ""),
                 active_gate_text=active_gate.get("title", ""),
@@ -7578,6 +7588,7 @@ def create_tab(ctx):
                 cost_str = f"${cost:.4f}" if cost > 0 else _estimate_cost_str(
                     s["backend"], inp_t, out_t,
                     provider=provider_dropdown.value,
+                    model=model_dropdown.value,
                 )
                 _append_system_message(
                     f"Token usage:\n"
@@ -7607,33 +7618,37 @@ def create_tab(ctx):
             cost_str = f"${cost:.4f}" if cost > 0 else _estimate_cost_str(
                 backend, inp_t, out_t,
                 provider=provider_dropdown.value,
+                model=model,
             )
-            # Per-model pricing estimate
-            _PRICING = {
-                "opus":   {"input": 15.0, "output": 75.0},
-                "sonnet": {"input": 3.0,  "output": 15.0},
-                "haiku":  {"input": 0.25, "output": 1.25},
-                "gpt-5.4": {"input": 2.0, "output": 8.0},
-                "gpt-5.4-mini": {"input": 0.40, "output": 1.60},
-                "gpt-5.3-codex": {"input": 2.0, "output": 8.0},
-                "gpt-5.2-codex": {"input": 2.0, "output": 8.0},
-                "gpt-5.2": {"input": 2.0, "output": 8.0},
-                "gpt-5.1-codex-max": {"input": 2.0, "output": 8.0},
-                "gpt-5.1-codex-mini": {"input": 0.40, "output": 1.60},
-                "gpt-4.1": {"input": 2.0, "output": 8.0},
-                "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
-                "o4-mini": {"input": 1.10, "output": 4.40},
-                "o3": {"input": 2.0, "output": 8.0},
-            }
-            # Ollama / vLLM / LM Studio are local — no per-token cost.
-            if (provider_dropdown.value == "ollama"
-                    or model.startswith(("qwen", "llama", "mistral",
-                                          "deepseek", "phi", "gemma"))):
-                pricing = {"input": 0.0, "output": 0.0}
+            # Per-model rates come from the one pricing source, so this
+            # block can no longer contradict the Total printed beneath it
+            # (it used to quote 15/75 for "opus" beside a total computed
+            # at (3.0, 15.0), and Anthropic rates for a KIT model that
+            # costs nothing per token). Three outcomes, one of them "we
+            # do not know" — which is printed as such, not as a rate.
+            _price = _pricing.resolve(model, provider_dropdown.value)
+            if _price.state == _pricing.PRICED:
+                est_in = inp_t * _price.input_per_mtok / 1_000_000
+                est_out = out_t * _price.output_per_mtok / 1_000_000
+                _cost_block = (
+                    f"  Input:       ${est_in:.4f} "
+                    f"(${_price.input_per_mtok}/MTok)\n"
+                    f"  Output:      ${est_out:.4f} "
+                    f"(${_price.output_per_mtok}/MTok)\n"
+                    f"  Total:       {cost_str}\n"
+                )
+            elif _price.state == _pricing.NON_BILLING:
+                _cost_block = (
+                    f"  Rate:        no per-token USD cost "
+                    f"({_price.reason})\n"
+                    f"  Spent:       {total_t:,} tokens\n"
+                )
             else:
-                pricing = _PRICING.get(model, _PRICING.get("sonnet", {"input": 3.0, "output": 15.0}))
-            est_in = inp_t * pricing["input"] / 1_000_000
-            est_out = out_t * pricing["output"] / 1_000_000
+                _cost_block = (
+                    f"  Rate:        unmeasured — {_price.reason}\n"
+                    f"  Spent:       {total_t:,} tokens "
+                    f"(no rate to convert them)\n"
+                )
             # Message counts
             user_msgs = sum(1 for m in state["chat_messages"] if m["role"] == "user")
             asst_msgs = sum(1 for m in state["chat_messages"] if m["role"] == "assistant")
@@ -7662,9 +7677,7 @@ def create_tab(ctx):
                 f"  Total:       {total_t:,}\n"
                 f"\n"
                 f"Cost:\n"
-                f"  Input:       ${est_in:.4f} (${pricing['input']}/MTok)\n"
-                f"  Output:      ${est_out:.4f} (${pricing['output']}/MTok)\n"
-                f"  Total:       {cost_str}\n"
+                f"{_cost_block}"
                 f"\n"
                 f"Stats:\n"
                 f"  Duration:    {dur}\n"
@@ -16928,6 +16941,7 @@ def _render_status(
     output_tokens: int,
     cost_usd: float,
     provider: str = "claude",
+    model: str = "",
     perm_profile: str = "ask_all",
     cached_tokens: int = 0,
     active_gate_type: str = "",
@@ -16964,7 +16978,7 @@ def _render_status(
         cost_str = _fmt_cost(cost_usd)
     else:
         cost_str = _estimate_cost_str(backend, input_tokens, output_tokens,
-                                      provider=provider)
+                                      provider=provider, model=model)
 
     # Show cached prompt tokens when the endpoint reports them — a live signal
     # of how much input was served free from the prefix cache.
@@ -17036,22 +17050,37 @@ def _fmt_cost(cost_usd: float) -> str:
 
 def _estimate_cost_str(
     backend: str, input_tokens: int, output_tokens: int,
-    provider: str = "claude",
+    provider: str = "claude", model: str = "",
 ) -> str:
-    """Rough cost string for the dashboard status row."""
-    if provider == "kit":
-        # KIT-Toolbox is provided by KIT — no per-call USD cost, but
-        # there's a quota and the user explicitly asked to see the
-        # burn rate. Showing tokens spent makes runaway agents
-        # visible without faking a price.
-        total = input_tokens + output_tokens
+    """Cost string for the dashboard status row, or an honest refusal.
+
+    This row only runs when the engine reports no cost of its own, so
+    whatever it prints is the user's only number. It used to print one of
+    two hardcoded rates for anything that was not KIT — including models
+    with no published rate at all — so a run whose cost nobody knew read
+    as a confident "~$0.412".
+
+    The quota branch below also used to be unreachable in practice: it is
+    guarded on a zero cost, and the OpenAI-compatible client's invented
+    fallback made sure a KIT run's cost was never zero. With the fallback
+    gone, the one branch that refused to fake a price can finally run.
+    """
+    total = input_tokens + output_tokens
+    price = _pricing.resolve(model, provider)
+
+    if price.state == _pricing.NON_BILLING:
+        label = "KIT" if price.provider == "kit" else "Local"
         if total <= 0:
-            return "KIT (no usage yet)"
-        return f"KIT quota: {total:,} tokens"
+            return f"{label} (no usage yet)"
+        return f"{label} quota: {total:,} tokens"
     if backend == "cli":
         return "included in subscription"
-    if provider == "openai":
-        cost = (input_tokens * 2.0 + output_tokens * 8.0) / 1_000_000
-    else:
-        cost = (input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000
+    if price.state == _pricing.UNKNOWN:
+        # No rate on record. Say so — the tokens are the only measured
+        # thing there is.
+        if total <= 0:
+            return "cost unmeasured"
+        return f"{total:,} tokens · cost unmeasured"
+    cost = (input_tokens * price.input_per_mtok
+            + output_tokens * price.output_per_mtok) / 1_000_000
     return f"~${cost:.3f}"

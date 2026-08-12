@@ -32,6 +32,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import pricing as _pricing
+
 try:
     import yaml as _yaml
 except ImportError:                                            # pragma: no cover
@@ -694,9 +696,22 @@ def score_outcome(
     else:
         speed_pts = 15
 
-    if task.max_cost_usd > 0 and traj.cost_usd >= 0:
-        cost_ratio = min(1.0, traj.cost_usd / task.max_cost_usd)
-        cost_pts = int(round(10 * (1.0 - cost_ratio)))
+    # Cost points require a cost that was actually measured. The guard
+    # used to be ``traj.cost_usd >= 0``, which no cost can fail, so a run
+    # that reported 0.0 because nobody knew its model's price collected
+    # the full 10 points for thrift it never demonstrated. A run IS
+    # measured when the runner observed real spend (cost > 0), or when the
+    # provider genuinely bills no USD — a local or quota-funded model
+    # earns its zero. Anything else is unmeasured and scores nothing, with
+    # the reason recorded so the missing points are explainable.
+    if task.max_cost_usd > 0:
+        price = _pricing.resolve(model)
+        if traj.cost_usd > 0 or price.state == _pricing.NON_BILLING:
+            cost_ratio = min(1.0, max(0.0, traj.cost_usd) / task.max_cost_usd)
+            cost_pts = int(round(10 * (1.0 - cost_ratio)))
+        else:
+            cost_pts = 0
+            budget_violations.append(f"cost_usd unmeasured ({price.reason})")
     else:
         cost_pts = 10
 
