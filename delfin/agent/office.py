@@ -1377,6 +1377,26 @@ def read_sheet(
                     has_formula = True
 
         notes: list[str] = []
+        # Two things the .ods reader has always reported and this one did
+        # not. Read from the sheet rather than the value grid, because both
+        # are invisible once iter_rows has flattened it.
+        last_shown = min(total_rows, start_row + max_rows - 1)
+        xlsx_hidden = 0
+        try:
+            for _r in range(start_row, last_shown + 1):
+                _dim = ws.row_dimensions.get(_r)
+                if _dim is not None and getattr(_dim, "hidden", False):
+                    xlsx_hidden += 1
+        except Exception:
+            xlsx_hidden = 0
+        xlsx_merges: list[str] = []
+        try:
+            for _rng in getattr(ws, "merged_cells", None).ranges:
+                if _rng.min_row <= last_shown and _rng.max_row >= start_row:
+                    xlsx_merges.append(str(_rng))
+        except Exception:
+            xlsx_merges = []
+        xlsx_merges.sort()
         # Second pass only when it can change what is shown: swap in
         # cached values for the formula cells, and say which ones have
         # none rather than rendering them as blanks.
@@ -1427,6 +1447,30 @@ def read_sheet(
                 f"{total_rows} — pass start_row to page further")
         if total_cols > max_cols:
             notes.append(f"showing {max_cols} of {total_cols} columns")
+        if xlsx_hidden:
+            # The .ods reader has said this for a long time; the .xlsx branch
+            # never looked at row_dimensions or auto_filter. A finance workbook
+            # is normally saved with a filter left on, and the agent's total
+            # then silently includes rows the user cannot see on screen.
+            notes.append(
+                f"{xlsx_hidden} row(s) in the range shown are hidden or "
+                "filtered out. They ARE included in the grid above, so a total "
+                "computed here can differ from what the file shows on screen.")
+        if xlsx_merges:
+            # iter_rows(values_only=True) yields None for every non-anchor cell
+            # of a merged range, so the label of a merged block appears on its
+            # first row and the rows beneath look empty. In the German
+            # cost-centre layout that is the difference between "KST 4711 has
+            # the highest total" and four fifths of the spend sitting under a
+            # cost centre with no name. The values are NOT filled in: that
+            # would put data in the file's mouth.
+            shown = ", ".join(xlsx_merges[:4])
+            more = (f" and {len(xlsx_merges) - 4} more"
+                    if len(xlsx_merges) > 4 else "")
+            notes.append(
+                f"{len(xlsx_merges)} merged cell range(s): {shown}{more}. Only "
+                "the first cell of each range carries the value; the cells "
+                "under it read as blank here but are not empty in the file.")
         fragile = _fragile_features(wb)
         if fragile:
             notes.append("fragile content present: " + "; ".join(fragile))
