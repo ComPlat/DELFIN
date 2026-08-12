@@ -353,7 +353,13 @@ def reserve_running(sa_id: str, *, subagent_type: str = "",
     between -- the runner raising on the way in, a runner that stores
     nothing -- left that id resolving to "no such id", which the model
     reads as having invented the id rather than as a run that crashed.
-    Reserving the entry with the id keeps the two answers distinct."""
+    Reserving the entry with the id keeps the two answers distinct.
+
+    Reserving is also what marks the run as one the parent is OWED a
+    report for: it happens only on the background path, where the tool
+    result carries an id instead of the work. ``_note_pending_report``
+    records that debt so the finished report can be pushed into a turn
+    rather than waiting for a poll that may never come."""
     _running_update(sa_id, {
         "type": subagent_type,
         "description": (description or "")[:120],
@@ -363,6 +369,8 @@ def reserve_running(sa_id: str, *, subagent_type: str = "",
         "transcript": [],
         "reserved": True,
     })
+    _note_pending_report(sa_id, subagent_type=subagent_type,
+                         description=description)
 
 
 def mark_running_died(sa_id: str, error: str = "") -> None:
@@ -448,6 +456,169 @@ def reap_dead_running() -> list[str]:
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Background reports the parent has not been given yet (exactly-once)
+# ---------------------------------------------------------------------------
+#
+# A backgrounded delegation returns an id instead of a report, and nothing
+# ever pushed the finished report anywhere: the only route back was the
+# parent spending a whole tool round on ``subagent_result(sa_id)``, against
+# round budgets as small as ten. A parent that ended its turn first -- the
+# normal "I started it, I'll wait" ending -- never took another turn, so the
+# report was not late, it was gone.
+#
+# One file per outstanding report, claimed by exactly one drain. Same
+# exactly-once shape as the bash-job registry, for the same reason: a
+# completion announced twice is its own defect, and the claim has to
+# survive a restart. The claim IS the unlink -- on POSIX only one caller
+# can remove a given file -- so two drains racing cannot both report it.
+_PENDING_DIR = Path.home() / ".delfin" / "subagent_pending"
+# A marker whose owning process is gone belongs to a session that can no
+# longer be told anything; kept only long enough to be reaped, like the
+# died-run records above.
+_PENDING_TTL_S = 24 * 3600
+# How many finished reports one drain hands over. The rest stay claimed by
+# nobody and arrive on the next drain -- dropping them here would destroy
+# exactly what this exists to deliver.
+_PENDING_DRAIN_LIMIT = 3
+
+
+def _pending_path(sa_id: str) -> Path:
+    return _PENDING_DIR / f"{(sa_id or '').strip()}.json"
+
+
+def _note_pending_report(sa_id: str, *, subagent_type: str = "",
+                         description: str = "") -> None:
+    """Record that this process owes its parent agent a report for ``sa_id``.
+
+    Best-effort: a delegation must never fail because bookkeeping could
+    not be written. The owner stamp is what keeps two concurrent sessions
+    on one machine from draining each other's reports."""
+    sa_id = (sa_id or "").strip()
+    if not sa_id:
+        return
+    try:
+        _PENDING_DIR.mkdir(parents=True, exist_ok=True)
+        # Starting one is the moment to clear what an earlier crash left
+        # behind — the same place the live registry does its reaping.
+        reap_pending_reports()
+        _pending_path(sa_id).write_text(json.dumps({
+            "sa_id": sa_id,
+            "type": subagent_type or "",
+            "description": (description or "")[:120],
+            "started_at": time.time(),
+            **_owner_stamp(),
+        }), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _claim_pending_report(sa_id: str) -> bool:
+    """Take ownership of an outstanding report. True iff THIS call took it.
+
+    Removing the file is the claim, so the exactly-once contract needs no
+    lock and no flag: whoever the unlink succeeds for is the one caller
+    that may announce this completion."""
+    try:
+        _pending_path(sa_id).unlink()
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except Exception:
+        return False
+
+
+def reap_pending_reports() -> list[str]:
+    """Drop markers nobody can be told about any more. Returns the ids.
+
+    A marker outlives its process only when that process died; nothing
+    else would ever remove it, so without this they accumulate for good."""
+    removed: list[str] = []
+    now = time.time()
+    try:
+        for f in sorted(_PENDING_DIR.glob("*.json")):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                rec = {}
+            if _entry_owner_alive(rec):
+                try:
+                    age = now - float(rec.get("started_at") or 0.0)
+                except (TypeError, ValueError):
+                    age = 0.0
+                if age <= _PENDING_TTL_S:
+                    continue
+            try:
+                f.unlink()
+                removed.append(f.stem)
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return removed
+
+
+def drain_finished_subagents(limit: int = _PENDING_DRAIN_LIMIT) -> list[dict]:
+    """Background delegations that ENDED since the last drain — exactly once.
+
+    Returns the collected result of each run this process backgrounded and
+    has not yet handed to its parent, in the shape ``subagent_result``
+    would have returned: ``sa_id``, ``subagent_type``, ``description``,
+    ``status`` (``finished`` / ``died``), ``final_text``, ``error``, the
+    verification verdict, and the worktree summary when the run had one.
+
+    A run still in flight is left alone, so a marker is consumed only when
+    there is something to say. Never raises: this runs on the parent's turn
+    and must not be able to end it."""
+    out: list[dict] = []
+    try:
+        files = sorted(_PENDING_DIR.glob("*.json"))
+    except Exception:
+        return out
+    if not files:
+        return out
+    try:
+        live = read_running()
+        dead = read_running(include_dead=True)
+    except Exception:
+        live, dead = {}, {}
+    for f in files:
+        if len(out) >= max(1, int(limit or 1)):
+            break
+        sa_id = f.stem
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            rec = {}
+        if not _entry_owner_alive(rec):
+            continue                    # another session's leftover; reaped
+        # Terminality is decided BEFORE the claim, and without
+        # get_subagent_result -- that call acknowledges the report itself
+        # (an explicit collection is a delivery), so asking it first would
+        # consume the marker and leave this drain with nothing to hand on.
+        # Same precedence it uses: a live entry outranks a stored report,
+        # so a resumed run is not reported as finished mid-flight.
+        if sa_id in live:
+            continue                    # still in flight; say nothing
+        if not (load_subagent_session(sa_id) or dead.get(sa_id)):
+            continue                    # nothing recorded yet; not an ending
+        if not _claim_pending_report(sa_id):
+            continue                    # a concurrent drain announced it
+        try:
+            result = get_subagent_result(sa_id)
+        except Exception:
+            result = {}
+        if str((result or {}).get("status") or "") in ("finished", "died"):
+            out.append(result)
+        else:
+            # The run went back to running (a resume) or the store could
+            # not be read. Put the debt back: a claim that hands nothing on
+            # is how an event gets destroyed rather than delivered.
+            _note_pending_report(sa_id, subagent_type=str(rec.get("type") or ""),
+                                 description=str(rec.get("description") or ""))
+    return out
+
+
 # Finished-subagent sessions (resume-by-id): each run
 # persists its conversation so a later ``resume_id`` call can continue
 # the same subagent with its context intact.
@@ -498,6 +669,7 @@ def _save_subagent_session(
     messages: list[dict],
     interactions: list[dict],
     error: str = "",
+    worktree: dict | None = None,
 ) -> None:
     """Persist a finished subagent conversation for later resumption.
 
@@ -505,6 +677,12 @@ def _save_subagent_session(
     interactions WITH their (trimmed) outputs — so a resumed subagent
     sees what it actually read, not just its own conclusions. Best-effort,
     never raises.
+
+    ``worktree`` is the framework's own account of the isolated tree the
+    run used. A FOREGROUND run returns it in the payload; a background one
+    returns an id, so without storing it here the account of the tree
+    reached nobody — including the one case that has to be said out loud,
+    a tree kept because the run left processes in it.
     """
     try:
         record = {
@@ -527,6 +705,7 @@ def _save_subagent_session(
                 for it in (interactions or [])[-_MAX_STORED_INTERACTIONS:]
             ],
             "error": error or "",
+            "worktree": dict(worktree or {}),
         }
         # The report, whole. Taken before the trim above touches it.
         for m in reversed(messages or []):
@@ -1567,6 +1746,22 @@ def _unwritten_citation(claim: str, write_paths) -> str:
         return ""
 
 
+def _did_work(ev: dict) -> bool:
+    """True when the trace contains a call that acted on the workspace.
+
+    The pairing a generic "done" needs. ``ev["calls"] > 0`` was the whole
+    test, so a run whose single tool call was ``task_update``,
+    ``bash_status`` or a question to the user corroborated "erledigt" —
+    any tool call at all counted as having finished the work. What can
+    back a completion claim is a write, a command that ran, or a read
+    that returned something; ``files_read`` rather than ``files`` on
+    purpose, because the generous set includes paths merely typed into a
+    command line.
+    """
+    return bool(ev.get("writes") or ev.get("commands")
+                or ev.get("files_read") or ev.get("test_runs"))
+
+
 def _inspected(ev: dict) -> bool:
     """True when the run looked at anything at all (read/grep/search/exec)."""
     if ev.get("files") or ev.get("commands"):
@@ -1669,7 +1864,9 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
       completion   — zero tool calls -> unsupported; a mutation claim with no
                      write in the trace, or naming only files this run never
                      wrote -> unsupported; a verification claim with nothing
-                     read, grepped or executed -> unsupported.
+                     read, grepped or executed -> unsupported; a generic
+                     "done" with no write, no command and no read that
+                     returned anything -> unsupported.
 
     Returns a compact, JSON-serializable verdict::
 
@@ -1799,6 +1996,12 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
                      "nothing was read, grepped or executed in this "
                      "sub-agent's trace",
                      "repeat the comparison yourself")
+            elif claim.family == "generic" and not _did_work(ev):
+                _add(False, "completion", claim.text,
+                     "no tool call in this sub-agent's trace wrote, ran or "
+                     "read anything, so nothing in the run shows work being "
+                     "finished",
+                     "check what was actually done before accepting this")
             else:
                 _add(True, "completion", claim.text)
 
@@ -2403,7 +2606,14 @@ def run_subagent(
     # If an isolated worktree was created, tear it down — keep the dir
     # when there are local changes so the user can review/merge.
     worktree_summary: dict = {}
-    if worktree_info is not None:
+    _held_jobs = (_jobs_holding_worktree(worktree_info.path)
+                  if worktree_info is not None else [])
+    if worktree_info is not None and _held_jobs:
+        # The tree is still in use. Removing it would take the live
+        # processes' working directory and their job registry with it —
+        # see _kept_for_running_jobs.
+        worktree_summary = _kept_for_running_jobs(worktree_info, _held_jobs)
+    elif worktree_info is not None:
         try:
             from .worktree import exit_worktree as _exit_wt
             info = _exit_wt(worktree_info, keep_if_changed=True)
@@ -2500,6 +2710,7 @@ def run_subagent(
         messages=prior_messages + this_round,
         interactions=all_interactions,
         error=error,
+        worktree=worktree_summary,
     )
     # Persist a telemetry record so the dashboard /agents stats command
     # and the subagent-pane can show real costs/durations across runs.
@@ -2535,6 +2746,56 @@ def run_subagent(
         structured_output=structured_output,
         schema_error=schema_error,
     )
+
+
+def _jobs_holding_worktree(path) -> list[dict]:
+    """Background jobs still running inside a sub-agent's isolated tree.
+
+    Best-effort: a registry that cannot be read reports nothing, which
+    keeps the teardown behaving exactly as it did before this check."""
+    try:
+        from .bash_jobs import running_jobs_for_workspace
+        return running_jobs_for_workspace(path) or []
+    except Exception:
+        return []
+
+
+def _kept_for_running_jobs(info, jobs: list[dict]) -> dict:
+    """Refuse the teardown and say why, with the job ids to act on.
+
+    ``bash_background`` registers a job under the workspace it was started
+    in, and for an isolated sub-agent that workspace IS the worktree. The
+    tree was then removed with ``--force`` while the child process — in
+    its own session, so it survives — kept running to its 24-hour cap:
+    its working directory deleted underneath it, its completion event
+    destroyed with the registry file, and ``bash_status`` answering
+    ``unknown job_id``, which reads as a typo rather than as a live
+    process nobody is counting.
+
+    Refusing to remove a tree that is still in use is the honest half of
+    that trade. Re-registering the record against the parent workspace
+    would rescue the bookkeeping and still leave a running process whose
+    cwd had been deleted — a record about a job whose tree no longer
+    exists, filed under a workspace that never ran it. Keeping the tree
+    costs a directory that the report names; the parent can end the jobs
+    with ``bash_kill`` or let them finish.
+    """
+    ids = [str(j.get("job_id") or "?") for j in jobs][:8]
+    return {
+        "branch": getattr(info, "branch", ""),
+        "had_changes": True,
+        "final_path": str(getattr(info, "path", "")),
+        "cleaned_up": False,
+        "running_jobs": ids,
+        "warning": (
+            f"the isolated worktree was NOT removed: {len(jobs)} background "
+            f"job(s) started by this sub-agent are still running in it "
+            f"({', '.join(ids)}). Removing it would delete their working "
+            f"directory and their completion records while the processes "
+            f"keep running. End them with bash_kill(job_id) or wait for "
+            f"them; the tree stays at {getattr(info, 'path', '')}."
+        ),
+    }
 
 
 def auto_isolation_for(
@@ -2920,6 +3181,9 @@ def get_subagent_result(sa_id: str) -> dict:
         dead = read_running(include_dead=True).get(sa_id)
         if dead:
             why = str(dead.get("error") or "").strip()
+            # Collecting IS the delivery: whoever asked has now been told,
+            # so the push channel must not announce it a second time.
+            _claim_pending_report(sa_id)
             return {"sa_id": sa_id, "status": "died",
                     "subagent_type": dead.get("type", ""),
                     "description": dead.get("description", ""),
@@ -2944,6 +3208,12 @@ def get_subagent_result(sa_id: str) -> dict:
            "description": sess.get("description", ""),
            "final_text": final,
            "error": sess.get("error", "")}
+    # What the framework recorded about the run's isolated tree — kept
+    # trees, and the reason one was kept, above all.
+    wt = sess.get("worktree")
+    if isinstance(wt, dict) and wt:
+        out["worktree"] = wt
+    _claim_pending_report(sa_id)
     # A collected background report gets the same cross-check as a foreground
     # one — the stored session keeps the tool calls WITH their outputs.
     return attach_verification(
@@ -2972,4 +3242,6 @@ __all__ = [
     "get_subagent_result",
     "reserve_running",
     "mark_running_died",
+    "drain_finished_subagents",
+    "reap_pending_reports",
 ]
