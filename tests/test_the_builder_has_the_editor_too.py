@@ -411,3 +411,32 @@ def test_it_says_so_when_the_input_reads_another_structure(builder):
     text = refs['orca_preview'].value
     assert '# Held in the editor on water.xyz' in text
     assert '# input reads benzene.xyz' in text
+
+
+def test_the_fullscreen_button_is_there_for_one_structure_too(builder):
+    """It sits in the row with the block stepper, and that row was hidden
+    whenever the coordinates had not been written as named blocks.
+
+    So pasting a plain XYZ -- which is what the editor itself writes back, and
+    what anybody pasting coordinates starts with -- left no way at all to
+    enlarge the viewer. With two blocks it worked, which is exactly how the
+    report came in.
+
+    Driven in a real dashboard on a bare twelve-atom benzene: the button is
+    visible, and a click takes the viewer from 721x560 to 1484x766.
+    """
+    refs, _sent = builder
+    row = refs['orca_mol_nav_row']
+
+    refs['orca_coords'].value = ''
+    assert row.layout.display == 'none', 'nothing to enlarge, nothing to show'
+
+    refs['orca_coords'].value = f'3\nwater\n{WATER}\n'
+    assert row.layout.display == ''
+    assert refs['orca_mol_next_btn'].layout.display == 'none', (
+        'one structure has nothing to step to')
+    assert refs['orca_mol_fullscreen_btn'].layout.display != 'none'
+
+    refs['orca_coords'].value = TWO_BLOCKS
+    assert row.layout.display == ''
+    assert refs['orca_mol_next_btn'].layout.display == ''

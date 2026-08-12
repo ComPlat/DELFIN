@@ -1164,12 +1164,16 @@ def create_tab(ctx):
             orca_mol_next_btn.layout.display = ''
             orca_mol_nav_row.layout.display = ''
         else:
-            # Single (or no parsed) molecule: hide the prev/next counter but keep
-            # the row visible so the labels on/off toggle stays reachable.
+            # One structure, or one that never came in named blocks at all:
+            # hide the stepper, keep the row. It carries the fullscreen button,
+            # and a structure can be made large whether or not somebody wrote a
+            # "name;" over it -- paste a bare XYZ and the row disappeared, and
+            # with it the only way to enlarge the editor.
             orca_mol_nav_label.value = ''
             orca_mol_prev_btn.layout.display = 'none'
             orca_mol_next_btn.layout.display = 'none'
-            orca_mol_nav_row.layout.display = '' if blocks else 'none'
+            showing = bool(blocks) or bool(strip_xyz_header(orca_coords.value).strip())
+            orca_mol_nav_row.layout.display = '' if showing else 'none'
 
     def _refresh_mol_view(reset_view=False):
         """Re-render the molecule viewer, preserving orientation unless *reset_view*."""
@@ -2268,6 +2272,7 @@ def create_tab(ctx):
         'orca_mol_prev_btn': orca_mol_prev_btn,
         'orca_mol_next_btn': orca_mol_next_btn,
         'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
+        'orca_mol_nav_row': orca_mol_nav_row,
         'update_orca_preview': update_orca_preview,
         # The structure editor this tab holds, under the names it uses.
         **orca_editor.exported,
