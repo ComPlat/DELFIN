@@ -11,6 +11,15 @@ into **waiting for the first token** (a backend/queue stall — high ttft, tiny
 output, no tools) versus heavy generation or many tool rounds. That distinction
 is exactly what a single "turn took 92.7s" number cannot give.
 
+The severest form of that stall is the turn where the first token never
+arrives at all, which records ``ttft_ms=None``. It was excluded from
+:func:`is_stall` by a ``ttft is not None`` guard, so the summaries and the
+eval report's "turn health" line called a backend that had stopped answering
+healthy — and, since such turns count as turns while contributing no ttft,
+the reported avg/p90 got *better* the more of them piled up. See
+:func:`is_never_started` for how a silent turn is told apart from a record
+that simply predates the field.
+
 Best-effort and dependency-free: never raises, caps file size, no-ops on IO
 error. Mirrors :mod:`tool_trace`.
 """
@@ -131,14 +140,70 @@ def read(session: str, *, last_n: int | None = None) -> list[dict]:
         return []
 
 
+def _int(entry: dict, key: str) -> int:
+    """Field as an int, treating absent/None/garbage as 0."""
+    try:
+        return int(entry.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_never_started(entry: dict) -> bool:
+    """A turn that spent the wall clock without a single token arriving.
+
+    Telling this apart from "the field was not recorded" is the whole
+    problem, and the record answers it in two independent ways.
+
+    Provenance: :func:`record` always writes ``ttft_ms``, so the KEY is the
+    marker. Present-and-``None`` comes from an instrumented turn whose
+    first-token stamp was never taken — the backend stayed silent. A
+    MISSING key is a record written before the field existed; it says
+    nothing about what arrived, and judging it would rewrite yesterday's
+    logs into stalls the moment this rule shipped.
+
+    Corroboration: the rest of the record must agree that the turn really
+    was silent — no text, no tool calls, no counted output tokens. If any
+    of those is non-zero while ttft is ``None``, tokens demonstrably DID
+    arrive and only the stamp was missed (thinking deltas, for one, never
+    stamp it). That is a recording gap; calling it a backend stall would
+    be a guess dressed as evidence.
+
+    Wait: with no first token, the whole turn IS the wait, so ``total_ms``
+    faces the same threshold a recorded ttft would. A turn that produced
+    nothing within milliseconds never waited on the backend — that is an
+    immediate failure, a different defect, and it must not inflate this
+    count.
+    """
+    try:
+        if "ttft_ms" not in entry or entry.get("ttft_ms") is not None:
+            return False
+        return (_int(entry, "output_chars") == 0
+                and _int(entry, "tool_calls") == 0
+                and _int(entry, "output_tokens") == 0
+                and _int(entry, "total_ms") >= _SLOW_TTFT_MS)
+    except Exception:
+        return False
+
+
 def is_stall(entry: dict) -> bool:
     """A turn dominated by waiting for the first token — little output, no
-    tools — i.e. the backend, not the agent, ate the time."""
+    tools — i.e. the backend, not the agent, ate the time.
+
+    A turn where the first token never arrived at all is the extreme of
+    that same failure and counts here too. The original ``ttft is not
+    None`` guard excluded it, so the one shape this module was built to
+    expose — and the one the dashboard watchdog kills on its first-token
+    budget — was the single shape reported as healthy. Who ended such a
+    turn does not matter: by the time anyone stopped it, the silence had
+    already lasted longer than the threshold.
+    """
     try:
+        if is_never_started(entry):
+            return True
         ttft = entry.get("ttft_ms")
         return (ttft is not None and int(ttft) >= _SLOW_TTFT_MS
-                and int(entry.get("tool_calls") or 0) == 0
-                and int(entry.get("output_chars") or 0) <= 400)
+                and _int(entry, "tool_calls") == 0
+                and _int(entry, "output_chars") <= 400)
     except Exception:
         return False
 
@@ -167,6 +232,18 @@ def aggregate_turn_stats(
     outside the last ``window_days`` are skipped (``window_days <= 0``
     disables the window); entries without a parseable ``ts`` stay
     visible.  Best-effort: never raises — corrupt lines/files skipped.
+
+    A turn that never produced a token has no ttft to average, so it can
+    only ever pull the reported percentiles DOWN by leaving their sample
+    while still counting as a turn.  That is why it has to land in
+    ``stalls``: the report renders the stall count on the same line as
+    avg/p90, so a backend that answers less often now moves a number
+    upward there instead of quietly flattering the latency figures.  The
+    alternative — folding the never-started turns into the ttft sample at
+    their ``total_ms`` — was rejected because it would report a
+    first-token time for turns that never had one, turning a censored
+    observation into an invented measurement; :func:`is_never_started`
+    is public so a consumer can count the two kinds apart.
     """
     empty = {"turns": 0, "avg_ttft_ms": 0, "p90_ttft_ms": 0,
              "stalls": 0, "stopped_count": 0}
@@ -238,5 +315,5 @@ def format_summary(entries: list[dict], *, limit: int = 30) -> str:
     return "\n".join(rows)
 
 
-__all__ = ["metrics_path", "record", "read", "is_stall", "format_summary",
-           "aggregate_turn_stats"]
+__all__ = ["metrics_path", "record", "read", "is_stall", "is_never_started",
+           "format_summary", "aggregate_turn_stats"]
