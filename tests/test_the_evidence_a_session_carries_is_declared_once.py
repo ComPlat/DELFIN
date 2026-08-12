@@ -234,6 +234,11 @@ _NOT_CARRIED = {
     "last_restore_report",
     # -- re-armed once per process on purpose ------------------------------
     "_foreign_tasks_shown",   # a resumed session may re-show the notice
+    # The "no USD ceiling is in force" notice. The COUNTS behind it are
+    # declared session state, because a resumed run's spend figure means
+    # nothing without them; this flag is only "has the agent been told",
+    # and the agent of a resumed session has not been.
+    "_unmeasured_budget_notice_shown",
     "_prompt_session_serial",
 }
 

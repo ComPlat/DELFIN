@@ -105,8 +105,11 @@ def test_aggregate_tolerates_corrupt_lines(home):
 
 
 def test_aggregate_empty_and_missing_dir_never_raise(home):
+    # "crashes" joined the roll-up when turns that RAISED stopped being
+    # counted as backend stalls: without its own counter, a run of
+    # crashing turns would have made this report quieter than before.
     zeros = {"turns": 0, "avg_ttft_ms": 0, "p90_ttft_ms": 0,
-             "stalls": 0, "stopped_count": 0}
+             "stalls": 0, "crashes": 0, "stopped_count": 0}
     assert tm.aggregate_turn_stats() == zeros           # dir doesn't exist yet
     tm.record("s", model="m", total_ms=1)
     tm.metrics_path("s").write_text("", encoding="utf-8")

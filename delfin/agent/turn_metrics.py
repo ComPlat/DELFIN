@@ -20,6 +20,33 @@ the reported avg/p90 got *better* the more of them piled up. See
 :func:`is_never_started` for how a silent turn is told apart from a record
 that simply predates the field.
 
+Three fields exist so that "the backend produced nothing" cannot absorb
+every other way a turn can produce nothing:
+
+``error``
+    The exception the turn died on. The parameter existed from the start
+    and the engine never passed one, so a turn that raised before any
+    event — a connect/read timeout, an auth rejection — wrote the same
+    record as a live backend that stayed silent, and the log is the only
+    evidence there is afterwards. :func:`is_crashed` reads it and
+    :func:`is_never_started` steps aside for it.
+``first_event_ms``
+    Time to the first stream EVENT of any kind, not to the first token.
+    ``message_start`` and thinking deltas never stamp ttft, so a live
+    connection to a silent model and a transport that delivered nothing
+    at all both recorded ``ttft_ms=None``. ``first_event_ms`` separates
+    them; :func:`silence_kind` names which one happened.
+``retries``
+    How many times the client re-issued the request. Three transient
+    retries cost 1.5 + 3 + 6 s of sleep plus request latency; without the
+    count, a turn that fought for that long looks exactly like a quiet
+    one. ``None`` means the backend does not report retries — it is not
+    a count of zero.
+
+Provenance, for every field here: a MISSING key is a record written before
+the field existed and must never be judged; present-and-``None`` is the
+marker of an instrumented turn that has something to say.
+
 Best-effort and dependency-free: never raises, caps file size, no-ops on IO
 error. Mirrors :mod:`tool_trace`.
 """
@@ -41,6 +68,26 @@ _KEEP_TAIL = 2000               # lines kept when trimming
 _SLOW_TTFT_MS = 20_000
 
 
+def _clean_error(text: str) -> str:
+    """An exception message, with credential material taken out.
+
+    ``error`` is the one free-form field here, and an API failure quotes
+    what it was given: a URL with a token in the query, an auth header,
+    the key it rejected. These files are 0600 but a bug report bundles
+    them, so the string is scrubbed before it reaches the disk rather
+    than after. Best-effort: a guard that can break the recorder would
+    cost more than it saves.
+    """
+    s = str(text or "")[:300]
+    if not s:
+        return ""
+    try:
+        from .output_guard import _redact_secrets
+        return _redact_secrets(s, [])
+    except Exception:
+        return s
+
+
 def _safe(session: str) -> str:
     s = "".join(c if (c.isalnum() or c in "-_.") else "_"
                 for c in (session or "default"))
@@ -59,10 +106,12 @@ def record(
     role: str = "",
     total_ms: int = 0,
     ttft_ms: int | None = None,
+    first_event_ms: int | None = None,
     output_chars: int = 0,
     tool_calls: int = 0,
     stopped: bool = False,
     error: str = "",
+    retries: int | None = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cached_tokens: int = 0,
@@ -80,6 +129,11 @@ def record(
     count is above zero, so on an endpoint that reports none it silently
     vanished. Recording it makes the question answerable from data instead
     of from one probe somebody remembers running.
+
+    ``first_event_ms`` and ``retries`` are written on EVERY entry, ``None``
+    included: an omitted key means "this recorder did not have the field",
+    which is a different statement from "the field had nothing to report",
+    and only the second may be judged.
     """
     try:
         _DIR.mkdir(parents=True, exist_ok=True)
@@ -97,10 +151,13 @@ def record(
             "role": str(role or ""),
             "total_ms": int(total_ms),
             "ttft_ms": (int(ttft_ms) if ttft_ms is not None else None),
+            "first_event_ms": (int(first_event_ms)
+                               if first_event_ms is not None else None),
             "output_chars": int(output_chars),
             "tool_calls": int(tool_calls),
             "stopped": bool(stopped),
-            "error": str(error or "")[:300],
+            "error": _clean_error(error),
+            "retries": (int(retries) if retries is not None else None),
             "input_tokens": int(input_tokens or 0),
             "output_tokens": int(output_tokens or 0),
             "cached_tokens": int(cached_tokens or 0),
@@ -148,11 +205,82 @@ def _int(entry: dict, key: str) -> int:
         return 0
 
 
+def is_crashed(entry: dict) -> bool:
+    """The turn ended in an exception, recorded by the engine that caught it.
+
+    The counterpart to :func:`is_never_started`: both describe a turn that
+    delivered nothing, and only this one had somebody to blame other than
+    a silent backend. A record with no ``error`` KEY predates the field
+    and is not judged — absence of the key is not absence of a crash.
+    """
+    try:
+        return bool(str(entry.get("error") or "").strip())
+    except Exception:
+        return False
+
+
+def _produced_no_token(entry: dict) -> bool:
+    """The record says, and can prove, that not one token arrived.
+
+    The shared precondition of :func:`is_never_started` and
+    :func:`silence_kind`: an instrumented ``ttft_ms`` that stayed ``None``,
+    no crash to explain it, and the rest of the record agreeing (no text,
+    no tools, no counted output tokens). What the two do with it differs —
+    one asks how long the silence lasted, the other what kind it was.
+    """
+    if is_crashed(entry):
+        return False
+    if "ttft_ms" not in entry or entry.get("ttft_ms") is not None:
+        return False
+    return (_int(entry, "output_chars") == 0
+            and _int(entry, "tool_calls") == 0
+            and _int(entry, "output_tokens") == 0)
+
+
+def silence_kind(entry: dict) -> str:
+    """Which kind of silence a token-less turn recorded.
+
+    ``""``
+        The turn produced tokens, or crashed — neither is silence.
+    ``"transport"``
+        ``first_event_ms is None``: not one event of any kind arrived, so
+        the connection itself never delivered.
+    ``"model"``
+        A first event arrived and no token followed — the stream was
+        alive and the model said nothing. This is the discriminator that
+        time-to-first-TOKEN cannot make, because ``message_start`` and
+        thinking deltas never stamp it.
+    ``"unclassified"``
+        The record predates ``first_event_ms``. It is silent, and which
+        kind cannot be recovered; guessing would invent evidence.
+
+    Unlike :func:`is_never_started` this asks nothing about duration: a
+    turn that failed in milliseconds with nothing on the wire is a
+    different defect from a long wait, but it is still worth knowing
+    whether anything was ever delivered.
+    """
+    try:
+        if not _produced_no_token(entry):
+            return ""
+        if "first_event_ms" not in entry:
+            return "unclassified"
+        return "transport" if entry.get("first_event_ms") is None else "model"
+    except Exception:
+        return ""
+
+
 def is_never_started(entry: dict) -> bool:
     """A turn that spent the wall clock without a single token arriving.
 
     Telling this apart from "the field was not recorded" is the whole
     problem, and the record answers it in two independent ways.
+
+    A recorded error settles it first: the turn did not wait out a silent
+    backend, it died, and :func:`is_crashed` is the predicate for that.
+    Both shapes write ``ttft_ms=None`` with an empty rest of the record,
+    so without this the stall count absorbed every crash that took more
+    than twenty seconds to fail — and the log, which is the only evidence
+    left afterwards, could not tell the two apart at all.
 
     Provenance: :func:`record` always writes ``ttft_ms``, so the KEY is the
     marker. Present-and-``None`` comes from an instrumented turn whose
@@ -175,11 +303,7 @@ def is_never_started(entry: dict) -> bool:
     count.
     """
     try:
-        if "ttft_ms" not in entry or entry.get("ttft_ms") is not None:
-            return False
-        return (_int(entry, "output_chars") == 0
-                and _int(entry, "tool_calls") == 0
-                and _int(entry, "output_tokens") == 0
+        return (_produced_no_token(entry)
                 and _int(entry, "total_ms") >= _SLOW_TTFT_MS)
     except Exception:
         return False
@@ -196,6 +320,10 @@ def is_stall(entry: dict) -> bool:
     budget — was the single shape reported as healthy. Who ended such a
     turn does not matter: by the time anyone stopped it, the silence had
     already lasted longer than the threshold.
+
+    A turn that raised is NOT counted here — it is a crash, reported by
+    :func:`is_crashed` and counted separately in the roll-up, so neither
+    failure hides inside the other's number.
     """
     try:
         if is_never_started(entry):
@@ -226,9 +354,13 @@ def aggregate_turn_stats(
     """Windowed roll-up across ALL session files — the telemetry consumer
     the per-turn logs have been missing.
 
-    Returns ``{turns, avg_ttft_ms, p90_ttft_ms, stalls, stopped_count}``
-    where ``stalls`` counts entries flagged by :func:`is_stall` and the
-    ttft numbers cover only turns that recorded a first token.  Entries
+    Returns ``{turns, avg_ttft_ms, p90_ttft_ms, stalls, crashes,
+    stopped_count}`` where ``stalls`` counts entries flagged by
+    :func:`is_stall` and the ttft numbers cover only turns that recorded a
+    first token.  ``crashes`` exists because the stall count stopped
+    absorbing turns that raised: a run of crashing turns would otherwise
+    have made this roll-up quieter than before, which is the exact failure
+    mode the stall counter was fixed for.  Entries
     outside the last ``window_days`` are skipped (``window_days <= 0``
     disables the window); entries without a parseable ``ts`` stay
     visible.  Best-effort: never raises — corrupt lines/files skipped.
@@ -246,14 +378,14 @@ def aggregate_turn_stats(
     is public so a consumer can count the two kinds apart.
     """
     empty = {"turns": 0, "avg_ttft_ms": 0, "p90_ttft_ms": 0,
-             "stalls": 0, "stopped_count": 0}
+             "stalls": 0, "crashes": 0, "stopped_count": 0}
     try:
         base = Path(dir_path) if dir_path else _DIR
         cutoff: float | None = None
         if window_days and float(window_days) > 0:
             cutoff = ((now if now is not None else time.time())
                       - float(window_days) * 86400.0)
-        turns = stalls = stopped = 0
+        turns = stalls = crashes = stopped = 0
         ttfts: list[int] = []
         for fp in sorted(base.glob("*.jsonl")):
             try:
@@ -282,6 +414,8 @@ def aggregate_turn_stats(
                         pass
                 if is_stall(e):
                     stalls += 1
+                if is_crashed(e):
+                    crashes += 1
                 if e.get("stopped"):
                     stopped += 1
         ttfts.sort()
@@ -291,6 +425,7 @@ def aggregate_turn_stats(
                             if ttfts else 0),
             "p90_ttft_ms": _percentile(ttfts, 90),
             "stalls": stalls,
+            "crashes": crashes,
             "stopped_count": stopped,
         }
     except Exception:
@@ -298,7 +433,14 @@ def aggregate_turn_stats(
 
 
 def format_summary(entries: list[dict], *, limit: int = 30) -> str:
-    """One line per turn; flags likely backend stalls. Empty when no entries."""
+    """One line per turn; flags stalls and crashes. Empty when no entries.
+
+    This is what a bug report carries, so a line has to say which failure
+    it was: a backend that answered nothing, a backend that was never
+    reached, or a turn that died — with the retry count when the client
+    reports one, because three retries and a quiet wait are the same
+    number of seconds and not the same problem.
+    """
     if not entries:
         return ""
     rows = []
@@ -306,7 +448,17 @@ def format_summary(entries: list[dict], *, limit: int = 30) -> str:
         total = int(e.get("total_ms") or 0)
         ttft = e.get("ttft_ms")
         ttft_s = f"{int(ttft)/1000:.1f}s" if ttft is not None else "—"
-        flag = "  ⚠ backend-stall" if is_stall(e) else ""
+        if is_crashed(e):
+            flag = f"  ✖ crashed: {str(e.get('error') or '')[:80]}"
+        elif is_stall(e):
+            kind = {"transport": " (no transport)",
+                    "model": " (model silent)"}.get(silence_kind(e), "")
+            flag = f"  ⚠ backend-stall{kind}"
+        else:
+            flag = ""
+        retries = e.get("retries")
+        if retries:
+            flag += f"  retries={int(retries)}"
         rows.append(
             f"{e.get('model','?')}  total={total/1000:.1f}s  "
             f"ttft={ttft_s}  out={int(e.get('output_chars') or 0)}ch  "
@@ -316,4 +468,5 @@ def format_summary(entries: list[dict], *, limit: int = 30) -> str:
 
 
 __all__ = ["metrics_path", "record", "read", "is_stall", "is_never_started",
-           "format_summary", "aggregate_turn_stats"]
+           "is_crashed", "silence_kind", "format_summary",
+           "aggregate_turn_stats"]

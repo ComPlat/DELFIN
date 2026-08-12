@@ -431,6 +431,18 @@ class AgentEngine:
         self._last_test_evidence: list = []
         self.token_usage = {"input": 0, "output": 0, "cached": 0}
         self.cost_usd: float = 0.0
+        # Whether that number could be measured at all, per turn. cost_usd
+        # is a sum of MEASURED spend only: a turn on a model with no
+        # published rate adds 0.0, which no USD gate can tell from a cheap
+        # turn -- so the ceiling is weakest exactly where the price is
+        # least known. The counters are what let the gates say that
+        # instead of passing silently. A NON_BILLING turn is counted
+        # apart, because its zero is a fact and calling it unmeasured
+        # would be false in the other direction.
+        self._measured_cost_turns: int = 0
+        self._non_billing_turns: int = 0
+        self._unpriced_turns: int = 0
+        self._unmeasured_budget_notice_shown: bool = False
         # Exact system prompt of the most recent turn (for bug reports).
         # Kept for the running process only -- it carries the injected
         # memory, so it is not written into every session file.
@@ -1725,6 +1737,18 @@ class AgentEngine:
         self.last_empty_turn = None
         _usage_before = dict(self.token_usage)
         _turn_ttft: float | None = None
+        # Time of the FIRST stream event of any kind — message_start and
+        # thinking deltas included, neither of which stamps ttft. Without
+        # it a live connection to a silent model and a transport that
+        # delivered nothing at all wrote the same record, and the log is
+        # the only evidence left afterwards. See turn_metrics.silence_kind.
+        _turn_first_event: float | None = None
+        # The exception this turn died on, kept for the record below. The
+        # except clause's own name is unbound by the time `finally` runs,
+        # and `record()` has had an `error` parameter from the start that
+        # nothing ever filled -- so a crash and a silent backend logged
+        # identically.
+        _turn_error = ""
         _turn_tool_calls = 0
         # Tool NAMES this turn — evidence input for the claim-grounding
         # guard (a lookup tool used this turn grounds quantity claims).
@@ -1769,6 +1793,12 @@ class AgentEngine:
                 thinking_budget=thinking_budget,
                 **_stream_kwargs,
             ):
+                # ANY event, before any filtering: this stamp answers
+                # "did the transport deliver anything at all?", which is
+                # a different question from "did a token arrive?".
+                if _turn_first_event is None:
+                    _turn_first_event = _time.monotonic()
+
                 if self._stop_requested and event.type != "message_delta":
                     # A stop ends the turn here -- but not before the
                     # events the client emits BECAUSE of the stop. This
@@ -2048,6 +2078,9 @@ class AgentEngine:
                         break
 
         except Exception as _turn_exc:
+            # Take the plain form first, so the turn log gets an error even
+            # if the classification below fails.
+            _turn_error = f"{type(_turn_exc).__name__}: {_turn_exc}"
             if not chunks:
                 self.messages.pop()
             else:
@@ -2080,6 +2113,9 @@ class AgentEngine:
                         _etype = "transient_api"
                 except Exception:
                     pass
+                # The same classification the profiles get. It was already
+                # being computed here while the turn log was told nothing.
+                _turn_error = f"{_etype}: {_turn_exc}"
                 self.record_cycle_outcome(
                     "FAIL", user_message, error_type=_etype,
                     start_time=_turn_t0)
@@ -2103,6 +2139,11 @@ class AgentEngine:
             # Per-turn timing telemetry (best-effort; never affects the turn).
             # Captures total + time-to-first-token so a slow turn is diagnosable
             # after the fact (backend stall vs generation vs tool rounds).
+            #
+            # The failure fields travel with it: the exception the turn died
+            # on, the first-EVENT stamp that says whether the transport ever
+            # delivered, and the client's retry count. Without all three,
+            # every way of producing nothing wrote the same record.
             try:
                 from . import turn_metrics as _tm
                 _tm.record(
@@ -2113,9 +2154,13 @@ class AgentEngine:
                     total_ms=int((_time.monotonic() - _turn_t0) * 1000),
                     ttft_ms=(int((_turn_ttft - _turn_t0) * 1000)
                              if _turn_ttft is not None else None),
+                    first_event_ms=(int((_turn_first_event - _turn_t0) * 1000)
+                                    if _turn_first_event is not None else None),
                     output_chars=sum(len(c) for c in chunks),
                     tool_calls=_turn_tool_calls,
                     stopped=self._stop_requested,
+                    error=_turn_error,
+                    retries=self._client_retry_count(),
                     # Per-TURN deltas, not the running totals: a cache hit
                     # rate is only meaningful per request.
                     input_tokens=max(
@@ -2128,6 +2173,15 @@ class AgentEngine:
                         0, int(self.token_usage.get("cached", 0))
                         - int(_usage_before.get("cached", 0))),
                 )
+            except Exception:
+                pass
+            # Whether this turn's spend could be measured at all. The USD
+            # gates read a bare self.cost_usd, to which an unpriced turn
+            # contributes 0.0 -- indistinguishable from a cheap one. See
+            # _usd_budget_enforced.
+            try:
+                self._note_turn_price_state(
+                    float(self.cost_usd) - float(self._turn_start_cost))
             except Exception:
                 pass
             # Turn is over (normally or with a surfaced error) — the
@@ -4161,9 +4215,116 @@ class AgentEngine:
                 pass
         return usd, secs
 
+    def _client_retry_count(self) -> int | None:
+        """How often the client re-issued this turn's request, if it says.
+
+        ``None`` means the backend does not report retries — which is not
+        a count of zero. A client that retries internally (transient 5xx /
+        timeout, 1.5 + 3 + 6 s of sleep) exposes ``last_turn_retries``;
+        without it a turn that fought for twenty seconds and a quiet one
+        record the same thing.
+        """
+        try:
+            raw = getattr(self.client, "last_turn_retries", None)
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _note_turn_price_state(self, cost_delta: float = 0.0) -> None:
+        """Count the turn that just ran by what its cost could mean.
+
+        Three ways the number means something, resolved in the order the
+        dashboard's own cost line already uses:
+
+        * NON_BILLING — the provider charges no USD for the call at all
+          (KIT quota, local hardware). A measured zero.
+        * The backend measured it itself: a reported spend above zero, or
+          the CLI backend, where the provider states the turn's cost
+          (often zero, on a subscription) instead of leaving it to a rate
+          table. An observation outranks the table either way.
+        * PRICED — a published rate applied to counted tokens.
+
+        Everything else is UNKNOWN: no rate, nothing observed, and a 0.0
+        in ``self.cost_usd`` that every USD gate reads as thrift.
+        """
+        from . import pricing as _pricing
+        state = _pricing.resolve(
+            str(getattr(self.client, "model", "") or ""),
+            str(getattr(self, "provider", "") or ""),
+        ).state
+        if state == _pricing.NON_BILLING:
+            self._non_billing_turns += 1
+        elif (state == _pricing.PRICED
+                or float(cost_delta or 0.0) > 0
+                or getattr(self, "backend", "") == "cli"):
+            self._measured_cost_turns += 1
+        else:
+            self._unpriced_turns += 1
+
+    def _usd_budget_enforced(self) -> bool:
+        """Whether the configured USD ceiling actually bounds this run.
+
+        False in one case that matters: a USD budget is set and at least
+        one turn ran on a model with no published rate. Such a turn adds
+        0.0 to ``self.cost_usd``, so the fraction the gates compare is a
+        sum over the turns that happened to be measurable — it can sit at
+        0% through a run of any size, and the refusal above 110% can never
+        fire. The tier aliases the model picker ships (``opus``,
+        ``sonnet``, ``haiku``) are precisely the unpriced ids, so this is
+        the default case, not an exotic one.
+
+        A quota-funded or locally served run is NOT this case: its zero is
+        a measurement, its ceiling holds, and calling it unmeasured would
+        be a false statement in the other direction.
+        """
+        usd, _secs = self._run_budget()
+        return usd > 0 and int(getattr(self, "_unpriced_turns", 0) or 0) == 0
+
+    def _unmeasured_budget_block(self) -> str:
+        """Say ONCE that no monetary ceiling is in force, and what is.
+
+        Silent unless a USD budget is configured AND an unpriced turn has
+        run: with no budget there is nothing to mislead anyone about, and
+        with every turn priced the ordinary wind-down block does the job.
+        Turn counts and token totals are always measured, so they are what
+        this offers in place of the ceiling that cannot be enforced.
+        """
+        usd, secs = self._run_budget()
+        unpriced = int(getattr(self, "_unpriced_turns", 0) or 0)
+        if (usd <= 0 or unpriced == 0
+                or getattr(self, "_unmeasured_budget_notice_shown", False)):
+            return ""
+        self._unmeasured_budget_notice_shown = True
+        turns = (unpriced + int(getattr(self, "_measured_cost_turns", 0) or 0)
+                 + int(getattr(self, "_non_billing_turns", 0) or 0))
+        tok_in = int(self.token_usage.get("input", 0) or 0)
+        tok_out = int(self.token_usage.get("output", 0) or 0)
+        lines = [
+            "# Run budget NOT enforceable in USD (auto-injected, once)",
+            f"- {unpriced} of {turns} turn(s) so far ran on a model with no "
+            f"published rate, so their cost was never measured. The "
+            f"${usd:.2f} ceiling is not in force, and neither is the "
+            f"per-turn cost breaker.",
+            f"- Measured instead: {turns} turn(s), {tok_in:,} input + "
+            f"{tok_out:,} output tokens. Judge the size of this run by "
+            f"those, not by a dollar figure.",
+        ]
+        if secs > 0:
+            lines.append(f"- The {secs:.0f}s wall-clock ceiling IS measured "
+                         "and still ends this run.")
+        else:
+            lines.append("- For a ceiling that can be enforced, set "
+                         "agent.run_budget_s or pick a model id with a "
+                         "published rate.")
+        return "\n".join(lines)
+
     def _run_budget_status(self) -> tuple[float, bool]:
         """(worst fraction spent, exhausted). Fraction is max over the
-        enabled dimensions; (0.0, False) when no budget is configured."""
+        enabled dimensions; (0.0, False) when no budget is configured.
+
+        The USD term is a sum over measurable turns only — see
+        :meth:`_usd_budget_enforced` for what it cannot see.
+        """
         usd, secs = self._run_budget()
         frac = 0.0
         if usd > 0:
@@ -4178,30 +4339,41 @@ class AgentEngine:
     def _build_budget_block(self) -> str:
         """Per-turn budget status for the prompt: silent when unconfigured
         or comfortably below the wind-down threshold; from 80% it instructs
-        the agent to wrap up gracefully instead of being cut off mid-work."""
+        the agent to wrap up gracefully instead of being cut off mid-work.
+
+        The unmeasured-cost notice comes first and independently of the
+        threshold, because the threshold is exactly what an unpriced run
+        can never reach: its fraction stays at 0% however long it runs.
+        """
+        parts: list[str] = []
+        try:
+            parts.append(self._unmeasured_budget_block())
+        except Exception:
+            pass
         try:
             frac, exhausted = self._run_budget_status()
         except Exception:
-            return ""
-        if frac < 0.8:
-            return ""
-        pct = min(999, int(frac * 100))
-        if exhausted:
-            return (
-                "# Run budget EXHAUSTED\n"
-                f"- {pct}% of this run's budget is spent. Finish your "
-                "CURRENT sentence of work only: save state, mark task "
-                "statuses honestly, and summarise what remains. No new "
-                "work."
-            )
-        return (
-            "# Run budget wind-down (auto-injected)\n"
-            f"- {pct}% of this run's budget is spent. Start wrapping up "
-            "NOW: complete or checkpoint the current step, commit/save "
-            "state, mark tasks, and summarise open work. If a follow-up "
-            "run makes sense, note exactly where to resume. Do not start "
-            "new large work items."
-        )
+            frac, exhausted = 0.0, False
+        if frac >= 0.8:
+            pct = min(999, int(frac * 100))
+            if exhausted:
+                parts.append(
+                    "# Run budget EXHAUSTED\n"
+                    f"- {pct}% of this run's budget is spent. Finish your "
+                    "CURRENT sentence of work only: save state, mark task "
+                    "statuses honestly, and summarise what remains. No new "
+                    "work."
+                )
+            else:
+                parts.append(
+                    "# Run budget wind-down (auto-injected)\n"
+                    f"- {pct}% of this run's budget is spent. Start wrapping "
+                    "up NOW: complete or checkpoint the current step, "
+                    "commit/save state, mark tasks, and summarise open work. "
+                    "If a follow-up run makes sense, note exactly where to "
+                    "resume. Do not start new large work items."
+                )
+        return "\n\n".join(p for p in parts if p)
 
     def _cost_hard_cap(self) -> float:
         """Per-turn hard cost ceiling in USD — a runaway circuit-breaker, NOT a
@@ -4403,6 +4575,20 @@ class AgentEngine:
             "cost_usd", "cost_usd", "state",
             lambda v: float(v or 0.0), lambda v: float(v or 0.0),
             lambda: 0.0),
+        # How much of that total could be measured at all. Carried with it
+        # for the same reason the run clock is carried as elapsed: a resume
+        # that dropped these would restore a partial spend figure and
+        # present it as a ceiling the run is under, when the turns it
+        # cannot see are the ones that were never priced.
+        _SessionField(
+            "_measured_cost_turns", "measured_cost_turns", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        _SessionField(
+            "_non_billing_turns", "non_billing_turns", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        _SessionField(
+            "_unpriced_turns", "unpriced_turns", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
         _SessionField(
             "_project_dir", "project_dir", "state",
             lambda v: str(v or ""), lambda v: str(v or ""), lambda: ""),
