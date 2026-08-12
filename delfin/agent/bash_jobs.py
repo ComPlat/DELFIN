@@ -716,6 +716,40 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
     return events
 
 
+def running_jobs_for_workspace(workspace: str | Path) -> list[dict]:
+    """Jobs still alive that were registered under ``workspace``.
+
+    Read from the persisted registry rather than from this process's
+    in-memory one: the question is who still OWNS the directory, and that
+    includes jobs started by a thread whose own bookkeeping has already
+    been torn down.
+
+    Each entry: ``job_id``, ``pid``, ``command`` (truncated), ``cwd``.
+    Never raises — an unreadable registry answers "nothing running",
+    which leaves every caller behaving as it did before this existed."""
+    out: list[dict] = []
+    try:
+        jobs = _load_registry_file(workspace).get("jobs", {})
+    except Exception:
+        return out
+    for jid, rec in (jobs or {}).items():
+        try:
+            if (rec or {}).get("finished_at") is not None:
+                continue
+            pid = int((rec or {}).get("pid") or 0)
+            if not _pid_alive(pid, (rec or {}).get("proc_start_ticks")):
+                continue
+            out.append({
+                "job_id": jid,
+                "pid": pid,
+                "command": str((rec or {}).get("command") or "")[:200],
+                "cwd": str((rec or {}).get("cwd") or ""),
+            })
+        except Exception:
+            continue
+    return out
+
+
 def _known_workspaces() -> list[str]:
     """Every workspace the locator index has seen a job started in.
 

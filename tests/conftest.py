@@ -1,9 +1,10 @@
 """Shared test fixtures.
 
 Redirect the subagent state files (live registry, telemetry, finished
-sessions) away from the real ``~/.delfin`` so test runs never leave
-artifacts that show up in the user's dashboard (live panel, ``/agents``
-listing, stats).
+sessions, outstanding background reports) away from the real
+``~/.delfin`` so test runs never leave artifacts that show up in the
+user's dashboard (live panel, ``/agents`` listing, stats) or get pushed
+into a real session's next turn.
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ def _isolate_subagent_state(tmp_path, monkeypatch):
                         tmp_path / "subagent_telemetry.jsonl")
     monkeypatch.setattr(sa, "_SESSIONS_DIR",
                         tmp_path / "subagent_sessions")
+    # Reserving a background id records a report the parent is owed; the
+    # engine drains those into the next turn, so a test that spawned one
+    # would otherwise announce itself in a real session.
+    monkeypatch.setattr(sa, "_PENDING_DIR",
+                        tmp_path / "subagent_pending")
     yield
 
 

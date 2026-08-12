@@ -13971,6 +13971,13 @@ class OpenAIClient(_BaseClient):
         _AUTO_CONT_CAP = 12
         _auto_cont_count = 0
         _did_tools_since_cont = False
+        # Completion events that arrive as the turn is ENDING. Both drains
+        # below are exactly-once: what they hand over is gone from their
+        # store, so it has to be acted on in this turn -- nothing in the
+        # codebase wakes an idle agent (no timer, no completion callback,
+        # no autonomous turn). Capped, because each one costs a round.
+        _END_EVENT_CONT_CAP = 3
+        _end_event_conts = 0
         # Plan-mode redirect: fired once per turn when a round is blocked by the
         # plan-mode gate. Weaker models (qwen) batch every task_create/edit in
         # ONE round, so they can't react to the first block before the whole
@@ -15049,6 +15056,35 @@ class OpenAIClient(_BaseClient):
                     yield StreamEvent(
                         type="text_delta", text="\n\n💬 [you, mid-run]: " + _s + "\n")
                 continue
+
+            # Background work that finished while the model was writing its
+            # final answer. Both drains used to live inside the
+            # tool-calling branch only, so a turn that ended without tool
+            # calls surfaced nothing -- and the turn that ends without tool
+            # calls is exactly the "I started the job, I'll wait" ending
+            # after which the agent never takes another turn on its own.
+            # The event was drained by no one and destroyed by the next
+            # drain that did run, if any ever did.
+            if _end_event_conts < _END_EVENT_CONT_CAP:
+                _end_notes = self._drain_background_events()
+                _end_blocks = self._drain_turn_steering()
+                if _end_notes or _end_blocks:
+                    _end_event_conts += 1
+                    _final = "".join(_text_chunks) if _text_chunks else ""
+                    if _final.strip():
+                        api_messages.append(
+                            {"role": "assistant", "content": _final})
+                    for _n in _end_notes:
+                        api_messages.append({"role": "user", "content": _n})
+                        yield StreamEvent(
+                            type="text_delta", text="\n\n" + _n + "\n")
+                    for _b in _end_blocks:
+                        api_messages.append({"role": "user", "content": _b})
+                    api_messages.append({"role": "user", "content": (
+                        "This finished while you were answering. Act on it "
+                        "now and tell the user the result — the turn is "
+                        "about to end and nothing will remind you again.")})
+                    continue
 
             # Auto-continue: the model ended its turn, but tasks are still open
             # and it made fresh progress this round (o3 stops after each batch +

@@ -311,12 +311,21 @@ _STEERING_ROLES = ("solo_agent", "dashboard_agent", "office_agent")
 # what the system prompt already says.
 _MID_TURN_STEERING_KEYS = frozenset({
     "context_status", "open_tasks", "unmet_delegation", "unmet_tasklist",
-    "finished_jobs", "budget", "answered",
+    "finished_jobs", "finished_subagents", "budget", "answered",
 })
 # Blocks backed by a store that drains: their content is new by construction,
 # so comparing it against the last delivery would suppress a real event that
 # happens to read the same as an earlier one.
-_DRAINED_STEERING_KEYS = frozenset({"finished_jobs", "answered"})
+#
+# These are also the blocks EVERY role gets. The role gate below exists for
+# the blocks that are recomputed from state on every turn -- a scripted
+# pipeline role keeps no task list, no budget of its own and no project pin,
+# so those would cost it tokens to say nothing. A drain-backed block is the
+# opposite: it is empty unless something actually finished, it is consumed
+# exactly once by its own store, and a builder or test role waiting on a
+# cluster job needs the completion just as much as a solo one. Gating them
+# meant eight of the eleven roles were never told a job had ended.
+_DRAINED_STEERING_KEYS = ("finished_jobs", "finished_subagents", "answered")
 # Ceiling on mid-turn steering deliveries. A block that flaps (a task list
 # edited repeatedly) must not be able to spend a turn's context on itself.
 _MAX_STEERING_REFRESHES = 6
@@ -1040,6 +1049,75 @@ class AgentEngine:
             ["# Background jobs finished since your last turn "
              "(act on these results now)"] + events)
 
+    # How much of a finished delegate's report the push carries. The report
+    # IS the deliverable, so a 200-character tail (right for a job's stdout)
+    # would deliver the fact and drop the substance; the full text can be
+    # arbitrarily long, so the rest waits behind subagent_result.
+    _SUBAGENT_REPORT_CHARS = 1200
+
+    def _build_finished_subagents_block(self) -> str:
+        """Event-driven completion notice for background DELEGATES.
+
+        Background bash jobs have had a completion push since the events
+        existed; background sub-agents had nothing. The only way the model
+        learned a delegate had finished was to spend a whole tool round on
+        ``subagent_result(sa_id)`` — against per-model round budgets of 10
+        to 50, and against a tool result that ends "Continue other work
+        meanwhile". A parent that ended its turn instead (the normal "I
+        started it, I'll wait" ending) never took another turn: no timer,
+        no callback and no autonomous turn exists to wake it, so the
+        report was not late, it was never relayed at all.
+
+        Drains the reports that ended since the previous turn, in the same
+        shape as ``_build_finished_jobs_block`` and with the same
+        exactly-once guarantee — the store claims each report for exactly
+        one caller, so a completion cannot be announced twice. Empty
+        string when nothing finished; best-effort, never raises."""
+        try:
+            from delfin.agent.subagents import drain_finished_subagents
+            events = drain_finished_subagents() or []
+        except Exception:
+            return ""
+        lines: list[str] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            sa_id = str(ev.get("sa_id") or "?")
+            head = (f"- sub-agent {ev.get('subagent_type') or '?'} [{sa_id}] "
+                    f"{str(ev.get('description') or '')[:80]}")
+            if str(ev.get("status")) == "died":
+                lines.append(
+                    f"{head} — ENDED WITHOUT A REPORT: "
+                    f"{str(ev.get('error') or 'no reason recorded')[:200]}. "
+                    "This work was not done; start it again or do it here.")
+                continue
+            report = str(ev.get("final_text") or "").strip()
+            if len(report) > self._SUBAGENT_REPORT_CHARS:
+                report = (report[:self._SUBAGENT_REPORT_CHARS]
+                          + f"\n  […] full report: subagent_result(sa_id="
+                            f"'{sa_id}')")
+            err = str(ev.get("error") or "").strip()
+            lines.append(head + (f" — run error: {err[:160]}" if err else ""))
+            if report:
+                lines.append(report)
+            verification = ev.get("verification")
+            notice = (str(verification.get("notice") or "").strip()
+                      if isinstance(verification, dict) else "")
+            if notice:
+                lines.append(notice[:400])
+            worktree = ev.get("worktree")
+            warn = (str(worktree.get("warning") or "").strip()
+                    if isinstance(worktree, dict) else "")
+            if warn:
+                lines.append(f"  ⚠️ {warn[:300]}")
+        if not lines:
+            return ""
+        return "\n".join(
+            ["# Background sub-agents that finished since your last turn "
+             "(their reports are below — relay what matters to the user; "
+             "calling subagent_result again only repeats what you can "
+             "already read here)"] + lines)
+
     # Explicit delegation requests, in the languages the dashboard is used
     # in. Matching is deliberately narrow: only an explicit mention of
     # sub-agents or delegation counts, never a generic "split this up".
@@ -1343,6 +1421,8 @@ class AgentEngine:
         pairs.append(("unmet_delegation", self._build_unmet_delegation_block()))
         pairs.append(("unmet_tasklist", self._build_unmet_tasklist_block()))
         pairs.append(("finished_jobs", self._build_finished_jobs_block()))
+        pairs.append(("finished_subagents",
+                      self._build_finished_subagents_block()))
         pairs.append(("budget", self._build_budget_block()))
         pairs.append(("answered", self._build_answered_attention_block()))
         # One-time backend capability notice: reduced surfaces (no tool
@@ -1361,6 +1441,33 @@ class AgentEngine:
             pass
         return [(key, text) for key, text in pairs if text]
 
+    def _drained_steering_blocks(self) -> list[tuple[str, str]]:
+        """Only the blocks whose store guarantees exactly-once delivery.
+
+        Built separately from :meth:`_steering_blocks` because they are the
+        ones no role is excluded from: what a drain returns has already
+        happened, is gone from the store once read, and costs nothing when
+        nothing happened. Building them via the full list would drag the
+        role-gated blocks along with them.
+        """
+        builders = {
+            "finished_jobs": self._build_finished_jobs_block,
+            "finished_subagents": self._build_finished_subagents_block,
+            "answered": self._build_answered_attention_block,
+        }
+        pairs: list[tuple[str, str]] = []
+        for key in _DRAINED_STEERING_KEYS:
+            build = builders.get(key)
+            if build is None:
+                continue
+            try:
+                text = build()
+            except Exception:
+                continue
+            if text:
+                pairs.append((key, text))
+        return pairs
+
     def _drain_turn_steering(self) -> list[str]:
         """Steering blocks that became true *during* the running turn.
 
@@ -1374,14 +1481,16 @@ class AgentEngine:
         at turn start — so for a single-turn task they never fire at all.
 
         Returns the blocks whose text has CHANGED since the last delivery,
-        capped per turn. Drain-backed blocks (finished jobs, late answers)
-        are consumed exactly once by their own store, so they are passed on
-        as they come. Read-only and best-effort: this runs inside the tool
-        loop and must never end a turn that is otherwise working.
+        capped per turn. Drain-backed blocks (finished jobs, finished
+        delegates, late answers) are consumed exactly once by their own
+        store, so they are passed on as they come — for EVERY role, and
+        outside the refresh cap: an event that a cap swallowed would not be
+        delayed, it would be destroyed, since the drain that produced it
+        has already forgotten it. Read-only and best-effort: this runs
+        inside the tool loop and must never end a turn that is otherwise
+        working.
         """
         role = self.current_role or (self.route[0] if self.route else "")
-        if role not in _STEERING_ROLES:
-            return []
         # Off-switch, for measuring this mechanism against itself: a
         # benchmark arm can run with the refresh disabled and be compared
         # against one that has it, which is the only way to put a number on
@@ -1390,6 +1499,24 @@ class AgentEngine:
         if _os.environ.get(
                 "DELFIN_TURN_STEERING", "").strip() in ("0", "off", "false"):
             return []
+        out: list[str] = []
+        try:
+            out.extend(text for _key, text in self._drained_steering_blocks())
+        except Exception:
+            pass
+        if role in _STEERING_ROLES:
+            out.extend(self._changed_steering_blocks(role))
+        return [f"[live update — this changed since the turn started]\n{t}"
+                for t in out]
+
+    def _changed_steering_blocks(self, role: str) -> list[str]:
+        """The role-gated blocks whose text moved since the last delivery.
+
+        Capped per turn: these are recomputed from state, so a list that
+        flaps could otherwise spend a whole turn's context restating
+        itself. Nothing here is consumed by being read, so a block the cap
+        holds back is delivered by the next turn's system prompt.
+        """
         if self._steering_refreshes >= _MAX_STEERING_REFRESHES:
             return []
         try:
@@ -1401,8 +1528,7 @@ class AgentEngine:
             if key not in _MID_TURN_STEERING_KEYS:
                 continue
             if key in _DRAINED_STEERING_KEYS:
-                # Its store already guarantees exactly-once delivery.
-                out.append(text)
+                # Already delivered above, for every role.
                 continue
             # A window-usage line that ticks up a percent every round would
             # be pure noise; it is worth a turn's attention only once it
@@ -1415,8 +1541,7 @@ class AgentEngine:
             out.append(text)
         if out:
             self._steering_refreshes += 1
-        return [f"[live update — this changed since the turn started]\n{t}"
-                for t in out]
+        return out
 
     def _build_current_system_prompt(
         self,
@@ -1452,17 +1577,22 @@ class AgentEngine:
         # question that timed out. The context snapshot and the project pin
         # stay solo-only -- office is pinned to its folder by construction,
         # so a pin block would state what the lock already guarantees.
-        if role in _STEERING_ROLES:
-            pairs = self._steering_blocks(role)
-            # Remember what each block said here, so the mid-loop refresh
-            # (see _drain_turn_steering) re-sends a block only once it has
-            # actually changed.
-            self._steering_delivered = dict(pairs)
-            self._steering_refreshes = 0
-            extra_blocks: list[str] = [text for _, text in pairs]
-            if extra_blocks:
-                joined = "\n\n".join(extra_blocks)
-                live_state = f"{joined}\n\n{live_state}" if live_state else joined
+        #
+        # A scripted role gets the drain-backed blocks only. Those are the
+        # ones the gate never had a reason to hold back: a finished cluster
+        # job reached three roles of eleven, so a builder or test role that
+        # had submitted one was told nothing and had to poll for it.
+        pairs = (self._steering_blocks(role) if role in _STEERING_ROLES
+                 else self._drained_steering_blocks())
+        # Remember what each block said here, so the mid-loop refresh
+        # (see _drain_turn_steering) re-sends a block only once it has
+        # actually changed.
+        self._steering_delivered = dict(pairs)
+        self._steering_refreshes = 0
+        extra_blocks: list[str] = [text for _, text in pairs]
+        if extra_blocks:
+            joined = "\n\n".join(extra_blocks)
+            live_state = f"{joined}\n\n{live_state}" if live_state else joined
 
         try:
             _perm_mode = getattr(self.kit_permissions, "mode", "") or ""

@@ -44,6 +44,7 @@ from delfin.agent import subagents as sa
 def _iso(monkeypatch, tmp_path):
     monkeypatch.setattr(sa, "_RUNNING_DIR", tmp_path / "running")
     monkeypatch.setattr(sa, "_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(sa, "_PENDING_DIR", tmp_path / "pending")
     monkeypatch.setattr(sa, "_TELEMETRY_PATH", tmp_path / "telemetry.jsonl")
 
 
