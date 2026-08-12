@@ -631,11 +631,61 @@ def _server_from_config(name: str, cfg: dict) -> MCPServer:
     )
 
 
+# Discovery asks every configured server three questions (tools,
+# resources, prompts) one after another, and each question can sit on the
+# per-call deadline. A server that is dead still costs the full wait, and
+# `initialize` sends its own request first, so one unreachable entry can
+# hold the pass for twice the RPC deadline before anything moves on. Five
+# of them, serially, is minutes -- and every failure was swallowed, so
+# the only symptom was a turn that would not start.
+#
+# The per-call deadline cannot see this: it is doing its job each time.
+# What was missing is a ceiling on the WHOLE pass. Once it is spent the
+# remaining servers are not asked, and which ones they were is reported
+# rather than dropped.
+_DISCOVERY_BUDGET_S = 30.0
+
+
+@dataclass
+class _DiscoveryBudget:
+    """Wall-clock left for one discovery pass, plus what it skipped."""
+
+    total_s: float = _DISCOVERY_BUDGET_S
+    started: float = field(default_factory=time.monotonic)
+    skipped: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+
+    def spent(self) -> float:
+        return time.monotonic() - self.started
+
+    def exhausted(self) -> bool:
+        return self.spent() >= self.total_s
+
+    def note_skipped(self, name: str) -> None:
+        if name not in self.skipped:
+            self.skipped.append(name)
+
+    def note_failed(self, name: str, exc: BaseException | str) -> None:
+        entry = f"{name}: {exc}"[:200]
+        if entry not in self.failed:
+            self.failed.append(entry)
+
+    def report(self) -> dict:
+        return {
+            "seconds": round(self.spent(), 2),
+            "budget_s": self.total_s,
+            "exhausted": self.exhausted(),
+            "skipped": list(self.skipped),
+            "failed": list(self.failed),
+        }
+
+
 @dataclass
 class MCPRegistry:
     servers: dict[str, MCPServer] = field(default_factory=dict)
     workspace: Optional[Path] = None
     loaded: bool = False
+    last_discovery: dict = field(default_factory=dict)
 
     def load(self, workspace: Path | None = None) -> None:
         configs = _load_configs(workspace)
@@ -646,13 +696,24 @@ class MCPRegistry:
         self.workspace = Path(workspace) if workspace else self.workspace
         self.loaded = True
 
-    def discover_all(self) -> list[MCPTool]:
+    def discover_all(self, budget: "_DiscoveryBudget | None" = None
+                     ) -> list[MCPTool]:
+        own = budget is None
+        budget = budget or _DiscoveryBudget()
         tools: list[MCPTool] = []
-        for srv in self.servers.values():
+        for name, srv in self.servers.items():
+            if budget.exhausted():
+                budget.note_skipped(name)
+                continue
             try:
                 tools.extend(srv.list_tools())
-            except Exception:   # pragma: no cover
-                pass
+            except Exception as exc:
+                budget.note_failed(name, exc)
+            else:
+                if getattr(srv, "last_error", ""):
+                    budget.note_failed(name, srv.last_error)
+        if own:
+            self.last_discovery = budget.report()
         return tools
 
     def call(self, namespaced: str, arguments: dict) -> str:
@@ -667,23 +728,72 @@ class MCPRegistry:
             return json.dumps({"error": f"unknown MCP server: {server_name!r}"})
         return srv.call_tool(tool_name, arguments)
 
-    def discover_resources(self) -> list[MCPResource]:
+    def discover_resources(self, budget: "_DiscoveryBudget | None" = None
+                           ) -> list[MCPResource]:
+        own = budget is None
+        budget = budget or _DiscoveryBudget()
         out: list[MCPResource] = []
-        for srv in self.servers.values():
+        for name, srv in self.servers.items():
+            if budget.exhausted():
+                budget.note_skipped(name)
+                continue
             try:
                 out.extend(srv.list_resources())
-            except Exception:   # pragma: no cover
-                pass
+            except Exception as exc:
+                budget.note_failed(name, exc)
+        if own:
+            self.last_discovery = budget.report()
         return out
 
-    def discover_prompts(self) -> list[MCPPrompt]:
+    def discover_prompts(self, budget: "_DiscoveryBudget | None" = None
+                         ) -> list[MCPPrompt]:
+        own = budget is None
+        budget = budget or _DiscoveryBudget()
         out: list[MCPPrompt] = []
-        for srv in self.servers.values():
+        for name, srv in self.servers.items():
+            if budget.exhausted():
+                budget.note_skipped(name)
+                continue
             try:
                 out.extend(srv.list_prompts())
-            except Exception:   # pragma: no cover
-                pass
+            except Exception as exc:
+                budget.note_failed(name, exc)
+        if own:
+            self.last_discovery = budget.report()
         return out
+
+    def discover_everything(self) -> tuple[list, list, list]:
+        """One pass, one budget. Asking three times with three separate
+        ceilings would let a broken configuration cost three times the
+        ceiling, which is the thing the ceiling exists to prevent."""
+        budget = _DiscoveryBudget()
+        tools = self.discover_all(budget)
+        resources = self.discover_resources(budget)
+        prompts = self.discover_prompts(budget)
+        self.last_discovery = budget.report()
+        return tools, resources, prompts
+
+    def discovery_notice(self) -> str:
+        """One line for the user when a pass did not reach everything.
+
+        Empty when it did. A discovery that quietly returned fewer tools
+        than the config declares is indistinguishable from a config with
+        fewer tools in it, and that is the state this reports."""
+        rep = self.last_discovery or {}
+        if not rep.get("skipped") and not rep.get("failed"):
+            return ""
+        parts = []
+        if rep.get("skipped"):
+            parts.append(
+                f"{len(rep['skipped'])} server(s) were not asked "
+                f"({', '.join(rep['skipped'])}) — the {rep.get('budget_s')}s "
+                f"discovery budget was spent on the ones before them")
+        if rep.get("failed"):
+            parts.append(f"{len(rep['failed'])} did not answer: "
+                         + "; ".join(rep["failed"]))
+        return ("MCP discovery took "
+                f"{rep.get('seconds')}s and did not complete: "
+                + ". ".join(parts) + ".")
 
     def read_resource(self, server: str, uri: str) -> str:
         srv = self.servers.get(server)
