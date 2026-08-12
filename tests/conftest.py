@@ -102,6 +102,8 @@ _USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.memory_store", "_DEFAULT_PATH", "agent_memory.json"),
     ("delfin.agent.skill_registry", "_LOCAL_SKILLS_DIR", "skills"),
     ("delfin.agent.job_monitor", "_WATCHED_PATH", "watched_jobs.json"),
+    ("delfin.agent.job_monitor", "_AGENT_WATCH_INDEX_PATH",
+     "agent_watch_index.json"),
     ("delfin.agent.job_monitor", "_FINDINGS_PATH", "monitor_findings.jsonl"),
     ("delfin.agent.job_monitor", "_PID_PATH", "job_monitor.pid"),
     ("delfin.agent.bug_watcher", "_PID_PATH", "bug_watcher.pid"),

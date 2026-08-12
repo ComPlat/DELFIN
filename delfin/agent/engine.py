@@ -1025,41 +1025,63 @@ class AgentEngine:
         except Exception:
             return ""
         events: list[str] = []
+        drained: list[dict] = []
         try:
             # The sweep, not the single-folder drain: a job belongs to the
             # workspace it was started in, which is not always the one the
             # session is in now.
             from delfin.agent.bash_jobs import drain_all_finished_events
-            for ev in drain_all_finished_events(ws) or []:
+            drained = drain_all_finished_events(ws) or []
+            for ev in drained:
                 rc = ev.get("exit_code")
                 state = "ok" if rc == 0 else (
                     f"exit {rc}" if rc is not None else "finished (exit unknown)")
+                if ev.get("timed_out"):
+                    state = "killed at its wall-clock cap"
+                elif ev.get("children_running"):
+                    state = f"{state}, children still running"
                 tail = (ev.get("stderr_tail") if rc not in (0, None)
                         else ev.get("stdout_tail")) or ""
                 tail = " ".join(str(tail).split())[:200]
+                submitted = ev.get("watched_slurm_jobs") or []
                 events.append(
                     f"- bash job {ev.get('job_id')} [{state}, "
                     f"{ev.get('runtime_s', 0):.0f}s] "
                     f"{str(ev.get('command', ''))[:100]}"
-                    + (f" → {tail}" if tail else ""))
+                    + (f" → {tail}" if tail else "")
+                    + (f" (submitted cluster job(s) {', '.join(submitted)}; "
+                       f"now watched)" if submitted else ""))
         except Exception:
             pass
         try:
             from delfin.agent.job_monitor import check_agent_jobs
             for ev in check_agent_jobs(ws) or []:
                 sig = ", ".join(ev.get("signatures") or [])
+                degraded = str(ev.get("degraded") or "")
                 events.append(
                     f"- {ev.get('kind', 'job')} {ev.get('job_id')} "
                     f"[{ev.get('state', '?')}] "
                     f"{str(ev.get('description', ''))[:80]}"
-                    + (f" — signatures: {sig}" if sig else ""))
+                    + (f" — signatures: {sig}" if sig else "")
+                    + (f" — {degraded}" if degraded else ""))
         except Exception:
             pass
         if not events:
             return ""
-        return "\n".join(
+        block = "\n".join(
             ["# Background jobs finished since your last turn "
              "(act on these results now)"] + events)
+        # Phase two: the notice now exists in the block being returned, so
+        # the claim can become a permanent acknowledgement. Confirming here
+        # rather than inside the drain is what makes a turn that dies
+        # BEFORE this point re-deliver instead of losing the only word a
+        # twelve-hour calculation ever gets.
+        try:
+            from delfin.agent.bash_jobs import confirm_finished_events
+            confirm_finished_events(drained)
+        except Exception:
+            pass
+        return block
 
     # How much of a finished delegate's report the push carries. The report
     # IS the deliverable, so a 200-character tail (right for a job's stdout)

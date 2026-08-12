@@ -11865,13 +11865,19 @@ class _DocToolExecutor:
             _wt.exit_worktree(info, keep_if_changed=keep_if_changed)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
-        return json.dumps({
+        payload = {
             "status": "ok",
             "had_changes": info.had_changes,
             "kept": info.final_path is not None,
             "final_path": str(info.final_path) if info.final_path else "",
             "branch": info.branch,
-        })
+        }
+        if info.held_by_jobs:
+            payload["running_jobs"] = [
+                str(j.get("job_id") or "?") for j in info.held_by_jobs][:8]
+            payload["warning"] = _wt._held_message(
+                info.path, info.held_by_jobs)
+        return json.dumps(payload)
 
     def _execute_worktree_merge(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
@@ -13498,17 +13504,30 @@ class OpenAIClient(_BaseClient):
         notes: list[str] = []
         try:
             from . import bash_jobs as _bj
-            for event in _bj.drain_finished_events(workspace) or ():
+            events = list(_bj.drain_finished_events(workspace) or ())
+            for event in events:
                 if not isinstance(event, dict):
                     continue
                 jid = event.get("job_id") or "?"
                 rc = event.get("exit_code")
                 desc = str(event.get("description") or "").strip()
+                submitted = event.get("watched_slurm_jobs") or []
                 notes.append(
                     f"[background] job {jid}"
                     + (f" ({desc})" if desc else "")
-                    + f" finished with exit code {rc}. Read its output with "
-                    "bash_output before relying on it.")
+                    + f" finished with exit code {rc}"
+                    + (" — but processes it started are still running in its "
+                       "process group, so this exit code is the wrapper "
+                       "shell's, not the work's"
+                       if event.get("children_running") else "")
+                    + (f" — it submitted cluster job(s) "
+                       f"{', '.join(submitted)}, now watched"
+                       if submitted else "")
+                    + ". Read its output with bash_output before relying "
+                      "on it.")
+            # Phase two: only now that the notes exist is the event safe to
+            # retire. A turn that dies before this gets it again.
+            _bj.confirm_finished_events(events)
         except Exception:
             return notes
         return notes

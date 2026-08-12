@@ -22,12 +22,19 @@ Failures are isolated: a buggy callback never crashes the
 scheduler thread. Consecutive callback failures are counted per
 entry; after ``_MAX_CONSECUTIVE_FAILURES`` the entry is disabled
 (persisted, with a reason) instead of retrying forever.
+
+Every route to a disabled entry goes through ``Scheduler._disable``,
+which emits an attention event as well as persisting the reason: a
+schedule that stops without saying so cannot be told apart from one
+that is simply not due yet. The save is atomic and merges with what
+is on disk, so a second writer's entries are neither torn nor lost.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 import uuid
@@ -113,6 +120,7 @@ class Scheduler:
     def __init__(self, path: Path | None = None):
         self.path = path or _DEFAULT_PATH
         self._entries: dict[str, ScheduleEntry] = {}
+        self._removed: set[str] = set()
         self._lock = threading.RLock()
         self._fire_callback: Optional[Callable[[ScheduleEntry], None]] = None
         self._thread: Optional[threading.Thread] = None
@@ -121,27 +129,85 @@ class Scheduler:
 
     # --- persistence ------------------------------------------------------
 
-    def _load(self) -> None:
+    def _read_file(self) -> dict[str, ScheduleEntry]:
+        out: dict[str, ScheduleEntry] = {}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return
+            return out
         for raw in data.get("entries", []):
             try:
                 ent = ScheduleEntry(**raw)
-                self._entries[ent.id] = ent
+                out[ent.id] = ent
             except (TypeError, ValueError):
                 continue
+        return out
+
+    def _load(self) -> None:
+        self._entries.update(self._read_file())
 
     def _save(self) -> None:
+        """Persist atomically, and merge rather than overwrite.
+
+        Two problems, one write. A plain ``write_text`` is not atomic: this
+        was the one state file in the agent that a reader could catch
+        half-written or empty, which for a schedule means entries simply
+        gone. And an in-process Scheduler loads once and never reloads, so
+        its save flattened whatever another process (the headless daemon,
+        the CLI, a second dashboard) had created in the meantime —
+        scheduling into a file that another writer would silently revert.
+
+        Merging on write keeps entries this instance never knew about,
+        while entries it deliberately removed stay removed.
+        """
         try:
+            merged = self._read_file()
+            merged.update(self._entries)
+            for entry_id in self._removed:
+                merged.pop(entry_id, None)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"entries": [asdict(e) for e in self._entries.values()]}
-            self.path.write_text(
-                json.dumps(payload, indent=2), encoding="utf-8",
-            )
+            payload = {"entries": [asdict(e) for e in merged.values()]}
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{self.path.name}.", suffix=".tmp",
+                dir=str(self.path.parent))
+            tmp = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2)
+                os.replace(tmp, self.path)
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
         except OSError:
             pass
+
+    # --- disable notification (the single choke point) --------------------
+
+    def _disable(self, ent: ScheduleEntry, reason: str) -> None:
+        """Disable an entry AND say so where a user will see it.
+
+        Every route to a disabled entry goes through here. The workspace
+        gate used to raise outside the block that emitted attention, so the
+        one case most worth telling about — a moved or deleted workspace
+        killing the schedule outright — was also the only silent one, while
+        an ordinary run failure did notify. A schedule that stops without
+        saying so is indistinguishable from one that is simply not due yet.
+        """
+        ent.disabled = True
+        ent.disabled_reason = reason
+        try:
+            from .attention import emit_attention
+            emit_attention(
+                "run_failed",
+                title=f"Schedule {ent.id} disabled",
+                detail=f"{ent.reason or ent.prompt[:120]} — {reason}"[:400],
+                workspace=str(ent.workspace or ""),
+            )
+        except Exception:
+            pass        # notification is best-effort; the disable is not
 
     # --- API --------------------------------------------------------------
 
@@ -192,13 +258,21 @@ class Scheduler:
         return ent
 
     def list_entries(self) -> list[ScheduleEntry]:
+        """Every entry in the schedule, including ones another process
+        created since this instance was built."""
         with self._lock:
+            self._entries.update(
+                {k: v for k, v in self._read_file().items()
+                 if k not in self._entries and k not in self._removed})
             return list(self._entries.values())
 
     def delete(self, entry_id: str) -> bool:
         with self._lock:
             removed = self._entries.pop(entry_id, None) is not None
+            if not removed and entry_id in self._read_file():
+                removed = True          # created by another process
             if removed:
+                self._removed.add(entry_id)
                 self._save()
             return removed
 
@@ -239,6 +313,12 @@ class Scheduler:
         changed = False
         now = time.time()
         with self._lock:
+            # Reload first: a long-lived in-process scheduler otherwise
+            # never sees an entry the CLI, the daemon or a second front end
+            # wrote after it was constructed.
+            self._entries.update(
+                {k: v for k, v in self._read_file().items()
+                 if k not in self._entries and k not in self._removed})
             for ent in list(self._entries.values()):
                 if ent.disabled or not ent.is_due(now):
                     continue
@@ -246,12 +326,11 @@ class Scheduler:
                 # it is disabled with the reason, so the entry can still be
                 # found and understood rather than vanishing.
                 if ent.is_stale(now):
-                    ent.disabled = True
-                    ent.disabled_reason = (
+                    self._disable(ent, (
                         f"not fired: overdue by "
                         f"{int(now - ent.next_fire_at)}s, past the "
                         f"{int(_STALE_ONCE_GRACE_S)}s grace for a one-shot "
-                        "wake-up. Schedule it again if it is still wanted.")
+                        "wake-up. Schedule it again if it is still wanted."))
                     changed = True
                     continue
                 cb = fire_callback or self._fire_callback
@@ -260,18 +339,16 @@ class Scheduler:
                 try:
                     cb(ent)
                 except DisableEntry as exc:
-                    ent.disabled = True
-                    ent.disabled_reason = (
-                        exc.reason or "disabled by fire callback")
+                    self._disable(
+                        ent, exc.reason or "disabled by fire callback")
                     changed = True
                     continue
                 except Exception as exc:
                     ent.fail_count += 1
                     if ent.fail_count >= _MAX_CONSECUTIVE_FAILURES:
-                        ent.disabled = True
-                        ent.disabled_reason = (
+                        self._disable(ent, (
                             f"disabled after {ent.fail_count} consecutive "
-                            f"failures (last: {str(exc)[:160]})")
+                            f"failures (last: {str(exc)[:160]})"))
                     changed = True
                     continue
                 ent.fail_count = 0
@@ -279,6 +356,7 @@ class Scheduler:
                 still_active = ent.reschedule(now)
                 if not still_active:
                     self._entries.pop(ent.id, None)
+                    self._removed.add(ent.id)
             if fired or changed:
                 self._save()
         return fired

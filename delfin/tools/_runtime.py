@@ -9,6 +9,12 @@ program without blocking on it.
 Run records persist as JSON under ``$DELFIN_RUNS_DIR`` (default
 ``~/.delfin/runs``), so history survives the process.  Execution is synchronous
 *inside a background thread*; this module is the seam — callers see only handles.
+
+For ``backend="slurm"`` the executing process lives on a compute node, so the
+login-node record cannot learn anything by itself.  Every non-terminal
+slurm-backed record is therefore reconciled against ``sacct`` when it is read,
+and the answer is tri-state on purpose: a state, "the scheduler does not know
+this id", or "the scheduler could not be asked".
 """
 
 from __future__ import annotations
@@ -34,6 +40,49 @@ class RunStatus(str, Enum):
 
 _TERMINAL = {RunStatus.SUCCESS.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
 
+# --- SLURM reconciliation -------------------------------------------------
+#
+# A ``backend="slurm"`` run is executed by ``execute_run`` on a compute node,
+# and that compute-node process was the ONLY writer able to move the record
+# off PENDING. Every way a batch job can end without running its payload --
+# OUT_OF_MEMORY, TIMEOUT, NODE_FAIL, an admin ``scancel``, a held job that
+# never starts -- therefore left the record PENDING for ever, indistinguishable
+# from "queued" and from "running fine". On a shared node that is not a
+# cosmetic bug: the run store is what tells a user whether their allocation is
+# still being spent, and a record that can only ever say "pending" says nothing.
+#
+# The scheduler is the authority on a scheduler job, so a non-terminal
+# slurm-backed record is reconciled against ``sacct`` whenever it is read.
+
+# The scheduler answered and the job is in this state.
+_SLURM_RUNNING_STATES = frozenset({
+    "RUNNING", "COMPLETING", "STAGE_OUT", "SUSPENDED",
+})
+_SLURM_QUEUED_STATES = frozenset({
+    "PENDING", "CONFIGURING", "REQUEUED", "REQUEUE_HOLD", "REQUEUE_FED",
+    "RESIZING", "SIGNALING", "RESV_DEL_HOLD",
+})
+_SLURM_FAILED_STATES = frozenset({
+    "FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL",
+    "DEADLINE", "PREEMPTED", "REVOKED", "SPECIAL_EXIT",
+})
+_SLURM_CANCELLED_STATES = frozenset({"CANCELLED"})
+_SLURM_OK_STATES = frozenset({"COMPLETED"})
+
+# How long an id may be unknown to ``sacct`` before the record is closed.
+# Accounting can lag a fresh submission by seconds; a job that is still
+# missing a quarter of an hour later is not going to appear.
+_SLURM_ABSENT_GRACE_S = 900.0
+
+# ``RunHandle.wait`` used to default to no timeout at all with a 0.05 s poll:
+# a 20 Hz busy-wait on the login node, beside the queue it was waiting on,
+# that could not return while a record was stuck non-terminal. It now has a
+# default cap and backs off, and a wait that expires says so through
+# ``RunHandle.state()`` rather than pretending the run is still going.
+_DEFAULT_WAIT_TIMEOUT_S = 3600.0
+_WAIT_POLL_START_S = 0.5
+_WAIT_POLL_MAX_S = 15.0
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -57,6 +106,135 @@ def _default_calc_dir() -> Path:
 
 class _Cancelled(Exception):
     """Raised internally to abort a run between steps."""
+
+
+def _default_slurm_query(job_id: str) -> Optional[str]:
+    """Ask the scheduler for one job's state. Tri-state, deliberately.
+
+    * ``"RUNNING"`` / ``"TIMEOUT"`` / … — the scheduler answered.
+    * ``""`` — the scheduler answered and does not know this id.
+    * ``None`` — the scheduler could NOT be asked (no ``sacct``, non-zero
+      exit, timeout).
+
+    Collapsing the last two into one empty answer is what turns "SLURM says
+    nothing changed" into "SLURM could not be reached", and a run that is
+    burning an allocation into one that looks merely quiet.
+    """
+    import shutil
+    import subprocess
+
+    sacct = shutil.which("sacct")
+    if sacct is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [sacct, "-j", str(job_id), "-n", "-X", "-P", "-o", "State"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except Exception:      # noqa: BLE001 — any failure means "not asked"
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in (proc.stdout or "").splitlines():
+        text = line.strip().upper()
+        if text:
+            # "CANCELLED by 1234" → CANCELLED; "COMPLETED+" → COMPLETED.
+            return text.split()[0].rstrip("+")
+    return ""
+
+
+# Injection seam: tests replace this instead of touching a real queue.
+_slurm_query = _default_slurm_query
+
+
+def _reconcile_slurm_record(rec: "RunRecord", store: "RunStore") -> "RunRecord":
+    """Fold the scheduler's view of a slurm-backed run into its record.
+
+    A no-op for local runs, for records without a job id, and for records
+    that already reached a terminal state. Persists only on an actual
+    change, so reading a run stays cheap.
+    """
+    if rec is None or rec.done:
+        return rec
+    job_id = str((rec.metrics or {}).get("slurm_job_id") or "").strip()
+    if not job_id:
+        return rec
+    try:
+        state = _slurm_query(job_id)
+    except Exception:      # noqa: BLE001 — a broken probe is "not asked"
+        state = None
+
+    prev_note = (rec.metrics or {}).get("slurm_state")
+    new_status = ""
+    error = ""
+    note = ""
+
+    if state is None:
+        # Visible degradation: the record keeps its status, but it now says
+        # the status is unverified rather than implying it was checked.
+        note = "unavailable"
+    elif state == "":
+        note = "absent"
+        first_missing = float((rec.metrics or {}).get("slurm_absent_since") or 0.0)
+        now = _time_now()
+        if not first_missing:
+            rec.metrics["slurm_absent_since"] = now
+        elif (now - first_missing) > _SLURM_ABSENT_GRACE_S:
+            new_status = RunStatus.FAILED.value
+            error = (f"SLURM job {job_id} is unknown to the scheduler and the "
+                     f"run never reported a result — the job is gone")
+    else:
+        note = state
+        rec.metrics.pop("slurm_absent_since", None)
+        if state in _SLURM_RUNNING_STATES:
+            if rec.status == RunStatus.PENDING.value:
+                new_status = RunStatus.RUNNING.value
+        elif state in _SLURM_QUEUED_STATES:
+            pass
+        elif state in _SLURM_CANCELLED_STATES:
+            new_status = RunStatus.CANCELLED.value
+        elif state in _SLURM_FAILED_STATES:
+            new_status = RunStatus.FAILED.value
+            error = f"SLURM job {job_id} ended in state {state}"
+        elif state in _SLURM_OK_STATES:
+            # The batch job is over but the payload never wrote a result:
+            # either it never started or it died before saving. Reporting
+            # success here would invent outputs that do not exist.
+            new_status = RunStatus.FAILED.value
+            error = (f"SLURM job {job_id} finished (COMPLETED) without the run "
+                     f"recording a result — check the slurm_*.out/.err files "
+                     f"in {rec.work_dir or 'the work directory'}")
+        else:
+            new_status = RunStatus.FAILED.value
+            error = f"SLURM job {job_id} ended in state {state}"
+
+    if not new_status and note == prev_note:
+        return rec
+
+    # Re-read before writing: the compute node may have finished between the
+    # query and now, and its result always wins over our inference.
+    fresh = store.get(rec.id)
+    if fresh is not None:
+        if fresh.done:
+            return fresh
+        fresh.metrics = {**(fresh.metrics or {}), **(rec.metrics or {})}
+        rec = fresh
+    rec.metrics["slurm_state"] = note
+    if new_status:
+        rec.status = new_status
+        rec.finished_at = rec.finished_at or _now()
+        if error:
+            rec.error = error
+        rec.events.append({"t": _now(), "event": "slurm_reconciled",
+                           "job_id": job_id, "state": note,
+                           "status": new_status})
+    store.save(rec)
+    return rec
+
+
+def _time_now() -> float:
+    import time as _t
+    return _t.time()
 
 
 def _apply_resources(pipeline, resources: Dict[str, Any]) -> None:
@@ -142,11 +320,40 @@ class RunHandle:
     _runtime: "Runtime"
 
     def record(self) -> Optional[RunRecord]:
-        return self._runtime.store.get(self.id)
+        # Goes through the runtime, not straight to the store: a slurm-backed
+        # record is reconciled against the scheduler on every read.
+        return self._runtime.get(self.id)
 
     def status(self) -> Optional[str]:
         rec = self.record()
         return rec.status if rec else None
+
+    def state(self) -> Dict[str, Any]:
+        """Tri-state view of the run — including "we could not find out".
+
+        ``known`` is the point. A slurm-backed run whose scheduler could not
+        be reached is NOT running-as-far-as-we-know; it is unverified, and a
+        caller that treats the two the same will wait for ever on a job that
+        was cancelled hours ago.
+
+        Keys: ``status``, ``done``, ``known`` (False when the last
+        reconciliation could not reach the scheduler, or the run has no
+        record at all), ``slurm_state`` and ``detail``.
+        """
+        rec = self.record()
+        if rec is None:
+            return {"status": "", "done": False, "known": False,
+                    "slurm_state": "", "detail": f"no record for run {self.id}"}
+        slurm_state = str((rec.metrics or {}).get("slurm_state") or "")
+        known = rec.done or slurm_state != "unavailable"
+        detail = ""
+        if not known:
+            detail = ("the scheduler could not be asked, so this status is "
+                      "the last thing we were told, not the current state")
+        elif slurm_state == "absent":
+            detail = ("the scheduler does not (yet) know this job id")
+        return {"status": rec.status, "done": rec.done, "known": known,
+                "slurm_state": slurm_state, "detail": detail}
 
     def done(self) -> bool:
         rec = self.record()
@@ -163,17 +370,37 @@ class RunHandle:
     def cancel(self) -> None:
         self._runtime.cancel(self.id)
 
-    def wait(self, *, timeout: Optional[float] = None, poll: float = 0.05) -> Optional[RunRecord]:
-        """Block until the run reaches a terminal state (or *timeout*)."""
+    def wait(
+        self,
+        *,
+        timeout: Optional[float] = None,
+        poll: float = _WAIT_POLL_START_S,
+    ) -> Optional[RunRecord]:
+        """Block until the run reaches a terminal state, or the wait expires.
+
+        ``timeout=None`` means the default cap (:data:`_DEFAULT_WAIT_TIMEOUT_S`),
+        not "for ever": an unbounded wait on a run whose state nothing could
+        advance is an idle core held on a login node next to the queue it is
+        waiting on. The poll interval backs off from *poll* to
+        :data:`_WAIT_POLL_MAX_S` for the same reason.
+
+        On expiry the returned record is simply NOT terminal — ask
+        :meth:`state` whether that means "still going" or "we could not find
+        out". ``None`` means there is no such run.
+        """
         import time as _time
-        deadline = None if timeout is None else (_time.monotonic() + timeout)
+        limit = _DEFAULT_WAIT_TIMEOUT_S if timeout is None else float(timeout)
+        deadline = _time.monotonic() + max(0.0, limit)
+        interval = max(0.01, float(poll))
         while True:
             rec = self.record()
             if rec and rec.done:
                 return rec
-            if deadline is not None and _time.monotonic() >= deadline:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
                 return rec
-            _time.sleep(poll)
+            _time.sleep(min(interval, remaining))
+            interval = min(_WAIT_POLL_MAX_S, interval * 2)
 
 
 class Runtime:
@@ -372,19 +599,40 @@ class Runtime:
     # -- control / query ----------------------------------------------
 
     def cancel(self, run_id: str) -> bool:
-        """Cancel a run: ``scancel`` a SLURM job, else cooperative local stop."""
+        """Cancel a run: ``scancel`` a SLURM job, else cooperative local stop.
+
+        Returns True only when the cancellation was actually requested. A
+        missing ``scancel`` or a failing one used to be swallowed: the record
+        was marked CANCELLED and True returned, and because CANCELLED is
+        terminal nothing ever looked at that record again — while the job ran
+        its full allocation on a node somebody else was queued for. The
+        terminal status is now written only after the scheduler confirms it.
+        """
         rec = self.store.get(run_id)
         slurm_job = rec.metrics.get("slurm_job_id") if rec else None
         if slurm_job:
             import shutil
             import subprocess
             scancel = shutil.which("scancel")
-            if scancel:
-                subprocess.run([scancel, str(slurm_job)], capture_output=True)
+            if scancel is None:
+                return False           # nothing was cancelled; say so
+            try:
+                proc = subprocess.run(
+                    [scancel, str(slurm_job)], capture_output=True, text=True,
+                    timeout=20,
+                )
+            except Exception:          # noqa: BLE001 — could not even run it
+                return False
+            if proc.returncode != 0:
+                return False
             if rec is not None and not rec.done:
-                rec.status = RunStatus.CANCELLED.value
-                rec.finished_at = _now()
+                rec.events.append({"t": _now(), "event": "slurm_cancel_requested",
+                                   "job_id": str(slurm_job)})
                 self.store.save(rec)
+            # One state read decides whether the job is really over. scancel
+            # is asynchronous, so "not terminal yet" is normal — the record
+            # stays non-terminal and the next read reconciles it.
+            self.get(run_id)
             return True
         with self._lock:
             ev = self._cancels.get(run_id)
@@ -394,10 +642,10 @@ class Runtime:
         return True
 
     def get(self, run_id: str) -> Optional[RunRecord]:
-        return self.store.get(run_id)
+        return _reconcile_slurm_record(self.store.get(run_id), self.store)
 
     def list_runs(self) -> List[RunRecord]:
-        return self.store.list()
+        return [_reconcile_slurm_record(r, self.store) for r in self.store.list()]
 
 
 # --- compute-node executor (used by SLURM jobs) ---------------------------
