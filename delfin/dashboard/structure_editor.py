@@ -75,6 +75,20 @@ def scale_for_px(px):
     return wanted / LABEL_PX_PER_SCALE
 
 
+#: What the editor knows about the structure it is working on, as opposed to
+#: what it knows about itself. A tab that holds several structures and lets the
+#: user step between them puts these aside for the one being left and hands
+#: back the ones for the one being shown -- otherwise coming back to a
+#: structure means perceiving it again from its coordinates, and an atom that
+#: was pulled away from its neighbour comes back with the bond gone.
+STRUCTURE_MEMORY_KEYS = (
+    'perceived', 'perceived_for', 'bond_edits', 'hand_bonds', 'hyb_overrides',
+    'constraints', 'poly_applied', 'poly_metal', 'poly_assignment',
+    'poly_arrangements', 'poly_arrangement_index', 'history', 'structure_undo',
+    'pristine_coords', 'gfn_topology', 'gfn_topology_source',
+)
+
+
 def _atom_numbers_js():
     """The layer itself: ``window.__delfinAtomNumbers``.
 
@@ -1248,9 +1262,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             pass
 
     def _structure_fingerprint(xyz):
-        """Element column of an XYZ block -- what makes it the same molecule."""
-        rows = [line.split() for line in (xyz or '').splitlines() if line.strip()]
-        return tuple(r[0] for r in rows if len(r) >= 4)
+        """Element column of an XYZ block -- what makes it the same molecule.
+
+        A row counts only if what follows the symbol are three numbers. Four
+        whitespace-separated words were enough before, and an XYZ comment line
+        is free text: "Edited in DELFIN viewer" is four words, so it went into
+        the fingerprint as though it were an atom called Edited. The molecule
+        then looked like a different one every time a comment changed, the
+        bonding was perceived again from the coordinates, and a bond stretched
+        by dragging an atom away was gone.
+        """
+        out = []
+        for line in (xyz or '').splitlines():
+            row = line.split()
+            if len(row) < 4:
+                continue
+            try:
+                float(row[1]), float(row[2]), float(row[3])
+            except ValueError:
+                continue
+            out.append(row[0])
+        return tuple(out)
 
     def _perception_for(xyz):
         """Perceive the bonding once per structure and keep it.
@@ -5020,6 +5052,46 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         (lambda: submit_dyn_bonds_btn, False),
     )
 
+    def remember_structure():
+        """What the editor knows about the structure it is on, to be given back.
+
+        The bonding above all: it is perceived once from the structure as it
+        arrived and kept, so that dragging an atom away from its neighbour does
+        not decide the bond was never there. Step to another structure and back
+        without this, and the coordinates are read afresh -- with the atom where
+        it was dragged to, and no bond to it.
+        """
+        return {key: state.get(key) for key in STRUCTURE_MEMORY_KEYS}
+
+    def restore_structure(saved):
+        """Give back what was put aside, or start clean for an unseen one."""
+        for key in STRUCTURE_MEMORY_KEYS:
+            if saved and key in saved:
+                state[key] = saved[key]
+            else:
+                state.pop(key, None)
+        # The shapes the rest of the editor reads without asking.
+        for key, empty in (('perceived', None), ('poly_applied', None),
+                           ('poly_metal', None), ('constraints', []),
+                           ('bond_edits', {}), ('hand_bonds', {}),
+                           ('hyb_overrides', {}), ('history', []),
+                           ('structure_undo', [])):
+            state.setdefault(key, empty)
+        _refresh_constraints()
+
+    def structure_changed():
+        """A different structure is on screen now.
+
+        A live force field is a set of parameters worked out for one molecule.
+        Stepping from one block to another left the previous one's running
+        under the new structure -- with the wrong number of atoms, even, so
+        Dynamik Opt pulled at a molecule it had never been told about. The
+        parameters are worked out again for what is being shown, and only
+        while the switch is on.
+        """
+        if submit_relax_btn.value:
+            _enable_live_forcefield()
+
     def reset_controls():
         """Back to how the editor starts, for a structure it has not seen.
 
@@ -5105,6 +5177,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f'{num_atoms}\nConverted from SMILES (isomer: {label})\n{xyz_string}')
         finally:
             state['editor_quiet'] = False
+        # Another isomer is another structure: a running field belongs to the
+        # one its parameters were worked out for.
+        structure_changed()
 
     def handle_isomer_prev(button):
         if state['isomers']:
@@ -5119,8 +5194,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                  max_isomers=None, opt_topn=None, construction=None,
                                  method="gfn2", num_confs=None, collapse=None, spin="auto",
                                  deterministic: bool = True):
+        # What is in the box wins whenever it is a SMILES.
+        #
+        # The quick conversion remembers the SMILES it last built, so that
+        # pressing it again rolls another embedding of the same molecule --
+        # by then the box holds coordinates and has nothing to offer. But it
+        # took the remembered one even when the box held a different SMILES:
+        # draw something new in Ketcher, hand it back with TO SMILES, press
+        # convert, and the structure that came out was the one before it.
+        typed = (read_input() or '').strip()
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
-        raw_input = (cached_smiles or read_input() or '').strip()
+        if typed and clean_input_data(typed)[1] == 'smiles':
+            raw_input = typed
+        else:
+            raw_input = (cached_smiles or typed or '').strip()
         if not raw_input:
             _replace_mol_output_text('Please enter SMILES in the input box.')
             return

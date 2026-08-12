@@ -16172,7 +16172,12 @@ def is_smiles_string(content: str) -> bool:
 
     # Check for coordinate patterns (element symbol followed by numbers)
     # XYZ format: "C  1.234  5.678  9.012"
-    coord_pattern = re.compile(r'^[A-Z][a-z]?\s+[-+]?\d+\.\d+\s+[-+]?\d+\.\d+\s+[-+]?\d+\.\d+')
+    # The decimal point is not part of what makes a line coordinates: "C 0 0 0"
+    # is a perfectly ordinary way to write an atom at the origin, and it was
+    # read as a SMILES because it has digits in it and starts with a carbon.
+    coord_pattern = re.compile(
+        r'^[A-Z][a-z]?\s+[-+]?\d+(?:\.\d+)?\s+[-+]?\d+(?:\.\d+)?'
+        r'\s+[-+]?\d+(?:\.\d+)?\s*$')
     if coord_pattern.match(first_line):
         return False
 
@@ -16183,8 +16188,14 @@ def is_smiles_string(content: str) -> bool:
     except (ValueError, IndexError):
         pass
 
-    # Check for typical SMILES characters
-    smiles_chars = set('()[]=#@+-/\\>%')
+    # Check for typical SMILES characters. The dot belongs in here: it is how
+    # SMILES separates one molecule from another, which is what a drawing of
+    # two things hands back -- and "CCO.CCO" has no bracket, no aromatic
+    # letter and no ring number, so without it nothing here recognised it and
+    # a two-fragment drawing could not be converted at all. Coordinates cannot
+    # be caught by it: a line of them is turned away above, by the pattern for
+    # an element followed by three numbers and by the atom-count check.
+    smiles_chars = set('()[]=#@+-/\\>%.')
     has_smiles_chars = any(char in first_line for char in smiles_chars)
 
     # Check for aromatic notation (lowercase c, n, o, etc.) which is SMILES-specific
