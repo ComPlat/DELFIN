@@ -2124,13 +2124,27 @@ class AgentEngine:
             # availability flag distinguishes "backend keeps no ledger"
             # (claim grounding cannot judge -> stays off) from "ledger kept
             # but empty" (zero evidence -> enforcement may fire).
+            #
+            # UNION, never replace. restore_state deliberately leaves the
+            # client alone and the client mints its ledger fresh, so a
+            # replace here threw away everything the resumed session had
+            # read before the save -- on the FIRST resumed turn, before any
+            # guard had read it. The grounding guard then flagged every
+            # file:line restated from the restored history as unsupported,
+            # which is precisely the false correction the evidence export
+            # exists to prevent.
             _obs_ledger = getattr(self.client, "_observed_files_session", None)
-            self._observed_ledger_available = _obs_ledger is not None
+            _restored_flag = bool(
+                getattr(self, "_observed_ledger_available", False))
+            self._observed_ledger_available = (
+                _obs_ledger is not None or _restored_flag)
             try:
-                self._last_observed_files = set(_obs_ledger or ())
+                _carried = set(getattr(self, "_last_observed_files", None) or ())
+                self._last_observed_files = _carried | set(_obs_ledger or ())
             except TypeError:
-                self._last_observed_files = set()
-                self._observed_ledger_available = False
+                self._last_observed_files = set(
+                    getattr(self, "_last_observed_files", None) or ())
+                self._observed_ledger_available = _restored_flag
             self._last_turn_tools = list(_turn_tool_names)
             # Session-wide tool names: an open delegation request is
             # satisfied by a sub-agent run in ANY turn of the session.
@@ -2968,7 +2982,12 @@ class AgentEngine:
 
     # -- Mid-conversation compaction (Feature 3) ---------------------------
 
-    _COMPACTION_THRESHOLD = 12  # messages before compaction triggers
+    # The legacy message-count trigger. It is NOT a gate any more: pressure
+    # decides, and the only count that still matters is the structural floor
+    # (_KEEP_RECENT) below which there is nothing between the summary block
+    # and the kept tail. Retained as the "a conversation this short is not
+    # worth summarising" reference point.
+    _COMPACTION_THRESHOLD = 12
     _KEEP_RECENT = 4            # keep last 4 messages intact
     # Header that marks a compaction summary message — used both to build the
     # block and to recognise a PRIOR summary on re-compaction so it isn't
@@ -3067,6 +3086,12 @@ class AgentEngine:
         the window; it only costs the session its memory of itself. The
         remedy is a smaller prompt, and which part to give up is the user's
         decision, so this is recorded rather than done quietly.
+
+        The record carries ``archived_at`` like every other compaction
+        record. Without it the post-turn notice — which keys on exactly
+        that field to detect "something happened this turn" — never fired,
+        so the one diagnosis that needs the USER to act was the only one
+        never shown to them.
         """
         irreducible = self._irreducible_tokens()
         if irreducible < budget:
@@ -3074,6 +3099,9 @@ class AgentEngine:
         self.last_compaction_info = {
             "kind": kind,
             "trimmed": 0,
+            "messages_compacted": 0,
+            "tokens_saved": 0,
+            "archived_at": _time.time(),
             "note": (
                 f"the system prompt alone is ~{irreducible} tokens against a "
                 f"{budget}-token budget for this window, so trimming the "
@@ -3083,10 +3111,55 @@ class AgentEngine:
         }
         return True
 
-    def _slide_window_trim(self) -> int:
-        """In-place trim: progressively truncate the OLDEST tool_result-
-        style assistant messages until we're back under the sliding-window
-        threshold. Keeps user goals + recent assistant text verbatim.
+    # Machine-generated turns carry the "user" role in ``self.messages``.
+    #
+    # Enumerating every append site shows this history only ever holds the
+    # roles "user" and "assistant": tool calls and their results live in a
+    # per-request list inside the backend client and are discarded when the
+    # request returns. What DOES reach the history in place of a tool result
+    # is a synthetic user turn -- command output fed back to the model,
+    # verification feedback, injected context sections. Those are the bulk,
+    # and treating them as GOALS (which "role == user" did) meant the trim
+    # stages skipped them and cut the agent's own answers instead: the only
+    # place its conclusions, file lists and line numbers survive.
+    _MACHINE_TURN_PREFIXES = (
+        "[Command results]",
+        "[Verify]",
+        "[System]",
+    )
+
+    @classmethod
+    def _is_machine_turn(cls, msg: dict) -> bool:
+        """True for a synthetic user turn — this history's tool output."""
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            return False
+        content = msg.get("content")
+        if not isinstance(content, str):
+            return False
+        return content.lstrip().startswith(cls._MACHINE_TURN_PREFIXES)
+
+    def _trim_candidates(self, msgs: list[dict]) -> list[tuple[int, dict]]:
+        """(index, message) pairs a destructive stage may touch, cheapest
+        loss first: machine turns before the agent's own answers, oldest
+        first within each group. A real user goal and a pinned message are
+        in neither group and are therefore never returned.
+        """
+        machine: list[tuple[int, dict]] = []
+        own: list[tuple[int, dict]] = []
+        for idx, msg in enumerate(msgs):
+            if not isinstance(msg, dict) or msg.get("_pinned"):
+                continue
+            if self._is_machine_turn(msg):
+                machine.append((idx, msg))
+            elif msg.get("role", "") != "user":
+                own.append((idx, msg))
+        return machine + own
+
+    def _shorten_oldest_non_goal_messages(self) -> int:
+        """In-place trim: progressively shorten the OLDEST messages that are
+        not user goals until we're back under the sliding-window threshold.
+        Machine turns go first, then the agent's own answers; real user
+        goals and pinned messages are never touched.
 
         Returns the number of messages that were trimmed (not removed —
         just shortened with an ``... [trimmed by sliding window] ...``
@@ -3099,22 +3172,16 @@ class AgentEngine:
         # Don't touch the last KEEP_RECENT messages — they're conversation
         # state the agent is actively reasoning over.
         protected_from = max(0, len(self.messages) - self._KEEP_RECENT)
-        for idx, msg in enumerate(self.messages[:protected_from]):
+        for idx, msg in self._trim_candidates(self.messages[:protected_from]):
             if self._estimate_context_tokens() <= budget:
                 break
             role = msg.get("role", "")
             content = msg.get("content", "")
             if not isinstance(content, str):
                 continue
-            # Only trim large messages — small ones (user goals,
-            # short acknowledgements) survive untouched.
+            # Only trim large messages — small ones (short goals, short
+            # acknowledgements) survive untouched.
             if len(content) < 2000:
-                continue
-            # Preserve user messages verbatim (those are the GOALS).
-            if role == "user":
-                continue
-            # Pinned messages are protected from every destructive stage.
-            if msg.get("_pinned"):
                 continue
             # Lossless elision: persist the FULL original before trimming so
             # the dropped middle stays retrievable. Best-effort — an empty
@@ -3122,7 +3189,7 @@ class AgentEngine:
             ref = self._elide_original(
                 idx, role, content, reason="sliding_window")
             hint = f" — retrievable via history_get('elided:{ref}')" if ref else ""
-            # Trim the oldest large assistant/tool message head+tail.
+            # Keep the head + tail of the oldest long non-goal message.
             head_len = 600
             tail_len = 400
             new_content = (
@@ -3139,16 +3206,17 @@ class AgentEngine:
             trimmed += 1
         return trimmed
 
-    def _hard_clear_old_tool_results(self, old_msgs: list[dict]) -> int:
+    def _stub_oldest_non_goal_messages(self, old_msgs: list[dict]) -> int:
         """Deterministic context-editing pass: stub the body of old, bulky
-        TOOL-OUTPUT / assistant-payload messages down to a short marker so the
-        lossy + non-deterministic + paid LLM summary becomes a genuine LAST
-        RESORT rather than the default at the 95% cliff.
+        NON-GOAL messages down to a short marker so the lossy +
+        non-deterministic + paid LLM summary becomes a genuine LAST RESORT
+        rather than the default at the 95% cliff.
 
-        Structure-preserving: only NON-user string-content messages are
-        touched (user turns are the GOALS; list-content tool_use blocks and
-        their tool_call pairing are left intact), so the message list stays
-        valid for the backend. Returns how many messages were cleared.
+        Structure-preserving: machine turns first, then the agent's own
+        answers, and only string content (real user goals are the GOALS;
+        list-content tool_use blocks and their tool_call pairing are left
+        intact), so the message list stays valid for the backend. Returns
+        how many messages were cleared.
 
         Runs AFTER the 0.70 sliding-window trim, so it only bites when a
         session is genuinely at the compaction cliff; then, if it frees enough,
@@ -3162,14 +3230,9 @@ class AgentEngine:
         if self._trimming_cannot_reach(budget, "hard_clear"):
             return 0
         cleared = 0
-        for idx, msg in enumerate(old_msgs):
+        for idx, msg in self._trim_candidates(old_msgs):
             if self._estimate_context_tokens() <= budget:
                 break
-            if msg.get("role", "") == "user":
-                continue
-            # Pinned messages are protected from every destructive stage.
-            if msg.get("_pinned"):
-                continue
             content = msg.get("content", "")
             if not isinstance(content, str) or len(content) < 800:
                 continue
@@ -3182,8 +3245,8 @@ class AgentEngine:
             hint = f" — retrievable via history_get('elided:{ref}')" if ref else ""
             head = content[:200]
             msg["content"] = (
-                f"[cleared: {len(content)} chars of old tool output elided "
-                f"to save context{hint}]\n{head}"
+                f"[cleared: {len(content)} chars of an older message body "
+                f"elided to save context{hint}]\n{head}"
             )
             self._trimmed_chars_since_floor = (
                 getattr(self, "_trimmed_chars_since_floor", 0)
@@ -3305,20 +3368,58 @@ class AgentEngine:
                 else carried_summary
         return summary
 
-    def _compact_history(self) -> None:
+    def _deterministic_digest(self, msgs: list[dict]) -> str:
+        """Last-resort recap when both summarisers came back empty.
+
+        No model call, no settings, no failure mode: the role and the
+        opening of each message that is about to be replaced. It is a poor
+        summary, which is why it is last; it is still enormously better
+        than the silent ``return`` that used to sit here and left the
+        session over budget with no record that anything had been tried.
+        """
+        lines: list[str] = []
+        for msg in msgs:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                try:
+                    content = " ".join(
+                        str(p.get("text", p)) if isinstance(p, dict) else str(p)
+                        for p in content
+                    )
+                except Exception:
+                    content = str(content)
+            content = " ".join(content.split())
+            if not content:
+                continue
+            role = str(msg.get("role", "?"))
+            lines.append(f"[{role}] {content[:300]}")
+        if not lines:
+            return ""
+        return (
+            f"No summary could be produced for these {len(lines)} "
+            f"message(s); their openings follow verbatim.\n"
+            + "\n".join(lines)
+        )
+
+    def _compact_history(self, *, force: bool = False) -> None:
         """Summarize older messages, keeping recent ones intact.
 
         Three-stage strategy for multi-day session resilience:
-        1. ``_slide_window_trim`` — gentle in-place trim of oldest large
-           tool_result content when usage crosses 70% of the window.
-           User messages survive verbatim; assistant payloads get head
-           + tail with a middle marker.
+        1. ``_shorten_oldest_non_goal_messages`` — gentle in-place trim of
+           the oldest long non-goal content when usage crosses 70% of the
+           window. Real user goals survive verbatim; machine turns and
+           assistant payloads get head + tail with a middle marker.
         2. Full ``_compact_history`` summarisation when usage crosses
-           ``auto_compact_pct`` (default 95%) OR the legacy message-count
-           threshold is hit.
+           ``auto_compact_pct`` (default 95%).
         3. LLM-quality summary preferred (API backends), extractive
            fallback (CLI backend, summary failure, opt-out via
            ``agent.llm_compaction: false``).
+
+        ``force`` runs the full summarisation regardless of pressure — the
+        manual ``/compact`` command, where the user has already decided.
+        The structural floor and every protection still apply.
 
         Pinned messages (``msg["_pinned"]``) are exempt from every stage:
         the trims skip them and the summary path carries them verbatim
@@ -3330,7 +3431,7 @@ class AgentEngine:
         # so the cliff at 95% is much rarer. Cheap — no LLM call.
         try:
             if self._should_slide():
-                _trimmed = self._slide_window_trim()
+                _trimmed = self._shorten_oldest_non_goal_messages()
                 if _trimmed:
                     # Record the trim event into last_compaction_info so
                     # /context shows what happened.
@@ -3350,12 +3451,19 @@ class AgentEngine:
         # 2026-06-13: "compacted at 15% full → agent confused"). This was the
         # legacy ``msg_count >= 12 OR tokens > 95%`` trigger; the OR meant the
         # 0.95 token threshold (raised precisely to avoid early compaction)
-        # was undermined by the message count. The message count now only acts
-        # as a floor — never summarise a conversation too short to have a
-        # compactable middle (we always keep the last _KEEP_RECENT intact).
-        if len(self.messages) < self._COMPACTION_THRESHOLD:
+        # was undermined by the message count.
+        #
+        # Pressure is now asked FIRST. The count gate used to return before
+        # anything looked at the budget, and since it can only have an effect
+        # once pressure is already over the line, its whole effect was to
+        # block compaction exactly when it was needed: eleven messages at 99%
+        # of the window compacted nothing and the request went out over the
+        # window. What remains of the count is the structural floor it was
+        # described as — there must be something between the summary block
+        # and the kept tail, or there is nothing to summarise.
+        if not force and not self._should_auto_compact():
             return
-        if not self._should_auto_compact():
+        if len(self.messages) <= self._KEEP_RECENT:
             return
 
         old_msgs = self.messages[:-self._KEEP_RECENT]
@@ -3377,8 +3485,8 @@ class AgentEngine:
         # brings us back under the auto-compact budget, skip the lossy/paid
         # summary and keep the (edited) history intact.
         try:
-            _cleared = self._hard_clear_old_tool_results(old_msgs)
-            if _cleared and not self._should_auto_compact():
+            _cleared = self._stub_oldest_non_goal_messages(old_msgs)
+            if _cleared and not force and not self._should_auto_compact():
                 self.last_compaction_info = {
                     "kind": "context_edit",
                     "tool_results_cleared": _cleared,
@@ -3411,6 +3519,19 @@ class AgentEngine:
             for msg in compactable:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
+                if self._is_machine_turn(msg):
+                    # This history's tool output: a synthetic user turn.
+                    # The branch that used to stand here tested
+                    # ``role == "tool"``, a role no append site ever
+                    # produces, so it selected nothing while the bulk it
+                    # was written for sailed through the "user = GOAL"
+                    # branch at full 400-char weight.
+                    text = content if isinstance(content, str) else ""
+                    if text.strip().startswith('{"error"'):
+                        summary_parts.append(f"Tool (error): {text[:120]}")
+                    elif "error" in text[:400].lower():
+                        summary_parts.append(f"Tool (error): {text[:200]}")
+                    continue
                 if role == "user":
                     text = content if isinstance(content, str) else ""
                     # A prior compaction's summary block is ALREADY a
@@ -3438,17 +3559,30 @@ class AgentEngine:
                     extracted = self._summarize_output_for_handoff(content, limit=300)
                     if extracted:
                         summary_parts.append(f"Assistant: {extracted}")
-                elif role == "tool":
-                    # Skip raw tool results — their important findings
-                    # are reflected in the assistant text we keep. Only
-                    # surface a short marker for diagnostic value.
-                    text = content if isinstance(content, str) else ""
-                    if text.strip().startswith('{"error"'):
-                        summary_parts.append(
-                            f"Tool (error): {text[:120]}"
-                        )
             summary = "\n".join(summary_parts)
+        summary_kind = "summary"
         if not summary:
+            # Both summarisers came back empty. Returning here left the
+            # session over budget with NO record that compaction had been
+            # attempted at all, so the next turn repeated it and /context
+            # still reported the compaction before last. A deterministic
+            # digest always has something to say as long as there is
+            # anything to compact, and the record names which path ran.
+            summary = self._deterministic_digest(compactable)
+            summary_kind = "deterministic_digest"
+        if not summary:
+            self.last_compaction_info = {
+                "kind": "summary_unavailable",
+                "messages_compacted": 0,
+                "tokens_saved": 0,
+                "archived_at": _time.time(),
+                "note": (
+                    f"nothing could be summarised out of "
+                    f"{len(compactable)} compactable message(s); the "
+                    f"history is unchanged and the context is still over "
+                    f"budget."
+                ),
+            }
             return
 
         n_compacted = len(compactable)
@@ -3490,13 +3624,22 @@ class AgentEngine:
 
         tokens_after = self._estimate_context_tokens()
         self.last_compaction_info = {
+            "kind": summary_kind,
             "messages_compacted": n_compacted,
             "pinned_kept": len(pinned_old),
             "tokens_before": tokens_before,
             "tokens_after": tokens_after,
             "tokens_saved": max(0, tokens_before - tokens_after),
             "archived_at": _time.time(),
+            "forced": bool(force),
         }
+        if summary_kind == "deterministic_digest":
+            self.last_compaction_info["note"] = (
+                "the summariser produced nothing, so the older messages "
+                "were replaced by a deterministic digest of their openings "
+                "— less faithful than a summary. The full transcript is in "
+                "the archive."
+            )
 
         # CLI backend: by default tear down the persistent process so the
         # next stream_message starts fresh and the compacted history
@@ -4002,18 +4145,14 @@ class AgentEngine:
             self.client.kill()
         if not preserve_messages:
             self.messages.clear()
-            self.role_outputs.clear()
-            self.role_verdicts.clear()
-            self.role_test_evidence.clear()
-            self._project_dir = ""   # new conversation → re-pin on first write
-            # New conversation: what an earlier cycle ran no longer grounds
-            # a claim that something works now.
-            self._exec_commands_session.clear()
-            self.compaction_summaries.clear()
-            self.current_role_index = 0
-            self.token_usage = {"input": 0, "output": 0, "cached": 0}
-            self.cost_usd = 0.0
-            self._last_outcome_cost = 0.0  # A6 — reset Δ baseline on new cycle
+            # Every session-scoped field, from the one declaration that
+            # export and restore also read. Hand-clearing a subset here was
+            # the third face of the same drift: three of the eight ledgers
+            # were listed, so a brand-new conversation started holding the
+            # previous one's tool-name set and a delegation flag already
+            # satisfied — which suppressed the delegation reminder for work
+            # that had never delegated anything.
+            self._reset_session_fields()
             self.session_id = self._fresh_session_id()  # fresh session for new cycle
             self._sync_task_session()
             self._foreign_tasks_shown = False  # new session → notice re-armed
@@ -4023,11 +4162,7 @@ class AgentEngine:
             # role-tracking since the new mode has a different role
             # route. role_outputs and compaction_summaries are
             # role-keyed and stale for the new mode — drop them.
-            self.role_outputs.clear()
-            self.role_verdicts.clear()
-            self.role_test_evidence.clear()
-            self.compaction_summaries.clear()
-            self.current_role_index = 0
+            self._reset_session_fields(role_scoped_only=True)
         self.loader.reset_session_prompt_state(
             f"engine-session-{self._prompt_session_serial}"
         )
@@ -4036,81 +4171,229 @@ class AgentEngine:
         if mode is not None and mode != self.mode:
             self._load_mode(mode)
 
-    def export_state(self) -> dict:
-        """Export engine state for session persistence."""
-        return {
-            "mode": self.mode,
-            "role_index": self.current_role_index,
-            "route": list(self.route),
-            "role_outputs": dict(self.role_outputs),
-            "compaction_summaries": dict(self.compaction_summaries),
-            "engine_messages": list(self.messages),
-            "token_usage": dict(self.token_usage),
-            "cost_usd": self.cost_usd,
-            "session_id": self.session_id,
-            # Round-tripped by restore_state so resume doesn't lose the
-            # project-directory pin or the compaction estimator's floor.
-            "project_dir": self._project_dir,
-            "last_input_tokens": self._last_input_tokens,
-            # getattr: engines built for a targeted test never ran the
-            # full __init__, and export must not be the thing that breaks.
-            "system_prompt_chars": int(
-                getattr(self, "_system_prompt_chars", 0) or 0),
-            # One sub-dict, written and read as a unit, so a new ledger is
-            # added in one place instead of four.
-            "evidence": self._export_evidence(),
-        }
-
     @dataclasses.dataclass(frozen=True)
-    class _EvidenceField:
-        """One ledger that has to survive a resume.
+    class _SessionField:
+        """One piece of session-scoped state that has to survive a resume.
 
         ``dump`` makes it JSON-safe, ``load`` takes it back including the
-        None case, so a session saved before the field existed loads with
-        the same default a fresh session starts from."""
+        None case (so a session saved before the field existed loads with
+        the same default a fresh session starts from), and ``reset`` gives
+        the value a brand-new conversation starts from. All three live
+        together because all three were maintained separately and all
+        three had drifted.
+
+        ``section`` says where the value rides in the saved dict:
+        ``"state"`` is a top-level key, ``"evidence"`` is inside the
+        evidence sub-dict the guards read.
+
+        ``role_scoped`` marks the values a mode-switch invalidates — they
+        are keyed by role, and the new mode has a different role route.
+        """
         attr: str
         key: str
+        section: str
         dump: "Callable[[Any], Any]"
         load: "Callable[[Any], Any]"
+        reset: "Callable[[], Any]"
+        role_scoped: bool = False
 
-    # The single declaration. Export, restore and the coverage test all read
-    # it, because the failure here was never one missing field -- it was a
-    # hand-written list beside a set of attributes maintained by need, with
-    # nothing noticing when they drifted. They had drifted twice, and both
-    # times the field left out was a guard: the location scanner ran
-    # disabled while holding a populated ledger, and a restored PASS faced
-    # no test-evidence veto.
-    _EVIDENCE_FIELDS: "tuple[_EvidenceField, ...]" = (
-        _EvidenceField(
-            "_last_observed_files", "observed_files",
-            lambda v: sorted(v or ()), lambda v: set(v or ())),
+    @dataclasses.dataclass(frozen=True)
+    class RestoreReport:
+        """What a restore actually brought back.
+
+        ``_restore_evidence`` swallowed every per-field exception into an
+        empty default with no counter, no log and no return value, and
+        ``restore_state`` returned None — so a restore that recovered two
+        fields out of twenty was indistinguishable from a complete one,
+        and the session went on to judge as if it had the record.
+        """
+        schema_version: int
+        restored: tuple[str, ...] = ()
+        missing: tuple[str, ...] = ()
+        failed: tuple[str, ...] = ()
+        migrations: tuple[str, ...] = ()
+
+        @property
+        def complete(self) -> bool:
+            return not self.missing and not self.failed
+
+        def summary(self) -> str:
+            parts = [
+                f"schema v{self.schema_version}",
+                f"{len(self.restored)} field(s) restored",
+            ]
+            if self.missing:
+                parts.append("missing: " + ", ".join(sorted(self.missing)))
+            if self.failed:
+                parts.append("failed: " + ", ".join(sorted(self.failed)))
+            if self.migrations:
+                parts.append("migrated: " + ", ".join(self.migrations))
+            return "; ".join(parts)
+
+    # The single declaration. Export, restore, reset and the coverage test
+    # all read it, because the failure here was never one missing field --
+    # it was a hand-written list beside a set of attributes maintained by
+    # need, with nothing noticing when they drifted. They had drifted three
+    # times: twice in the export (the location scanner ran disabled while
+    # holding a populated ledger, and a restored PASS faced no test-evidence
+    # veto) and once in the reset (a new conversation inherited the previous
+    # one's tool-name set and a satisfied delegation flag).
+    _SESSION_FIELDS: "tuple[_SessionField, ...]" = (
+        # -- the ledgers the guards judge against -------------------------
+        _SessionField(
+            "_last_observed_files", "observed_files", "evidence",
+            lambda v: sorted(v or ()), lambda v: set(v or ()), set),
         # Whether a ledger EXISTS is not the same question as whether it is
         # empty -- an empty one means nothing was read, which is a fact.
         # Kept as its own value for that reason, and exported for the same.
-        _EvidenceField(
+        _SessionField(
             "_observed_ledger_available", "observed_ledger_available",
-            lambda v: bool(v), lambda v: bool(v)),
-        _EvidenceField(
-            "_exec_commands_session", "exec_commands",
-            lambda v: list(v or ()), lambda v: list(v or ())),
-        _EvidenceField(
-            "_session_tool_names", "session_tool_names",
-            lambda v: sorted(v or ()), lambda v: set(v or ())),
-        _EvidenceField(
-            "_delegation_satisfied", "delegation_satisfied",
-            lambda v: bool(v), lambda v: bool(v)),
-        _EvidenceField(
-            "role_verdicts", "role_verdicts",
-            lambda v: dict(v or {}), lambda v: dict(v or {})),
-        _EvidenceField(
-            "role_test_evidence", "role_test_evidence",
+            "evidence", bool, bool, lambda: False),
+        _SessionField(
+            "_exec_commands_session", "exec_commands", "evidence",
+            lambda v: list(v or ()), lambda v: list(v or ()), list),
+        _SessionField(
+            "_session_tool_names", "session_tool_names", "evidence",
+            lambda v: sorted(v or ()), lambda v: set(v or ()), set),
+        _SessionField(
+            "_delegation_satisfied", "delegation_satisfied", "evidence",
+            bool, bool, lambda: False),
+        # The ninth and tenth ledger, found by the enumeration below the
+        # moment it started walking the engine instead of comparing the
+        # declaration to a copy of itself. Both have exactly the shape of
+        # the eight above and neither survived a resume or a new cycle:
+        # the task-list reminder re-fired for a list that already existed,
+        # and the "do NOT repeat these" error memory came back empty.
+        _SessionField(
+            "_tasklist_satisfied", "tasklist_satisfied", "evidence",
+            bool, bool, lambda: False),
+        _SessionField(
+            "_session_errors", "session_errors", "evidence",
+            lambda v: [dict(x) for x in (v or ()) if isinstance(x, dict)],
+            lambda v: [dict(x) for x in (v or ()) if isinstance(x, dict)]
+            if isinstance(v, list) else [], list),
+        _SessionField(
+            "role_verdicts", "role_verdicts", "evidence",
+            lambda v: dict(v or {}), lambda v: dict(v or {}), dict,
+            role_scoped=True),
+        _SessionField(
+            "role_test_evidence", "role_test_evidence", "evidence",
             lambda v: {k: list(x) for k, x in (v or {}).items()},
             lambda v: {k: list(x) for k, x in (v or {}).items()}
-            if isinstance(v, dict) else {}),
-        _EvidenceField(
+            if isinstance(v, dict) else {}, dict, role_scoped=True),
+        _SessionField(
             "_trimmed_chars_since_floor", "trimmed_chars_since_floor",
-            lambda v: int(v or 0), lambda v: int(v or 0)),
+            "evidence", lambda v: int(v or 0), lambda v: int(v or 0),
+            lambda: 0),
+        # -- top-level session state --------------------------------------
+        _SessionField(
+            "current_role_index", "role_index", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0,
+            role_scoped=True),
+        _SessionField(
+            "role_outputs", "role_outputs", "state",
+            lambda v: dict(v or {}), lambda v: dict(v or {}), dict,
+            role_scoped=True),
+        _SessionField(
+            "compaction_summaries", "compaction_summaries", "state",
+            lambda v: dict(v or {}), lambda v: dict(v or {}), dict,
+            role_scoped=True),
+        _SessionField(
+            "token_usage", "token_usage", "state",
+            lambda v: dict(v or {}),
+            # Sessions saved before the cached-token counter existed have
+            # no such key; the estimate must not read None for it.
+            lambda v: {"input": 0, "output": 0, "cached": 0, **(v or {})},
+            lambda: {"input": 0, "output": 0, "cached": 0}),
+        _SessionField(
+            "cost_usd", "cost_usd", "state",
+            lambda v: float(v or 0.0), lambda v: float(v or 0.0),
+            lambda: 0.0),
+        _SessionField(
+            "_project_dir", "project_dir", "state",
+            lambda v: str(v or ""), lambda v: str(v or ""), lambda: ""),
+        _SessionField(
+            "_last_input_tokens", "last_input_tokens", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        _SessionField(
+            "_system_prompt_chars", "system_prompt_chars", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        # The run clock, carried as ELAPSED rather than as a timestamp: the
+        # wall-clock run budget is measured from _run_started_at, and a
+        # resume that reset it to now handed the run its whole time budget
+        # again -- so resuming was a way to launder a time budget on an
+        # unattended run. Saving the elapsed seconds and setting the start
+        # to "now minus that" continues the same clock.
+        _SessionField(
+            "_run_started_at", "run_elapsed_s", "state",
+            lambda v: max(0.0, _time.time() - float(v or 0.0)),
+            lambda v: _time.time() - max(0.0, float(v or 0.0)),
+            _time.time),
+        # The cost baseline the next outcome's delta is measured from. Zero
+        # after a resume meant the first outcome record booked the WHOLE
+        # session's spend as that one turn, which the activity view then
+        # summed on top of the records already written for it.
+        _SessionField(
+            "_last_outcome_cost", "last_outcome_cost", "state",
+            lambda v: float(v or 0.0), lambda v: float(v or 0.0),
+            lambda: 0.0),
     )
+
+    def _dump_field(self, spec: "AgentEngine._SessionField") -> Any:
+        """getattr default + a swallowed failure: engines built for a
+        targeted test never ran the full __init__, and export must not be
+        the thing that breaks."""
+        try:
+            return spec.dump(getattr(self, spec.attr, None))
+        except Exception:
+            try:
+                return spec.dump(spec.reset())
+            except Exception:
+                return None
+
+    def _reset_session_fields(self, *, role_scoped_only: bool = False) -> None:
+        """Set every declared field back to what a fresh session starts
+        from. ``role_scoped_only`` is the mode-switch case: the message
+        history and the evidence for it stay, only the role-keyed values go.
+        """
+        for spec in self._SESSION_FIELDS:
+            if role_scoped_only and not spec.role_scoped:
+                continue
+            try:
+                fresh = spec.reset()
+            except Exception:
+                continue
+            cur = getattr(self, spec.attr, None)
+            # Clear containers IN PLACE where possible: other components
+            # hold references to these, and a rebind would leave them
+            # pointing at the previous cycle's contents.
+            if (isinstance(cur, (dict, list, set))
+                    and type(cur) is type(fresh) and not fresh):
+                cur.clear()
+            else:
+                setattr(self, spec.attr, fresh)
+
+    def export_state(self) -> dict:
+        """Export engine state for session persistence.
+
+        Every declared field is written from the declaration, so a call
+        site cannot drop one by listing the keys it happens to know.
+        """
+        # getattr throughout: engines built for a targeted test never ran
+        # the full __init__, and export must not be the thing that breaks.
+        out: dict = {
+            "mode": getattr(self, "mode", ""),
+            "route": list(getattr(self, "route", None) or ()),
+            "engine_messages": list(getattr(self, "messages", None) or ()),
+            "session_id": getattr(self, "session_id", "") or "",
+        }
+        for spec in self._SESSION_FIELDS:
+            if spec.section == "state":
+                out[spec.key] = self._dump_field(spec)
+        # One sub-dict, written and read as a unit, so a new ledger is
+        # added in one place instead of four.
+        out["evidence"] = self._export_evidence()
+        return out
 
     def _export_evidence(self) -> dict:
         """The ledgers the guards judge against.
@@ -4128,11 +4411,9 @@ class AgentEngine:
         reads its context as larger than it is and compacts early.
         """
         out: dict = {}
-        for spec in self._EVIDENCE_FIELDS:
-            try:
-                out[spec.key] = spec.dump(getattr(self, spec.attr, None))
-            except Exception:
-                out[spec.key] = spec.dump(None)
+        for spec in self._SESSION_FIELDS:
+            if spec.section == "evidence":
+                out[spec.key] = self._dump_field(spec)
         # When it was taken. Nothing reads it yet, and that is deliberate:
         # a resumed session asserting "the tests pass now" is believed on a
         # ledger recorded against a tree that may have moved since, and the
@@ -4142,52 +4423,154 @@ class AgentEngine:
         out["saved_at"] = int(_time.time())
         return out
 
-    def _restore_evidence(self, data: dict) -> None:
-        """Read the ledgers back. Missing or malformed means empty, never
-        raises: a session saved before this existed must still load.
+    def _load_declared_fields(
+        self, data: dict, *, section: str,
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Read one section back. Missing or malformed means the fresh
+        default, never an exception: a session saved before a field existed
+        must still load.
 
-        Driven by the same declaration as the export, so the two cannot
-        drift apart -- which they had, twice, and both times the field
-        that went missing was a guard."""
-        ev = data.get("evidence")
-        if not isinstance(ev, dict):
-            ev = {}
-        for spec in self._EVIDENCE_FIELDS:
+        Returns (restored, missing, failed) attribute names — the counters
+        that used to not exist, which is why a nearly empty restore looked
+        exactly like a complete one.
+        """
+        if section == "evidence":
+            src = data.get("evidence")
+            if not isinstance(src, dict):
+                src = {}
+        else:
+            src = data
+        restored: list[str] = []
+        missing: list[str] = []
+        failed: list[str] = []
+        for spec in self._SESSION_FIELDS:
+            if spec.section != section:
+                continue
+            if spec.key not in src:
+                missing.append(spec.attr)
+                try:
+                    setattr(self, spec.attr, spec.reset())
+                except Exception:
+                    failed.append(spec.attr)
+                continue
             try:
-                setattr(self, spec.attr, spec.load(ev.get(spec.key)))
+                setattr(self, spec.attr, spec.load(src.get(spec.key)))
+                restored.append(spec.attr)
             except Exception:
-                setattr(self, spec.attr, spec.load(None))
+                failed.append(spec.attr)
+                try:
+                    setattr(self, spec.attr, spec.reset())
+                except Exception:
+                    pass
+        return restored, missing, failed
 
-    def restore_state(self, data: dict) -> None:
+    def _restore_evidence(self, data: dict) -> "AgentEngine.RestoreReport":
+        """Read the guard ledgers back, driven by the same declaration as
+        the export so the two cannot drift apart."""
+        restored, missing, failed = self._load_declared_fields(
+            data, section="evidence")
+        return AgentEngine.RestoreReport(
+            schema_version=int(data.get("schema_version") or 1),
+            restored=tuple(restored), missing=tuple(missing),
+            failed=tuple(failed),
+        )
+
+    def _seed_client_observed_files(self) -> None:
+        """Hand the restored read-ledger to the client.
+
+        ``restore_state`` deliberately leaves the client alone, and the
+        client mints ``_observed_files_session`` fresh on its first turn.
+        Without this the restored set was overwritten by an empty one
+        before any guard read it, and the grounding check then flagged
+        every file:line the answer restated from the restored history.
+        Seeded only when the save says a ledger really existed, so a
+        backend that keeps none does not acquire a fictitious one.
+        """
+        if not getattr(self, "_observed_ledger_available", False):
+            return
+        client = getattr(self, "client", None)
+        if client is None:
+            return
+        try:
+            files = set(getattr(self, "_last_observed_files", None) or ())
+            current = getattr(client, "_observed_files_session", None)
+            if isinstance(current, set):
+                current |= files
+            else:
+                client._observed_files_session = files
+        except Exception:
+            pass
+
+    def restore_state(self, data: dict) -> "AgentEngine.RestoreReport":
         """Restore engine state from a saved session.
 
         The client and prompt loader remain as-is; only conversation
         state is restored so ``--resume`` can continue the CLI session.
+
+        Returns a :class:`RestoreReport` naming what came back and what did
+        not. Raises ``session_store.SessionSchemaError`` when the file was
+        written by a NEWER schema than this code understands — a stated
+        refusal, because reading it with today's loaders would silently
+        drop whatever the newer version added.
         """
-        if data.get("mode") and data["mode"] != self.mode:
-            self._load_mode(data["mode"])
-        self.current_role_index = data.get("role_index", 0)
-        self.role_outputs = data.get("role_outputs", {})
-        self.compaction_summaries = data.get("compaction_summaries", {})
-        self.messages = data.get("engine_messages", [])
-        self.token_usage = data.get("token_usage", {"input": 0, "output": 0})
-        self.token_usage.setdefault("cached", 0)   # old sessions predate this key
-        self.cost_usd = data.get("cost_usd", 0.0)
-        self.session_id = data.get("session_id", "")
-        # Round-trip state that used to be silently dropped on resume:
-        # the project-directory pin (keeps a long session writing into the
-        # same folder) and the last authoritative input-token count (the
-        # compaction estimator's ground-truth floor).
-        self._project_dir = str(data.get("project_dir", "") or "")
+        from . import session_store as _ss
+
         try:
-            self._last_input_tokens = int(data.get("last_input_tokens", 0) or 0)
+            version = int(data.get("schema_version") or 1)
         except (TypeError, ValueError):
-            self._last_input_tokens = 0
-        try:
-            self._system_prompt_chars = int(data.get("system_prompt_chars", 0) or 0)
-        except (TypeError, ValueError):
-            self._system_prompt_chars = 0
-        self._restore_evidence(data)
+            version = 1
+        if version > _ss.SESSION_SCHEMA_VERSION:
+            raise _ss.SessionSchemaError(
+                f"session was written with schema v{version}; this build "
+                f"understands v{_ss.SESSION_SCHEMA_VERSION}. Refusing to "
+                f"load it rather than silently dropping what it carries."
+            )
+        migrations: tuple[str, ...] = ()
+        if version < _ss.SESSION_SCHEMA_VERSION:
+            data, migrations = _ss.migrate_session_data(data, version)
+
+        restored: list[str] = []
+        missing: list[str] = []
+
+        if data.get("mode"):
+            restored.append("mode")
+            if data["mode"] != self.mode:
+                self._load_mode(data["mode"])
+        else:
+            missing.append("mode")
+
+        if "engine_messages" in data:
+            self.messages = list(data.get("engine_messages") or [])
+            restored.append("engine_messages")
+        else:
+            self.messages = []
+            missing.append("engine_messages")
+
+        self.session_id = str(data.get("session_id", "") or "")
+        if self.session_id:
+            restored.append("session_id")
+        else:
+            missing.append("session_id")
+        # Bind the task list to the restored id. The dashboard patched this
+        # from outside afterwards; the headless path did not, so a headless
+        # resume filtered tasks on a throwaway id and saw zero open tasks.
+        self._sync_task_session()
+
+        s_restored, s_missing, s_failed = self._load_declared_fields(
+            data, section="state")
+        ev = self._restore_evidence(data)
+        # The restored read-ledger has to reach the client before the first
+        # turn's post-stream update, or it is discarded unread.
+        self._seed_client_observed_files()
+
+        report = AgentEngine.RestoreReport(
+            schema_version=version,
+            restored=tuple(restored + s_restored + list(ev.restored)),
+            missing=tuple(missing + s_missing + list(ev.missing)),
+            failed=tuple(s_failed + list(ev.failed)),
+            migrations=migrations,
+        )
+
         # Crash recovery: a surviving mid-turn checkpoint means the
         # previous process died inside a turn, so that turn's work was
         # never committed. Inject the recovery note using the house
@@ -4205,6 +4588,8 @@ class AgentEngine:
                 })
         except Exception:
             pass
+        self.last_restore_report = report
+        return report
 
     def available_modes(self) -> list[str]:
         """Return list of available mode IDs."""

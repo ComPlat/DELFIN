@@ -129,7 +129,7 @@ def _quiet_engine(agent_tree):
     return _engine(agent_tree, _client_from(ev))
 
 
-def test_slide_window_trim_credits_the_floor(agent_tree):
+def test_shorten_oldest_non_goal_messages_credits_the_floor(agent_tree):
     engine = _quiet_engine(agent_tree)
     engine.context_window_tokens = 10_000
     big = "x" * 40_000
@@ -141,7 +141,7 @@ def test_slide_window_trim_credits_the_floor(agent_tree):
     engine._last_input_tokens = 20_000     # pre-trim provider snapshot
     before = engine._estimate_context_tokens()
     assert before == 20_000                # floor is binding
-    trimmed = engine._slide_window_trim()
+    trimmed = engine._shorten_oldest_non_goal_messages()
     assert trimmed >= 1
     assert engine._trimmed_chars_since_floor > 0
     after = engine._estimate_context_tokens()
@@ -155,7 +155,7 @@ def test_hard_clear_credits_the_floor(agent_tree):
     msgs = [{"role": "assistant", "content": big}]
     engine.messages = msgs + [{"role": "user", "content": "goal"}]
     engine._last_input_tokens = 20_000
-    cleared = engine._hard_clear_old_tool_results(msgs)
+    cleared = engine._stub_oldest_non_goal_messages(msgs)
     assert cleared == 1
     assert engine._estimate_context_tokens() < 20_000
 

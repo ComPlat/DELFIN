@@ -69,7 +69,7 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
         print(f"WARN: session '{sid}' not found, starting fresh.", file=sys.stderr)
         return ""
     try:
-        engine.restore_state({
+        report = engine.restore_state({
             # Forward everything the store holds, then apply the defaults
             # below. Listing the fields by hand was the bug: restore_state
             # learned to read the compaction summaries, the project pin and
@@ -78,16 +78,27 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
             # thinner than the session that was saved.
             **data,
             "mode": data.get("mode", args.mode or "solo"),
-            "role_index": data.get("role_index", 0),
-            "role_outputs": data.get("role_outputs", {}),
-            "engine_messages": data.get("engine_messages", []),
-            "token_usage": data.get("token_usage", {"input": 0, "output": 0}),
-            "cost_usd": data.get("cost_usd", 0.0),
             "session_id": data.get("session_id", sid),
         })
+    except _ss.SessionSchemaError as exc:
+        # A stated refusal. Continuing fresh is safe: the engine keeps the
+        # id it minted at construction, so the newer file is not written
+        # over by this run.
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return ""
     except Exception as exc:
         print(f"WARN: restore_state failed ({exc}); continuing fresh.", file=sys.stderr)
         return ""
+    # Say what actually came back. An almost-empty restore used to look
+    # exactly like a complete one, and unattended runs have no one watching
+    # the screen to notice the session had forgotten everything.
+    try:
+        if report is not None and (
+                not report.complete or report.migrations
+                or getattr(args, "verbose", False)):
+            print(f"resume: {report.summary()}", file=sys.stderr)
+    except Exception:
+        pass
     return data.get("session_id", sid)
 
 
@@ -143,7 +154,19 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
 
 
 def _save_session(engine, repo_root: Path) -> str:
-    """Auto-save so the next ``--session`` resumes cleanly."""
+    """Auto-save so the next ``--session`` resumes cleanly.
+
+    The exported state is forwarded WHOLESALE. Listing the fields by hand
+    here was the bug — and the mirror image of the one already fixed on the
+    restore side. The exporter produces the evidence ledgers, the
+    compaction summaries, the project pin, the context floor and the
+    system-prompt size; this call named eight keys and none of those, so
+    ``save_session`` defaulted every one of them away. The restored session
+    then believed it had read no files, run no commands and used no tools,
+    while the "a ledger exists" flag was re-derived as True on the first
+    turn — the ENFORCING branch. It judged as if it had checked. Every
+    scheduled unattended run saves through this same path.
+    """
     from . import session_store as _ss
     sid = getattr(engine, "session_id", "") or ""
     if not sid:
@@ -151,19 +174,9 @@ def _save_session(engine, repo_root: Path) -> str:
         sid = str(uuid.uuid4())
         engine.session_id = sid
     try:
-        estate = engine.export_state()
-        _ss.save_session(
-            sid,
-            mode=estate.get("mode", "solo"),
-            role_index=estate.get("role_index", 0),
-            route=estate.get("route", []),
-            role_outputs=estate.get("role_outputs", {}),
-            chat_messages=[],
-            engine_messages=estate.get("engine_messages", []),
-            token_usage=estate.get("token_usage", {}),
-            cost_usd=estate.get("cost_usd", 0.0),
-            workspace=str(repo_root),
-        )
+        estate = dict(engine.export_state())
+        estate["session_id"] = sid
+        _ss.save_session(chat_messages=[], workspace=str(repo_root), **estate)
     except Exception as exc:
         print(f"WARN: session save failed: {exc}", file=sys.stderr)
     return sid
