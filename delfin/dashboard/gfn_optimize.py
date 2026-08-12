@@ -657,13 +657,20 @@ def atom_lines(xyz_text: str) -> list:
     the run succeeds.  The lines are counted instead, and the header written
     to match them.
     """
-    raw = [line for line in str(xyz_text or '').splitlines() if line.strip()]
+    raw = str(xyz_text or '').splitlines()
+    while raw and not raw[0].strip():
+        raw.pop(0)                    # a blank line before the header is none
     if not raw:
         return []
     start = 0
     try:
         int(raw[0].split()[0])
-        start = 2                     # a header and its comment line
+        # A header and its comment line -- and the comment line is allowed to
+        # be empty, which is what a named block in the ORCA Builder writes.
+        # Dropping blank lines before counting the two swallowed it, and with
+        # it the first atom: a water came back from xtb as two hydrogens, and
+        # everything about the run said it had succeeded.
+        start = 2
     except (ValueError, IndexError):
         start = 0
     out = []

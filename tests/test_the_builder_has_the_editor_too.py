@@ -248,3 +248,166 @@ def test_the_editor_seeds_the_keys_it_reads_without_asking():
         assert f"'{key}'" in seeded, key
     assert 'state.setdefault(_key, _value)' in source
     assert build is not None
+
+
+# ---------------------------------------------------------------------------
+# the numbering check, with the editor in the tab
+# ---------------------------------------------------------------------------
+
+
+def _shown(monkeypatch):
+    """Whatever the tab hands to display(), as text."""
+    drawn = []
+    monkeypatch.setattr(
+        tab_orca_builder, 'display',
+        lambda *a, **k: drawn.append(getattr(a[0], 'data', str(a[0])) if a else ''))
+    return drawn
+
+
+SWAPPED = "O 0.000 0.000 0.000\nH -0.757 0.586 0.000\nH 0.757 0.586 0.000"
+
+
+@pytest.fixture
+def compared(builder, monkeypatch, capsys):
+    refs, sent = builder
+    drawn = _shown(monkeypatch)
+    refs['orca_coords'].value = (f"a.xyz;\n3\n\n{WATER}\n*\n\n"
+                                 f"b.xyz;\n3\n\n{SWAPPED}\n*")
+    drawn.clear()
+    refs['orca_check_numbering_btn'].click()
+    capsys.readouterr()
+    return refs, sent, drawn
+
+
+def test_the_overlay_is_still_red_and_blue(compared):
+    """Two structures in one viewer, the reference in red and the target in
+    blue, which is what makes a numbering mismatch visible at a glance."""
+    _refs, _sent, drawn = compared
+
+    assert drawn, 'nothing was drawn'
+    overlay = drawn[-1]
+    assert overlay.count('addModel') >= 2
+    assert '#d32f2f' in overlay and '#1f5fff' in overlay
+
+
+def test_all_three_views_belong_to_the_editor(compared):
+    """The overlay included: the numbers are the editor's, and it can only put
+    them on a viewer it has been told about."""
+    refs, _sent, drawn = compared
+    assert '_submitMolViewerByScope' in drawn[-1]
+    assert refs['editor_scope'] in drawn[-1]
+
+    for _step in range(2):
+        drawn.clear()
+        refs['orca_mol_next_btn'].click()
+        assert '_submitMolViewerByScope' in drawn[-1]
+
+
+def test_a_single_structure_can_be_edited_and_the_overlay_cannot(compared):
+    """Stepping to the aligned reference or the reordered target gives the
+    editor one structure, which it works on like any other. The overlay is two
+    at once and there is nothing single to edit."""
+    refs, _sent, drawn = compared
+    assert refs['submit_manip_toolbar'].layout.display == 'none'
+    assert 'Overlay' in refs['mol_status'].value
+
+    refs['orca_mol_next_btn'].click()          # aligned reference
+    assert refs['submit_manip_toolbar'].layout.display == 'flex'
+    assert refs['editor_coords'].value.split('\n')[0] == '3'
+
+    refs['orca_mol_next_btn'].click()          # reordered target
+    assert refs['submit_manip_toolbar'].layout.display == 'flex'
+
+
+def test_the_comparison_stays_up_after_the_fix(compared):
+    """The reordered block is the thing to look at once it has been applied.
+    Rewriting the coordinates box the ordinary way dropped the tab back to the
+    first structure with nothing left to compare against."""
+    refs, _sent, _drawn = compared
+    refs['editor_state']['numbering_check_block_idx'] = 1
+
+    refs['orca_apply_numbering_btn'].click()
+
+    assert refs['editor_state']['numbering_check_active']
+    fixed = refs['orca_coords'].value.split('b.xyz;')[1]
+    assert fixed.index('H  -0.75700000') < fixed.index('H   0.75700000')
+
+
+# ---------------------------------------------------------------------------
+# what is held in the editor, in the input ORCA reads
+# ---------------------------------------------------------------------------
+
+
+ETHANE_BLOCK = ("eth.xyz;\n8\n\nC 0 0 0\nC 1.53 0 0\n"
+                "H -0.36 1.02 0\nH -0.36 -0.51 0.88\nH -0.36 -0.51 -0.88\n"
+                "H 1.89 1.02 0\nH 1.89 -0.51 0.88\nH 1.89 -0.51 -0.88\n*")
+
+
+def test_a_held_coordinate_is_written_as_an_orca_constraint(builder):
+    """Set a bond, an angle or a dihedral in the editor and it is in the input.
+
+    ORCA counts atoms from zero and so does the numbering on the structure, so
+    the numbers in the constraint are the numbers on the atoms.
+    """
+    refs, _sent = builder
+    refs['orca_coords'].value = ETHANE_BLOCK
+    refs['editor_state']['constraints'] = [
+        {'kind': 'distance', 'atoms': [0, 1], 'value': 1.6, 'mode': 'fix'},
+        {'kind': 'angle', 'atoms': [2, 0, 1], 'value': 109.5, 'mode': 'fix'},
+        {'kind': 'dihedral', 'atoms': [2, 0, 1, 5], 'value': 180.0, 'mode': 'fix'},
+    ]
+
+    refs['update_orca_preview']()
+
+    text = refs['orca_preview'].value
+    assert '%geom Constraints' in text
+    assert '{ B 0 1 1.6000 C }' in text
+    assert '{ A 2 0 1 109.5000 C }' in text
+    assert '{ D 2 0 1 5 180.0000 C }' in text
+    assert text.index('%geom') < text.index('* xyz')
+
+
+def test_a_pull_is_not_a_constraint(builder):
+    """It is a spring the browser relaxes against while a structure is dragged.
+    A geometry optimisation has no such thing, and writing one as a constraint
+    would claim something nobody asked for."""
+    refs, _sent = builder
+    refs['orca_coords'].value = ETHANE_BLOCK
+    refs['editor_state']['constraints'] = [
+        {'kind': 'distance', 'atoms': [0, 5], 'value': 2.2, 'mode': 'pull'}]
+
+    refs['update_orca_preview']()
+
+    assert '%geom' not in refs['orca_preview'].value
+
+
+def test_releasing_one_takes_it_out_of_the_input_again(builder):
+    refs, _sent = builder
+    refs['orca_coords'].value = ETHANE_BLOCK
+    refs['editor_state']['constraints'] = [
+        {'kind': 'distance', 'atoms': [0, 1], 'value': 1.6, 'mode': 'fix'}]
+    refs['update_orca_preview']()
+    assert '%geom' in refs['orca_preview'].value
+
+    refs['editor_state']['constraints'] = []
+    refs['update_orca_preview']()
+
+    text = refs['orca_preview'].value
+    assert '%geom' not in text
+    assert '* xyzfile' in text, 'the rest of the input survived'
+
+
+def test_it_says_so_when_the_input_reads_another_structure(builder):
+    """The input reads the first block. Holding a coordinate on the second and
+    writing its atom numbers into that input without a word would be a silent
+    lie about atoms ORCA will never see."""
+    refs, _sent = builder
+    refs['orca_mol_next_btn'].click()
+    refs['editor_state']['constraints'] = [
+        {'kind': 'distance', 'atoms': [0, 1], 'value': 1.1, 'mode': 'fix'}]
+
+    refs['update_orca_preview']()
+
+    text = refs['orca_preview'].value
+    assert '# Held in the editor on water.xyz' in text
+    assert '# input reads benzene.xyz' in text

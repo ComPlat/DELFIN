@@ -692,15 +692,59 @@ def create_tab(ctx):
         coords = strip_xyz_header(orca_coords.value)
         return f'* xyz {orca_charge.value} {orca_multiplicity.value}\n{coords}\n*'
 
+    #: What ORCA calls a held bond, angle and dihedral.
+    _ORCA_CONSTRAINT = {'distance': ('B', 2), 'angle': ('A', 3),
+                        'dihedral': ('D', 4)}
+
+    def _build_constraints_block():
+        """The coordinates held in the editor, in ORCA's own syntax.
+
+        Only the ones held exactly -- Hold in "fix" mode. A "pull" is a spring
+        the browser relaxes against while a structure is being dragged; it has
+        no counterpart in a geometry optimisation, and writing it as a
+        constraint would claim something nobody asked for.
+
+        The atom numbers are the ones on the atoms in the viewer: ORCA counts
+        from zero, and so does the numbering.
+        """
+        held = [c for c in (state.get('constraints') or [])
+                if c.get('mode') == 'fix']
+        if not held:
+            return ''
+        lines = []
+        for entry in held:
+            word, wanted = _ORCA_CONSTRAINT.get(entry.get('kind'), ('', 0))
+            atoms = list(entry.get('atoms') or [])
+            if not word or len(atoms) != wanted:
+                continue
+            lines.append('    { %s %s %.4f C }' % (
+                word, ' '.join(str(int(i)) for i in atoms),
+                float(entry.get('value') or 0.0)))
+        if not lines:
+            return ''
+        note = ''
+        blocks = state.get('xyz_blocks') or []
+        shown = int(state.get('xyz_view_idx', 0))
+        if len(blocks) > 1 and shown != 0:
+            # The input reads the first block; the editor was working on
+            # another one. Saying so is the only honest thing to do -- the
+            # numbers below name atoms of a structure ORCA will not see.
+            note = (f'# Held in the editor on {blocks[shown][0]}, while this\n'
+                    f'# input reads {blocks[0][0]}. Check the atom numbers.\n')
+        return note + '%geom Constraints\n' + '\n'.join(lines) + '\n  end\nend'
+
     def generate_orca_input():
         keyword_line = _build_keyword_line()
         pal_block = f'%pal\n  nprocs {orca_pal.value}\nend'
         maxcore_line = f'%maxcore {orca_maxcore.value}'
         output_block = _build_output_block()
+        constraints_block = _build_constraints_block()
         coord_block = _build_coord_block()
         inp = f'{keyword_line}\n\n{pal_block}\n\n{maxcore_line}\n'
         if output_block:
             inp += f'\n{output_block}\n'
+        if constraints_block:
+            inp += f'\n{constraints_block}\n'
         inp += f'\n{coord_block}\n'
         return inp
 
@@ -1064,6 +1108,7 @@ def create_tab(ctx):
             '    }\n'
             '    viewer.render();\n'
             '    window._orcaBuildViewer=viewer;\n'
+            f'    {_register_with_editor_js()}\n'
             '  }\n'
             '  setTimeout(init,0);\n'
             '})();\n'
@@ -1154,18 +1199,29 @@ def create_tab(ctx):
                     ):
                         target_xyz = blocks[overlay_idx][1]
                         reordered_target_xyz = overlay_result.get('reordered_target_xyz') or target_xyz
+                        step = int(state.get('numbering_view_step', 0))
                         display(
                             HTML(
                                 _numbering_check_view_html(
                                     overlay_result['aligned_reference_xyz'],
                                     target_xyz,
                                     reordered_target_xyz,
-                                    state.get('numbering_view_step', 0),
+                                    step,
                                     reset_view=reset_view,
                                 )
                             )
                         )
-                        _hand_to_editor('')
+                        # Two of the three check views are a single structure,
+                        # and the editor can work on those like any other. The
+                        # overlay is both at once, which is nothing to edit --
+                        # the numbers still come up on it, from its own model.
+                        _hand_to_editor(
+                            overlay_result['aligned_reference_xyz'] if step == 1
+                            else reordered_target_xyz if step == 2 else '')
+                        if step == 0:
+                            orca_editor._set_mol_status(
+                                'Overlay: reference in red, target in blue. '
+                                'Step to a single structure to edit it.')
                     else:
                         label_js = _labels_js()
                         display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
@@ -1455,7 +1511,17 @@ def create_tab(ctx):
             suffix = record.get('suffix_comment', '')
             header = f'{label};{suffix}' if suffix else f'{label};'
             rebuilt.append(f'{header}\n{record["full_xyz"].strip()}\n*')
-        orca_coords.value = '\n\n'.join(rebuilt)
+        # Written quietly, so the comparison stays up: the reordered block is
+        # the thing to look at after a fix, and starting the tab over would
+        # drop it back to the first structure with nothing to compare against.
+        state['editor_quiet'] = True
+        try:
+            orca_coords.value = '\n\n'.join(rebuilt)
+            state['xyz_blocks'] = parse_xyz_blocks(orca_coords.value) or []
+        finally:
+            state['editor_quiet'] = False
+        result['reordered_target_xyz'] = reordered_xyz
+        _refresh_mol_view(reset_view=False)
         with orca_output:
             clear_output(wait=True)
             print(f'Applied numbering fix to block {idx + 1}.')
@@ -1505,6 +1571,22 @@ def create_tab(ctx):
                 r'(\n\* xyz(?:file)? )',
                 f'\n{new_output}\n\\1', text, count=1,
             )
+
+        # What the editor holds, kept in step the same way %output is: the
+        # preview is the user's to edit, so the block is replaced where it is
+        # rather than the whole input written again.
+        new_geom = _build_constraints_block()
+        held = re.search(r'%geom\b.*?\n\s*end\s*\nend', text,
+                         flags=re.DOTALL | re.IGNORECASE)
+        if held:
+            if new_geom:
+                text = (text[:held.start()] + new_geom + text[held.end():])
+            else:
+                text = (text[:held.start()].rstrip('\n') + '\n\n'
+                        + text[held.end():].lstrip('\n'))
+        elif new_geom:
+            text = re.sub(r'(\n\* xyz(?:file)? )',
+                          f'\n{new_geom}\n\\1', text, count=1)
 
         xyz_blocks = parse_xyz_blocks(orca_coords.value)
         if xyz_blocks:
@@ -1652,6 +1734,10 @@ def create_tab(ctx):
     orca_mol_prev_btn.on_click(on_mol_prev)
     orca_mol_next_btn.on_click(on_mol_next)
     orca_editor_coords.observe(_orca_editor_wrote, names='value')
+    # The list of held coordinates is rebuilt whenever one is added, retuned or
+    # deleted, so this is where the input preview hears about it.
+    orca_editor.submit_constraint_dd.observe(
+        lambda _change: update_orca_preview(), names='options')
     update_orca_molecule_view()
     update_orca_preview()
     state['last_auto_keywords'] = _build_keyword_line()

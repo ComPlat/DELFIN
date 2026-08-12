@@ -3048,3 +3048,35 @@ def test_the_trajectory_is_shown_as_fast_as_it_is_computed():
     assert watch.index('log.stat().st_size') < watch.index('FRAME_READ_INTERVAL')
     assert 'time.sleep(WATCH_INTERVAL)' in body
     assert '0.2' not in watch.split('read_trajectory')[0]
+
+
+def test_an_empty_comment_line_does_not_cost_an_atom():
+    """XYZ's second line is a comment, and it is allowed to be empty.
+
+    The coordinate lines were picked out by dropping every blank line and then
+    skipping two -- so with an empty comment the first atom was skipped as
+    though it were the comment. A water went to xtb as two hydrogens and came
+    back as two hydrogens, at -0.982686 Eh instead of -5.070544, and every
+    other sign said the run had succeeded.
+
+    A named block in the ORCA Builder writes exactly that: name, count, empty
+    comment, atoms. So the editor there optimised a molecule short of its first
+    atom, silently, and the same would happen to anyone pasting such a block
+    into the Submit tab.
+    """
+    from delfin.dashboard.gfn_optimize import atom_lines
+
+    shapes = {
+        'blank comment': '3\n\nO 0 0 0\nH 0.9 0 0\nH -0.3 0.85 0\n',
+        'named comment': '3\nwater\nO 0 0 0\nH 0.9 0 0\nH -0.3 0.85 0\n',
+        'no header at all': 'O 0 0 0\nH 0.9 0 0\nH -0.3 0.85 0\n',
+        'blank line first': '\n3\nwater\nO 0 0 0\nH 0.9 0 0\nH -0.3 0.85 0\n',
+        'blanks in the middle': '3\nwater\nO 0 0 0\n\nH 0.9 0 0\nH -0.3 0.85 0\n',
+        'trailing blanks': '3\nwater\nO 0 0 0\nH 0.9 0 0\nH -0.3 0.85 0\n\n\n',
+        # The count is not trusted either: xtb reads that many and ignores the
+        # rest, so a header that disagrees with the block must not decide.
+        'a count that lies': '89\nwater\nO 0 0 0\nH 0.9 0 0\nH -0.3 0.85 0\n',
+    }
+    for shape, xyz in shapes.items():
+        assert len(atom_lines(xyz)) == 3, shape
+        assert atom_lines(xyz)[0].split()[0] == 'O', shape
