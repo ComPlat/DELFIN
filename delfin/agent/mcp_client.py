@@ -713,6 +713,48 @@ _REGISTRY_LOCK = threading.Lock()
 _REGISTRY: MCPRegistry | None = None
 
 
+def count_live_tools(registry: "MCPRegistry") -> int:
+    """How many tools the servers in ``registry`` actually offer.
+
+    The dashboard used ``len(getattr(registry, "tools", {}) or {})``, and
+    MCPRegistry has no ``tools`` attribute -- the default fired every
+    time, so the number it printed beside the word "live" was zero for a
+    healthy server exactly as much as for a dead one. Tools live on each
+    server and appear only once someone asks.
+
+    Asking is the point: it is the difference between reporting the
+    config back and reporting what answered.
+    """
+    total = 0
+    for server in (getattr(registry, "servers", None) or {}).values():
+        try:
+            total += len(server.list_tools() or ())
+        except Exception:
+            continue
+    return total
+
+
+def unreachable_servers(registry: "MCPRegistry") -> list[str]:
+    """``name: reason`` for every server that could not be asked.
+
+    MCPServer.start already records the cause in ``last_error`` and
+    nothing surfaced it, so a server that failed to start looked exactly
+    like one that worked."""
+    out: list[str] = []
+    for name, server in (getattr(registry, "servers", None) or {}).items():
+        try:
+            server.list_tools()
+            continue
+        except Exception as exc:
+            reason = ""
+            try:
+                reason = str(getattr(server, "last_error", "") or "")
+            except Exception:
+                reason = ""
+            out.append(f"{name}: {reason or exc}")
+    return out
+
+
 def get_registry(workspace: Path | None = None) -> MCPRegistry:
     """Return the process-wide MCP registry, lazily creating it."""
     global _REGISTRY

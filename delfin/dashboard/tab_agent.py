@@ -8020,11 +8020,27 @@ def create_tab(ctx):
                     _mcp.reset_registry()
                     new_reg = _mcp.get_registry(ctx.repo_dir or None)
                     n_servers = len(getattr(new_reg, "servers", []) or [])
-                    n_tools = len(getattr(new_reg, "tools", {}) or {})
-                    _append_system_message(
-                        f"♻️ MCP registry reloaded{(' — ' + reason) if reason else ''}: "
+                    # Ask the servers rather than an attribute the registry
+                    # does not have: the old count read
+                    # getattr(new_reg, "tools", {}) and was therefore zero
+                    # for a working server exactly as much as for a dead
+                    # one, while the word "live" beside it was an echo of
+                    # the config the user had just typed.
+                    n_tools = _mcp.count_live_tools(new_reg)
+                    _dead = _mcp.unreachable_servers(new_reg)
+                    _msg = (
+                        f"♻️ MCP registry reloaded"
+                        f"{(' — ' + reason) if reason else ''}: "
                         f"{n_servers} server(s), {n_tools} tool(s) live."
                     )
+                    # A server that could not be asked is named with the
+                    # reason it recorded. last_error existed all along and
+                    # was surfaced nowhere, so a failed start looked
+                    # exactly like a working one.
+                    if _dead:
+                        _msg += ("\n⚠️ not reachable: "
+                                 + "; ".join(_dead[:5]))
+                    _append_system_message(_msg)
                 except Exception as exc:
                     _append_system_message(f"MCP reload failed: {exc}")
 
