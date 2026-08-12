@@ -1781,6 +1781,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 });
             }
         }
+        // The numbers, if any are shown, belong on the atom cores -- and this
+        // is the frame in which those have just moved. Nothing happens when
+        // they are switched off.
+        try {
+            if (window.__delfinAtomNumbers) window.__delfinAtomNumbers.refresh(viewer);
+        } catch (e) {}
         try { viewer.render(); } catch (e) {}
         updateStatus(scopeKey);
         updateMeasureBox(scopeKey);

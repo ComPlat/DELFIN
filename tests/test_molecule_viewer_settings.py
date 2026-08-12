@@ -318,7 +318,6 @@ def test_orca_label_occlusion_is_deferred_until_mouse_interaction_ends():
     assert "grid=Object.create(null)" in editor
     assert "hideForInteraction" not in editor
     assert "__delfinInteractionEndHandlers" in editor
-    assert "schedule(0)" in editor
     assert "v.render=function()" not in editor
     assert "raf(loop)" not in editor
     # The disposal of the previous viewer is the tab's own business.
@@ -327,11 +326,9 @@ def test_orca_label_occlusion_is_deferred_until_mouse_interaction_ends():
     # prose above it says what it used to be, which is not the same thing.
     from delfin.dashboard import structure_editor
 
-    emitted = (structure_editor.atom_number_labels_js(
-                   '2\n\nO 0 0 0\nH 1 0 0\n', var='v')
-               + structure_editor.label_scale_setter_js())
+    emitted = structure_editor.show_atom_numbers_js(var='v')
     assert '_orcaBuildViewer' not in emitted
-    assert 'function(scale, viewer)' in structure_editor.label_scale_setter_js()
+    assert 'window.__delfinAtomNumbers.set(v,true,' in emitted
 
 
 def test_trajectory_playback_yields_rendering_while_viewer_is_dragged():

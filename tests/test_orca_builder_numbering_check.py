@@ -93,5 +93,5 @@ def test_atom_number_size_resizes_without_redrawing_the_molecule(tmp_path):
 
     # one call into the page that rescales the existing labels -- no new viewer
     assert len(executed_js) == 1
-    assert "__delfinSetLabelScale" in executed_js[0]
+    assert "__delfinAtomNumbers.setScale(window._orcaBuildViewer," in executed_js[0]
     assert "addModel" not in executed_js[0]

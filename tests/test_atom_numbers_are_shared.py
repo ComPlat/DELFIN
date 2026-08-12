@@ -4,47 +4,116 @@ They lived inside the ORCA Builder and were reachable from nowhere else: the
 size control resolved the viewer as ``window._orcaBuildViewer``, one global for
 one tab. Sharing the code was not enough -- that global had to go first.
 
-Now the Submit tab has them, from the same code and with the same five sizes.
-Driven in a browser on a ten-atom glycine: the ``#`` button is in the toolbar,
-switching it on takes the viewer from 0 to 10 labels at scale 0.20, the size
-control appears with it, and choosing XXL then S moves the live scale to 0.38
-and 0.11 without the numbers being rebuilt.
+Three things were wrong with the first version of them, and all three come from
+the same mistake: the numbers were written out as fixed points in space, from
+coordinates the kernel had, instead of being hung on the atoms the browser
+holds.
 
-The ORCA Builder is untouched by this: its labels are byte-for-byte what they
-were, diffed against its own previous function.
+  * They stayed behind when the atoms moved. A drag, an optimisation or a
+    dynamic run left every number where the atom used to be.
+  * Switching them off rendered the molecule again -- and a molecule rebuilt
+    from its coordinates comes back with the bonds re-perceived from distances,
+    so a structure that had been pulled about lost bonds. The numbers did what
+    dynamic bonds do, without anybody asking for them.
+  * They were too small to read, and the largest size on offer was where the
+    smallest should have started.
+
+Now they are a layer of sprites over the model that holds the atom objects
+themselves: they follow the cores through every frame the editor draws, they go
+on and off without the model hearing about it, and the ladder of sizes starts
+where it used to end.
 """
 
-from delfin.dashboard import structure_editor, tab_orca_builder, tab_submit
+from delfin.dashboard import (molecule_viewer, structure_editor,
+                              tab_orca_builder, tab_submit)
 
 
 SUBMIT = open(tab_submit.__file__, encoding='utf-8').read()
 ORCA = open(tab_orca_builder.__file__, encoding='utf-8').read()
+VIEWER = open(molecule_viewer.__file__, encoding='utf-8').read()
+LAYER = structure_editor.atom_numbers_js()
 
 
 def test_the_numbering_names_no_tab():
     """A viewer is passed in. Nothing here may reach for one by name."""
-    emitted = (structure_editor.atom_number_labels_js(
-                   '2\n\nO 0 0 0\nH 1 0 0\n', var='v')
-               + structure_editor.label_scale_setter_js())
+    emitted = structure_editor.show_atom_numbers_js(var='v')
 
     assert '_orcaBuildViewer' not in emitted
     assert '_submitMolViewerByScope' not in emitted
-    assert 'function(scale, viewer)' in structure_editor.label_scale_setter_js()
+    assert 'window.__delfinAtomNumbers.set(v,true,' in emitted
 
 
 def test_both_tabs_take_it_from_the_same_place():
-    assert 'structure_editor.atom_number_labels_js(' in ORCA
-    assert '_structure_editor.atom_number_labels_js(' in SUBMIT
+    assert '_structure_editor.show_atom_numbers_js(' in ORCA
+    assert '_structure_editor.show_atom_numbers_js(' in SUBMIT
     # And neither keeps a copy of the occlusion pass.
     assert 'grid=Object.create(null)' not in ORCA
     assert 'grid=Object.create(null)' not in SUBMIT
 
 
-def test_the_sizes_are_the_same_five():
+def test_the_layer_is_installed_once_per_page():
+    assert LAYER.startswith('if(!window.__delfinAtomNumbers){')
+
+
+def test_a_number_is_hung_on_its_atom_not_on_a_copy_of_its_place():
+    """The atom object is kept, so reading x/y/z later reads where it is now."""
+    assert 'L.push({a:a,l:lab})' in LAYER
+    assert "sp.position.set(a.x,a.y,a.z)" in LAYER
+    # ...and the projection used for the occlusion test reads it too, rather
+    # than a stored triple.
+    assert 'p[0]=r11*a.x+r12*a.y+r13*a.z;' in LAYER
+
+
+def test_they_are_brought_along_on_every_frame_the_molecule_moves_in():
+    """One funnel draws every changed geometry -- drag, optimise, dynamics."""
+    draw = VIEWER.split('function drawHighlightsNow(scopeKey)')[1].split(
+        '\n    function ')[0]
+
+    assert 'window.__delfinAtomNumbers.refresh(viewer)' in draw
+    assert draw.index('__delfinAtomNumbers.refresh') < draw.index(
+        'try { viewer.render(); }')
+
+
+def test_switching_them_off_leaves_the_molecule_alone():
+    """This is the bond loss: a re-render re-perceives bonds from distances."""
+    handler = SUBMIT.split('def on_submit_labels_toggle')[1].split('\n    def ')[0]
+
+    assert 'update_molecule_view' not in handler
+    assert '_structure_editor.show_atom_numbers_js(' in handler
+    assert 'on=on' in handler
+
+    # The layer takes its own sprites out. It does not reach for the model,
+    # and it does not use removeAllLabels, which would take away labels that
+    # are not its own -- and draw a frame for each one it removed.
+    clear = LAYER.split('function clear(v){')[1].split('\n  }')[0]
+    assert 'v.modelGroup.remove(lab.sprite)' in clear
+    assert 'removeAllLabels' not in LAYER
+    assert 'addModel' not in LAYER
+    assert 'rebuildBonds' not in LAYER
+    assert 'setStyle' not in LAYER
+
+
+def test_resizing_does_not_rebuild_the_molecule():
+    """The browser rescales the sprites it already holds; re-rendering would
+    throw the camera away and cost a WebGL context."""
+    handler = SUBMIT.split('def on_submit_label_size')[1].split('\n    def ')[0]
+
+    assert '__delfinAtomNumbers.setScale' in handler
+    assert 'update_molecule_view' not in handler
+
+
+def test_the_sizes_start_where_they_used_to_end():
+    """0.28 was XL and was still too small to read; it is the bottom now."""
+    sizes = dict(structure_editor.LABEL_SIZES)
+
     assert [name for name, _ in structure_editor.LABEL_SIZES] == [
         'S', 'M', 'L', 'XL', 'XXL']
-    assert structure_editor.LABEL_SCALE_DEFAULT == 0.20
+    assert sizes['S'] == 0.28
+    assert structure_editor.LABEL_SCALE_DEFAULT == sizes['L']
+    assert sorted(sizes.values()) == list(sizes.values())
+    # Both tabs offer the one ladder, so changing it changes it everywhere.
     assert 'options=list(_structure_editor.LABEL_SIZES)' in SUBMIT
+    assert 'options=list(_structure_editor.LABEL_SIZES)' in ORCA
 
 
 def test_nothing_is_numbered_until_it_is_asked_for():
@@ -55,20 +124,18 @@ def test_nothing_is_numbered_until_it_is_asked_for():
     assert 'if submit_labels_btn.value:' in build
 
 
-def test_resizing_does_not_rebuild_the_molecule():
-    """The browser rescales the sprites it already holds; re-rendering would
-    throw the camera away and cost a WebGL context."""
-    handler = SUBMIT.split('def on_submit_label_size')[1].split('\n    def ')[0]
-
-    assert '__delfinSetLabelScale' in handler
-    assert 'update_molecule_view' not in handler
-    # Switching them on or off is the other way round: the labels are built
-    # with the model, so that one does render again.
-    toggle = SUBMIT.split('def on_submit_labels_toggle')[1].split('\n    def ')[0]
-    assert 'update_molecule_view()' in toggle
+def test_every_structure_in_the_viewer_is_numbered_from_its_own_zero():
+    """The ORCA Builder overlays two structures in one viewer."""
+    assert 'function modelsOf(v)' in LAYER
+    build = LAYER.split('function build(v,scale){')[1].split('\n  }')[0]
+    assert 'for(var mi=0;mi<ms.length;mi++)' in build
+    assert "v.addLabel(String(i)" in build
 
 
-def test_an_unreadable_structure_is_not_numbered():
-    assert structure_editor.atom_number_labels_js('') == ''
-    assert structure_editor.atom_number_labels_js('nonsense') == ''
-    assert structure_editor.atom_number_labels_js('2\n\nO 0 0 0\nH 1 0 0\n')
+def test_atoms_coming_or_going_are_numbered_again():
+    """Drawing an atom or adjusting hydrogens changes what there is to number."""
+    refresh = LAYER.split('function refresh(v){')[1].split('\n  }')[0]
+
+    assert 'atomCount(v)!==m' in refresh
+    # ...without the rebuild being able to ask for itself again.
+    assert '!v.__delfinLabelRebuilding' in refresh

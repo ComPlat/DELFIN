@@ -280,7 +280,7 @@ def create_tab(ctx):
     # On-screen size of the atom numbers.  The value is the factor the
     # high-resolution label texture is down-scaled by, so larger stays sharp.
     orca_mol_label_size = widgets.Dropdown(
-        options=[('S', 0.11), ('M', 0.15), ('L', 0.20), ('XL', 0.28), ('XXL', 0.38)],
+        options=list(_structure_editor.LABEL_SIZES),
         value=_LABEL_SCALE_DEFAULT,
         tooltip='Size of the atom numbers',
         layout=widgets.Layout(width='68px', height='28px'),
@@ -802,22 +802,20 @@ def create_tab(ctx):
         except Exception:
             return _structure_editor.LABEL_SCALE_DEFAULT
 
-    def _atom_labels_js(full_xyz, var='viewer'):
-        """Atom numbers, from the shared editor part.
+    def _labels_js(var='viewer'):
+        """Atom numbers, gated by the preview's labels on/off toggle.
 
         This was 140 lines here and reachable from nowhere else -- the size
         control resolved the viewer as ``window._orcaBuildViewer``. Numbering
         belongs to a viewer, so it lives beside the rest of the editor now and
-        the Submit tab has it too.
+        the Submit tab has it too. The coordinates are no longer handed over:
+        the numbers are read off the atoms the viewer holds, which is also
+        what keeps them on the cores when those move.
         """
-        return _structure_editor.atom_number_labels_js(
-            full_xyz, var=var, scale=_label_scale())
-
-    def _labels_js(full_xyz, var='viewer'):
-        """Atom-number labels, gated by the preview's labels on/off toggle."""
         if not state.get('show_atom_labels', True):
             return ''
-        return _atom_labels_js(full_xyz, var=var)
+        return _structure_editor.show_atom_numbers_js(
+            var=var, scale=_label_scale())
 
     def _update_molecule_js(xyz_data, label_js=''):
         """Script that shows another molecule in the viewer that is already there.
@@ -849,8 +847,7 @@ def create_tab(ctx):
             '      return;\n'
             '    }\n'
             '    try{\n'
-            '      if(typeof viewer.removeAllLabels==="function") viewer.removeAllLabels();\n'
-            '      viewer.__delfinLbls=[];viewer.__delfinProj=[];\n'
+            '      if(window.__delfinAtomNumbers)window.__delfinAtomNumbers.clear(viewer);\n'
             '      viewer.removeAllModels();\n'
             f'      viewer.addModel({json.dumps(xyz_data)},"xyz");\n'
             f'      viewer.setStyle({{}},{profile["style_js"]});\n'
@@ -866,7 +863,7 @@ def create_tab(ctx):
 
     def _show_molecule_in_place(full_xyz):
         """Show *full_xyz* without rebuilding the viewer.  True if it happened."""
-        script = _update_molecule_js(full_xyz, _labels_js(full_xyz))
+        script = _update_molecule_js(full_xyz, _labels_js())
         if not script:
             return False
         ctx.run_js(script)
@@ -962,13 +959,13 @@ def create_tab(ctx):
         if step == 1:
             return _viewer_html(
                 reference_xyz,
-                _labels_js(reference_xyz, var='viewer'),
+                _labels_js(),
                 reset_view=reset_view,
             )
         if step == 2:
             return _viewer_html(
                 reordered_target_xyz,
-                _labels_js(reordered_target_xyz, var='viewer'),
+                _labels_js(),
                 reset_view=reset_view,
             )
         return _overlay_viewer_html(reference_xyz, target_xyz, reset_view=reset_view)
@@ -1053,7 +1050,7 @@ def create_tab(ctx):
                             )
                         )
                     else:
-                        label_js = _labels_js(full_xyz)
+                        label_js = _labels_js()
                         display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
                 except Exception as e:
                     print(f'Could not visualize: {e}')
@@ -1070,7 +1067,7 @@ def create_tab(ctx):
                     atom_lines = [l for l in coords.split('\n') if l.strip()]
                     n = len(atom_lines)
                     xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
-                    label_js = _labels_js(xyz_data)
+                    label_js = _labels_js()
                     display(HTML(_viewer_html(xyz_data, label_js, reset_view=reset_view)))
                 except Exception as e:
                     print(f'Could not visualize: {e}')
@@ -1139,8 +1136,8 @@ def create_tab(ctx):
         sprites it already has, so the size changes as the dropdown closes.
         """
         ctx.run_js(
-            _structure_editor.label_scale_setter_js()
-            + 'window.__delfinSetLabelScale(%.3f, window._orcaBuildViewer);'
+            _structure_editor.atom_numbers_js()
+            + 'window.__delfinAtomNumbers.setScale(window._orcaBuildViewer,%.3f);'
             % _label_scale()
         )
 

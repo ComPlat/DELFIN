@@ -1479,9 +1479,8 @@ def create_tab(ctx):
         # addressed to it by name like everything else here.
         labels = ''
         if submit_labels_btn.value:
-            labels = _structure_editor.atom_number_labels_js(
-                xyz_data, var='viewer_UNIQUEID',
-                scale=float(submit_label_size.value))
+            labels = _structure_editor.show_atom_numbers_js(
+                var='viewer_UNIQUEID', scale=float(submit_label_size.value))
         if hasattr(view, 'startjs'):
             view.startjs += registration
             if labels:
@@ -6571,19 +6570,32 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{float(submit_sens_slider.value)});'
         )
 
-    def on_submit_labels_toggle(change):
-        """Numbers on or off.
+    def _submit_viewer_js():
+        """The viewer this tab is showing, as an expression for the browser."""
+        return '(window._submitMolViewerByScope||{})[%s]' % json.dumps(
+            submit_scope_id)
 
-        The molecule is rendered again rather than patched: the labels are
-        built with the model, and 3Dmol has no way to be told about them
-        afterwards without keeping a second copy of the geometry here.
+    def on_submit_labels_toggle(change):
+        """Numbers on or off, and nothing else.
+
+        The molecule is emphatically not rendered again. Rebuilding it from
+        the coordinates is how a structure loses what only the browser knows:
+        the bonds as they were perceived, and the ones made or broken by hand.
+        Switching the numbers off used to do exactly that, so a molecule that
+        had been optimised came back with bonds missing. The numbers are a
+        layer of sprites over the model -- they can be added and taken away
+        without the model hearing about it.
         """
         if change.get('name') != 'value':
             return
         on = bool(submit_labels_btn.value)
         submit_label_size.layout.display = '' if on else 'none'
         submit_labels_btn.button_style = 'info' if on else ''
-        update_molecule_view()
+        _run_manip_js(
+            _structure_editor.show_atom_numbers_js(
+                var=_submit_viewer_js(), on=on,
+                scale=float(submit_label_size.value))
+        )
 
     def on_submit_label_size(change):
         """Resize them in the viewer that is already there.
@@ -6594,10 +6606,9 @@ def create_tab(ctx):
         if change.get('name') != 'value':
             return
         _run_manip_js(
-            _structure_editor.label_scale_setter_js()
-            + 'window.__delfinSetLabelScale(%.3f,'
-              '(window._submitMolViewerByScope||{})[%s]);'
-            % (float(submit_label_size.value), json.dumps(submit_scope_id))
+            _structure_editor.atom_numbers_js()
+            + 'window.__delfinAtomNumbers.setScale(%s,%.3f);'
+            % (_submit_viewer_js(), float(submit_label_size.value))
         )
 
     def on_submit_strength_changed(change):
