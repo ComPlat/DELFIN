@@ -25,6 +25,7 @@ from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spel
 from . import gfn_optimize as _gfn
 from . import mopac_optimize as _mopac
 from . import solvents as _solvents
+from . import structure_editor as _structure_editor
 from . import ketcher as _ketcher
 from . import separate_systems as _separate
 from .molecule_viewer import (
@@ -788,6 +789,23 @@ def create_tab(ctx):
         layout=widgets.Layout(width='90px', height='30px'),
         disabled=True,
     )
+    #: Atom numbers, and how big they are drawn -- the same pair the ORCA
+    #: Builder has, from the same code: numbering belongs to a viewer, so
+    #: both tabs take it from the shared editor part.
+    submit_labels_btn = widgets.ToggleButton(
+        value=False, description='#',
+        tooltip=('Number every atom, in the order the coordinates are in. '
+                 'The numbers sit on the atom centres, and one behind another '
+                 'atom is hidden, so a crowded structure stays readable.'),
+        layout=widgets.Layout(width='46px', height='30px'),
+        disabled=True,
+    )
+    submit_label_size = widgets.Dropdown(
+        options=list(_structure_editor.LABEL_SIZES),
+        value=_structure_editor.LABEL_SCALE_DEFAULT,
+        tooltip='Size of the atom numbers',
+        layout=widgets.Layout(width='72px', height='30px', display='none'),
+    )
     submit_manip_undo_btn = widgets.Button(
         description='Undo', button_style='info', icon='undo',
         tooltip='Undo last move/rotate (Ctrl-Z)',
@@ -1153,6 +1171,7 @@ def create_tab(ctx):
             submit_select_btn, submit_manip_btn, submit_draw_btn,
             submit_element_dd, submit_adjust_h_btn,
             submit_manip_clear_btn, submit_centre_btn,
+            submit_labels_btn, submit_label_size,
             submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
@@ -1454,8 +1473,19 @@ def create_tab(ctx):
             '  } catch(e) {}\n'
             '})();\n'
         )
+        # The numbers, from the shared editor part -- the same code the ORCA
+        # Builder draws them with.  py3Dmol names its viewer viewer_UNIQUEID
+        # and rewrites that when it makes the HTML, so the labels can be
+        # addressed to it by name like everything else here.
+        labels = ''
+        if submit_labels_btn.value:
+            labels = _structure_editor.atom_number_labels_js(
+                xyz_data, var='viewer_UNIQUEID',
+                scale=float(submit_label_size.value))
         if hasattr(view, 'startjs'):
             view.startjs += registration
+            if labels:
+                view.startjs += '\n' + labels + '\n'
         html_payload = view._make_html()
         return ({
             'output_type': 'display_data',
@@ -1493,6 +1523,7 @@ def create_tab(ctx):
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
+        submit_labels_btn.disabled = not enabled
         submit_sens_slider.disabled = not enabled
         submit_settle_btn.disabled = not enabled
         submit_bond_btn.disabled = not enabled
@@ -6540,6 +6571,35 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{float(submit_sens_slider.value)});'
         )
 
+    def on_submit_labels_toggle(change):
+        """Numbers on or off.
+
+        The molecule is rendered again rather than patched: the labels are
+        built with the model, and 3Dmol has no way to be told about them
+        afterwards without keeping a second copy of the geometry here.
+        """
+        if change.get('name') != 'value':
+            return
+        on = bool(submit_labels_btn.value)
+        submit_label_size.layout.display = '' if on else 'none'
+        submit_labels_btn.button_style = 'info' if on else ''
+        update_molecule_view()
+
+    def on_submit_label_size(change):
+        """Resize them in the viewer that is already there.
+
+        Nothing is re-rendered: the browser rescales the label sprites it
+        holds, so the size changes as the dropdown closes.
+        """
+        if change.get('name') != 'value':
+            return
+        _run_manip_js(
+            _structure_editor.label_scale_setter_js()
+            + 'window.__delfinSetLabelScale(%.3f,'
+              '(window._submitMolViewerByScope||{})[%s]);'
+            % (float(submit_label_size.value), json.dumps(submit_scope_id))
+        )
+
     def on_submit_strength_changed(change):
         if change.get('name') != 'value':
             return
@@ -7269,6 +7329,8 @@ def create_tab(ctx):
     submit_gfn_autospin.observe(on_submit_autospin, names='value')
     submit_gfn_solvent.observe(on_submit_solvent, names='value')
     submit_gfn_solv_model.observe(on_submit_solv_model, names='value')
+    submit_labels_btn.observe(on_submit_labels_toggle, names='value')
+    submit_label_size.observe(on_submit_label_size, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
@@ -7630,6 +7692,8 @@ def create_tab(ctx):
         'submit_optimize_all_btn': submit_optimize_all_btn,
         'submit_settle_btn': submit_settle_btn,
         'submit_strength_slider': submit_strength_slider,
+        'submit_labels_btn': submit_labels_btn,
+        'submit_label_size': submit_label_size,
         'submit_sens_slider': submit_sens_slider,
         'submit_relax_btn': submit_relax_btn,
         'submit_gfn_frame': submit_gfn_frame,
