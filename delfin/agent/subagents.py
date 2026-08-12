@@ -325,7 +325,8 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
     (name · task · steps · status) without sharing memory with the worker
     thread."""
     try:
-        _RUNNING_DIR.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, write_text
+        ensure_dir(_RUNNING_DIR)
         f = _RUNNING_DIR / f"{sa_id}.json"
         if entry is None:
             try:
@@ -338,8 +339,7 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
                 # and cheap enough to carry the cleanup of what an earlier
                 # crash left behind.
                 reap_dead_running()
-            f.write_text(
-                json.dumps({**entry, **_owner_stamp()}), encoding="utf-8")
+            write_text(f, json.dumps({**entry, **_owner_stamp()}))
     except Exception:
         pass
 
@@ -498,17 +498,18 @@ def _note_pending_report(sa_id: str, *, subagent_type: str = "",
     if not sa_id:
         return
     try:
-        _PENDING_DIR.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, write_text
+        ensure_dir(_PENDING_DIR)
         # Starting one is the moment to clear what an earlier crash left
         # behind — the same place the live registry does its reaping.
         reap_pending_reports()
-        _pending_path(sa_id).write_text(json.dumps({
+        write_text(_pending_path(sa_id), json.dumps({
             "sa_id": sa_id,
             "type": subagent_type or "",
             "description": (description or "")[:120],
             "started_at": time.time(),
             **_owner_stamp(),
-        }), encoding="utf-8")
+        }))
     except Exception:
         pass
 
@@ -717,10 +718,14 @@ def _save_subagent_session(
                             + f"{_MAX_STORED_REPORT_CHARS} characters]")
                 record["final_report"] = full
                 break
-        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        path = _SESSIONS_DIR / f"{sa_id}.json"
-        path.write_text(json.dumps(record, ensure_ascii=False),
-                        encoding="utf-8")
+        # Owner-only from creation. This record is the densest single file
+        # the agent writes: up to 60 tool outputs at 2000 chars each plus
+        # the delegate's whole report, and it had no mode of its own at all
+        # — all 108 on disk were observed group-readable.
+        from .state_paths import ensure_dir, write_text
+        ensure_dir(_SESSIONS_DIR)
+        write_text(_SESSIONS_DIR / f"{sa_id}.json",
+                   json.dumps(record, ensure_ascii=False))
     except Exception:
         pass
 
@@ -799,10 +804,13 @@ def _write_telemetry(record: dict) -> None:
     cheap to read for ``/agents stats``.
     """
     try:
+        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import write_text as _write_secure
         path = _TELEMETRY_PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
+        ensure_dir(path.parent)
+        with open_append(path) as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        secure_file(path)
         # Best-effort trim — only every 50 writes to avoid I/O thrash
         try:
             stat = path.stat()
@@ -810,7 +818,7 @@ def _write_telemetry(record: dict) -> None:
                 lines = path.read_text(encoding="utf-8").splitlines()
                 if len(lines) > _TELEMETRY_MAX_LINES:
                     tail = lines[-_TELEMETRY_MAX_LINES:]
-                    path.write_text("\n".join(tail) + "\n", encoding="utf-8")
+                    _write_secure(path, "\n".join(tail) + "\n")
         except Exception:
             pass
     except Exception:

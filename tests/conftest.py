@@ -136,6 +136,13 @@ def _user_state_targets():
 # was measured, and it breaks 357 tests that legitimately read the real home.
 _USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
+    # The state-tree maintenance sweep walks these three, and its prune
+    # DELETES: pointed at the real home from inside a test run it would
+    # remove the user's archived transcripts, handoffs and bundles.
+    ("delfin.agent.session_store", "_transcript_archive_path",
+     "transcript_archive"),
+    ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
+    ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
@@ -305,3 +312,17 @@ def _isolate_agent_telemetry(monkeypatch, tmp_path):
     monkeypatch.setattr(_tm, "_DIR", tmp_path / "turn_metrics")
     monkeypatch.setattr(_tt, "_DIR", tmp_path / "tool_trace")
     monkeypatch.setattr(_fl, "_LOG_PATH", tmp_path / "failure_log.jsonl")
+
+
+@pytest.fixture(autouse=True)
+def _state_maintenance_runs_once_per_test(monkeypatch):
+    """Keep the one-shot state sweep from leaking across tests.
+
+    ``run_startup_maintenance`` latches a module global so it costs nothing
+    after the first session write. Left alone in a suite, whichever test
+    ran first would consume the latch and every later test would silently
+    skip the sweep — including the tests that assert it happens.
+    """
+    from delfin.agent import state_paths as _sp
+    monkeypatch.setattr(_sp, "_MAINTENANCE_DONE", False)
+    yield

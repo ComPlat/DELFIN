@@ -39,9 +39,16 @@ each finished job is reported exactly once across drains and restarts.
 
 The job's stdout / stderr tempfiles are opened with ``unbuffered=False``
 in line-buffered mode so the agent can read partial progress while a
-script is still running. Tempfiles are removed when the job is
-explicitly killed or when the registry shuts down. They survive a
-crash so post-mortem inspection is possible.
+script is still running.
+
+They are NOT removed when the job ends, is killed, or when the process
+exits: ``bash_output`` is read after a job finishes, and reading a killed
+job's output is how one finds out why it was killed. Their single
+cleanup point is the registry record's ~7-day prune, which is the last
+moment anything still knows where they are. (This paragraph used to claim
+removal on kill and on shutdown; neither existed, and 6740 orphaned
+``kit_bg_*`` files had accumulated in ``/tmp`` by the time it was
+checked. They are 0600, so the content stays private to the owner.)
 """
 
 from __future__ import annotations
@@ -236,13 +243,58 @@ def _load_registry_file(workspace: str | Path) -> dict:
     return data
 
 
+def _base_child_env() -> dict:
+    """The environment a background command starts from.
+
+    Foreground bash already ran on a scrubbed environment; this path took
+    ``os.environ.copy()``, so backgrounding a command — a choice the MODEL
+    makes, ``bash_background`` being model-callable — handed the child the
+    provider key the agent itself is running on. Anything that prints its
+    environment then wrote that key into the job's output file and returned
+    it as a tool result.
+
+    Falls back to the raw environment only if the scrubber cannot be
+    imported at all, which would mean a broken install rather than a
+    running agent.
+    """
+    try:
+        from .api_client import _scrubbed_bash_env
+        return _scrubbed_bash_env()
+    except Exception:
+        return os.environ.copy()
+
+
+def _unlink_job_outputs(rec: dict) -> None:
+    """Remove a finished job's stdout/stderr tempfiles.
+
+    Nothing ever deleted these: 6740 orphaned ``kit_bg_*`` files were
+    observed in ``/tmp``. They are 0600, so no third party reads them, but
+    they hold whatever the command printed and they accumulate without
+    limit. Best-effort — a file already gone is the expected case.
+    """
+    for key in ("stdout_path", "stderr_path"):
+        raw = (rec or {}).get(key)
+        if not raw:
+            continue
+        try:
+            Path(str(raw)).unlink()
+        except (OSError, ValueError):
+            pass
+
+
 def _prune_old_records(jobs: dict, now: float) -> bool:
     """Drop records started more than ~7 days ago. The 24 h hard timeout
-    guarantees any such job is long over. Returns True when pruned."""
+    guarantees any such job is long over. Returns True when pruned.
+
+    Dropping the record is also the last moment anything knows where the
+    job's output files are, so they are unlinked here — otherwise the only
+    map to them is gone and they stay in ``/tmp`` forever.
+    """
     cutoff = now - _REGISTRY_MAX_AGE_S
     stale = [jid for jid, rec in jobs.items()
              if float((rec or {}).get("started_at") or 0.0) < cutoff]
     for jid in stale:
+        _unlink_job_outputs(jobs.get(jid) or {})
         jobs.pop(jid, None)
     return bool(stale)
 
@@ -482,7 +534,7 @@ class _Registry:
         sout = open(stdout_path, "w", buffering=1)   # line-buffered
         serr = open(stderr_path, "w", buffering=1)
 
-        run_env = os.environ.copy()
+        run_env = _base_child_env()
         run_env.setdefault("LC_ALL", "C.UTF-8")
         run_env.setdefault("LANG", "C.UTF-8")
         # Buffering off in the child Python so output appears live.
