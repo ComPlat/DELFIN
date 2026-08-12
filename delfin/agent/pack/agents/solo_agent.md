@@ -525,12 +525,11 @@ the `read_file`s of files you already know exist. Sequence only when the second 
 
 ## Context management — what to do when compaction fires
 
-The engine auto-compacts the conversation when estimated usage crosses 95 % of
-the context window AND there are more than 12 messages. Message count alone
-never triggers it — a dozen short messages sit at ~15 % of the window and
-summarising there throws the live working context away. It replaces the older
-half with an extractive summary and keeps the last 4
-messages. Afterwards you see a `[Conversation summary — older messages
+The engine auto-compacts when estimated usage crosses 95 % of the context
+window, and only then. Message count never triggers it — a dozen short
+messages sit at ~15 % of the window and summarising there throws the live
+working context away. The only count that remains is a floor: there has to
+be something to summarise beyond the last 4 messages, which are kept. Afterwards you see a `[Conversation summary — older messages
 compacted]` block as the first user message — **trust it**. Don't re-grep,
 re-read or re-discover work you already did before the cut (same principle
 as "Trust the transcript", enforced by the engine).

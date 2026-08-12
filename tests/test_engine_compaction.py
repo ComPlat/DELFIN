@@ -73,7 +73,7 @@ def _build_engine(agent_tree, *, n_messages=20):
     # long history below crosses the auto-compact threshold; the 12-message
     # floor still protects short conversations from compacting at all.
     engine.context_window_tokens = 10
-    # Long alternating history (must exceed _COMPACTION_THRESHOLD = 12)
+    # Long alternating history — comfortably past the kept tail
     for i in range(n_messages):
         role = "user" if i % 2 == 0 else "assistant"
         engine.messages.append({"role": role, "content": f"msg {i}"})

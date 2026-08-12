@@ -209,6 +209,14 @@ _NOT_CARRIED = {
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
     "_truncated_tools_turn", "_stop_requested", "_steering_delivered",
     "_steering_refreshes",
+    # -- the stop's owner, and the counter it is stamped from -------------
+    #    A stop belongs to the turn that asked for it — that is what keeps
+    #    the next message from erasing it. Nothing about that survives the
+    #    process: on resume there is no turn in flight to own a stop, and
+    #    a serial carried across would let a stale id match a fresh turn.
+    "_turn_serial", "_turn_id", "_stop_owner_turn",
+    # -- the last turn's diagnosis, shown once and cleared next turn ------
+    "last_empty_turn",
     # -- the live system prompt: its TEXT carries the injected memory and
     #    is deliberately never written to disk. Its SIZE is carried, as
     #    _system_prompt_chars, which is declared.

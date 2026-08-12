@@ -2987,7 +2987,12 @@ class AgentEngine:
     # (_KEEP_RECENT) below which there is nothing between the summary block
     # and the kept tail. Retained as the "a conversation this short is not
     # worth summarising" reference point.
-    _COMPACTION_THRESHOLD = 12
+    # Retired. It gated _compact_history until pressure was asked
+    # first; since the count can only matter once the budget is
+    # already over the line, its whole remaining effect was to block
+    # compaction exactly when it was needed. The floor that survives
+    # is _KEEP_RECENT: there must be something to summarise beyond
+    # the messages that are kept.
     _KEEP_RECENT = 4            # keep last 4 messages intact
     # Header that marks a compaction summary message — used both to build the
     # block and to recognise a PRIOR summary on re-compaction so it isn't

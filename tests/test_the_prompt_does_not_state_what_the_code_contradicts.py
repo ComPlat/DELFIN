@@ -41,15 +41,20 @@ def test_the_compaction_rule_is_stated_as_the_code_implements_it():
     src = (_ROOT / "delfin" / "agent" / "engine.py").read_text(encoding="utf-8")
     body = src[src.index("def _compact_history"):]
     body = body[:body.index("\n    def ", 10)]
-    # Both guards return early -> the trigger is a conjunction.
-    assert "if len(self.messages) < self._COMPACTION_THRESHOLD:\n            return" in body
-    assert "if not self._should_auto_compact():\n            return" in body
+    # Pressure is asked FIRST and is the only trigger; what remains of the
+    # message count is a floor -- there must be something to summarise
+    # beyond the messages that are kept. The old count gate returned
+    # before anything looked at the budget, which blocked compaction
+    # exactly when it was needed, and it is gone.
+    assert "if not force and not self._should_auto_compact():\n            return" in body
+    assert "if len(self.messages) <= self._KEEP_RECENT:\n            return" in body
+    assert "_COMPACTION_THRESHOLD" not in body
 
     section = _SOLO[_SOLO.index("## Context management"):]
     section = section[:section.index("\n## ")]
-    assert " AND " in section
     assert " or estimated usage crosses" not in section
-    assert str(AgentEngine._COMPACTION_THRESHOLD) in section
+    assert "Message count never triggers it" in section
+    assert str(AgentEngine._KEEP_RECENT) in section
     assert "95 %" in section
 
 
