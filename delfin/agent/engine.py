@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import subprocess
@@ -3821,6 +3822,57 @@ class AgentEngine:
             "evidence": self._export_evidence(),
         }
 
+    @dataclasses.dataclass(frozen=True)
+    class _EvidenceField:
+        """One ledger that has to survive a resume.
+
+        ``dump`` makes it JSON-safe, ``load`` takes it back including the
+        None case, so a session saved before the field existed loads with
+        the same default a fresh session starts from."""
+        attr: str
+        key: str
+        dump: "Callable[[Any], Any]"
+        load: "Callable[[Any], Any]"
+
+    # The single declaration. Export, restore and the coverage test all read
+    # it, because the failure here was never one missing field -- it was a
+    # hand-written list beside a set of attributes maintained by need, with
+    # nothing noticing when they drifted. They had drifted twice, and both
+    # times the field left out was a guard: the location scanner ran
+    # disabled while holding a populated ledger, and a restored PASS faced
+    # no test-evidence veto.
+    _EVIDENCE_FIELDS: "tuple[_EvidenceField, ...]" = (
+        _EvidenceField(
+            "_last_observed_files", "observed_files",
+            lambda v: sorted(v or ()), lambda v: set(v or ())),
+        # Whether a ledger EXISTS is not the same question as whether it is
+        # empty -- an empty one means nothing was read, which is a fact.
+        # Kept as its own value for that reason, and exported for the same.
+        _EvidenceField(
+            "_observed_ledger_available", "observed_ledger_available",
+            lambda v: bool(v), lambda v: bool(v)),
+        _EvidenceField(
+            "_exec_commands_session", "exec_commands",
+            lambda v: list(v or ()), lambda v: list(v or ())),
+        _EvidenceField(
+            "_session_tool_names", "session_tool_names",
+            lambda v: sorted(v or ()), lambda v: set(v or ())),
+        _EvidenceField(
+            "_delegation_satisfied", "delegation_satisfied",
+            lambda v: bool(v), lambda v: bool(v)),
+        _EvidenceField(
+            "role_verdicts", "role_verdicts",
+            lambda v: dict(v or {}), lambda v: dict(v or {})),
+        _EvidenceField(
+            "role_test_evidence", "role_test_evidence",
+            lambda v: {k: list(x) for k, x in (v or {}).items()},
+            lambda v: {k: list(x) for k, x in (v or {}).items()}
+            if isinstance(v, dict) else {}),
+        _EvidenceField(
+            "_trimmed_chars_since_floor", "trimmed_chars_since_floor",
+            lambda v: int(v or 0), lambda v: int(v or 0)),
+    )
+
     def _export_evidence(self) -> dict:
         """The ledgers the guards judge against.
 
@@ -3836,48 +3888,36 @@ class AgentEngine:
         the credit that offsets it resets to zero. A resumed session then
         reads its context as larger than it is and compacts early.
         """
-        return {
-            "observed_files": sorted(
-                getattr(self, "_last_observed_files", None) or ()),
-            "exec_commands": list(
-                getattr(self, "_exec_commands_session", None) or ()),
-            "session_tool_names": sorted(
-                getattr(self, "_session_tool_names", None) or ()),
-            "delegation_satisfied": bool(
-                getattr(self, "_delegation_satisfied", False)),
-            "role_verdicts": dict(getattr(self, "role_verdicts", None) or {}),
-            "trimmed_chars_since_floor": int(
-                getattr(self, "_trimmed_chars_since_floor", 0) or 0),
-        }
+        out: dict = {}
+        for spec in self._EVIDENCE_FIELDS:
+            try:
+                out[spec.key] = spec.dump(getattr(self, spec.attr, None))
+            except Exception:
+                out[spec.key] = spec.dump(None)
+        # When it was taken. Nothing reads it yet, and that is deliberate:
+        # a resumed session asserting "the tests pass now" is believed on a
+        # ledger recorded against a tree that may have moved since, and the
+        # answer to that is to say where the evidence CAME FROM. Discarding
+        # stale evidence is what produced the false "unverified" caveats
+        # that made exporting it necessary in the first place.
+        out["saved_at"] = int(_time.time())
+        return out
 
     def _restore_evidence(self, data: dict) -> None:
         """Read the ledgers back. Missing or malformed means empty, never
-        raises: a session saved before this existed must still load."""
+        raises: a session saved before this existed must still load.
+
+        Driven by the same declaration as the export, so the two cannot
+        drift apart -- which they had, twice, and both times the field
+        that went missing was a guard."""
         ev = data.get("evidence")
         if not isinstance(ev, dict):
             ev = {}
-        try:
-            self._last_observed_files = set(ev.get("observed_files") or ())
-        except Exception:
-            self._last_observed_files = set()
-        try:
-            self._exec_commands_session = list(ev.get("exec_commands") or ())
-        except Exception:
-            self._exec_commands_session = []
-        try:
-            self._session_tool_names = set(ev.get("session_tool_names") or ())
-        except Exception:
-            self._session_tool_names = set()
-        self._delegation_satisfied = bool(ev.get("delegation_satisfied", False))
-        try:
-            self.role_verdicts = dict(ev.get("role_verdicts") or {})
-        except Exception:
-            self.role_verdicts = {}
-        try:
-            self._trimmed_chars_since_floor = int(
-                ev.get("trimmed_chars_since_floor", 0) or 0)
-        except (TypeError, ValueError):
-            self._trimmed_chars_since_floor = 0
+        for spec in self._EVIDENCE_FIELDS:
+            try:
+                setattr(self, spec.attr, spec.load(ev.get(spec.key)))
+            except Exception:
+                setattr(self, spec.attr, spec.load(None))
 
     def restore_state(self, data: dict) -> None:
         """Restore engine state from a saved session.
