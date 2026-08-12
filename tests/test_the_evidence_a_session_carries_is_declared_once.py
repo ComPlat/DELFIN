@@ -215,6 +215,12 @@ _NOT_CARRIED = {
     #    resume would let a figure from a previous conversation excuse
     #    one stated in this one.
     "_last_user_message",
+    # -- the name of THIS turn's office figure ledger ----------------------
+    #    The ledger it names lives in memory in this process, so the token
+    #    means nothing to another one. Carrying it would name a ledger that
+    #    does not exist — and the empty-ledger reading is the strict one,
+    #    so a resumed turn would caveat figures its own tools produced.
+    "_figure_ledger_token",
     # -- the correction budget, spent at most once per turn ---------------
     #    Kept apart from the VERDICT (_claim_guard_corrected) so the green
     #    "answer corrected" line comes from a re-scan rather than from
