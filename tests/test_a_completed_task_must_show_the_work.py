@@ -285,6 +285,24 @@ def test_an_artifact_task_is_judged_on_files_the_session_wrote(agent_home):
     assert out["task"]["verified"] == "unmet"
 
 
+def test_an_artifact_task_whose_pdf_exists_is_not_accused(agent_home):
+    """The regression that matters most here. The old check read its
+    evidence off an attribute the executor does not have, so it saw an
+    empty ledger every time and flagged this exact case — a report task
+    whose PDF was written — as unmet. Against German subjects (Bericht,
+    Brief, Tabelle) that fires constantly, and a note that is wrong
+    constantly is a note nobody reads."""
+    perms = _perms(agent_home)
+    tid = _create_and_start(perms, "PDF-Bericht für Juni erstellen")
+    _doc_executor.execute("write_file", {
+        "path": str(agent_home / "bericht.pdf"), "content": "%PDF-1.4",
+    }, perms)
+    out = json.loads(_doc_executor.execute(
+        "task_update", {"task_id": tid, "status": "completed"}, perms))
+    assert "note" not in out, out
+    assert out["task"]["verified"] == "verified"
+
+
 def test_the_journal_window_is_compared_in_the_same_timezone(agent_home):
     """The change journal writes LOCAL naive timestamps and the task store
     writes UTC ones. Compared raw, every change in the window looks hours
