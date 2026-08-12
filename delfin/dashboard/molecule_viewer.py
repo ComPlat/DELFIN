@@ -1301,16 +1301,22 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function getRoot(scopeKey) {
         return document.querySelector('.' + scopeKey);
     }
-    // Toolbar parts are looked up inside the tab's own scope first, then
-    // anywhere on the page. Fullscreen moves the toolbar into a floating
-    // overlay outside that scope: a scope-only lookup then found nothing, so
-    // the value box stayed empty and — worse — edits never reached Python,
-    // because the sync input had left the scope too. There is one Submit tab
-    // per dashboard, so the page-wide fallback cannot address the wrong one.
+    // Every element that carries this scope's class, not just the first one.
+    //
+    // Fullscreen puts a second one on the page: the floating overlay is given
+    // the same class, and the toolbar is moved into it. Looking only in the
+    // first and then falling back to the whole page -- which is what this did
+    // -- was safe while there was one editor per dashboard, and stopped being
+    // safe the moment the ORCA Builder got one too: the fallback would reach
+    // into the other tab's toolbar and read the wrong value box, or worse,
+    // send an edit through the wrong sync input.
     function findInScope(scopeKey, selector) {
-        var root = getRoot(scopeKey);
-        var found = root ? root.querySelector(selector) : null;
-        return found || document.querySelector(selector);
+        var roots = document.querySelectorAll('.' + scopeKey);
+        for (var i = 0; i < roots.length; i++) {
+            var found = roots[i].querySelector(selector);
+            if (found) return found;
+        }
+        return null;
     }
     function getSyncInput(scopeKey) {
         var wrap = findInScope(scopeKey, '.submit-manip-sync');

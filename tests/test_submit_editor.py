@@ -440,9 +440,17 @@ def test_toolbar_parts_are_found_even_when_fullscreen_moves_them():
     """Fullscreen lifts the toolbar into a floating overlay, outside the tab's
     scope container. A scope-only lookup then found nothing: the value box
     stayed empty and, worse, edits never reached Python at all, because the
-    sync input had left the scope too."""
+    sync input had left the scope too.
+
+    The overlay carries the scope's class as well, so the answer is to look in
+    every element that has it. It used to fall back to the whole page instead,
+    on the grounds that there is one Submit tab per dashboard -- which stopped
+    being true when the ORCA Builder got an editor of its own.
+    """
     finder = _body('findInScope')
-    assert 'document.querySelector(selector)' in finder
+    assert "document.querySelectorAll('.' + scopeKey)" in finder
+    assert 'roots[i].querySelector(selector)' in finder
+    assert 'document.querySelector(selector)' not in finder
     for name in ('getSyncInput', 'getStatusEl', 'updateInternalReadout'):
         body = _body(name)
         assert 'findInScope(' in body, name

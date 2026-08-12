@@ -15,6 +15,7 @@ import numpy as np
 
 from . import structure_editor as _structure_editor
 
+from IPython import get_ipython
 from IPython.display import clear_output, display, HTML
 
 from delfin.common.control_validator import (
@@ -323,6 +324,45 @@ def create_tab(ctx):
         'viewer_div': None,
         'viewer_live': False,
     }
+
+    # -- the structure editor -------------------------------------------
+    # The same one the Submit tab holds, over the block this tab is showing.
+    #
+    # The editor writes a structure as plain XYZ into a coordinates box and
+    # lets its tab take it from there. This tab's box holds named blocks --
+    # "name.xyz;comment", the atoms, "*" -- which the editor knows nothing
+    # about, so it is given a box of its own and what it writes is folded back
+    # into the block on screen. That is the same rebuild Apply Numbering Fix
+    # does, so Check Numbering and Apply Numbering Fix are untouched by this.
+    orca_editor_coords = widgets.Textarea(
+        value='', layout=widgets.Layout(display='none'))
+    _main_io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
+
+    def _orca_schedule_ui_update(func, *args, **kwargs):
+        if _main_io_loop is not None:
+            _main_io_loop.add_callback(lambda: func(*args, **kwargs))
+            return
+        func(*args, **kwargs)
+
+    orca_editor = _structure_editor.build(
+        ctx,
+        state=state,
+        coords_widget=orca_editor_coords,
+        viewer_height=560,
+        schedule_ui_update=_orca_schedule_ui_update,
+        # Defined further down, so they are looked up when they are called.
+        update_view=lambda *a, **k: _orca_editor_wrote(*a, **k),
+        # This tab has no isomers and no SMILES to take a charge from.
+        show_isomer_at_index=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None,
+    )
+    orca_editor_scope = orca_editor.submit_scope_id
+    # This tab has a fullscreen button of its own, beside the block stepper.
+    orca_editor.submit_fullscreen_btn.layout.display = 'none'
+    orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-member')
+    orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
+    orca_editor.mol_status.add_class('delfin-structure-fs-member')
+    orca_editor.submit_ff_notes.add_class('delfin-structure-fs-member')
 
     # -- helpers --------------------------------------------------------
     def _orca_parse_xyz_block_records(text):
@@ -783,11 +823,31 @@ def create_tab(ctx):
         '    }\n'
         '    viewer.render();\n'
         '    window._orcaBuildViewer=viewer;\n'
+        '    __REGISTER__\n'
         '  }\n'
         '  setTimeout(init,0);\n'
         '})();\n'
         '</script>\n'
     )
+
+    def _register_with_editor_js(viewer='viewer', element='el'):
+        """Hand the viewer to the structure editor working in this scope.
+
+        This is what the Submit tab's viewer does when it appears, and it is
+        all the toolbar needs: the editor addresses a viewer by the scope it
+        belongs to, never by a name of its own.
+        """
+        scope = json.dumps(orca_editor_scope)
+        return (
+            'try{'
+            'window._submitMolViewerByScope=window._submitMolViewerByScope||{};'
+            f'window._submitMolViewerByScope[{scope}]={viewer};'
+            'setTimeout(function(){'
+            'if(window.__delfinSubmitManip)'
+            f'window.__delfinSubmitManip.onViewerReady({scope},{element});'
+            '},80);'
+            '}catch(_e){}'
+        )
 
     # JS installed once per viewer: labels sit at the exact atom centre and are
     # drawn on top (inFront:true), so a number never drifts off its atom and is
@@ -852,6 +912,7 @@ def create_tab(ctx):
             f'      viewer.setStyle({{}},{profile["style_js"]});\n'
             f'      {label_js}\n'
             '      viewer.render();\n'
+            f'      {_register_with_editor_js("viewer", "el")}\n'
             '      var hs=viewer.__delfinInteractionEndHandlers||[];\n'
             '      for(var i=0;i<hs.length;i++){try{hs[i]();}catch(_e){}}\n'
             '    }catch(_err){}\n'
@@ -866,7 +927,77 @@ def create_tab(ctx):
         if not script:
             return False
         ctx.run_js(script)
+        _hand_to_editor(full_xyz)
         return True
+
+    def _hand_to_editor(full_xyz):
+        """Tell the editor which structure is on screen.
+
+        Quietly: this is the tab saying what it has just drawn, not the editor
+        saying it has changed something, and the two travel down the same wire.
+        """
+        state['editor_quiet'] = True
+        try:
+            orca_editor_coords.value = full_xyz or ''
+        finally:
+            state['editor_quiet'] = False
+        if full_xyz:
+            orca_editor._ensure_manip_bootstrap()
+        orca_editor._set_manip_toolbar_enabled(bool(full_xyz))
+
+    def _blocks_with_edit(full_xyz):
+        """The coordinates box with the shown block replaced by *full_xyz*.
+
+        The same rebuild Apply Numbering Fix does -- name, comment, atoms, the
+        closing star -- so an edit leaves every other block and every header
+        exactly as it found them.
+        """
+        records = _orca_parse_xyz_block_records(orca_coords.value)
+        idx = int(state.get('xyz_view_idx', 0))
+        if not records or not 0 <= idx < len(records):
+            return strip_xyz_header(full_xyz)
+        records[idx]['full_xyz'] = full_xyz
+        rebuilt = []
+        for record in records:
+            label = record.get('raw_name') or record.get('filename') or 'block'
+            suffix = record.get('suffix_comment', '')
+            header = f'{label};{suffix}' if suffix else f'{label};'
+            rebuilt.append(f'{header}\n{record["full_xyz"].strip()}\n*')
+        return '\n\n'.join(rebuilt)
+
+    def _orca_editor_wrote(change=None):
+        """The editor has changed the structure. Put it in the block on screen.
+
+        Rewriting the coordinates box would normally throw the preview away and
+        step back to the first block, which is not what dragging an atom asks
+        for -- so the box is written quietly and the block list corrected by
+        hand.
+        """
+        if state.get('editor_quiet'):
+            return
+        text = orca_editor_coords.value
+        atoms = strip_xyz_header(text)
+        if not atoms.strip():
+            return
+        lines = [line for line in atoms.split('\n') if line.strip()]
+        full_xyz = '%d\nEdited in DELFIN viewer\n%s' % (len(lines), atoms)
+        # The browser moved the atoms and is already showing them; only the
+        # coordinates have to catch up. Redrawing here would take the model
+        # apart and perceive its bonds again, which is exactly what the editor
+        # has been working against.
+        drawn_already = bool(state.pop('manip_inflight', False))
+        state['editor_quiet'] = True
+        try:
+            orca_coords.value = _blocks_with_edit(full_xyz)
+            blocks = parse_xyz_blocks(orca_coords.value) or []
+            if blocks:
+                state['xyz_blocks'] = blocks
+                state['xyz_view_idx'] = min(state.get('xyz_view_idx', 0),
+                                            len(blocks) - 1)
+        finally:
+            state['editor_quiet'] = False
+        if not drawn_already and not _show_molecule_in_place(full_xyz):
+            _refresh_mol_view(reset_view=False)
 
     def _viewer_html(xyz_data, label_js='', reset_view=False):
         """Build a self-contained HTML block that renders xyz_data in a $3Dmol viewer.
@@ -894,6 +1025,7 @@ def create_tab(ctx):
             .replace('__STYLE__', profile['style_js'])
             .replace('__VIEWER_CONFIG__', profile['viewer_config_js'])
             .replace('__LABELS__', label_js)
+            .replace('__REGISTER__', _register_with_editor_js())
             .replace('__ZOOM__', zoom)
         )
         return html
@@ -1048,9 +1180,11 @@ def create_tab(ctx):
                                 )
                             )
                         )
+                        _hand_to_editor('')
                     else:
                         label_js = _labels_js()
                         display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
+                        _hand_to_editor(full_xyz)
                 except Exception as e:
                     print(f'Could not visualize: {e}')
             else:
@@ -1068,10 +1202,16 @@ def create_tab(ctx):
                     xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
                     label_js = _labels_js()
                     display(HTML(_viewer_html(xyz_data, label_js, reset_view=reset_view)))
+                    _hand_to_editor(xyz_data)
                 except Exception as e:
                     print(f'Could not visualize: {e}')
 
     def update_orca_molecule_view(change=None):
+        # An edit from the editor has already put itself in the box and told
+        # the viewer; starting over here would step back to the first block
+        # and reset the camera in the middle of a drag.
+        if state.get('editor_quiet'):
+            return
         state['xyz_blocks'] = parse_xyz_blocks(orca_coords.value) or []
         state['xyz_view_idx'] = 0
         state['numbering_check_active'] = False
@@ -1558,6 +1698,7 @@ def create_tab(ctx):
     orca_mol_next_btn.on_click(on_mol_next)
     orca_mol_labels_btn.observe(on_mol_labels_toggle, names='value')
     orca_mol_label_size.observe(on_mol_label_size, names='value')
+    orca_editor_coords.observe(_orca_editor_wrote, names='value')
     update_orca_molecule_view()
     update_orca_preview()
     state['last_auto_keywords'] = _build_keyword_line()
@@ -1840,9 +1981,12 @@ def create_tab(ctx):
     orca_mol_header.add_class('delfin-structure-fs-member')
     orca_mol_header.add_class('delfin-structure-fs-header')
     orca_mol_module = widgets.VBox(
-        [orca_mol_header, orca_mol_nav_row, orca_mol_output],
+        [orca_mol_header, orca_mol_nav_row, orca_editor.submit_manip_toolbar,
+         orca_editor.mol_status, orca_mol_output, orca_editor.submit_ff_notes],
         layout=widgets.Layout(width='100%', min_width='0', gap='6px'),
     )
+    # The editor finds its own controls by this class, and only inside it.
+    orca_mol_module.add_class(orca_editor_scope)
     orca_mol_module.add_class('delfin-structure-fs-module')
     orca_mol_module.add_class('orca-structure-fs-module')
 
@@ -2088,4 +2232,9 @@ def create_tab(ctx):
         'orca_mol_labels_btn': orca_mol_labels_btn,
         'orca_mol_label_size': orca_mol_label_size,
         'update_orca_preview': update_orca_preview,
+        # The structure editor this tab holds, under the names it uses.
+        **orca_editor.exported,
+        'editor_state': state,
+        'editor_coords': orca_editor_coords,
+        'editor_scope': orca_editor_scope,
     }
