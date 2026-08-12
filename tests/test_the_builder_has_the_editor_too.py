@@ -800,3 +800,57 @@ def test_an_edit_keeps_the_header_of_a_plain_xyz(builder):
     lines = refs['orca_coords'].value.split('\n')
     assert lines[0].strip() == '3', refs['orca_coords'].value[:60]
     assert lines[2].startswith('O 0.2')
+
+
+def test_the_editor_starts_the_same_way_in_both_tabs(builder):
+    """Numbers off until they are asked for, and the size field with them.
+
+    The Builder used to bring them up by itself, from the days when its
+    numbering was its own; the editor's default is off, and one default is
+    better than two.
+    """
+    refs, _sent = builder
+    refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
+
+    assert refs['submit_labels_btn'].value is False
+    assert refs['submit_label_size'].layout.display == 'none'
+
+
+def test_the_force_field_notes_stay_in_the_small_view(builder):
+    """They are several lines of prose about what had to be approximated --
+    a forced hybridisation, a metal the parameters do not really cover. In
+    fullscreen they take that space off the structure they describe, and the
+    Submit tab has never put them there either."""
+    refs, _sent = builder
+    classes = refs['submit_ff_notes']._dom_classes
+
+    assert 'delfin-structure-fs-member' not in classes
+    assert not any(c.startswith('submit-fs-member') for c in classes)
+
+
+def test_drawing_on_and_asking_again_gives_the_new_structure(builder):
+    """Ketcher stays open while a structure grows. Each TO SMILES reads what is
+    there now, and the answer carries a serial in front so that asking twice
+    about the same drawing reads as two answers rather than as one that never
+    came.
+
+    Measured in both tabs: a four-carbon chain gives CCCC, drawing two more on
+    and asking again gives CCCCCC, and asking a third time with nothing changed
+    gives CCCCCC.
+    """
+    refs, _sent = builder
+
+    def molfile(n):
+        head = '\n  Ketcher\n\n%3d%3d  0  0  0  0            999 V2000\n' % (n, n - 1)
+        atoms = '    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n' * n
+        bonds = ''.join('%3d%3d  1  0  0  0  0\n' % (i, i + 1) for i in range(1, n))
+        return head + atoms + bonds + 'M  END\n'
+
+    refs['submit_draw_sync'].value = '1\n' + molfile(4)
+    assert refs['orca_coords'].value == 'CCCC'
+
+    refs['submit_draw_sync'].value = '2\n' + molfile(6)
+    assert refs['orca_coords'].value == 'CCCCCC'
+
+    refs['submit_draw_sync'].value = '3\n' + molfile(6)
+    assert refs['orca_coords'].value == 'CCCCCC'

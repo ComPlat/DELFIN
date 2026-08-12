@@ -56,8 +56,8 @@ LABEL_PX_PER_SCALE = 34.0
 #: What a size control offers: the height of a number in pixels, typed or
 #: stepped. Five fixed rungs were not enough -- a crowded structure and a
 #: three-atom one want different numbers, and neither wants the rung between.
-LABEL_PX_DEFAULT = 17
-LABEL_PX_MIN = 6
+LABEL_PX_DEFAULT = 6
+LABEL_PX_MIN = 2
 LABEL_PX_MAX = 48
 
 #: On-screen size of the numbers: the factor the high-resolution label texture

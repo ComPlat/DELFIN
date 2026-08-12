@@ -74,6 +74,8 @@ def test_switching_the_numbers_off_keeps_the_viewer(tab):
     """
     widgets_map, scripts = tab
 
+    widgets_map["submit_labels_btn"].value = True
+    scripts.clear()
     widgets_map["submit_labels_btn"].value = False
 
     assert len(scripts) == 1
@@ -87,7 +89,6 @@ def test_switching_the_numbers_off_keeps_the_viewer(tab):
 
 def test_switching_the_numbers_back_on_keeps_the_viewer(tab):
     widgets_map, scripts = tab
-    widgets_map["submit_labels_btn"].value = False
     scripts.clear()
 
     widgets_map["submit_labels_btn"].value = True

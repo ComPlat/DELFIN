@@ -341,9 +341,6 @@ def create_tab(ctx):
         write_input=_write_orca_coords,
     )
     orca_editor_scope = orca_editor.submit_scope_id
-    # This tab has always shown its numbers straight away; the editor's own
-    # default is off, because the Submit tab starts from a blank box.
-    orca_editor.submit_labels_btn.value = True
     # The editor's own fullscreen button, at the head of its toolbar where the
     # Submit tab has it, rather than a second one in a row of its own. It is
     # made over to this tab's fullscreen: the Submit tab's overlay is built
@@ -355,7 +352,9 @@ def create_tab(ctx):
     orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-member')
     orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
     orca_editor.mol_status.add_class('delfin-structure-fs-member')
-    orca_editor.submit_ff_notes.add_class('delfin-structure-fs-member')
+    # The force-field notes stay in the small view, as they do in the Submit
+    # tab: they are several lines of prose about what had to be approximated,
+    # and in fullscreen they take that space off the structure they describe.
 
     # -- helpers --------------------------------------------------------
     def _orca_parse_xyz_block_records(text):

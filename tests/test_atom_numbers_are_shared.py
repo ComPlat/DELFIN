@@ -113,6 +113,7 @@ def test_the_size_is_asked_for_in_pixels():
     ask for pixels.
     """
     assert structure_editor.scale_for_px(17) == 0.5
+    assert structure_editor.LABEL_PX_DEFAULT == 6, 'small enough to stay out of the way'
     assert structure_editor.scale_for_px(34) == 1.0
     assert structure_editor.LABEL_SCALE_DEFAULT == structure_editor.scale_for_px(
         structure_editor.LABEL_PX_DEFAULT)
