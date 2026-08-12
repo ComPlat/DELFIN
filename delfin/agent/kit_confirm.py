@@ -35,35 +35,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-# Directories never AUTO-granted for the session from a single-file approval:
-# approving a read of e.g. /etc/hostname must not silently open all of /etc.
-_NON_GRANTABLE_DIRS = frozenset({
-    "/", "/etc", "/root", "/usr", "/bin", "/sbin", "/lib", "/lib64",
-    "/var", "/sys", "/proc", "/dev", "/boot", "/run", "/srv", "/cdrom",
-})
-_SECRET_DIR_NAMES = frozenset({
-    ".ssh", ".gnupg", ".gpg", ".aws", ".azure", ".kube", ".docker",
-})
-
-
-def _is_grantable_session_dir(path: str) -> bool:
-    """Whether ``path`` is safe to auto-grant for the rest of the session. The
-    single approved read still proceeds — this only governs whether we BROADEN
-    to the parent directory, which must not be a system root (or its direct
-    child) or a secret directory. Fail closed on any error."""
-    try:
-        p = Path(path).expanduser().resolve()
-        if str(p) in _NON_GRANTABLE_DIRS:
-            return False
-        if len(p.parts) >= 2 and ("/" + p.parts[1]) in _NON_GRANTABLE_DIRS:
-            return False
-        if set(p.parts) & _SECRET_DIR_NAMES:
-            return False
-        return True
-    except Exception:
-        return False
-
-
 @dataclass
 class _ConfirmRequest:
     seq: int
@@ -75,10 +46,6 @@ class _ConfirmRequest:
     remember_pattern: Optional[str] = None
     persist_pattern: Optional[str] = None  # value for ~/.delfin/settings.json
     persist_kind: Optional[str] = None     # 'allow_pattern' or 'extra_dir'
-    # Directory to grant for THIS session (non-persisted) when a plain
-    # "Allow (once)" approves an outside-workspace access — so the agent
-    # can keep reading in that dir without re-prompting per file (bug 065503).
-    session_dir: Optional[str] = None
 
 
 class KitConfirmBroker:
@@ -184,7 +151,6 @@ class KitConfirmBroker:
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
             persist_kind = req.persist_kind
-            session_dir = req.session_dir
 
         # Tell the UI that the prompt EXPIRED rather than letting it
         # disappear silently — the user was deciding, not ignoring it.
@@ -226,19 +192,14 @@ class KitConfirmBroker:
             self._set_toast(
                 f"{'OK' if ok else 'FAIL'} persisted: {msg}"
             )
-        # Plain "Allow (once)" on an outside-workspace access: grant the
-        # directory for THIS session only (live perms, not persisted) so the
-        # agent doesn't re-prompt for every file in it (bug 065503). Skipped
-        # when "Allow + Permanent" was used — that already added + persisted
-        # the dir.
-        elif persist_cb and req.decision and session_dir:
-            try:
-                ok, msg = persist_cb("extra_dir_session", session_dir)
-            except Exception as exc:
-                ok, msg = False, f"session grant failed: {exc}"
-            self._set_toast(
-                f"{'OK' if ok else 'FAIL'} for this session: {msg}"
-            )
+        # A plain "Allow (once)" on an outside-workspace read grants nothing
+        # here. It used to hand the file's parent directory to the live
+        # permissions as a WRITABLE root (bug 065503, "stop re-prompting per
+        # file"), which is not what the dialog said and not what the user
+        # clicked: approving a read of a file in $HOME made $HOME writable
+        # for the session. The read gate now opens that directory for READS
+        # itself (KitToolPermissions.add_session_read_dir), so the
+        # re-prompting stays solved without a write grant nobody asked for.
 
         self._refresh_panel()
         return bool(req.decision)
@@ -408,8 +369,11 @@ class KitConfirmBroker:
                     "stay active)."
                 )
         elif tool == "read_file":
-            # outside-workspace read: persisting = adding the parent
-            # directory as extra_workspace_dir.
+            # An outside-workspace read. "Allow (once)" opens the directory
+            # for READS only, and the read gate does that itself. The
+            # PERMANENT button is a different act: it makes the directory a
+            # writable workspace root in this and every later session, which
+            # is why the row below spells that out.
             from pathlib import Path
             try:
                 parent = str(Path(path_arg).expanduser().resolve().parent)
@@ -469,7 +433,7 @@ class KitConfirmBroker:
         if persist_pat and self._persist_callback is not None:
             kind_label = (
                 "bash allow-pattern" if persist_kind == "allow_pattern"
-                else "extra_workspace_dir" if persist_kind == "extra_dir"
+                else "WRITABLE workspace directory" if persist_kind == "extra_dir"
                 else persist_kind
             )
             persist_status = widgets.HTML(value=(
@@ -492,16 +456,18 @@ class KitConfirmBroker:
         # ---- 5. Buttons --------------------------------------------
         approve = widgets.Button(
             description="Allow (once)", button_style="success",
-            tooltip="Allow — for a directory access the folder applies for THIS "
-                    "session (no re-prompt per file); otherwise just this one "
-                    "action. Future sessions will ask again.",
+            tooltip="Allow this one action. For an outside-workspace read it "
+                    "also allows READING the other files in that directory "
+                    "for this session — no write access, nothing saved. "
+                    "Future sessions ask again.",
         )
         approve_persist = widgets.Button(
             description="Allow + Permanent",
             button_style="info",
             tooltip=(
                 f"Allow the action AND write the rule to {target_path} "
-                "(applies in future sessions without asking again)."
+                "(applies in future sessions without asking again). For a "
+                "file access this makes the directory WRITABLE."
             ),
             disabled=(not persist_pat or self._persist_callback is None),
         )
@@ -510,14 +476,6 @@ class KitConfirmBroker:
         def _decide(ok: bool, persist: bool = False):
             with self._lock:
                 req.decision = ok
-                # Approving an outside-workspace access grants its directory
-                # for the rest of this session (live perms, not persisted) so
-                # the agent stops re-prompting per file (bug 065503). The
-                # request() handler skips this when "Allow + Permanent" was
-                # clicked — that path already adds the dir AND persists it.
-                if (ok and persist_kind == "extra_dir" and persist_pat
-                        and _is_grantable_session_dir(persist_pat)):
-                    req.session_dir = persist_pat
                 if persist and persist_pat:
                     req.persist_pattern = persist_pat
                     req.persist_kind = persist_kind

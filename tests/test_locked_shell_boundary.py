@@ -117,9 +117,19 @@ def test_ordinary_commands_are_still_auto_allowed_under_a_lock(cmd):
     assert locked.matches_bash_auto_allow(cmd), cmd
 
 
-@pytest.mark.parametrize("cmd", ['python3 -c "print(1)"', "make build"])
+@pytest.mark.parametrize("cmd", [
+    "pytest -q", "python3 script.py", "python3 -m pytest tests/",
+    "ls -la", "git status",
+])
 def test_an_unlocked_session_keeps_its_auto_allow(cmd):
-    """HPC coding workflows depend on these running unattended."""
+    """HPC coding workflows depend on these running unattended.
+
+    `python -c` and `make` used to be in this list: the auto-allow table
+    kept them everywhere the scope was not locked. They are gone from it
+    because that made every write gate optional in the ordinary modes too
+    (test_an_interpreter_is_never_the_way_around_a_write_gate.py). What
+    stays here is what the routine loop actually runs.
+    """
     ws = pathlib.Path(tempfile.mkdtemp()).resolve()
     unlocked = A.KitToolPermissions(workspace=ws)
     if unlocked.scope_locked:
