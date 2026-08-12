@@ -28,6 +28,12 @@ Settings are read from (later wins on overlap):
   2. ``<workspace>/.delfin/settings.json``             — project
   3. ``<workspace>/.delfin/settings.local.json``       — local override
 
+The user's own file is always read: it is not a workspace and never
+needed trusting. The two workspace files are read only when the USER
+has trusted that directory for hooks — see ``workspace_trust``. A
+repository the user merely checked out ships no commands this module
+will run, and what it withheld is reported rather than dropped.
+
 A hook command may exit non-zero to *block* the upcoming tool call
 (PreToolUse) or simply log to stderr (other events). It may also
 emit a JSON object on stdout::
@@ -91,6 +97,12 @@ class HookCommand:
     command: str = ""           # shell command to run
     timeout_s: float = _DEFAULT_TIMEOUT_S
     type: str = "command"
+    # Absolute path of the settings file this came from. A hook the user
+    # wrote and a hook a repository shipped ran identically and printed
+    # identically, so the listing could not tell them apart; carrying the
+    # source makes /hooks, the audit record and the changes report all
+    # able to say WHOSE hook ran.
+    source: str = ""
 
     @property
     def matcher_re(self) -> re.Pattern[str] | None:
@@ -113,6 +125,7 @@ class HookResult:
     reason: str = ""
     duration_s: float = 0.0
     command: str = ""
+    source: str = ""
 
     @property
     def blocks(self) -> bool:
@@ -122,6 +135,11 @@ class HookResult:
 @dataclass
 class HooksConfig:
     by_event: dict[str, list[HookCommand]] = field(default_factory=dict)
+    # Everything the load could not do and did not crash over: a
+    # malformed entry that was dropped, a workspace whose hooks were
+    # withheld for lack of trust. Every call site swallowed the
+    # exceptions these replace, so the failures were invisible.
+    warnings: list[str] = field(default_factory=list)
 
     def for_event(self, event: str) -> list[HookCommand]:
         return self.by_event.get(event, [])
@@ -135,8 +153,17 @@ def _user_settings_path() -> Path:
 
 
 def _project_settings_paths(workspace: Path) -> list[Path]:
-    base = Path(workspace) / ".delfin"
-    return [base / "settings.json", base / "settings.local.json"]
+    """Every settings file this loader knows about inside *workspace*.
+
+    Derived from the trust registry rather than spelled out here, so the
+    set of files that RUN commands and the set of files that need a
+    trust decision (and a protected glob) cannot drift apart. They had:
+    ``settings.local.json`` was read here and protected nowhere.
+    """
+    from . import workspace_trust as _trust
+    root = Path(workspace)
+    return [root / rel
+            for rel in _trust.get_kind(_trust.KIND_HOOKS).relative_paths]
 
 
 def _read_json_safe(path: Path) -> dict[str, Any]:
@@ -146,10 +173,48 @@ def _read_json_safe(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _merge_hooks(into: HooksConfig, raw: dict[str, Any]) -> None:
+def _parse_timeout(raw: Any, warn: list[str], where: str) -> float | None:
+    """Seconds for one hook entry, or None when the entry must be dropped.
+
+    A ``timeout`` that is not a number raised TypeError out of the whole
+    merge, and every call site swallows exceptions around ``load_hooks``
+    -- so one typo in any settings layer silently disabled ALL hooks,
+    including the user's own blocking ones. A configuration error must
+    cost the entry that has it and nothing else, and must be said out
+    loud: hooks that stop running look exactly like hooks that found
+    nothing to complain about.
+
+    Values above 100 are read as milliseconds (the canonical schema),
+    at or below as seconds.
+    """
+    if raw is None or raw is False or raw == 0 or raw == "":
+        return float(_DEFAULT_TIMEOUT_S)
+    if isinstance(raw, bool):
+        value = float(int(raw))
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            warn.append(
+                f"{where}: timeout must be a number, got {raw!r} — this hook "
+                f"entry was dropped; the others still load."
+            )
+            return None
+    if value <= 0:
+        warn.append(
+            f"{where}: timeout must be positive, got {raw!r} — this hook "
+            f"entry was dropped; the others still load."
+        )
+        return None
+    return value / 1000.0 if value > 100 else value
+
+
+def _merge_hooks(into: HooksConfig, raw: dict[str, Any],
+                 source: Path | str = "") -> None:
     hooks_obj = raw.get("hooks") if isinstance(raw, dict) else None
     if not isinstance(hooks_obj, dict):
         return
+    src = str(source)
     for event, entries in hooks_obj.items():
         if event not in _VALID_EVENTS:
             continue
@@ -166,20 +231,25 @@ def _merge_hooks(into: HooksConfig, raw: dict[str, Any]) -> None:
             for c in cmds:
                 if not isinstance(c, dict):
                     continue
+                command = str(c.get("command", ""))
+                timeout_s = _parse_timeout(
+                    c.get("timeout"), into.warnings,
+                    f"{src or '<settings>'} [{event}] {command[:60]}")
+                if timeout_s is None:
+                    continue
                 bucket.append(
                     HookCommand(
                         matcher=matcher,
-                        command=str(c.get("command", "")),
-                        timeout_s=float(c.get("timeout", _DEFAULT_TIMEOUT_S)) / 1000.0
-                        if c.get("timeout", 0) and c.get("timeout", 0) > 100
-                        else float(c.get("timeout", _DEFAULT_TIMEOUT_S)),
+                        command=command,
+                        timeout_s=timeout_s,
                         type=str(c.get("type", "command")),
+                        source=src,
                     )
                 )
 
 
 def _project_hooks_allowed(workspace: Path | str | None) -> bool:
-    """Whether hooks may be read from inside *workspace*.
+    """Whether hooks MAY be considered at all for *workspace*.
 
     A hook file is executable configuration: it runs a shell command
     before and after every tool call, outside the permission gate and
@@ -193,6 +263,13 @@ def _project_hooks_allowed(workspace: Path | str | None) -> bool:
     hooks unguarded, so a locked office folder's settings file executed on
     every message. A guard a caller has to remember is a guard that gets
     forgotten.
+
+    This answers only "is this folder categorically ineligible". The
+    question that decides an ordinary directory -- "did the USER say they
+    trust it?" -- is ``workspace_trust.gate`` and is asked below, for the
+    same reason and in the same place. Being eligible was never consent:
+    every directory that was not a registered office folder passed here,
+    which includes one cloned a second ago.
     """
     if workspace is None:
         return False
@@ -212,18 +289,33 @@ def load_hooks(
 ) -> HooksConfig:
     """Read all settings files and return a merged HooksConfig.
 
-    The user's own file is always read. The workspace's is read only when
-    the workspace is one the user is working IN rather than one they have
-    pointed the agent AT -- see ``_project_hooks_allowed``.
+    The user's own ``~/.delfin/settings.json`` is always read: it is not
+    a workspace and never needed trusting. A workspace's files are read
+    only when the user has explicitly trusted that directory for hooks,
+    with the exact content they trusted -- ``workspace_trust.gate``.
+    What was withheld lands in ``cfg.warnings`` rather than being
+    dropped, because hooks that stop running look exactly like hooks
+    that had nothing to say.
+
+    ``extra_paths`` is for a caller naming a file itself (the CLI, a
+    test). It is deliberately NOT gated: naming a path is the user's own
+    decision, the same one the trust store records. Nothing derives it
+    from the workspace.
     """
+    from . import workspace_trust as _trust
+
     cfg = HooksConfig()
     paths: list[Path] = [_user_settings_path()]
+    decision = None
     if workspace is not None and _project_hooks_allowed(workspace):
-        paths.extend(_project_settings_paths(Path(workspace)))
+        decision = _trust.gate(_trust.KIND_HOOKS, workspace)
+        paths.extend(decision.paths)
     for p in extra_paths or ():
         paths.append(Path(p))
     for p in paths:
-        _merge_hooks(cfg, _read_json_safe(p))
+        _merge_hooks(cfg, _read_json_safe(p), source=p)
+    if decision is not None and decision.notice:
+        cfg.warnings.append(decision.notice)
     return cfg
 
 
@@ -354,8 +446,12 @@ def run_hooks(
             reason=reason or err.strip()[:240],
             duration_s=dur,
             command=hk.command,
+            source=hk.source,
         ))
-        # Fire-and-forget audit
+        # Fire-and-forget audit. The SOURCE is part of the record: a hook
+        # the user wrote and a hook a repository shipped executed
+        # identically and logged identically, so "what ran a shell
+        # command during this session" could not be answered.
         try:
             _audit.append(_audit.make_record(
                 tool="hook",
@@ -366,6 +462,11 @@ def run_hooks(
                     "matcher": hk.matcher,
                     "exit_code": rc,
                     "duration_s": round(dur, 3),
+                    "hook_event": event,
+                    # Not ``path``: the changes report drops records whose
+                    # absolute path lies outside the workspace, and the
+                    # user's own settings file always does.
+                    "source": hk.source,
                 },
             ))
         except Exception:

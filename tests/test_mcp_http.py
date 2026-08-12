@@ -16,6 +16,16 @@ import pytest
 from delfin.agent import mcp_client as M
 
 
+def _trust_workspace(ws):
+    """A workspace's server definitions are honoured only for a directory
+    the USER trusted — see
+    ``tests/test_a_checked_out_repository_cannot_run_commands.py``. These
+    tests are about the HTTP transport, so they grant the decision and
+    then exercise what the registry does with it."""
+    from delfin.agent import workspace_trust as WT
+    WT.trust_workspace(ws, [WT.KIND_MCP_SERVERS], actor=WT.ACTOR_USER)
+
+
 # ---------------------------------------------------------------------------
 # Fake HTTP MCP endpoint
 # ---------------------------------------------------------------------------
@@ -245,6 +255,7 @@ def test_registry_resources_and_prompts(monkeypatch, tmp_path):
     cfg = {"servers": {"remote": {"url": "https://mcp.example.com/mcp"}}}
     (tmp_path / ".delfin").mkdir()
     (tmp_path / ".delfin" / "mcp_servers.json").write_text(json.dumps(cfg))
+    _trust_workspace(tmp_path)
     reg = M.MCPRegistry()
     reg.load(workspace=tmp_path)
     assert [r.uri for r in reg.discover_resources()] == \
@@ -268,6 +279,7 @@ def test_registry_loads_http_and_discovers(monkeypatch, tmp_path):
     (tmp_path / ".delfin" / "mcp_servers.json").write_text(json.dumps(cfg))
     monkeypatch.setattr(M, "_user_config_path",
                         lambda: tmp_path / "nonexistent.json")
+    _trust_workspace(tmp_path)
     reg = M.MCPRegistry()
     reg.load(workspace=tmp_path)
     assert "remote" in reg.servers

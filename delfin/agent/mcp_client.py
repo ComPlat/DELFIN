@@ -41,6 +41,15 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
 A server is treated as HTTP when ``type`` is ``http``/``sse``/
 ``streamable-http`` or a ``url`` is present; otherwise stdio.
 
+The user's own config is always read. A WORKSPACE's config is read only
+when the user has explicitly trusted that directory for MCP servers —
+see ``workspace_trust``. A server definition is the most powerful thing
+a folder can ship: it is spawned with the parent environment while the
+tool surface is being assembled, before the model emits a token, so a
+repository the user merely checked out could run a command of its
+choosing by containing one file. What a lack of trust withheld is
+reported on the registry rather than dropped.
+
 The registry is a singleton — first call to ``get_registry()``
 loads all configured servers; further calls reuse the running
 processes / sessions. Servers fail closed: a crash during discovery
@@ -79,7 +88,15 @@ def _user_config_path() -> Path:
 
 
 def _project_config_path(workspace: Path) -> Path:
-    return Path(workspace) / ".delfin" / "mcp_servers.json"
+    """Where a workspace's server config lives.
+
+    Derived from the trust registry rather than spelled out here, so the
+    file that SPAWNS processes and the file that needs a trust decision
+    (and a protected glob) cannot drift apart.
+    """
+    from . import workspace_trust as _trust
+    rel = _trust.get_kind(_trust.KIND_MCP_SERVERS).relative_paths[0]
+    return Path(workspace) / rel
 
 
 # Built-in MCP servers that ship WITH DELFIN — always available so a mode like
@@ -95,14 +112,32 @@ _BUILTIN_SERVERS: dict[str, dict] = {
 }
 
 
-def _load_configs(workspace: Path | None) -> dict[str, dict]:
-    """Merge built-in defaults + user-global + project-scoped MCP configs."""
+def _load_configs_with_sources(
+    workspace: Path | None,
+) -> tuple[dict[str, dict], dict[str, str], str]:
+    """``(configs, source-per-server, trust notice)``.
+
+    The trust gate lives HERE, in the loader, and not at the callers:
+    the tool-surface assembly, ``/mcp reload``, the doctor and every
+    future caller reach a workspace's config only through this function,
+    so the question is asked once and cannot be forgotten by the next
+    caller added.
+
+    The source of each entry is carried out with it because ``/mcp``
+    listed only the user's own file — a server a workspace added was
+    spawned and never appeared in the listing at all.
+    """
     out: dict[str, dict] = {
         name: dict(cfg) for name, cfg in _BUILTIN_SERVERS.items()
     }
+    sources: dict[str, str] = {name: "built-in" for name in _BUILTIN_SERVERS}
     paths = [(_user_config_path(), True)]
+    notice = ""
     if workspace:
-        paths.append((_project_config_path(workspace), False))
+        from . import workspace_trust as _trust
+        decision = _trust.gate(_trust.KIND_MCP_SERVERS, workspace)
+        notice = decision.notice
+        paths.extend((p, False) for p in decision.paths)
     for path, is_user in paths:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -129,9 +164,16 @@ def _load_configs(workspace: Path | None) -> dict[str, dict]:
                 continue
             if cfg.get("enabled", True):
                 out[name] = cfg                 # add or override (incl. a builtin)
+                sources[name] = str(path)
             else:
                 out.pop(name, None)             # explicit disable (also disables a builtin)
-    return out
+                sources.pop(name, None)
+    return out, sources, notice
+
+
+def _load_configs(workspace: Path | None) -> dict[str, dict]:
+    """Merge built-in defaults + user-global + trusted project MCP configs."""
+    return _load_configs_with_sources(workspace)[0]
 
 
 def _flatten_content(content: Any) -> str:
@@ -686,15 +728,26 @@ class MCPRegistry:
     workspace: Optional[Path] = None
     loaded: bool = False
     last_discovery: dict = field(default_factory=dict)
+    # Config file each server came from, by name. ``/mcp`` read only the
+    # user's own file, so a server a workspace contributed was spawned
+    # and never listed — invisible in exactly the case that matters.
+    sources: dict[str, str] = field(default_factory=dict)
+    # What a lack of trust withheld, in one sentence, or "".
+    trust_notice: str = ""
 
     def load(self, workspace: Path | None = None) -> None:
-        configs = _load_configs(workspace)
+        configs, sources, notice = _load_configs_with_sources(workspace)
         for name, cfg in configs.items():
             if name in self.servers:
                 continue
             self.servers[name] = _server_from_config(name, cfg)
+        self.sources.update(sources)
+        self.trust_notice = notice
         self.workspace = Path(workspace) if workspace else self.workspace
         self.loaded = True
+
+    def source_of(self, name: str) -> str:
+        return self.sources.get(name, "")
 
     def discover_all(self, budget: "_DiscoveryBudget | None" = None
                      ) -> list[MCPTool]:
@@ -778,10 +831,14 @@ class MCPRegistry:
 
         Empty when it did. A discovery that quietly returned fewer tools
         than the config declares is indistinguishable from a config with
-        fewer tools in it, and that is the state this reports."""
+        fewer tools in it, and that is the state this reports.
+
+        The trust notice rides along: servers a workspace declared and
+        the user has not trusted are the other reason the surface is
+        smaller than the configuration reads."""
         rep = self.last_discovery or {}
         if not rep.get("skipped") and not rep.get("failed"):
-            return ""
+            return self.trust_notice
         parts = []
         if rep.get("skipped"):
             parts.append(
@@ -791,9 +848,10 @@ class MCPRegistry:
         if rep.get("failed"):
             parts.append(f"{len(rep['failed'])} did not answer: "
                          + "; ".join(rep["failed"]))
-        return ("MCP discovery took "
+        text = ("MCP discovery took "
                 f"{rep.get('seconds')}s and did not complete: "
                 + ". ".join(parts) + ".")
+        return f"{text} {self.trust_notice}".strip()
 
     def read_resource(self, server: str, uri: str) -> str:
         srv = self.servers.get(server)
@@ -885,12 +943,43 @@ def reset_registry() -> None:
         _REGISTRY = None
 
 
+def effective_servers(workspace: Path | None) -> list[dict]:
+    """Every server that WOULD load, with the file it came from.
+
+    The ``/mcp`` listing read the user-global config directly, so it
+    could not show a builtin, could not show a workspace's entry, and
+    could not say which file any line came from. This is what actually
+    loads, named by source.
+    """
+    configs, sources, _notice = _load_configs_with_sources(workspace)
+    out: list[dict] = []
+    for name, cfg in configs.items():
+        out.append({
+            "name": name,
+            "command": cfg.get("command", ""),
+            "args": list(cfg.get("args") or []),
+            "env": dict(cfg.get("env") or {}),
+            "url": cfg.get("url", ""),
+            "enabled": bool(cfg.get("enabled", True)),
+            "source": sources.get(name, ""),
+        })
+    out.sort(key=lambda r: r["name"])
+    return out
+
+
+def trust_notice(workspace: Path | None) -> str:
+    """What a lack of trust withheld for *workspace*, or ""."""
+    return _load_configs_with_sources(workspace)[2]
+
+
 __all__ = [
     "MCPTool",
     "MCPResource",
     "MCPPrompt",
     "MCPServer",
     "MCPRegistry",
+    "effective_servers",
     "get_registry",
     "reset_registry",
+    "trust_notice",
 ]

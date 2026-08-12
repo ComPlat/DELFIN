@@ -24,6 +24,12 @@ def _write_hook(ws, matcher, command):
         "PreToolUse": [{"matcher": matcher,
                         "hooks": [{"type": "command", "command": command}]}]
     }}), encoding="utf-8")
+    # A workspace's hooks run only for a directory the USER trusted; these
+    # tests are about whether the MCP path FIRES them, so the decision is
+    # granted explicitly. See
+    # tests/test_a_checked_out_repository_cannot_run_commands.py.
+    from delfin.agent import workspace_trust as WT
+    WT.trust_workspace(ws, [WT.KIND_HOOKS], actor=WT.ACTOR_USER)
 
 
 # --- helper units -----------------------------------------------------------
