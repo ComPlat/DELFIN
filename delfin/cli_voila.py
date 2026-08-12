@@ -284,7 +284,7 @@ def _refuse_insecure_no_token(ip: str) -> str:
 
 #: Frontend extensions the browser is not asked to load.  See the comment at
 #: the ``--VoilaConfiguration.extension_denylist`` argument for the measurement.
-DEFAULT_EXTENSION_DENYLIST = ('nglview-js-widgets',)
+DEFAULT_EXTENSION_DENYLIST = ('nglview-js-widgets', 'jupyterlab-plotly')
 
 
 def _extension_denylist() -> list:
@@ -782,18 +782,28 @@ def main(argv=None):
         # the dashboard runs Voila as a jupyter-server extension, where the
         # Voila app's own mathjax_url trait is never read.
         '--ServerApp.tornado_settings={"mathjax_url": "data:text/javascript,//"}',
-        # The nglview frontend extension is 4.55 MB the browser fetches,
-        # parses and runs at every load, for a widget this dashboard never
-        # makes: the structure viewers are py3Dmol, and there is no
-        # `import nglview` anywhere in the source. The four mentions of it are
-        # Python-side package probes for the Settings tab, which this does not
-        # touch. Measured, four interleaved loads each way: main-thread
-        # blocking 1581 -> 1227 ms, long tasks 5.5 -> 4.2, transfer 14.7 ->
-        # 10.2 MB. On loopback the bytes are free; through an SSH tunnel they
-        # are most of the wait.
+        # Frontend extensions the browser fetches, parses and evaluates at
+        # every load, for widgets this dashboard never makes.
         #
-        # DELFIN_VOILA_EXTENSION_DENYLIST overrides it, so a machine that does
-        # want an NGL widget can have one back without editing this file.
+        # nglview: 4.55 MB. The structure viewers are py3Dmol and there is no
+        # `import nglview` in the source; the four mentions of the name are
+        # Python-side package probes for the Settings tab, which this does not
+        # touch. Measured over four interleaved loads each way: blocking 1581
+        # -> 1227 ms, transfer 14.7 -> 10.2 MB.
+        #
+        # jupyterlab-plotly: 192.9 ms of self time in a CPU profile of the
+        # load, 186.4 of it in one function -- the extension evaluating
+        # itself. It is only reachable by a plotly figure rendered as a widget
+        # in this page, and nothing can make one: the agent runs its Python in
+        # subprocesses (sys.executable -c ...), whose output is a file or
+        # text, and Voila has no editable cells. `delfin/tools/` contains no
+        # plotly, FigureWidget or to_html. The Settings probe that reports
+        # whether the plotly *package* is installed is a different question
+        # and still answers it.
+        #
+        # DELFIN_VOILA_EXTENSION_DENYLIST overrides the list, so a machine
+        # that does want either of them back can have it without editing this
+        # file.
         f"--VoilaConfiguration.extension_denylist={_extension_denylist()!r}",
     ]
 
