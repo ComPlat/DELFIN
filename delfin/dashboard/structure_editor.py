@@ -3651,6 +3651,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # The page saying which editor it is running. Until it has, every
             # rendered structure carries a copy of the editor with it.
             state['manip_seen_version'] = str(payload)
+            # And saying that a viewer has just been made ready, which is the
+            # moment a running force field has to be worked out again. The
+            # page clears the parameters it finds when a viewer appears -- they
+            # were assigned for the geometry that just went away -- so anything
+            # sent before this arrives is cleared with them, and Dynamik Opt
+            # stood on with nothing running underneath it.
+            if submit_relax_btn.value and not state.get('ff_reassigning'):
+                state['ff_reassigning'] = True
+                try:
+                    _enable_live_forcefield()
+                finally:
+                    state['ff_reassigning'] = False
             return
 
         if verb == 'gfnplay':
@@ -5085,9 +5097,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         A live force field is a set of parameters worked out for one molecule.
         Stepping from one block to another left the previous one's running
         under the new structure -- with the wrong number of atoms, even, so
-        Dynamik Opt pulled at a molecule it had never been told about. The
-        parameters are worked out again for what is being shown, and only
-        while the switch is on.
+        Dynamik Opt pulled at a molecule it had never been told about.
+
+        The parameters are worked out again here, and again when the page says
+        the new viewer is ready: a viewer appearing clears the parameters it
+        finds, so whichever of the two comes second is the one that counts.
         """
         if submit_relax_btn.value:
             _enable_live_forcefield()
