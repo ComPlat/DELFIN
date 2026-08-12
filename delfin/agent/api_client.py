@@ -12834,9 +12834,9 @@ class OpenAIClient(_BaseClient):
         that waits on a user answer or a missing credential is a loop,
         not progress. They are still reported at turn end.
         """
-        state = self._open_task_state()
-        counts = state.get("counts") or {}
-        return bool(counts.get("in_progress") or counts.get("pending"))
+        from . import agent_tasks as _at
+        counts = self._open_task_state().get("counts") or {}
+        return any(counts.get(s) for s in _at.ACTIONABLE_STATUSES)
 
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
