@@ -44,7 +44,9 @@ A server is treated as HTTP when ``type`` is ``http``/``sse``/
 The registry is a singleton — first call to ``get_registry()``
 loads all configured servers; further calls reuse the running
 processes / sessions. Servers fail closed: a crash during discovery
-just leaves that server's tool set empty.
+just leaves that server's tool set empty, and so does silence — every
+stdio read is bounded by ``_RPC_TIMEOUT_S``, with the reason kept in
+the server's ``last_error``.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -65,6 +68,8 @@ from typing import Any, Optional
 
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 _RPC_TIMEOUT_S = 15.0
+# Lines a stdio server may run ahead of the client before it is made to wait.
+_STDOUT_QUEUE_LINES = 1000
 _NAMESPACE_PREFIX = "mcp__"
 _HTTP_TYPES = {"http", "sse", "streamable-http", "streamablehttp"}
 
@@ -228,6 +233,11 @@ class MCPServer:
     _initialised: bool = False
     tools: list[MCPTool] = field(default_factory=list)
     last_error: str = ""
+    # Lines drained off the subprocess by ``_reader_lines``; ``None`` is the
+    # EOF sentinel. Bound to the process they came from, so a restart cannot
+    # be served stale output from the previous one.
+    _lines: Optional["queue.Queue"] = None
+    _lines_proc: Optional[subprocess.Popen] = None
 
     def start(self) -> None:
         if self.transport == "http":
@@ -266,6 +276,58 @@ class MCPServer:
             pass
         self.proc = None
         self._initialised = False
+        # Drop the reader's queue with the process it belonged to, so a
+        # restart cannot be handed lines the previous process left behind.
+        self._lines = None
+        self._lines_proc = None
+
+    def _reader_lines(self) -> "queue.Queue":
+        """Queue of stdout lines, filled by a daemon thread we may abandon.
+
+        The deadline in ``_send`` has to be enforceable while NOTHING is
+        arriving, and a blocking ``readline()`` cannot be interrupted: it
+        returns on a newline or on EOF and on nothing else, so a clock checked
+        around it bounds only servers that keep talking. The alternatives do
+        not survive the pipe being opened in text mode (``text=True`` in
+        ``start``): ``selectors`` on the raw fd can report "not ready" while
+        the ``TextIOWrapper`` already holds a complete buffered line, and
+        putting the fd in non-blocking mode makes that same wrapper raise on
+        a short read instead of waiting. Moving the blocking read to a thread
+        keeps the stream exactly as it was and lets the caller wait on
+        ``Queue.get(timeout=...)`` -- on something it is allowed to give up
+        on -- instead of on the kernel. The thread is a daemon and holds no
+        lock, so a server that never speaks again costs one parked thread
+        until the process is stopped rather than the turn it was blocking.
+        """
+        proc = self.proc
+        if self._lines is not None and self._lines_proc is proc:
+            return self._lines
+        # Bounded on purpose. Reading only inside ``_send`` meant an idle
+        # client left the server's output in the OS pipe buffer, which stops
+        # a server that floods; draining into an unbounded queue would remove
+        # that brake and let one chatty server grow the agent's memory instead
+        # of its own. Full queue -> the pump blocks -> the pipe fills -> the
+        # server waits, exactly as before.
+        lines: "queue.Queue" = queue.Queue(maxsize=_STDOUT_QUEUE_LINES)
+        self._lines = lines
+        self._lines_proc = proc
+        stdout = proc.stdout if proc is not None else None
+
+        def _pump() -> None:
+            try:
+                while True:
+                    raw = stdout.readline()     # type: ignore[union-attr]
+                    if not raw:
+                        break
+                    lines.put(raw)
+            except Exception:   # pragma: no cover - pipe torn down under us
+                pass
+            finally:
+                lines.put(None)                 # EOF sentinel
+        threading.Thread(
+            target=_pump, name=f"mcp-reader-{self.name}", daemon=True,
+        ).start()
+        return lines
 
     def _send(self, method: str, params: dict | None = None) -> dict:
         if self.transport == "http":
@@ -289,9 +351,21 @@ class MCPServer:
                 return {"error": {"message": f"write failed: {exc}"}}
             t_end = time.monotonic() + _RPC_TIMEOUT_S
             assert self.proc.stdout is not None
-            while time.monotonic() < t_end:
-                raw = self.proc.stdout.readline()
-                if not raw:
+            lines = self._reader_lines()
+            while True:
+                remaining = t_end - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    raw = lines.get(timeout=remaining)
+                except queue.Empty:
+                    break
+                if raw is None:
+                    # EOF is terminal for this process: put the sentinel back
+                    # so every later call sees it too, rather than the first
+                    # one consuming it and the rest waiting out the budget on
+                    # a pipe that can no longer produce anything.
+                    lines.put(None)
                     return {"error": {"message": "EOF from server"}}
                 raw = raw.strip()
                 if not raw:
@@ -302,8 +376,17 @@ class MCPServer:
                     continue
                 if msg.get("id") == rid:
                     return msg
-                # ignore notifications / unrelated messages
-        return {"error": {"message": "rpc timeout"}}
+                # ignore notifications / unrelated messages -- including a
+                # reply that a PREVIOUS call already gave up on, which the
+                # id check discards here.
+        # Recorded, not just returned: a server that accepts a request and
+        # never answers looks identical to a healthy one from the outside,
+        # and this field is the only place the reason survives the empty
+        # tool list that discovery reports.
+        self.last_error = (
+            f"rpc timeout: no reply to {method} within {_RPC_TIMEOUT_S:g}s"
+        )
+        return {"error": {"message": self.last_error}}
 
     def _send_http(
         self, method: str, params: dict | None = None,
