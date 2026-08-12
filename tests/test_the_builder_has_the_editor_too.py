@@ -601,3 +601,33 @@ def test_the_quick_embedding_is_not_offered_as_a_conformer(builder):
 
     names = [name for name, _xyz in refs['editor_state']['xyz_blocks']]
     assert names == ['conf-1.xyz', 'conf-2.xyz']
+
+
+def test_to_smiles_reads_its_own_drawing(builder):
+    """"Reading the drawing..." never ended in the Builder.
+
+    The button asked the page for "the" drawing frame and "the" channel to
+    answer on. With one editor per dashboard that was one of each; with two it
+    found the Submit tab's, was told no editor was open in it, and answered
+    into that tab's channel -- so the Builder waited for a reply that had gone
+    somewhere else.
+
+    Both tabs keep the frame outside their scope container, so the scope
+    travels on the element itself. Driven in a browser with two editors on one
+    page, each with a drawing of its own: the Submit tab's channel got
+    DRAWING-IN-SUBMIT and the Builder's got DRAWING-IN-BUILDER.
+    """
+    refs, sent = builder
+    scope = refs['submit_scope_id']
+
+    assert scope in refs['submit_draw_frame']._dom_classes
+    assert scope in refs['submit_draw_sync']._dom_classes
+
+    sent.clear()
+    refs['submit_draw_get_btn'].click()
+
+    script = sent[0]
+    assert "'.submit-ketcher-frame.'+scope" in script
+    assert "'.submit-ketcher-sync.'+scope" in script
+    assert scope in script
+    assert "document.querySelector('.submit-ketcher-frame')" not in script

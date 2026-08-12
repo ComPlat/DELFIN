@@ -5354,12 +5354,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_frame = widgets.HTML(value='', layout=widgets.Layout(
         width='100%', display='none'))
     submit_draw_frame.add_class('submit-ketcher-frame')
+    # Also stamped with this editor's scope further down, once it has one:
+    # both tabs put their drawing frame outside the scope container, so the
+    # class on the element is the only way to tell one editor's frame from
+    # the other's -- and TO SMILES asked the page for "the" frame, found the
+    # Submit tab's, was told there was no editor open in it, and answered into
+    # that tab's channel. The Builder's "Reading the drawing..." never ended.
     # What the editor hands back, on the same kind of channel the viewer uses:
     # a widget value is ordered and survives a background thread, where a
     # script sent through run_js can be replaced before the page has run it.
     submit_draw_sync = widgets.Textarea(
         value='', layout=widgets.Layout(display='none'))
     submit_draw_sync.add_class('submit-ketcher-sync')
+    # Which editor this drawing belongs to. Both tabs keep the frame outside
+    # the scope container, so the class has to travel on the element itself.
+    submit_draw_frame.add_class(submit_scope_id)
+    submit_draw_sync.add_class(submit_scope_id)
 
     # -- drawing the structure ------------------------------------------
     def _draw_frame_html(url):
@@ -5548,7 +5558,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _set_mol_status('Reading the drawing...', spinner=True)
         ctx.run_js(
             "(function(){\n"
-            "  var box=document.querySelector('.submit-ketcher-sync');\n"
+            f"  var scope={json.dumps(submit_scope_id)};\n"
+            "  var box=document.querySelector('.submit-ketcher-sync.'+scope);\n"
             "  var input=box&&box.querySelector('textarea, input');\n"
             "  function hand(text){\n"
             "    if(!input) return;\n"
@@ -5564,7 +5575,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
             "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
             "  }\n"
-            "  var host=document.querySelector('.submit-ketcher-frame');\n"
+            "  var host=document.querySelector('.submit-ketcher-frame.'+scope);\n"
             "  var frame=host&&host.querySelector('iframe');\n"
             "  var api=null;\n"
             "  try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
