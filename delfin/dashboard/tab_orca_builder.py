@@ -269,18 +269,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='36px', height='28px'),
     )
     orca_mol_nav_label = widgets.HTML(value='')
-    orca_mol_fullscreen_btn = widgets.Button(
-        description='', icon='expand', tooltip='Toggle fullscreen (Esc to exit)',
-        layout=widgets.Layout(width='40px', height='28px'),
-    )
-    orca_mol_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
-    orca_mol_fullscreen_btn.add_class('orca-structure-fullscreen-btn')
     orca_mol_nav_row = widgets.HBox(
         [
             orca_mol_prev_btn,
             orca_mol_nav_label,
             orca_mol_next_btn,
-            orca_mol_fullscreen_btn,
         ],
         layout=widgets.Layout(display='none', align_items='center', gap='6px'),
     )
@@ -337,7 +330,7 @@ def create_tab(ctx):
         # This tab takes its charge from its own box, not from a SMILES.
         get_smiles_charge=lambda *a, **k: None,
         # Several structures belong in several named blocks here.
-        offer_structures=lambda isomers: _take_structures(isomers),
+        offer_structures=lambda *a, **k: _take_structures(*a, **k),
         # A SMILES is typed into the tab's own box, not the editor's.
         read_input=lambda: orca_coords.value,
         write_input=_write_orca_coords,
@@ -346,8 +339,14 @@ def create_tab(ctx):
     # This tab has always shown its numbers straight away; the editor's own
     # default is off, because the Submit tab starts from a blank box.
     orca_editor.submit_labels_btn.value = True
-    # This tab has a fullscreen button of its own, beside the block stepper.
-    orca_editor.submit_fullscreen_btn.layout.display = 'none'
+    # The editor's own fullscreen button, at the head of its toolbar where the
+    # Submit tab has it, rather than a second one in a row of its own. It is
+    # made over to this tab's fullscreen: the Submit tab's overlay is built
+    # from members carrying submit-fs-* classes, which the Builder's are not.
+    orca_mol_fullscreen_btn = orca_editor.submit_fullscreen_btn
+    orca_mol_fullscreen_btn.remove_class('submit-fullscreen-btn')
+    orca_mol_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
+    orca_mol_fullscreen_btn.add_class('orca-structure-fullscreen-btn')
     orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-member')
     orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
     orca_editor.mol_status.add_class('delfin-structure-fs-member')
@@ -978,7 +977,7 @@ def create_tab(ctx):
             orca_editor._ensure_manip_bootstrap()
         orca_editor._set_manip_toolbar_enabled(bool(full_xyz))
 
-    def _take_structures(isomers):
+    def _take_structures(isomers, quick=False):
         """Every structure a conversion produced, as named blocks.
 
         A conversion hands over one structure or several -- the isomers of a
@@ -987,12 +986,30 @@ def create_tab(ctx):
         once, in the layout it reads: a name, the atoms, a closing star. So
         they are written that way and the block stepper walks them, which is
         the stepper this tab already had.
+
+        Except for the quick conversion, which answers with a structure rather
+        than a set to choose from: that one writes plain coordinates, the way
+        it always has here.
         """
         if not isomers:
             return False
+        if quick:
+            xyz_string, num_atoms, _label = isomers[0]
+            rows = [row for row in (strip_xyz_header(xyz_string)
+                                    or xyz_string).split('\n') if row.strip()]
+            orca_coords.value = '%d\nConverted from SMILES\n%s' % (
+                num_atoms or len(rows), '\n'.join(rows))
+            return True
+        # The quick embedding rides along at the end of a conformer set as a
+        # fallback to step to. It is not a conformer, and a block called
+        # quick.xyz beside conf-1 and conf-2 says it is one.
+        named = [entry for entry in isomers
+                 if str(entry[2] or '').strip().lower() != 'quick']
+        if not named:
+            named = isomers
         blocks = []
         used = {}
-        for xyz_string, num_atoms, label in isomers:
+        for xyz_string, num_atoms, label in named:
             name = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(label or 'structure')).strip('-.')
             if not name:
                 name = 'structure'
@@ -1209,8 +1226,10 @@ def create_tab(ctx):
             orca_mol_nav_label.value = ''
             orca_mol_prev_btn.layout.display = 'none'
             orca_mol_next_btn.layout.display = 'none'
-            showing = bool(blocks) or bool(strip_xyz_header(orca_coords.value).strip())
-            orca_mol_nav_row.layout.display = '' if showing else 'none'
+            # Only the stepper is left in this row -- the fullscreen button
+            # sits in the toolbar now -- so with nothing to step to there is
+            # nothing to show.
+            orca_mol_nav_row.layout.display = 'none'
 
     def _refresh_mol_view(reset_view=False):
         """Re-render the molecule viewer, preserving orientation unless *reset_view*."""

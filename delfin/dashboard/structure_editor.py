@@ -4935,7 +4935,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return
             state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
             _offer_isomers(
-                [(xyz_string, result['num_atoms'], 'quick')] + preview_items)
+                [(xyz_string, result['num_atoms'], 'quick')] + preview_items,
+                quick=True)
             return
 
         isomers = result.get('isomers') or []
@@ -4996,7 +4997,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ctx.run_js(js_code)
         xyz_copy_status.value = '<span style="color:#388e3c;">Copied to clipboard</span>'
 
-    def _offer_isomers(isomers):
+    def _offer_isomers(isomers, quick=False):
         """Every structure a conversion produced, to wherever they belong.
 
         A tab that keeps more than one -- the ORCA Builder, with its named
@@ -5004,10 +5005,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         isomer stepper here stays out of the way. A tab that keeps one gets
         the first shown and the stepper to walk the rest, which is what the
         Submit tab has always done.
+
+        *quick* says this came from the quick conversion, which is the one
+        that answers with a structure rather than with a set to choose from.
+        A tab may want plain coordinates for that one and blocks for the rest.
         """
         isomers = list(isomers or [])
         state['isomers'] = isomers
-        if isomers and offer_structures is not None and offer_structures(isomers):
+        if isomers and offer_structures is not None and offer_structures(
+                isomers, quick):
             state['isomer_index'] = 0
             isomer_nav_row.layout.display = 'none'
             # Say the conversion is over. The other way out of here shows a

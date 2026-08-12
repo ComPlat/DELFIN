@@ -413,32 +413,35 @@ def test_it_says_so_when_the_input_reads_another_structure(builder):
     assert '# input reads benzene.xyz' in text
 
 
-def test_the_fullscreen_button_is_there_for_one_structure_too(builder):
-    """It sits in the row with the block stepper, and that row was hidden
-    whenever the coordinates had not been written as named blocks.
+def test_the_fullscreen_button_stands_where_the_submit_tab_has_it(builder):
+    """First in the toolbar, before Select, and not in a row of its own.
 
-    So pasting a plain XYZ -- which is what the editor itself writes back, and
-    what anybody pasting coordinates starts with -- left no way at all to
-    enlarge the viewer. With two blocks it worked, which is exactly how the
-    report came in.
+    It used to sit in the row with the block stepper, and that row is hidden
+    when there is nothing to step to -- so pasting a plain XYZ, which is what
+    the editor itself writes back, left no way at all to enlarge the viewer
+    while the same molecule in named blocks could be enlarged fine.
 
-    Driven in a real dashboard on a bare twelve-atom benzene: the button is
-    visible, and a click takes the viewer from 721x560 to 1484x766.
+    It is the editor's own button now, made over to this tab's fullscreen: the
+    Submit tab's overlay is built from members carrying submit-fs-* classes,
+    which the Builder's are not.
     """
     refs, _sent = builder
-    row = refs['orca_mol_nav_row']
+    button = refs['submit_fullscreen_btn']
+    toolbar = list(refs['submit_manip_toolbar'].children)
 
-    refs['orca_coords'].value = ''
-    assert row.layout.display == 'none', 'nothing to enlarge, nothing to show'
+    assert toolbar.index(button) == 0
+    assert toolbar.index(button) < toolbar.index(refs['submit_select_btn'])
+    assert 'delfin-structure-fullscreen-btn' in button._dom_classes
+    assert 'submit-fullscreen-btn' not in button._dom_classes, (
+        'both machineries would answer the same click')
 
     refs['orca_coords'].value = f'3\nwater\n{WATER}\n'
-    assert row.layout.display == ''
-    assert refs['orca_mol_next_btn'].layout.display == 'none', (
-        'one structure has nothing to step to')
-    assert refs['orca_mol_fullscreen_btn'].layout.display != 'none'
+    assert refs['submit_manip_toolbar'].layout.display == 'flex'
+    assert refs['orca_mol_nav_row'].layout.display == 'none', (
+        'one structure has nothing to step to, and nothing else is in that row')
 
     refs['orca_coords'].value = TWO_BLOCKS
-    assert row.layout.display == ''
+    assert refs['orca_mol_nav_row'].layout.display == ''
     assert refs['orca_mol_next_btn'].layout.display == ''
 
 
@@ -567,3 +570,34 @@ def test_the_conversion_says_when_it_is_over(builder):
 
     assert refs['mol_status'].value == ''
     assert refs['mol_status_fs'].value == ''
+
+
+def test_the_quick_conversion_writes_plain_coordinates(builder):
+    """It answers with a structure, not with a set to choose from, and this tab
+    has always taken that as coordinates. Blocks are for the conversions that
+    offer conformers."""
+    refs, _sent = builder
+
+    refs['offer_structures'](
+        [('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'quick')], True)
+
+    text = refs['orca_coords'].value
+    assert '\n*' not in text
+    assert 'quick.xyz' not in text
+    assert text.startswith('3\nConverted from SMILES\n')
+
+
+def test_the_quick_embedding_is_not_offered_as_a_conformer(builder):
+    """It rides along at the end of a conformer set as a fallback to step to.
+    A block called quick.xyz beside conf-1 and conf-2 says it is one of them.
+    """
+    refs, _sent = builder
+
+    refs['offer_structures']([
+        ('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'conf-1'),
+        ('O 0 0 0\nH 0.97 0 0\nH -0.25 0.94 0', 3, 'conf-2'),
+        ('O 0 0 0\nH 0.98 0 0\nH -0.26 0.95 0', 3, 'quick'),
+    ])
+
+    names = [name for name, _xyz in refs['editor_state']['xyz_blocks']]
+    assert names == ['conf-1.xyz', 'conf-2.xyz']
