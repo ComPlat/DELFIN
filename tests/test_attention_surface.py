@@ -132,13 +132,18 @@ def test_dismiss_item_not_replayed(_fake_home):
 def test_clear_all_and_kind_scoped_clear(_fake_home):
     _seed_three()
     res = attention.clear_all("run_finished")
-    assert res == {"ok": True, "cleared": 1}
+    assert (res["ok"], res["cleared"], res["kept"]) == (True, 1, 0)
     assert len(attention.list_pending()) == 2
+    # A blanket clear leaves the two blocking items alone; naming the
+    # kind is the explicit gesture that clears them.
     res = attention.clear_all()
-    assert res == {"ok": True, "cleared": 2}
+    assert (res["ok"], res["cleared"], res["kept"]) == (True, 0, 2)
+    assert len(attention.list_pending()) == 2
+    res = attention.clear_all(include_blocking=True)
+    assert (res["ok"], res["cleared"], res["kept"]) == (True, 2, 0)
     assert attention.list_pending() == []
     assert attention.drain_resolved("s1") == []    # nothing replays
-    assert attention.clear_all() == {"ok": True, "cleared": 0}
+    assert attention.clear_all()["cleared"] == 0
 
 
 # ---------------------------------------------------------------------------

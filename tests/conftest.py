@@ -291,6 +291,25 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _mute_out_of_band_notifications(monkeypatch):
+    """No test may reach the user's desktop or the network.
+
+    The attention inbox itself is redirected to tmp above, but its
+    delivery fan-out is not a file: it shells out to ``notify-send`` and
+    POSTs to the configured webhook. Any test that emits an attention
+    event — a confirm timing out, a scheduled run failing, and now a
+    containment block — would pop a real notification on the developer's
+    screen. Tests that assert on the transports patch these themselves,
+    after this fixture.
+    """
+    from delfin.agent import notify as _n
+    monkeypatch.setattr(_n, "send_notification", lambda *a, **k: False)
+    monkeypatch.setattr(
+        _n, "send_remote_trigger",
+        lambda *a, **k: _n.TriggerResult(sent=False, error="muted in tests"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_telemetry(monkeypatch, tmp_path):
     """Redirect the agent's per-user telemetry sinks into the test tmp dir.
 

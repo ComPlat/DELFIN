@@ -245,6 +245,13 @@ _NOT_CARRIED = {
     # nothing without them; this flag is only "has the agent been told",
     # and the agent of a resumed session has not been.
     "_unmeasured_budget_notice_shown",
+    # Which budget levels have already been raised in the attention inbox.
+    # Same reasoning one line up, from the other side: the notice exists
+    # for a user who is not watching, and a resumed run is a new chance
+    # for them to be away. Re-raising once per level in the new process
+    # is the behaviour worth having; carrying the flags would mean a
+    # resumed run that stops on its ceiling says nothing at all.
+    "_budget_attention_levels",
     "_prompt_session_serial",
 }
 

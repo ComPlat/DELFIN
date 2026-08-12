@@ -238,17 +238,75 @@ def _check_scheduler(ctx: dict) -> list[dict]:
 
 
 def _check_attention(ctx: dict) -> list[dict]:
-    """Attention inbox — pending events awaiting a user answer."""
-    from .attention import list_pending
+    """Attention inbox — what is waiting, in both directions.
 
+    Two states, not one: events waiting for the user, and answers the
+    user has already given that no session has picked up. The second was
+    invisible everywhere (every surface filtered on ``pending``), so the
+    user's answer could sit in the file while the report said all clear.
+    """
+    from .attention import _BLOCKING_KINDS, list_pending, list_undelivered
+
+    out: list[dict] = []
     pending = list_pending()
-    if pending:
-        return [_row(
+    blocking = [ev for ev in pending if ev.get("kind") in _BLOCKING_KINDS]
+    if blocking:
+        out.append(_row(
             "attention inbox", WARN,
-            f"{len(pending)} pending event(s) awaiting your answer",
-            "open the dashboard Agent tab and answer the pending events",
+            f"{len(blocking)} event(s) blocking the agent"
+            + (f", {len(pending) - len(blocking)} notice(s)"
+               if len(pending) > len(blocking) else ""),
+            "/attention in the dashboard Agent tab, then "
+            "/attention answer <id> <text>",
+        ))
+    elif pending:
+        out.append(_row(
+            "attention inbox", PASS,
+            f"{len(pending)} unread notice(s), nothing blocking the agent",
+        ))
+    else:
+        out.append(_row("attention inbox", PASS, "no pending events"))
+
+    waiting = list_undelivered()
+    if waiting:
+        out.append(_row(
+            "attention answers", WARN,
+            f"{len(waiting)} answered event(s) not yet delivered to a "
+            "session — they reach the agent on its next turn",
+            "start or continue an agent session in that workspace",
+        ))
+    return out
+
+
+def _check_attention_transports(ctx: dict) -> list[dict]:
+    """Can the agent reach the user out-of-band at all?
+
+    Everything else in this report checks what the agent can DO. This
+    checks whether anyone would be told when it stops and waits: with no
+    desktop notifier, no webhook and no hook command, the fan-out for a
+    blocking question is a no-op, and every other surface still reports
+    healthy while an unattended run sits blocked until morning.
+    """
+    from .attention import transport_status
+
+    st = transport_status(ctx.get("settings") or None)
+    usable = list(st.get("usable") or [])
+    detail = st.get("detail") or {}
+    if usable:
+        return [_row(
+            "attention transports", PASS,
+            f"{len(usable)} usable: {', '.join(usable)}",
         )]
-    return [_row("attention inbox", PASS, "no pending events")]
+    reasons = "; ".join(
+        f"{name}: {detail[name]}" for name in ("desktop", "webhook", "hook")
+        if detail.get(name))
+    return [_row(
+        "attention transports", WARN,
+        "no usable transport — a blocked or finished run reaches you only "
+        "in the inbox (" + (reasons or "nothing configured") + ")",
+        "set agent.attention.notify_command to your own notifier, or "
+        "agent.job_monitor.webhook_url to an https endpoint",
+    )]
 
 
 def _check_benchmark(ctx: dict) -> list[dict]:
@@ -444,6 +502,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
     ("attention inbox", "_check_attention"),
+    ("attention transports", "_check_attention_transports"),
     ("benchmark truth", "_check_benchmark"),
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),

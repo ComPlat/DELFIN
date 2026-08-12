@@ -591,22 +591,37 @@ def diagnose_finding(
 
 
 def announce(finding: Finding, settings: dict | None = None) -> None:
-    """Desktop notification + optional webhook. Best-effort, never raises."""
+    """Desktop notification + optional webhook + a durable inbox event.
+
+    A failed cluster job is the core unattended case, and it used to
+    leave no trace anywhere the user looks later: the findings file needs
+    a typed command (whose read then marks the findings seen), the
+    desktop popup is gone at the next login, and the attention inbox —
+    the one surface built for "tell me what happened while I was away",
+    and the one the doctor reports on — never heard about it at all.
+
+    Both transports are driven here, as before, and their real result is
+    recorded on the event, so the inbox does not notify a second time and
+    does not claim a delivery that never happened. Best-effort
+    throughout: never raises.
+    """
     cfg = monitor_settings(settings)
     title = f"🚨 DELFIN: job {finding.job_id} failed"
     body = (f"{finding.state}"
             + (f" · {', '.join(finding.signatures)}" if finding.signatures else "")
             + (f" · Session: {finding.diagnosis_session}"
                if finding.diagnosis_session else ""))
+    delivered: dict[str, bool] = {}
     try:
         from delfin.agent.notify import send_notification
-        send_notification(title, body, urgency="critical")
+        delivered["desktop"] = bool(
+            send_notification(title, body, urgency="critical"))
     except Exception:
-        pass
+        delivered["desktop"] = False
     if cfg["webhook_url"]:
         try:
             from delfin.agent.notify import send_remote_trigger
-            send_remote_trigger(
+            result = send_remote_trigger(
                 {"event": "job_failed", "job_id": finding.job_id,
                  "state": finding.state, "folder": finding.folder,
                  "signatures": finding.signatures,
@@ -614,8 +629,20 @@ def announce(finding: Finding, settings: dict | None = None) -> None:
                  "session": finding.diagnosis_session},
                 override_url=cfg["webhook_url"],
             )
+            delivered["webhook"] = bool(getattr(result, "sent", False))
         except Exception:
-            pass
+            delivered["webhook"] = False
+    try:
+        from delfin.agent.attention import emit_attention
+        emit_attention(
+            "run_failed",
+            title=f"Job {finding.job_id} failed ({finding.state})",
+            detail=(body + (f"\n{finding.summary}" if finding.summary else ""))[:400],
+            workspace=finding.folder,
+            delivered_by_caller=delivered,
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
