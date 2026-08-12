@@ -163,3 +163,27 @@ def test_no_foreign_camelcase_tool_name_is_presented_as_callable(name):
                 hits.append(f"{path.name}: {pattern}")
     assert not hits, (
         f"{name} is not a tool here (tools are snake_case): " + ", ".join(hits))
+
+
+# ---------------------------------------------------------------------------
+# 4. The dashboard's own prose about plan mode
+# ---------------------------------------------------------------------------
+#
+# The pack is not the only text the model reads. The agent tab writes chat
+# messages, and on a mid-session mode switch the whole UI transcript --
+# system lines included -- is replayed to the next engine as context. It
+# told the reader, three times over, that the agent "waits for your
+# approval via ExitPlanMode": another harness's spelling of a tool that
+# exists here as `exit_plan_mode`. Naming a tool the model cannot call
+# teaches it to try, and tells the user to look for a button that is not
+# there.
+
+
+def test_the_dashboard_names_the_plan_tool_it_actually_advertises():
+    tab = (Path(__file__).resolve().parents[1] / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    assert "exit_plan_mode" in _advertised(), (
+        "the plan tool was renamed; this test names the old one")
+    assert "ExitPlanMode" not in tab, (
+        "the agent tab still names a retired plan tool")
+    assert "exit_plan_mode" in tab

@@ -88,6 +88,123 @@ def _build_verify_hint(user_text: str, mode: str = "") -> str:
     return ""
 
 
+def _self_verification_note(verified: bool) -> str:
+    """The line shown after a forced self-correction turn.
+
+    Two outcomes, two lines. The green check is a VERDICT — it may only
+    appear when a re-scan of the corrected answer finds the claims
+    grounded. Spending the correction budget is not the same event: a
+    correction that raised a new claim, or that only rewrote the wording
+    into hedges, is still an answer nobody checked, and printing the
+    check for it told the reader the opposite of what happened.
+    """
+    if verified:
+        return "✓ Self-verification: statements checked, answer corrected."
+    return (
+        "⚠️ Self-verification: the answer was revised, but the claims in it "
+        "are still not backed by anything looked up this turn — treat them "
+        "as unconfirmed."
+    )
+
+
+def _correction_verdict_note(scan, text, *, keep=None, **kwargs) -> str:
+    """Re-scan a corrected answer and return the note that matches the
+    verdict, never the fact that a retry ran.
+
+    ``keep`` filters the flags that count as "still ungrounded" (the code
+    citation scan also returns soft, non-forcing flags). A scanner that
+    raises counts as NOT verified: the check must be earned, and an
+    unreadable answer has not earned it.
+    """
+    try:
+        flags = list(scan(text, **kwargs) or ())
+    except Exception:
+        flags = ["rescan-failed"]
+    if keep is not None:
+        try:
+            flags = [f for f in flags if keep(f)]
+        except Exception:
+            pass
+    return _self_verification_note(not flags)
+
+
+# The stall watchdog measures PROVIDER silence. A tool call that is doing
+# its job produces no stream event either, and every blocking tool has a
+# budget far longer than the stall budget: a bash_status wait, a bash run,
+# a sub-agent — and ANY tool can sit at a confirmation dialog waiting for
+# the user. Judged by the stall budget all of those looked like a dead
+# endpoint, so the turn was killed while the tool was still working, and
+# the approval the user gave a moment later was consumed by a broker whose
+# turn no longer existed.
+_TOOL_CONFIRM_WAIT_S = 300.0    # KitConfirmBroker's default_timeout_s
+_TOOL_STALL_GRACE_S = 30.0      # dispatch + result marshalling
+
+
+def _tool_stall_budget_s(tool_name: str) -> float:
+    """Seconds a running tool may hold the stream before its own silence
+    counts as a fault.
+
+    Read off the tools' real limits rather than restated here, so raising
+    one of them raises this with it. The floor is the confirmation wait,
+    which any tool can hit; the execution cap is added on top because a
+    tool is approved first and runs afterwards.
+    """
+    name = str(tool_name or "").rsplit("__", 1)[-1]
+    exec_cap = 0.0
+    try:
+        if name in ("bash_status", "bash_output"):
+            from delfin.agent.api_client import _BASH_STATUS_WAIT_CAP_S
+            exec_cap = float(_BASH_STATUS_WAIT_CAP_S)
+        elif name in ("bash", "run_tests", "apply_patch"):
+            from delfin.agent.api_client import KitToolPermissions
+            exec_cap = float(KitToolPermissions.bash_max_timeout_s)
+        elif name in ("subagent", "subagent_result", "orchestrate",
+                      "skill", "Agent", "Task"):
+            from delfin.agent.subagents import _MAX_WALL_S
+            exec_cap = float(_MAX_WALL_S)
+    except Exception:
+        exec_cap = 0.0
+    return _TOOL_CONFIRM_WAIT_S + exec_cap + _TOOL_STALL_GRACE_S
+
+
+def _longest_pending_tool(inflight: dict, now: float):
+    """``(name, waited_s, budget_s)`` for the running tool with the most
+    budget LEFT, or None when nothing is in flight.
+
+    The most-budget-left one decides: while any tool is still inside its
+    own deadline the stream's silence is accounted for, and only when the
+    last of them is over its budget may the watchdog call it a fault.
+    """
+    best = None
+    try:
+        items = list((inflight or {}).items())
+    except Exception:
+        return None
+    for name, started in items:
+        try:
+            waited = max(0.0, now - float(started))
+        except (TypeError, ValueError):
+            continue
+        budget = _tool_stall_budget_s(name)
+        if best is None or (budget - waited) > (best[2] - best[1]):
+            best = (name, waited, budget)
+    return best
+
+
+def _stall_remaining_s(elapsed: float, budget: float, pending) -> float:
+    """Seconds left before silence may be called a fault.
+
+    ``pending`` is a :func:`_longest_pending_tool` triple or None. A tool
+    still inside its own deadline pushes the decision out to THAT
+    deadline: the stall budget is a statement about the provider, and it
+    cannot be spent by the agent's own tool doing what it was asked to.
+    """
+    remaining = float(budget) - float(elapsed)
+    if pending and pending[1] < pending[2]:
+        remaining = max(remaining, pending[2] - pending[1])
+    return remaining
+
+
 def _finalize_plan_decision(
     state: dict,
     *,
@@ -1329,7 +1446,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
-    ("Plan", "/plan approve", "Approve a pending plan when model forgot ExitPlanMode", False),
+    ("Plan", "/plan approve", "Approve a pending plan when model forgot exit_plan_mode", False),
     ("Plan", "/plan reject", "Reject a pending plan and exit plan mode", False),
     ("Bugs", "/bugs", "List bug reports in the archive (or /bugs ls)", False),
     ("Bugs", "/bugs task", "Scaffold a regression benchmark task from a report (/bugs task <name>)", True),
@@ -3163,6 +3280,11 @@ def create_tab(ctx):
         "_stale_timer": None,           # active threading.Timer for stale watch
         "_stale_kill_timer": None,      # cooperative-kill timer (dashboard only)
         "_stale_seen": False,           # already showed stale state this stream
+        # {tool_name: monotonic start} for tool calls that have been
+        # dispatched but not yet answered. The stall budget is about the
+        # PROVIDER; a tool running inside its own budget is accounted-for
+        # silence, not a stalled stream.
+        "_tool_inflight": {},
         "_cycle_history": [],        # recent gate / handoff / retry events
         "_inspector_detail_key": "", # selected cycle inspector detail entry
         "_mode_manual_override": False,
@@ -3204,7 +3326,7 @@ def create_tab(ctx):
                   "Bypass. No chemistry tools.",
         "plan": "Read-only research first — the agent explores the codebase, drafts a "
                 "step-by-step plan in markdown, and waits for your approval via "
-                "ExitPlanMode before any file edits or bash run.",
+                "exit_plan_mode before any file edits or bash run.",
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
                     "state-of-the-art methods. Web search enabled, read-only, no code changes.",
         "quick": "Session Manager → Builder → Test — lightweight pipeline for bugfixes, "
@@ -4165,13 +4287,14 @@ def create_tab(ctx):
                         if not hasattr(eng, "add_kit_workspace_dir"):
                             return False, "add_kit_workspace_dir missing"
                         return eng.add_kit_workspace_dir(value, persist=True)
-                    if kind == "extra_dir_session":
-                        # Session-only grant (bug 065503): add to live perms
-                        # without writing settings.json, so the agent stops
-                        # re-prompting per file in a just-allowed directory.
-                        if not hasattr(eng, "add_kit_workspace_dir"):
-                            return False, "add_kit_workspace_dir missing"
-                        return eng.add_kit_workspace_dir(value, persist=False)
+                    # There is no session-only directory kind here any more.
+                    # "Allow (once)" on an outside-workspace read used to
+                    # come through as one and made the file's parent a
+                    # WRITABLE session root — approving a read of a file in
+                    # $HOME made $HOME writable for the session, which is
+                    # neither what the dialog said nor what the click meant.
+                    # The read gate now opens that directory for READS
+                    # itself, so the broker hands out no directory at all.
                     return False, f"unknown persist kind: {kind}"
                 broker.set_persist_callback(_persist)
                 panel = broker.build_widget()
@@ -5086,7 +5209,7 @@ def create_tab(ctx):
             return {"answers": [], "timed_out": True}
         return result
 
-    # ExitPlanMode approval — uses existing plan_accept_btn but flips perms
+    # exit_plan_mode approval — uses existing plan_accept_btn but flips perms
     # via the structured callback so the tool result reflects the choice.
     state["_plan_approval_event"] = None
     state["_plan_approval_result"] = None
@@ -5488,22 +5611,20 @@ def create_tab(ctx):
             return
         try:
             from delfin.agent.session_store import save_session
-            estate = engine.export_state()
-            # Capture the full live state so resume restores not just chat
-            # history but also UI mode, permissions, the in-flight plan
-            # body, the subagent panel snapshot — everything a long session
-            # depends on to feel continuous after Ctrl-C / reopen.
+            # The exported state is forwarded WHOLESALE, as on the headless
+            # path. Listing the exporter's keys by hand here was the same
+            # defect one call site over: this list named neither the run
+            # clock nor the outcome-cost baseline, so a resumed dashboard
+            # session was handed its whole wall-clock budget again and
+            # booked the entire session's spend as its first turn. Only
+            # the values the exporter does NOT know (the UI's own state)
+            # are named here; a future exporter key that collides with one
+            # of them raises rather than quietly winning.
+            estate = dict(engine.export_state())
+            estate["session_id"] = engine.session_id
             save_session(
-                session_id=engine.session_id,
-                mode=estate["mode"],
-                role_index=estate["role_index"],
-                route=estate["route"],
-                role_outputs=estate["role_outputs"],
                 chat_messages=state["chat_messages"],
                 cycle_history=state.get("_cycle_history", []),
-                engine_messages=estate["engine_messages"],
-                token_usage=estate["token_usage"],
-                cost_usd=estate["cost_usd"],
                 perm_profile=state.get("_perm_profile", ""),
                 provider=provider_dropdown.value,
                 model=model_dropdown.value,
@@ -5514,11 +5635,7 @@ def create_tab(ctx):
                 pending_plan_body=state.get("_pending_plan_body", ""),
                 todo_payload=state.get("current_todos") or [],
                 workspace=_agent_workspace_path(),
-                project_dir=estate.get("project_dir", ""),
-                last_input_tokens=estate.get("last_input_tokens", 0),
-                system_prompt_chars=estate.get("system_prompt_chars", 0),
-                evidence=estate.get("evidence") or {},
-                compaction_summaries=estate.get("compaction_summaries", {}),
+                **estate,
             )
             state["active_session_id"] = engine.session_id
             # Episodic memory: one compact per-session record so a later
@@ -5584,25 +5701,27 @@ def create_tab(ctx):
         if not engine:
             return
 
-        # Restore engine state
-        engine.restore_state({
-            "mode": saved_mode,
-            "role_index": data.get("role_index", 0),
-            "role_outputs": data.get("role_outputs", {}),
-            "engine_messages": data.get("engine_messages", []),
-            "token_usage": data.get("token_usage", {"input": 0, "output": 0}),
-            "cost_usd": data.get("cost_usd", 0.0),
-            "session_id": session_id,
-            # restore_state reads both, and both were being dropped on the
-            # way out: the directory pin, and the estimator's floor that
-            # keeps the context bar honest before the first turn of the
-            # resumed session re-establishes it.
-            "project_dir": data.get("project_dir", ""),
-            "last_input_tokens": data.get("last_input_tokens", 0),
-            "system_prompt_chars": data.get("system_prompt_chars", 0),
-            "evidence": data.get("evidence") or {},
-            "compaction_summaries": data.get("compaction_summaries", {}),
-        })
+        # Restore engine state. The saved file is handed over WHOLESALE —
+        # ``restore_state`` reads it by declared key and ignores the rest,
+        # and re-listing the keys here is the same defect as on the save
+        # side: this list carried neither the run clock nor the outcome-cost
+        # baseline, and by dropping ``schema_version`` it made every
+        # dashboard resume look like a v1 file, so the v1 migration reset
+        # the run clock to zero on files that had recorded it correctly.
+        # Only the two values the UI owns are overridden: the mode the
+        # dropdown clamped to, and the id this load was asked for.
+        # A file from a NEWER schema makes restore_state refuse rather than
+        # drop what it cannot read; that refusal is the user's to see, not
+        # a traceback in the notebook output.
+        try:
+            engine.restore_state({
+                **data,
+                "mode": saved_mode,
+                "session_id": session_id,
+            })
+        except Exception as exc:
+            _append_system_message(f"Session not restored: {exc}")
+            return
 
         # Restore chat UI
         state["chat_messages"] = data.get("chat_messages", [])
@@ -7300,8 +7419,15 @@ def create_tab(ctx):
                 last = float(state.get("_last_stream_activity") or 0.0)
                 if last <= 0.0:
                     return
-                elapsed = time.monotonic() - last
-                if elapsed >= threshold and not state.get("_stale_seen"):
+                now = time.monotonic()
+                elapsed = now - last
+                # A tool still inside its own budget explains the silence,
+                # so the stream is not stalled — it is waiting, and saying
+                # otherwise sends the user hunting for a provider fault.
+                pending = _longest_pending_tool(
+                    state.get("_tool_inflight"), now)
+                if (elapsed >= threshold and not state.get("_stale_seen")
+                        and not (pending and pending[1] < pending[2])):
                     state["_stale_seen"] = True
                     mins = int(elapsed // 60)
                     _set_working(
@@ -7350,16 +7476,28 @@ def create_tab(ctx):
                 last = float(state.get("_last_stream_activity") or 0.0)
                 if last <= 0.0:
                     return
-                elapsed = time.monotonic() - last
+                now = time.monotonic()
+                elapsed = now - last
                 waiting_for_first = not state.get("_stream_saw_output")
                 budget = first_token_kill if waiting_for_first else kill_after
-                if elapsed < budget:
+                # A dispatched tool call is silence the agent CAUSED, not
+                # silence the provider fell into: bash_status blocks for its
+                # server-side wait, a sub-agent runs for its wall budget, and
+                # any tool can be sitting at a confirmation dialog. Each of
+                # those outlives the stall budget by design, so the turn was
+                # killed mid-tool and the approval the user was in the middle
+                # of giving died with it. While a tool is inside its own
+                # deadline the kill waits for THAT deadline instead.
+                pending = _longest_pending_tool(
+                    state.get("_tool_inflight"), now)
+                remaining = _stall_remaining_s(elapsed, budget, pending)
+                if remaining > 0:
                     # Not due yet — re-arm for the remaining time instead of
                     # dropping the watch (the first-token budget outlives
                     # this timer).
                     try:
                         again = _threading.Timer(
-                            max(5.0, budget - elapsed) + 1.0, _check_kill)
+                            max(5.0, remaining) + 1.0, _check_kill)
                         again.daemon = True
                         again.start()
                         state["_stale_kill_timer"] = again
@@ -7367,7 +7505,8 @@ def create_tab(ctx):
                         pass
                     return
                 state["_watchdog_stopped"] = (
-                    "prefill" if waiting_for_first else "stall")
+                    "tool" if pending
+                    else "prefill" if waiting_for_first else "stall")
                 engine = state.get("engine")
                 if engine is None:
                     return
@@ -7380,7 +7519,16 @@ def create_tab(ctx):
                         engine.client.signal_stop()
                 except Exception:
                     pass
-                if waiting_for_first:
+                if pending:
+                    _append_system_message(
+                        f"⏱ Turn ended by DELFIN's watchdog: the tool "
+                        f"`{pending[0]}` was dispatched {int(pending[1])} s "
+                        f"ago and never returned (its own budget is "
+                        f"{int(pending[2])} s). This is the tool, not the "
+                        f"provider — check whether it is waiting on "
+                        f"something that will never arrive."
+                    )
+                elif waiting_for_first:
                     _append_system_message(
                         f"⏱ Turn ended by DELFIN's watchdog: the provider "
                         f"sent nothing for {int(elapsed)} s (first-token "
@@ -8307,6 +8455,14 @@ def create_tab(ctx):
                         "todo_payload": state.get("current_todos", []),
                         "active_gate": state.get("_active_gate"),
                         "pending_plan_body": state.get("_pending_plan_body", ""),
+                        # Where the task store lives. The brief falls back
+                        # to the real task list when the todo payload is
+                        # empty, and a saved session carries this; the live
+                        # one did not, so handing off a session that had
+                        # never been saved briefed the fresh agent that
+                        # nothing was outstanding while work was still open.
+                        "workspace": _agent_workspace_path(),
+                        "project_dir": estate.get("project_dir", ""),
                     }
                 try:
                     brief = _ss.build_handoff_brief(data)
@@ -9064,7 +9220,7 @@ def create_tab(ctx):
             if not plans:
                 _append_system_message(
                     "No saved plans yet. Plans are written here when you "
-                    "approve a Plan-Mode plan via ExitPlanMode."
+                    "approve a Plan-Mode plan via exit_plan_mode."
                 )
                 return True
             import time as _time
@@ -13827,6 +13983,7 @@ def create_tab(ctx):
         state["_last_stream_activity"] = time.monotonic()
         state["_stale_seen"] = False
         state["_stream_saw_output"] = False
+        state["_tool_inflight"] = {}
         state.pop("_watchdog_stopped", None)
         _arm_stale_watcher()
         # Checkpoint BEFORE the turn runs. Auto-save used to happen only
@@ -13866,6 +14023,12 @@ def create_tab(ctx):
                     nonlocal last_update
                     state["_last_stream_activity"] = time.monotonic()
                     state["_stream_saw_output"] = True
+                    # The provider is streaming again, so whatever tools
+                    # were dispatched are answered — a result event with an
+                    # empty body reaches no callback, and a marker left
+                    # standing would extend the stall budget for the rest
+                    # of the turn.
+                    state["_tool_inflight"] = {}
                     if state.get("_stale_seen"):
                         # Recovered from stale — clear the warning state
                         state["_stale_seen"] = False
@@ -13884,6 +14047,7 @@ def create_tab(ctx):
                     nonlocal last_update
                     state["_last_stream_activity"] = time.monotonic()
                     state["_stream_saw_output"] = True
+                    state["_tool_inflight"] = {}   # see _on_thinking
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
                     # When first text arrives, flush thinking as collapsed block
@@ -13928,6 +14092,16 @@ def create_tab(ctx):
                         parts = tool_name.split("__")
                         if len(parts) >= 3:
                             tool_name = parts[-1]
+                    # The call is dispatched here and the stream stays quiet
+                    # until it answers. Record when, so the watchdog can
+                    # tell an agent waiting on its own tool apart from a
+                    # provider that has gone away. Replaced rather than
+                    # mutated: the watchdog reads this from a timer thread
+                    # and must never walk a dict that is being written.
+                    state["_tool_inflight"] = {
+                        **(state.get("_tool_inflight") or {}),
+                        tool_name: time.monotonic(),
+                    }
                     # Track tool names this turn so the verify-guard can
                     # tell whether the answer grounded itself (doc-search /
                     # file read) before making keyword claims.
@@ -14241,12 +14415,22 @@ def create_tab(ctx):
 
                 def _on_tool_result(tool_name, tool_output):
                     """Append tool result as collapsible detail to the last tool message."""
+                    _bare = tool_name
+                    if _bare and _bare.startswith("mcp__"):
+                        _parts = _bare.split("__")
+                        if len(_parts) >= 3:
+                            _bare = _parts[-1]
+                    # The tool answered — the stream is the provider's again.
+                    # Cleared before the empty-output return below, which
+                    # would otherwise leave the marker standing for a tool
+                    # that had finished.
+                    state["_last_stream_activity"] = time.monotonic()
+                    _still = dict(state.get("_tool_inflight") or {})
+                    _still.pop(_bare, None)
+                    state["_tool_inflight"] = _still
                     if not tool_output:
                         return
-                    if tool_name and tool_name.startswith("mcp__"):
-                        parts = tool_name.split("__")
-                        if len(parts) >= 3:
-                            tool_name = parts[-1]
+                    tool_name = _bare
                     # Subagent panel: mark the next running call as done.
                     if tool_name == "Agent":
                         for entry in state["subagent_calls"]:
@@ -14737,8 +14921,7 @@ def create_tab(ctx):
                             and _final_text.strip()):
                         chunks[:] = [_final_text]
                         _append_system_message(
-                            "✓ Self-verification: statements checked, "
-                            "answer corrected.")
+                            _self_verification_note(True))
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
@@ -15056,8 +15239,16 @@ def create_tab(ctx):
                                     finalize=True,
                                 )
                                 _append_system_message(
-                                    "✓ Self-verification: statements "
-                                    "checked, answer corrected.")
+                                    _correction_verdict_note(
+                                        _vg.scan_for_ungrounded_code_claims,
+                                        "".join(chunks),
+                                        keep=lambda f: f.kind == "nonexistent",
+                                        repo_root=getattr(
+                                            engine, "repo_dir", None),
+                                        observed_files=getattr(
+                                            engine, "_last_observed_files",
+                                            None),
+                                    ))
                         if _vflags:
                             _kws = ", ".join(
                                 getattr(f, "keyword", str(f))
@@ -15095,8 +15286,10 @@ def create_tab(ctx):
                                         finalize=True,
                                     )
                                     _append_system_message(
-                                        "✓ Self-verification: statements "
-                                        "checked, answer corrected.")
+                                        _correction_verdict_note(
+                                            _vg.scan_for_unverified_keywords,
+                                            "".join(chunks),
+                                        ))
 
                         # Quantity-claim check: physical quantities stated
                         # without any evidence act this turn (no calculation
@@ -15149,8 +15342,14 @@ def create_tab(ctx):
                                         finalize=True,
                                     )
                                     _append_system_message(
-                                        "✓ Self-verification: statements "
-                                        "checked, answer corrected.")
+                                        _correction_verdict_note(
+                                            _vg.scan_for_unsourced_quantities,
+                                            "".join(chunks),
+                                            observed_files=getattr(
+                                                engine, "_last_observed_files",
+                                                None),
+                                            evidence_tools_used=turn_tools,
+                                        ))
 
                     # -- Interactive question detection (solo/dashboard) --
                     # After the agent finishes a turn, check if the response
@@ -15788,6 +15987,7 @@ def create_tab(ctx):
                                 pass
                         state[_slot] = None
                     state["_stale_seen"] = False
+                    state["_tool_inflight"] = {}
                 except Exception:
                     pass
                 if _is_current:
@@ -16162,7 +16362,7 @@ def create_tab(ctx):
             perm_dropdown.disabled = True
             _append_system_message(
                 "🧭 Plan mode active — read-only. The agent will draft a "
-                "plan and call ExitPlanMode for your approval before any "
+                "plan and call exit_plan_mode for your approval before any "
                 "edits or bash runs."
             )
         else:

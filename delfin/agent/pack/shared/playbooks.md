@@ -58,10 +58,10 @@ Recovery must work for both local and SLURM. Never modify the original input.
 Metal bonds → dative bonds via `_convert_metal_bonds_to_dative`. Hapto
 approximation is optional (`_hapto_approx_enabled` flag).
 
-## dashboard/tab_agent.py (17110 lines)
+## dashboard/tab_agent.py (17310 lines)
 
 1. ALWAYS Grep first
-2. Entry point: `create_tab` (line 3072)
+2. Entry point: `create_tab` (line 3194)
 3. Grep for specific widget or callback names
 4. Run: `pytest tests/test_agent_*.py -x -q`
 

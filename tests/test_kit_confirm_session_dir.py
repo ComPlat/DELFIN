@@ -116,6 +116,34 @@ def test_bash_allow_once_grants_no_directory(tmp_path):
     assert all(k not in ("extra_dir_session", "extra_dir") for k, _ in calls)
 
 
+def test_the_dashboard_knows_no_session_directory_kind():
+    """The other end of the same wire. The broker stopped asking for a
+    session-only directory grant, but the dashboard's persist callback
+    still had a branch for it -- dead code that reads like a supported
+    path and invites the grant to be wired back up."""
+    import ast
+    import inspect
+    import pathlib
+
+    from delfin.dashboard import tab_agent
+
+    src = pathlib.Path(inspect.getfile(tab_agent)).read_text(encoding="utf-8")
+    assert "extra_dir_session" not in src
+
+    persist = [n for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.FunctionDef) and n.name == "_persist"]
+    assert len(persist) == 1
+    kinds = {c.value for n in ast.walk(persist[0])
+             if isinstance(n, ast.Compare)
+             for c in n.comparators
+             if isinstance(c, ast.Constant) and isinstance(c.value, str)}
+    kinds |= {e.value for n in ast.walk(persist[0])
+              if isinstance(n, ast.Compare)
+              for c in n.comparators if isinstance(c, ast.Tuple)
+              for e in c.elts if isinstance(e, ast.Constant)}
+    assert kinds == {"allow", "deny", "extra_dir"}
+
+
 def test_deny_grants_nothing(tmp_path):
     broker, calls = _broker_with_recorder()
     f = tmp_path / "secret" / "k.py"
