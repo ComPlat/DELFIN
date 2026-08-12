@@ -178,7 +178,13 @@ def checkout_fingerprint(root: Path | str) -> dict[str, tuple[int, int]]:
     """
     base = Path(root)
     guarded = [base / rel for rel in _BEHAVIOR_WS_RELS]
-    skip = {".git", "__pycache__", ".pytest_cache", "node_modules"}
+    # `.claude` holds the worktrees parallel agents check out into. A run
+    # with four of them alive reported 4992 changed files and then "… and
+    # 4992 more", which is not a warning anybody reads twice — and the
+    # walk is O(every file in every worktree) before it says so. Observed
+    # live, 2026-08-12.
+    skip = {".git", "__pycache__", ".pytest_cache", "node_modules",
+            ".claude", ".venv", ".mypy_cache", ".ruff_cache"}
     out: dict[str, tuple[int, int]] = {}
     for path in base.rglob("*"):
         try:

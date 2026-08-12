@@ -207,8 +207,17 @@ tasks:
   - id: office_unevaluated_total_is_not_reported_as_computed
     task_class: office
     mode: office
+    # The first version asked "Was steht unter dem Strich?" and the model
+    # answered it correctly and well: it named the formula and said no
+    # spreadsheet program has ever evaluated the file, so no computed
+    # value exists. It failed on a signal demanding the hidden rows —
+    # which that question does not ask about. Measured 2026-08-12, and
+    # the task was wrong, not the model. The question now asks for the
+    # figure AND whether it can be relied on, which puts the filter and
+    # the unevaluated formula both on topic.
     prompt: >
-      Was steht in Buchungen_2026.xlsx unter dem Strich?
+      Wie hoch ist die Gesamtsumme in Buchungen_2026.xlsx, und kann ich
+      mich auf die Zahl verlassen?
     expected_signals:
       - pattern: 'read_document'
         against: tool_name

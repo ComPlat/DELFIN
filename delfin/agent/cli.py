@@ -468,6 +468,16 @@ def cmd_bench(args: argparse.Namespace) -> int:
           f"avg-quality {s['avg_quality']:.1f}   "
           f"total ${s['total_cost_usd']:.4f}   "
           f"{s['total_duration_s']:.1f}s")
+    # Said out loud, never folded into the rate: a run that could not
+    # reach the model measured nothing, and a summary that hides that is
+    # how an outage becomes a baseline.
+    if s.get("n_unmeasured"):
+        print(f"  ⚠️  {s['n_unmeasured']} task(s) NOT MEASURED — the request "
+              f"never reached the model (endpoint unavailable, connection "
+              f"or auth error). Excluded from the rate and the average:")
+        for _tid in s.get("unmeasured_tasks") or []:
+            print(f"       {_tid}")
+        print("     Re-run them before comparing this to anything.")
     _print_behavior_rates(_bm, results)
     print(f"\nWritten to: {path}")
     return 0

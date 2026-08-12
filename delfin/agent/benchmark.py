@@ -137,6 +137,12 @@ class BenchmarkResult:
     missing_signals: list[str] = field(default_factory=list)
     budget_violations: list[str] = field(default_factory=list)
     error: str = ""
+    # A run whose request never reached the model. Not a score: the
+    # endpoint had no capacity, or the connection failed, so nothing
+    # about the model was observed. Booking that as a failing model
+    # lowers a baseline permanently and silently, and the next real
+    # regression then passes under it.
+    unmeasured: bool = False
     # --- replicate-aware fields (N=1 → trivially the only sample) ---
     n_samples: int = 1
     quality_stdev: float = 0.0
@@ -607,6 +613,63 @@ def behavior_rates(
     }
 
 
+# Errors that mean the request never reached the model. Each was seen in
+# a real run: the KIT gateway reporting no deployment for the requested
+# model, a proxy connection error, an auth rejection, a gateway 5xx. The
+# distinguishing property is that no token was ever generated, so there
+# is nothing to score -- as opposed to a model that answered badly, or a
+# tool that failed inside an otherwise live turn.
+_TRANSPORT_FAILURE_MARKERS: tuple[str, ...] = (
+    "no deployments available",
+    "server connection error",
+    "connection error",
+    "connection refused",
+    "connection reset",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "temporarily unavailable",
+    "rate limit",
+    "429",
+    "502", "503", "504",
+    "authentication", "unauthorized", "invalid api key",
+    "engine init failed",
+)
+
+
+def is_unmeasured(traj: "Trajectory") -> bool:
+    """True when the run says nothing about the model.
+
+    Observed 2026-08-12: two office tasks came back at quality 35 with a
+    zero pass rate, and their entire recorded output was the harness's
+    own three retry banners. The endpoint had no capacity. Scored as
+    model failures, they took a suite from 9/11 to 7/11 and wrote that
+    into the file baselines are compared against.
+
+    The text check is deliberately paired with a second condition -- no
+    tool call and no output beyond the retry notices -- so a turn that
+    ran, did work and then hit a transport error near the end is still
+    scored on what it did.
+    """
+    try:
+        err = str(getattr(traj, "error", "") or "").lower()
+        if not err:
+            return False
+        if not any(m in err for m in _TRANSPORT_FAILURE_MARKERS):
+            return False
+        if getattr(traj, "tool_calls", None):
+            return False
+        text = str(getattr(traj, "text", "") or "")
+        stripped = _RETRY_NOTICE_RE.sub("", text).strip()
+        return len(stripped) < 40
+    except Exception:
+        return False
+
+
+_RETRY_NOTICE_RE = re.compile(
+    r"(?m)^\s*[\u23f3\u26a0\u23f9\U0001f6d1][^\n]*$")
+
+
 def score_outcome(
     task: Task,
     traj: Trajectory,
@@ -652,6 +715,10 @@ def score_outcome(
         if _signal_matches(sig, traj, waive_negated=True):
             violated.append(label)
 
+    unmeasured = is_unmeasured(traj)
+    # An unmeasured run is not a pass and not a fail. `success` stays
+    # False so nothing counts it as working; the flag is what keeps the
+    # aggregates from counting it as broken.
     success = bool(success_required_ok and not violated and not traj.error)
 
     # 3. Budget checks (don't flip success on their own — visible in score).
@@ -762,6 +829,7 @@ def score_outcome(
         missing_signals=missing,
         budget_violations=budget_violations,
         error=traj.error,
+        unmeasured=unmeasured,
         text_excerpt=excerpt,
         tool_names=tool_names,
         behavior=behavior_flags(task, traj),
@@ -970,16 +1038,30 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     if not rows:
         return {
             "n_tasks": 0, "n_pass": 0, "pass_rate": 0.0,
+            "n_unmeasured": 0, "unmeasured_tasks": [],
             "avg_quality": 0.0, "total_cost_usd": 0.0,
             "total_duration_s": 0.0, "total_tool_calls": 0,
         }
-    n = len(rows)
-    n_pass = sum(1 for r in rows if r.get("success"))
+    # A task whose request never reached the model is excluded from both
+    # the rate and the average, and counted separately. Including it
+    # writes an endpoint outage into the number a baseline is compared
+    # against -- which lowers the bar permanently, and silently, so the
+    # next real regression passes under it. Observed 2026-08-12: two
+    # tasks whose entire output was the harness's own retry banners took
+    # a suite from 9/11 to 7/11.
+    scored = [r for r in rows if not r.get("unmeasured")]
+    n_unmeasured = len(rows) - len(scored)
+    n = len(scored)
+    n_pass = sum(1 for r in scored if r.get("success"))
     return {
         "n_tasks": n,
         "n_pass": n_pass,
-        "pass_rate": n_pass / n,
-        "avg_quality": sum(int(r.get("quality_0_100") or 0) for r in rows) / n,
+        "n_unmeasured": n_unmeasured,
+        "unmeasured_tasks": sorted(
+            str(r.get("task_id") or "?") for r in rows if r.get("unmeasured")),
+        "pass_rate": (n_pass / n) if n else 0.0,
+        "avg_quality": (sum(int(r.get("quality_0_100") or 0)
+                            for r in scored) / n) if n else 0.0,
         "total_cost_usd": sum(float(r.get("cost_usd") or 0) for r in rows),
         "total_duration_s": sum(float(r.get("duration_s") or 0) for r in rows),
         "total_tool_calls": sum(int(r.get("tool_calls") or 0) for r in rows),
