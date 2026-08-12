@@ -62,7 +62,19 @@ _BASELINE_TOKENS = 11_422
 # read_document's own description plus two of its parameter texts were
 # tightened to return 12. The ceiling moves by the measured remainder,
 # 8, and not by a round number.
-_TOKEN_BUDGET = 9_133
+#
+# Raised a third time, 9_133 -> 9_287, for sum_column: 154 tokens
+# measured, after its description and parameter texts were cut to the
+# shortest form that still says what the tool refuses and how to get past
+# the refusal. Not a relaxation. Until now nothing in the catalogue
+# TOTALLED anything: a sum was arithmetic the model did in its head over a
+# rendered grid, so no tool result ever held the figure the answer stated,
+# and the coverage ledger that checks an answer's figures had nothing to
+# check a total against. Its own text pays for what it can — the six
+# parameters are the file, the column, the sheet, the group, the header
+# row and the convention, and none of them can be dropped without making
+# the tool unusable on the layouts the users actually have.
+_TOKEN_BUDGET = 9_287
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -70,8 +82,8 @@ _TOKEN_BUDGET = 9_133
 # like growth that was paid for.
 _POST_COMPACTION_TOOLS = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
-    "fill_docx_template", "create_docx", "compare_tables", "fill_series",
-    "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
+    "fill_docx_template", "create_docx", "compare_tables", "sum_column",
+    "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
 })
 
 

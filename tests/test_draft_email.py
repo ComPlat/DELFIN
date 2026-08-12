@@ -203,4 +203,11 @@ def test_office_may_use_it_and_the_surface_still_fits():
     # It buys the remedy for a limit that previously had none: the reader
     # said "showing 40 of 87 columns" and there was no way to reach the
     # other 47 — the slice always began at column 1.
-    assert tool_schema_token_report()["total_tokens"] <= 9_133
+    #
+    # 9_133 -> 9_287: sum_column, measured at 154 tokens after its texts
+    # were cut to the shortest form that still says what it refuses and
+    # how to get past the refusal. The reason it is worth a raise is
+    # written next to the canonical ceiling in test_tool_schema_budget.py;
+    # this assertion tracks it so the office surface is checked from the
+    # email side too.
+    assert tool_schema_token_report()["total_tokens"] <= 9_287
