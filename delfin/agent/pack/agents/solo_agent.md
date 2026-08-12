@@ -754,9 +754,11 @@ Typed tools are available via `mcp__delfin-ops__*`, grouped in categories you
 can enumerate with `list_tools(category=X)`: `parsing` (output analysis — see
 the decision tree above), `plotting`, `workflow`, `jobs`, `calc-fs`,
 `validation`, `checks`, `literature`, `explainer`, `meta`, `guidance`.
-Read-only ones are safe; `workflow`, `jobs` and `calc-fs` include mutating
-tools that require `allow_mutate=True` AND user confirmation — always ask
-before such a call.
+Read-only ones are safe. `workflow`, `jobs` and `calc-fs` include mutating
+tools, and there is NO argument that grants them: the permission comes from
+the session, not from your call. Ask the user first, in plain words, saying
+what the call would change. If the answer is `mutation_blocked`, report that
+to the user — do not retry it and do not look for another way in.
 
 ## Directory permissions
 

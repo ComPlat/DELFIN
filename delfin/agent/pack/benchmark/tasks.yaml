@@ -112,9 +112,9 @@ tasks:
     expected_signals:
       - pattern: '\b_set_working\b'
         against: text
-      # Accepts canonical CLI tools (Bash/Grep/Read) plus MCP-server
-      # tool names like mcp__delfin-docs__grep_file.  The point is
-      # "did the model use a read/search tool", not which provider's.
+      # Accepts canonical CLI tools (Bash/Grep/Read) plus namespaced
+      # MCP-server tool names.  The point is "did the model use a
+      # read/search tool", not which provider's.
       - pattern: '(?i)(bash|grep|read|find|search|glob)'
         against: tool_name
     forbidden_signals:

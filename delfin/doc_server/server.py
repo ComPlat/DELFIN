@@ -21,13 +21,35 @@ from .search import DocSearchEngine
 
 
 def _load_index(index_path: str | Path) -> dict:
-    """Load the JSON index from disk."""
+    """Load the JSON index from disk, or an empty index that says why.
+
+    Exiting on a missing index made the server a process that dies during
+    the client's ``initialize`` handshake. To the client that is
+    indistinguishable from a server with no tools: ``list_tools`` returns
+    ``[]``, the reason ends up in ``last_error``, and nothing looked at it.
+    An empty index keeps the server alive and lets every tool answer with
+    the reason instead.
+    """
     p = Path(index_path)
     if not p.exists():
-        print(f"Error: Index file not found: {p}", file=sys.stderr)
+        print(f"Warning: Index file not found: {p}", file=sys.stderr)
         print("Run 'delfin-docs-index' to build the index.", file=sys.stderr)
-        sys.exit(1)
-    return json.loads(p.read_text(encoding="utf-8"))
+        return {
+            "version": 1, "built_at": "", "document_count": 0,
+            "documents": {}, "failed_documents": [],
+            "index_error": (
+                f"no doc index at {p} — run `delfin-docs-index` to build it"
+            ),
+        }
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Warning: Index at {p} is unreadable: {exc}", file=sys.stderr)
+        return {
+            "version": 1, "built_at": "", "document_count": 0,
+            "documents": {}, "failed_documents": [],
+            "index_error": f"doc index at {p} is unreadable: {exc}",
+        }
 
 
 def run_server(argv: list[str] | None = None) -> None:
@@ -76,11 +98,16 @@ def run_server(argv: list[str] | None = None) -> None:
             max_results: Maximum number of results (default: 10)
 
         Returns:
-            JSON array of matching sections with doc_id, section_id, title,
-            score, and a text snippet.
+            JSON object with ``results`` (matching sections: doc_id,
+            section_id, title, score, snippet) and ``index`` (when the index
+            was built, how many sections it holds, which documents could not
+            be extracted, which have changed since).
         """
-        results = engine.search(query, doc_filter=doc_filter, max_results=max_results)
-        return json.dumps(results, indent=2, ensure_ascii=False)
+        payload = engine.search(query, doc_filter=doc_filter,
+                                max_results=max_results)
+        if index.get("index_error"):
+            payload["index"]["error"] = index["index_error"]
+        return json.dumps(payload, indent=2, ensure_ascii=False)
 
     @mcp.tool()
     def read_section(doc_id: str, section_id: str) -> str:
@@ -119,9 +146,13 @@ def run_server(argv: list[str] | None = None) -> None:
         """List all indexed documents with metadata.
 
         Returns:
-            JSON array of documents with doc_id, title, source_path,
-            section_count, and total_chars.
+            JSON object with ``documents`` (doc_id, title, source_path,
+            section_count, total_chars) and ``index`` (build time, documents
+            that could NOT be extracted with the reason, documents whose
+            source changed since the build).
         """
+        from .indexer import index_provenance
+
         docs = []
         for doc_id, doc in index.get("documents", {}).items():
             docs.append({
@@ -132,7 +163,11 @@ def run_server(argv: list[str] | None = None) -> None:
                 "section_count": doc.get("section_count", 0),
                 "total_chars": doc.get("total_chars", 0),
             })
-        return json.dumps(docs, indent=2, ensure_ascii=False)
+        prov = index_provenance(index)
+        if index.get("index_error"):
+            prov["error"] = index["index_error"]
+        return json.dumps({"documents": docs, "index": prov},
+                          indent=2, ensure_ascii=False)
 
     @mcp.tool()
     def list_sections(doc_id: str) -> str:
@@ -202,15 +237,19 @@ def run_server(argv: list[str] | None = None) -> None:
             max_results: Maximum results to return (default: 20)
 
         Returns:
-            JSON array of matching calculations with metadata.
+            JSON object with ``results`` (matching calculations with
+            metadata) and ``index`` (which roots were scanned, which were
+            missing, when the scan ran, where it was cut off by its depth
+            limit).
         """
         eng = _get_calc_engine()
-        results = eng.search(
-            query=query, source=source, functional=functional,
-            basis_set=basis_set, solvent=solvent, module=module,
-            max_results=max_results,
-        )
-        return json.dumps(results, indent=2, ensure_ascii=False)
+        return json.dumps(
+            eng.search(
+                query=query, source=source, functional=functional,
+                basis_set=basis_set, solvent=solvent, module=module,
+                max_results=max_results,
+            ),
+            indent=2, ensure_ascii=False)
 
     @mcp.tool()
     def get_calc_info(calc_id: str) -> str:
@@ -228,7 +267,10 @@ def run_server(argv: list[str] | None = None) -> None:
         eng = _get_calc_engine()
         info = eng.get_calc_info(calc_id)
         if info is None:
-            return json.dumps({"error": f"Calculation '{calc_id}' not found."})
+            return json.dumps({
+                "error": f"Calculation '{calc_id}' not found.",
+                "index": eng.provenance(),
+            }, indent=2, ensure_ascii=False)
         return json.dumps(info, indent=2, ensure_ascii=False)
 
     @mcp.tool()

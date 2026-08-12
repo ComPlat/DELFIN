@@ -15,24 +15,50 @@ from typing import Any
 # PDF extraction
 # ---------------------------------------------------------------------------
 
-def _extract_pdf_text(path: Path, quiet: bool = False) -> list[dict[str, Any]]:
+def _extract_pdf_text(
+    path: Path, quiet: bool = False, report: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Extract text from a PDF file, one entry per page.
 
-    Returns a list of ``{"page": int, "text": str}`` dicts.
+    Returns a list of ``{"page": int, "text": str}`` dicts. When nothing
+    could be extracted, *report* (if given) is filled with ``reason`` — the
+    caller needs to tell "no pypdf" from "scanned or DRM-protected PDF"
+    apart, because both produce the same empty list and neither is a
+    document.
     """
     try:
         from pypdf import PdfReader  # type: ignore
     except ImportError:
         if not quiet:
             print(f"  [skip] pypdf not installed — cannot index {path.name}", file=sys.stderr)
+        if report is not None:
+            report["reason"] = (
+                "pypdf is not installed, so no text could be read from this "
+                "PDF (pip install pypdf)"
+            )
         return []
 
-    reader = PdfReader(str(path))
+    try:
+        reader = PdfReader(str(path))
+        page_count = len(reader.pages)
+    except Exception as exc:            # unreadable / encrypted / corrupt
+        if report is not None:
+            report["reason"] = f"PDF could not be opened: {type(exc).__name__}: {exc}"
+        return []
+
     pages: list[dict[str, Any]] = []
     for i, page in enumerate(reader.pages):
-        text = (page.extract_text() or "").strip()
+        try:
+            text = (page.extract_text() or "").strip()
+        except Exception:
+            text = ""
         if text:
             pages.append({"page": i + 1, "text": text})
+    if not pages and report is not None:
+        report["reason"] = (
+            f"no text on any of the {page_count} page(s) — a scanned or "
+            "image-only PDF needs OCR before it can be searched"
+        )
     return pages
 
 
@@ -48,6 +74,15 @@ def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]
         r"([A-Z][A-Za-z0-9\s\-\/:,()&]+)$",                # title in mixed case
         re.MULTILINE,
     )
+
+    if not pages:
+        # No pages with text is NOT a one-section document with an empty
+        # body. It used to be: the chunker emitted ``full_document`` with
+        # ``text=""``, the document reported ``section_count: 1``, the "is
+        # the manual indexed" check passed on the title alone, and every
+        # search against it returned nothing, forever. The caller records
+        # this as an indexing failure instead.
+        return []
 
     full_text = "\n\n".join(
         f"--- PAGE {p['page']} ---\n{p['text']}" for p in pages
@@ -244,19 +279,33 @@ def build_index(
             })
 
     documents: dict[str, Any] = {}
+    failed: list[dict[str, Any]] = []
+
+    def _fail(spec: dict, path: Path, reason: str) -> None:
+        failed.append({
+            "doc_id": spec.get("doc_id", ""),
+            "title": spec.get("title", ""),
+            "source_path": str(path),
+            "reason": reason,
+        })
+        if not quiet:
+            print(f"  [fail] {path.name}: {reason}", file=sys.stderr)
+
     for spec in doc_specs:
         path = Path(spec["path"])
         if not path.exists():
             if not quiet:
                 print(f"  [skip] not found: {path}", file=sys.stderr)
+            _fail(spec, path, "file not found")
             continue
 
         doc_type = spec.get("type", _SUPPORTED_EXTENSIONS.get(path.suffix.lower(), "text"))
         if not quiet:
             print(f"  indexing: {path.name} ({doc_type})", file=sys.stderr)
 
+        report: dict[str, Any] = {}
         if doc_type == "pdf":
-            pages = _extract_pdf_text(path, quiet=quiet)
+            pages = _extract_pdf_text(path, quiet=quiet, report=report)
             sections_list = _chunk_pdf_into_sections(pages)
         elif doc_type == "markdown":
             sections_list = _extract_markdown_sections(path)
@@ -278,12 +327,23 @@ def build_index(
         sections = {s["section_id"]: s for s in sections_list}
         total_chars = sum(len(s["text"]) for s in sections.values())
 
+        # Zero extracted characters is an indexing FAILURE, not a document
+        # with nothing in it. Recorded WITH the reason, and kept out of
+        # ``documents`` so nothing downstream can report it as present:
+        # a present-and-empty entry answered "yes, indexed" to the manual
+        # check and returned nothing to every search, permanently.
+        if total_chars == 0:
+            _fail(spec, path, report.get("reason")
+                  or "no text could be extracted from this file")
+            continue
+
         documents[spec["doc_id"]] = {
             "title": spec["title"],
             "source_path": str(path),
             "source_type": doc_type,
             "section_count": len(sections),
             "total_chars": total_chars,
+            "source_mtime": _mtime(path),
             "sections": sections,
         }
 
@@ -292,6 +352,74 @@ def build_index(
         "built_at": datetime.now(timezone.utc).isoformat(),
         "document_count": len(documents),
         "documents": documents,
+        # Named, with the reason. A file that produced nothing has to be
+        # visible somewhere or the only symptom is a search that never
+        # matches.
+        "failed_documents": failed,
+    }
+
+
+def _mtime(path: Path) -> float:
+    """Source mtime, or 0.0 when it cannot be read."""
+    try:
+        return float(path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def stale_documents(index: dict) -> list[dict[str, Any]]:
+    """Indexed documents whose source changed or vanished since the build.
+
+    ``built_at`` was written by both indexers and compared to nothing, so
+    an answer from a section deleted from the source last month was
+    byte-identical to a fresh hit. Every consumer that hands index content
+    to a reader stamps this alongside it.
+    """
+    out: list[dict[str, Any]] = []
+    for doc_id, doc in (index or {}).get("documents", {}).items():
+        if not isinstance(doc, dict):
+            continue
+        src = doc.get("source_path") or ""
+        if not src:
+            continue
+        path = Path(src)
+        if not path.exists():
+            out.append({"doc_id": doc_id, "source_path": src,
+                        "reason": "source file no longer exists"})
+            continue
+        recorded = doc.get("source_mtime")
+        if not recorded:
+            # Indexed before mtimes were recorded — unknowable, not stale.
+            continue
+        current = _mtime(path)
+        if current > float(recorded) + 1.0:
+            out.append({"doc_id": doc_id, "source_path": src,
+                        "reason": "source file changed after the index was built"})
+    return out
+
+
+def index_provenance(index: dict) -> dict[str, Any]:
+    """What the caller needs to judge an answer from this index.
+
+    Carried on every search and listing payload, INCLUDING an empty one:
+    "nothing matched" and "there is nothing to match against" are the same
+    sentence otherwise.
+    """
+    index = index or {}
+    docs = index.get("documents", {}) or {}
+    failures = [f for f in (index.get("failed_documents", []) or [])
+                if isinstance(f, dict)]
+    return {
+        "built_at": index.get("built_at", ""),
+        "document_count": len(docs),
+        "section_count": sum(
+            len((d or {}).get("sections", {}) or {}) for d in docs.values()
+            if isinstance(d, dict)),
+        "failed_documents": [
+            {"doc_id": f.get("doc_id", ""), "reason": f.get("reason", "")}
+            for f in failures
+        ],
+        "stale_documents": stale_documents(index),
     }
 
 
@@ -370,6 +498,9 @@ def main(argv: list[str] | None = None) -> None:
     total_sections = sum(d["section_count"] for d in index["documents"].values())
     print(f"Index written to: {output_path}", file=sys.stderr)
     print(f"  {doc_count} document(s), {total_sections} section(s)", file=sys.stderr)
+    for entry in index.get("failed_documents", []):
+        print(f"  NOT indexed: {entry['source_path']} — {entry['reason']}",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":

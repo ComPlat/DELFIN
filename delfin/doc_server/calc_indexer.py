@@ -256,12 +256,18 @@ def _scan_calc_dir(
     calc_dir: Path,
     source: str,
     quiet: bool = False,
+    truncated: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Scan a directory for DELFIN calculations.
 
     Each immediate subdirectory that contains CONTROL.txt, DELFIN_Data.json,
     or .inp files is treated as a calculation.  Also recurses one level for
     archive structures like ``archive/Fritz/calc_name/``.
+
+    Directories still holding subdirectories at the depth limit are appended
+    to *truncated* — a calculation deeper than the limit is silently outside
+    every count otherwise, and ``calc`` is scanned one level deep while the
+    archives get three.
     """
     records: list[dict[str, Any]] = []
     if not calc_dir.is_dir():
@@ -359,8 +365,14 @@ def _scan_calc_dir(
     def _recurse(d: Path, prefix: str, depth: int, max_depth: int) -> None:
         """Recursively scan for calc dirs up to *max_depth* levels."""
         if depth > max_depth:
+            if truncated is not None:
+                truncated.append(f"{prefix.rstrip('/')}" or str(d))
             return
-        for child in sorted(d.iterdir()):
+        try:
+            children = sorted(d.iterdir())
+        except OSError:
+            return
+        for child in children:
             if not child.is_dir() or child.name.startswith("."):
                 continue
             _process_dir(child, rel_prefix=prefix)
@@ -374,11 +386,14 @@ def _scan_calc_dir(
                     max_depth=max_depth,
                 )
 
-    # calc/ is flat (depth 1), archive can be nested (depth 3)
-    scan_depth = 3 if source in ("archive", "remote_archive") else 1
-    _recurse(calc_dir, "", 0, scan_depth)
+    _recurse(calc_dir, "", 0, scan_depth_for(source))
 
     return records
+
+
+def scan_depth_for(source: str) -> int:
+    """How many levels below a root are scanned. calc/ is flat, archives nest."""
+    return 3 if source in ("archive", "remote_archive") else 1
 
 
 # ---------------------------------------------------------------------------
@@ -407,37 +422,64 @@ def build_calc_index(
     Returns
     -------
     dict
-        Index with ``records`` list and metadata.
+        Index with ``records`` list, metadata, and ``provenance`` — which
+        roots were scanned, which were missing, and where the scan was cut
+        off by its depth limit. Without it a home with no ``calc``
+        directory produced a SUCCESS with zero records, so "you have no
+        calculations" and "I scanned nothing" were the same answer: the
+        explicit "index could not be built" error was unreachable,
+        ``search_calcs`` returned ``[]`` and ``calc_summary`` returned all
+        zeros, exactly as for a populated home whose query simply missed.
     """
     all_records: list[dict[str, Any]] = []
+    roots: list[dict[str, Any]] = []
 
-    if calc_dir and calc_dir.is_dir():
+    def _scan(directory: Path | None, source: str) -> None:
+        if directory is None:
+            roots.append({"source": source, "path": "", "status": "not_configured",
+                          "records": 0, "max_depth": scan_depth_for(source)})
+            return
+        if not directory.is_dir():
+            roots.append({"source": source, "path": str(directory),
+                          "status": "missing", "records": 0,
+                          "max_depth": scan_depth_for(source)})
+            return
         if not quiet:
-            print(f"  scanning calc: {calc_dir}", file=sys.stderr)
-        all_records.extend(_scan_calc_dir(calc_dir, "calc", quiet=quiet))
+            print(f"  scanning {source}: {directory}", file=sys.stderr)
+        truncated: list[str] = []
+        found = _scan_calc_dir(directory, source, quiet=quiet,
+                               truncated=truncated)
+        all_records.extend(found)
+        roots.append({
+            "source": source, "path": str(directory), "status": "scanned",
+            "records": len(found), "max_depth": scan_depth_for(source),
+            "not_scanned_below_depth": sorted(set(truncated))[:20],
+        })
 
-    if archive_dir and archive_dir.is_dir():
-        if not quiet:
-            print(f"  scanning archive: {archive_dir}", file=sys.stderr)
-        all_records.extend(_scan_calc_dir(archive_dir, "archive", quiet=quiet))
-
-    if remote_archive_dir and remote_archive_dir.is_dir():
-        if not quiet:
-            print(f"  scanning remote_archive: {remote_archive_dir}",
-                  file=sys.stderr)
-        all_records.extend(
-            _scan_calc_dir(remote_archive_dir, "remote_archive", quiet=quiet)
-        )
+    _scan(calc_dir, "calc")
+    _scan(archive_dir, "archive")
+    _scan(remote_archive_dir, "remote_archive")
 
     # Build search text for each record
     for rec in all_records:
         rec["_search_text"] = _build_search_text(rec)
 
+    built_at = datetime.now(timezone.utc).isoformat()
+    scanned = [r for r in roots if r["status"] == "scanned"]
     return {
         "version": 1,
-        "built_at": datetime.now(timezone.utc).isoformat(),
+        "built_at": built_at,
         "record_count": len(all_records),
         "records": all_records,
+        "provenance": {
+            "built_at": built_at,
+            "roots": roots,
+            "roots_scanned": len(scanned),
+            "any_root_scanned": bool(scanned),
+            "truncated": sorted({
+                t for r in roots for t in r.get("not_scanned_below_depth", [])
+            })[:20],
+        },
     }
 
 
