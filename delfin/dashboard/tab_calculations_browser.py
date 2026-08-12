@@ -203,6 +203,7 @@ def create_tab(ctx):
         'search_spans': [],
         'current_match': -1,
         'search_truncated': False,
+        'open_label': '',
         'selected_file_path': None,
         'selected_file_size': 0,
         'selected_inp_path': None,
@@ -4338,6 +4339,18 @@ def create_tab(ctx):
         )
         return full_path if full_path.exists() else None
 
+    def _calc_active_item_path():
+        """Path of the file being shown, else the one the list has selected.
+
+        The two differ while a click is being served: the browser reports the
+        press before the selection change it causes, so the list still names
+        the file that was on screen before.
+        """
+        open_path = _calc_path_for_label(state.get('open_label') or '')
+        if open_path is not None and open_path.exists():
+            return open_path
+        return _calc_selected_item_path()
+
     def _calc_download_target_path():
         selected_path = _calc_selected_item_path()
         if selected_path is not None:
@@ -7375,7 +7388,7 @@ def create_tab(ctx):
             f"{format_xyz_comment_label(comment, frames=frames)}"
             f"{large_traj_note}"
         )
-        selected_path = _calc_selected_item_path()
+        selected_path = _calc_active_item_path()
         rmsd_enabled = bool(
             selected_path
             and selected_path.suffix.lower() == '.xyz'
@@ -7923,6 +7936,9 @@ def create_tab(ctx):
         state['file_chunk_end'] = 0
         state['chunk_dom_initialized'] = False
         calc_file_list.options = []
+        # No file is on screen once the listing is rebuilt, so the actions of
+        # the one that was must not stay in the dropdown.
+        state['open_label'] = ''
         state['traj_viewer_ready'] = False
         _calc_stop_xyz_playback(update_button=True)
         state['xyz_frames'].clear()
@@ -8353,9 +8369,17 @@ def create_tab(ctx):
             _calc_focus_plain_match(start, end)
 
     # -- options dropdown ---------------------------------------------------
-    def calc_update_options_dropdown():
-        labels = _calc_selected_labels()
-        selected = labels[0] if labels else ''
+    def calc_update_options_dropdown(label=''):
+        # The label is passed in by whoever opens the file. The click bridge
+        # reports a press before the selection change it causes, so at that
+        # moment the list still carries the previous selection -- reading it
+        # here offered the previous file's actions, or none at all.
+        selected = str(label or '') or str(state.get('open_label') or '')
+        if not selected:
+            labels = _calc_selected_labels()
+            selected = labels[0] if labels else ''
+        if selected.startswith('('):
+            selected = ''
         sel_lower = selected.lower() if selected else ''
         rmsd_available = bool(state.get('rmsd_available'))
         if selected:
@@ -8372,8 +8396,8 @@ def create_tab(ctx):
                 return
         if selected and sel_lower.endswith('.xyz'):
             xyz_options = ['(Options)', 'Build Batch from XYZ', 'Calc NMR', 'Calc CENSO/ANMR']
-            selected_path = _calc_selected_item_path()
-            if selected_path and _calc_is_single_structure_xyz(selected_path):
+            selected_path = _calc_path_for_label(selected)
+            if selected_path and selected_path.exists() and _calc_is_single_structure_xyz(selected_path):
                 xyz_options.extend(['hyperpol_xtb', 'tadf_xtb'])
             if rmsd_available:
                 xyz_options.append('RMSD')
@@ -12183,7 +12207,8 @@ def create_tab(ctx):
         calc_search_input.value = ''
         calc_update_nav_buttons()
         calc_delete_hide_confirm()
-        calc_update_options_dropdown()
+        state['open_label'] = selected
+        calc_update_options_dropdown(selected)
 
         next_suffix = full_path.suffix.lower()
         next_name_lower = full_path.name.lower()
