@@ -340,6 +340,58 @@ def test_a_shell_that_left_children_behind_is_not_reported_as_done(ws):
             pass
 
 
+def test_a_shell_that_left_children_behind_keeps_its_slot(ws, monkeypatch):
+    """Releasing the slot is the other half of the harm: the cores are still
+    spent, so the cap must still count them."""
+    monkeypatch.setattr(BJ, "_core_budget", lambda: 64)
+    job = BJ.get_registry().start(
+        "sleep 20 & echo started", cwd=str(ws), workspace=ws)
+    deadline = time.monotonic() + 10
+    while job.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert job.poll() is not None
+    BJ._REGISTRY._jobs.clear()          # only the persisted record remains
+
+    try:
+        assert [j["job_id"] for j in BJ.live_jobs()] == [job.job_id]
+        assert BJ.get_registry().count_running() == 1
+    finally:
+        try:
+            os.killpg(os.getpgid(job.proc.pid), signal.SIGKILL)
+        except Exception:
+            pass
+
+
+def test_a_worktree_running_only_orphaned_children_is_still_held(ws, monkeypatch):
+    job = BJ.get_registry().start(
+        "sleep 20 & echo started", cwd=str(ws), workspace=ws)
+    deadline = time.monotonic() + 10
+    while job.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+    try:
+        held = BJ.running_jobs_for_workspace(ws)
+        assert [h["job_id"] for h in held] == [job.job_id]
+    finally:
+        try:
+            os.killpg(os.getpgid(job.proc.pid), signal.SIGKILL)
+        except Exception:
+            pass
+
+
+def test_an_empty_group_releases_the_slot(ws, monkeypatch):
+    """The cap must not leak slots — that stops the agent working."""
+    monkeypatch.setattr(BJ, "_core_budget", lambda: 64)
+    job = BJ.get_registry().start("echo done", cwd=str(ws), workspace=ws)
+    deadline = time.monotonic() + 10
+    while job.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    BJ._REGISTRY._jobs.clear()
+
+    assert BJ.live_jobs() == []
+    assert BJ.running_jobs_for_workspace(ws) == []
+
+
 def test_a_job_that_really_finished_says_nothing_about_children(ws):
     job = BJ.get_registry().start("echo done", cwd=str(ws), workspace=ws)
     deadline = time.monotonic() + 10

@@ -412,6 +412,34 @@ def _record_alive(rec: dict) -> bool:
         return False
 
 
+def _record_holds_the_node(rec: dict, live_pgids: Optional[set] = None,
+                           now: Optional[float] = None) -> bool:
+    """Is this record's work still occupying the machine?
+
+    Wider than :func:`_record_alive`, which asks only about the direct
+    child — and the direct child is ``/bin/bash -c <command>``, a wrapper
+    that exits the moment its last foreground command returns. A job whose
+    wrapper exited while its process GROUP kept running was reported
+    finished, released its slot in the concurrency cap, and let its
+    worktree be torn down, all while real processes held real cores.
+
+    Bounded by the wall-clock deadline so a recycled pid cannot make an
+    ancient record look busy for ever. ``live_pgids`` is the one-pass
+    optimisation for callers judging many records; ``None`` falls back to
+    a per-record probe.
+    """
+    if _record_alive(rec):
+        return True
+    pid = int((rec or {}).get("pid") or 0)
+    if pid <= 0:
+        return False
+    if (now if now is not None else time.time()) >= _record_deadline(rec):
+        return False
+    if live_pgids is None:
+        return _group_children_alive(pid, pid)
+    return pid in live_pgids
+
+
 def _prune_old_records(jobs: dict, now: float) -> bool:
     """Drop records older than ~7 days whose process is NOT still running.
 
@@ -525,6 +553,31 @@ def _proc_pgrp(pid: int) -> Optional[int]:
         return int(stat[stat.rindex(")") + 1:].split()[2])
     except Exception:
         return None
+
+
+def _live_pgids() -> Optional[set[int]]:
+    """Every process group that currently has a member, in ONE ``/proc`` pass.
+
+    The per-record form of this question is :func:`_group_children_alive`;
+    a caller with many records to judge (the concurrency cap, a teardown
+    guard) asks once and tests membership, so the cost does not scale with
+    the size of the registry. ``None`` where ``/proc`` is unavailable, which
+    every caller reads as "fall back to the leader pid alone".
+    """
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    live: set[int] = set()
+    try:
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            pgrp = _proc_pgrp(int(entry.name))
+            if pgrp:
+                live.add(pgrp)
+    except OSError:
+        return None
+    return live
 
 
 def _group_children_alive(pgid: int, leader_pid: int) -> bool:
@@ -1169,12 +1222,15 @@ def running_jobs_for_workspace(workspace: str | Path) -> list[dict]:
         jobs = _load_registry_file(workspace).get("jobs", {})
     except Exception:
         return out
+    live_pgids = _live_pgids()
+    now = time.time()
     for jid, rec in (jobs or {}).items():
         try:
-            # Deliberately not deadline-filtered: a job past its wall clock
-            # is still a live process holding this directory until someone
-            # actually ends it, and removing the tree under it is the harm.
-            if not _record_alive(rec):
+            # The GROUP, not just the wrapper shell: a tree whose wrapper
+            # exited while `orca &` runs on inside it is still in use, and
+            # removing it deletes a live process's working directory.
+            if not (_record_alive(rec)
+                    or _record_holds_the_node(rec, live_pgids, now)):
                 continue
             out.append({
                 "job_id": jid,
@@ -1203,16 +1259,19 @@ def live_jobs() -> list[dict]:
     """
     seen: dict[str, dict] = {}
     now = time.time()
+    live_pgids = _live_pgids()          # one /proc pass for every record
     for ws in _known_workspaces():
         try:
             jobs = _load_registry_file(ws).get("jobs", {}) or {}
         except Exception:
             continue
         for jid, rec in jobs.items():
-            if jid in seen or not _record_alive(rec):
+            if jid in seen:
                 continue
             if now >= _record_deadline(rec):
                 continue      # past its wall clock; the next read ends it
+            if not _record_holds_the_node(rec, live_pgids, now):
+                continue
             seen[jid] = {
                 "job_id": jid,
                 "pid": int((rec or {}).get("pid") or 0),
