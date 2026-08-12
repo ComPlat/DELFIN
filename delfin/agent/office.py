@@ -2309,6 +2309,13 @@ def compare_tables(
 
     equal: list[str] = []
     differing: list[dict] = []
+    # How many matched rows a column actually had something to say about.
+    # A column that is empty on both sides agrees on every row, and that
+    # agreement is what "equal" was built out of: comparing two tables on
+    # a Notiz column nobody fills reported "2 equal, 0 differing" — a
+    # clean reconciliation over nothing. Counted here so the verdict can
+    # state what it rests on.
+    with_values: dict[str, int] = {c: 0 for c in wanted}
     for token, (line, row) in sorted(comparable_left.items()):
         if token not in comparable_right:
             continue
@@ -2318,6 +2325,8 @@ def compare_tables(
             a = row[left_idx[column]] if left_idx[column] < len(row) else ""
             b = (other_row[right_idx[column]]
                  if right_idx[column] < len(other_row) else "")
+            if str(a or "").strip() or str(b or "").strip():
+                with_values[column] += 1
             left_p, right_p = left_profiles[column], right_profiles[column]
             if left_p.get("kind") == right_p.get("kind"):
                 # Same kind on both sides: normalise each under its OWN
@@ -2371,6 +2380,29 @@ def compare_tables(
                 f"{left_profiles[column].get('kind')}s and the right side like "
                 f"{right_profiles[column].get('kind')}s — compared as text, so "
                 "a difference here may be a formatting difference only.")
+    # A column both sides leave empty agrees on every row it is asked
+    # about, and that agreement is indistinguishable from a checked one
+    # in the counts. Two tables compared on a Notiz column nobody fills
+    # reported "2 equal, 0 differing" — a clean reconciliation over
+    # nothing at all.
+    matched_rows = len(equal) + len(differing)
+    empty_cols = [c for c in wanted if with_values.get(c, 0) == 0]
+    if matched_rows and empty_cols:
+        if len(empty_cols) == len(wanted):
+            notes.append(
+                f"NOTHING WAS ACTUALLY COMPARED: "
+                f"{'the only column' if len(wanted) == 1 else 'every column'} "
+                f"checked ({', '.join(empty_cols)}) is empty on both sides "
+                f"for all {matched_rows} matched row(s). The {len(equal)} "
+                f"'equal' below means the keys line up, not that the data "
+                f"agrees — name columns that hold values.")
+        else:
+            notes.append(
+                f"column(s) {', '.join(empty_cols)} are empty on both sides "
+                f"for all {matched_rows} matched row(s), so they contributed "
+                f"agreement without being checked. The verdict rests on the "
+                f"remaining "
+                f"{', '.join(c for c in wanted if c not in empty_cols)}.")
     if duplicate_keys:
         notes.append(
             f"{len(duplicate_keys)} key(s) appear more than once and were NOT "
@@ -2384,7 +2416,7 @@ def compare_tables(
     # A gross size asymmetry is far more often the wrong scope than a real
     # gap of that size. Say which reading is the likelier one rather than
     # letting a count of hundreds stand as a finding.
-    matched = len(equal) + len(differing)
+    matched = matched_rows
     for side, rows, one_sided in (("left", len(left_rows) - 1, only_left),
                                   ("right", len(right_rows) - 1, only_right)):
         if rows and len(one_sided) > max(10, matched):
@@ -2426,6 +2458,10 @@ def compare_tables(
         "not_comparable": not_comparable[:max_report],
         "not_comparable_count": len(not_comparable),
         "rows_accounted_for": balanced,
+        # Per compared column: how many matched rows held a value on at
+        # least one side. A zero here is a column that agreed on every row
+        # because there was nothing in it.
+        "columns_with_values": dict(with_values),
         "notes": notes,
     }
 
