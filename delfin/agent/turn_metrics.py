@@ -53,8 +53,6 @@ error. Mirrors :mod:`tool_trace`.
 
 from __future__ import annotations
 
-import os
-
 import json
 import time
 from pathlib import Path
@@ -136,12 +134,14 @@ def record(
     and only the second may be judged.
     """
     try:
-        _DIR.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import write_text as _write_secure
+        ensure_dir(_DIR)
         p = metrics_path(session)
         try:
             if p.exists() and p.stat().st_size > _MAX_BYTES:
                 lines = p.read_text(encoding="utf-8").splitlines()[-_KEEP_TAIL:]
-                p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                _write_secure(p, "\n".join(lines) + "\n")
         except Exception:
             pass
         entry = {
@@ -162,17 +162,11 @@ def record(
             "output_tokens": int(output_tokens or 0),
             "cached_tokens": int(cached_tokens or 0),
         }
-        with p.open("a", encoding="utf-8") as f:
+        # Created 0600 by ``open_append``: a chmod after the first write
+        # leaves the file group-readable for the length of that write.
+        with open_append(p) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        # 0600 AFTER the write: on the first append the file does
-        # not exist yet, so a chmod before it silently did nothing.
-        # These files carry raw tool output, commands and paths;
-        # they were created at the process umask (observed 0664)
-        # and a bug report bundles them, adding group-read.
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
+        secure_file(p)          # tighten a file that already existed
     except Exception:
         pass
 

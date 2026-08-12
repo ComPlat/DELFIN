@@ -107,6 +107,18 @@ DEFAULT_SETTINGS = {
         # Soft warning when cumulative session cost crosses this USD
         # mark. The agent shows a banner; nothing is blocked.
         "cost_soft_limit_usd": 5.0,
+        # How long the agent's own state under ~/.delfin is kept, in days.
+        # Nothing expired before, so a state tree only ever grew: tool
+        # traces, turn metrics, sub-agent records, archived transcripts,
+        # handoffs, bundles and filed bug reports going back months.
+        #
+        # Two numbers because the two kinds of file are not comparable.
+        # Derived state is telemetry ABOUT work that is already finished.
+        # A saved session is work the user can still resume, so deleting
+        # one costs them something; it keeps the longer default and its
+        # own setting. Either at 0 disables that half of the prune.
+        "state_retention_days": 30,
+        "session_retention_days": 90,
         # Per-turn tool-round budget for the OpenAI/KIT/Ollama agent loop.
         # The agent runs up to this many tool-call rounds in ONE user turn
         # before stopping with a "send continue" notice. 500 is high enough

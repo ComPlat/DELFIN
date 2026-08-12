@@ -358,10 +358,16 @@ class CLIClient(_BaseClient):
                             result_tool = _tool_id_to_name.get(
                                 _last_tool_use_id, ""
                             )
+                            # Redacted where the EVENT is built, not where
+                            # the model copy is made: the engine writes this
+                            # event to the tool trace, and a bug report
+                            # bundles that file and adds group-read to it.
+                            # Redacting only on the way into the context
+                            # protected the model and left the disk open.
                             yield StreamEvent(
                                 type="tool_result",
                                 tool_name=result_tool,
-                                tool_output=result_text,
+                                tool_output=_redact_tool_result(result_text),
                             )
                         tool_result_chunks = []
                     elif current_tool_name:
@@ -426,7 +432,7 @@ class CLIClient(_BaseClient):
                             yield StreamEvent(
                                 type="tool_result",
                                 tool_name=result_tool,
-                                tool_output=str(content),
+                                tool_output=_redact_tool_result(str(content)),
                             )
 
             elif dtype == "result":

@@ -110,20 +110,18 @@ def append(
         enriched["session_id"] = session_id
     line = json.dumps(enriched, ensure_ascii=False) + "\n"
     try:
+        from .state_paths import ensure_dir, open_append, secure_file
         with _LOG_LOCK:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_dir(path.parent)
             _rotate_if_needed(path, now)
-            with path.open("a", encoding="utf-8") as fh:
+            # Created 0600 by ``open_append``: a chmod after the first
+            # write leaves the file group-readable for the length of that
+            # write. A rotated log keeps the mode it had when it was
+            # renamed, which is why the eight already on disk stayed 0664
+            # — the start-up repair sweep is what fixes those.
+            with open_append(path) as fh:
                 fh.write(line)
-            # 0600 AFTER the write: on the first append the file does
-            # not exist yet, so a chmod before it silently did nothing.
-            # These files carry raw tool output, commands and paths;
-            # they were created at the process umask (observed 0664)
-            # and a bug report bundles them, adding group-read.
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
+            secure_file(path)   # tighten a file that already existed
     except Exception:
         # Audit must not crash the agent. If the user removed the home
         # dir or ran out of disk, the action proceeds without logging.
