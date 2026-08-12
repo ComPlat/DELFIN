@@ -209,6 +209,12 @@ _NOT_CARRIED = {
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
     "_truncated_tools_turn", "_stop_requested", "_steering_delivered",
     "_steering_refreshes",
+    # -- the correction budget, spent at most once per turn ---------------
+    #    Kept apart from the VERDICT (_claim_guard_corrected) so the green
+    #    "answer corrected" line comes from a re-scan rather than from
+    #    having tried. Neither is worth carrying: a resumed session has
+    #    not spent anything yet.
+    "_claim_guard_spent",
     # -- the stop's owner, and the counter it is stamped from -------------
     #    A stop belongs to the turn that asked for it — that is what keeps
     #    the next message from erasing it. Nothing about that survives the
