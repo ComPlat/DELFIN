@@ -971,7 +971,23 @@ def create_tab(ctx):
 
         Quietly: this is the tab saying what it has just drawn, not the editor
         saying it has changed something, and the two travel down the same wire.
+
+        Stepping to another block also puts aside what the editor knows about
+        the one being left and hands back what it knew about the one arriving.
+        Without that, coming back to a structure meant perceiving it again from
+        its coordinates -- with an atom where it had been dragged to, and the
+        bond to its neighbour simply gone.
         """
+        blocks = state.get('xyz_blocks') or []
+        index = int(state.get('xyz_view_idx', 0))
+        here = blocks[index][0] if 0 <= index < len(blocks) else ''
+        there = state.get('editor_block')
+        if there != here:
+            memory = state.setdefault('editor_memory', {})
+            if there is not None:
+                memory[there] = orca_editor.remember_structure()
+            orca_editor.restore_structure(memory.get(here))
+            state['editor_block'] = here
         state['editor_quiet'] = True
         try:
             orca_editor_coords.value = full_xyz or ''

@@ -75,6 +75,20 @@ def scale_for_px(px):
     return wanted / LABEL_PX_PER_SCALE
 
 
+#: What the editor knows about the structure it is working on, as opposed to
+#: what it knows about itself. A tab that holds several structures and lets the
+#: user step between them puts these aside for the one being left and hands
+#: back the ones for the one being shown -- otherwise coming back to a
+#: structure means perceiving it again from its coordinates, and an atom that
+#: was pulled away from its neighbour comes back with the bond gone.
+STRUCTURE_MEMORY_KEYS = (
+    'perceived', 'perceived_for', 'bond_edits', 'hand_bonds', 'hyb_overrides',
+    'constraints', 'poly_applied', 'poly_metal', 'poly_assignment',
+    'poly_arrangements', 'poly_arrangement_index', 'history', 'structure_undo',
+    'pristine_coords', 'gfn_topology', 'gfn_topology_source',
+)
+
+
 def _atom_numbers_js():
     """The layer itself: ``window.__delfinAtomNumbers``.
 
@@ -5019,6 +5033,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         (lambda: submit_draw_btn, False),
         (lambda: submit_dyn_bonds_btn, False),
     )
+
+    def remember_structure():
+        """What the editor knows about the structure it is on, to be given back.
+
+        The bonding above all: it is perceived once from the structure as it
+        arrived and kept, so that dragging an atom away from its neighbour does
+        not decide the bond was never there. Step to another structure and back
+        without this, and the coordinates are read afresh -- with the atom where
+        it was dragged to, and no bond to it.
+        """
+        return {key: state.get(key) for key in STRUCTURE_MEMORY_KEYS}
+
+    def restore_structure(saved):
+        """Give back what was put aside, or start clean for an unseen one."""
+        for key in STRUCTURE_MEMORY_KEYS:
+            if saved and key in saved:
+                state[key] = saved[key]
+            else:
+                state.pop(key, None)
+        # The shapes the rest of the editor reads without asking.
+        for key, empty in (('perceived', None), ('poly_applied', None),
+                           ('poly_metal', None), ('constraints', []),
+                           ('bond_edits', {}), ('hand_bonds', {}),
+                           ('hyb_overrides', {}), ('history', []),
+                           ('structure_undo', [])):
+            state.setdefault(key, empty)
+        _refresh_constraints()
 
     def reset_controls():
         """Back to how the editor starts, for a structure it has not seen.

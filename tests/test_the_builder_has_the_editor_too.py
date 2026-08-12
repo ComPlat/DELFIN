@@ -26,6 +26,7 @@ the browser looked its toolbar parts up by falling back to the whole page.
 """
 
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -900,3 +901,168 @@ def test_converting_again_builds_what_is_in_the_box_now(builder):
     assert 'raw_input = typed' in body
     # ...and the remembered one is still there for a box holding coordinates.
     assert 'raw_input = (cached_smiles or typed' in body
+
+
+def test_two_molecules_in_one_drawing_are_a_smiles():
+    """Draw two things in Ketcher and it hands back "CCO.CCO".
+
+    The dot is how SMILES separates one molecule from another, and it was not
+    among the characters that made a string look like one -- that string has no
+    bracket, no aromatic letter and no ring number, so nothing recognised it.
+    Two consequences, and the second is the one that was reported: such a
+    drawing could not be converted at all, and the quick conversion fell back
+    on the SMILES it had built before, so pressing convert produced the
+    structure from the drawing before last.
+
+    Coordinates cannot be caught by the dot: a line of them is turned away
+    first, by the pattern for an element followed by three numbers.
+    """
+    from delfin.dashboard.input_processing import clean_input_data
+
+    for text in ('CCO.CCO', '[Na+].[Cl-]', 'c1ccccc1.c1ccccc1', 'CCO.O'):
+        assert clean_input_data(text)[1] == 'smiles', text
+
+    for text in ('O 0.000 0.000 0.000', 'C  1.234  5.678  9.012',
+                 '3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0',
+                 # And the decimal point is not what makes a line coordinates:
+                 # "C 0 0 0" is an ordinary way to write an atom at the origin,
+                 # and it was read as a SMILES because it has digits in it.
+                 'C 0 0 0\nC 1.53 0 0', 'H 0 0 0', 'Cl -1 2 3'):
+        assert clean_input_data(text)[1] == 'xyz', text
+
+
+ETHANE = ("C 0.000 0.000 0.000\nC 1.530 0.000 0.000\n"
+          "H -0.360 1.020 0.000\nH -0.360 -0.510 0.880\n"
+          "H -0.360 -0.510 -0.880\nH 1.890 1.020 0.000\n"
+          "H 1.890 -0.510 0.880\nH 1.890 -0.510 -0.880")
+
+
+def test_stepping_away_and_back_keeps_what_the_editor_knew(builder):
+    """Each structure keeps its own bonding, held values and history.
+
+    Bonding is perceived once, from the structure as it arrived, so that
+    dragging an atom away from its neighbour does not decide the bond was never
+    there. Step to another block and back without a memory and the coordinates
+    are read afresh -- with the atom where it was dragged to. Perceived fresh,
+    the pulled ethane has six bonds where it had seven.
+    """
+    refs, _sent = builder
+    state = refs['editor_state']
+    water = "O 0.000 0.000 0.000\nH 0.960 0.000 0.000\nH -0.240 0.930 0.000"
+    refs['orca_coords'].value = (
+        'eth.xyz;\n8\n\n' + ETHANE + '\n*\n\nwat.xyz;\n3\n\n' + water + '\n*')
+
+    refs['submit_relax_btn'].value = True          # makes it perceive
+    before = len(state['perceived'].bonds)
+    assert before == 7
+
+    state['manip_inflight'] = True
+    refs['editor_coords'].value = '8\nEdited in DELFIN viewer\n' + ETHANE.replace(
+        'H 1.890 -0.510 -0.880', 'H 4.500 -2.500 -3.000')
+    assert len(state['perceived'].bonds) == before, 'the drag kept the bonding'
+
+    refs['orca_mol_next_btn'].click()
+    refs['orca_mol_prev_btn'].click()
+
+    assert len(state['perceived'].bonds) == before
+
+
+def test_a_fresh_perception_of_the_pulled_structure_would_have_lost_it():
+    """Which is what made the round trip lose the bond, and what the memory is
+    there to prevent."""
+    from delfin.dashboard.molecule_forcefield import perceive_molecule
+
+    pulled = ETHANE.replace('H 1.890 -0.510 -0.880', 'H 4.500 -2.500 -3.000')
+    assert len(perceive_molecule('8\npulled\n' + pulled).bonds) == 6
+    assert len(perceive_molecule('8\nwhole\n' + ETHANE).bonds) == 7
+
+
+def test_the_memory_names_what_belongs_to_a_structure():
+    keys = structure_editor.STRUCTURE_MEMORY_KEYS
+
+    for key in ('perceived', 'bond_edits', 'hand_bonds', 'hyb_overrides',
+                'constraints', 'poly_applied', 'history', 'pristine_coords'):
+        assert key in keys, key
+    # Not the switches: those belong to the editor, not to one structure, and
+    # a new structure puts them back to their defaults.
+    for key in ('manip_bootstrap_done', 'smiles_task_id', 'isomers'):
+        assert key not in keys, key
+
+
+def _five_blocks():
+    water = "O 0.000 0.000 0.000\nH 0.960 0.000 0.000\nH -0.240 0.930 0.000"
+    return "\n\n".join('conf-%d.xyz;\n3\nconf-%d\n%s\n*' % (i, i, water)
+                        for i in range(1, 6))
+
+
+def test_the_frame_on_screen_is_the_one_that_is_worked_on(builder):
+    """Five blocks, standing on the third: the editor holds that one, an edit
+    lands in that one, and the other four are left alone.
+
+    Driven through the real tab with GFN2-xTB: Optimize on 3/5 answers
+    "Optimised 1 of 1 frame(s) ... E = -5.070544 Eh", writes the result into
+    conf-3.xyz, leaves conf-1.xyz as it was, and stays on 3/5.
+    """
+    refs, _sent = builder
+    state = refs['editor_state']
+    refs['orca_coords'].value = _five_blocks()
+
+    refs['orca_mol_next_btn'].click()
+    refs['orca_mol_next_btn'].click()
+    assert state['xyz_view_idx'] == 2
+    assert refs['submit_manip_toolbar'].layout.display == 'flex'
+    assert refs['editor_coords'].value.split('\n')[0] == '3'
+
+    state['manip_inflight'] = True
+    refs['editor_coords'].value = (
+        '3\nEdited in DELFIN viewer\nO 0.500 0.000 0.000\n'
+        'H 0.960 0.000 0.000\nH -0.240 0.930 0.000\n')
+
+    touched = [name for name, xyz in state['xyz_blocks'] if 'O 0.500' in xyz]
+    assert touched == ['conf-3.xyz']
+    assert [name for name, _xyz in state['xyz_blocks']] == [
+        'conf-1.xyz', 'conf-2.xyz', 'conf-3.xyz', 'conf-4.xyz', 'conf-5.xyz']
+    assert state['xyz_view_idx'] == 2, 'the view did not wander off the frame'
+
+
+def test_undo_and_the_rest_belong_to_the_frame_they_were_made_on(builder):
+    """Each block keeps its own history, held values and bond edits -- they are
+    in the memory that is put aside when stepping away."""
+    keys = structure_editor.STRUCTURE_MEMORY_KEYS
+
+    for key in ('history', 'structure_undo', 'bond_edits', 'constraints'):
+        assert key in keys, key
+
+    refs, _sent = builder
+    refs['orca_coords'].value = _five_blocks()
+    state = refs['editor_state']
+    refs['orca_mol_next_btn'].click()
+    state['constraints'] = [{'kind': 'distance', 'atoms': [0, 1],
+                             'value': 1.1, 'mode': 'fix'}]
+
+    refs['orca_mol_next_btn'].click()
+    assert state.get('constraints') == [], 'a held value followed to another frame'
+
+    refs['orca_mol_prev_btn'].click()
+    assert len(state.get('constraints') or []) == 1, 'and did not come back'
+
+
+def test_all_optimises_every_block(builder):
+    """Driven through the real tab on five conformers with UFF: "Optimised 5 of
+    5 frame(s) with UFF", all five blocks changed, all five names kept."""
+    refs, _sent = builder
+    refs['orca_coords'].value = _five_blocks()
+    state = refs['editor_state']
+    before = [xyz.split('\n')[2] for _name, xyz in state['xyz_blocks']]
+
+    refs['submit_optimize_all_btn'].value = True
+    for _ in range(200):
+        time.sleep(0.5)
+        if not refs['submit_optimize_all_btn'].value:
+            break
+
+    assert 'Optimised 5 of 5 frame(s)' in refs['mol_status'].value
+    after = [xyz.split('\n')[2] for _name, xyz in state['xyz_blocks']]
+    assert sum(1 for a, b in zip(before, after) if a != b) == 5
+    assert [name for name, _xyz in state['xyz_blocks']] == [
+        'conf-%d.xyz' % i for i in range(1, 6)]
