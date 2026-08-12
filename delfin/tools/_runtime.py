@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -176,7 +177,7 @@ def _reconcile_slurm_record(rec: "RunRecord", store: "RunStore") -> "RunRecord":
     elif state == "":
         note = "absent"
         first_missing = float((rec.metrics or {}).get("slurm_absent_since") or 0.0)
-        now = _time_now()
+        now = time.time()
         if not first_missing:
             rec.metrics["slurm_absent_since"] = now
         elif (now - first_missing) > _SLURM_ABSENT_GRACE_S:
@@ -230,11 +231,6 @@ def _reconcile_slurm_record(rec: "RunRecord", store: "RunStore") -> "RunRecord":
                            "status": new_status})
     store.save(rec)
     return rec
-
-
-def _time_now() -> float:
-    import time as _t
-    return _t.time()
 
 
 def _apply_resources(pipeline, resources: Dict[str, Any]) -> None:
@@ -388,18 +384,17 @@ class RunHandle:
         :meth:`state` whether that means "still going" or "we could not find
         out". ``None`` means there is no such run.
         """
-        import time as _time
         limit = _DEFAULT_WAIT_TIMEOUT_S if timeout is None else float(timeout)
-        deadline = _time.monotonic() + max(0.0, limit)
+        deadline = time.monotonic() + max(0.0, limit)
         interval = max(0.01, float(poll))
         while True:
             rec = self.record()
             if rec and rec.done:
                 return rec
-            remaining = deadline - _time.monotonic()
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return rec
-            _time.sleep(min(interval, remaining))
+            time.sleep(min(interval, remaining))
             interval = min(_WAIT_POLL_MAX_S, interval * 2)
 
 
