@@ -344,12 +344,51 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
         pass
 
 
+def reserve_running(sa_id: str, *, subagent_type: str = "",
+                    description: str = "") -> None:
+    """Announce a subagent id BEFORE the work behind it starts.
+
+    A background run hands its id to the parent immediately, but the live
+    entry used to be written inside the run itself. Anything that failed in
+    between -- the runner raising on the way in, a runner that stores
+    nothing -- left that id resolving to "no such id", which the model
+    reads as having invented the id rather than as a run that crashed.
+    Reserving the entry with the id keeps the two answers distinct."""
+    _running_update(sa_id, {
+        "type": subagent_type,
+        "description": (description or "")[:120],
+        "started_at": time.time(),
+        "actions": [],
+        "last_action": "",
+        "transcript": [],
+        "reserved": True,
+    })
+
+
+def mark_running_died(sa_id: str, error: str = "") -> None:
+    """Record that a subagent ended without leaving a report.
+
+    Not a removal: the id was handed to a parent, so it has to keep
+    answering -- with what happened, so the parent can start the work
+    again instead of polling for a report that can no longer arrive."""
+    entry = dict(read_running(include_dead=True).get(sa_id) or {})
+    entry.pop("dead", None)
+    entry.setdefault("type", "")
+    entry.setdefault("description", "")
+    entry.setdefault("started_at", time.time())
+    entry["died"] = True
+    entry["error"] = (error or "").strip()[:400]
+    _running_update(sa_id, entry)
+
+
 def read_running(*, include_dead: bool = False) -> dict:
     """Live registry: {id: {type, description, started_at, actions, last_action}}.
 
     Entries whose owning process is gone are left out: they are leftovers
-    from a killed or crashed session, not work in flight. Pass
-    ``include_dead=True`` to see them, marked with ``dead: True``."""
+    from a killed or crashed session, not work in flight. So are entries
+    whose run ended without a report (``died``) -- the process is fine,
+    the run is not. Pass ``include_dead=True`` to see both, marked with
+    ``dead: True``."""
     out: dict = {}
     try:
         for f in _RUNNING_DIR.glob("*.json"):
@@ -357,7 +396,10 @@ def read_running(*, include_dead: bool = False) -> dict:
                 entry = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if _entry_owner_alive(entry):
+            if entry.get("died"):
+                if include_dead:
+                    out[f.stem] = {**entry, "dead": True}
+            elif _entry_owner_alive(entry):
                 out[f.stem] = entry
             elif include_dead:
                 out[f.stem] = {**entry, "dead": True}
@@ -366,20 +408,35 @@ def read_running(*, include_dead: bool = False) -> dict:
     return out
 
 
+# How long a "this run died" record is kept answering for its id. Long
+# enough that the parent that was given the id still gets the truthful
+# answer; short enough that the records cannot pile up unbounded, since
+# their owning process is alive and nothing else would ever remove them.
+_DIED_ENTRY_TTL_S = 24 * 3600
+
+
 def reap_dead_running() -> list[str]:
     """Delete registry entries whose owning process is gone. Returns the ids.
 
     Without this the files accumulate: nothing else ever removes an entry
     whose ``finally`` did not run, so every crash leaves one behind for
-    good."""
+    good. Aged-out ``died`` records go the same way."""
     removed: list[str] = []
+    now = time.time()
     try:
         for f in sorted(_RUNNING_DIR.glob("*.json")):
             try:
                 entry = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if _entry_owner_alive(entry):
+            if entry.get("died"):
+                try:
+                    age = now - float(entry.get("started_at") or 0.0)
+                except (TypeError, ValueError):
+                    age = 0.0
+                if age <= _DIED_ENTRY_TTL_S:
+                    continue
+            elif _entry_owner_alive(entry):
                 continue
             try:
                 f.unlink()
@@ -919,6 +976,14 @@ _WRITE_TOOL_NAMES = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
     "write", "edit", "patch", "create_file", "undo_changes",
 })
+# Tools whose call means the delegate LOOKED AT the file it names. Mirrors
+# the parent's own observation set; a tool outside it (bash above all) names
+# its files only inside a command string, where naming and reading are
+# indistinguishable.
+_READ_TOOL_NAMES = frozenset({
+    "read_file", "grep_file", "list_files", "notebook_read", "view_image",
+    "read_document", "read", "read_section",
+})
 # Tools whose call means the delegate RAN tests (name-based; command-based
 # detection reuses verify_guard's test-command pattern).
 _TEST_TOOL_NAMES = frozenset({"run_tests", "pytest"})
@@ -973,6 +1038,35 @@ _TEST_FAILURE_RE = re.compile(
 def _output_shows_failures(output: str) -> bool:
     """Whether recorded test output contradicts a claim that all passed."""
     return bool(_TEST_FAILURE_RE.search(output or ""))
+
+
+def _readable_output(out) -> str:
+    """The part of a recorded tool result that is the run's own output.
+
+    The shell tool returns a JSON envelope (command, cwd, exit_code,
+    elapsed_s, stdout, stderr). Judging a test claim against the envelope
+    let the COMMAND STRING stand in for the output it discarded:
+    ``pytest -q > /dev/null`` leaves a result that mentions pytest, shows
+    no failures, and can even supply a claimed count out of ``elapsed_s``.
+    The quoting hid real failures too — ``"stdout": "3 failed, ...`` puts
+    a quote where the failure pattern expects a separator.
+
+    Anything that is not such an envelope is returned unchanged.
+    """
+    text = out if isinstance(out, str) else str(out)
+    stripped = text.strip()
+    if not (stripped.startswith("{") and '"stdout"' in stripped):
+        return text
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return text          # truncated envelope: the raw text is all there is
+    if not isinstance(data, dict) or "stdout" not in data:
+        return text
+    return "\n".join(
+        str(data.get(key) or "") for key in ("stdout", "stderr")
+        if str(data.get(key) or "").strip()
+    )
 
 
 # A read that returned an error, or nothing, is not an observation. Paths
@@ -1151,9 +1245,13 @@ def _tool_args(raw) -> dict:
     return {}
 
 
-def _paths_from_call(args: dict, raw) -> list[str]:
-    """File paths a tool call touched: explicit path keys plus path-shaped
-    tokens in the raw input (a bash command names its files too)."""
+def _declared_paths(args: dict) -> list[str]:
+    """File paths a tool call NAMED in a recognised path argument.
+
+    The narrow half of ``_paths_from_call``: a path here was handed to the
+    tool as its target, so the tool acted on that file. Nothing is inferred
+    from prose or from a command string.
+    """
     out: list[str] = []
     for key in _PATH_INPUT_KEYS:
         val = args.get(key)
@@ -1171,6 +1269,20 @@ def _paths_from_call(args: dict, raw) -> list[str]:
                 val = e.get(key)
                 if isinstance(val, str) and val.strip():
                     out.append(val.strip())
+    return out[:60]
+
+
+def _paths_from_call(args: dict, raw) -> list[str]:
+    """File paths a tool call plausibly touched: the declared ones plus
+    path-shaped tokens in the raw input (a bash command names its files
+    too).
+
+    Deliberately generous, and therefore usable in ONE direction only: a
+    bigger set can suppress a false alarm about the delegate's own report,
+    it can never ground a citation. ``echo "checked engine.py"`` names a
+    file it did not open, so grounding reads ``_declared_paths`` instead.
+    """
+    out: list[str] = _declared_paths(args)
     text = raw if isinstance(raw, str) else ""
     if not text and args:
         text = " ".join(str(v) for v in args.values() if isinstance(v, str))
@@ -1191,18 +1303,34 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
     was recorded at all — missing bookkeeping is never treated as evidence of
     fabrication, so nothing is flagged in that case.
 
-    Returns ``{"trace_available", "calls", "tools", "files", "commands",
-    "test_runs", "writes", "test_output"}``. Never raises.
+    Two path sets, because they are read in opposite directions:
+
+    ``files``      — generous (command strings scraped for path-shaped
+                     tokens, inputs of calls whose output was never
+                     recorded). Only ever SUPPRESSES a flag about this
+                     delegate's own report, so over-collecting is safe.
+    ``files_read`` — a read or write tool, pointed at that path, that
+                     returned something. This is the set published to the
+                     parent as ``files_touched``, and the parent's honesty
+                     guard is disarmed for every path in it, so a path a
+                     delegate merely TYPED must never appear here.
+
+    Returns ``{"trace_available", "calls", "tools", "files", "files_read",
+    "commands", "test_runs", "writes", "write_paths", "test_output",
+    "test_output_recorded"}``. Never raises.
     """
     ev: dict = {
         "trace_available": False,
         "calls": 0,
         "tools": [],
         "files": [],
+        "files_read": [],
         "commands": [],
         "test_runs": [],
         "writes": [],
+        "write_paths": [],
         "test_output": "",
+        "test_output_recorded": False,
     }
     try:
         calls = tool_calls
@@ -1225,10 +1353,22 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 ev["tools"].append(name)
             raw_in = call.get("input")
             args = _tool_args(raw_in)
-            if _output_saw_content(call.get("output")):
+            out_raw = call.get("output")
+            if _output_saw_content(out_raw):
                 for p in _paths_from_call(args, raw_in):
                     if p not in ev["files"]:
                         ev["files"].append(p)
+                # Grounding needs the call to have RETURNED something: an
+                # input without a recorded result is what a wall-clock cut
+                # leaves behind, and counting it made a truncated run
+                # ground more than a clean one, where a refused read is
+                # dropped.
+                if (out_raw is not None
+                        and (name in _READ_TOOL_NAMES
+                             or name in _WRITE_TOOL_NAMES)):
+                    for p in _declared_paths(args):
+                        if p not in ev["files_read"]:
+                            ev["files_read"].append(p)
             cmd = ""
             if vg is not None:
                 try:
@@ -1241,11 +1381,22 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 cmd and test_cmd_re is not None and test_cmd_re.search(cmd))
             if ran_tests:
                 ev["test_runs"].append(cmd or name)
-                out = call.get("output")
-                if out is not None:
-                    outs.append(out if isinstance(out, str) else str(out))
+                if out_raw is not None:
+                    # Recorded, even when it is blank: an empty result is a
+                    # fact about the run ("the output went to /dev/null"),
+                    # unlike a trace that carries no results at all.
+                    ev["test_output_recorded"] = True
+                    outs.append(_readable_output(out_raw))
             if name in _WRITE_TOOL_NAMES or (cmd and _writes_anything(cmd)):
                 ev["writes"].append(cmd or name)
+                # Which files the write plausibly hit, so a mutation claim
+                # can be paired with the path it names. Generous on purpose
+                # (this direction only makes the pairing easier to
+                # satisfy): a `sed -i` names its target in the command.
+                for p in (_declared_paths(args) if name in _WRITE_TOOL_NAMES
+                          else _paths_from_call(args, raw_in)):
+                    if p not in ev["write_paths"]:
+                        ev["write_paths"].append(p)
         # An isolated worktree reports WHAT it changed; those paths are write
         # evidence even though the edits happened inside the child.
         if isinstance(payload, dict):
@@ -1254,8 +1405,14 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 stat = str(wt.get("diff_summary") or "")[:4000]
                 for m in _PATH_TOKEN_RE.finditer(stat):
                     tok = m.group(0).strip(".,;:()[]\"'|")
-                    if len(tok) > 3 and tok not in ev["files"]:
-                        ev["files"].append(tok)
+                    if len(tok) <= 3:
+                        continue
+                    # git --stat is the framework's own record of what the
+                    # child changed, not the child's account of it.
+                    for key in ("files", "files_read", "write_paths"):
+                        if tok not in ev[key]:
+                            ev[key].append(tok)
+                    if tok not in ev["writes"]:
                         ev["writes"].append(tok)
         ev["test_output"] = "\n".join(outs)[:_VERIFY_MAX_OUTPUT_CHARS]
     except Exception:
@@ -1382,6 +1539,34 @@ def _report_text(payload) -> str:
     return ""
 
 
+def _unwritten_citation(claim: str, write_paths) -> str:
+    """The file a mutation claim names when the run wrote none of them.
+
+    ``ev["writes"]`` is a flat list of write-ish calls, so ANY write backed
+    ANY mutation claim: ``mkdir -p /tmp/scratch`` corroborated "I
+    implemented the fix in engine.py". Pairing the claim with the file it
+    names closes that. A claim naming no file is unaffected, and one named
+    file actually written is enough (a sentence may cite the test it fixed
+    as well as the source it changed).
+
+    Returns "" when there is nothing to flag. Never raises: a failure here
+    means no extra flag, not a wrong one.
+    """
+    vg = _vg()
+    if vg is None:
+        return ""
+    try:
+        written = frozenset(str(p) for p in (write_paths or ()))
+        cited: list[str] = []
+        for path, _line in vg._iter_path_citations(claim):
+            if vg._is_observed(path, written):
+                return ""
+            cited.append(path)
+        return cited[0] if cited else ""
+    except Exception:
+        return ""
+
+
 def _inspected(ev: dict) -> bool:
     """True when the run looked at anything at all (read/grep/search/exec)."""
     if ev.get("files") or ev.get("commands"):
@@ -1473,14 +1658,18 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
     Claim classes and the rule each is judged by:
 
       test_result  — no test-running tool call in the trace -> unsupported;
-                     a claimed count absent from the recorded test output ->
+                     recorded output reporting failures -> unsupported; a
+                     test run whose recorded output is empty -> unsupported
+                     (a discarded output is no evidence, not a pass); a
+                     claimed count absent from the recorded test output ->
                      unsupported.
       file_reference / location / quantity / functional — delegated to the
                      shared scanners in ``verify_guard``, evaluated against
                      the files THIS sub-agent opened and the commands it ran.
       completion   — zero tool calls -> unsupported; a mutation claim with no
-                     write in the trace -> unsupported; a verification claim
-                     with nothing read, grepped or executed -> unsupported.
+                     write in the trace, or naming only files this run never
+                     wrote -> unsupported; a verification claim with nothing
+                     read, grepped or executed -> unsupported.
 
     Returns a compact, JSON-serializable verdict::
 
@@ -1518,7 +1707,10 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
         verdict["evidence"] = {
             "tool_calls": ev["calls"],
             "tools": sorted(set(ev["tools"]))[:12],
-            "files_touched": ev["files"][:8],
+            # The parent merges this into its own evidence ledger, so it
+            # carries only what a read or write tool actually returned --
+            # never a path scraped out of a command the delegate typed.
+            "files_touched": ev["files_read"][:8],
             "test_runs": len(ev["test_runs"]),
             "writes": len(ev["writes"]),
         }
@@ -1563,6 +1755,16 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
                      "the test output recorded in this run reports failures",
                      "read the actual test output yourself")
                 continue
+            if ev["test_output_recorded"] and not ev["test_output"].strip():
+                # A run that discarded its output is not a passing run; it
+                # is no run anyone can check. Every rule below reads the
+                # output, so an empty one used to fall through to
+                # "supported" -- `pytest -q > /dev/null` certified as green.
+                _add(False, "test_result", claim.text,
+                     "the test run in this sub-agent's trace recorded no "
+                     "output, so nothing in the run says how it ended",
+                     "run the tests yourself and read the output")
+                continue
             if (claim.subject and ev["test_output"]
                     and not re.search(rf"\b{re.escape(claim.subject)}\b",
                                       ev["test_output"])):
@@ -1575,6 +1777,8 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
 
         # --- completion claims ------------------------------------------
         for claim in scan_report_completion_claims(text):
+            unwritten = (_unwritten_citation(claim.text, ev["write_paths"])
+                         if claim.family == "mutation" else "")
             if ev["calls"] == 0:
                 _add(False, "completion", claim.text,
                      "this sub-agent made no tool calls at all, so nothing in "
@@ -1585,6 +1789,11 @@ def verify_subagent_report(payload, *, tool_calls=None, repo_root=None) -> dict:
                 _add(False, "completion", claim.text,
                      "no file-writing tool call in this sub-agent's trace",
                      "diff the files before accepting the change")
+            elif unwritten:
+                _add(False, "completion", claim.text,
+                     f"nothing in this sub-agent's trace wrote {unwritten}; a "
+                     "write somewhere else does not make this change happen",
+                     f"diff {unwritten} before accepting the change")
             elif claim.family == "verification" and not _inspected(ev):
                 _add(False, "completion", claim.text,
                      "nothing was read, grepped or executed in this "
@@ -1997,6 +2206,20 @@ def run_subagent(
     restore_parent = False
     try:
         sub_client = _copy.copy(parent_client)
+        # A shallow copy shares the parent's MUTABLE evidence ledgers: the
+        # child would union its own reads into the parent's session set in
+        # place, so a file only the delegate opened grounded the parent's
+        # citations -- even when the parent discarded the report (the
+        # fan-out timeout path abandons the thread, it does not stop it).
+        # The verified merge in _merge_delegate_evidence is the one route
+        # a delegate's reads may take to the parent; give the child its own
+        # ledger so that stays the only one.
+        for _ledger in ("_observed_files", "_observed_files_session"):
+            if hasattr(sub_client, _ledger):
+                try:
+                    setattr(sub_client, _ledger, set())
+                except Exception:
+                    pass
         sub_client.set_permissions(sub_perms)
     except Exception:
         # Fallback to the legacy swap-on-parent if copying fails.
@@ -2696,13 +2919,16 @@ def get_subagent_result(sa_id: str) -> dict:
         # id up. Only "died" lets it start the work again.
         dead = read_running(include_dead=True).get(sa_id)
         if dead:
+            why = str(dead.get("error") or "").strip()
             return {"sa_id": sa_id, "status": "died",
                     "subagent_type": dead.get("type", ""),
                     "description": dead.get("description", ""),
                     "started_at": dead.get("started_at", 0),
-                    "error": ("the process running this subagent is no "
-                              "longer running, and it wrote no report — "
-                              "the work has to be started again")}
+                    "error": ((why + " — the work has to be started again")
+                              if why else
+                              ("the process running this subagent is no "
+                               "longer running, and it wrote no report — "
+                               "the work has to be started again"))}
         return {"sa_id": sa_id, "status": "unknown",
                 "error": "no running or finished subagent with this id"}
     # The untrimmed report when it was stored; the conversation is the
@@ -2744,4 +2970,6 @@ __all__ = [
     "load_subagent_session",
     "list_finished",
     "get_subagent_result",
+    "reserve_running",
+    "mark_running_died",
 ]

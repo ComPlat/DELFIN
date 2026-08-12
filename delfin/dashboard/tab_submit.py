@@ -39,32 +39,8 @@ from .input_processing import (
 )
 
 
-_MANTA_GIF_DATA_URI_CACHE = None
 
 
-def _manta_gif_data_uri():
-    """Return the packaged MANTA loading animation as a data URI (cached).
-
-    Mirrors the dashboard logo loader: read the gif shipped under
-    ``delfin/logo`` and inline it as a base64 ``data:`` URI so it renders
-    inside the molecule viewer without needing a served static path.
-    Returns ``''`` when the asset is unavailable.
-    """
-    global _MANTA_GIF_DATA_URI_CACHE
-    if _MANTA_GIF_DATA_URI_CACHE is not None:
-        return _MANTA_GIF_DATA_URI_CACHE
-    uri = ''
-    try:
-        gif = importlib.resources.files('delfin').joinpath(
-            'logo', 'MANTA_readme_demo.gif')
-        if gif.is_file():
-            data = gif.read_bytes()
-            if data:
-                uri = 'data:image/gif;base64,' + base64.b64encode(data).decode('ascii')
-    except Exception:
-        uri = ''
-    _MANTA_GIF_DATA_URI_CACHE = uri
-    return uri
 
 
 def _smiles_to_architector_input(smiles):
@@ -302,128 +278,10 @@ _MANTA_OPT_TOPN = 10
 _MANTA_OPT_WORKERS = 4
 
 
-def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
-    """Env for the chosen construction config + GFN2 energy ranking, GFN2 charge
-    from the SMILES. construction: 'champion' (full SHIP-31 rich + KAPPA4 reach,
-    DEFAULT/maximum richness) | 'builder' (lean core + reach) | 'default' (legacy)."""
-    env = {"DELFIN_GFNFF_CHARGE": str(int(charge))}
-    if rank:
-        env["DELFIN_FFFREE_GFNFF_RANK"] = "1"
-        env["DELFIN_CONF_RANK_METHOD"] = method
-    if construction != "default":
-        env["DELFIN_FFFREE_BUILDER"] = "1"
-        env["DELFIN_FRAME_RANK_FIX"] = "1"
-        env["DELFIN_CHIRAL_ENUM"] = "1"        # Λ/Δ enantiomer enumeration (>=2 chelate pairs)
-        if construction == "champion":
-            for _f in _MANTA_CHAMPION_FLAGS:   # de-bloated set (KAPPA4 included; CONF_ENERGY_RANK dropped)
-                env["DELFIN_FFFREE_" + _f] = "1"
-        else:  # builder = lean core + reach
-            env["DELFIN_FFFREE_KAPPA4"] = "1"
-            env["DELFIN_FFFREE_SIGMA_ENSEMBLE"] = "1"
-            env["DELFIN_FFFREE_CONF_ENERGY_RANK"] = "1"
-    return env
 
 
-def _manta_rank_only(isomers, charge, method="gfn2", spin="auto"):
-    """RANK the manifold by xtb SINGLE-POINT energy: reorder best (lowest-energy) first WITHOUT
-    changing any geometry.  Each item is ``(xyz_string, num_atoms, label)``; the emitted structures
-    stay byte-identical to construction — only their ORDER changes.  spin='auto' -> parity-correct
-    uhf per structure (even electrons=singlet, odd=doublet); a fixed multiplicity sets uhf=mult-1.
-    Best-effort: any structure whose energy eval fails sinks to the end keeping its geometry.
-    Returns the list unchanged if xtb is unavailable or there is nothing to reorder."""
-    if not isomers or len(isomers) < 2:
-        return isomers
-    try:
-        from delfin.manta import _gfnff_rank as _gff
-    except Exception:
-        return isomers
-    if not _gff.available():
-        return isomers
-    import concurrent.futures as _cf
-
-    def _uhf_for(xyz):
-        if str(spin) != "auto":
-            return max(0, int(spin) - 1)
-        try:
-            return _gff._n_electrons(xyz, int(charge)) % 2   # parity-correct ground-state multiplicity
-        except Exception:
-            return 0
-
-    def _energy_one(item):
-        xyz = item[0]
-        try:
-            return _gff.gfnff_energy(xyz, charge=int(charge), uhf=_uhf_for(xyz), method=method)
-        except Exception:
-            return None
-    _max_workers = max(1, min(len(isomers), (os.cpu_count() or 4)))
-    try:
-        with _cf.ThreadPoolExecutor(max_workers=_max_workers) as ex:
-            energies = list(ex.map(_energy_one, isomers))
-    except Exception:
-        return isomers
-    # Ascending by energy; failed evals (None) sink to the end preserving their relative order.
-    order = sorted(range(len(isomers)),
-                   key=lambda i: (energies[i] is None, energies[i] if energies[i] is not None else 0.0, i))
-    return [isomers[i] for i in order]
 
 
-def _manta_opt_top(isomers, charge, topn=None, method="gfn2", spin="auto"):
-    """Geometry-optimize the top-N ranked isomers in parallel (laptop-bounded),
-    replace their geometry + label, re-sort the optimized head by opt energy. The
-    opt ``method`` FOLLOWS the Rank selection (gfn2/gfnff/gfn1/gfn0) so one switch
-    controls both. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
-    any structure whose optimization fails keeps its unrelaxed geometry.
-    ``topn`` (user-settable): None -> _MANTA_OPT_TOPN; 0 -> ALL structures (optimise
-    the complete ranked manifold, slowest/best); N>0 -> top-N; N<0 -> none."""
-    if not isomers:
-        return isomers
-    if topn is None:
-        _n = _MANTA_OPT_TOPN
-    elif int(topn) == 0:
-        _n = len(isomers)                  # 0 = ALL (optimise everything)
-    elif int(topn) < 0:
-        return isomers                     # negative = none
-    else:
-        _n = int(topn)
-    import concurrent.futures as _cf
-    try:
-        from delfin.manta import _gfnff_rank as _gff
-    except Exception:
-        return isomers
-    if not _gff.available():
-        return isomers
-    head = list(isomers[:_n])
-    tail = list(isomers[_n:])
-
-    def _opt_one(item):
-        xyz, _na, label = item
-        try:
-            if str(spin) == "auto":
-                # auto-spin: scan multiplicity -> GFN2 ground state (parity-correct)
-                r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
-            else:
-                # fixed multiplicity chosen by the user: uhf = multiplicity - 1
-                _uhf = max(0, int(spin) - 1)
-                r = _gff.gfnff_optimize(xyz, charge=int(charge), uhf=_uhf, method=method)
-        except Exception:
-            r = None
-        if r and r[0]:
-            opt_xyz, e = r
-            na = len([ln for ln in opt_xyz.splitlines() if ln.strip()])
-            _m = method.upper()
-            tag = (" [%s-opt %.1f kcal]" % (_m, e)) if e is not None else " [%s-opt]" % _m
-            return ((opt_xyz, na, (label or "isomer") + tag), e)
-        return (item, None)
-
-    workers = max(1, min(_MANTA_OPT_WORKERS, len(head)))
-    try:
-        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            opted = list(ex.map(_opt_one, head))
-    except Exception:
-        return isomers
-    # optimized structures first, sorted by GFN2-opt energy (failed/None last)
-    opted.sort(key=lambda t: (t[1] is None, t[1] if t[1] is not None else 0.0))
-    return [it for (it, _e) in opted] + tail
 
 
 def create_tab(ctx):
@@ -456,21 +314,6 @@ def create_tab(ctx):
     )
 
     button_spacer = widgets.Label(value='', layout=widgets.Layout(height='10px'))
-
-    convert_smiles_button = widgets.Button(
-        description='CONVERT SMILES', button_style='info',
-        layout=widgets.Layout(width='155px'),
-        tooltip='Full isomer search',
-    )
-    convert_smiles_quick_button = widgets.Button(
-        description='QUICK CONVERT SMILES', button_style='info',
-        layout=widgets.Layout(width='185px'),
-        tooltip='Fast single structure (no isomer search, no UFF)',
-    )
-    convert_smiles_uff_button = widgets.Button(
-        description='CONVERT SMILES + UFF', button_style='info',
-        layout=widgets.Layout(width='185px'),
-    )
 
     # Draw the structure instead of typing it.  Ketcher is a browser
     # application of thirty-odd megabytes, so it is fetched when it is first
@@ -511,94 +354,6 @@ def create_tab(ctx):
         layout=widgets.Layout(width='150px'),
         tooltip='Convert metal-complex SMILES to 3D via architector',
     )
-
-    manta_button = widgets.Button(
-        description='MANTA', button_style='',
-        layout=widgets.Layout(width='150px'),
-        tooltip='MANTA: build the complete coordination-isomer manifold from the '
-                'SMILES and rank it by GFN2 energy (best isomer/conformer first; '
-                'needs xtb). Results show in the viewer with isomer navigation.',
-    )
-    # MANTA-logo teal/cyan.
-    manta_button.style.button_color = '#1FA9C0'
-    manta_button.style.font_weight = 'bold'
-
-    # --- MANTA settings (the 5 keys a user actually needs; MANTA button sits BELOW) ---
-    # Power-user knobs (construction / seeds / confs-per-isomer / rank-method /
-    # merge-variants) are CLI-only on purpose: each has one sensible value for the
-    # dashboard (construction is ALWAYS champion = best; the rest are redundant with
-    # Quality), so exposing them only confuses users.  Pinned here.
-    _MANTA_DASH_DEFAULTS = dict(construction="champion", num_confs=None,
-                               collapse=False)
-    # Quality preset -> conformer-seed count.  Selecting a preset auto-fills the
-    # Seeds field (transparent: extreme = 60), but the field stays editable so a
-    # user can dial a custom seed count on top of the preset's cap/templates.
-    _MANTA_PROFILE_SEEDS = {'fast': 12, 'normal': 20, 'max': 40, 'extreme': 60}
-    manta_quality = widgets.Dropdown(
-        options=['fast', 'normal', 'max', 'extreme'], value='extreme',
-        description='Quality:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='160px'),
-        tooltip='Conformer depth (the main completeness<->speed switch). extreme guarantees the '
-                'GFN2 global minimum is in the manifold (convergence-proven); fast/normal miss it '
-                'by ~2.5 kcal/mol on multi-isomer systems.')
-    manta_seeds = widgets.IntText(
-        value=_MANTA_PROFILE_SEEDS['extreme'], description='Seeds:',
-        style={'description_width': 'initial'}, layout=widgets.Layout(width='130px'),
-        tooltip='ETKDG conformer seeds. Auto-fills from Quality (extreme=60) for transparency; '
-                'edit it to use a custom seed count (more seeds = more conformers, slower).')
-
-    def _sync_seeds_to_quality(change):
-        try:
-            manta_seeds.value = _MANTA_PROFILE_SEEDS.get(change['new'], manta_seeds.value)
-        except Exception:
-            pass
-    manta_quality.observe(_sync_seeds_to_quality, names='value')
-    manta_max_iso = widgets.IntText(
-        value=0, description='Max isomers (0=ALL):', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='190px'),
-        tooltip='Cap emitted isomers. 0 = COMPLETE manifold, never cut off (recommended).')
-    # DEFAULT = No / No -> users get ONLY the manifold (no post-processing).  Rank and Opt are
-    # SEPARATE opt-ins: Rank reorders by xtb single-point energy (geometry UNCHANGED); Opt xtb-
-    # geometry-optimises structures (changes geometry).  You can Rank without Opt, or Opt without Rank.
-    manta_rank = widgets.Dropdown(
-        options=['No', 'gfn2', 'gfnff', 'gfn1', 'gfn0'], value='No',
-        description='Rank:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='150px'),
-        tooltip='Energy-RANK the manifold so the global-minimum isomer/conformer is first — '
-                'single-point xtb energy, geometry UNCHANGED (pure reordering, no post-processing of '
-                'the structures). No = keep construction order (already best-first by realism). '
-                'gfn2 = standard; gfnff = fast force-field.')
-    manta_opt = widgets.Dropdown(
-        options=['No', 'Top 5', 'Top 10', 'Top 20', 'All'], value='No',
-        description='Opt:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='140px'),
-        tooltip='Geometry-OPTimise structures to a clean final geometry (xtb; method FOLLOWS Rank, or '
-                'gfn2 if Rank=No). No = keep the construction geometry (pure manifold, DEFAULT). '
-                'Top-N = optimise the N best; All = the whole manifold (slowest/best). '
-                'Independent of Rank.')
-    manta_spin = widgets.Dropdown(
-        options=['auto', '1', '2', '3', '4', '5', '6', '7'], value='auto',
-        description='Spin:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='130px'),
-        tooltip='Spin multiplicity for the GFN2 energy/rank. auto = scan parity/+2/+4 and take the '
-                'GFN2 ground state (parity-correct for open-shell TM). Or FIX it (1=singlet, 2=doublet, '
-                '3=triplet, ...) when you know the state. NOTE: GFN2 spin energetics for TM are '
-                'approximate -> set it explicitly for accuracy.')
-    manta_det = widgets.Dropdown(
-        options=['On', 'Off'], value='On',
-        description='Determinism:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='160px'),
-        tooltip='DETERMINISTIC construction (DEFAULT On) — byte-identical, reproducible manifold, '
-                'IDENTICAL to what the CLI and the development loop build (ship = validate). '
-                'Off = non-deterministic embedding (racy frame count; only for exploring extra '
-                'ETKDG variety). Keep On for a stable, reproducible isomer x conformer manifold.')
-    manta_settings_row = widgets.VBox([
-        widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
-                     "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
-                     "&times; conformer manifold</span>"),
-        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt, manta_spin, manta_det],
-                     layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
-    ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
 
     smiles_batch_widget = widgets.Textarea(
         value='',
@@ -656,28 +411,6 @@ def create_tab(ctx):
     output_area = widgets.Output()
     validate_output = widgets.Output()
 
-
-    xyz_copy_btn = widgets.Button(
-        description='\U0001f4cb Copy Coordinates', button_style='success',
-        layout=widgets.Layout(width='150px'), disabled=True,
-    )
-    xyz_copy_status = widgets.HTML(value='', layout=widgets.Layout(margin='0 0 0 6px'))
-
-    isomer_prev_btn = widgets.Button(
-        description='\u25c0', button_style='info',
-        layout=widgets.Layout(width='35px'),
-    )
-    isomer_next_btn = widgets.Button(
-        description='\u25b6', button_style='info',
-        layout=widgets.Layout(width='35px'),
-    )
-    isomer_label = widgets.HTML(
-        value='', layout=widgets.Layout(width='180px'),
-    )
-    isomer_nav_row = widgets.HBox(
-        [isomer_prev_btn, isomer_label, isomer_next_btn],
-        layout=widgets.Layout(gap='4px', align_items='center', display='none'),
-    )
 
     only_goat_label = widgets.Label('Only GOAT:')
     only_goat_charge = widgets.IntText(
@@ -790,20 +523,6 @@ def create_tab(ctx):
         for button in buttons:
             button.disabled = disabled
 
-    def _set_smiles_conversion_busy(is_busy):
-        state['smiles_busy'] = bool(is_busy)
-        _set_buttons_disabled(
-            [
-                convert_smiles_button,
-                convert_smiles_quick_button,
-                convert_smiles_uff_button,
-                isomer_prev_btn,
-                isomer_next_btn,
-            ],
-            is_busy,
-        )
-        ctx.set_busy(state['smiles_busy'] or state['batch_preview_busy'])
-
     def _set_batch_preview_busy(is_busy):
         state['batch_preview_busy'] = bool(is_busy)
         _set_buttons_disabled([smiles_prev_button, smiles_next_button], is_busy)
@@ -832,8 +551,8 @@ def create_tab(ctx):
         schedule_ui_update=_schedule_ui_update,
         # Defined further down, so they are looked up when they are called.
         update_view=lambda *a, **k: update_molecule_view(*a, **k),
-        show_isomer_at_index=lambda *a, **k: _show_isomer_at_index(*a, **k),
         get_smiles_charge=lambda *a, **k: _get_smiles_charge(*a, **k),
+        set_buttons_disabled=lambda *a, **k: _set_buttons_disabled(*a, **k),
     )
     mol_status = _editor.mol_status
     mol_status_fs = _editor.mol_status_fs
@@ -851,195 +570,24 @@ def create_tab(ctx):
     _remember = _editor._remember
     _push_hand_bonds = _editor._push_hand_bonds
     _refresh_constraints = _editor._refresh_constraints
+    convert_smiles_button = _editor.convert_smiles_button
+    convert_smiles_quick_button = _editor.convert_smiles_quick_button
+    convert_smiles_uff_button = _editor.convert_smiles_uff_button
+    manta_button = _editor.manta_button
+    manta_settings_row = _editor.manta_settings_row
+    xyz_copy_btn = _editor.xyz_copy_btn
+    xyz_copy_status = _editor.xyz_copy_status
+    isomer_nav_row = _editor.isomer_nav_row
+    _clear_mol_output = _editor._clear_mol_output
+    _replace_mol_output_text = _editor._replace_mol_output_text
+    _replace_mol_output_view = _editor._replace_mol_output_view
+    _show_mol_busy = _editor._show_mol_busy
+    _set_smiles_conversion_busy = _editor._set_smiles_conversion_busy
+    _show_isomer_at_index = _editor._show_isomer_at_index
+    _clean_xyz_block = _editor._clean_xyz_block
+    _apply_smiles_conversion_result = _editor._apply_smiles_conversion_result
+    _build_mol_output_bundle = _editor._build_mol_output_bundle
 
-
-    def _build_mol_output_bundle(xyz_data):
-        view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
-        view.addModel(xyz_data, 'xyz')
-        apply_molecule_view_style(view)
-        scope_key_js = json.dumps(submit_scope_id)
-        # The editor rides along only until the page has said it has it. It is
-        # 136 KiB of the 159 a rendered structure weighs, and every conversion,
-        # every edit and every optimisation result sent it again -- to a page
-        # that had it already and threw the copy away on its version check.
-        # Sending it at all, the first time, is the belt: the separate script
-        # that installs it goes through an output widget whose content can be
-        # replaced before the page has run it, and a structure without an
-        # editor cannot be edited at all.
-        carry_editor = (state.get('manip_seen_version')
-                        != submit_manip_version())
-        registration = (
-            '\n'
-            + (submit_manip_bootstrap_js() if carry_editor else '')
-            + '\n(function(){\n'
-            '  try {\n'
-            '    window._submitMolViewerByScope = window._submitMolViewerByScope || {};\n'
-            # Every render of this tab creates a fresh WebGL viewer. Without
-            # releasing the previous one its context, observers and window-level
-            # mouse listeners stay alive; browsers cap contexts and start
-            # killing the oldest, which blacks out the viewers in other tabs.
-            f'    var prev = window._submitMolViewerByScope[{scope_key_js}];\n'
-            # Keep the camera across a re-render. Optimising or stepping to
-            # another isomer rebuilds the viewer, and the view otherwise snapped
-            # back to the default orientation every time.
-            '    window._submitMolViewByScope = window._submitMolViewByScope || {};\n'
-            '    if (prev && prev !== viewer_UNIQUEID) {\n'
-            '      try {\n'
-            '        var prevModel = prev.getModel ? prev.getModel() : null;\n'
-            '        var prevCount = prevModel && prevModel.selectedAtoms\n'
-            '          ? prevModel.selectedAtoms({}).length : -1;\n'
-            f'        window._submitMolViewByScope[{scope_key_js}] =\n'
-            '          {view: prev.getView(), atoms: prevCount};\n'
-            '      } catch(e) {}\n'
-            '      if (window.__delfinDisposeViewer) window.__delfinDisposeViewer(prev);\n'
-            '    }\n'
-            '    try {\n'
-            f'      var saved = window._submitMolViewByScope[{scope_key_js}];\n'
-            '      var model = viewer_UNIQUEID.getModel();\n'
-            '      var count = model && model.selectedAtoms\n'
-            '        ? model.selectedAtoms({}).length : -1;\n'
-            # Same structure, just moved -- keep the view. A different one
-            # deserves a fresh look at it. An edit that adds or removes an
-            # atom is neither: the count changes but it is still the molecule
-            # being worked on, so the camera stays put rather than snapping
-            # back to the default every time something is drawn.
-            '      var edited = !!window.__delfinStructureEdit;\n'
-            '      window.__delfinStructureEdit = false;\n'
-            '      if (saved && saved.view && (edited || saved.atoms === count)) {\n'
-            '        viewer_UNIQUEID.setView(saved.view);\n'
-            '        viewer_UNIQUEID.__delfinUserInteracted = true;\n'
-            '        viewer_UNIQUEID.render();\n'
-            '      }\n'
-            '    } catch(e) {}\n'
-            f'    window._submitMolViewerByScope[{scope_key_js}] = viewer_UNIQUEID;\n'
-            '    var el = document.getElementById("3dmolviewer_UNIQUEID");\n'
-            '    var fire = function(){\n'
-            '      if (window.__delfinSubmitManip) {\n'
-            f'        window.__delfinSubmitManip.onViewerReady({scope_key_js}, el);\n'
-            '      }\n'
-            '    };\n'
-            '    setTimeout(fire, 80);\n'
-            '  } catch(e) {}\n'
-            '})();\n'
-        )
-        # The numbers, from the shared editor part -- the same code the ORCA
-        # Builder draws them with.  py3Dmol names its viewer viewer_UNIQUEID
-        # and rewrites that when it makes the HTML, so the labels can be
-        # addressed to it by name like everything else here.
-        labels = ''
-        if submit_labels_btn.value:
-            labels = _structure_editor.show_atom_numbers_js(
-                var='viewer_UNIQUEID',
-                scale=_structure_editor.scale_for_px(submit_label_size.value))
-        if hasattr(view, 'startjs'):
-            view.startjs += registration
-            if labels:
-                view.startjs += '\n' + labels + '\n'
-        html_payload = view._make_html()
-        return ({
-            'output_type': 'display_data',
-            'data': {
-                'application/3dmoljs_load.v0': html_payload,
-                'text/html': html_payload,
-            },
-            'metadata': {},
-        },)
-
-    def _clear_mol_output():
-        mol_output.outputs = ()
-
-    def _replace_mol_output_text(*lines):
-        _set_mol_status(*lines)
-        _clear_mol_output()
-        _set_manip_toolbar_enabled(False)
-
-
-    def _replace_mol_output_view(xyz_data):
-        # The structure as it arrived, once: the first thing in the history,
-        # the thing Reset returns to, and the thing Undo stops at.
-        if state.pop('history_seed_pending', False):
-            state['history'] = []
-            _remember('the structure as it was loaded')
-        _clear_mol_status()
-        _ensure_manip_bootstrap()
-        mol_output.outputs = _build_mol_output_bundle(xyz_data)
-        _set_manip_toolbar_enabled(True)
-        _push_hand_bonds()
-
-    def _show_mol_busy(message):
-        """Render the animated MANTA loader centered in the viewer.
-
-        While the manifold build / GFN2 ranking / optimization runs there is
-        no structure to show, so fill the 3D viewer box with the floating
-        MANTA mark plus a status caption. ``_replace_mol_output_view`` later
-        swaps it out for the finished structure (same as before).
-        """
-        _clear_mol_status()
-        safe_msg = html.escape(str(message))
-        gif_uri = _manta_gif_data_uri()
-        if gif_uri:
-            visual_html = (
-                f"<img src='{gif_uri}' alt='MANTA working' "
-                "style='width:92%; max-width:1050px; height:auto; "
-                "object-fit:contain; image-rendering:auto;'/>"
-            )
-        else:
-            visual_html = (
-                "<span class='delfin-busy' style='width:42px; height:42px; "
-                "border-width:4px;'></span>"
-            )
-        payload = (
-            "<div class='manta-busy-stage' style='display:flex; "
-            "flex-direction:column; align-items:center; justify-content:center; "
-            f"width:100%; min-height:{SUBMIT_MOL_HEIGHT - 6}px; gap:20px; "
-            "background:#fcfcfc;'>"
-            f"{visual_html}"
-            "<div class='manta-busy-caption' style='display:flex; "
-            "align-items:center; justify-content:center; gap:8px; max-width:84%; "
-            "font-family:monospace; font-size:13px; line-height:1.4; "
-            "color:#1976d2; text-align:center;'>"
-            "<span class='delfin-busy' style='vertical-align:middle;'></span>"
-            f"<span>{safe_msg}</span></div></div>"
-        )
-        mol_output.outputs = ({
-            'output_type': 'display_data',
-            'data': {'text/html': payload},
-            'metadata': {},
-        },)
-        _set_manip_toolbar_enabled(False)
-
-    def _apply_smiles_conversion_result(task_id, *, quick, cleaned_data, result):
-        if task_id != state['smiles_task_id']:
-            return
-
-        _set_smiles_conversion_busy(False)
-        if quick:
-            xyz_string = result.get('xyz_string')
-            preview_items = result.get('preview_items') or []
-            error = result.get('error')
-            if error or not xyz_string:
-                _replace_mol_output_text(f'Error: {error or "Conversion failed"}')
-                return
-            state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
-            state['isomers'] = [(xyz_string, result['num_atoms'], 'quick')] + preview_items
-            _show_isomer_at_index(0)
-            return
-
-        isomers = result.get('isomers') or []
-        error = result.get('error')
-        if error or not isomers:
-            _replace_mol_output_text(
-                f'SMILES: {cleaned_data}',
-                f'Error: {error or "No isomers generated"}',
-            )
-            state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
-            state['isomers'] = []
-            isomer_nav_row.layout.display = 'none'
-            return
-
-        state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
-        state['isomers'] = isomers
-        _show_isomer_at_index(0)
 
     def _apply_batch_preview_result(task_id, entry, preview_payload):
         if task_id != state['batch_preview_task_id']:
@@ -1048,6 +596,11 @@ def create_tab(ctx):
         _render_batch_preview(entry, preview_payload)
 
     def update_molecule_view(change=None):
+        # The editor has put a structure in the box that is already on screen
+        # -- an isomer it stepped to, a conversion it just took. Drawing it
+        # again would throw the camera away and re-perceive its bonds.
+        if state.get('editor_quiet'):
+            return
         if state.get('manip_inflight'):
             # Change originated from JS-side atom manipulation: the 3Dmol viewer
             # has already reflected the new coordinates. Update state/copy only.
@@ -1134,326 +687,6 @@ def create_tab(ctx):
         xyz_copy_btn.disabled = False
         xyz_copy_status.value = '<span style="color:#388e3c;">XYZ ready to copy</span>'
         _replace_mol_output_view(xyz_data)
-
-    def on_xyz_copy(button):
-        content = state['current_xyz_for_copy'].get('content')
-        if not content:
-            xyz_copy_status.value = '<span style="color:#d32f2f;">No XYZ to copy</span>'
-            return
-        text_payload = json.dumps(str(content))
-        js_code = (
-            "(function(){"
-            f"const text={text_payload};"
-            "function _manualPrompt(){"
-            "try{window.prompt('Copy to clipboard (Cmd+C/Ctrl+C, Enter):', text);}catch(_e){}"
-            "}"
-            "function _legacyCopy(){"
-            "try{"
-            "const ta=document.createElement('textarea');"
-            "ta.value=text;"
-            "ta.setAttribute('readonly','readonly');"
-            "ta.style.position='fixed';"
-            "ta.style.top='-1000px';"
-            "ta.style.left='-1000px';"
-            "ta.style.opacity='0';"
-            "document.body.appendChild(ta);"
-            "ta.focus();"
-            "ta.select();"
-            "ta.setSelectionRange(0, ta.value.length);"
-            "const ok=document.execCommand('copy');"
-            "document.body.removeChild(ta);"
-            "return !!ok;"
-            "}catch(_e){return false;}"
-            "}"
-            "if(navigator.clipboard && navigator.clipboard.writeText){"
-            "navigator.clipboard.writeText(text).catch(function(){"
-            "if(!_legacyCopy()) _manualPrompt();"
-            "});"
-            "}else{"
-            "if(!_legacyCopy()) _manualPrompt();"
-            "}"
-            "})();"
-        )
-        ctx.run_js(js_code)
-        xyz_copy_status.value = '<span style="color:#388e3c;">Copied to clipboard</span>'
-
-    def _show_isomer_at_index(index):
-        isomers = state['isomers']
-        if not isomers:
-            return
-        index = index % len(isomers)
-        state['isomer_index'] = index
-        xyz_string, num_atoms, label = isomers[index]
-
-        # Update navigation label and visibility
-        if len(isomers) > 1:
-            display_label = label or f'Isomer {index + 1}'
-            isomer_label.value = (
-                f'<span style="font-size:13px;">'
-                f'{display_label} ({index + 1}/{len(isomers)})</span>'
-            )
-            isomer_nav_row.layout.display = ''
-        else:
-            isomer_nav_row.layout.display = 'none'
-
-        xyz_data = f'{num_atoms}\nIsomer: {label}\n{xyz_string}'
-        _replace_mol_output_view(xyz_data)
-
-        # Update copy state
-        state['current_xyz_for_copy'] = {'content': xyz_data}
-        xyz_copy_btn.disabled = False
-        xyz_copy_status.value = '<span style="color:#388e3c;">XYZ ready to copy</span>'
-
-        # Keep converted_xyz_cache in sync for submit
-        state['converted_xyz_cache']['xyz'] = xyz_string
-
-        # Update coords widget without triggering update_molecule_view
-        coords_widget.unobserve(update_molecule_view, names='value')
-        coords_widget.value = f'{num_atoms}\nConverted from SMILES (isomer: {label})\n{xyz_string}'
-        coords_widget.observe(update_molecule_view, names='value')
-
-    def handle_isomer_prev(button):
-        if state['isomers']:
-            _show_isomer_at_index(state['isomer_index'] - 1)
-
-    def handle_isomer_next(button):
-        if state['isomers']:
-            _show_isomer_at_index(state['isomer_index'] + 1)
-
-    def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False,
-                                 quality_mode=None, seeds_override=None,
-                                 max_isomers=None, opt_topn=None, construction=None,
-                                 method="gfn2", num_confs=None, collapse=None, spin="auto",
-                                 deterministic: bool = True):
-        cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
-        raw_input = (cached_smiles or coords_widget.value).strip()
-        if not raw_input:
-            _replace_mol_output_text('Please enter SMILES in the input box.')
-            return
-
-        cleaned_data, input_type = clean_input_data(raw_input)
-        if input_type != 'smiles':
-            _replace_mol_output_text('Please enter SMILES in the input box.')
-            return
-
-        state['smiles_task_id'] += 1
-        task_id = state['smiles_task_id']
-        _set_smiles_conversion_busy(True)
-
-        # The MANTA logo animation must ALWAYS play while MANTA builds the manifold — WITH or WITHOUT
-        # post-processing.  A MANTA submit is (not quick) AND has a construction preset (the convert
-        # buttons pass construction=None); Rank=No / Opt<0 = manifold-only, but the logo still shows.
-        if (not quick) and (construction is not None):
-            _method_lbl = str(method).upper()
-            _topn = -1 if opt_topn is None else int(opt_topn)
-            _opt_on = _topn >= 0
-            if not rank and not _opt_on:
-                _caption = ('MANTA: building the complete coordination-isomer × conformer manifold '
-                            '(no post-processing)...')
-            else:
-                _parts = []
-                if rank:
-                    _parts.append(f'{_method_lbl} energy-ranking')
-                if _opt_on:
-                    _parts.append('optimizing all' if _topn == 0 else f'optimizing top {_topn}')
-                _caption = ('MANTA: building manifold + ' + ' + '.join(_parts) +
-                            ' (needs xtb; takes a bit)...')
-            _show_mol_busy(_caption)
-        else:
-            _clear_mol_output()
-            if quick:
-                _set_mol_status('Quick convert (single structure)...', spinner=True)
-            elif apply_uff:
-                _set_mol_status('Converting SMILES with UFF...', spinner=True)
-            else:
-                _set_mol_status('Converting SMILES (no UFF)...', spinner=True)
-
-        def _worker():
-            import os
-            # MANTA "best version": derive the GFN2 charge from the SMILES, then
-            # apply the SHIP-31 champion construction + GFN2-rank env for this
-            # build only (snapshot + restore so the global env isn't polluted).
-            _chg = 0
-            if rank or construction:
-                try:
-                    from rdkit import Chem as _Chem
-                    _m = _Chem.MolFromSmiles(cleaned_data, sanitize=False)
-                    if _m is not None:
-                        _chg = _Chem.GetFormalCharge(_m)
-                except Exception:
-                    _chg = 0
-            # construction env applies ONLY for MANTA (construction set); the plain
-            # convert/build-complex buttons pass construction=None -> unchanged behaviour.
-            _best_env = (_manta_best_env(_chg, construction=construction, method=method,
-                                         rank=rank) if construction else {})
-            _saved_env = {k: os.environ.get(k) for k in _best_env}
-            os.environ.update(_best_env)
-            try:
-                separate = _separate.has_separate_systems(cleaned_data)
-                if quick and separate:
-                    # A dot in a SMILES means two molecules that are not bonded
-                    # to each other, and a converter handed both at once puts
-                    # them in one another: measured on a
-                    # hexaphenylbenzene.benzene, the benzene came out inside
-                    # the other molecule, 0.877 A at the closest.  Built apart
-                    # and set side by side they come out 5.1 A apart, which is
-                    # a picture somebody can work in.
-                    #
-                    # The hapticity previews are made per part and travel with
-                    # it.  They are the alternative ways a ligand can sit on
-                    # its metal, so they belong to the part that has the metal;
-                    # made from the whole string they would describe a molecule
-                    # that is none of the frames.
-                    per_part, error = [], None
-                    for position, part in enumerate(
-                            _separate.split_smiles(cleaned_data), start=1):
-                        made, count, _m, previews, error = (
-                            smiles_to_xyz_quick_with_previews(part))
-                        if error or not made:
-                            error = (f'part {position} could not be built: '
-                                     f'{error or "nothing came back"}')
-                            break
-                        per_part.append([(made, count, 'quick')]
-                                        + list(previews or []))
-                    frames = ([] if error
-                              else _separate.combine_isomers(per_part))
-                    result = {
-                        'error': error,
-                        'xyz_string': frames[0][0] if frames else None,
-                        'num_atoms': frames[0][1] if frames else 0,
-                        'preview_items': frames[1:],
-                        'separate_parts': len(per_part),
-                    }
-                elif quick:
-                    xyz_string, num_atoms, _method, preview_items, error = (
-                        smiles_to_xyz_quick_with_previews(cleaned_data)
-                    )
-                    result = {
-                        'error': error,
-                        'xyz_string': xyz_string,
-                        'num_atoms': num_atoms,
-                        'preview_items': preview_items,
-                    }
-                else:
-                    # Interactive metal-complex conversion should prioritize
-                    # isomer diversity over strict reproducibility.
-                    _iso_kwargs = dict(
-                        apply_uff=apply_uff,
-                        collapse_label_variants=(bool(collapse) if collapse is not None else False),
-                        include_binding_mode_isomers=True,
-                        deterministic=deterministic,
-                    )
-                    # user-exposed completeness/speed switches (MANTA settings row);
-                    # None -> library default. max_isomers None/0 -> COMPLETE (no cut).
-                    if quality_mode:
-                        _iso_kwargs["quality_mode"] = quality_mode
-                    if seeds_override:
-                        _iso_kwargs["seeds_override"] = int(seeds_override)
-                    if max_isomers:
-                        _iso_kwargs["max_isomers"] = int(max_isomers)
-                    if num_confs:
-                        _iso_kwargs["num_confs"] = int(num_confs)
-                    if separate:
-                        # Every part gets its own manifold, and the part with
-                        # the most arrangements drives the navigation -- a
-                        # counter-ion with one form does not multiply the
-                        # complex's twelve into twelve of itself.
-                        per_part, error = [], None
-                        for position, part in enumerate(
-                                _separate.split_smiles(cleaned_data), start=1):
-                            made, error = smiles_to_xyz_isomers(
-                                part, **_iso_kwargs)
-                            if error or not made:
-                                error = (f'part {position} could not be built: '
-                                         f'{error or "nothing came back"}')
-                                break
-                            # Its own hapticity previews, from its own SMILES:
-                            # the ways this ligand can sit on this metal, which
-                            # is a question about this part and no other.
-                            made = append_hapto_previews_to_isomers(
-                                made, part, include_quick=apply_uff)
-                            per_part.append(made)
-                        isomers = ([] if error
-                                   else _separate.combine_isomers(per_part))
-                    else:
-                        isomers, error = smiles_to_xyz_isomers(
-                            cleaned_data, **_iso_kwargs)
-                    # For a split input each part has had its own already,
-                    # from its own SMILES.  Handed the whole string here they
-                    # would describe a molecule that is none of the frames.
-                    if not error and isomers and not separate:
-                        isomers = append_hapto_previews_to_isomers(
-                            isomers,
-                            cleaned_data,
-                            include_quick=apply_uff,
-                        )
-                    if rank and not error and isomers:
-                        # RANK (opt-in): reorder best-first by xtb SINGLE-POINT energy.
-                        # Geometry UNCHANGED — the emitted structures stay byte-identical to
-                        # construction, only their order changes.
-                        isomers = _manta_rank_only(isomers, _chg, method=method, spin=spin)
-                    if (opt_topn is not None and int(opt_topn) >= 0
-                            and not error and isomers):
-                        # OPT (opt-in, independent of Rank): xtb geometry-optimise the top-N
-                        # (0 = the whole manifold) for best-possible final geometry.
-                        isomers = _manta_opt_top(isomers, _chg, topn=opt_topn, method=method, spin=spin)
-                    result = {'error': error, 'isomers': isomers}
-            except Exception as exc:
-                result = {'error': str(exc)}
-            finally:
-                for _k, _v in _saved_env.items():
-                    if _v is None:
-                        os.environ.pop(_k, None)
-                    else:
-                        os.environ[_k] = _v
-
-            _schedule_ui_update(
-                _apply_smiles_conversion_result,
-                task_id,
-                quick=quick,
-                cleaned_data=cleaned_data,
-                result=result,
-            )
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _convert_smiles(*, apply_uff: bool):
-        _start_smiles_conversion(apply_uff=apply_uff, quick=False)
-
-    def handle_convert_smiles(button):
-        _convert_smiles(apply_uff=False)
-
-    def handle_convert_smiles_quick(button):
-        _start_smiles_conversion(apply_uff=False, quick=True)
-
-    def handle_manta(button):
-        # MANTA: full coordination-isomer manifold (with UFF cleanup) + GFN2
-        # energy ranking, shown in the viewer with the existing isomer nav.
-        # Read the exposed settings row (Quality/Seeds/Max-iso/Rank/Opt-top).
-        _rank_sel = manta_rank.value
-        # Opt dropdown -> top-N int: No = -1 (off, keep construction geometry); All = 0; Top-N = N.
-        _opt_map = {'No': -1, 'Top 5': 5, 'Top 10': 10, 'Top 20': 20, 'All': 0}
-        _start_smiles_conversion(
-            apply_uff=True, quick=False,
-            rank=(_rank_sel != 'No'),
-            method=(_rank_sel if _rank_sel != 'No' else 'gfn2'),
-            quality_mode=(manta_quality.value or None),
-            # seeds field = preset value (transparent) unless the user edited it ->
-            # custom seed count on top of the preset's cap/templates.
-            seeds_override=(int(manta_seeds.value) or None),
-            # 0 -> COMPLETE manifold (never cut off); else user cap
-            max_isomers=(int(manta_max_iso.value) or 100000),
-            opt_topn=_opt_map.get(manta_opt.value, -1),
-            spin=str(manta_spin.value),     # 'auto' (scan) or fixed multiplicity (1/2/3/...)
-            # Determinism toggle (default On) -> byte-identical, IDENTICAL to the CLI
-            # and the development loop (ship = validate).  Off = non-deterministic embed.
-            deterministic=(manta_det.value == 'On'),
-            # construction always champion + power-user knobs CLI-only -> pinned here
-            **_MANTA_DASH_DEFAULTS,
-        )
-
-    def handle_convert_smiles_uff(button):
-        _convert_smiles(apply_uff=True)
 
     def handle_build_complex(button):
         with output_area:
@@ -2003,19 +1236,6 @@ def create_tab(ctx):
                     print(result.stderr)
             except Exception as e:
                 print(f'Error submitting GUPPY job: {e}')
-
-    def _clean_xyz_block(raw_xyz):
-        text = (raw_xyz or '').strip()
-        if not text:
-            return ''
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            try:
-                int(lines[0].strip())
-                return '\n'.join(lines[2:]).strip()
-            except ValueError:
-                pass
-        return '\n'.join(lines).strip()
 
     def _get_smiles_charge(smi):
         """Sum formal charges of all atoms in a SMILES string via RDKit."""
@@ -3329,18 +2549,13 @@ def create_tab(ctx):
                         'coordinates.')
 
     # -- wiring ---------------------------------------------------------
-    xyz_copy_btn.on_click(on_xyz_copy)
     coords_widget.observe(update_molecule_view, names='value')
     submit_draw_open_btn.observe(on_submit_draw_open, names='value')
     submit_draw_get_btn.on_click(on_submit_draw_get)
     submit_draw_update_btn.on_click(on_submit_draw_update)
     submit_draw_sync.observe(on_submit_draw_sync, names='value')
-    convert_smiles_button.on_click(handle_convert_smiles)
-    convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
-    convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
     build_complex_button.on_click(handle_build_complex)
     architector_button.on_click(handle_architector_convert)
-    manta_button.on_click(handle_manta)
     guppy_submit_button.on_click(handle_guppy_submit)
     fukui_submit_button.on_click(handle_fukui_submit)
     smiles_prev_button.on_click(handle_smiles_prev)
@@ -3352,8 +2567,6 @@ def create_tab(ctx):
         preview_smiles_at_index(0, delay=0.35)
 
     smiles_batch_widget.observe(on_batch_change, names='value')
-    isomer_prev_btn.on_click(handle_isomer_prev)
-    isomer_next_btn.on_click(handle_isomer_next)
     only_goat_submit_button.on_click(handle_only_goat_submit)
     co2_submit_button.on_click(handle_co2_chain_submit)
     validate_button.on_click(handle_validate_control)

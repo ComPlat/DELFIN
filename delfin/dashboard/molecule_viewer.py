@@ -4739,6 +4739,28 @@ def submit_manip_bootstrap_js():
 # left untouched: only the marked viewer/header/control members are moved into
 # a body-level overlay, then restored to their exact original DOM positions.
 STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
+/* Everything from Optimise onward starts a second row, the same as in the
+   Submit tab's own overlay. Flexbox cannot be told to break, so the break is
+   an element that takes a whole line and no height. Hidden outside an
+   overlay: the ordinary toolbar is narrow enough to wrap where it needs to on
+   its own, and a forced break there would waste a row. */
+.delfin-structure-fs-overlay .submit-fs-row-break {
+    display: block !important;
+    flex: 1 0 100% !important;
+    width: 100% !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+}
+/* The toolbar keeps its own wrapping in the overlay rather than being
+   squeezed into one line with everything else. */
+.delfin-structure-fs-overlay .delfin-structure-fs-toolbar {
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    flex-wrap: wrap !important;
+}
 /* The gutter a notebook keeps for "Out[7]:". An Output widget is laid out as a
    table: .jp-OutputArea-child is display:table, its first cell is the prompt,
    its second holds the picture. The prompt is empty here and always will be,

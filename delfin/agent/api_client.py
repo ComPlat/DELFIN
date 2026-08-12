@@ -4788,6 +4788,39 @@ def _merge_delegate_evidence(observed: set, fn_name: str, result: str) -> None:
         return
 
 
+def _begin_observed_ledgers(client) -> None:
+    """Start this turn's evidence ledgers on ``client``.
+
+    The per-turn set is always fresh. The SESSION set must belong to the
+    client object that owns it, which a ``hasattr`` guard cannot decide: a
+    sub-agent runs on a SHALLOW COPY of the parent client, and the copy
+    inherits the attribute already bound to the PARENT's set object. The
+    guard skipped the rebind, so every union after a tool call mutated the
+    parent's ledger in place -- files only the delegate ever opened
+    grounded the parent's citations, including when the parent had
+    discarded the delegate's report. ``_merge_delegate_evidence`` is the
+    one route by which a delegate's reads may count for the parent; this
+    keeps it the only one.
+
+    Binding by owner (not by presence) keeps the ledger cumulative for the
+    client that owns it and gives any copy its own.
+    """
+    import weakref
+
+    client._observed_files = set()
+    owner = getattr(client, "_observed_files_ledger_owner", None)
+    if owner is not None and owner() is client:
+        return
+    client._observed_files_session = set()
+    try:
+        client._observed_files_ledger_owner = weakref.ref(client)
+    except TypeError:
+        # Not weak-referenceable: no owner can be recorded, so every turn
+        # starts fresh. Losing accumulation is the safe direction; leaking
+        # into another object's ledger is not.
+        client._observed_files_ledger_owner = None
+
+
 def _mcp_schema_budget_chars() -> int:
     """How many characters of MCP tool schema may ride on each request.
 
@@ -11164,8 +11197,27 @@ class _DocToolExecutor:
             # Reserve the id up-front so the parent can poll/collect this
             # specific run via subagent_result(sa_id) once it finishes.
             _bg_sa_id = _uuid.uuid4().hex[:8]
+            # A resumed run keeps the id it is resuming, so the reserved one
+            # would never resolve — the parent would poll it forever for work
+            # that had finished under a different name.
+            try:
+                _collect_id = _sa.collectable_sa_id(
+                    reserved=_bg_sa_id, resume_from=str(resume_id or ""))
+            except Exception:
+                _collect_id = _bg_sa_id
+            # ...and make that id answer from this moment on, not from
+            # whenever the run gets far enough to register itself. A thread
+            # that dies before then would otherwise leave the id resolving
+            # to "no such id", which reads as an invented id rather than as
+            # a run that has to be started again.
+            try:
+                _sa.reserve_running(_collect_id, subagent_type=sa_type,
+                                    description=description)
+            except Exception:
+                pass
 
             def _bg_run():
+                _why = ""
                 try:
                     try:
                         perms.subagent_runner(
@@ -11185,9 +11237,22 @@ class _DocToolExecutor:
                             isolation=isolation,
                             **_resume_kw,
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _why = ("the background sub-agent thread ended with: "
+                            f"{str(exc) or type(exc).__name__}")
                 finally:
+                    # The run is over either way. If it left no report, the
+                    # reserved id has to say so — swallowing the exception
+                    # left it claiming to be running for the rest of the
+                    # session, and nothing else would ever clear it.
+                    try:
+                        from . import subagents as _sa_bg_reg
+                        if not _sa_bg_reg.load_subagent_session(_collect_id):
+                            _sa_bg_reg.mark_running_died(_collect_id, _why or (
+                                "the background sub-agent ended without "
+                                "writing a report"))
+                    except Exception:
+                        pass
                     try:
                         _bg_release()
                     except Exception:
@@ -11195,22 +11260,13 @@ class _DocToolExecutor:
 
             _th.Thread(target=_bg_run, daemon=True,
                        name=f"subagent-bg-{sa_type}").start()
-            # A resumed run keeps the id it is resuming, so the reserved one
-            # would never resolve — the parent would poll it forever for work
-            # that had finished under a different name.
-            try:
-                from . import subagents as _sa_id_mod
-                _collect_id = _sa_id_mod.collectable_sa_id(
-                    reserved=_bg_sa_id, resume_from=str(resume_id or ""))
-            except Exception:
-                _collect_id = _bg_sa_id
             return json.dumps({
                 "status": "started_in_background",
                 "sa_id": _collect_id,
                 "subagent_type": sa_type,
                 "description": description,
                 "note": ("Running in the background. Collect the result later "
-                         f"with subagent_result(sa_id='{_bg_sa_id}'); it also "
+                         f"with subagent_result(sa_id='{_collect_id}'); it also "
                          "appears in the 🤖 Subagents panel. Continue other "
                          "work meanwhile."),
             })
@@ -12284,6 +12340,53 @@ def _subagent_collect_timeout() -> float:
     return wall + 120.0
 
 
+def _collect_subagent_futures(futures: dict, timeout: float) -> dict:
+    """Resolve fanned-out sub-agent futures as they finish.
+
+    ``{tool_call_id: result string}``; an id that did not finish inside the
+    deadline is simply absent, and the caller reports it as uncollected.
+
+    Collection used to walk the futures in the order the model EMITTED
+    them, each with its own copy of the timeout. The pool runs them
+    concurrently, so that ordering bought nothing and cost two things: a
+    delegate that finished in five seconds went unnoticed until every
+    earlier one had been waited out, and N stalled delegates could hold
+    the turn for N times the budget. One deadline for the whole fan-out,
+    results taken in completion order.
+
+    The caller still emits results in tool-call order — the API requires
+    one tool_result per tool_call, in order — but it no longer WAITS in
+    that order.
+    """
+    import concurrent.futures as _cf
+
+    out: dict[str, str] = {}
+    if not futures:
+        return out
+    by_future = {fut: tc_id for tc_id, fut in futures.items()}
+    try:
+        deadline = max(0.0, float(timeout or 0.0))
+    except (TypeError, ValueError):
+        deadline = _subagent_collect_timeout()
+    try:
+        for fut in _cf.as_completed(list(by_future), timeout=deadline):
+            tc_id = by_future.get(fut)
+            if tc_id is None:
+                continue
+            try:
+                out[tc_id] = fut.result()
+            except Exception as exc:
+                out[tc_id] = json.dumps({
+                    "error": "subagent failed: "
+                             f"{str(exc) or type(exc).__name__}"
+                })
+    except Exception:
+        # Deadline reached: keep everything that did land. The stragglers
+        # keep running as daemon threads; the parent moves on without them.
+        pass
+    return out
+
+
 def _fan_out_subagents(tc_list, permissions):
     """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
     pool so a multi-subagent turn runs concurrently (parallel
@@ -12986,10 +13089,9 @@ class OpenAIClient(_BaseClient):
         self._red_test_files: set[str] = set()
         # Observed-files ledger (per turn + cumulative session): every file
         # the model actually read/grepped, so the code-claim citation check
-        # can tell grounded statements from invented ones.
-        self._observed_files: set[str] = set()
-        if not hasattr(self, "_observed_files_session"):
-            self._observed_files_session: set[str] = set()
+        # can tell grounded statements from invented ones. The session half
+        # is bound to its owner — see _begin_observed_ledgers.
+        _begin_observed_ledgers(self)
         # Undo journal: new turn — reset the turn-scope seq window so
         # undo_changes(scope="turn") only covers this turn's changes.
         _doc_executor._turn_change_seqs = []
@@ -13393,12 +13495,15 @@ class OpenAIClient(_BaseClient):
 
                 # Parallel subagent fan-out: when the
                 # model emits ≥2 `subagent` calls in ONE turn, run them
-                # concurrently instead of sequentially.  The sequential
-                # loop below resolves each future in tc_list order, so
-                # event-yield and api_message ordering are unchanged.
+                # concurrently instead of sequentially.  The loop below
+                # still emits results in tc_list order (event-yield and
+                # api_message ordering are unchanged); it collects them in
+                # COMPLETION order, under one deadline for the whole
+                # fan-out — see _collect_subagent_futures.
                 _sub_futures, _sub_executor = _fan_out_subagents(
                     tc_list, self._permissions
                 )
+                _sub_results: Optional[dict] = None
 
                 # Track results from this round for consecutive-failure
                 # detection. Each entry is the tool_result string.
@@ -13602,16 +13707,19 @@ class OpenAIClient(_BaseClient):
                         # Pre-dispatched parallel subagent — collect result.
                         # Bounded wait: a stalled child (its per-event wall guard
                         # can't fire without events) must not freeze the parent
-                        # turn. On timeout the daemon thread keeps running but
-                        # the parent moves on with an error result.
-                        try:
-                            result = _sub_futures[tc["id"]].result(
-                                timeout=_subagent_collect_timeout())
-                        except Exception as exc:
-                            _msg = str(exc) or type(exc).__name__
+                        # turn. The whole fan-out is drained once, in completion
+                        # order, so a child that finished early is not held up
+                        # behind a stalled sibling. On the deadline the daemon
+                        # threads keep running but the parent moves on.
+                        if _sub_results is None:
+                            _sub_results = _collect_subagent_futures(
+                                _sub_futures, _subagent_collect_timeout())
+                        result = _sub_results.get(tc["id"])
+                        if result is None:
                             result = json.dumps({
-                                "error": f"subagent did not finish in time "
-                                         f"or failed: {_msg}"
+                                "error": "subagent did not finish in time: the "
+                                         "fan-out deadline passed before this "
+                                         "one returned"
                             })
                     elif is_mcp:
                         # MCP tools skip _DocToolExecutor.execute(), so run the

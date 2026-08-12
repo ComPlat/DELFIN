@@ -249,11 +249,10 @@ def test_py3dmol_viewers_release_the_contexts_they_leave_behind():
     assert 'window.__delfinDisposeViewer(v)' in sweep
     assert 'v.__delfinDisposed' in sweep
 
-    submit = (
-        Path(__file__).resolve().parents[1]
-        / "delfin" / "dashboard" / "tab_submit.py"
-    ).read_text(encoding="utf-8")
-    # The Submit tab keeps a scope-keyed handle, so it can release directly.
+    # The viewer the Submit tab shows is built by the structure editor now,
+    # which is a part of its own; the tab and the part are one component.
+    from editor_source import SUBMIT_SOURCE as submit
+    # It keeps a scope-keyed handle, so it can release directly.
     assert '__delfinDisposeViewer(prev)' in submit
 
 
