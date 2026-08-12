@@ -476,7 +476,11 @@ def test_several_structures_become_several_named_blocks(builder):
 
     text = refs['orca_coords'].value
     assert text.count('\n*') == 2
-    assert 'conf-1.xyz;' in text and 'conf-2.xyz;' in text
+    # Name, nothing after the semicolon: the header every other block here
+    # carries. It read "conf-1.xyz;conf-1" at first, with the label twice.
+    assert text.startswith('conf-1.xyz;\n')
+    assert 'conf-2.xyz;\n' in text
+    assert 'conf-1.xyz;conf-1' not in text
     assert [name for name, _xyz in taken['xyz_blocks']] == ['conf-1.xyz',
                                                             'conf-2.xyz']
     # The editor's own isomer stepper stays out of the way: this tab has one.
@@ -503,3 +507,63 @@ def test_a_smiles_is_read_from_the_box_it_was_typed_into(builder):
     refs, _sent = builder
     refs['orca_coords'].value = 'CCO'
     assert refs['read_input']() == 'CCO'
+
+
+def test_the_drawing_editor_is_the_editors_too(builder):
+    """DRAW is the same 2D editor the Submit tab opens, and what comes out of
+    it lands in the box this tab shows.
+
+    Which is not the box the editor writes structures into: it has a hidden one
+    of its own here. A drawing comes back as a SMILES, and the buttons that turn
+    one into coordinates read from the visible box, so that is where it goes.
+
+    Driven through the real tab: a four-carbon chain drawn in Ketcher arrives as
+    CCCC, and CONVERT SMILES turns it into conf-1.xyz and conf-2.xyz.
+    """
+    refs, sent = builder
+    for name in ('submit_draw_open_btn', 'submit_draw_get_btn',
+                 'submit_draw_update_btn', 'submit_draw_frame',
+                 'submit_draw_sync'):
+        assert name in refs, name
+    assert 'orca_editor.submit_draw_open_btn' in BUILDER
+
+    sent.clear()
+    refs['submit_draw_get_btn'].click()
+    assert len(sent) == 1 and 'getMolfile' in sent[0]
+
+    molfile = ('\n  Ketcher\n\n  4  3  0  0  0  0            999 V2000\n'
+               + '    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n' * 4
+               + '  1  2  1  0  0  0  0\n  2  3  1  0  0  0  0\n'
+                 '  3  4  1  0  0  0  0\nM  END\n')
+    refs['submit_draw_sync'].value = '1\n' + molfile
+
+    assert refs['orca_coords'].value == 'CCCC'
+
+
+def test_a_drawing_that_could_not_be_read_says_so(builder):
+    refs, _sent = builder
+
+    refs['submit_draw_sync'].value = '1\n!no-editor'
+
+    assert 'not open yet' in refs['mol_status'].value
+    assert refs['orca_coords'].value != '!no-editor'
+
+
+def test_the_conversion_says_when_it_is_over(builder):
+    """It ends by handing the structures to the tab, and that way out never
+    cleared the line it had written.
+
+    The other way out shows a structure, and showing one clears the status on
+    the way through -- so in the Submit tab the spinner went by itself and
+    here "Converting SMILES (no UFF)..." sat there for good, over coordinates
+    that had plainly arrived.
+    """
+    refs, _sent = builder
+    refs['mol_status'].value = 'Converting SMILES (no UFF)...'
+    refs['editor_state']['smiles_busy'] = True
+
+    refs['editor_offer_isomers'](
+        [('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'conf-1')])
+
+    assert refs['mol_status'].value == ''
+    assert refs['mol_status_fs'].value == ''

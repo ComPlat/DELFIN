@@ -322,6 +322,10 @@ def create_tab(ctx):
             return
         func(*args, **kwargs)
 
+    def _write_orca_coords(text):
+        """What was drawn, into the box this tab shows."""
+        orca_coords.value = text
+
     orca_editor = _structure_editor.build(
         ctx,
         state=state,
@@ -336,6 +340,7 @@ def create_tab(ctx):
         offer_structures=lambda isomers: _take_structures(isomers),
         # A SMILES is typed into the tab's own box, not the editor's.
         read_input=lambda: orca_coords.value,
+        write_input=_write_orca_coords,
     )
     orca_editor_scope = orca_editor.submit_scope_id
     # This tab has always shown its numbers straight away; the editor's own
@@ -999,9 +1004,10 @@ def create_tab(ctx):
                 name = '%s-%d.xyz' % (name[:-4], used[name])
             body = strip_xyz_header(xyz_string) or xyz_string
             rows = [row for row in body.split('\n') if row.strip()]
-            blocks.append('%s;%s\n%d\n%s\n%s\n*' % (
-                name, label or '', num_atoms or len(rows), label or '',
-                '\n'.join(rows)))
+            # Name, nothing after the semicolon, then the structure itself --
+            # the same header every other block in this box carries.
+            blocks.append('%s;\n%d\n%s\n%s\n*' % (
+                name, num_atoms or len(rows), label or '', '\n'.join(rows)))
         orca_coords.value = '\n\n'.join(blocks)
         return True
 
@@ -1980,12 +1986,18 @@ def create_tab(ctx):
     orca_left = widgets.VBox([
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
-        # The conversions are the editor's, the same ones the Submit tab has.
-        _row([orca_editor.convert_smiles_button,
+        # The conversions and the 2D editor are the editor's, the same ones
+        # the Submit tab has.
+        _row([orca_editor.submit_draw_open_btn,
+              orca_editor.convert_smiles_button,
               orca_editor.convert_smiles_quick_button,
               orca_editor.convert_smiles_uff_button,
               orca_editor.manta_button]),
         orca_editor.manta_settings_row,
+        _row([orca_editor.submit_draw_get_btn,
+              orca_editor.submit_draw_update_btn]),
+        orca_editor.submit_draw_frame,
+        orca_editor.submit_draw_sync,
         _row([orca_copy_coords_btn, orca_check_numbering_btn, orca_apply_numbering_btn]),
         widgets.HTML('<b>Config Templates:</b>'),
         _row([orca_template_dd, orca_template_load_btn, orca_template_save_btn, orca_template_delete_btn]),
@@ -2273,5 +2285,7 @@ def create_tab(ctx):
         'editor_coords': orca_editor_coords,
         'editor_scope': orca_editor_scope,
         'offer_structures': _take_structures,
+        # The editor's own funnel, which is what a conversion goes through.
+        'editor_offer_isomers': orca_editor._offer_isomers,
         'read_input': lambda: orca_coords.value,
     }
