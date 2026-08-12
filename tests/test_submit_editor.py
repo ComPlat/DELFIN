@@ -197,7 +197,7 @@ def test_optimisation_covers_every_frame_and_is_undoable():
 
     source = _EDITOR_PY
     body = source.split('def on_submit_optimize(change=None, every_frame=False)')[1].split('\n    def ')[0]
-    assert "frames = list(state.get('isomers') or []) if every_frame else []" in body, (
+    assert "frames = list(list_structures() or []) if every_frame else []" in body, (
         "Optimize takes the frame on screen; all takes the set"
     )
     assert "state['pre_optimize_frames']" in body

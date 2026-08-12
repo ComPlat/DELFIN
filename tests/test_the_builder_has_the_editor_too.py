@@ -255,25 +255,51 @@ def test_the_editor_seeds_the_keys_it_reads_without_asking():
 # ---------------------------------------------------------------------------
 
 
+class _Drawn(list):
+    """What is in the preview, as text.
+
+    Read off the Output widget rather than caught at display(): the preview is
+    filled by assigning its outputs, because a conversion answers from a thread
+    where ``with output:`` reaches nothing.
+    """
+
+    def __init__(self, widget):
+        super().__init__()
+        self._widget = widget
+
+    def _current(self):
+        out = []
+        for item in self._widget.outputs or ():
+            data = item.get('data') or {}
+            out.append(str(data.get('text/html') or item.get('text') or ''))
+        return out
+
+    def __len__(self):
+        return len(self._current())
+
+    def __getitem__(self, index):
+        return self._current()[index]
+
+    def __bool__(self):
+        return bool(self._current())
+
+    def clear(self):
+        return None
+
+
 def _shown(monkeypatch):
-    """Whatever the tab hands to display(), as text."""
-    drawn = []
-    monkeypatch.setattr(
-        tab_orca_builder, 'display',
-        lambda *a, **k: drawn.append(getattr(a[0], 'data', str(a[0])) if a else ''))
-    return drawn
+    return None
 
 
 SWAPPED = "O 0.000 0.000 0.000\nH -0.757 0.586 0.000\nH 0.757 0.586 0.000"
 
 
 @pytest.fixture
-def compared(builder, monkeypatch, capsys):
+def compared(builder, capsys):
     refs, sent = builder
-    drawn = _shown(monkeypatch)
+    drawn = _Drawn(refs['orca_mol_output'])
     refs['orca_coords'].value = (f"a.xyz;\n3\n\n{WATER}\n*\n\n"
                                  f"b.xyz;\n3\n\n{SWAPPED}\n*")
-    drawn.clear()
     refs['orca_check_numbering_btn'].click()
     capsys.readouterr()
     return refs, sent, drawn
@@ -413,32 +439,35 @@ def test_it_says_so_when_the_input_reads_another_structure(builder):
     assert '# input reads benzene.xyz' in text
 
 
-def test_the_fullscreen_button_is_there_for_one_structure_too(builder):
-    """It sits in the row with the block stepper, and that row was hidden
-    whenever the coordinates had not been written as named blocks.
+def test_the_fullscreen_button_stands_where_the_submit_tab_has_it(builder):
+    """First in the toolbar, before Select, and not in a row of its own.
 
-    So pasting a plain XYZ -- which is what the editor itself writes back, and
-    what anybody pasting coordinates starts with -- left no way at all to
-    enlarge the viewer. With two blocks it worked, which is exactly how the
-    report came in.
+    It used to sit in the row with the block stepper, and that row is hidden
+    when there is nothing to step to -- so pasting a plain XYZ, which is what
+    the editor itself writes back, left no way at all to enlarge the viewer
+    while the same molecule in named blocks could be enlarged fine.
 
-    Driven in a real dashboard on a bare twelve-atom benzene: the button is
-    visible, and a click takes the viewer from 721x560 to 1484x766.
+    It is the editor's own button now, made over to this tab's fullscreen: the
+    Submit tab's overlay is built from members carrying submit-fs-* classes,
+    which the Builder's are not.
     """
     refs, _sent = builder
-    row = refs['orca_mol_nav_row']
+    button = refs['submit_fullscreen_btn']
+    toolbar = list(refs['submit_manip_toolbar'].children)
 
-    refs['orca_coords'].value = ''
-    assert row.layout.display == 'none', 'nothing to enlarge, nothing to show'
+    assert toolbar.index(button) == 0
+    assert toolbar.index(button) < toolbar.index(refs['submit_select_btn'])
+    assert 'delfin-structure-fullscreen-btn' in button._dom_classes
+    assert 'submit-fullscreen-btn' not in button._dom_classes, (
+        'both machineries would answer the same click')
 
     refs['orca_coords'].value = f'3\nwater\n{WATER}\n'
-    assert row.layout.display == ''
-    assert refs['orca_mol_next_btn'].layout.display == 'none', (
-        'one structure has nothing to step to')
-    assert refs['orca_mol_fullscreen_btn'].layout.display != 'none'
+    assert refs['submit_manip_toolbar'].layout.display == 'flex'
+    assert refs['orca_mol_nav_row'].layout.display == 'none', (
+        'one structure has nothing to step to, and nothing else is in that row')
 
     refs['orca_coords'].value = TWO_BLOCKS
-    assert row.layout.display == ''
+    assert refs['orca_mol_nav_row'].layout.display == ''
     assert refs['orca_mol_next_btn'].layout.display == ''
 
 
@@ -476,7 +505,11 @@ def test_several_structures_become_several_named_blocks(builder):
 
     text = refs['orca_coords'].value
     assert text.count('\n*') == 2
-    assert 'conf-1.xyz;' in text and 'conf-2.xyz;' in text
+    # Name, nothing after the semicolon: the header every other block here
+    # carries. It read "conf-1.xyz;conf-1" at first, with the label twice.
+    assert text.startswith('conf-1.xyz;\n')
+    assert 'conf-2.xyz;\n' in text
+    assert 'conf-1.xyz;conf-1' not in text
     assert [name for name, _xyz in taken['xyz_blocks']] == ['conf-1.xyz',
                                                             'conf-2.xyz']
     # The editor's own isomer stepper stays out of the way: this tab has one.
@@ -503,3 +536,321 @@ def test_a_smiles_is_read_from_the_box_it_was_typed_into(builder):
     refs, _sent = builder
     refs['orca_coords'].value = 'CCO'
     assert refs['read_input']() == 'CCO'
+
+
+def test_the_drawing_editor_is_the_editors_too(builder):
+    """DRAW is the same 2D editor the Submit tab opens, and what comes out of
+    it lands in the box this tab shows.
+
+    Which is not the box the editor writes structures into: it has a hidden one
+    of its own here. A drawing comes back as a SMILES, and the buttons that turn
+    one into coordinates read from the visible box, so that is where it goes.
+
+    Driven through the real tab: a four-carbon chain drawn in Ketcher arrives as
+    CCCC, and CONVERT SMILES turns it into conf-1.xyz and conf-2.xyz.
+    """
+    refs, sent = builder
+    for name in ('submit_draw_open_btn', 'submit_draw_get_btn',
+                 'submit_draw_update_btn', 'submit_draw_frame',
+                 'submit_draw_sync'):
+        assert name in refs, name
+    assert 'orca_editor.submit_draw_open_btn' in BUILDER
+
+    sent.clear()
+    refs['submit_draw_get_btn'].click()
+    assert len(sent) == 1 and 'getMolfile' in sent[0]
+
+    molfile = ('\n  Ketcher\n\n  4  3  0  0  0  0            999 V2000\n'
+               + '    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n' * 4
+               + '  1  2  1  0  0  0  0\n  2  3  1  0  0  0  0\n'
+                 '  3  4  1  0  0  0  0\nM  END\n')
+    refs['submit_draw_sync'].value = '1\n' + molfile
+
+    assert refs['orca_coords'].value == 'CCCC'
+
+
+def test_a_drawing_that_could_not_be_read_says_so(builder):
+    refs, _sent = builder
+
+    refs['submit_draw_sync'].value = '1\n!no-editor'
+
+    assert 'not open yet' in refs['mol_status'].value
+    assert refs['orca_coords'].value != '!no-editor'
+
+
+def test_the_conversion_says_when_it_is_over(builder):
+    """It ends by handing the structures to the tab, and that way out never
+    cleared the line it had written.
+
+    The other way out shows a structure, and showing one clears the status on
+    the way through -- so in the Submit tab the spinner went by itself and
+    here "Converting SMILES (no UFF)..." sat there for good, over coordinates
+    that had plainly arrived.
+    """
+    refs, _sent = builder
+    refs['mol_status'].value = 'Converting SMILES (no UFF)...'
+    refs['editor_state']['smiles_busy'] = True
+
+    refs['editor_offer_isomers'](
+        [('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'conf-1')])
+
+    assert refs['mol_status'].value == ''
+    assert refs['mol_status_fs'].value == ''
+
+
+def test_the_quick_conversion_writes_plain_coordinates(builder):
+    """It answers with a structure, not with a set to choose from, and this tab
+    has always taken that as coordinates. Blocks are for the conversions that
+    offer conformers."""
+    refs, _sent = builder
+
+    refs['offer_structures'](
+        [('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'quick')], True)
+
+    text = refs['orca_coords'].value
+    assert '\n*' not in text
+    assert 'quick.xyz' not in text
+    assert text.startswith('3\nConverted from SMILES\n')
+
+
+def test_the_quick_embedding_is_not_offered_as_a_conformer(builder):
+    """It rides along at the end of a conformer set as a fallback to step to.
+    A block called quick.xyz beside conf-1 and conf-2 says it is one of them.
+    """
+    refs, _sent = builder
+
+    refs['offer_structures']([
+        ('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'conf-1'),
+        ('O 0 0 0\nH 0.97 0 0\nH -0.25 0.94 0', 3, 'conf-2'),
+        ('O 0 0 0\nH 0.98 0 0\nH -0.26 0.95 0', 3, 'quick'),
+    ])
+
+    names = [name for name, _xyz in refs['editor_state']['xyz_blocks']]
+    assert names == ['conf-1.xyz', 'conf-2.xyz']
+
+
+def test_to_smiles_reads_its_own_drawing(builder):
+    """"Reading the drawing..." never ended in the Builder.
+
+    The button asked the page for "the" drawing frame and "the" channel to
+    answer on. With one editor per dashboard that was one of each; with two it
+    found the Submit tab's, was told no editor was open in it, and answered
+    into that tab's channel -- so the Builder waited for a reply that had gone
+    somewhere else.
+
+    Both tabs keep the frame outside their scope container, so the scope
+    travels on the element itself. Driven in a browser with two editors on one
+    page, each with a drawing of its own: the Submit tab's channel got
+    DRAWING-IN-SUBMIT and the Builder's got DRAWING-IN-BUILDER.
+    """
+    refs, sent = builder
+    scope = refs['submit_scope_id']
+
+    assert scope in refs['submit_draw_frame']._dom_classes
+    assert scope in refs['submit_draw_sync']._dom_classes
+
+    sent.clear()
+    refs['submit_draw_get_btn'].click()
+
+    script = sent[0]
+    assert "'.submit-ketcher-frame.'+scope" in script
+    assert "'.submit-ketcher-sync.'+scope" in script
+    assert scope in script
+    assert "document.querySelector('.submit-ketcher-frame')" not in script
+
+
+def _preview(refs):
+    out = []
+    for item in refs['orca_mol_output'].outputs or ():
+        data = item.get('data') or {}
+        out.append('viewer' if data.get('text/html') else (item.get('text') or '').strip())
+    return out
+
+
+def test_a_converted_structure_reaches_the_preview(builder):
+    """It did not, and the reason is where the preview is filled from.
+
+    ``with output: display(...)`` only reaches the widget while the kernel is
+    running the cell it belongs to. A conversion answers from a thread, through
+    the interface loop, and there is no cell there -- so the coordinates landed
+    in the box, the preview was asked to draw them, and nothing happened. The
+    viewer kept what it had, which after a SMILES was a one-atom model of its
+    first letter. Assigning the outputs works wherever the call comes from,
+    which is how the Submit tab has always done it.
+
+    Driven in a real dashboard: c1ccccc1, QUICK CONVERT, and within three
+    seconds the viewer holds twelve atoms with twelve numbers on them.
+    """
+    refs, _sent = builder
+
+    refs['orca_coords'].value = 'c1ccccc1'
+    assert _preview(refs) and 'SMILES detected' in _preview(refs)[0], (
+        'a SMILES is not coordinates, and drawing it as some was the other '
+        'half of "it does not show it"')
+
+    refs['offer_structures'](
+        [('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'quick')], True)
+
+    assert _preview(refs) == ['viewer']
+    assert refs['orca_coords'].value.startswith('3\nConverted from SMILES\n')
+
+
+def test_the_preview_is_filled_by_assignment_not_by_capture():
+    assert 'orca_mol_output.outputs = tuple(items)' in BUILDER
+    assert 'with orca_mol_output:' not in BUILDER
+
+
+def test_every_name_in_the_editor_resolves():
+    """A name that points nowhere is invisible until the line runs.
+
+    Moving the editor into a part of its own renamed four things the tab used
+    to supply, and one call to one of them was left behind. Nothing failed at
+    import, nothing failed in a test, and the line only runs when an
+    optimisation over several frames finishes -- so "all" raised a NameError
+    in both tabs, minutes into a run, and the results were lost.
+
+    This walks build() and asks what it reads that nobody gives it.
+    """
+    import ast
+    import builtins
+
+    source = open(structure_editor.__file__, encoding='utf-8').read()
+    tree = ast.parse(source)
+    build = next(n for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name == 'build')
+
+    bound = {a.arg for a in build.args.args + build.args.kwonlyargs}
+    loaded = set()
+    for node in ast.walk(build):
+        if isinstance(node, ast.Name):
+            (bound if isinstance(node.ctx, (ast.Store, ast.Del))
+             else loaded).add(node.id)
+        elif isinstance(node, ast.FunctionDef):
+            bound.add(node.name)
+            for arg in node.args.args + node.args.kwonlyargs:
+                bound.add(arg.arg)
+            if node.args.vararg:
+                bound.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                bound.add(node.args.kwarg.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split('.')[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.Lambda):
+            for arg in node.args.args:
+                bound.add(arg.arg)
+
+    module_level = {n.name for n in tree.body
+                    if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                module_level.add((alias.asname or alias.name).split('.')[0])
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in ast.walk(target):
+                    if isinstance(name, ast.Name):
+                        module_level.add(name.id)
+
+    unresolved = sorted(name for name in loaded - bound
+                        if name not in dir(builtins) and name not in module_level)
+    assert unresolved == [], unresolved
+
+
+def test_all_reaches_every_frame_the_tab_holds(builder):
+    """The Submit tab holds a set of isomers; this one holds named blocks, and
+    each of those is a frame too -- so "all" over two blocks means two."""
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_BLOCKS
+
+    frames = refs['list_structures']()
+
+    assert [label for _xyz, _n, label in frames] == ['benzene', 'water']
+    assert [n for _xyz, n, _label in frames] == [12, 3]
+
+
+def test_a_new_structure_starts_the_editor_over(builder):
+    """A live force field belongs to the molecule its parameters were worked
+    out for, and a mode belongs to the structure it was picked on."""
+    refs, _sent = builder
+    refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
+    for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_manip_btn'):
+        refs[name].value = True
+
+    refs['orca_coords'].value = '3\nanother\n' + WATER + '\n'
+
+    for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_manip_btn'):
+        assert refs[name].value is False, name
+
+
+def test_an_edit_keeps_the_header_of_a_plain_xyz(builder):
+    """A box that was never written as named blocks holds one plain XYZ,
+    header and all. Handing back the bare atom lines took that header away on
+    every edit, and after an optimisation the box read as coordinates with no
+    count and no comment."""
+    refs, _sent = builder
+    refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
+
+    refs['editor_state']['manip_inflight'] = True
+    refs['editor_coords'].value = (
+        '3\nEdited in DELFIN viewer\nO 0.2 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n')
+
+    lines = refs['orca_coords'].value.split('\n')
+    assert lines[0].strip() == '3', refs['orca_coords'].value[:60]
+    assert lines[2].startswith('O 0.2')
+
+
+def test_the_editor_starts_the_same_way_in_both_tabs(builder):
+    """Numbers off until they are asked for, and the size field with them.
+
+    The Builder used to bring them up by itself, from the days when its
+    numbering was its own; the editor's default is off, and one default is
+    better than two.
+    """
+    refs, _sent = builder
+    refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
+
+    assert refs['submit_labels_btn'].value is False
+    assert refs['submit_label_size'].layout.display == 'none'
+
+
+def test_the_force_field_notes_stay_in_the_small_view(builder):
+    """They are several lines of prose about what had to be approximated --
+    a forced hybridisation, a metal the parameters do not really cover. In
+    fullscreen they take that space off the structure they describe, and the
+    Submit tab has never put them there either."""
+    refs, _sent = builder
+    classes = refs['submit_ff_notes']._dom_classes
+
+    assert 'delfin-structure-fs-member' not in classes
+    assert not any(c.startswith('submit-fs-member') for c in classes)
+
+
+def test_drawing_on_and_asking_again_gives_the_new_structure(builder):
+    """Ketcher stays open while a structure grows. Each TO SMILES reads what is
+    there now, and the answer carries a serial in front so that asking twice
+    about the same drawing reads as two answers rather than as one that never
+    came.
+
+    Measured in both tabs: a four-carbon chain gives CCCC, drawing two more on
+    and asking again gives CCCCCC, and asking a third time with nothing changed
+    gives CCCCCC.
+    """
+    refs, _sent = builder
+
+    def molfile(n):
+        head = '\n  Ketcher\n\n%3d%3d  0  0  0  0            999 V2000\n' % (n, n - 1)
+        atoms = '    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n' * n
+        bonds = ''.join('%3d%3d  1  0  0  0  0\n' % (i, i + 1) for i in range(1, n))
+        return head + atoms + bonds + 'M  END\n'
+
+    refs['submit_draw_sync'].value = '1\n' + molfile(4)
+    assert refs['orca_coords'].value == 'CCCC'
+
+    refs['submit_draw_sync'].value = '2\n' + molfile(6)
+    assert refs['orca_coords'].value == 'CCCCCC'
+
+    refs['submit_draw_sync'].value = '3\n' + molfile(6)
+    assert refs['orca_coords'].value == 'CCCCCC'

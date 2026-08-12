@@ -317,32 +317,6 @@ def create_tab(ctx):
 
     # Draw the structure instead of typing it.  Ketcher is a browser
     # application of thirty-odd megabytes, so it is fetched when it is first
-    # wanted rather than carried in the repository -- see dashboard/ketcher.py.
-    submit_draw_open_btn = widgets.ToggleButton(
-        value=False, description='DRAW', icon='pencil', button_style='info',
-        tooltip=('Draw the structure in Ketcher and hand it back as a SMILES. '
-                 'The editor is fetched the first time it is opened.'),
-        layout=widgets.Layout(width='110px'),
-    )
-    submit_draw_get_btn = widgets.Button(
-        description='TO SMILES', icon='arrow-down', button_style='success',
-        tooltip='Put what is drawn into the input box above, as a SMILES.',
-        layout=widgets.Layout(width='130px', display='none'),
-    )
-    submit_draw_update_btn = widgets.Button(
-        description='Update', icon='refresh',
-        tooltip='Fetch the newest published Ketcher.',
-        layout=widgets.Layout(width='100px', display='none'),
-    )
-    submit_draw_frame = widgets.HTML(value='', layout=widgets.Layout(
-        width='100%', display='none'))
-    submit_draw_frame.add_class('submit-ketcher-frame')
-    # What the editor hands back, on the same kind of channel the viewer uses:
-    # a widget value is ordered and survives a background thread, where a
-    # script sent through run_js can be replaced before the page has run it.
-    submit_draw_sync = widgets.Textarea(
-        value='', layout=widgets.Layout(display='none'))
-    submit_draw_sync.add_class('submit-ketcher-sync')
 
     build_complex_button = widgets.Button(
         description='BUILD COMPLEX', button_style='warning',
@@ -587,6 +561,11 @@ def create_tab(ctx):
     _clean_xyz_block = _editor._clean_xyz_block
     _apply_smiles_conversion_result = _editor._apply_smiles_conversion_result
     _build_mol_output_bundle = _editor._build_mol_output_bundle
+    submit_draw_open_btn = _editor.submit_draw_open_btn
+    submit_draw_get_btn = _editor.submit_draw_get_btn
+    submit_draw_update_btn = _editor.submit_draw_update_btn
+    submit_draw_frame = _editor.submit_draw_frame
+    submit_draw_sync = _editor.submit_draw_sync
 
 
     def _apply_batch_preview_result(task_id, entry, preview_payload):
@@ -633,6 +612,9 @@ def create_tab(ctx):
         # everything across that itself, so none of this may be thrown away
         # underneath it.
         if not state.get('structure_edit_inflight'):
+            # A structure the editor has not seen: it starts on this one the
+            # way it starts on any other.
+            _editor.reset_controls()
             state['constraints'] = []
             state['bond_edits'] = {}
             state['hand_bonds'] = {}
@@ -2306,254 +2288,9 @@ def create_tab(ctx):
                 print(f'Error creating job: {e}')
 
 
-    # -- drawing the structure ------------------------------------------
-    def _draw_frame_html(url):
-        """The editor itself, in a frame of its own.
-
-        A frame rather than the page: Ketcher is a React application that owns
-        its own globals, and the dashboard is another one.  Same origin, so the
-        page may reach in and ask it for the drawing -- across origins there
-        would be nothing to ask with, because Ketcher speaks no messages.
-        """
-        return (
-            "<iframe src='" + html.escape(url, quote=True) + "' "
-            "style='width:100%; height:560px; border:1px solid #d0d0d0; "
-            "border-radius:6px; background:#fff;' "
-            "title='Ketcher'></iframe>"
-        )
-
-    def _refresh_ketcher_controls():
-        # Named for what it is.  This was called _refresh_draw_controls, which
-        # is also the name of the one that shows the element dropdown for
-        # drawing atoms in the viewer -- the later definition replaced the
-        # earlier, so switching the viewer's Draw on stopped offering an
-        # element to draw with.
-        drawn = bool(submit_draw_open_btn.value)
-        ready = _ketcher.is_installed()
-        submit_draw_frame.layout.display = '' if (drawn and ready) else 'none'
-        submit_draw_get_btn.layout.display = '' if (drawn and ready) else 'none'
-        submit_draw_update_btn.layout.display = '' if (drawn and ready) else 'none'
-
-    #: Keep the pane where it is while the editor loads.
-    #:
-    #: Opening DRAW does not move anything: the frame appears below the button
-    #: and the button stays put.  Two to three seconds later Ketcher finishes
-    #: loading inside the frame and takes the focus, and the browser scrolls
-    #: the frame into view.  Measured: at +1.2 s the pane was still at 0 with
-    #: the button 538 px down the viewport; at +3 s the pane was at 654 and the
-    #: button at -116, off the top of the screen.
-    #:
-    #: So the first scroll within six seconds of opening is undone, and then
-    #: the hold is gone -- one correction, not a clamp.  A clamp was tried and
-    #: is worse than the jump: it also swallowed the user's own scrolling, and
-    #: whether their wheel released it depended on what the pointer happened to
-    #: be over. At most one deliberate scroll in those six seconds is undone,
-    #: and the next one stands.
-    _KETCHER_SCROLL_HOLD_JS = """
-    (function() {
-        var found = null;
-        var buttons = document.querySelectorAll('button');
-        for (var i = 0; i < buttons.length; i++) {
-            if ((buttons[i].textContent || '').trim() === 'DRAW') {
-                found = buttons[i];
-                break;
-            }
-        }
-        if (!found) return;
-        var pane = found.parentElement;
-        while (pane && pane !== document.body) {
-            var how = window.getComputedStyle(pane);
-            if (/(auto|scroll)/.test(how.overflowY)
-                && pane.scrollHeight > pane.clientHeight + 4) break;
-            pane = pane.parentElement;
-        }
-        if (!pane || pane === document.body) pane = document.scrollingElement;
-        if (!pane) return;
-        if (window.__delfinDrawScrollRelease) window.__delfinDrawScrollRelease();
-        var keep = pane.scrollTop;
-        var timer = window.setTimeout(release, 6000);
-        function release() {
-            window.clearTimeout(timer);
-            pane.removeEventListener('scroll', onScroll);
-            window.__delfinDrawScrollRelease = null;
-        }
-        function onScroll() {
-            release();
-            if (pane.scrollTop !== keep) pane.scrollTop = keep;
-        }
-        pane.addEventListener('scroll', onScroll);
-        window.__delfinDrawScrollRelease = release;
-    })();
-        """
-
-    def on_submit_draw_open(change):
-        if change.get('name') != 'value':
-            return
-        if not submit_draw_open_btn.value:
-            # Folded away, not thrown away.  Emptying the frame ends the
-            # application inside it, and with it whatever had been drawn --
-            # so folding it shut and open again lost the structure, which is
-            # the opposite of what folding something away means.
-            _refresh_ketcher_controls()
-            return
-        url = _ketcher.app_url()
-        if url:
-            version = _ketcher.installed_version()
-            # Built once.  Setting the same frame again reloads it, and a
-            # reloaded editor is an empty one.
-            if url not in (submit_draw_frame.value or ''):
-                submit_draw_frame.value = _draw_frame_html(url)
-            _refresh_ketcher_controls()
-            _run_manip_js(_KETCHER_SCROLL_HOLD_JS)
-            _set_mol_status(
-                f'Ketcher {version}: draw the structure, then press TO SMILES '
-                'to put it in the input box.')
-            return
-        # Not there yet.  Offered rather than fetched: it is thirty-odd
-        # megabytes, and on a machine without a network it is a wait that ends
-        # in nothing.
-        _refresh_ketcher_controls()
-        if _ketcher.app_directory() is None:
-            submit_draw_open_btn.value = False
-            _set_mol_status(
-                'The drawing editor needs a directory the browser can load it '
-                'from, and this dashboard is not serving one.')
-            return
-        state['draw_installing'] = True
-        _set_mol_status('Looking up the newest Ketcher...', spinner=True)
-
-        def _work():
-            newest = _ketcher.latest_release()
-
-            def _ask():
-                state['draw_installing'] = False
-                if not newest['ok']:
-                    submit_draw_open_btn.value = False
-                    _set_mol_status(newest['status'])
-                    return
-                state['draw_offer'] = newest
-                submit_draw_get_btn.layout.display = 'none'
-                submit_draw_update_btn.description = 'Fetch it'
-                submit_draw_update_btn.button_style = 'warning'
-                submit_draw_update_btn.layout.display = ''
-                _set_mol_status(
-                    f'Ketcher {newest["version"]} is not here yet: '
-                    f'{newest["size"] / 1e6:.0f} MB from '
-                    'github.com/epam/ketcher, unpacked to about 32 MB beside '
-                    'the dashboard. Press Fetch it to get it.')
-
-            _schedule_ui_update(_ask)
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    def on_submit_draw_update(_button=None):
-        """Fetch the newest build -- the first time, or over an older one."""
-        if state.get('draw_installing'):
-            return
-        state['draw_installing'] = True
-        submit_draw_update_btn.layout.display = 'none'
-        _set_mol_status('Fetching Ketcher...', spinner=True)
-
-        def _work():
-            def _line(text):
-                _schedule_ui_update(_set_mol_status, f'Ketcher: {text}',
-                                    spinner=True)
-
-            outcome = _ketcher.install(on_line=_line)
-
-            def _done():
-                state['draw_installing'] = False
-                state['draw_offer'] = None
-                submit_draw_update_btn.description = 'Update'
-                submit_draw_update_btn.button_style = ''
-                if not outcome['ok']:
-                    submit_draw_open_btn.value = False
-                    _refresh_ketcher_controls()
-                    _set_mol_status(outcome['status'])
-                    return
-                url = _ketcher.app_url()
-                submit_draw_frame.value = _draw_frame_html(url) if url else ''
-                if not submit_draw_open_btn.value:
-                    submit_draw_open_btn.value = True
-                _refresh_ketcher_controls()
-                _set_mol_status(outcome['status'],
-                                'Draw the structure, then press TO SMILES.')
-
-            _schedule_ui_update(_done)
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    def on_submit_draw_get(_button=None):
-        """Ask the editor for what has been drawn.
-
-        The molfile, not the SMILES the editor could write itself: everything
-        downstream here reads structures with RDKit, and a SMILES RDKit wrote
-        is one RDKit will certainly read back.
-        """
-        _set_mol_status('Reading the drawing...', spinner=True)
-        ctx.run_js(
-            "(function(){\n"
-            "  var box=document.querySelector('.submit-ketcher-sync');\n"
-            "  var input=box&&box.querySelector('textarea, input');\n"
-            "  function hand(text){\n"
-            "    if(!input) return;\n"
-            "    var proto=(input.tagName==='TEXTAREA')\n"
-            "      ? window.HTMLTextAreaElement.prototype\n"
-            "      : window.HTMLInputElement.prototype;\n"
-            "    var setter=Object.getOwnPropertyDescriptor(proto,'value');\n"
-            "    /* A serial in front, so drawing the same thing twice reads\n"
-            "       as two answers rather than as one that never came. */\n"
-            "    var line=(Date.now())+'\\n'+text;\n"
-            "    if(setter&&setter.set) setter.set.call(input,line);\n"
-            "    else input.value=line;\n"
-            "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
-            "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
-            "  }\n"
-            "  var host=document.querySelector('.submit-ketcher-frame');\n"
-            "  var frame=host&&host.querySelector('iframe');\n"
-            "  var api=null;\n"
-            "  try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
-            "  catch(e){ api=null; }\n"
-            "  if(!api){ hand('!no-editor'); return; }\n"
-            "  try{\n"
-            "    Promise.resolve(api.getMolfile()).then(function(mol){\n"
-            "      hand(mol||''); }, function(err){ hand('!'+err); });\n"
-            "  }catch(e){ hand('!'+e); }\n"
-            "})();"
-        )
-
-    def on_submit_draw_sync(change):
-        """What the editor handed back."""
-        if change.get('name') != 'value':
-            return
-        raw = submit_draw_sync.value or ''
-        if '\n' not in raw:
-            return
-        molfile = raw.split('\n', 1)[1]
-        if molfile.startswith('!'):
-            trouble = molfile[1:]
-            _set_mol_status(
-                'The editor is not open yet, so there is nothing to read.'
-                if trouble == 'no-editor' else
-                f'The drawing could not be read: {trouble}')
-            return
-        outcome = _ketcher.smiles_from_molfile(molfile)
-        if not outcome['ok']:
-            _set_mol_status(outcome['status'])
-            return
-        # Into the box the rest of the tab reads, so Convert, Build and every
-        # other button downstream sees it exactly as a typed SMILES.
-        coords_widget.value = outcome['smiles']
-        _set_mol_status(f'Drawn: {outcome["smiles"]}',
-                        'It is in the input box -- Convert turns it into '
-                        'coordinates.')
 
     # -- wiring ---------------------------------------------------------
     coords_widget.observe(update_molecule_view, names='value')
-    submit_draw_open_btn.observe(on_submit_draw_open, names='value')
-    submit_draw_get_btn.on_click(on_submit_draw_get)
-    submit_draw_update_btn.on_click(on_submit_draw_update)
-    submit_draw_sync.observe(on_submit_draw_sync, names='value')
     build_complex_button.on_click(handle_build_complex)
     architector_button.on_click(handle_architector_convert)
     guppy_submit_button.on_click(handle_guppy_submit)

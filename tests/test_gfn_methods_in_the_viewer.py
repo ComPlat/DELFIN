@@ -586,7 +586,11 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     assert "_install_gfn_frame_watcher" in handler
     # both ways of showing a result rebuild the viewer, and both would tear
     # the playback down
-    assert "if not played[0]:" in handler, "the isomer path re-renders too"
+    # The set goes back the way it came -- to the tab that keeps blocks as
+    # blocks, or to the isomer stepper -- and showing one re-renders, which is
+    # why a running playback keeps the results without being shown.
+    assert "if played[0]:" in handler, "the isomer path re-renders too"
+    assert "_offer_isomers(results)" in handler
 
 
 @_needs_xtb
@@ -645,7 +649,7 @@ def test_leaving_fullscreen_puts_every_member_back():
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     editor_js = submit_manip_bootstrap_js()
-    exit_body = editor_js.split("function exitFullscreen")[1][:1600]
+    exit_body = editor_js.split("function exitFullscreen")[1][:2600]
     assert "insertBefore" in exit_body and "appendChild" in exit_body
     assert "isConnected" in exit_body, "an orphaned member is a lost control"
     assert "root.appendChild(el)" in exit_body

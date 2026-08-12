@@ -269,18 +269,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='36px', height='28px'),
     )
     orca_mol_nav_label = widgets.HTML(value='')
-    orca_mol_fullscreen_btn = widgets.Button(
-        description='', icon='expand', tooltip='Toggle fullscreen (Esc to exit)',
-        layout=widgets.Layout(width='40px', height='28px'),
-    )
-    orca_mol_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
-    orca_mol_fullscreen_btn.add_class('orca-structure-fullscreen-btn')
     orca_mol_nav_row = widgets.HBox(
         [
             orca_mol_prev_btn,
             orca_mol_nav_label,
             orca_mol_next_btn,
-            orca_mol_fullscreen_btn,
         ],
         layout=widgets.Layout(display='none', align_items='center', gap='6px'),
     )
@@ -322,6 +315,10 @@ def create_tab(ctx):
             return
         func(*args, **kwargs)
 
+    def _write_orca_coords(text):
+        """What was drawn, into the box this tab shows."""
+        orca_coords.value = text
+
     orca_editor = _structure_editor.build(
         ctx,
         state=state,
@@ -333,20 +330,31 @@ def create_tab(ctx):
         # This tab takes its charge from its own box, not from a SMILES.
         get_smiles_charge=lambda *a, **k: None,
         # Several structures belong in several named blocks here.
-        offer_structures=lambda isomers: _take_structures(isomers),
+        offer_structures=lambda *a, **k: _take_structures(*a, **k),
         # A SMILES is typed into the tab's own box, not the editor's.
         read_input=lambda: orca_coords.value,
+        # Every named block is a frame, so "all" reaches all of them.
+        list_structures=lambda: [
+            (xyz, len([r for r in strip_xyz_header(xyz).split('\n') if r.strip()]),
+             name[:-4] if name.lower().endswith('.xyz') else name)
+            for name, xyz in (state.get('xyz_blocks') or [])],
+        write_input=_write_orca_coords,
     )
     orca_editor_scope = orca_editor.submit_scope_id
-    # This tab has always shown its numbers straight away; the editor's own
-    # default is off, because the Submit tab starts from a blank box.
-    orca_editor.submit_labels_btn.value = True
-    # This tab has a fullscreen button of its own, beside the block stepper.
-    orca_editor.submit_fullscreen_btn.layout.display = 'none'
+    # The editor's own fullscreen button, at the head of its toolbar where the
+    # Submit tab has it, rather than a second one in a row of its own. It is
+    # made over to this tab's fullscreen: the Submit tab's overlay is built
+    # from members carrying submit-fs-* classes, which the Builder's are not.
+    orca_mol_fullscreen_btn = orca_editor.submit_fullscreen_btn
+    orca_mol_fullscreen_btn.remove_class('submit-fullscreen-btn')
+    orca_mol_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
+    orca_mol_fullscreen_btn.add_class('orca-structure-fullscreen-btn')
     orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-member')
     orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
     orca_editor.mol_status.add_class('delfin-structure-fs-member')
-    orca_editor.submit_ff_notes.add_class('delfin-structure-fs-member')
+    # The force-field notes stay in the small view, as they do in the Submit
+    # tab: they are several lines of prose about what had to be approximated,
+    # and in fullscreen they take that space off the structure they describe.
 
     # -- helpers --------------------------------------------------------
     def _orca_parse_xyz_block_records(text):
@@ -973,7 +981,7 @@ def create_tab(ctx):
             orca_editor._ensure_manip_bootstrap()
         orca_editor._set_manip_toolbar_enabled(bool(full_xyz))
 
-    def _take_structures(isomers):
+    def _take_structures(isomers, quick=False):
         """Every structure a conversion produced, as named blocks.
 
         A conversion hands over one structure or several -- the isomers of a
@@ -982,12 +990,30 @@ def create_tab(ctx):
         once, in the layout it reads: a name, the atoms, a closing star. So
         they are written that way and the block stepper walks them, which is
         the stepper this tab already had.
+
+        Except for the quick conversion, which answers with a structure rather
+        than a set to choose from: that one writes plain coordinates, the way
+        it always has here.
         """
         if not isomers:
             return False
+        if quick:
+            xyz_string, num_atoms, _label = isomers[0]
+            rows = [row for row in (strip_xyz_header(xyz_string)
+                                    or xyz_string).split('\n') if row.strip()]
+            orca_coords.value = '%d\nConverted from SMILES\n%s' % (
+                num_atoms or len(rows), '\n'.join(rows))
+            return True
+        # The quick embedding rides along at the end of a conformer set as a
+        # fallback to step to. It is not a conformer, and a block called
+        # quick.xyz beside conf-1 and conf-2 says it is one.
+        named = [entry for entry in isomers
+                 if str(entry[2] or '').strip().lower() != 'quick']
+        if not named:
+            named = isomers
         blocks = []
         used = {}
-        for xyz_string, num_atoms, label in isomers:
+        for xyz_string, num_atoms, label in named:
             name = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(label or 'structure')).strip('-.')
             if not name:
                 name = 'structure'
@@ -999,9 +1025,10 @@ def create_tab(ctx):
                 name = '%s-%d.xyz' % (name[:-4], used[name])
             body = strip_xyz_header(xyz_string) or xyz_string
             rows = [row for row in body.split('\n') if row.strip()]
-            blocks.append('%s;%s\n%d\n%s\n%s\n*' % (
-                name, label or '', num_atoms or len(rows), label or '',
-                '\n'.join(rows)))
+            # Name, nothing after the semicolon, then the structure itself --
+            # the same header every other block in this box carries.
+            blocks.append('%s;\n%d\n%s\n%s\n*' % (
+                name, num_atoms or len(rows), label or '', '\n'.join(rows)))
         orca_coords.value = '\n\n'.join(blocks)
         return True
 
@@ -1015,7 +1042,11 @@ def create_tab(ctx):
         records = _orca_parse_xyz_block_records(orca_coords.value)
         idx = int(state.get('xyz_view_idx', 0))
         if not records or not 0 <= idx < len(records):
-            return strip_xyz_header(full_xyz)
+            # A box that was never written as named blocks holds one plain
+            # XYZ, header and all. Handing back the bare atom lines took that
+            # header away on every edit, and after an optimisation the box read
+            # as a list of coordinates with no count and no comment.
+            return full_xyz
         records[idx]['full_xyz'] = full_xyz
         rebuilt = []
         for record in records:
@@ -1203,84 +1234,108 @@ def create_tab(ctx):
             orca_mol_nav_label.value = ''
             orca_mol_prev_btn.layout.display = 'none'
             orca_mol_next_btn.layout.display = 'none'
-            showing = bool(blocks) or bool(strip_xyz_header(orca_coords.value).strip())
-            orca_mol_nav_row.layout.display = '' if showing else 'none'
+            # Only the stepper is left in this row -- the fullscreen button
+            # sits in the toolbar now -- so with nothing to step to there is
+            # nothing to show.
+            orca_mol_nav_row.layout.display = 'none'
+
+    def _show_in_viewer(*items):
+        """Put *items* in the preview, by assignment rather than by capture.
+
+        ``with output: display(...)`` only reaches the widget while the kernel
+        is running the cell it belongs to. A conversion answers from a thread,
+        through the interface loop, and there is no cell there: the coordinates
+        arrived in the box, the preview was asked to draw them, and nothing
+        appeared -- the viewer kept whatever it had, which after a SMILES was a
+        one-atom model of the letters. Assigning the outputs works wherever the
+        call comes from, which is how the Submit tab has always done it.
+        """
+        orca_mol_output.outputs = tuple(items)
+
+    def _as_html(markup):
+        return {'output_type': 'display_data',
+                'data': {'text/html': markup}, 'metadata': {}}
+
+    def _as_text(message):
+        return {'output_type': 'stream', 'name': 'stdout',
+                'text': str(message) + '\n'}
 
     def _refresh_mol_view(reset_view=False):
         """Re-render the molecule viewer, preserving orientation unless *reset_view*."""
         blocks = state['xyz_blocks']
         _update_nav_label()
         _update_numbering_fix_button()
-        if state.get('numbering_check_active'):
-            orca_mol_output.layout.height = '560px'
-            orca_mol_output.layout.min_height = '560px'
-        else:
-            orca_mol_output.layout.height = '560px'
-            orca_mol_output.layout.min_height = '560px'
-        with orca_mol_output:
-            clear_output(wait=True)
-            state['viewer_live'] = False   # nothing on screen until we draw it
-            if blocks:
-                idx = state['xyz_view_idx']
-                _block_name, full_xyz = blocks[idx]
-                try:
-                    overlay_idx = int(state.get('numbering_check_block_idx', 1))
-                    overlay_result = (state.get('numbering_check_results') or {}).get(overlay_idx)
-                    if (
-                        state.get('numbering_check_active')
-                        and overlay_idx > 0
-                        and overlay_result
-                        and overlay_result.get('aligned_reference_xyz')
-                    ):
-                        target_xyz = blocks[overlay_idx][1]
-                        reordered_target_xyz = overlay_result.get('reordered_target_xyz') or target_xyz
-                        step = int(state.get('numbering_view_step', 0))
-                        display(
-                            HTML(
-                                _numbering_check_view_html(
-                                    overlay_result['aligned_reference_xyz'],
-                                    target_xyz,
-                                    reordered_target_xyz,
-                                    step,
-                                    reset_view=reset_view,
-                                )
-                            )
-                        )
-                        # Two of the three check views are a single structure,
-                        # and the editor can work on those like any other. The
-                        # overlay is both at once, which is nothing to edit --
-                        # the numbers still come up on it, from its own model.
-                        _hand_to_editor(
-                            overlay_result['aligned_reference_xyz'] if step == 1
-                            else reordered_target_xyz if step == 2 else '')
-                        if step == 0:
-                            orca_editor._set_mol_status(
-                                'Overlay: reference in red, target in blue. '
-                                'Step to a single structure to edit it.')
-                    else:
-                        label_js = _labels_js()
-                        display(HTML(_viewer_html(full_xyz, label_js, reset_view=reset_view)))
-                        _hand_to_editor(full_xyz)
-                except Exception as e:
-                    print(f'Could not visualize: {e}')
-            else:
-                raw = orca_coords.value.strip()
-                if not raw:
-                    print('Paste XYZ coordinates to see 3D preview.')
-                    return
-                coords = strip_xyz_header(raw)
-                if not coords:
-                    print('No valid coordinates.')
-                    return
-                try:
-                    atom_lines = [l for l in coords.split('\n') if l.strip()]
-                    n = len(atom_lines)
-                    xyz_data = f'{n}\nORCA Builder Preview\n{coords}'
-                    label_js = _labels_js()
-                    display(HTML(_viewer_html(xyz_data, label_js, reset_view=reset_view)))
-                    _hand_to_editor(xyz_data)
-                except Exception as e:
-                    print(f'Could not visualize: {e}')
+        orca_mol_output.layout.height = '560px'
+        orca_mol_output.layout.min_height = '560px'
+        state['viewer_live'] = False   # nothing on screen until we draw it
+        if blocks:
+            idx = state['xyz_view_idx']
+            _block_name, full_xyz = blocks[idx]
+            try:
+                overlay_idx = int(state.get('numbering_check_block_idx', 1))
+                overlay_result = (state.get('numbering_check_results') or {}).get(overlay_idx)
+                if (
+                    state.get('numbering_check_active')
+                    and overlay_idx > 0
+                    and overlay_result
+                    and overlay_result.get('aligned_reference_xyz')
+                ):
+                    target_xyz = blocks[overlay_idx][1]
+                    reordered_target_xyz = overlay_result.get('reordered_target_xyz') or target_xyz
+                    step = int(state.get('numbering_view_step', 0))
+                    _show_in_viewer(_as_html(_numbering_check_view_html(
+                        overlay_result['aligned_reference_xyz'],
+                        target_xyz,
+                        reordered_target_xyz,
+                        step,
+                        reset_view=reset_view,
+                    )))
+                    # Two of the three check views are a single structure, and
+                    # the editor can work on those like any other. The overlay
+                    # is both at once, which is nothing to edit -- the numbers
+                    # still come up on it, from its own model.
+                    _hand_to_editor(
+                        overlay_result['aligned_reference_xyz'] if step == 1
+                        else reordered_target_xyz if step == 2 else '')
+                    if step == 0:
+                        orca_editor._set_mol_status(
+                            'Overlay: reference in red, target in blue. '
+                            'Step to a single structure to edit it.')
+                else:
+                    _show_in_viewer(_as_html(
+                        _viewer_html(full_xyz, _labels_js(), reset_view=reset_view)))
+                    _hand_to_editor(full_xyz)
+            except Exception as e:
+                _show_in_viewer(_as_text(f'Could not visualize: {e}'))
+            return
+        raw = orca_coords.value.strip()
+        if not raw:
+            _show_in_viewer(_as_text('Paste XYZ coordinates to see 3D preview.'))
+            _hand_to_editor('')
+            return
+        # A SMILES is not coordinates. Read as some, "c1ccccc1" became a
+        # one-atom model of its own first letter, and after a conversion had
+        # plainly filled the box the viewer still showed that atom -- which is
+        # what "it does not show it" looked like from the outside.
+        if clean_input_data(raw)[1] == 'smiles':
+            _show_in_viewer(_as_text(
+                'SMILES detected. Use CONVERT SMILES, QUICK CONVERT or '
+                'CONVERT SMILES + UFF to turn it into coordinates.'))
+            _hand_to_editor('')
+            return
+        coords = strip_xyz_header(raw)
+        if not coords:
+            _show_in_viewer(_as_text('No valid coordinates.'))
+            _hand_to_editor('')
+            return
+        try:
+            atom_lines = [l for l in coords.split('\n') if l.strip()]
+            xyz_data = f'{len(atom_lines)}\nORCA Builder Preview\n{coords}'
+            _show_in_viewer(_as_html(
+                _viewer_html(xyz_data, _labels_js(), reset_view=reset_view)))
+            _hand_to_editor(xyz_data)
+        except Exception as e:
+            _show_in_viewer(_as_text(f'Could not visualize: {e}'))
 
     def update_orca_molecule_view(change=None):
         # An edit from the editor has already put itself in the box and told
@@ -1288,6 +1343,9 @@ def create_tab(ctx):
         # and reset the camera in the middle of a drag.
         if state.get('editor_quiet'):
             return
+        # A structure the editor has not seen: it starts on this one the way
+        # it starts on any other.
+        orca_editor.reset_controls()
         state['xyz_blocks'] = parse_xyz_blocks(orca_coords.value) or []
         state['xyz_view_idx'] = 0
         state['numbering_check_active'] = False
@@ -1980,12 +2038,18 @@ def create_tab(ctx):
     orca_left = widgets.VBox([
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
-        # The conversions are the editor's, the same ones the Submit tab has.
-        _row([orca_editor.convert_smiles_button,
+        # The conversions and the 2D editor are the editor's, the same ones
+        # the Submit tab has.
+        _row([orca_editor.submit_draw_open_btn,
+              orca_editor.convert_smiles_button,
               orca_editor.convert_smiles_quick_button,
               orca_editor.convert_smiles_uff_button,
               orca_editor.manta_button]),
         orca_editor.manta_settings_row,
+        _row([orca_editor.submit_draw_get_btn,
+              orca_editor.submit_draw_update_btn]),
+        orca_editor.submit_draw_frame,
+        orca_editor.submit_draw_sync,
         _row([orca_copy_coords_btn, orca_check_numbering_btn, orca_apply_numbering_btn]),
         widgets.HTML('<b>Config Templates:</b>'),
         _row([orca_template_dd, orca_template_load_btn, orca_template_save_btn, orca_template_delete_btn]),
@@ -2266,6 +2330,7 @@ def create_tab(ctx):
         'orca_mol_next_btn': orca_mol_next_btn,
         'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
         'orca_mol_nav_row': orca_mol_nav_row,
+        'orca_mol_output': orca_mol_output,
         'update_orca_preview': update_orca_preview,
         # The structure editor this tab holds, under the names it uses.
         **orca_editor.exported,
@@ -2273,5 +2338,11 @@ def create_tab(ctx):
         'editor_coords': orca_editor_coords,
         'editor_scope': orca_editor_scope,
         'offer_structures': _take_structures,
+        # The editor's own funnel, which is what a conversion goes through.
+        'editor_offer_isomers': orca_editor._offer_isomers,
         'read_input': lambda: orca_coords.value,
+        'list_structures': lambda: [
+            (xyz, len([r for r in strip_xyz_header(xyz).split('\n') if r.strip()]),
+             name[:-4] if name.lower().endswith('.xyz') else name)
+            for name, xyz in (state.get('xyz_blocks') or [])],
     }

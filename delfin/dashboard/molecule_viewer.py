@@ -1051,9 +1051,12 @@ MEASUREMENT_BOOTSTRAP_JS = r"""
         return null;
     }
     function findDisplay(scopeKey) {
-        var root = document.querySelector('.' + scopeKey);
-        if (!root) return null;
-        return root.querySelector('.delfin-xyz-measure-display');
+        var roots = document.querySelectorAll('.' + scopeKey);
+        for (var i = 0; i < roots.length; i++) {
+            var found = roots[i].querySelector('.delfin-xyz-measure-display');
+            if (found) return found;
+        }
+        return null;
     }
     function updateDisplay(scopeKey) {
         var el = findDisplay(scopeKey);
@@ -1300,6 +1303,20 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     }
     function getRoot(scopeKey) {
         return document.querySelector('.' + scopeKey);
+    }
+    // The scope is not one element. Fullscreen adds an overlay carrying it,
+    // and the 2D drawing frame carries it too -- it sits in the other column,
+    // away from the viewer, so nothing could tell whose drawing it was
+    // otherwise. Anything that asks the scope for a part has to look in all
+    // of them: taking the first found the drawing frame, which holds none of
+    // the parts, and fullscreen in the Submit tab stopped opening at all.
+    function eachRoot(scopeKey, look) {
+        var roots = document.querySelectorAll('.' + scopeKey);
+        for (var i = 0; i < roots.length; i++) {
+            var found = look(roots[i]);
+            if (found) return found;
+        }
+        return null;
     }
     // Every element that carries this scope's class, not just the first one.
     //
@@ -4483,9 +4500,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             icon.classList.add(active ? 'fa-compress' : 'fa-expand');
             btn.setAttribute('title', active ? 'Exit fullscreen (Esc)' : 'Toggle fullscreen (Esc to exit)');
         }
+        function eachScopeRoot(scopeKey, look) {
+            /* Every element carrying the scope, not the first: the drawing
+               frame carries it too and sits in the other column, holding none
+               of the members. */
+            var roots = document.querySelectorAll('.' + scopeKey);
+            for (var i = 0; i < roots.length; i++) {
+                var found = look(roots[i]);
+                if (found) return found;
+            }
+            return null;
+        }
         function enterFullscreen(scopeKey) {
-            var root = document.querySelector('.' + scopeKey);
-            if (!root) return;
             var selectors = [
                 '.submit-fs-member-toolbar',
                 /* Its own status line, not the one the ordinary view uses.
@@ -4501,7 +4527,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             ];
             var members = [];
             for (var i = 0; i < selectors.length; i++) {
-                var el = root.querySelector(selectors[i]);
+                var el = eachScopeRoot(scopeKey, (function(selector) {
+                    return function(node) { return node.querySelector(selector); };
+                })(selectors[i]));
                 if (el) members.push(el);
             }
             if (!members.length) return;
@@ -4534,7 +4562,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
             try { entry.overlay.parentNode.removeChild(entry.overlay); } catch (e) {}
             delete window._submitFsByScope[scopeKey];
-            var root = document.querySelector('.' + scopeKey);
+            var root = eachScopeRoot(scopeKey, function(node) {
+                return node.querySelector('.submit-fs-member-viewer')
+                    || node.querySelector('.submit-fs-member-toolbar')
+                    ? node : null;
+            }) || document.querySelector('.' + scopeKey);
             /* A member whose recorded parent was itself replaced while
                fullscreen was open has nowhere to go back to, and would be
                carried out of the page with the overlay -- the toolbar, the
@@ -4548,7 +4580,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     }
                 }
             }
-            var btn = root && root.querySelector('.submit-fullscreen-btn');
+            var btn = eachScopeRoot(scopeKey, function(node) {
+                return node.querySelector('.submit-fullscreen-btn');
+            });
             setFsIcon(btn, false);
             resizeScopeViewer(scopeKey);
         }
