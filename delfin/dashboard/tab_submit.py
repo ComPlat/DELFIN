@@ -7001,6 +7001,58 @@ def create_tab(ctx):
         submit_draw_get_btn.layout.display = '' if (drawn and ready) else 'none'
         submit_draw_update_btn.layout.display = '' if (drawn and ready) else 'none'
 
+    #: Keep the pane where it is while the editor loads.
+    #:
+    #: Opening DRAW does not move anything: the frame appears below the button
+    #: and the button stays put.  Two to three seconds later Ketcher finishes
+    #: loading inside the frame and takes the focus, and the browser scrolls
+    #: the frame into view.  Measured: at +1.2 s the pane was still at 0 with
+    #: the button 538 px down the viewport; at +3 s the pane was at 654 and the
+    #: button at -116, off the top of the screen.
+    #:
+    #: So the first scroll within six seconds of opening is undone, and then
+    #: the hold is gone -- one correction, not a clamp.  A clamp was tried and
+    #: is worse than the jump: it also swallowed the user's own scrolling, and
+    #: whether their wheel released it depended on what the pointer happened to
+    #: be over. At most one deliberate scroll in those six seconds is undone,
+    #: and the next one stands.
+    _KETCHER_SCROLL_HOLD_JS = """
+    (function() {
+        var found = null;
+        var buttons = document.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {
+            if ((buttons[i].textContent || '').trim() === 'DRAW') {
+                found = buttons[i];
+                break;
+            }
+        }
+        if (!found) return;
+        var pane = found.parentElement;
+        while (pane && pane !== document.body) {
+            var how = window.getComputedStyle(pane);
+            if (/(auto|scroll)/.test(how.overflowY)
+                && pane.scrollHeight > pane.clientHeight + 4) break;
+            pane = pane.parentElement;
+        }
+        if (!pane || pane === document.body) pane = document.scrollingElement;
+        if (!pane) return;
+        if (window.__delfinDrawScrollRelease) window.__delfinDrawScrollRelease();
+        var keep = pane.scrollTop;
+        var timer = window.setTimeout(release, 6000);
+        function release() {
+            window.clearTimeout(timer);
+            pane.removeEventListener('scroll', onScroll);
+            window.__delfinDrawScrollRelease = null;
+        }
+        function onScroll() {
+            release();
+            if (pane.scrollTop !== keep) pane.scrollTop = keep;
+        }
+        pane.addEventListener('scroll', onScroll);
+        window.__delfinDrawScrollRelease = release;
+    })();
+        """
+
     def on_submit_draw_open(change):
         if change.get('name') != 'value':
             return
@@ -7019,6 +7071,7 @@ def create_tab(ctx):
             if url not in (submit_draw_frame.value or ''):
                 submit_draw_frame.value = _draw_frame_html(url)
             _refresh_ketcher_controls()
+            _run_manip_js(_KETCHER_SCROLL_HOLD_JS)
             _set_mol_status(
                 f'Ketcher {version}: draw the structure, then press TO SMILES '
                 'to put it in the input box.')
