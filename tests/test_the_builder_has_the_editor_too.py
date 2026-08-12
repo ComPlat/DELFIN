@@ -776,13 +776,17 @@ def test_a_new_structure_starts_the_editor_over(builder):
     out for, and a mode belongs to the structure it was picked on."""
     refs, _sent = builder
     refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
-    for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_manip_btn'):
+    for name in ('submit_relax_btn', 'submit_manip_btn', 'submit_draw_btn'):
         refs[name].value = True
+    refs['submit_settle_btn'].value = False
 
     refs['orca_coords'].value = '3\nanother\n' + WATER + '\n'
 
-    for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_manip_btn'):
+    for name in ('submit_relax_btn', 'submit_manip_btn', 'submit_draw_btn'):
         assert refs[name].value is False, name
+    # To the defaults, not to off: letting go of an atom and leaving the strain
+    # of the drag in the structure is the surprising answer, not the useful one.
+    assert refs['submit_settle_btn'].value is True
 
 
 def test_an_edit_keeps_the_header_of_a_plain_xyz(builder):
@@ -854,3 +858,16 @@ def test_drawing_on_and_asking_again_gives_the_new_structure(builder):
 
     refs['submit_draw_sync'].value = '3\n' + molfile(6)
     assert refs['orca_coords'].value == 'CCCCCC'
+
+
+def test_settle_is_on_to_begin_with_in_both_tabs():
+    from delfin.dashboard import structure_editor as editor
+
+    source = open(editor.__file__, encoding='utf-8').read()
+    made = source.split('submit_settle_btn = widgets.ToggleButton')[1].split(')\n')[0]
+    assert 'value=True' in made
+    # ...and a structure the editor has not seen puts it back on rather than
+    # taking it away.
+    defaults = source.split('_CONTROL_DEFAULTS = (')[1].split('\n    )')[0]
+    assert 'submit_settle_btn, True' in defaults
+    assert 'submit_relax_btn, False' in defaults
