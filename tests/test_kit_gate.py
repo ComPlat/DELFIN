@@ -288,15 +288,21 @@ def test_bash_deny_wins_even_in_bypass(workspace):
 # Git: commit/read auto-allowed, push needs confirm, deletion blocked everywhere
 # ---------------------------------------------------------------------------
 
+# `git stash` and `git add -A` used to be in this list. Both act on the
+# WHOLE working tree, which in a shared checkout also holds work this
+# session did not do: the stash carries it away and leaves a tree that
+# looks clean, the bulk stage sweeps it into the agent's commit. They now
+# go through the confirm gate; the scoped forms still run unattended.
+# See test_the_git_gate_matches_the_git_rules.py.
 @pytest.mark.parametrize("cmd", [
     "git commit -m 'msg'",      # local + reversible → auto
     "git commit --message=msg",
     "git status",
     "git diff --stat",
     "git log -5",
-    "git stash",
+    "git stash list",
     "git init",
-    "git add -A",
+    "git add delfin/agent/office.py",
 ])
 def test_git_normal_ops_auto_allowed_default_mode(workspace, cmd):
     perms = KitToolPermissions(workspace=workspace, mode="default")

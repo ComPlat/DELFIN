@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
+from . import text_files as _text_files
+
 
 def _auto_install(package: str, pip_spec: str = "") -> None:
     """Install a missing Python package automatically via pip."""
@@ -7075,7 +7077,16 @@ class _DocToolExecutor:
         if binary_hint is not None:
             return json.dumps({"error": binary_hint}, ensure_ascii=False)
         try:
-            lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
+            # Split on newlines only. `str.splitlines()` also breaks on
+            # \v \f \x1c-\x1e \x85    , while grep_file iterates
+            # the file object, which breaks on \n \r \r\n. A form feed —
+            # ordinary in older Python and in Emacs-formatted C — made the
+            # two disagree from that line on, which is the same off-by-N
+            # the comment below describes fixing.
+            _body = _text_files.read_text_file(full).text
+            lines = _body.split("\n")
+            if lines and lines[-1] == "":
+                lines.pop()
         except Exception as exc:
             return json.dumps({"error": str(exc)})
         # 1-BASED, to agree with grep_file.
@@ -9224,11 +9235,13 @@ class _DocToolExecutor:
                     "(mtime mismatch). Re-read before writing."
                 )})
             try:
-                old_text = resolved.read_text(encoding="utf-8", errors="replace")
+                shape = _text_files.read_text_file(resolved)
+                old_text = shape.text
             except Exception as exc:
                 return json.dumps({"error": f"cannot read existing file: {exc}"})
         else:
             old_text = ""
+            shape = None
 
         if getattr(perms, "mode", "") == "diff_approval":
             return self._stage_pending_change(
@@ -9236,10 +9249,13 @@ class _DocToolExecutor:
                 old_text if existed else None, content, perms)
 
         try:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(content, encoding="utf-8")
+            write_notes = _text_files.write_text_file(
+                resolved, content, like=shape)
         except Exception as exc:
-            return json.dumps({"error": f"write failed: {exc}"})
+            return json.dumps({"error": (
+                f"write failed: {exc}. The file is unchanged — the write "
+                f"builds a temporary file and only swaps it in once it is "
+                f"complete.")})
 
         self._capture_change(
             "write_file", resolved,
@@ -9255,7 +9271,9 @@ class _DocToolExecutor:
         action = "created" if not existed else "overwritten"
         test_hint = self._suggest_test_for_edit(resolved, perms)
         lang_hint = _language_hint_for_write(resolved, content)
-        return f"File {action}: {disp}\n\n{diff}{test_hint}{lang_hint}"
+        shape_note = ("\n\nNOTE: " + " ".join(write_notes)) if write_notes else ""
+        return (f"File {action}: {disp}\n\n{diff}"
+                f"{test_hint}{lang_hint}{shape_note}")
 
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -9293,7 +9311,8 @@ class _DocToolExecutor:
             )})
 
         try:
-            old_text = resolved.read_text(encoding="utf-8", errors="replace")
+            shape = _text_files.read_text_file(resolved)
+            old_text = shape.text
         except Exception as exc:
             return json.dumps({"error": f"cannot read file: {exc}"})
 
@@ -9312,9 +9331,11 @@ class _DocToolExecutor:
                         return self._stage_pending_change(
                             "edit_file", resolved, old_text, new_text, perms)
                     try:
-                        resolved.write_text(new_text, encoding="utf-8")
+                        _text_files.write_text_file(
+                            resolved, new_text, like=shape)
                     except Exception as exc:
-                        return json.dumps({"error": f"write failed: {exc}"})
+                        return json.dumps({"error": (
+                            f"write failed: {exc}. The file is unchanged.")})
                     self._capture_change(
                         "edit_file", resolved, old_text, new_text, perms)
                     try:
@@ -9356,9 +9377,10 @@ class _DocToolExecutor:
                 "edit_file", resolved, old_text, new_text, perms)
 
         try:
-            resolved.write_text(new_text, encoding="utf-8")
+            _text_files.write_text_file(resolved, new_text, like=shape)
         except Exception as exc:
-            return json.dumps({"error": f"write failed: {exc}"})
+            return json.dumps({"error": (
+                f"write failed: {exc}. The file is unchanged.")})
 
         self._capture_change("edit_file", resolved, old_text, new_text, perms)
 
@@ -9410,7 +9432,8 @@ class _DocToolExecutor:
             )})
 
         try:
-            old_text = resolved.read_text(encoding="utf-8", errors="replace")
+            shape = _text_files.read_text_file(resolved)
+            old_text = shape.text
         except Exception as exc:
             return json.dumps({"error": f"cannot read file: {exc}"})
 
@@ -9457,9 +9480,10 @@ class _DocToolExecutor:
                 "multi_edit", resolved, old_text, text, perms)
 
         try:
-            resolved.write_text(text, encoding="utf-8")
+            _text_files.write_text_file(resolved, text, like=shape)
         except Exception as exc:
-            return json.dumps({"error": f"write failed: {exc}"})
+            return json.dumps({"error": (
+                f"write failed: {exc}. The file is unchanged.")})
 
         self._capture_change("multi_edit", resolved, old_text, text, perms)
 

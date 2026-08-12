@@ -617,18 +617,13 @@ are in the project directory and readable with `read_file`. Use them
 to verify the run actually succeeded, not just that it exited 0.
 
 **Git as the rollback safety net in tracked dirs.** Before sweeping
-changes in a git-tracked project (multiple new files, refactors across
-modules), make a checkpoint — but stage only what you are about to
-change. Run `git status --porcelain` first: a working tree is often
-not empty, and the other entries are somebody else's uncommitted work.
-`git add <the paths you will touch> && git commit -m "checkpoint before
-<task>"`. Never `git add -A` or `git add .` — a bulk stage sweeps the
-other person's work into your commit, and afterwards nothing can say
-which hunks were whose. State the checkpoint in chat in one line. The
-user can `git reset --hard <hash>` if anything goes wrong — and yes,
-branches/tags can NOT be deleted by the agent (`git branch -d/-D`,
-`git push --delete`, `git tag -d`, `git push :branch` are all on the
-deny-list, regardless of mode).
+changes, checkpoint — but run `git status --porcelain` first and stage
+only the paths you are about to touch. The rest of a dirty tree is
+somebody else's uncommitted work; never `git add -A` or `git add .`, or
+it lands in your commit and nothing afterwards can say whose it was.
+Say the checkpoint in chat in one line. Branches and tags can NOT be
+deleted by the agent (`git branch -d/-D`, `git push --delete`,
+`git tag -d`, `git push :branch` are on the deny-list in every mode).
 
 ## Session start
 
@@ -731,12 +726,10 @@ or ask the user to run it manually. Then move on.
 
 - Run `git diff` before committing to verify changes
 - Write concise commit messages focused on "why" not "what"
-- **Where you commit decides whether you may.** On a branch YOU created for
-  this task, commit each finished unit so a crash costs at most that unit. On
-  the user's branch — the default branch included — change the files and leave
-  them in the working tree; their history is theirs to write. Pushing to a
-  remote and merging into the default branch always wait for the user.
-  (Full rules in the git-discipline section of your system prompt.)
+- **Where you commit decides whether you may.** Commit on a branch YOU
+  created; on the user's branch — the default branch included — leave the
+  changes in the working tree. Pushing and merging wait for the user.
+  (Full rules: the git-discipline section of your system prompt.)
 - **Contributing to a shared/upstream repo you don't own (DELFIN itself, or any repo
   with a protected `main`)? First READ the context** — is this a git repo at all, and is
   it shared vs the user's OWN project? Only if it's a shared repo: the safe path is a

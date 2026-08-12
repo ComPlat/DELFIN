@@ -91,8 +91,12 @@ def test_the_prompt_no_longer_teaches_the_bulk_stage():
     import pathlib
     src = (pathlib.Path(__file__).resolve().parents[1] / "delfin" / "agent"
            / "pack" / "agents" / "solo_agent.md").read_text(encoding="utf-8")
-    assert "git add -A &&" not in src
-    assert "Never `git add -A`" in src
+    assert "git add -A &&" not in src, "the checkpoint recipe is still there"
+    # Lowercase both sides or neither: lowering only the source turns its
+    # `-A` into `-a` and the needle never matches.
+    assert "never `git add -a`" in src.lower(), (
+        "the prompt has to say what to do instead, not merely stop saying "
+        "the wrong thing")
 
 
 # ---------------------------------------------------------------------------
