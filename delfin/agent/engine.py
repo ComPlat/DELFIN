@@ -502,6 +502,19 @@ class AgentEngine:
         self._trace_pending: list = []   # (tool, input, t0) awaiting its result
         self._prompt_session_serial: int = 1
         self._stop_requested = False
+        # A stop belongs to ONE turn. Without an owner the flag was engine
+        # state that any later caller could reset, including a caller whose
+        # own turn was about to be refused -- which erased the stop of the
+        # turn still running. _turn_serial numbers the turns, _turn_id is
+        # the turn holding the gate (0 = none), and _stop_owner_turn is the
+        # turn the current stop was requested for.
+        self._turn_serial: int = 0
+        self._turn_id: int = 0
+        self._stop_owner_turn: int | None = None
+        # Set by the last turn that ended without producing any answer
+        # text (see the empty-turn branch in stream_response); None after
+        # any turn that answered.
+        self.last_empty_turn: dict | None = None
         self._lock = threading.Lock()
         # Claim-grounding guard state (see _enforce_claim_grounding).
         # _claim_guard_active is the reentrancy latch: True only while the
@@ -1469,7 +1482,6 @@ class AgentEngine:
         str
             The complete assistant response text.
         """
-        self._stop_requested = False
         # New user turn: re-arm the one-correction budget — unless this IS
         # the correction turn (nested call), which must not re-arm itself.
         if not self._claim_guard_active:
@@ -1547,6 +1559,21 @@ class AgentEngine:
                         pass
                 return _busy
             self._turn_in_flight = True
+            self._turn_serial += 1
+            self._turn_id = self._turn_serial
+            # The stop reset lives HERE, behind the gate, and nowhere
+            # earlier. It used to be the first statement of the method,
+            # which meant a turn the gate was about to refuse still wiped
+            # the flag on its way out: Stop during a long tool call, send
+            # the next message, and that message's turn -- refused, having
+            # done nothing -- deleted the stop the running turn was about
+            # to read. The running turn then carried on at its next round
+            # boundary and billed for a plan the user had abandoned.
+            # Whoever owns the turn owns its stop; a caller that never got
+            # a turn owns nothing.
+            self._stop_requested = False
+            self._stop_owner_turn = None
+        _turn_id = self._turn_id
 
         self.messages.append(self._build_user_message(user_message, images))
         # Sanitize message history: ensure proper user/assistant alternation.
@@ -1622,11 +1649,23 @@ class AgentEngine:
             pass
 
         chunks: list[str] = []
+        # Events still dispatched after a stop has been seen (see the loop
+        # below): enough for a client's closing notice, far too few for a
+        # client that ignores the stop to keep generating.
+        _stop_drain = 3
+        # Reasoning characters this turn. A model that streams its whole
+        # answer on the reasoning channel produces zero chunks and zero
+        # exceptions, and the empty-turn branch below needs to be able to
+        # say so instead of reporting "no answer" with no explanation.
+        _thinking_chars = 0
         # Per-turn timing: capture time-to-first-token + tool count so a slow
         # turn can be diagnosed after the fact (backend stall vs generation vs
         # tool rounds). Recorded in the finally below so errored/partial turns
         # are captured too. See turn_metrics.
         _turn_t0 = _time.monotonic()
+        # Cleared per turn: a diagnostic left over from an earlier empty
+        # turn must not be read as a report about this one.
+        self.last_empty_turn = None
         _usage_before = dict(self.token_usage)
         _turn_ttft: float | None = None
         _turn_tool_calls = 0
@@ -1673,7 +1712,36 @@ class AgentEngine:
                 thinking_budget=thinking_budget,
                 **_stream_kwargs,
             ):
-                if self._stop_requested:
+                if self._stop_requested and event.type != "message_delta":
+                    # A stop ends the turn here -- but not before the
+                    # events the client emits BECAUSE of the stop. This
+                    # used to be an unconditional break, and what a client
+                    # sends the moment it sees the flag is its closing
+                    # notice followed by the message_delta carrying this
+                    # turn's tokens and cost. Breaking on the notice threw
+                    # away both: a stopped turn reported $0.00 however many
+                    # rounds it had already billed, the notice never
+                    # reached the user, and the run-budget gate was blind
+                    # to the whole turn.
+                    #
+                    # The notice is forwarded to the caller but NOT added
+                    # to ``chunks``: it is machinery talking, not the
+                    # model's answer, and the stop branch below still needs
+                    # to see an empty response to take the unanswered
+                    # message back out of the history.
+                    #
+                    # The budget is the reason this cannot become a way to
+                    # keep streaming through a stop: a client that ignores
+                    # the flag gets a handful of events, not a free run.
+                    if (event.type == "text_delta" and event.text
+                            and _stop_drain > 0):
+                        _stop_drain -= 1
+                        if on_token:
+                            try:
+                                on_token(event.text)
+                            except Exception:
+                                pass
+                        continue
                     break
 
                 if event.type == "text_delta" and event.text:
@@ -1684,6 +1752,7 @@ class AgentEngine:
                         on_token(event.text)
 
                 elif event.type == "thinking_delta" and event.text:
+                    _thinking_chars += len(event.text)
                     if on_thinking:
                         on_thinking(event.text)
 
@@ -1887,6 +1956,8 @@ class AgentEngine:
                             and (self.cost_usd - self._turn_start_cost) >= _cap):
                         self._cost_cap_hit = True
                         self._stop_requested = True
+                        # This stop belongs to THIS turn, like any other.
+                        self._stop_owner_turn = _turn_id
                         _note = (
                             f"\n\n🛑 Cost circuit-breaker: this turn hit the "
                             f"${_cap:.0f} per-turn hard cap and was stopped so "
@@ -1901,6 +1972,11 @@ class AgentEngine:
                     # Capture session ID from result event
                     if event.text and not self.session_id:
                         self.session_id = event.text
+                    if self._stop_requested:
+                        # The accounting above is what the stop check at the
+                        # top of the loop was let past for. Nothing further
+                        # from this stream may be dispatched.
+                        break
 
         except Exception as _turn_exc:
             if not chunks:
@@ -2035,6 +2111,10 @@ class AgentEngine:
             pass
 
         full_response = "".join(chunks)
+        # True once the empty-turn branch below has written a diagnostic
+        # into full_response — it is a report about the turn, not an answer
+        # the model gave, so no guard may treat it as one.
+        _empty_turn = False
         # Repair corrupted output (harmony tool-channel leaks + glitch
         # tokens from gpt-5.x via the OpenAI-compatible endpoint) BEFORE it
         # enters the conversation context — otherwise the garbage is replayed
@@ -2095,6 +2175,59 @@ class AgentEngine:
             # messages that break the API on the next turn.
             if self.messages and self.messages[-1].get("role") == "user":
                 self.messages.pop()
+        else:
+            # No text, no stop, no exception. This branch did not exist,
+            # and its absence destroyed the question: the user message
+            # appended above stayed in the history with no answer after
+            # it, and on the next turn the alternation sanitiser resolves
+            # two consecutive user messages by keeping the NEWEST -- so
+            # the follow-up silently overwrote the original task and the
+            # model answered a question nobody had asked.
+            #
+            # It needs no crash to happen. A reasoning model that streams
+            # its whole answer on the reasoning channel produces thinking
+            # deltas only, which never reach ``chunks``; and a CLI turn
+            # whose process dies without a diagnostic used to end the same
+            # way. The exception path already handled this hazard; the
+            # quiet path never did.
+            #
+            # Same repair as the exception path: take the unanswered
+            # message back out, and say what was observed instead of
+            # returning "" for the caller to interpret as an answer.
+            _empty_turn = True
+            if self.messages and self.messages[-1].get("role") == "user":
+                self.messages.pop()
+            _empty_elapsed = _time.monotonic() - _turn_t0
+            full_response = (
+                f"[empty turn] The backend ended this turn without any "
+                f"answer text — {_thinking_chars} characters of reasoning, "
+                f"{_turn_tool_calls} tool call(s), {_empty_elapsed:.1f}s. "
+                f"Nothing was added to the history, so your message is "
+                f"unchanged: send it again, or switch model if this "
+                f"repeats (a model that answers on the reasoning channel "
+                f"only produces exactly this)."
+            )
+            # Named, so the turn log can tell an empty turn apart from a
+            # normal finish instead of recording a successful cycle that
+            # answered nothing.
+            self.last_empty_turn = {
+                "thinking_chars": _thinking_chars,
+                "tool_calls": _turn_tool_calls,
+                "duration_s": round(_empty_elapsed, 3),
+                "model": str(getattr(self.client, "model", "") or ""),
+                "role": self.current_role or "",
+            }
+            try:
+                self.record_cycle_outcome(
+                    "FAIL", user_message, error_type="empty_turn",
+                    start_time=_turn_t0)
+            except Exception:
+                pass
+            if on_token:
+                try:
+                    on_token(full_response)
+                except Exception:
+                    pass
 
         # Claim-grounding enforcement — every mode funnels through this
         # method, so the guard runs here (not in any UI layer): a final
@@ -2104,7 +2237,7 @@ class AgentEngine:
         # caveat. The nested correction turn (guard active) skips this
         # block, which structurally rules out a loop. Best-effort: a guard
         # failure must never break the turn.
-        if (full_response and not self._stop_requested
+        if (full_response and not _empty_turn and not self._stop_requested
                 and not self._claim_guard_active
                 and not self._turn_describes_intent()):
             try:
@@ -3649,8 +3782,15 @@ class AgentEngine:
                 return
 
     def request_stop(self) -> None:
-        """Request the current streaming response to stop."""
+        """Request the current streaming response to stop.
+
+        The stop is stamped with the turn it is aimed at — the one holding
+        the gate, or the last one to have held it. Without that stamp the
+        flag was anonymous engine state, and anonymous state gets cleared
+        by whoever comes next (see ``clear_stop``).
+        """
         self._stop_requested = True
+        self._stop_owner_turn = getattr(self, "_turn_id", 0)
 
     def clear_stop(self) -> None:
         """Cancel a previous stop so a NEW turn can run.
@@ -3665,9 +3805,21 @@ class AgentEngine:
 
         A stop belongs to the turn it interrupted. Starting a new turn is
         the moment it stops applying, so the owner of that decision is
-        whoever begins the turn.
+        whoever begins the turn -- and ONLY once that turn has actually
+        begun. Clearing a stop whose turn is still in flight is not
+        starting fresh, it is disarming a running turn's only brake: the
+        stopped turn polls this flag between rounds, so a caller that
+        cleared it here made the abandoned plan resume and bill for
+        itself. Refused, and the caller's own turn is refused by the gate
+        a moment later anyway.
         """
+        if (getattr(self, "_stop_requested", False)
+                and getattr(self, "_turn_in_flight", False)
+                and getattr(self, "_stop_owner_turn", None)
+                == getattr(self, "_turn_id", 0)):
+            return
         self._stop_requested = False
+        self._stop_owner_turn = None
 
     def steer(self, text: str) -> bool:
         """Inject a user message into the RUNNING tool loop (mid-loop steering).

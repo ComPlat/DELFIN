@@ -14533,6 +14533,15 @@ def create_tab(ctx):
                 # at all: the engine only cleared the flag inside
                 # stream_response, which the gate below prevented it from
                 # ever entering again.
+                #
+                # The request is advisory, and deliberately so. Stop does
+                # not wait for the worker, so this thread can reach this
+                # line while the stopped turn is still inside a long tool
+                # call -- and that turn is polling the very flag we are
+                # asking to clear. The engine refuses in that case (the
+                # stop is stamped with the turn that owns it) and the send
+                # below is refused by the turn gate, which is the honest
+                # outcome: one running turn, stopping, not two.
                 try:
                     engine.clear_stop()
                 except Exception:

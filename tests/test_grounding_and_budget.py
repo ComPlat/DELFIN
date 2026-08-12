@@ -245,7 +245,13 @@ def test_no_budget_means_no_gate(agent_tree):
     engine = _engine(agent_tree)
     engine.cost_usd = 999.0
     assert engine._build_budget_block() == ""
-    assert engine.stream_response("hi") == ""   # normal (empty fake) turn
+    # The fake client yields no events at all, which is now reported as an
+    # empty turn instead of returning "". The old assertion (== "") encoded
+    # the defect: a turn that answered nothing was indistinguishable from a
+    # model with nothing to say, and left the user's message orphaned in the
+    # history for the next one to overwrite. What this test is about is the
+    # budget gate, so it asserts that — the gate did not fire.
+    assert "Run budget exhausted" not in engine.stream_response("hi")
 
 
 # ---------------------------------------------------------------------------
