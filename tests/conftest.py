@@ -13,6 +13,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _reset_workspace_trust_caches():
+    """Trust state is process-global: a parsed store and a record of which
+    refusals have already been reported. Both would otherwise leak from one
+    test's tmp workspace into the next one's assertions."""
+    from delfin.agent import workspace_trust as wt
+    wt.reset_announcements()
+    yield
+    wt.reset_announcements()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_subagent_state(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
     monkeypatch.setattr(sa, "_RUNNING_DIR",
@@ -136,6 +147,12 @@ def _user_state_targets():
 # was measured, and it breaks 357 tests that legitimately read the real home.
 _USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
+    # Which directories the user has trusted to run commands. A test that
+    # granted trust must never grant it in the real store: the entry would
+    # outlive the run and let a later, real session honour a workspace's
+    # hooks and MCP servers on the strength of a pytest tmp directory.
+    ("delfin.agent.workspace_trust", "_trust_store_path",
+     "trusted_workspaces.json"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),

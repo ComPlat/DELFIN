@@ -1695,6 +1695,14 @@ def _hook_workspace(perms) -> "Path | None":
     Under a locked scope only the user-level settings file supplies
     hooks; a .delfin/settings.json sitting in the documents folder is
     ignored. Everywhere else this is unchanged.
+
+    This decides only which workspace is ELIGIBLE to be asked about.
+    Whether its definitions are actually honoured is a separate question
+    -- "did the user say they trust this directory, with this content?"
+    -- and it is answered inside the loaders themselves, by
+    ``workspace_trust.gate``. Returning a workspace here was never
+    consent: every directory that was not a registered office folder was
+    returned, which includes one cloned a second ago.
     """
     try:
         if getattr(perms, "scope_locked", False):
@@ -1987,8 +1995,28 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/sandbox.py",
     "delfin/agent/kit_settings.py",
     "delfin/user_settings.py",
+    # Every file a workspace can ship that RUNS something. Each is read by
+    # a loader (hooks.load_hooks, mcp_client._load_configs) and each is
+    # therefore a way for the model to grant itself a shell: settings.json
+    # was protected, and settings.local.json and mcp_servers.json — read by
+    # the same loaders, in the same directory, to the same effect — were
+    # not. In acceptEdits / diff_approval / bypassPermissions the model
+    # could write either one with no confirm, and the next tool call
+    # executed it: past the bash gate, the deny-list, the secret scanner
+    # and the sandbox. The list is kept in step with the loaders by
+    # ``tests/test_a_checked_out_repository_cannot_run_commands.py``, which
+    # measures what those loaders actually read.
     ".delfin/settings.json",
     "**/.delfin/settings.json",
+    ".delfin/settings.local.json",
+    "**/.delfin/settings.local.json",
+    ".delfin/mcp_servers.json",
+    "**/.delfin/mcp_servers.json",
+    # The record of which directories the user trusted. Writable only by
+    # the user's own trust command; an edit here would grant the trust
+    # the file exists to withhold.
+    ".delfin/trusted_workspaces.json",
+    "**/.delfin/trusted_workspaces.json",
     # CI / repo-governance config. Editing a GitHub Actions workflow can run
     # arbitrary code on the runner or weaken the test gate; CODEOWNERS controls
     # required reviews; dependabot pulls dependencies. A write under .github/
@@ -13874,6 +13902,14 @@ class OpenAIClient(_BaseClient):
             # answers every call routed to it. Strictly more powerful
             # than a hook, which at least waits for a tool call. A folder
             # that receives files from other people supplies neither.
+            #
+            # _hook_workspace decides only ELIGIBILITY. The consent itself
+            # is checked inside _load_configs, which this reaches through
+            # get_registry -> load: a workspace's servers are honoured
+            # only if the user trusted that directory for exactly this
+            # content. The check sits in the loader and not here because
+            # this is one of several callers, and the one before it was
+            # written guarded while three others were not.
             _ws = _hook_workspace(self._permissions)
             _registry = _mcp.get_registry(_ws)
             _mcp_tools = _registry.discover_all()

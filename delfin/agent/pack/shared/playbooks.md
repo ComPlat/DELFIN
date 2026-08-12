@@ -58,7 +58,7 @@ Recovery must work for both local and SLURM. Never modify the original input.
 Metal bonds → dative bonds via `_convert_metal_bonds_to_dative`. Hapto
 approximation is optional (`_hapto_approx_enabled` flag).
 
-## dashboard/tab_agent.py (17310 lines)
+## dashboard/tab_agent.py (17404 lines)
 
 1. ALWAYS Grep first
 2. Entry point: `create_tab` (line 3194)

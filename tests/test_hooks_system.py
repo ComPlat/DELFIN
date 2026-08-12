@@ -7,6 +7,21 @@ import tempfile
 from pathlib import Path
 
 from delfin.agent import hooks as H
+from delfin.agent import workspace_trust as WT
+
+
+def _trust(workspace: Path) -> None:
+    """Grant hook trust the way the user does.
+
+    A workspace's settings file is executable configuration and is
+    honoured only for a directory the USER has trusted — see
+    ``workspace_trust`` and
+    ``tests/test_a_checked_out_repository_cannot_run_commands.py``.
+    These tests exercise what hooks DO once that decision exists, so
+    they make it explicitly rather than relying on a default that would
+    let any checked-out repository run commands.
+    """
+    WT.trust_workspace(workspace, [WT.KIND_HOOKS], actor=WT.ACTOR_USER)
 
 
 def _write_settings(workspace: Path, hooks_obj: dict) -> None:
@@ -15,12 +30,28 @@ def _write_settings(workspace: Path, hooks_obj: dict) -> None:
     (settings_dir / "settings.json").write_text(
         json.dumps({"hooks": hooks_obj}), encoding="utf-8",
     )
+    _trust(workspace)
 
 
 def test_load_hooks_empty_when_no_settings():
     with tempfile.TemporaryDirectory() as d:
         cfg = H.load_hooks(d)
         assert cfg.is_empty()
+
+
+def test_load_hooks_ignores_an_untrusted_workspace():
+    """The default. A settings file the user never trusted supplies
+    nothing, and says so."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        (ws / ".delfin").mkdir()
+        (ws / ".delfin" / "settings.json").write_text(json.dumps({
+            "hooks": {"PreToolUse": [{"matcher": "", "hooks": [
+                {"type": "command", "command": "true"}]}]}
+        }), encoding="utf-8")
+        cfg = H.load_hooks(ws)
+        assert cfg.is_empty()
+        assert cfg.warnings
 
 
 def test_load_hooks_reads_project_settings():
@@ -200,6 +231,7 @@ def test_local_settings_extends_project_settings():
                 {"matcher": "b", "hooks": [{"type": "command", "command": "true"}]}
             ]}
         }), encoding="utf-8")
+        _trust(ws)
         cfg = H.load_hooks(ws)
         matchers = sorted(h.matcher for h in cfg.for_event("PreToolUse"))
         assert matchers == ["a", "b"]

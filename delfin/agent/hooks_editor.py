@@ -55,7 +55,13 @@ def _write_settings(data: dict[str, Any], path: Path | None = None) -> None:
 
 def list_hooks(workspace: Path | str | None = None) -> list[dict]:
     """Return one flat record per registered hook, across all settings
-    layers, in event-order. Used by the ``/hooks`` slash command."""
+    layers, in event-order. Used by the ``/hooks`` slash command.
+
+    ``source`` is part of the record. Without it the listing showed
+    event, matcher and command, so a hook the user wrote themselves and
+    a hook a checked-out repository shipped were indistinguishable in
+    the only place they are ever displayed.
+    """
     cfg = _hooks.load_hooks(workspace)
     out: list[dict] = []
     for event in _VALID_EVENTS:
@@ -67,8 +73,45 @@ def list_hooks(workspace: Path | str | None = None) -> list[dict]:
                 "command": cmd.command,
                 "timeout_s": cmd.timeout_s,
                 "type": cmd.type,
+                "source": cmd.source,
             })
     return out
+
+
+def hook_warnings(workspace: Path | str | None = None) -> list[str]:
+    """Everything the load could not do: definitions withheld for lack of
+    trust, entries dropped as malformed. Rendered by ``/hooks``.
+
+    A guard the user cannot see is one they will work around, and a hook
+    that silently stopped running looks exactly like a hook that found
+    nothing to complain about."""
+    return list(_hooks.load_hooks(workspace).warnings)
+
+
+def trust_state(workspace: Path | str | None = None) -> str:
+    """Human-readable trust state of *workspace* for hook definitions."""
+    from . import workspace_trust as _trust
+    return _trust.describe(workspace)
+
+
+def trust_this_workspace(workspace: Path | str) -> dict:
+    """Record that the USER trusts *workspace*'s hook definitions.
+
+    Called only from the ``/hooks trust`` command -- i.e. only when the
+    user typed it. The actor is passed explicitly so that no other
+    caller can reach this by accident; ``workspace_trust`` refuses
+    anything else.
+    """
+    from . import workspace_trust as _trust
+    return _trust.trust_workspace(
+        workspace, [_trust.KIND_HOOKS], actor=_trust.ACTOR_USER)
+
+
+def untrust_this_workspace(workspace: Path | str) -> bool:
+    """Withdraw hook trust for *workspace*. ``/hooks untrust``."""
+    from . import workspace_trust as _trust
+    return _trust.revoke_workspace(
+        workspace, [_trust.KIND_HOOKS], actor=_trust.ACTOR_USER)
 
 
 def add_hook(
@@ -160,6 +203,7 @@ def dry_run_hook(
         out.append({
             "matched": bool(getattr(r, "matched", False)),
             "command": getattr(r, "command", ""),
+            "source": getattr(r, "source", ""),
             "decision": getattr(r, "decision", "") or "",
             "reason": getattr(r, "reason", "") or "",
             "exit_code": getattr(r, "exit_code", 0),
@@ -171,5 +215,7 @@ def dry_run_hook(
 
 __all__ = [
     "list_hooks", "add_hook", "remove_hook", "dry_run_hook",
+    "hook_warnings", "trust_state", "trust_this_workspace",
+    "untrust_this_workspace",
     "_VALID_EVENTS",
 ]

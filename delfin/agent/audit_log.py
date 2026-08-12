@@ -239,6 +239,15 @@ _WRITE_TOOLS = frozenset({
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})
+# A hook is a shell command. It runs outside the permission gate, outside
+# the deny-list and outside the sandbox, and it fires on every prompt and
+# every tool call -- so it belongs in "what did you change" more than most
+# of what is already here. Only the BLOCKING ones appeared, via
+# _DENIED_DECISIONS below: a hook that successfully executed matched none
+# of the write/command/persist families and fell out of the report
+# entirely. The protective refusal was reported and the arbitrary
+# execution was not.
+_HOOK_TOOLS = frozenset({"hook"})
 # "block" is what a PreToolUse hook writes. It was missing here, so a
 # hook that stopped an edit produced a record that matched none of the
 # write/command/persist families either -- and dropped out of the changes
@@ -315,6 +324,8 @@ def build_changes_report(
 
         {"files_written":        [{"path", "tool", "count"}],
          "commands":             [{"command", "cwd"}],
+         "hooks_fired":          [{"command", "source", "exit_code",
+                                   "event", "decision"}],
          "denied":               [{"tool", "target", "decision", "reason"}],
          "permissions_persisted":[{"tool", "persistence"}],
          "window": {"from_ts", "to_ts", "records"}}
@@ -322,7 +333,7 @@ def build_changes_report(
     Never raises — on any failure the empty skeleton comes back.
     """
     empty: dict[str, Any] = {
-        "files_written": [], "commands": [], "denied": [],
+        "files_written": [], "commands": [], "hooks_fired": [], "denied": [],
         "permissions_persisted": [],
         "window": {"from_ts": "", "to_ts": "", "records": 0},
     }
@@ -350,6 +361,7 @@ def build_changes_report(
         files: dict[str, dict[str, Any]] = {}
         file_tools: dict[str, set] = {}
         commands: list[dict[str, str]] = []
+        hooks_fired: list[dict[str, Any]] = []
         denied: list[dict[str, str]] = []
         persisted: list[dict[str, Any]] = []
         for rec in picked:
@@ -357,6 +369,18 @@ def build_changes_report(
             decision = str(rec.get("decision", ""))
             path = str(rec.get("path", ""))
             command = str(rec.get("command", ""))
+            # Before the denied branch, and without consuming the record:
+            # a blocking hook both RAN and refused, and belongs in both
+            # places. Its exit code is what the user needs to see, and
+            # its source is what tells them whether it was theirs.
+            if tool in _HOOK_TOOLS:
+                hooks_fired.append({
+                    "command": command,
+                    "source": str(rec.get("source", "")),
+                    "event": str(rec.get("hook_event", "")),
+                    "exit_code": rec.get("exit_code", 0),
+                    "decision": decision,
+                })
             if decision in _DENIED_DECISIONS:
                 denied.append({
                     "tool": tool,
@@ -385,6 +409,7 @@ def build_changes_report(
         return {
             "files_written": list(files.values()),
             "commands": commands,
+            "hooks_fired": hooks_fired,
             "denied": denied,
             "permissions_persisted": persisted,
             "window": {
@@ -406,10 +431,11 @@ def format_changes_report(report: dict) -> str:
     try:
         files = report.get("files_written") or []
         commands = report.get("commands") or []
+        hooks_fired = report.get("hooks_fired") or []
         denied = report.get("denied") or []
         persisted = report.get("permissions_persisted") or []
         window = report.get("window") or {}
-        if not (files or commands or denied or persisted):
+        if not (files or commands or hooks_fired or denied or persisted):
             return ("No recorded changes — the audit log has no matching "
                     "records for this session/window.")
         lines: list[str] = ["### Changes made"]
@@ -425,6 +451,14 @@ def format_changes_report(report: dict) -> str:
                 cwd = c.get("cwd", "")
                 suffix = f" (cwd: {cwd})" if cwd else ""
                 lines.append(f"- `{c.get('command', '?')}`{suffix}")
+        if hooks_fired:
+            lines.append("Hooks fired:")
+            for h in hooks_fired:
+                src = str(h.get("source", "") or "").strip()
+                lines.append(
+                    f"- `{h.get('command', '?')}` — exit="
+                    f"{h.get('exit_code', 0)}"
+                    + (f", from {src}" if src else ", source unrecorded"))
         if denied:
             lines.append("Denied / failed:")
             for d in denied:
