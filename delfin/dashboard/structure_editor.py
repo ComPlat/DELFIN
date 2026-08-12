@@ -5051,18 +5051,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ctx.run_js(js_code)
         xyz_copy_status.value = '<span style="color:#388e3c;">Copied to clipboard</span>'
 
-    #: What the editor's switches read on a structure it has not seen. Not all
-    #: of them off: Settle is on to begin with, because letting go of an atom
-    #: and leaving the strain of the drag in the structure is the surprising
-    #: answer, not the useful one.
-    _CONTROL_DEFAULTS = (
-        (lambda: submit_relax_btn, False),
-        (lambda: submit_settle_btn, True),
-        (lambda: submit_select_btn, False),
-        (lambda: submit_manip_btn, False),
-        (lambda: submit_draw_btn, False),
-        (lambda: submit_dyn_bonds_btn, False),
-    )
+    #: How the switches read on an editor that has just been built, taken from
+    #: the widgets themselves rather than written down a second time. A
+    #: structure the editor has not seen starts here -- Settle on, the rest
+    #: off, charge zero, multiplicity one. The charge is why this covers more
+    #: than the switches: carrying a cation's charge into the next block is a
+    #: wrong answer waiting to happen.
+    def _structure_controls():
+        """The switches that belong to the structure, not to the editor.
+
+        Charge and multiplicity are the clearest case: a cation in one block
+        and a neutral molecule in the next are two different calculations, and
+        carrying one over to the other is a wrong answer waiting to happen. The
+        same goes for the method, the solvent and whether a field is running --
+        switching Dynamik Opt on for one structure says nothing about the next.
+
+        Strength and Mouse are not in here. They are how the editor feels under
+        the hand, and that does not change with the molecule.
+        """
+        return (submit_relax_btn, submit_settle_btn, submit_select_btn,
+                submit_manip_btn, submit_draw_btn, submit_dyn_bonds_btn,
+                submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
+                submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
+                submit_hold_mode)
+
+    def _apply_controls(values):
+        for widget, value in zip(_structure_controls(), values or ()):
+            try:
+                if widget.value != value:
+                    widget.value = value
+            except Exception:
+                # A list that no longer offers what it offered then.
+                pass
+
+    _CONTROL_START = [w.value for w in _structure_controls()]
 
     def remember_structure():
         """What the editor knows about the structure it is on, to be given back.
@@ -5073,10 +5095,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         without this, and the coordinates are read afresh -- with the atom where
         it was dragged to, and no bond to it.
         """
-        return {key: state.get(key) for key in STRUCTURE_MEMORY_KEYS}
+        saved = {key: state.get(key) for key in STRUCTURE_MEMORY_KEYS}
+        saved['controls'] = [w.value for w in _structure_controls()]
+        return saved
 
     def restore_structure(saved):
-        """Give back what was put aside, or start clean for an unseen one."""
+        """Give back what was put aside, or start clean for an unseen one.
+
+        The switches with it: a structure comes back the way it was left, and
+        one the editor has not seen starts on the defaults.
+        """
         for key in STRUCTURE_MEMORY_KEYS:
             if saved and key in saved:
                 state[key] = saved[key]
@@ -5089,6 +5117,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                            ('hyb_overrides', {}), ('history', []),
                            ('structure_undo', [])):
             state.setdefault(key, empty)
+        if saved and saved.get('controls'):
+            _apply_controls(saved['controls'])
+        else:
+            reset_controls()
         _refresh_constraints()
 
     def structure_changed():
@@ -5118,10 +5150,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         To the defaults, not to off -- switching Settle off here took away
         something the editor is supposed to start with.
         """
-        for control, default in _CONTROL_DEFAULTS:
-            widget = control()
-            if widget.value != default:
-                widget.value = default
+        _apply_controls(_CONTROL_START)
 
     def _offer_isomers(isomers, quick=False):
         """Every structure a conversion produced, to wherever they belong.

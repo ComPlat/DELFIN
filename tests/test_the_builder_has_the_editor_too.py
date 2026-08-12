@@ -868,11 +868,11 @@ def test_settle_is_on_to_begin_with_in_both_tabs():
     source = open(editor.__file__, encoding='utf-8').read()
     made = source.split('submit_settle_btn = widgets.ToggleButton')[1].split(')\n')[0]
     assert 'value=True' in made
-    # ...and a structure the editor has not seen puts it back on rather than
-    # taking it away.
-    defaults = source.split('_CONTROL_DEFAULTS = (')[1].split('\n    )')[0]
-    assert 'submit_settle_btn, True' in defaults
-    assert 'submit_relax_btn, False' in defaults
+    # ...and a structure the editor has not seen starts from how the switches
+    # read on an editor that has just been built, taken from the widgets
+    # rather than written down a second time.
+    assert '_CONTROL_START = [w.value for w in _structure_controls()]' in source
+    assert '_apply_controls(_CONTROL_START)' in source
 
 
 def test_converting_again_builds_what_is_in_the_box_now(builder):
@@ -1077,9 +1077,9 @@ def test_the_live_field_follows_the_frame(builder):
     the previous block's parameters running under it -- with the wrong number of
     atoms, even.
 
-    Measured through the real tab on a water and an ethane: the field has three
-    terms on the water, twenty-eight after stepping to the ethane, and three
-    again on the way back.
+    Measured through the real tab on a water and an ethane: three terms on the
+    water, twenty-eight when a field is switched on over the ethane, and three
+    again on the way back -- never the wrong molecule's.
     """
     refs, sent = builder
     water = "O 0.000 0.000 0.000\nH 0.960 0.000 0.000\nH -0.240 0.930 0.000"
@@ -1097,13 +1097,22 @@ def test_the_live_field_follows_the_frame(builder):
     refs['submit_relax_btn'].value = True
     assert terms() == 3
 
+    # Stepping to a frame that has never had a field switches it off there --
+    # a running field belongs to the structure it was worked out for, and this
+    # one has not asked for one.
     sent.clear()
     refs['orca_mol_next_btn'].click()
-    assert any('setForceField' in s for s in sent), 'no field for the new frame'
+    assert refs['submit_relax_btn'].value is False
+
+    # Switch it on there and it is the ethane's, not the water's.
+    sent.clear()
+    refs['submit_relax_btn'].value = True
     assert terms() == 28
 
+    # And back on the water it is the water's again.
     sent.clear()
     refs['orca_mol_prev_btn'].click()
+    assert refs['submit_relax_btn'].value is True, 'it was running here'
     assert terms() == 3
 
 
@@ -1129,3 +1138,63 @@ def test_a_comment_line_is_not_an_atom(builder):
     state['manip_inflight'] = True
     refs['editor_coords'].value = '8\nEdited in DELFIN viewer\n' + ETHANE
     assert state['perceived_for'] == ('C', 'C', 'H', 'H', 'H', 'H', 'H', 'H')
+
+
+def test_every_frame_has_its_own_editor(builder):
+    """Switching Dynamik Opt on for one block said nothing about the next, and
+    a charge set on one followed to all of them.
+
+    What belongs to a structure now travels with it: whether a field is
+    running, Settle, the modes, dynamic bonds, the method, the charge, the
+    multiplicity, the solvent -- and the bonding, the held values and the
+    history that were already there. Strength and Mouse are not in it: they are
+    how the editor feels under the hand, and that does not change with the
+    molecule.
+
+    Driven through the real tab on an ethane and a water:
+
+        frame 1 set        Dynamik on, charge -1, one held value, 7 bonds
+        step to frame 2    Dynamik off, charge 0, nothing held
+        frame 2 set        charge 2
+        back to frame 1    Dynamik on, charge -1, one held value, 7 bonds
+        frame 2 again      charge 2
+    """
+    refs, _sent = builder
+    state = refs['editor_state']
+    water = "O 0.000 0.000 0.000\nH 0.960 0.000 0.000\nH -0.240 0.930 0.000"
+    refs['orca_coords'].value = (
+        'eth.xyz;\n8\n\n' + ETHANE + '\n*\n\nwat.xyz;\n3\n\n' + water + '\n*')
+
+    refs['submit_relax_btn'].value = True
+    refs['submit_gfn_charge'].value = -1
+    state['constraints'] = [{'kind': 'distance', 'atoms': [0, 1],
+                             'value': 1.7, 'mode': 'fix'}]
+    kept = len(state['perceived'].bonds)
+
+    refs['orca_mol_next_btn'].click()
+    assert refs['submit_relax_btn'].value is False, 'the field followed'
+    assert refs['submit_gfn_charge'].value == 0, 'the charge followed'
+    assert state.get('constraints') == []
+
+    refs['submit_gfn_charge'].value = 2
+    refs['orca_mol_prev_btn'].click()
+    assert refs['submit_relax_btn'].value is True
+    assert refs['submit_gfn_charge'].value == -1
+    assert len(state.get('constraints') or []) == 1
+    assert len(state['perceived'].bonds) == kept
+
+    refs['orca_mol_next_btn'].click()
+    assert refs['submit_gfn_charge'].value == 2
+
+
+def test_how_the_editor_feels_is_not_per_structure():
+    """Strength and Mouse stay where the user put them."""
+    source = open(structure_editor.__file__, encoding='utf-8').read()
+    controls = source.split('def _structure_controls():')[1].split('\n    def ')[0]
+
+    for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_ff_dd',
+                 'submit_gfn_charge', 'submit_gfn_mult', 'submit_gfn_solvent'):
+        assert name in controls, name
+    for name in ('submit_strength_slider', 'submit_sens_slider',
+                 'submit_labels_btn', 'submit_label_size'):
+        assert name not in controls, name

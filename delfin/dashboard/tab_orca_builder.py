@@ -874,14 +874,24 @@ def create_tab(ctx):
         belongs to, never by a name of its own.
         """
         scope = json.dumps(orca_editor_scope)
+        # Waited for, not assumed. The editor is installed by the kernel, and a
+        # viewer can appear before it: the first structure of a session that
+        # began with a SMILES is exactly that, since a SMILES in the box has no
+        # viewer and so nothing asked for the editor yet. The introduction was
+        # made once, eighty milliseconds later, and if the editor was not there
+        # by then it was never made at all -- the picture turned in space and
+        # nothing else worked, because the editor had never heard of it.
         return (
             'try{'
             'window._submitMolViewerByScope=window._submitMolViewerByScope||{};'
             f'window._submitMolViewerByScope[{scope}]={viewer};'
-            'setTimeout(function(){'
-            'if(window.__delfinSubmitManip)'
-            f'window.__delfinSubmitManip.onViewerReady({scope},{element});'
-            '},80);'
+            f'(function(el){{var tries=0;'
+            'var meet=function(){'
+            'if(window.__delfinSubmitManip){'
+            f'try{{window.__delfinSubmitManip.onViewerReady({scope},el);}}catch(_e){{}}'
+            'return;}'
+            'if(++tries<200)setTimeout(meet,80);};'
+            f'setTimeout(meet,80);}})({element});'
             '}catch(_e){}'
         )
 
@@ -1292,6 +1302,9 @@ def create_tab(ctx):
         orca_mol_output.layout.height = '560px'
         orca_mol_output.layout.min_height = '560px'
         state['viewer_live'] = False   # nothing on screen until we draw it
+        # Ask for the editor before drawing the thing it has to be told about.
+        if blocks or strip_xyz_header(orca_coords.value).strip():
+            orca_editor._ensure_manip_bootstrap()
         if blocks:
             idx = state['xyz_view_idx']
             _block_name, full_xyz = blocks[idx]
