@@ -2870,6 +2870,48 @@ class AgentEngine:
         budget = int(self.context_window_tokens * self._SLIDING_WINDOW_PCT)
         return self._estimate_context_tokens() > budget
 
+    def _irreducible_tokens(self) -> int:
+        """The part of the estimate that trimming messages cannot change.
+
+        The system prompt, which is rebuilt every turn and does not shrink
+        when history does. Kept separate because the trim loops compare
+        against a budget covering the whole estimate, and a constant on the
+        wrong side of that comparison is what made them unstoppable.
+        """
+        live = len(getattr(self, "last_system_prompt", "") or "")
+        return (live or int(getattr(self, "_system_prompt_chars", 0) or 0)) // 4
+
+    def _trimming_cannot_reach(self, budget: int, kind: str) -> bool:
+        """True when the target is out of reach before anything is trimmed.
+
+        Measured on a 32k window with a 90 kB prompt: budget 22400, system
+        prompt 22500 on its own. The loops' break condition -- estimate
+        under budget -- was therefore unsatisfiable, so they ran to the end
+        of the eligible prefix and cut every message in it down to a stub,
+        finished still over budget, and did it again the next turn on
+        whatever had grown since. The agent's own answers are the only
+        place its conclusions and file lists survive.
+
+        Shredding the history does not fix a prompt that is too large for
+        the window; it only costs the session its memory of itself. The
+        remedy is a smaller prompt, and which part to give up is the user's
+        decision, so this is recorded rather than done quietly.
+        """
+        irreducible = self._irreducible_tokens()
+        if irreducible < budget:
+            return False
+        self.last_compaction_info = {
+            "kind": kind,
+            "trimmed": 0,
+            "note": (
+                f"the system prompt alone is ~{irreducible} tokens against a "
+                f"{budget}-token budget for this window, so trimming the "
+                f"conversation cannot reach it. History left intact — the "
+                f"prompt is what has to get smaller."
+            ),
+        }
+        return True
+
     def _slide_window_trim(self) -> int:
         """In-place trim: progressively truncate the OLDEST tool_result-
         style assistant messages until we're back under the sliding-window
@@ -2880,6 +2922,8 @@ class AgentEngine:
         middle marker so the agent still sees the head + tail).
         """
         budget = int(self.context_window_tokens * self._SLIDING_WINDOW_PCT)
+        if self._trimming_cannot_reach(budget, "sliding_window"):
+            return 0
         trimmed = 0
         # Don't touch the last KEEP_RECENT messages — they're conversation
         # state the agent is actively reasoning over.
@@ -2941,6 +2985,11 @@ class AgentEngine:
         """
         pct = float(self.auto_compact_pct or 0.95)
         budget = int(self.context_window_tokens * pct)
+        # Same rule as the sliding window: a budget the prompt already
+        # exceeds cannot be reached by stubbing messages, and running the
+        # loop anyway empties the history for nothing.
+        if self._trimming_cannot_reach(budget, "hard_clear"):
+            return 0
         cleared = 0
         for idx, msg in enumerate(old_msgs):
             if self._estimate_context_tokens() <= budget:
