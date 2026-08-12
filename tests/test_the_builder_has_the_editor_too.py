@@ -698,3 +698,105 @@ def test_a_converted_structure_reaches_the_preview(builder):
 def test_the_preview_is_filled_by_assignment_not_by_capture():
     assert 'orca_mol_output.outputs = tuple(items)' in BUILDER
     assert 'with orca_mol_output:' not in BUILDER
+
+
+def test_every_name_in_the_editor_resolves():
+    """A name that points nowhere is invisible until the line runs.
+
+    Moving the editor into a part of its own renamed four things the tab used
+    to supply, and one call to one of them was left behind. Nothing failed at
+    import, nothing failed in a test, and the line only runs when an
+    optimisation over several frames finishes -- so "all" raised a NameError
+    in both tabs, minutes into a run, and the results were lost.
+
+    This walks build() and asks what it reads that nobody gives it.
+    """
+    import ast
+    import builtins
+
+    source = open(structure_editor.__file__, encoding='utf-8').read()
+    tree = ast.parse(source)
+    build = next(n for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name == 'build')
+
+    bound = {a.arg for a in build.args.args + build.args.kwonlyargs}
+    loaded = set()
+    for node in ast.walk(build):
+        if isinstance(node, ast.Name):
+            (bound if isinstance(node.ctx, (ast.Store, ast.Del))
+             else loaded).add(node.id)
+        elif isinstance(node, ast.FunctionDef):
+            bound.add(node.name)
+            for arg in node.args.args + node.args.kwonlyargs:
+                bound.add(arg.arg)
+            if node.args.vararg:
+                bound.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                bound.add(node.args.kwarg.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split('.')[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.Lambda):
+            for arg in node.args.args:
+                bound.add(arg.arg)
+
+    module_level = {n.name for n in tree.body
+                    if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                module_level.add((alias.asname or alias.name).split('.')[0])
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in ast.walk(target):
+                    if isinstance(name, ast.Name):
+                        module_level.add(name.id)
+
+    unresolved = sorted(name for name in loaded - bound
+                        if name not in dir(builtins) and name not in module_level)
+    assert unresolved == [], unresolved
+
+
+def test_all_reaches_every_frame_the_tab_holds(builder):
+    """The Submit tab holds a set of isomers; this one holds named blocks, and
+    each of those is a frame too -- so "all" over two blocks means two."""
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_BLOCKS
+
+    frames = refs['list_structures']()
+
+    assert [label for _xyz, _n, label in frames] == ['benzene', 'water']
+    assert [n for _xyz, n, _label in frames] == [12, 3]
+
+
+def test_a_new_structure_starts_the_editor_over(builder):
+    """A live force field belongs to the molecule its parameters were worked
+    out for, and a mode belongs to the structure it was picked on."""
+    refs, _sent = builder
+    refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
+    for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_manip_btn'):
+        refs[name].value = True
+
+    refs['orca_coords'].value = '3\nanother\n' + WATER + '\n'
+
+    for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_manip_btn'):
+        assert refs[name].value is False, name
+
+
+def test_an_edit_keeps_the_header_of_a_plain_xyz(builder):
+    """A box that was never written as named blocks holds one plain XYZ,
+    header and all. Handing back the bare atom lines took that header away on
+    every edit, and after an optimisation the box read as coordinates with no
+    count and no comment."""
+    refs, _sent = builder
+    refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
+
+    refs['editor_state']['manip_inflight'] = True
+    refs['editor_coords'].value = (
+        '3\nEdited in DELFIN viewer\nO 0.2 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n')
+
+    lines = refs['orca_coords'].value.split('\n')
+    assert lines[0].strip() == '3', refs['orca_coords'].value[:60]
+    assert lines[2].startswith('O 0.2')

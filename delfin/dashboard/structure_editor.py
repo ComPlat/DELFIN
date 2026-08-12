@@ -449,7 +449,8 @@ class Editor:
 
 def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
           update_view, get_smiles_charge, set_buttons_disabled=None,
-          offer_structures=None, read_input=None, write_input=None):
+          offer_structures=None, read_input=None, write_input=None,
+          list_structures=None):
     """Make one structure editor over the coordinates a tab keeps.
 
     *state* is the tab's own dictionary -- the editor keeps its history, its
@@ -481,6 +482,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # at all -- so a conversion has to be told where to look.
         def read_input():
             return coords_widget.value
+    if list_structures is None:
+        # What "all" means. The Submit tab holds a set of isomers; the ORCA
+        # Builder holds named blocks, and each of those is a frame too.
+        def list_structures():
+            return state.get('isomers') or []
     if write_input is None:
         # And where a drawing is put, which is the same box: a drawing comes
         # back as a SMILES, and the buttons that turn one into coordinates
@@ -2431,7 +2437,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the browser's own undo stack cannot, because the results arrive from
         Python and re-render the viewer.
         """
-        frames = list(state.get('isomers') or []) if every_frame else []
+        frames = list(list_structures() or []) if every_frame else []
         single = _current_xyz()
         if not frames and not single:
             _set_mol_status('Load a structure before optimising.')
@@ -2642,11 +2648,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'coords': coords_widget.value,
                 }
                 if frames:
-                    state['isomers'] = results
-                    if not played[0]:
-                        # Showing the isomer rebuilds the viewer, which is the
-                        # other way the playback was being torn down.
-                        show_isomer_at_index(state.get('isomer_index', 0))
+                    # Back the way they came: a tab that keeps its structures
+                    # as blocks gets them as blocks, and one that steps through
+                    # isomers gets the one it was on. Showing an isomer rebuilds
+                    # the viewer, which is the other way the playback was being
+                    # torn down.
+                    if played[0]:
+                        state['isomers'] = results
+                    else:
+                        _offer_isomers(results)
                 else:
                     lines = [
                         line for line in results[0][0].splitlines()[2:] if line.strip()
@@ -4996,6 +5006,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         )
         ctx.run_js(js_code)
         xyz_copy_status.value = '<span style="color:#388e3c;">Copied to clipboard</span>'
+
+    def reset_controls():
+        """Back to how the editor starts, for a structure it has not seen.
+
+        A live force field belongs to the molecule its parameters were worked
+        out for, and a mode belongs to the structure it was picked on. Leaving
+        Dynamik Opt running across a change of structure means the next one is
+        relaxed by the last one's parameters, and leaving Manipulate on means
+        the first click lands on an atom nobody meant to move.
+        """
+        for control in (submit_relax_btn, submit_settle_btn, submit_select_btn,
+                        submit_manip_btn, submit_draw_btn, submit_dyn_bonds_btn):
+            if control.value:
+                control.value = False
 
     def _offer_isomers(isomers, quick=False):
         """Every structure a conversion produced, to wherever they belong.

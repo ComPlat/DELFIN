@@ -333,6 +333,11 @@ def create_tab(ctx):
         offer_structures=lambda *a, **k: _take_structures(*a, **k),
         # A SMILES is typed into the tab's own box, not the editor's.
         read_input=lambda: orca_coords.value,
+        # Every named block is a frame, so "all" reaches all of them.
+        list_structures=lambda: [
+            (xyz, len([r for r in strip_xyz_header(xyz).split('\n') if r.strip()]),
+             name[:-4] if name.lower().endswith('.xyz') else name)
+            for name, xyz in (state.get('xyz_blocks') or [])],
         write_input=_write_orca_coords,
     )
     orca_editor_scope = orca_editor.submit_scope_id
@@ -1038,7 +1043,11 @@ def create_tab(ctx):
         records = _orca_parse_xyz_block_records(orca_coords.value)
         idx = int(state.get('xyz_view_idx', 0))
         if not records or not 0 <= idx < len(records):
-            return strip_xyz_header(full_xyz)
+            # A box that was never written as named blocks holds one plain
+            # XYZ, header and all. Handing back the bare atom lines took that
+            # header away on every edit, and after an optimisation the box read
+            # as a list of coordinates with no count and no comment.
+            return full_xyz
         records[idx]['full_xyz'] = full_xyz
         rebuilt = []
         for record in records:
@@ -1335,6 +1344,9 @@ def create_tab(ctx):
         # and reset the camera in the middle of a drag.
         if state.get('editor_quiet'):
             return
+        # A structure the editor has not seen: it starts on this one the way
+        # it starts on any other.
+        orca_editor.reset_controls()
         state['xyz_blocks'] = parse_xyz_blocks(orca_coords.value) or []
         state['xyz_view_idx'] = 0
         state['numbering_check_active'] = False
@@ -2330,4 +2342,8 @@ def create_tab(ctx):
         # The editor's own funnel, which is what a conversion goes through.
         'editor_offer_isomers': orca_editor._offer_isomers,
         'read_input': lambda: orca_coords.value,
+        'list_structures': lambda: [
+            (xyz, len([r for r in strip_xyz_header(xyz).split('\n') if r.strip()]),
+             name[:-4] if name.lower().endswith('.xyz') else name)
+            for name, xyz in (state.get('xyz_blocks') or [])],
     }

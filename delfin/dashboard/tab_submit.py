@@ -612,6 +612,9 @@ def create_tab(ctx):
         # everything across that itself, so none of this may be thrown away
         # underneath it.
         if not state.get('structure_edit_inflight'):
+            # A structure the editor has not seen: it starts on this one the
+            # way it starts on any other.
+            _editor.reset_controls()
             state['constraints'] = []
             state['bond_edits'] = {}
             state['hand_bonds'] = {}
