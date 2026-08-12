@@ -992,6 +992,27 @@ def create_tab(ctx):
         layout=widgets.Layout(width='200px'),
         disabled=True,
     )
+    #: How far the structure moves for how far the mouse moves.
+    #:
+    #: One is the cursor and the atom staying together: let go and the atom is
+    #: where the pointer is. Below one the hand travels further than the
+    #: structure, which is what a crowded region wants; above one it travels
+    #: less far, for reaching across a large system without running out of
+    #: desk. It scales dragging and turning a selection only -- where a *new*
+    #: atom is placed stays one to one, because an atom that appeared
+    #: somewhere other than under the cursor would be a different kind of
+    #: wrong.
+    submit_sens_slider = widgets.FloatSlider(
+        value=1.0, min=0.2, max=3.0, step=0.1,
+        description='Mouse', continuous_update=False,
+        readout=True, readout_format='.1f',
+        tooltip=('How far the structure moves for how far the mouse moves. '
+                 '1.0 keeps the atom under the cursor; lower is finer, higher '
+                 'reaches further. Placing a new atom is always 1.0.'),
+        style={'description_width': '58px'},
+        layout=widgets.Layout(width='200px'),
+        disabled=True,
+    )
     submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
     submit_pick_sync.add_class('submit-pick-sync')
     # Keyboard shortcuts for things Python owns. Unbond is not a picture edit:
@@ -1137,7 +1158,7 @@ def create_tab(ctx):
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
-            submit_strength_slider,
+            submit_strength_slider, submit_sens_slider,
             submit_fs_row_break,
             submit_optimize_btn, submit_optimize_all_btn,
             submit_relax_btn, submit_settle_btn,
@@ -1472,6 +1493,7 @@ def create_tab(ctx):
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
+        submit_sens_slider.disabled = not enabled
         submit_settle_btn.disabled = not enabled
         submit_bond_btn.disabled = not enabled
         submit_unbond_btn.disabled = not enabled
@@ -4706,6 +4728,9 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{json.dumps(payload)});'
             'window.__delfinSubmitManip.setOptimizerStrength('
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
+            # Re-applied with the rest, so a reload keeps the feel the user set.
+            'window.__delfinSubmitManip.setDragSensitivity('
+            f'{json.dumps(submit_scope_id)},{float(submit_sens_slider.value)});'
             'window.__delfinSubmitManip.setSettleOnRelease('
             f'{json.dumps(submit_scope_id)},'
             f'{"true" if submit_settle_btn.value else "false"});'
@@ -6505,6 +6530,16 @@ def create_tab(ctx):
             f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
         )
 
+    def on_submit_sens_changed(change):
+        if change.get('name') != 'value':
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setDragSensitivity('
+            f'{json.dumps(submit_scope_id)},{float(submit_sens_slider.value)});'
+        )
+
     def on_submit_strength_changed(change):
         if change.get('name') != 'value':
             return
@@ -7235,6 +7270,7 @@ def create_tab(ctx):
     submit_gfn_solvent.observe(on_submit_solvent, names='value')
     submit_gfn_solv_model.observe(on_submit_solv_model, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
+    submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
@@ -7594,6 +7630,7 @@ def create_tab(ctx):
         'submit_optimize_all_btn': submit_optimize_all_btn,
         'submit_settle_btn': submit_settle_btn,
         'submit_strength_slider': submit_strength_slider,
+        'submit_sens_slider': submit_sens_slider,
         'submit_relax_btn': submit_relax_btn,
         'submit_gfn_frame': submit_gfn_frame,
         # The two channels the page speaks through, and the line it is

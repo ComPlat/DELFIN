@@ -3437,6 +3437,26 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return state.ffStrength;
     }
 
+    //: How far the structure moves for how far the mouse moves.
+    //
+    // One is the cursor and the atom staying together -- release the button
+    // and the atom is where the pointer is, which is what makes placing one
+    // by hand trustworthy. Below one the hand moves further than the
+    // structure, which is what a crowded region wants; above one it moves
+    // less far, for reaching across a large system without dragging the mouse
+    // off the desk.
+    //
+    // It scales the drag only. Where a *new* atom is put, and where a click
+    // lands, stay at one to one: an atom that appeared somewhere other than
+    // under the cursor would be a different kind of wrong.
+    function setDragSensitivity(scopeKey, value) {
+        var state = getState(scopeKey);
+        var asked = parseFloat(value);
+        if (!isFinite(asked) || asked <= 0) asked = 1;
+        state.dragSensitivity = Math.max(0.1, Math.min(5, asked));
+        return state.dragSensitivity;
+    }
+
     function ffEndDrag(scopeKey, heldSerials) {
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
@@ -3878,7 +3898,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 e.preventDefault();
                 if (!d.snapshotted) { snapshotForUndo(scopeKey); d.snapshotted = true; }
                 var basis = getCameraBasis(viewer);
-                var s = getPixelToWorld(viewer, state2.canvas);
+                var s = getPixelToWorld(viewer, state2.canvas)
+                        * (state2.dragSensitivity || 1);
                 var delta = {
                     x: basis.right.x * dx * s - basis.up.x * dy * s,
                     y: basis.right.y * dx * s - basis.up.y * dy * s,
@@ -3894,7 +3915,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             } else if (d.kind === 'rotate' && d.movedEnough) {
                 e.preventDefault();
                 if (!d.snapshotted) { snapshotForUndo(scopeKey); d.snapshotted = true; }
-                applyRotate(scopeKey, dx, dy);
+                var turn = state2.dragSensitivity || 1;
+                applyRotate(scopeKey, dx * turn, dy * turn);
             } else if (d.kind === 'maybe-rect' && d.movedEnough) {
                 // Lazily begin rect
                 if (!state2.rect) beginRectDraw(scopeKey, d.origX, d.origY);
@@ -4582,6 +4604,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         updateEnergyBadge(scopeKey);
         if (state.ffActive && state.ffStrength) {
             setOptimizerStrength(scopeKey, state.ffStrength);
+            setDragSensitivity(scopeKey, state.dragSensitivity);
         }
         updateStatus(scopeKey);
         return result;
@@ -4639,6 +4662,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         readInternal: readInternal,
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
+        setDragSensitivity: setDragSensitivity,
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
         centreOnSystem: centreOnSystem,
