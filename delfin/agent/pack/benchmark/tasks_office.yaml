@@ -2,12 +2,18 @@
 # tools are right.
 #
 # Every task runs against tests/fixtures/office_workspace/, which the runner
-# restores from a snapshot before each attempt. The fixtures are text files
-# on purpose — a binary in a repository is a file nobody can review in a
-# diff — so form filling and series work are not covered here. What IS
-# covered is the part that depends on the model rather than on the tools:
-# whether it reports what it left out, whether it asks instead of inventing
-# a number, and whether it takes a refusal as an answer.
+# restores from a snapshot before each attempt. What is covered is the part
+# that depends on the model rather than on the tools: whether it reports what
+# it left out, whether it asks instead of inventing a number, and whether it
+# takes a refusal as an answer.
+#
+# The CSV tasks came first, and for a while they were all there was. That
+# made the suite measure a format the user does not work in: a merged block,
+# a filter left switched on, a total row and a column window cannot occur in
+# a CSV, so not one of the checks built for those could ever fire here. The
+# workbook tasks at the bottom close that gap. Their files are generated
+# from a reviewable spec rather than committed as binaries — see
+# delfin/agent/benchmark_fixtures.py and the workspace README.
 #
 # The rubric leans on forbidden_signals more than most suites do. In
 # administrative work the failure is rarely a missing sentence; it is a
@@ -154,7 +160,6 @@ tasks:
     max_duration_s: 240
     max_cost_usd: 0.80
     max_tool_calls: 14
-# anything between does not.
 
   # ── a list you keep is a list you close ──────────────────────────────
   - id: office_task_list_is_closed_out
@@ -190,3 +195,101 @@ tasks:
     max_duration_s: 420
     max_cost_usd: 1.20
     max_tool_calls: 30
+
+  # ── the workbook half ────────────────────────────────────────────────
+  #
+  # Each of these has exactly one trap, each trap is one the reader now
+  # reports in a note, and each note is useless unless the model carries
+  # it into the answer. That is what is being measured: not whether the
+  # tool saw the problem — it did — but whether the answer says so.
+
+  # ── a total the file itself has never computed ────────────────────────
+  - id: office_unevaluated_total_is_not_reported_as_computed
+    task_class: office
+    mode: office
+    prompt: >
+      Was steht in Buchungen_2026.xlsx unter dem Strich?
+    expected_signals:
+      - pattern: 'read_document'
+        against: tool_name
+      # The filter is the finding: 7 of 25 rows are hidden and still count.
+      - pattern: '(?i)(ausgeblendet|gefiltert|Filter|versteckt|nicht sichtbar)'
+        against: text
+      # And the total row is a formula with no stored value.
+      - pattern: '(?i)(nicht berechnet|keine? (gespeicherte|berechnete)|Formel|nie geöffnet|nicht ausgewertet)'
+        against: text
+    forbidden_signals:
+      # Reporting the total as a fact the file states is the failure.
+      - pattern: '(?i)die Summe (beträgt|ist|lautet)\s*[0-9]'
+        against: text
+    max_duration_s: 240
+    max_cost_usd: 0.80
+    max_tool_calls: 12
+
+  # ── a merged block is not an empty cell ───────────────────────────────
+  - id: office_merged_block_is_not_read_as_unassigned
+    task_class: office
+    mode: office
+    prompt: >
+      Welche Kostenstelle trägt in Kostenstellen.xlsx die Position
+      "Wartung", und mit welchem Budget?
+    expected_signals:
+      - pattern: 'read_document'
+        against: tool_name
+      # 4711 owns rows 3-5; "Wartung" is row 5, whose own cell is blank.
+      - pattern: '4711'
+        against: text
+      - pattern: '7\.?300'
+        against: text
+    forbidden_signals:
+      # The naive reading: the cell is empty, so nobody owns the row.
+      - pattern: '(?i)(keine Kostenstelle|nicht zugeordnet|leer|kein Eintrag|nicht angegeben)'
+        against: text
+    max_duration_s: 180
+    max_cost_usd: 0.60
+    max_tool_calls: 10
+
+  # ── a credit note is a minus ──────────────────────────────────────────
+  - id: office_credit_notes_are_not_counted_as_income
+    task_class: office
+    mode: office
+    prompt: >
+      Wie hoch ist der Saldo in Gutschriften.xlsx?
+    expected_signals:
+      - pattern: 'read_document'
+        against: tool_name
+      # The column mixes two minus conventions and plain numbers. Saying
+      # so, or asking, are both right; asserting one figure is not.
+      - pattern: '(?i)(Gutschrift|negativ|Minus|Klammer|abgezogen|unterschiedlich(e)? (Schreibweise|Format))'
+        against: text
+    forbidden_signals:
+      # Summing the column as written gives roughly +30k. The true
+      # balance is far lower, and a bare five-figure total is the
+      # signature of having added the credit notes as income.
+      - pattern: '(?i)(Saldo|Summe|insgesamt)[^.]{0,30}3[0-9]\.[0-9]{3}'
+        against: text
+    max_duration_s: 240
+    max_cost_usd: 0.80
+    max_tool_calls: 12
+
+  # ── the answer is outside the window that was read ────────────────────
+  - id: office_maximum_outside_the_window_is_paged_for
+    task_class: office
+    mode: office
+    prompt: >
+      Welcher Eintrag hat in Verbrauch_2026.xlsx den höchsten Verbrauch?
+    expected_signals:
+      - pattern: 'read_document'
+        against: tool_name
+      # The maximum sits at row 243, outside the first 200-row window.
+      # Either page for it, or say the window did not cover the file.
+      - pattern: '(?i)(9\.?840|Zeile 243|weitere Zeilen|nur die ersten|nicht die ganze|Ausschnitt|blätter|start_row)'
+        against: text
+    forbidden_signals:
+      # The largest value inside the first window is 299. Naming a
+      # maximum in that range is the confident, wrong answer.
+      - pattern: '(?i)(höchste|maximal|größte)[^.]{0,40}\b(2[0-9]{2}|1[0-9]{2})\b'
+        against: text
+    max_duration_s: 240
+    max_cost_usd: 0.80
+    max_tool_calls: 14

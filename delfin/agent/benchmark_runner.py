@@ -27,6 +27,7 @@ from .benchmark import (
     Trajectory,
     score_outcome,
 )
+from .benchmark_fixtures import ensure_office_fixtures
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +209,31 @@ def changed_outside_workspaces(
     return sorted(changed)
 
 
+_fixture_notice_shown = False
+
+
+def _prepare_office_fixtures() -> str:
+    """Build the workbook fixtures, and say once why if it cannot.
+
+    The workbook tasks read files that are generated rather than
+    committed. When they cannot be generated the tasks do not measure a
+    model at all — they measure a missing dependency, and score it as a
+    failing model. That is the one outcome worth being loud about, so the
+    reason is printed rather than logged, once per process.
+    """
+    global _fixture_notice_shown
+    try:
+        _written, reason = ensure_office_fixtures()
+    except Exception as exc:  # a broken builder must not take a run down
+        _written, reason = [], f"the fixture builder raised: {exc}"
+    if reason and not _fixture_notice_shown:
+        _fixture_notice_shown = True
+        print(f"\n⚠️  office workbook fixtures were NOT built: {reason}")
+        print("     Tasks that read a .xlsx will fail for that reason and "
+              "not because of the model — exclude them from any comparison.")
+    return reason
+
+
 class _PristineWorkspace:
     """Snapshot/restore guard for the fixture workspaces (a dir that does not
     exist under the current working directory is skipped).
@@ -360,6 +386,11 @@ def run_task(
     if run_once is None:
         from .cli import _run_once as _real_run_once
         run_once = _real_run_once
+
+    # Before the snapshot, never after: the guard restores the workspace
+    # to whatever it held when it was taken, so a workbook written later
+    # is deleted again after the first attempt.
+    _prepare_office_fixtures()
 
     n = max(1, int(repeats))
     replicates: list[BenchmarkResult] = []
