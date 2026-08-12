@@ -11092,8 +11092,8 @@ class _DocToolExecutor:
             payload["watched_slurm_jobs"] = watched
             payload["note"] = (
                 "[watch] job(s) " + ", ".join(watched) + " are now watched; "
-                "their completion is reported to you without polling. Do not "
-                "loop on squeue."
+                "their completion reaches you at the start of a later turn, "
+                "without polling. Do not loop on squeue."
             )
         return json.dumps(payload, ensure_ascii=False)
 
