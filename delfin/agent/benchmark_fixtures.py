@@ -17,9 +17,12 @@ under test becomes the one the user actually has on disk.
 
 Three properties this has to keep:
 
-* **Deterministic.** A benchmark baseline is only comparable against
-  fixtures that are byte-stable, so nothing here is random and nothing
-  is derived from the clock.
+* **Deterministic, down to the bytes.** Nothing here is random and
+  nothing is derived from the clock — including the clock the workbook
+  writer puts into the zip entries and into ``docProps``, which is
+  stripped after the write. Two builds of one spec are byte-identical,
+  so a content hash can tell a spec change from a rebuild and a baseline
+  cannot be compared against a file that is not the one it measured.
 * **Rebuilt when the spec changes.** A stamp file carries a digest of
   the materialised rows. Stale workbooks from an older spec would score
   a model against a file the tasks no longer describe.
@@ -34,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -217,6 +221,52 @@ def missing_dependency_reason() -> str:
 # ---------------------------------------------------------------------------
 
 
+# The oldest moment a zip entry can carry. Any fixed value would do; this
+# one is unmistakably not a real modification time, so nobody reads it as
+# information about the file.
+_FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+_TIMESTAMP_RE = re.compile(
+    rb"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?")
+_FIXED_TIMESTAMP = b"1980-01-01T00:00:00Z"
+
+
+def _make_deterministic(path: Path) -> None:
+    """Remove the clock from a workbook that has just been written.
+
+    An .xlsx is a zip, and the writer stamps every entry with the current
+    time and puts created/modified timestamps into ``docProps``. Two
+    builds of the same spec therefore differ in their bytes, which was
+    asserted here as a property and was only ever true by luck — the
+    test passed while the two writes happened inside the same second and
+    failed as soon as they did not.
+
+    It matters because the workbooks are generated rather than committed:
+    if the bytes move on every rebuild, a content hash cannot be used to
+    tell a spec change from a rebuild, and a baseline can be compared
+    against a file that is not the one it was measured on.
+
+    The entry ORDER is left as the writer produced it. Sorting would be
+    just as deterministic and would move ``[Content_Types].xml`` away
+    from the front, which some readers care about.
+    """
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(path) as src:
+        entries = [(info.filename, src.read(info.filename))
+                   for info in src.infolist()]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
+        for name, data in entries:
+            if name.startswith("docProps/"):
+                data = _TIMESTAMP_RE.sub(_FIXED_TIMESTAMP, data)
+            info = zipfile.ZipInfo(name, date_time=_FIXED_ZIP_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o600 << 16
+            out.writestr(info, data)
+    path.write_bytes(buf.getvalue())
+
+
 def _write_workbook(target: Path, sheet_name: str,
                     rows: list[list[Any]], *,
                     merges: tuple[str, ...] = (),
@@ -243,6 +293,7 @@ def _write_workbook(target: Path, sheet_name: str,
     os.close(fd)
     try:
         wb.save(tmp)
+        _make_deterministic(Path(tmp))
         os.replace(tmp, target)
     finally:
         wb.close()
