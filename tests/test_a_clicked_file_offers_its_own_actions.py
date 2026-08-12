@@ -42,6 +42,14 @@ def refs(tmp_path):
     (job / 'huge.out').write_text(
         'FINAL SINGLE POINT ENERGY -1.0\n' * 120_000, encoding='utf-8')
     (job / 'notes.md').write_text('nothing to calculate here\n', encoding='utf-8')
+    (job / 'single.xyz').write_text(
+        '2\nwater fragment\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\n', encoding='utf-8')
+    (job / 'traj.final.interp').write_text(
+        '# trajectory\n0 0.0\n1 -0.5\n', encoding='utf-8')
+    for csv_name in ('complete_mutation_space.csv',
+                     'preselected_mutation_space.csv',
+                     'rejected_mutation_space.csv'):
+        (job / csv_name).write_text('id,smiles\n1,CCO\n', encoding='utf-8')
 
     ctx = DashboardContext(
         calc_dir=calc,
@@ -76,6 +84,13 @@ def _click(refs, name):
     ('stage.inp', ['Recalc']),
     ('stage.out', ['Print Mode', 'MO Plot', 'Print NMR']),
     ('huge.out', ['Print Mode', 'MO Plot', 'Print NMR']),
+    # RMSD rides along: a single-frame xyz is what it aligns against.
+    ('single.xyz', ['Build Batch from XYZ', 'Calc NMR', 'Calc CENSO/ANMR',
+                    'hyperpol_xtb', 'tadf_xtb', 'RMSD']),
+    ('traj.final.interp', ['Plot Trajectory']),
+    ('complete_mutation_space.csv', ['Preselection', 'Visualize']),
+    ('preselected_mutation_space.csv', ['Visualize']),
+    ('rejected_mutation_space.csv', ['Visualize']),
 ])
 def test_a_clicked_file_offers_its_actions(refs, name, expected):
     _click(refs, name)
