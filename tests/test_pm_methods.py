@@ -23,6 +23,7 @@ import shutil
 import pytest
 
 from delfin.dashboard import mopac_optimize as mopac
+from editor_source import SUBMIT_SOURCE
 
 _needs_mopac = pytest.mark.skipif(mopac.find_mopac() is None,
                                   reason='MOPAC not installed')
@@ -47,7 +48,7 @@ def test_the_energy_carries_its_unit():
     kcal/mol -- a number about nothing."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     assert "state['gfn_energy_unit'] = outcome.get('energy_unit')" in source
     assert "if unit:" in source
     assert "said += f' E = {energy:.4f} {unit}.'" in source
@@ -108,7 +109,7 @@ def test_charge_and_spin_reach_it():
 def test_the_viewer_offers_them_and_runs_the_right_engine():
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     assert "('PM6-D3H4', 'pm6d3h4')" in source
     assert 'from . import mopac_optimize as _mopac' in source
     # One question for "is this computed on the server", two engines behind it.
@@ -236,7 +237,7 @@ def test_the_continuous_relaxation_reaches_both_engines():
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     follow = source.split('def _gfn_follow_step')[1].split('\n    def ')[0]
     assert 'if _mopac.is_mopac_method(method):' in follow
     assert 'optimize_with_mopac(' in follow
@@ -262,7 +263,7 @@ def test_the_label_never_names_the_wrong_engine():
     KeyError in the middle of a drag."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     follow = source.split('def _gfn_follow_step')[1].split('\n    def ')[0]
     assert '_server_label(method)' in follow
     assert '_gfn.GFN_METHODS[method]' not in follow

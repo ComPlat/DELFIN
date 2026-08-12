@@ -16,6 +16,7 @@ import pytest
 from delfin.dashboard import gfn_optimize as gfn
 from delfin.dashboard import mopac_optimize as mopac
 from delfin.dashboard import solvents
+from editor_source import SUBMIT_SOURCE
 
 
 # Glycine: polar enough that a continuum around it moves both the energy and
@@ -211,7 +212,7 @@ def test_a_result_says_which_liquid_it_is_about_even_without_a_version():
 def test_the_tab_offers_the_model_and_hands_it_to_both_engines():
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     assert 'submit_gfn_solv_model' in source
     assert 'def _solv_model(' in source
     assert 'def _refresh_solvation_controls(' in source
@@ -297,7 +298,7 @@ def test_a_solvent_is_free_to_drag_in_except_for_the_one_that_is_not():
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     armed = source.split('def on_submit_relax_toggle')[1].split('\n    def ')[0]
     assert 'ddCOSMO costs about six times' in armed
     assert "_solv_model() == 'ddcosmo'" in armed
@@ -319,7 +320,7 @@ def test_the_settle_after_a_release_reaches_both_engines():
     Settle on did nothing, and said nothing about doing nothing."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     settle = source.split('def _gfn_settle_now')[1].split('\n    def _gfn_follow')[0]
     assert 'if not xyz or not _server_method(method):' in settle
     assert '_mopac.is_mopac_method(method)' in settle

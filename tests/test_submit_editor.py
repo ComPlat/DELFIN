@@ -10,6 +10,9 @@ import re
 import pytest
 
 from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+from editor_source import EDITOR_SOURCE as _EDITOR_PY
+from editor_source import SUBMIT_SOURCE
+from editor_source import SUBMIT_SOURCE as _TAB_AND_EDITOR
 
 EDITOR = submit_manip_bootstrap_js()
 
@@ -136,8 +139,7 @@ def test_dragging_an_atom_relaxes_the_rest_through_the_force_field():
 
 def test_force_field_is_switched_on_from_python_not_polled():
     from delfin.dashboard import tab_submit
-
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'def _enable_live_forcefield' in source
     assert 'export_forcefield_terms' in source
     assert 'setForceField' in source
@@ -193,7 +195,7 @@ def test_optimisation_covers_every_frame_and_is_undoable():
     stack cannot cover this: results arrive from Python and re-render."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     body = source.split('def on_submit_optimize(change=None, every_frame=False)')[1].split('\n    def ')[0]
     assert "frames = list(state.get('isomers') or []) if every_frame else []" in body, (
         "Optimize takes the frame on screen; all takes the set"
@@ -289,7 +291,7 @@ def test_optimise_starts_a_second_row_in_fullscreen():
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     children = source.split('submit_manip_toolbar = widgets.HBox')[1].split(']')[0]
     order = ['submit_strength_slider', 'submit_fs_row_break',
              'submit_optimize_btn', 'submit_optimize_all_btn']
@@ -310,7 +312,7 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     overflow hidden simply cut off whatever did not fit."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     toolbar = source.split('submit_manip_toolbar = widgets.HBox')[1].split(')\n')[0]
     assert "flex_flow='row wrap'" in toolbar
     assert "overflow='hidden'" not in toolbar
@@ -343,7 +345,7 @@ def test_relaxation_strength_is_adjustable():
     dragged atom has to be fought rather than led."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'submit_strength_slider' in source
     assert 'setOptimizerStrength' in source
 
@@ -363,7 +365,7 @@ def test_camera_survives_a_rebuild_of_the_same_structure():
     view snapped back to the default orientation every time."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     assert '_submitMolViewByScope' in source
     assert 'prev.getView()' in source
     assert 'viewer_UNIQUEID.setView(saved.view)' in source
@@ -482,7 +484,7 @@ def test_bonding_is_perceived_once_and_not_re_read_from_a_dragged_geometry():
     19.5 kcal/mol at any twist."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'def _perception_for' in source
     assert "state.get('perceived_for') == fingerprint" in source
     # Both the live parameters and the release-time relaxation use it.
@@ -500,7 +502,7 @@ def test_remembered_bonding_is_dropped_when_the_structure_really_changes():
     branch, which is what keeps a dragged double bond a double bond."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "state['perceived'] = None" in view
     # It must sit after the inflight early return, or a drag would clear it.
@@ -557,7 +559,7 @@ def test_settling_on_release_can_be_switched_off():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'submit_settle_btn' in source
     assert 'setSettleOnRelease' in source
     # On by default: it is what keeps a submitted geometry sane.
@@ -613,7 +615,7 @@ def test_tapping_a_metal_offers_its_coordination_polyhedra():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'submit_pick_sync' in source
     assert 'polyhedron_options(perceived, indices[0])' in source
     # Only for a single selected atom, and only when it is a metal.
@@ -631,7 +633,7 @@ def test_polyhedra_are_offered_without_the_force_field_being_on_first():
     at all — and said nothing either."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     handler = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
     assert '_perception_for(xyz)' in handler
     assert "state.get('perceived')" not in handler
@@ -650,7 +652,7 @@ def test_values_can_be_held_and_dropped_again():
     0.1377 A against 0.1344 for a plain relaxation."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'submit_hold_btn' in source
     hold = source.split('def on_submit_hold')[1].split('\n    def ')[0]
     assert "_CONSTRAINT_KINDS.get(len(indices))" in hold
@@ -676,7 +678,7 @@ def test_an_exchange_lets_the_polyhedron_hand_over_the_vertices():
     afresh from where they have landed."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     handler = source.split('def on_submit_swap')[1].split('\n    def ')[0]
     # No hand-written assignment any more; it is re-derived.
     assert "state['poly_assignment'] = None" in handler
@@ -691,7 +693,7 @@ def test_a_held_polyhedron_survives_selecting_something_else():
     polyhedron away, and the export that followed went out without it."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     handler = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
     assert "state['poly_offer_metal'] = None" in handler
     assert "state['poly_metal'] = None" not in handler
@@ -718,10 +720,10 @@ def test_dragging_a_ligand_hands_it_the_vertex_it_lands_on():
     its old place."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     sync = source.split('def on_submit_manip_sync')[1].split('\n    def ')[0]
     assert "state['poly_assignment'] = None" in sync
-    assert '_schedule_ui_update(_enable_live_forcefield)' in sync
+    assert 'schedule_ui_update(_enable_live_forcefield)' in sync
 
 
 def test_a_typed_value_is_not_overwritten_by_the_running_field():
@@ -762,7 +764,7 @@ def test_the_polyhedron_reconsiders_once_per_drag_not_twice_a_second():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     sync = source.split('def on_submit_manip_sync')[1].split('\n    def ')[0]
     # The comment line now carries the atoms the hand is on as well, so the
     # marker is read as a prefix rather than as the whole line.
@@ -780,7 +782,7 @@ def test_force_field_notes_sit_under_the_structure_they_describe():
     is about."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     assert 'submit_ff_notes' in source
     assert "submit_ff_notes.add_class('submit-ff-notes')" in source
     # Below the copy row, in the panel the viewer lives in.
@@ -819,7 +821,7 @@ def test_a_held_value_can_be_a_pull_or_an_exact_fix():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'submit_hold_mode' in source
     # Only pulls become force-field terms; fixes are re-imposed in the browser.
     assert "if c.get('mode', 'pull') == 'pull'" in source
@@ -889,7 +891,7 @@ def test_two_ligands_are_exchanged_rather_than_dragged_past_each_other():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     handler = source.split('def on_submit_swap')[1].split('\n    def ')[0]
     assert 'exchangeLigands(' in handler
     # Offered without a polyhedron too: an exchange is useful either way.
@@ -925,7 +927,7 @@ def test_bonds_can_be_drawn_and_removed_by_hand():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     assert 'submit_bond_btn' in source and 'submit_unbond_btn' in source
     # The correction is remembered and laid over perception, or the next
     # perception -- which runs from the geometry -- would quietly undo it.
@@ -996,7 +998,7 @@ def test_a_bond_edit_actually_reaches_the_force_field():
     the metal from 6 bonds and 15 angles to 4 and 6."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     edit = source.split('def _edit_bond')[1].split('\n    def ')[0]
     # The cache has to be dropped, or the correction never leaves the picture.
     assert "state['perceived'] = None" in edit
@@ -1030,7 +1032,7 @@ def test_the_selection_is_released_once_a_value_has_been_set():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'def _clear_selection' in source
     # Choosing a polyhedron is the same kind of act: the metal has done its
     # job, and leaving it picked meant the next atom clicked joined it.
@@ -1074,7 +1076,7 @@ def test_the_hybridisation_of_a_picked_atom_can_be_overruled():
     and angles come from the geometry either way."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     assert 'submit_hyb_dd' in source
     assert 'submit_hyb_dd.observe(on_submit_hyb_changed' in source
 
@@ -1165,7 +1167,7 @@ def test_delete_removes_the_selected_bond_and_nothing_else():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert "submit_cmd_sync.add_class('submit-cmd-sync')" in source
     assert 'submit_cmd_sync.observe(on_submit_cmd' in source
     handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
@@ -1183,7 +1185,7 @@ def test_a_hybridisation_can_be_forced_on_a_whole_selection():
     again puts C0 back to 120.0."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     offer = source.split('def _refresh_hybridisation')[1].split('\n    def ')[0]
     # Every picked atom, metals dropped rather than blocking the offer -- and
     # an index the structure no longer has dropped too, because the browser
@@ -1225,7 +1227,7 @@ def test_carbon_types_can_be_read_off_the_connectivity():
     says it outright, because carbon has no lone pair."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'submit_hyb_auto_btn' in source
     assert 'submit_hyb_auto_btn.on_click(on_submit_hyb_auto)' in source
     handler = source.split('def on_submit_hyb_auto')[1].split('\n    def ')[0]
@@ -1247,7 +1249,7 @@ def test_a_polyhedron_held_on_one_metal_is_not_offered_for_the_next():
     before that the second metal made a two-atom pick, which offers nothing."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     body = source.split('def on_submit_pick_sync')[1].split('\n    def ')[0]
     assert 'offered = {code for code, _label in choices}' in body
     assert 'submit_poly_dd.value = applied if applied in offered else \'\'' in body
@@ -1264,7 +1266,7 @@ def test_turn_is_offered_only_where_the_vertices_differ():
     prism on the Re complex leaves it hidden."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     assert 'submit_poly_turn_btn' in source
     assert 'submit_poly_turn_btn.on_click(on_submit_poly_turn)' in source
 
@@ -1312,7 +1314,7 @@ def test_draw_mode_hands_every_gesture_to_python():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     assert 'submit_draw_btn' in source
     # No order to choose in advance: a drawn bond is single, and what it
     # should be is decided afterwards by tapping the stick, where it can be
@@ -1349,7 +1351,7 @@ def test_undo_reaches_structural_edits_too():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
     assert "if verb == 'undo':" in handler
 
@@ -1381,7 +1383,7 @@ def test_drawing_does_not_reset_the_camera_or_stop_the_field():
     that includes the new atom, which is the moment to pick it up again."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     assert 'var edited = !!window.__delfinStructureEdit;' in source
     assert '(edited || saved.atoms === count)' in source
     mark = source.split('def _mark_structure_edit')[1].split('\n    def ')[0]
@@ -1429,7 +1431,7 @@ def test_a_double_bond_is_drawn_as_two_sticks():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     push = source.split('def _push_bond_orders')[1].split('\n    def ')[0]
     assert 'setBondOrders(' in push
     # Only what differs from a plain stick needs sending.
@@ -1519,7 +1521,7 @@ def test_a_held_value_follows_the_atoms_through_an_edit():
     structure.add_atom('H', (0.0, 0.0, 1.0))
     assert structure.renumbering() == {1: 0, 2: 1}   # a new atom came from nowhere
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     apply_ = source.split('def _apply_structure')[1].split('\n    def ')[0]
     assert 'renumber = structure.renumbering()' in apply_
     assert "state['constraints'] = kept" in apply_
@@ -1566,7 +1568,7 @@ def test_only_the_corrections_from_a_hand_are_put_back():
     and no longer says which bonds came from a hand."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     push = source.split('def _push_hand_bonds')[1].split('\n    def ')[0]
     assert "state.get('hand_bonds')" in push
     assert 'bond_edits' not in push
@@ -1590,7 +1592,7 @@ def test_a_different_molecule_keeps_none_of_the_corrections():
     """They name atoms by index, which says nothing about another structure."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     view = source.split('def update_molecule_view')[1].split('\n    def ')[0]
     assert "state['hand_bonds'] = {}" in view
     assert view.index('structure_edit_inflight') < view.index("state['hand_bonds'] = {}")
@@ -1605,7 +1607,7 @@ def test_the_fullscreen_status_is_cleared_with_the_small_one():
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     clear = source.split('def _clear_mol_status')[1].split('\n    def ')[0]
     assert "mol_status.value = ''" in clear
     assert "mol_status_fs.value = ''" in clear
@@ -1700,7 +1702,7 @@ def test_the_editor_is_not_sent_again_to_a_page_that_has_it():
     ready = _body('onViewerReady')
     assert "pushCommandToPython(scopeKey, 'editor', MANIP_VERSION)" in ready
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     bundle = source.split('def _build_mol_output_bundle')[1].split('\n    def ')[0]
     assert "carry_editor = (state.get('manip_seen_version')" in bundle
     assert "submit_manip_bootstrap_js() if carry_editor else ''" in bundle
@@ -1832,7 +1834,7 @@ def test_no_gutter_is_kept_for_an_output_number_that_will_never_come():
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _TAB_AND_EDITOR
     for scope in ('.submit-mol-output', '.submit-fs-overlay'):
         assert f'{scope} .jp-OutputPrompt' in source, scope
         assert f'{scope} .jp-OutputArea-prompt' in source, scope
@@ -1892,7 +1894,7 @@ def test_a_button_brings_the_system_back_into_view():
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     handler = source.split('def on_submit_centre')[1].split('\n    def ')[0]
     assert 'recentreView' in handler
     assert 'structure is unchanged' in handler
@@ -2002,7 +2004,7 @@ def test_a_step_is_recorded_before_it_happens_not_after(tab):
         'both ways of starting a drag have to say so'
     )
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = _EDITOR_PY
     handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
     assert "if verb == 'grabbed':" in handler
     assert "_remember('a drag')" in handler

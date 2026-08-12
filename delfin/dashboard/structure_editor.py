@@ -20,6 +20,20 @@ a frame, and leaves the model -- and with it the bonds -- untouched.
 
 from __future__ import annotations
 
+import html
+import json
+import shutil
+import threading
+import time
+from pathlib import Path
+
+import ipywidgets as widgets
+
+from . import gfn_optimize as _gfn
+from . import mopac_optimize as _mopac
+from . import solvents as _solvents
+from .molecule_viewer import submit_manip_bootstrap_js
+
 
 #: How tall a digit comes out, in CSS pixels, per unit of the scale factor.
 #: The label texture is 68 px tall and a digit fills about half of it; the
@@ -251,3 +265,4136 @@ def show_atom_numbers_js(var='viewer', on=True, scale=None):
         + '\nwindow.__delfinAtomNumbers.set(%s,%s,%.3f);'
         % (var, 'true' if on else 'false', size)
     )
+
+
+class Editor:
+    """One structure editor: what to place, and what the tab still calls.
+
+    Everything is reachable under the name it had while this lived in the
+    Submit tab, so a tab that holds one reads the same as it did.
+    """
+
+    def __init__(self, parts):
+        self.__dict__.update(parts)
+
+    @property
+    def exported(self):
+        """The widgets a tab hands out, under the names they have here."""
+        return {name: value for name, value in self.__dict__.items()
+                if name.startswith('submit_')
+                or name in ('mol_output', 'mol_status', 'mol_status_fs')}
+
+
+def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
+          update_view, show_isomer_at_index, get_smiles_charge):
+    """Make one structure editor over the coordinates a tab keeps.
+
+    *state* is the tab's own dictionary -- the editor keeps its history, its
+    held internal coordinates and its bond edits in it, so a tab that reloads
+    a structure can clear them the way it always has. *coords_widget* is where
+    an edited structure is written; changing it is what makes the tab redraw.
+    The four callables are what the editor cannot know: when it is safe to
+    touch the interface, how the tab shows a structure again, how it steps
+    through isomers, and what charge the SMILES it came from implies.
+    """
+    # The handful of keys the editor reads without asking first. A tab that
+    # has never shown a structure has not written them, and a second host has
+    # not written any of them; seeding them here is what lets the editor stand
+    # on a dictionary it has not been given a tour of.
+    for _key, _value in (('manip_bootstrap_done', False), ('manip_inflight', False),
+                         ('perceived', None), ('poly_applied', None),
+                         ('poly_metal', None), ('gfn_generation', 0),
+                         ('gfn_scanned_uhf', None)):
+        state.setdefault(_key, _value)
+
+    mol_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
+    )
+    # A second one, for the overlay.  Not the same widget moved: fullscreen
+    # relocates its members by hand and ipywidgets knows nothing about it, so
+    # the line borrowed for the big view came back somewhere else and was lost
+    # from the small one.  Two widgets, one text, nothing moved.
+    mol_status_fs = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
+    )
+    mol_status_fs.add_class('submit-fs-member-status')
+    # It lives in the ordinary layout so fullscreen can pick it up from there,
+    # but it must not be seen next to the line it is a copy of -- the message
+    # would simply be printed twice.  Hidden here, shown in the overlay.
+    mol_status_fs.layout.display = 'none'
+    mol_output = widgets.Output(layout=widgets.Layout(
+        border='2px solid #1976d2', width='100%', height=f'{viewer_height}px',
+        overflow='hidden', box_sizing='border-box',
+    ))
+    mol_output.add_class('submit-mol-output')
+
+    submit_scope_id = f'submit-scope-{abs(id(coords_widget))}'
+
+    submit_fullscreen_btn = widgets.Button(
+        description='', icon='expand',
+        tooltip='Toggle fullscreen (Esc to exit)',
+        layout=widgets.Layout(width='40px', height='30px'),
+        disabled=True,
+    )
+    submit_fullscreen_btn.add_class('submit-fullscreen-btn')
+
+    submit_select_btn = widgets.ToggleButton(
+        value=False, description='Select', icon='crosshairs',
+        button_style='',
+        tooltip=(
+            'Click atoms to pick or unpick them. Hold Shift and drag for a '
+            'rectangle; add Ctrl to keep the previous selection.'
+        ),
+        layout=widgets.Layout(width='96px', height='30px'),
+        disabled=True,
+    )
+    submit_manip_btn = widgets.ToggleButton(
+        value=False, description='Manipulate', icon='arrows',
+        button_style='',
+        tooltip=(
+            'Grab any atom and drag it; grabbing a selected atom moves the '
+            'whole selection. Drag empty space to turn the view. Right-click '
+            'an atom to set the pivot, right-drag to rotate the selection '
+            'about it.'
+        ),
+        layout=widgets.Layout(width='112px', height='30px'),
+        disabled=True,
+    )
+    from .molecule_builder import DRAW_ELEMENTS
+
+    submit_draw_btn = widgets.ToggleButton(
+        value=False, description='Draw', icon='pencil',
+        button_style='',
+        tooltip=(
+            'Click empty space to place an atom of the chosen element, drag '
+            'from an atom to grow a new one bonded to it, drag onto another '
+            'atom to bond them at the chosen order, tap an atom to change its '
+            'element, and press Delete to remove the selection. Free valences '
+            'are filled with hydrogen. The right button still turns the view.'
+        ),
+        layout=widgets.Layout(width='88px', height='30px'),
+        disabled=True,
+    )
+    # Every element, with the ones a molecule editor reaches for first at the
+    # top.  A native select types ahead by label and matches in the order the
+    # options stand in, so pressing P lands on phosphorus rather than on
+    # palladium, and I on iodine rather than on indium -- which is why the
+    # common ones come first rather than the list being sorted by number.
+    # Typing two letters quickly still finds Pd or In wherever they are.
+    # Each one-letter symbol before its two-letter relatives, or pressing B
+    # lands on bromine and P on palladium.
+    _COMMON_ELEMENTS = [
+        'C', 'H', 'N', 'O', 'S', 'P', 'F', 'B', 'I',
+        'Cl', 'Br', 'Si',
+        'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ru', 'Rh', 'Pd', 'Ag', 'Ir', 'Pt', 'Au',
+    ]
+    _ALL_ELEMENTS = [
+        'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
+        'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca',
+        'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
+        'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr', 'Rb', 'Sr', 'Y', 'Zr',
+        'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn',
+        'Sb', 'Te', 'I', 'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd',
+        'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb',
+        'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg',
+        'Tl', 'Pb', 'Bi', 'Po', 'At', 'Rn', 'Fr', 'Ra', 'Ac', 'Th',
+        'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf', 'Es', 'Fm',
+        'Md', 'No', 'Lr', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds',
+        'Rg', 'Cn', 'Nh', 'Fl', 'Mc', 'Lv', 'Ts', 'Og',
+    ]
+    _ELEMENT_CHOICES = _COMMON_ELEMENTS + [
+        e for e in _ALL_ELEMENTS if e not in set(_COMMON_ELEMENTS)]
+    submit_element_dd = widgets.Dropdown(
+        options=_ELEMENT_CHOICES,
+        value='C',
+        tooltip=('What a click draws. Every element is here; the common ones '
+                 'are at the top, and typing the symbol jumps to it.'),
+        layout=widgets.Layout(width='72px', display='none'),
+    )
+    submit_adjust_h_btn = widgets.ToggleButton(
+        value=True, description='Adjust H', icon='tint', button_style='info',
+        tooltip=(
+            'Fill or trim the hydrogens on the atoms an edit touches, so a '
+            'carbon that has just lost a bond gets one back. Switch it off to '
+            'leave them exactly as they are -- which is what a radical, an '
+            'open coordination site, or a fragment about to be joined to '
+            'something else needs.'
+        ),
+        layout=widgets.Layout(width='96px', height='30px'),
+    )
+    submit_manip_clear_btn = widgets.Button(
+        description='Clear', button_style='warning',
+        tooltip='Clear selection & pivot',
+        layout=widgets.Layout(width='66px', height='30px'),
+        disabled=True,
+    )
+    # When a structure has been dragged out of the picture -- or a relaxation
+    # has carried it out -- this puts it back: the camera on the centre of
+    # mass, and everything in view. It changes nothing about the molecule.
+    submit_centre_btn = widgets.Button(
+        description='Centre', button_style='', icon='crosshairs',
+        tooltip=('Put the system back in the middle of the view. '
+                 'Nothing about the structure changes.'),
+        layout=widgets.Layout(width='90px', height='30px'),
+        disabled=True,
+    )
+    #: Atom numbers, and how big they are drawn -- the same pair the ORCA
+    #: Builder has, from the same code: numbering belongs to a viewer, so
+    #: both tabs take it from the shared editor part.
+    submit_labels_btn = widgets.ToggleButton(
+        value=False, description='#',
+        tooltip=('Number every atom, in the order the coordinates are in. '
+                 'The numbers sit on the atom centres, and one behind another '
+                 'atom is hidden, so a crowded structure stays readable.'),
+        layout=widgets.Layout(width='46px', height='30px'),
+        disabled=True,
+    )
+    submit_label_size = widgets.BoundedIntText(
+        value=LABEL_PX_DEFAULT,
+        min=LABEL_PX_MIN,
+        max=LABEL_PX_MAX,
+        step=1,
+        tooltip=('How tall the numbers are, in pixels. Type one or step it; '
+                 'the numbers resize as you go.'),
+        layout=widgets.Layout(width='62px', height='30px', display='none'),
+    )
+    submit_manip_undo_btn = widgets.Button(
+        description='Undo', button_style='info', icon='undo',
+        tooltip='Undo last move/rotate (Ctrl-Z)',
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
+    submit_relax_btn = widgets.ToggleButton(
+        value=False, description='Dynamik Opt', icon='magic',
+        button_style='',
+        tooltip=(
+            'Keep the force field running: the structure settles continuously, '
+            'and an atom you grab drags the relaxing molecule along with it. '
+            'Use the strength control to make it gentler. Toggle off to stop.'
+        ),
+        layout=widgets.Layout(width='132px', height='30px'),
+        disabled=True,
+    )
+    submit_optimize_btn = widgets.ToggleButton(
+        value=False,
+        description='Optimize', button_style='success', icon='compress',
+        tooltip=(
+            'Minimise the frame on screen. A switch: press again to stop, and '
+            'what is stopped is what you were looking at. Undo restores the '
+            'geometry from before the run in one step.'
+        ),
+        layout=widgets.Layout(width='112px', height='30px'),
+        disabled=True,
+    )
+    submit_optimize_all_btn = widgets.ToggleButton(
+        value=False,
+        description='all', button_style='success',
+        tooltip=(
+            'Minimise every frame that is loaded -- all isomers or batch '
+            'entries, not only the one on screen. They run one after another, '
+            'never side by side: a login node is shared, and a set of isomers '
+            'would otherwise start one xtb per frame at once.'
+        ),
+        layout=widgets.Layout(width='52px', height='30px'),
+        disabled=True,
+    )
+    submit_ff_dd = widgets.Dropdown(
+        options=[('UFF', 'uff'), ('MMFF94', 'mmff94'),
+                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb'),
+                 ('PM6-D3H4', 'pm6d3h4'), ('PM6', 'pm6'), ('PM7', 'pm7')],
+        value='uff',
+        tooltip=(
+            'What Optimise minimises with. UFF and MMFF94 run in the browser '
+            'and also drive the live relaxation while you drag. GFN-FF, '
+            'GFN2-xTB and g-xTB run xtb on the server, and they know about the '
+            'metal where UFF guesses. g-xTB approximates wB97M-V/def2-TZVPPD '
+            'and needs a build of its own; Install g-xTB fetches it. '
+            'PM6-D3H4, PM6 and PM7 run MOPAC on the server. Measured on '
+            'twelve small organics, PM6 draws bonds closer to the literature '
+            'than GFN2 (5.0 against 11.3 mA on average), because GFN2 pulls '
+            'multiple and polar bonds short; on four dimers PM6-D3H4 is the '
+            'best of all of them and plain PM6 the worst -- it has no '
+            'dispersion, and the water dimer comes apart.'
+        ),
+        layout=widgets.Layout(width='128px'),
+        disabled=True,
+    )
+    # xtb needs both, and there is no honest default for a metal complex: the
+    # wrong number of unpaired electrons gives a confident wrong answer rather
+    # than an error.  Shown only when a GFN method is chosen.
+    submit_gfn_charge = widgets.IntText(
+        value=0, description='q', step=1,
+        style={'description_width': '12px'},
+        layout=widgets.Layout(width='72px', display='none'),
+    )
+    submit_gfn_mult = widgets.IntText(
+        value=1, description='M', step=1,
+        style={'description_width': '14px'},
+        layout=widgets.Layout(width='72px', display='none'),
+    )
+    # The lines between the atoms are 3Dmol's own bond list, worked out once
+    # when the model was built.  Moving atoms does not touch it, so a bond
+    # pulled apart goes on being drawn -- the picture keeps the connectivity
+    # the structure had rather than the one it has.  Off by default: it costs a
+    # rebuild per frame, and in a crowded coordination sphere the perception is
+    # at its limit and the lines flicker.
+    submit_dyn_bonds_btn = widgets.ToggleButton(
+        value=False, description='Dyn. bonds', icon='link',
+        tooltip=(
+            'Let the lines between the atoms follow the distances while the '
+            'structure moves, instead of keeping the bonds it was drawn with. '
+            'Only the picture changes -- what the calculation holds together '
+            'is a separate question, and Bond and Unbond are how that is said.'
+        ),
+        layout=widgets.Layout(width='104px', height='30px'),
+    )
+    submit_gfn_solvent = widgets.Dropdown(
+        options=[(label, name) for name, label in _gfn.SOLVENTS.items()],
+        value='',
+        tooltip=(
+            'Optimise with an implicit solvent around the structure. A '
+            'geometry optimised in the gas phase and one optimised in water '
+            'are different answers; the status line says which you got. Which '
+            'solvents are offered depends on the model beside this: ALPB '
+            'covers all 25, GBSA fewer, and how many fewer depends on the '
+            'method.'
+        ),
+        layout=widgets.Layout(width='140px', display='none'),
+    )
+    #: The continuum itself.  Its options are rebuilt whenever the method
+    #: changes, because what is available is a property of the method: GFN-FF
+    #: has ALPB and GBSA, GFN1 and GFN2 add ddCOSMO, and the PM methods have
+    #: MOPAC's COSMO and nothing else.  A dropdown that offers a model the
+    #: chosen method cannot run is a dropdown that can only produce a refusal.
+    submit_gfn_solv_model = widgets.Dropdown(
+        options=[('ALPB', 'alpb')], value='alpb',
+        tooltip=(
+            'Which continuum stands in for the solvent. ALPB costs nothing '
+            'and covers every solvent; ddCOSMO is five to six times the price '
+            'and is what COSMO-RS wants; GBSA is the older model, kept '
+            'because published numbers were computed with it. PM methods get '
+            'MOPAC\'s COSMO, given the dielectric constant of the same '
+            'solvent, so the two engines are asked about the same liquid.'
+        ),
+        layout=widgets.Layout(width='108px', display='none'),
+    )
+    submit_gfn_autospin = widgets.Checkbox(
+        value=False, description='auto M', indent=False,
+        tooltip=(
+            'Try the multiplicities the electron count allows and keep the '
+            'one that comes out lowest. For an open-shell metal a fixed guess '
+            'gives a confidently wrong energy and, through it, a wrong '
+            'geometry -- but it costs three runs instead of one.'
+        ),
+        layout=widgets.Layout(width='86px', display='none'),
+    )
+    # Shown only when a GFN method is chosen and xtb cannot be found.  Two
+    # presses, not one: the install fetches a conda environment of a few
+    # hundred megabytes, and on a cluster the right answer is often "load the
+    # module instead" -- so what it would run is shown before it runs.
+    submit_xtb_install_btn = widgets.Button(
+        description='Install xtb', icon='download',
+        tooltip='Fetch xtb with DELFIN\'s own installer. It will say what it '
+                'runs before it runs it.',
+        layout=widgets.Layout(width='118px', height='30px', display='none'),
+    )
+    submit_xtb_confirm_btn = widgets.Button(
+        description='Yes, install', button_style='warning',
+        layout=widgets.Layout(width='108px', height='30px', display='none'),
+    )
+    submit_xtb_cancel_btn = widgets.Button(
+        description='Cancel',
+        layout=widgets.Layout(width='72px', height='30px', display='none'),
+    )
+    submit_internal_label = widgets.HTML(
+        value=(
+            '<span class="submit-internal-label" '
+            'style="color:#888;font-size:0.9em;white-space:nowrap;">'
+            'pick 2-4 atoms</span>'
+        ),
+        layout=widgets.Layout(margin='0 0 0 4px'),
+    )
+    submit_internal_value = widgets.FloatText(
+        value=0.0, step=0.01,
+        layout=widgets.Layout(width='92px', height='30px'),
+        disabled=True,
+    )
+    submit_internal_value.add_class('submit-internal-value')
+    submit_internal_btn = widgets.ToggleButton(
+        value=False, description='Set', button_style='primary',
+        tooltip=(
+            'Turn the value by hand and watch it: while Set is on, the box '
+            'drives the selection live -- the arrow keys step a bond by '
+            '0.01 A, an angle by 0.1 and a dihedral by 0.5 degrees, and the '
+            'fragment on the far side of the coordinate follows. Two atoms are a bond '
+            'length, three an angle, four a dihedral. Hold is the other '
+            'question: it keeps a value at its target while the field runs, '
+            'with pull or fix.'
+        ),
+        layout=widgets.Layout(width='58px', height='30px'),
+        disabled=True,
+    )
+    submit_manip_status = widgets.HTML(
+        value='<span class="submit-manip-status" style="color:#888;font-size:0.9em;">— viewer empty —</span>',
+        # Takes a share of the row when there is room -- fullscreen keeps the
+        # toolbar on one line -- and wraps to its own line when there is not,
+        # which is what happens inside the tab on a laptop.
+        layout=widgets.Layout(
+            flex='1 1 260px', min_width='0', overflow_x='hidden',
+        ),
+    )
+    submit_manip_sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
+    submit_manip_sync.add_class('submit-manip-sync')
+    # Coordinates from the kernel, one frame at a time.  Not through run_js:
+    # that writes into a single Output and clears it first, so twenty scripts a
+    # second overwrite each other before the page has rendered them -- the
+    # relaxation ran, the last structure appeared, and nothing in between did.
+    # A widget value is ordered, survives a background thread, and cannot be
+    # clobbered by the next one.
+    submit_gfn_frame = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
+    submit_gfn_frame.add_class('submit-gfn-frame')
+
+    submit_strength_slider = widgets.IntSlider(
+        value=20, min=1, max=200, step=1,
+        description='Strength', continuous_update=False,
+        readout=True, readout_format='d',
+        style={'description_width': '58px'},
+        layout=widgets.Layout(width='200px'),
+        disabled=True,
+    )
+    #: How far the structure moves for how far the mouse moves.
+    #:
+    #: One is the cursor and the atom staying together: let go and the atom is
+    #: where the pointer is. Below one the hand travels further than the
+    #: structure, which is what a crowded region wants; above one it travels
+    #: less far, for reaching across a large system without running out of
+    #: desk. It scales dragging and turning a selection only -- where a *new*
+    #: atom is placed stays one to one, because an atom that appeared
+    #: somewhere other than under the cursor would be a different kind of
+    #: wrong.
+    submit_sens_slider = widgets.FloatSlider(
+        value=1.0, min=0.2, max=3.0, step=0.1,
+        description='Mouse', continuous_update=False,
+        readout=True, readout_format='.1f',
+        tooltip=('How far the structure moves for how far the mouse moves. '
+                 '1.0 keeps the atom under the cursor; lower is finer, higher '
+                 'reaches further. Placing a new atom is always 1.0.'),
+        style={'description_width': '58px'},
+        layout=widgets.Layout(width='200px'),
+        disabled=True,
+    )
+    submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    submit_pick_sync.add_class('submit-pick-sync')
+    # Keyboard shortcuts for things Python owns. Unbond is not a picture edit:
+    # it changes the topology the force field is built from, so the browser
+    # cannot carry it out alone and has to ask through here.
+    submit_cmd_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    submit_cmd_sync.add_class('submit-cmd-sync')
+    submit_poly_dd = widgets.Dropdown(
+        options=[('— polyhedron —', '')], value='',
+        layout=widgets.Layout(width='190px', display='none'),
+        disabled=True,
+    )
+    submit_poly_turn_btn = widgets.Button(
+        description='Turn', icon='refresh', button_style='',
+        tooltip=(
+            'Step to the next distinct arrangement on this polyhedron: which '
+            'ligands take the axial or apical positions. Only shown where the '
+            'vertices are not all alike -- an octahedron has nothing to turn, '
+            'a trigonal bipyramid has ten arrangements.'
+        ),
+        layout=widgets.Layout(width='78px', height='30px', display='none'),
+        disabled=True,
+    )
+    submit_hyb_dd = widgets.Dropdown(
+        options=[('— hybridisation —', '')], value='',
+        layout=widgets.Layout(width='190px', display='none'),
+        disabled=True,
+    )
+    submit_hyb_auto_btn = widgets.Button(
+        description='Types', icon='magic', button_style='',
+        tooltip=(
+            'Read each carbon\'s hybridisation off how many partners it is '
+            'bonded to: four is tetrahedral, three trigonal planar, two '
+            'linear. Stronger than perception, which goes through bond '
+            'orders and misses a double bond it cannot see in the geometry. '
+            'Applies to the selection, or to every carbon when nothing is '
+            'selected.'
+        ),
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
+    submit_settle_btn = widgets.ToggleButton(
+        value=True, description='Settle', icon='level-down',
+        button_style='info',
+        tooltip=(
+            'When you let go of an atom, let the structure relax around its '
+            'new position instead of keeping the strain of the drag. Switch '
+            'off to leave atoms exactly where you put them.'
+        ),
+        layout=widgets.Layout(width='92px', height='30px'),
+        disabled=True,
+    )
+    submit_swap_btn = widgets.Button(
+        description='Swap', button_style='', icon='exchange',
+        tooltip=(
+            'Exchange the two selected ligands on the polyhedron: they are '
+            'pulled onto each other\'s vertex instead of back to their own.'
+        ),
+        layout=widgets.Layout(width='78px', height='30px', display='none'),
+        disabled=True,
+    )
+    submit_bond_btn = widgets.Button(
+        description='Bond', icon='link', button_style='',
+        tooltip=(
+            'Draw a bond between the two selected atoms. Distance-based '
+            'perception is unreliable in a crowded coordination sphere, and '
+            'the coordination number and the force field both follow from '
+            'these bonds.'
+        ),
+        layout=widgets.Layout(width='74px', height='30px'),
+        disabled=True,
+    )
+    submit_unbond_btn = widgets.Button(
+        description='Unbond', icon='unlink', button_style='',
+        tooltip='Remove the bond between the two selected atoms.',
+        layout=widgets.Layout(width='90px', height='30px'),
+        disabled=True,
+    )
+    submit_hold_mode = widgets.Dropdown(
+        options=[('pull', 'pull'), ('fix', 'fix')], value='pull',
+        layout=widgets.Layout(width='78px'),
+        disabled=True,
+    )
+    submit_hold_btn = widgets.Button(
+        description='Hold', button_style='warning', icon='thumb-tack',
+        tooltip=(
+            'Hold the value the selection describes while the field runs, '
+            'instead of only setting it once. Held values appear in the list '
+            'beside this button and can be dropped again there.'
+        ),
+        layout=widgets.Layout(width='72px', height='30px'),
+        disabled=True,
+    )
+    submit_constraint_dd = widgets.Dropdown(
+        options=[('no constraints', '')], value='',
+        layout=widgets.Layout(width='210px', display='none'),
+        disabled=True,
+    )
+    submit_reset_btn = widgets.Button(
+        description='Reset', icon='undo', button_style='danger',
+        tooltip=(
+            'Back to the structure as it was loaded, and drop everything set '
+            'on it since: held values, polyhedron, hand-made bonds, '
+            'hybridisation overrides and the edit history.'
+        ),
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
+    submit_constraint_del = widgets.Button(
+        description='', icon='times', button_style='danger',
+        tooltip='Drop the selected constraint',
+        layout=widgets.Layout(width='40px', height='30px', display='none'),
+        disabled=True,
+    )
+    submit_internal_group = widgets.HBox(
+        [submit_internal_label, submit_internal_value,
+         submit_internal_btn, submit_hold_btn, submit_hold_mode],
+        layout=widgets.Layout(
+            gap='6px', align_items='center', flex_flow='row nowrap',
+            flex='0 0 auto', overflow='visible',
+        ),
+    )
+
+    #: A line break for a wrapping toolbar.  Flexbox has no "break here", so
+    #: the break is an element: nothing wide, taking a whole line, which
+    #: pushes everything after it onto the next row.  It is inert in the
+    #: ordinary view -- where the toolbar sits beside the rest of the tab and
+    #: wraps where it must -- and only takes effect inside the overlay, where
+    #: the row is as wide as the screen and would otherwise put the two
+    #: Optimise buttons at the far end of a very long first line.
+    submit_fs_row_break = widgets.Box(
+        [], layout=widgets.Layout(display='none'))
+    submit_fs_row_break.add_class('submit-fs-row-break')
+
+    submit_manip_toolbar = widgets.HBox(
+        [
+            submit_fullscreen_btn,
+            submit_select_btn, submit_manip_btn, submit_draw_btn,
+            submit_element_dd, submit_adjust_h_btn,
+            submit_manip_clear_btn, submit_centre_btn,
+            submit_labels_btn, submit_label_size,
+            submit_manip_undo_btn, submit_reset_btn,
+            submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
+            submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
+            submit_xtb_install_btn, submit_xtb_confirm_btn,
+            submit_xtb_cancel_btn,
+            submit_strength_slider, submit_sens_slider,
+            submit_fs_row_break,
+            submit_optimize_btn, submit_optimize_all_btn,
+            submit_relax_btn, submit_settle_btn,
+            submit_poly_dd, submit_poly_turn_btn,
+            submit_hyb_dd, submit_hyb_auto_btn,
+            submit_internal_group,
+            submit_bond_btn, submit_unbond_btn, submit_dyn_bonds_btn,
+            submit_swap_btn, submit_constraint_dd, submit_constraint_del,
+            submit_pick_sync, submit_cmd_sync,
+            submit_manip_status, submit_manip_sync, submit_gfn_frame,
+        ],
+        layout=widgets.Layout(
+            display='none', gap='6px', align_items='center',
+            width='100%', flex_flow='row wrap',
+            margin='0 0 6px 0', overflow='visible',
+        ),
+    )
+
+    def _set_mol_status(*lines, spinner=False):
+        # Both copies always say the same thing; which one is on screen is the
+        # overlay's business, not the caller's.
+        rendered = [html.escape(str(line)) for line in lines if line not in (None, '')]
+        spinner_html = (
+            "<span class='delfin-busy' style='margin-right:6px; vertical-align:middle;' "
+            "title='Working'></span>"
+            if spinner else ''
+        )
+        text_html = '<br>'.join(rendered)
+        if not spinner_html and not text_html:
+            mol_status.value = ''
+            mol_status_fs.value = ''
+            return
+        if spinner_html and text_html:
+            first, *rest = rendered
+            body = spinner_html + first
+            if rest:
+                body += '<br>' + '<br>'.join(rest)
+        else:
+            body = spinner_html + text_html
+        rendered_html = (
+            "<div style='font-family: monospace; white-space: pre-wrap; "
+            "font-size: 13px; line-height: 1.35;'>"
+            f"{body}</div>"
+        )
+        mol_status.value = rendered_html
+        # The fullscreen copy is there to report work -- a spinner, a
+        # trajectory, a result.  Asking for coordinates is not work, and in
+        # fullscreen there is a structure on screen to look at, so the prompt
+        # would be a permanent line saying nothing.
+        prompt = any('enter XYZ' in str(line) or 'Load a structure' in str(line)
+                     for line in lines)
+        mol_status_fs.value = '' if prompt else rendered_html
+
+    def _clear_mol_status():
+        # Both copies, the way _set_mol_status writes both. Clearing only the
+        # small one left the overlay saying "Quick convert (single
+        # structure)..." long after the structure was on screen: the finished
+        # view comes through here, and in fullscreen that stale line was the
+        # only thing the user had to go by.
+        mol_status.value = ''
+        mol_status_fs.value = ''
+
+    def _ensure_manip_bootstrap():
+        if state['manip_bootstrap_done']:
+            return
+        try:
+            ctx.run_js(submit_manip_bootstrap_js())
+            state['manip_bootstrap_done'] = True
+        except Exception:
+            pass
+
+    def _set_manip_toolbar_enabled(enabled):
+        submit_fullscreen_btn.disabled = not enabled
+        submit_select_btn.disabled = not enabled
+        submit_manip_btn.disabled = not enabled
+        submit_draw_btn.disabled = not enabled
+        submit_element_dd.disabled = not enabled
+        submit_adjust_h_btn.disabled = not enabled
+        submit_manip_clear_btn.disabled = not enabled
+        submit_relax_btn.disabled = not enabled
+        submit_strength_slider.disabled = not enabled
+        submit_labels_btn.disabled = not enabled
+        submit_sens_slider.disabled = not enabled
+        submit_settle_btn.disabled = not enabled
+        submit_bond_btn.disabled = not enabled
+        submit_unbond_btn.disabled = not enabled
+        submit_hyb_auto_btn.disabled = not enabled
+        submit_ff_dd.disabled = not enabled
+        submit_optimize_btn.disabled = not enabled
+        submit_optimize_all_btn.disabled = not enabled
+        submit_internal_value.disabled = not enabled
+        submit_internal_btn.disabled = not enabled
+        submit_hold_btn.disabled = not enabled
+        submit_hold_mode.disabled = not enabled
+        submit_manip_undo_btn.disabled = not enabled
+        submit_centre_btn.disabled = not enabled
+        submit_reset_btn.disabled = not enabled
+        submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
+        if not enabled:
+            if submit_select_btn.value:
+                submit_select_btn.value = False
+            if submit_manip_btn.value:
+                submit_manip_btn.value = False
+
+    # -- atom-selection / manipulation handlers -------------------------
+    def _run_manip_js(code):
+        try:
+            ctx.run_js(code)
+        except Exception:
+            pass
+
+    def _apply_manip_mode_js(mode):
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            f'if(window.__delfinSubmitManip) '
+            f'window.__delfinSubmitManip.setMode({json.dumps(submit_scope_id)}, '
+            f'{json.dumps(mode)});'
+        )
+
+    def _mode_buttons_mutex(keep):
+        """Only one mode at a time; the others switch themselves off."""
+        for button in (submit_select_btn, submit_manip_btn, submit_draw_btn):
+            if button is not keep and button.value:
+                button.value = False
+
+    def _refresh_draw_controls():
+        drawing = bool(submit_draw_btn.value)
+        submit_element_dd.layout.display = '' if drawing else 'none'
+
+    def on_submit_select_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_select_btn.value)
+        submit_select_btn.button_style = 'info' if active else ''
+        if active:
+            _mode_buttons_mutex(submit_select_btn)
+        _apply_manip_mode_js('select' if active else 'off')
+
+    def on_submit_manip_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_manip_btn.value)
+        submit_manip_btn.button_style = 'info' if active else ''
+        if active:
+            _mode_buttons_mutex(submit_manip_btn)
+        _apply_manip_mode_js('manipulate' if active else 'off')
+
+    def on_submit_draw_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_draw_btn.value)
+        submit_draw_btn.button_style = 'info' if active else ''
+        if active:
+            _mode_buttons_mutex(submit_draw_btn)
+        _refresh_draw_controls()
+        _apply_manip_mode_js('draw' if active else 'off')
+        if active:
+            on_submit_draw_choice(None)
+
+    def on_submit_draw_choice(_change=None):
+        """Hand over the element the browser draws with.
+
+        Not the bond order: a drawn bond is single, and what it should be is
+        decided afterwards by tapping the stick, where it can be seen. Having
+        to choose in advance was a setting that was almost always wrong.
+        """
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setDrawElement('
+            f'{json.dumps(submit_scope_id)},{json.dumps(submit_element_dd.value)});'
+        )
+
+    def _set_ff_notes(notes):
+        """Show what the force field had to approximate, under the viewer."""
+        rendered = [html.escape(str(note)) for note in notes if str(note).strip()]
+        if rendered and _server_method():
+            # These come from the field that runs in the browser, which is UFF
+            # whatever the method box says -- and read as though GFN had
+            # produced them, which is how "GFN behaves exactly like UFF" gets
+            # concluded from a panel that never claimed otherwise.
+            label = _server_label(submit_ff_dd.value)
+            rendered.insert(0, html.escape(
+                f'These notes are about the live field, which is UFF: it runs '
+                f'in the browser so that dragging follows the mouse. '
+                f'{label} runs when Optimise is pressed, and says so in the '
+                f'status line when it has.'))
+        if not rendered:
+            submit_ff_notes.value = ''
+            return
+        items = ''.join(
+            f'<li style="margin:0 0 2px 0;">{note}</li>' for note in rendered
+        )
+        submit_ff_notes.value = (
+            "<div style='font-size:12px; line-height:1.4; color:#5a6570; "
+            "background:#f6f7f9; border:1px solid #e0e4e8; border-radius:4px; "
+            "padding:6px 10px;'>"
+            "<b style='color:#455a64;'>Force field notes</b>"
+            f"<ul style='margin:4px 0 0 16px; padding:0;'>{items}</ul>"
+            "</div>"
+        )
+
+    def _ensure_ff_bootstrap():
+        if state.get('ff_bootstrap_done'):
+            return
+        try:
+            from .molecule_forcefield_js import molecule_ff_bootstrap_js
+            ctx.run_js(molecule_ff_bootstrap_js())
+            state['ff_bootstrap_done'] = True
+        except Exception:
+            pass
+
+    def _structure_fingerprint(xyz):
+        """Element column of an XYZ block -- what makes it the same molecule."""
+        rows = [line.split() for line in (xyz or '').splitlines() if line.strip()]
+        return tuple(r[0] for r in rows if len(r) >= 4)
+
+    def _perception_for(xyz):
+        """Perceive the bonding once per structure and keep it.
+
+        Bond orders are read from the geometry, and a twisted double bond stops
+        looking like one: turning a C=C by 30 degrees is enough for perception
+        to call it a single bond, which drops the barrier holding the two
+        halves coplanar from 19.5 to 1.1 kcal/mol. Everything downstream then
+        lets the double bond rotate freely, and nothing brings it back.
+
+        Editing moves atoms; it must not be able to change what the molecule
+        is. So the bonding is perceived from the structure as it arrived and
+        reused until a genuinely different one is loaded.
+        """
+        from .molecule_forcefield import perceive_molecule
+
+        fingerprint = _structure_fingerprint(xyz)
+        cached = state.get('perceived')
+        if cached and state.get('perceived_for') == fingerprint:
+            return cached
+        perceived = perceive_molecule(xyz)
+        _apply_bond_edits(perceived)
+        # After the bond edits, never before: rebuilding the typing molecule
+        # sanitizes it, and sanitisation re-perceives hybridisation.
+        _apply_hyb_overrides(perceived)
+        state['perceived'] = perceived
+        state['perceived_for'] = fingerprint
+        return perceived
+
+    def _apply_bond_edits(perceived):
+        """Lay the user's bond corrections over what perception found.
+
+        The correction has to reach the molecules the force-field parameters
+        are read from, not only the bond list -- otherwise a drawn bond keeps
+        the length it was drawn at instead of contracting.
+        """
+        from .molecule_forcefield import apply_bond_edits
+
+        apply_bond_edits(perceived, state.get('bond_edits') or {})
+
+    def _apply_hyb_overrides(perceived):
+        """Force the hybridisations the user has chosen by hand.
+
+        Bond orders are perceived from the geometry, and a double bond that is
+        not seen leaves its carbon typed sp3: angles at 109.5 degrees, and a
+        centre that puckers where it should stay flat.
+        """
+        from .molecule_forcefield import apply_hybridisation_overrides
+
+        apply_hybridisation_overrides(perceived, state.get('hyb_overrides') or {})
+
+    def _install_gfn_frame_watcher():
+        """Teach the page to play the trajectory, once.
+
+        Two things were wrong with sending one frame at a time.  ipywidgets
+        writes a new value into the DOM without firing an event, so there is
+        nothing to listen for -- the value has to be read on a timer.  And the
+        kernel produces frames faster than the reader can look, so all but the
+        last of each burst were never seen: the structure jumped instead of
+        moving.
+
+        The field carries the whole trajectory instead, and the page keeps its
+        place in it.  Nothing can be missed, because a frame that was written
+        while the reader was busy is still there when it looks again.  Playback
+        interpolates between frames -- twenty computed steps a second shown as
+        continuous motion.  The positions in between are drawn, not calculated;
+        every frame the structure actually passed through is one of the ends.
+        """
+        if state.get('gfn_watcher_installed'):
+            return
+        state['gfn_watcher_installed'] = True
+        _emit_watcher_js(
+            '(function(){\n'
+            '  var scope=' + json.dumps(submit_scope_id) + ';\n'
+            '  window.__delfinGfnPlay=window.__delfinGfnPlay||{};\n'
+            '  if(window.__delfinGfnPlay[scope]) return;\n'
+            '  var play={queue:[],at:0,started:0,last:null,seen:0,run:null};\n'
+            '  window.__delfinGfnPlay[scope]=play;\n'
+            '  var STEP_MS=55;\n'
+            '  function stepMs(){\n'
+            '    /* xtb computes faster than this plays: 75 frames arrive in\n'
+            '       0.4 s and would take 4 s to show, so the picture trails the\n'
+            '       calculation and keeps trailing it further.  A backlog is\n'
+            '       played faster -- the whole path is still shown, in the time\n'
+            '       the run actually takes. */\n'
+            '    var n=play.queue.length;\n'
+            '    if(n>60) return 8;\n'
+            '    if(n>25) return 20;\n'
+            '    if(n>10) return 35;\n'
+            '    /* One answer at a time -- a hand being followed -- is drawn\n'
+            '       over exactly the time the next answer takes to come, or the\n'
+            '       picture sits still between them.  A relaxation arrives in\n'
+            '       bursts instead, and those are paced by the rules above: a\n'
+            '       burst of thirty drawn at a follow pace of a third of a\n'
+            '       second each would put the picture ten seconds behind a\n'
+            '       calculation that took one. */\n'
+            '    if(play.follow&&play.gap&&n<=3) return play.gap;\n'
+            '    return STEP_MS;\n'
+            '  }\n'
+            '  function read(arrivedAt){\n'
+            '    /* Fullscreen moves the viewer into an overlay that carries\n'
+            '       the same scope class, and the frame field is not one of the\n'
+            '       things it takes -- so looking only inside the first element\n'
+            '       with that class found the overlay and no field, and the\n'
+            '       playback that worked in the small view showed nothing in\n'
+            '       the big one.  Every element with the class is tried, and\n'
+            '       the document stands behind them. */\n'
+            '    var field=null;\n'
+            '    var roots=document.querySelectorAll("."+scope);\n'
+            '    for(var r=0;r<roots.length&&!field;r++){\n'
+            '      field=roots[r].querySelector('
+            '".submit-gfn-frame textarea, .submit-gfn-frame input");\n'
+            '    }\n'
+            '    if(!field) field=document.querySelector('
+            '".submit-gfn-frame textarea, .submit-gfn-frame input");\n'
+            '    if(!field) return;\n'
+            '    var text=field.value||"";\n'
+            '    if(!text){ play.queue=[]; play.seen=0; play.last=null;'
+            ' play.run=null; return; }\n'
+            '    var data=null;\n'
+            '    try{ data=JSON.parse(text); }catch(e){ return; }\n'
+            '    if(data&&data.halt){\n'
+            '      /* The run was switched off.  Playing out the queue after\n'
+            '         that is the picture carrying on without the thing it is\n'
+            '         a picture of. */\n'
+            '      play.queue=[]; play.seen=(data.frames||[]).length;\n'
+            '      if(!play.toldStop){ play.toldStop=1;\n'
+            '        /* Which frame is on screen.  Stopping keeps that one:\n'
+            '           frames xtb had already computed but nobody had seen\n'
+            '           are not what the user stopped at. */\n'
+            '        say("stopped at frame "+(play.shown||0)); }\n'
+            '      return;\n'
+            '    }\n'
+            '    var frames=(data&&data.frames)||[];\n'
+            '    var run=(data&&data.run)||0;\n'
+            '    /* Whether these frames belong to a molecule following a hand\n'
+            '       rather than to a minimisation.  The two are told apart\n'
+            '       because Optimise is not pressed during a follow, and the\n'
+            '       check that abandons a queue when that switch goes up would\n'
+            '       otherwise throw every followed frame away. */\n'
+            '    play.follow=(data&&data.follow)?1:0;\n'
+            '    if(run!==play.run){\n'
+            '      /* A new run. Without this the count of frames already\n'
+            '         played carried over, so a shorter run than the one\n'
+            '         before it played nothing at all -- which is what made\n'
+            '         the playback look like it worked only sometimes. */\n'
+            '      if(play.queue.length){\n'
+            '        /* Land the run that is ending on its last frame first.\n'
+            '           Dropped there, the viewer keeps whatever it had drawn\n'
+            '           while the kernel keeps the geometry it computed, and\n'
+            '           the two drift apart: the next drag then hands over a\n'
+            '           structure that is behind, and the relaxation nobody saw\n'
+            '           is walked again -- which is every earlier drag being\n'
+            '           made a second time. */\n'
+            '        show(play.last,play.queue[play.queue.length-1],1);\n'
+            '      }\n'
+            '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
+            '      play.shown=0; play.toldStop=0;\n'
+            '    }\n'
+            '    /* Where in the run these frames start.  A long run sends the\n'
+            '       tail rather than the whole path -- every write is a message\n'
+            '       and the whole path grows without end -- so counting from\n'
+            '       the front of the message would replay frames already shown\n'
+            '       and then stop showing new ones altogether. */\n'
+            '    var from=(data&&data.from)||0;\n'
+            '    if(play.follow&&play.seen===0&&frames.length>1){\n'
+            '      /* A live run arriving from the start: only its newest frame\n'
+            '         is worth anything.  The ones before it describe where the\n'
+            '         structure was on the way here -- the drag that has just\n'
+            '         happened, or a relaxation of it -- and playing those is\n'
+            '         showing the user their own past.  What is wanted is the\n'
+            '         frame that is current. */\n'
+            '      from=from+frames.length-1;\n'
+            '      frames=[frames[frames.length-1]];\n'
+            '    }\n'
+            '    if(from+frames.length>play.seen){\n'
+            '      var start=Math.max(0,play.seen-from);\n'
+            '      /* A frame arriving into an empty queue starts its own\n'
+            '         interpolation.  Left over from the last one, the clock\n'
+            '         reads far past a step and the frame is jumped to instead\n'
+            '         of moved to -- which is every frame of a follow, where\n'
+            '         they arrive further apart than a step. */\n'
+            '      if(!play.queue.length) play.started=0;\n'
+            '      /* How long the machine took over the last answer, which is\n'
+            '         how long this one has to be drawn over. */\n'
+            '      if(play.arrived){\n'
+            '        var measured=Math.min(600,Math.max(24,\n'
+            '          arrivedAt-play.arrived));\n'
+            '        /* Averaged, not taken raw.  Answers do not arrive evenly,\n'
+            '           and pacing each frame by the last interval alone makes\n'
+            '           the drawing speed jump about as much as the arrivals\n'
+            '           do -- which is felt as jerkiness even when nothing is\n'
+            '           being missed. */\n'
+            '        play.gap=play.gap?(play.gap*0.6+measured*0.4):measured;\n'
+            '      }\n'
+            '      play.arrived=arrivedAt;\n'
+            '      for(var i=start;i<frames.length;i++) play.queue.push(frames[i]);\n'
+            '      play.seen=from+frames.length;\n'
+            '      say("received "+play.seen+" frames");\n'
+            '    }\n'
+            '    /* xtb produces frames faster than any frame rate can show\n'
+            '       them, so a queue that is allowed to grow puts the picture\n'
+            '       permanently behind the calculation.  Beyond a second of\n'
+            '       backlog the older ones are skipped: what is on screen is\n'
+            '       then always close to what xtb is doing, which is the point\n'
+            '       of watching at all. */\n'
+            '    if(play.queue.length>20){\n'
+            '      play.queue=play.queue.slice(-20);\n'
+            '    }\n'
+            '  }\n'
+            '  function say(text){ send("gfnplay", text); }\n'
+            '  function send(verb,text){\n'
+            '    /* The page reports back through the command bridge the editor\n'
+            '       already has, so a playback that does not appear says why by\n'
+            '       itself instead of being read out of a console. */\n'
+            '    try{\n'
+            '      var root=document.querySelector("."+scope);\n'
+            '      var wrap=root&&root.querySelector(".submit-cmd-sync");\n'
+            '      var input=wrap&&wrap.querySelector("input, textarea");\n'
+            '      if(!input) return;\n'
+            '      play.serial=(play.serial||0)+1;\n'
+            '      var proto=(input.tagName==="TEXTAREA")\n'
+            '        ? window.HTMLTextAreaElement.prototype\n'
+            '        : window.HTMLInputElement.prototype;\n'
+            '      var setter=Object.getOwnPropertyDescriptor(proto,"value");\n'
+            '      var line=verb+":"+play.serial+":"+text;\n'
+            '      if(setter&&setter.set) setter.set.call(input,line);\n'
+            '      else input.value=line;\n'
+            '      input.dispatchEvent(new Event("input",{bubbles:true}));\n'
+            '      input.dispatchEvent(new Event("change",{bubbles:true}));\n'
+            '    }catch(e){}\n'
+            '  }\n'
+            '  function show(a,b,t){\n'
+            '    if(!window.__delfinSubmitManip||'
+            '!window.__delfinSubmitManip.setPositions){\n'
+            '      if(!play.toldNoApi){ play.toldNoApi=1;'
+            ' say("no setPositions on the page"); }\n'
+            '      return;\n'
+            '    }\n'
+            '    var out=new Array(b.length);\n'
+            '    if(!a||a.length!==b.length){ out=b; }\n'
+            '    else { for(var i=0;i<b.length;i++) out[i]=a[i]+(b[i]-a[i])*t; }\n'
+            '    var ok=false;\n'
+            '    try{ ok=window.__delfinSubmitManip.setPositions('
+            'scope,out,heldSerials()); }\n'
+            '    catch(e){ ok=false; }\n'
+            '    play.drawn=(play.drawn||0)+(ok?1:0);\n'
+            '    if(!ok&&!play.toldNoDraw){ play.toldNoDraw=1;'
+            ' say("setPositions did not draw"); }\n'
+            '    if(ok&&!play.toldDrawing){ play.toldDrawing=1;'
+            ' say("drawing"); }\n'
+            '  }\n'
+            '  function grabbed(){\n'
+            '    /* Whether an atom is being moved right now.  A playback that\n'
+            '       keeps writing positions during a drag puts the atom back\n'
+            '       where xtb had it once per animation frame, so it cannot be\n'
+            '       moved at all -- the drag has to own the picture while it\n'
+            '       lasts.  A rectangle being pulled over the molecule selects\n'
+            '       and moves nothing, so it is not a grab. */\n'
+            '    var held=(window._submitManipStateByScope||{})[scope];\n'
+            '    var drag=held&&held.drag;\n'
+            '    if(!drag) return false;\n'
+            '    return drag.kind==="translate"||drag.kind==="rotate"'
+            '||drag.kind==="draw";\n'
+            '  }\n'
+            '  function heldSerials(){\n'
+            '    /* The atoms the hand is moving.  Coordinates that come back\n'
+            '       describe where they were when they were sent, and the\n'
+            '       cursor has moved on since -- so those are the ones the\n'
+            '       playback must leave alone. */\n'
+            '    var st=(window._submitManipStateByScope||{})[scope];\n'
+            '    return (st&&st.drag&&st.drag.targets)||[];\n'
+            '  }\n'
+            '  function followIsOn(){\n'
+            '    /* Relax, read off the page rather than asked of the kernel --\n'
+            '       the same reason as the switch below. */\n'
+            '    var holder=document.querySelector(".submit-gfn-follow");\n'
+            '    if(!holder) return false;\n'
+            '    var btn=(holder.tagName==="BUTTON")?holder'
+            ':holder.querySelector("button");\n'
+            '    if(!btn) return false;\n'
+            '    return btn.classList.contains("mod-active");\n'
+            '  }\n'
+            '  function switchIsOn(){\n'
+            '    /* ipywidgets marks a pressed toggle with mod-active.  Reading\n'
+            '       it here is instant; asking the kernel costs a round trip,\n'
+            '       and the picture ran on for the length of it. */\n'
+            '    var holder=document.querySelector(".submit-optimize-switch");\n'
+            '    if(!holder) return true;\n'
+            '    var btn=(holder.tagName==="BUTTON")?holder'
+            ':holder.querySelector("button");\n'
+            '    if(!btn) return true;\n'
+            '    return btn.classList.contains("mod-active");\n'
+            '  }\n'
+            '  function frame(now){\n'
+            '    /* An atom picked up while xtb is running: the kernel is told\n'
+            '       at the grab rather than at the release, because a GFN2 run\n'
+            '       is thirteen seconds and every one of them would be spent\n'
+            '       minimising a structure the user is in the middle of\n'
+            '       changing.  The queue goes with it -- those frames belong to\n'
+            '       the geometry that has just been altered. */\n'
+            '    var held=grabbed();\n'
+            '    if(held!==!!play.held){\n'
+            '      play.held=held?1:0;\n'
+            '      if(held){ play.queue=[]; play.last=null; }\n'
+            '      else {\n'
+            '        /* Let go of.  What is still queued describes the drag:\n'
+            '           each of those frames carries the dragged atom where the\n'
+            '           hand had it when the frame was computed, and while the\n'
+            '           hand was down they were drawn around it.  Drawn now,\n'
+            '           with nothing held any more, they walk that atom back\n'
+            '           through the whole drag in front of the user.  Land on\n'
+            '           the newest -- which is where the hand actually left it\n'
+            '           -- and drop the rest. */\n'
+            '        if(play.queue.length){\n'
+            '          show(play.last,play.queue[play.queue.length-1],1);\n'
+            '        }\n'
+            '        play.queue=[]; play.last=null;\n'
+            '        play.follow=0; play.pushed=0;\n'
+            '      }\n'
+            '      send(held?"gfngrab":"gfnfree","");\n'
+            '    }\n'
+            '    if(play.held&&!followIsOn()){\n'
+            '      window.requestAnimationFrame(frame); return;\n'
+            '    }\n'
+            '    if(play.held){\n'
+            '      /* Following: the geometry goes over while the mouse is\n'
+            '         still down, and the pace is set by the machine rather\n'
+            '         than by a clock.  The next one goes as soon as the last\n'
+            '         answer has landed -- GFN-FF answers a small molecule in\n'
+            '         under twenty milliseconds and a fixed fifth of a second\n'
+            '         threw nine tenths of that away.  A floor keeps the\n'
+            '         messages from becoming the bottleneck, and a ceiling\n'
+            '         starts again if an answer never comes at all. */\n'
+            '      /* The floor is the machine\'s own answer time, not a\n'
+            '         constant: never ask more than twice as often as it can\n'
+            '         answer, and never faster than an animation frame can show.\n'
+            '         On a small molecule that is about twenty milliseconds; on\n'
+            '         a hundred atoms it settles at sixty by itself. */\n'
+            '      var floor=Math.max(16,Math.min(120,(play.gap||60)/2));\n'
+            '      var since=now-(play.pushed||0);\n'
+            '      var answered=play.seen>(play.pushedAt||0);\n'
+            '      if(since>500||(answered&&since>floor)){\n'
+            '        play.pushed=now; play.pushedAt=play.seen;\n'
+            '        var api=window.__delfinSubmitManip;\n'
+            '        if(!api||!api.pushXyz){\n'
+            '          /* An editor from before the follow existed.  Swallowed,\n'
+            '             this is a drag that does nothing and says nothing --\n'
+            '             which is indistinguishable from a broken kernel. */\n'
+            '          if(!play.toldNoPush){ play.toldNoPush=1;\n'
+            '            say("this page has an editor without pushXyz; '
+            'reload the page"); }\n'
+            '        } else {\n'
+            '          try{ api.pushXyz(scope,"drag-follow"); }\n'
+            '          catch(e){ if(!play.toldNoPush){ play.toldNoPush=1;\n'
+            '            say("pushXyz failed: "+e); } }\n'
+            '        }\n'
+            '      }\n'
+            '    }\n'
+            '    if(play.queue.length&&!play.follow&&!switchIsOn()){\n'
+            '      /* Optimise going up abandons what it had computed but\n'
+            '         nobody had seen.  A follow has no Optimise behind it --\n'
+            '         checking that switch there threw away every frame the\n'
+            '         drag produced, which is what "it does nothing" was. */\n'
+            '      play.queue=[];\n'
+            '      if(!play.toldStop){ play.toldStop=1;\n'
+            '        say("stopped at frame "+(play.shown||0)); }\n'
+            '    }\n'
+            '    read(now);\n'
+            '    if(play.queue.length){\n'
+            '      if(!play.started) play.started=now;\n'
+            '      var t=(now-play.started)/stepMs();\n'
+            '      if(t>=1){\n'
+            '        var next=play.queue.shift();\n'
+            '        show(play.last,next,1);\n'
+            '        play.last=next; play.started=now;\n'
+            '        play.shown=(play.shown||0)+1;\n'
+            '      } else if(play.last){\n'
+            '        show(play.last,play.queue[0],t);\n'
+            '      } else {\n'
+            '        play.last=play.queue.shift(); show(null,play.last,1);\n'
+            '        play.started=now;\n'
+            '      }\n'
+            '    }\n'
+            '    window.requestAnimationFrame(frame);\n'
+            '  }\n'
+            '  window.requestAnimationFrame(frame);\n'
+            '})();'
+        )
+
+    def _emit_watcher_js(script):
+        """Send the player with the start-up scripts, not through run_js.
+
+        run_js writes into a single Output and clears it first, so a script
+        sent at click time can be replaced before the page has run it -- which
+        is how the player came to be missing while everything it depends on
+        was working.  add_init_js is the channel the explorer's own JS arrives
+        on, and that one has never been in doubt.
+        """
+        try:
+            ctx.add_init_js(script)
+            return
+        except Exception:
+            pass
+        _run_manip_js(script)
+
+    #: A follow step is a whole xtb process, so it is a few cycles rather than
+    #: a minimisation.  Measured on a 102-atom complex: one cycle 0.06 s, five
+    #: 0.09 s, ten 0.12 s -- five is about ten answers a second, which reads as
+    #: the molecule following the hand rather than catching up with it.
+    _GFN_FOLLOW_CYCLES = 5
+
+    def _begin_gfn_follow():
+        """A drag has started and the molecule is to follow it."""
+        if not (submit_relax_btn.value
+                and _server_method()):
+            return False
+        # The method on screen is the method that runs.  It used to be GFN-FF
+        # whatever the box said, which is a picture of a calculation nobody
+        # asked for -- and indistinguishable, from the outside, from the right
+        # one.
+        state['gfn_follow_method'] = str(submit_ff_dd.value)
+        if state.get('gfn_follow'):
+            return True     # already following; it keeps the run it began
+        _gfn_new_generation()
+        # What the molecule looked like before this drag: the bonding is read
+        # from here, not from a frame that has already been pulled about.
+        state['gfn_topology_source'] = (
+            state.get('current_xyz_for_copy') or {}).get('content')
+        state['gfn_follow'] = True
+        state['gfn_follow_steps'] = 0
+        state['gfn_follow_frames'] = []
+        run = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = run
+        state['gfn_follow_run'] = run
+        return True
+
+    def _end_gfn_follow():
+        state['gfn_follow'] = False
+
+    def _gfn_follow_step(xyz, holding=()):
+        """Relax around the atom the hand is holding, and send that back.
+
+        The dragged atom is not held by xtb: it cannot be.  ``$fix atoms:`` is
+        broken in xtb 6.7.1 and ``$constrain atoms:`` naming one atom does
+        nothing at all, both measured -- xtb holds internal coordinates, not
+        positions.  The hold is the page's instead: the frames that come back
+        are written to every atom *except* the ones being dragged, so the
+        cursor keeps the one it is holding and xtb arranges the rest around it.
+
+        Only one process at a time, and the newest geometry wins: a hand moves
+        faster than xtb answers, and a queue of answers about where the atom
+        used to be is worse than no answer at all.
+        """
+        if not state.get('gfn_follow') and not _begin_gfn_follow():
+            return          # not following: Relax is up, or GFN is not chosen
+        state['gfn_follow_xyz'] = (xyz, tuple(holding or ()))
+        if state.get('gfn_follow_busy'):
+            return
+        state['gfn_follow_busy'] = True
+        method = str(state.get('gfn_follow_method') or submit_ff_dd.value)
+        label = _server_label(method)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        constraints = list(state.get('constraints') or [])
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+
+        def _work():
+            try:
+                while state.get('gfn_follow'):
+                    newest = state.pop('gfn_follow_xyz', None)
+                    if newest is None:
+                        return
+                    current, holding = newest
+                    began = time.perf_counter()
+                    if _mopac.is_mopac_method(method):
+                        # MOPAC takes no held internals and no topology file,
+                        # so it is given what it does take. A few cycles, the
+                        # same as the xtb side: enough to move towards the
+                        # hand, not so many that the answer is stale when it
+                        # arrives. Measured on a benzophenone at 105 ms a run
+                        # against GFN-FF's 36, and COSMO takes that to 155 for
+                        # PM7 and 175 for PM6-D3H4 -- half again, and still
+                        # inside the budget for a drag.
+                        outcome = _mopac.optimize_with_mopac(
+                            current, method, charge=charge, uhf=uhf,
+                            max_steps=_GFN_FOLLOW_CYCLES, timeout=30.0,
+                            solvent=wet)
+                    else:
+                        outcome = _gfn.relax_steps(
+                            current, method=method, charge=charge, uhf=uhf,
+                            cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
+                            constraints=constraints, solvent=wet,
+                            solvation_model=model,
+                            topology=_gfn_topology_dir(
+                                len(_gfn.atom_lines(current))),
+                        )
+                    if not outcome.get('ok'):
+                        note = str(outcome.get('status') or 'it did not run')
+                        schedule_ui_update(
+                            _set_mol_status,
+                            f'The molecule stopped following: {note}')
+                        return
+                    # Say it out loud, every step.  A follow that is working
+                    # and a follow that is not both look like a molecule that
+                    # is not moving much, and the difference is the whole
+                    # question when something in the chain is broken.
+                    steps = int(state.get('gfn_follow_steps') or 0) + 1
+                    state['gfn_follow_steps'] = steps
+                    # How many atoms the hand is on.  Grabbing an atom that is
+                    # part of a selection drags the whole selection, so a
+                    # selection left over from earlier makes every drag move
+                    # everything -- which reads as the molecule fighting
+                    # itself, and is invisible unless it is counted here.
+                    many = (f' holding {len(holding)} atoms,'
+                            if len(holding) > 1 else '')
+                    said = (f'{label} is following the drag:{many} {steps} '
+                            f'step(s), '
+                            f'{(time.perf_counter() - began) * 1000:.0f} ms '
+                            'each.')
+                    state['gfn_last_status'] = said
+                    schedule_ui_update(_set_mol_status, said, spinner=True)
+                    # The atoms under the cursor go back where they were sent.
+                    # xtb pulls them most of the way home in five cycles, and
+                    # this answer outlives the drag -- applied after the
+                    # release it would take them with it, which is the spring
+                    # back that looked like the drag being undone.
+                    settled = _gfn.hold_atoms_at(
+                        outcome['xyz'], current, holding)
+                    frames = list(state.get('gfn_follow_frames') or [])
+                    frames.append(_gfn.coordinates_of(settled))
+                    state['gfn_follow_frames'] = frames
+                    # The tail, not the whole drag: every write is a message,
+                    # and a minute of dragging is three hundred frames of a
+                    # hundred atoms in each of them.
+                    trail = frames[-40:]
+                    payload = json.dumps({'run': state.get('gfn_follow_run'),
+                                          'from': len(frames) - len(trail),
+                                          'follow': 1, 'frames': trail})
+                    schedule_ui_update(
+                        lambda text=payload: setattr(
+                            submit_gfn_frame, 'value', text))
+            finally:
+                state['gfn_follow_busy'] = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    #: Letting go with Settle on.  More cycles than a follow step, because
+    #: nothing is being held any more and the structure should reach somewhere
+    #: it would stay rather than take one step towards it -- but still a bound,
+    #: because this happens on every release.
+    _GFN_SETTLE_CYCLES = 40
+
+    #: How many rounds before it gives up on converging.  Held values that
+    #: cannot all be met at once never converge -- measured on a propane with
+    #: two fixed distances and an angle fighting each other, not converged in
+    #: any round -- and a relaxation that will not end is a process per round
+    #: for as long as the switch is down, and a structure that visibly jitters.
+    _GFN_SETTLE_ROUNDS = 12
+    #: And a round that moved nothing has settled, whatever xtb calls it.
+    _GFN_SETTLE_STILL = 0.005
+
+    def _gfn_topology_dir(atoms):
+        """Where GFN-FF's perceived bonding is kept while a structure is worked
+        on.
+
+        GFN-FF reads its topology out of the geometry it is handed, once.  On a
+        drag that is a fresh perception per step, and it has a cliff in it:
+        measured on a propane, a C-C pulled to 1.87 A relaxes back to 1.49,
+        and at 1.96 A the bond is not seen at all and the same relaxation
+        pushes it to 2.80.  So the perception is made once and kept, the way
+        the browser's field assigns its parameters once when the switch goes
+        down -- at 2.33 A it then still pulls back, to 1.51.
+
+        It belongs to one molecule: an atom added or taken away makes it a
+        different one, and the count is what says so.
+        """
+        import tempfile
+
+        kept = state.get('gfn_topology')
+        if kept and kept.get('atoms') == atoms:
+            return Path(kept['dir'])
+        _drop_gfn_topology()
+        folder = tempfile.mkdtemp(prefix='delfin-gfnff-topo-')
+        state['gfn_topology'] = {'dir': folder, 'atoms': atoms}
+        # Perceived here and now, from the structure as it stood before a hand
+        # was laid on it.  Left to the first calculation that needs it, the
+        # perception is made from a geometry that has already been pulled
+        # about -- and if the drag has gone past where a bond is still
+        # recognised, the topology that is then kept for the whole session is
+        # one with the bond missing.  Measured: a propane whose C-C had been
+        # pulled to 2.1 A perceived that way came back at 3.57 A.
+        seed = (state.get('gfn_topology_source')
+                or (state.get('current_xyz_for_copy') or {}).get('content'))
+        if seed and len(_gfn.atom_lines(seed)) == atoms:
+            try:
+                _gfn.relax_steps(seed, cycles=1, timeout=30.0,
+                                 topology=Path(folder))
+            except Exception:
+                pass
+        return Path(folder)
+
+    def _drop_gfn_topology():
+        """Forget the bonding: the molecule is not the same one any more."""
+        kept = state.pop('gfn_topology', None)
+        if kept:
+            shutil.rmtree(kept.get('dir') or '', ignore_errors=True)
+
+    def _gfn_new_generation():
+        """Everything in flight belongs to the structure it was started for.
+
+        A drag, a Hold, a Set: each makes a new structure, and every timer and
+        every worker started for the one before it is now about something that
+        no longer exists.  They used to be left to finish -- writing their
+        geometry over the new one, or holding a flag that made the next
+        relaxation skip itself, which is why switching the toggle off and on
+        again finished the job that letting go should have.  One counter
+        settles all of it: whatever does not belong to the current generation
+        does nothing at all.
+        """
+        state['gfn_generation'] = int(state.get('gfn_generation', 0)) + 1
+        state['gfn_settle_forced'] = False
+        state['gfn_settle_rounds'] = 0
+        state['gfn_settle_again'] = False
+        return state['gfn_generation']
+
+    def _gfn_uhf_now():
+        """How many unpaired electrons the live relaxation should assume.
+
+        The box says a multiplicity and xtb counts unpaired electrons, so
+        M = 2S+1 becomes M - 1.  With auto M on, the box is not the answer at
+        all -- Optimise scans and keeps the lowest -- and a live relaxation
+        running the box's fixed M while Optimise ran a scanned one is two
+        answers about two different molecules, which is why pressing Optimise
+        after it moved the structure again.  Scanning every round would cost
+        three runs a round, so what the last scan settled on is used instead.
+        """
+        if submit_gfn_autospin.value and state.get('gfn_scanned_uhf') is not None:
+            return int(state['gfn_scanned_uhf'])
+        return max(0, int(submit_gfn_mult.value or 1) - 1)
+
+    def _gfn_live_is_on():
+        """Whether something on screen is meant to act on a change at once."""
+        return (submit_relax_btn.value and _server_method()
+                and _server_binary(submit_ff_dd.value) is not None)
+
+    def _arm_gfn_takeup(note=''):
+        """Take up a change to what is held, straight away.
+
+        Setting a value, watching nothing happen and having to press Optimise
+        for it is the switch claiming to be live and not being it.  Under the
+        browser's field a held value acts the moment it is set, because the
+        field is already running; here nothing is running between drags, so
+        the change is what starts it.
+        """
+        if not _gfn_live_is_on():
+            return
+        _gfn_new_generation()
+        state['gfn_settle_note'] = note
+        _arm_gfn_settle(forced=True)
+
+    def _arm_gfn_settle(forced=False):
+        """Tidy the structure after a release, with the method on screen.
+
+        The same promise Settle makes under the browser's field: what reaches
+        the coordinate box is a structure that has relaxed around where the
+        atom was put, rather than wherever the cursor happened to stop --
+        measured at 176 kcal/mol above a settled one on a real complex.
+
+        Waits a moment first, because the coordinates of the release arrive on
+        a message of their own and this has to start from them.
+        """
+        if forced:
+            # Asked for by a hand -- a value held, a value set.  That is not a
+            # tidy-up to be skipped when something else is in the air; it is
+            # the answer to something the user just did, and it has to happen.
+            state['gfn_settle_forced'] = True
+        if not (_server_method()
+                and _server_binary(submit_ff_dd.value) is not None
+                and (submit_settle_btn.value
+                     or state.get('gfn_settle_forced'))):
+            return
+        if not forced and state.get('optimize_interrupted') is not None:
+            # An optimisation was interrupted by this very drag and is coming
+            # back.  A whole minimisation is more than a settle, not less.
+            return
+        # A round that follows another round waits only long enough not to
+        # spin; a release waits for its coordinates to arrive first.
+        state['gfn_settle_at'] = time.monotonic() + (
+            0.05 if state.get('gfn_settle_again') else _GFN_RESTART_DELAY)
+        if state.get('gfn_settle_armed'):
+            return
+        state['gfn_settle_armed'] = True
+        generation = int(state.get('gfn_generation', 0))
+
+        def _wait():
+            while True:
+                left = state.get('gfn_settle_at', 0.0) - time.monotonic()
+                if left <= 0:
+                    break
+                time.sleep(min(left, 0.05))
+            state['gfn_settle_armed'] = False
+            if int(state.get('gfn_generation', 0)) != generation:
+                return          # the structure it was armed for is history
+            schedule_ui_update(_gfn_settle_now)
+
+        threading.Thread(target=_wait, daemon=True).start()
+
+    def _gfn_settle_now():
+        if state.get('gfn_follow'):
+            return                      # a new drag started in the meantime
+        if state.get('gfn_settle_busy'):
+            # One is already running.  What has just been asked for is a
+            # different question from the one it is answering, so it is asked
+            # again the moment that one is done -- dropped here, a value held
+            # while something was in flight did nothing at all until the
+            # toggle was switched off and on again.
+            state['gfn_settle_pending'] = True
+            return
+        if state.get('optimize_run') is not None:
+            return                      # Optimise is doing this already
+        generation = int(state.get('gfn_generation', 0))
+        method = str(submit_ff_dd.value)
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        # Either engine, not only xtb.  Settle was armed for the PM methods
+        # along with the follow, but this gate let only GFN through -- so
+        # letting go of an atom under PM7 with Settle on did nothing, and said
+        # nothing about doing nothing.
+        if not xyz or not _server_method(method):
+            return
+        label = _server_label(method)
+        state['gfn_settle_busy'] = True
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        constraints = list(state.get('constraints') or [])
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+        rounds = int(state.get('gfn_settle_rounds') or 0) + 1
+        state['gfn_settle_rounds'] = rounds
+        # One run number for the whole relaxation, not one per round.  A new
+        # run number resets the player, which drops what it had not drawn yet
+        # and applies the next frame outright instead of moving to it: with a
+        # round every few tenths of a second that is a twitch per round, and
+        # what it looks like is the structure jittering.
+        if rounds == 1:
+            state['gfn_run'] = int(state.get('gfn_run', 0)) + 1
+            state['gfn_settle_offset'] = 0
+        run = int(state.get('gfn_run', 0))
+        offset = int(state.get('gfn_settle_offset') or 0)
+        note = str(state.get('gfn_settle_note') or '')
+        _set_mol_status(
+            (f'{note}: {label} is moving the structure to it...' if note
+             else f'{label} is settling the structure...')
+            + (f' (round {rounds})' if rounds > 1 else ''), spinner=True)
+        # Only GFN-FF has a topology to keep, and asking for one makes a
+        # directory -- so a PM settle does not ask.
+        perceived = (_gfn_topology_dir(len(_gfn.atom_lines(xyz)))
+                     if _gfn.is_gfn_method(method) else None)
+        # Auto M, and no scan has happened yet: this run does the scanning, so
+        # that it and Optimise are asking about the same molecule.  Only xtb
+        # can be asked to scan; under PM the multiplicity on screen is used.
+        scanning = bool(submit_gfn_autospin.value
+                        and _gfn.is_gfn_method(method)
+                        and state.get('gfn_scanned_uhf') is None)
+
+        def _settle_stopped():
+            # A hand on an atom takes over from a relaxation of the whole
+            # thing; Optimise is the same calculation asked for by hand and
+            # supersedes it outright -- two xtb runs writing the same
+            # coordinate box is how the first press came to look like it had
+            # only worked out an energy.  And switching off means what it says,
+            # whichever of the two switches was keeping this alive.
+            return bool(state.get('gfn_follow')
+                        or state.get('optimize_run') is not None
+                        or not (submit_settle_btn.value or _gfn_live_is_on()))
+
+        def _push(frames):
+            walked = list(frames)
+            trail = walked[-60:]
+            state['gfn_settle_walked'] = len(walked)
+            schedule_ui_update(
+                lambda t=trail, f=offset + len(walked) - len(trail): setattr(
+                    submit_gfn_frame, 'value',
+                    json.dumps({'run': run, 'from': f, 'follow': 1,
+                                'frames': t})))
+
+        def _work():
+            began = time.perf_counter()
+            if _mopac.is_mopac_method(method):
+                # No held internals and no topology to carry, but the solvent
+                # is carried: a settle in water after a drag in water is the
+                # same question the drag was asking.
+                outcome = _mopac.optimize_with_mopac(
+                    xyz, method, charge=charge, uhf=uhf,
+                    max_steps=None, timeout=None, on_frames=_push,
+                    should_stop=_settle_stopped, solvent=wet)
+            elif scanning:
+                # Auto M with nothing scanned yet.  Optimise would scan and
+                # keep the lowest; running the box's M here instead makes the
+                # two answer about different molecules, and pressing Optimise
+                # afterwards then moves the structure for no visible reason.
+                # It costs three runs, once -- after that the answer is known.
+                outcome = _gfn.optimize_autospin(
+                    xyz, method, charge=charge, constraints=constraints,
+                    on_frames=_push, topology=perceived, timeout=None,
+                    solvent=wet, solvation_model=model,
+                    should_stop=_settle_stopped,
+                )
+                if outcome.get('uhf') is not None:
+                    state['gfn_scanned_uhf'] = int(outcome['uhf'])
+            else:
+                # No cycle cap and no clock: this is the ordinary
+                # optimisation, run on the frame that is on screen now, on the
+                # same terms Optimise runs on.  Chopping it into rounds bought
+                # nothing -- the geometry between two rounds is not a place
+                # anyone wants to stop at -- and cost a stutter at every
+                # boundary and an early ending whenever a round moved little.
+                outcome = _gfn.optimize_with_gfn(
+                    xyz, method, charge=charge, uhf=uhf,
+                    max_steps=None, timeout=None,
+                    constraints=constraints, on_frames=_push, solvent=wet,
+                    solvation_model=model,
+                    topology=perceived, should_stop=_settle_stopped,
+                )
+
+            def _done():
+                state['gfn_settle_busy'] = False
+                if state.pop('gfn_settle_pending', False):
+                    # Something was asked for while this was running.
+                    schedule_ui_update(lambda: _arm_gfn_settle(forced=True))
+                if (int(state.get('gfn_generation', 0)) != generation
+                        or state.get('optimize_run') is not None):
+                    # The structure moved on while this was running, or
+                    # Optimise took over.  Either way this geometry is about a
+                    # molecule that is no longer the current one, and writing
+                    # it would be the past reaching into the present.
+                    return
+                state['gfn_settle_again'] = False
+                # Where the next round's frames carry on from.
+                state['gfn_settle_offset'] = offset + int(
+                    state.pop('gfn_settle_walked', 0) or 0)
+                if not outcome.get('ok'):
+                    state['gfn_settle_forced'] = False
+                    state['gfn_settle_rounds'] = 0
+                    _set_mol_status(
+                        f'{label} could not settle it: '
+                        f'{outcome.get("status") or "it did not run"}')
+                    return
+                lines = [line for line in outcome['xyz'].splitlines()[2:]
+                         if line.strip()]
+                if lines:
+                    # The playback has drawn this already; the box is what Copy
+                    # and Submit read, and it has to be true whether or not a
+                    # frame happened to land.
+                    state['manip_inflight'] = True
+                    coords_widget.value = (
+                        f'{len(lines)}\nSettled with {label}\n'
+                        + '\n'.join(lines))
+                # Not converged and the switch is still down: keep going.  That
+                # is what makes this a relaxation rather than a single push.
+                # It ends three ways -- converged, standing still, or out of
+                # rounds -- because held values that cannot all be met at once
+                # never converge, and a relaxation that will not end is a
+                # process per round for as long as the switch is down.
+                moved = _gfn.largest_shift(xyz, outcome['xyz'])
+                if (not outcome.get('converged') and _gfn_live_is_on()
+                        and not state.get('gfn_follow')
+                        and rounds < _GFN_SETTLE_ROUNDS
+                        and moved > _GFN_SETTLE_STILL):
+                    state['gfn_settle_again'] = True
+                    state['gfn_settle_forced'] = True
+                    _arm_gfn_settle()
+                    return
+                state['gfn_settle_forced'] = False
+                state['gfn_settle_note'] = ''
+                took = time.perf_counter() - began
+                if outcome.get('converged'):
+                    said = (f'{label} relaxed the structure: converged after '
+                            f'{rounds} round(s).')
+                elif not _gfn_live_is_on() or state.get('gfn_follow'):
+                    said = f'{label} settled the structure in {took:.1f} s.'
+                else:
+                    # Said out loud, because a structure that has stopped
+                    # improving and one that is finished look identical, and
+                    # only one of them is worth pressing Optimise on.
+                    why = ('it is no longer moving' if moved <= _GFN_SETTLE_STILL
+                           else f'{rounds} rounds is as far as this goes')
+                    said = (
+                        f'{label} stopped without converging: {why}. '
+                        + ('Held values that cannot all be met at once are the '
+                           'usual reason -- the list beside the toolbar is '
+                           'what it is trying to satisfy.'
+                           if state.get('constraints') else
+                           'Optimise will run it without a round limit.'))
+                state['gfn_settle_rounds'] = 0
+                state['gfn_last_status'] = said
+                _set_mol_status(said)
+
+            schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _enable_live_forcefield():
+        """Assign UFF parameters for the geometry now in the viewer.
+
+        Runs once, when the toggle is switched on -- never during a drag. The
+        browser relaxes from these parameters alone; a round trip per frame
+        would cap the drag at about 13 Hz.
+
+        Refused outright while a GFN method is chosen.  A dozen handlers call
+        this -- Hold, a polyhedron, a hybridisation, a bond edit -- and any one
+        of them installing UFF parameters put a UFF relaxation under a molecule
+        whose method box said GFN: it settled on release, and the geometry that
+        reached the coordinate box was UFF's. The method that is chosen is the
+        method that acts, and nothing else may touch the structure.
+        """
+        if _server_method():
+            _stop_browser_field()
+            return
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            _set_mol_status('Load a structure before enabling Relax.')
+            submit_relax_btn.value = False
+            return
+        try:
+            from .molecule_forcefield import export_forcefield_terms
+            polyhedron = None
+            if state.get('poly_applied') and state.get('poly_metal') is not None:
+                polyhedron = {
+                    'metal': state['poly_metal'],
+                    'geometry': state['poly_applied'],
+                    # None means: work it out from where the ligands are now.
+                    'assignment': state.get('poly_assignment'),
+                }
+            payload = export_forcefield_terms(
+                xyz,
+                perceived=_perception_for(xyz),
+                # The live field is what the browser relaxes with on every
+                # frame, so it is always one of the two that live there.
+                method=_live_ff_method(),
+                polyhedron=polyhedron,
+                restraints=[
+                    c for c in (state.get('constraints') or [])
+                    if c.get('mode', 'pull') == 'pull'
+                ],
+            )
+        except Exception as exc:
+            _set_mol_status(f'Force field unavailable: {exc}')
+            submit_relax_btn.value = False
+            return
+        if not payload.get('ok'):
+            _set_mol_status('Force field could not be assigned for this structure.')
+            submit_relax_btn.value = False
+            return
+        _ensure_manip_bootstrap()
+        _ensure_ff_bootstrap()
+        _push_bond_orders()
+        # The resume flag is set here, in the same script that hands over the
+        # parameters, and not earlier: setting it before the re-render meant
+        # it could be consumed against the viewer that was going away, and the
+        # relaxation came back stuck until the toggle was cycled by hand.
+        resume = 'true' if submit_relax_btn.value else 'false'
+        _run_manip_js(
+            f'window.__delfinResumeAutoOpt = {resume};'
+            'if(window.__delfinSubmitManip){'
+            'window.__delfinSubmitManip.setForceField('
+            f'{json.dumps(submit_scope_id)},{json.dumps(payload)});'
+            'window.__delfinSubmitManip.setOptimizerStrength('
+            f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
+            # Re-applied with the rest, so a reload keeps the feel the user set.
+            'window.__delfinSubmitManip.setDragSensitivity('
+            f'{json.dumps(submit_scope_id)},{float(submit_sens_slider.value)});'
+            'window.__delfinSubmitManip.setSettleOnRelease('
+            f'{json.dumps(submit_scope_id)},'
+            f'{"true" if submit_settle_btn.value else "false"});'
+            'window.__delfinSubmitManip.setFixedInternals('
+            f'{json.dumps(submit_scope_id)},'
+            + json.dumps([
+                {'kind': c['kind'], 'atoms': c['atoms'], 'value': c['value']}
+                for c in (state.get('constraints') or [])
+                if c.get('mode') == 'fix'
+            ])
+            + ');'
+            '}'
+        )
+        # Terms derived from the input geometry rather than real UFF typing --
+        # the transition-metal case -- are worth saying out loud, and they
+        # belong under the structure they describe rather than in the preview's
+        # status line, which conversion messages keep overwriting.
+        _set_ff_notes(payload.get('warnings') or [])
+
+    def _stop_browser_field():
+        """Take the browser's own field off the molecule.
+
+        It has to be said to the page, not merely stopped being asked for: the
+        relaxation runs on its own animation frames and keeps running until it
+        is told, and the parameters stay installed until they are cleared --
+        which is how a GFN method could be chosen while UFF went on relaxing
+        underneath it.
+        """
+        _ensure_manip_bootstrap()
+        _set_ff_notes([])
+        _run_manip_js(
+            'if(window.__delfinSubmitManip){'
+            'window.__delfinSubmitManip.stopAutoOptimize('
+            f'{json.dumps(submit_scope_id)});'
+            'window.__delfinSubmitManip.setForceField('
+            f'{json.dumps(submit_scope_id)},null);'
+            '}'
+        )
+
+    def on_submit_relax_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_relax_btn.value)
+        if active:
+            # Where the continuous relaxation started, kept as one step. It
+            # runs for as long as it is on and moves the structure the whole
+            # time; one entry for the whole run is what a user means by "back
+            # to before I switched it on".
+            _remember('switching the continuous relaxation on')
+        submit_relax_btn.button_style = 'info' if active else ''
+        if _server_method():
+            # There is no GFN engine in the browser to run per frame, so this
+            # switch means something else here: while it is on, the molecule
+            # follows the atom being dragged -- one short xtb run per push,
+            # and nothing at all when nothing is being dragged.  A continuous
+            # loop of processes on a shared machine is what this deliberately
+            # is not.
+            _end_gfn_follow()
+            # Whether it goes on or off, the browser's field has no business
+            # here.  Left running from a UFF session it went on relaxing under
+            # a molecule whose method box said GFN.
+            _stop_browser_field()
+            label = _server_label(submit_ff_dd.value)
+            if not active:
+                state['gfn_settle_forced'] = False
+                state['gfn_settle_rounds'] = 0
+                _set_mol_status('The structure is no longer being relaxed.')
+                return
+            if _server_binary(submit_ff_dd.value) is None:
+                _set_mol_status(f'{label} needs a program that was not found.')
+                submit_relax_btn.value = False
+                return
+            if not submit_manip_btn.value:
+                submit_manip_btn.value = True  # dragging is what it is for
+            _ensure_manip_bootstrap()
+            _install_gfn_frame_watcher()
+            said = [
+                f'Drag an atom and the rest of the molecule follows it with '
+                f'{label}. Letting go leaves it where you put it -- Optimise '
+                'is what takes it downhill, and Settle asks for that on every '
+                'release.'
+            ]
+            if submit_ff_dd.value != 'gfnff':
+                said.append(f'{label} is the slow one -- if it drags heavily, '
+                            'GFN-FF answers about twenty times faster.')
+            # A solvent is free to drag in, except for the one that is not.
+            # Measured on a benzophenone, one follow step: GFN2 167 ms in
+            # vacuum, 117 with ALPB, 168 with GBSA -- and 1020 with ddCOSMO.
+            # Said here rather than left to be discovered, because what six
+            # times the cost per step looks like is a drag that is broken.
+            wet_now = str(submit_gfn_solvent.value or '')
+            if wet_now and _solv_model() == 'ddcosmo':
+                said.append('ddCOSMO costs about six times what the other '
+                            'models do per step -- a second each on 24 atoms '
+                            '-- so this will move like a slideshow. ALPB is '
+                            'the one to drag in.')
+            elif wet_now:
+                said.append(f'Following in {_solvents.label_of(wet_now)} '
+                            f'({_solvents.model_label(_solv_model())}).')
+            _set_mol_status(' '.join(said))
+            return
+        if not active:
+            _ensure_manip_bootstrap()
+            _set_ff_notes([])
+            _run_manip_js(
+                'if(window.__delfinSubmitManip){'
+                'window.__delfinSubmitManip.stopAutoOptimize('
+                f'{json.dumps(submit_scope_id)});'
+                'window.__delfinSubmitManip.setForceField('
+                f'{json.dumps(submit_scope_id)},null);'
+                '}'
+            )
+            return
+        if not submit_manip_btn.value:
+            submit_manip_btn.value = True   # dragging is what it is there for
+        _enable_live_forcefield()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.startAutoOptimize('
+            f'{json.dumps(submit_scope_id)});'
+        )
+
+    #: How long to wait after the last change before starting again.  Letting
+    #: go of an atom arrives as a burst -- the release, then the coordinates,
+    #: sometimes a settled version behind them -- and starting on the first of
+    #: those would launch an xtb for each one.
+    _GFN_RESTART_DELAY = 0.35
+
+    def _interrupt_gfn():
+        """End the running optimisation because the structure under it changed.
+
+        xtb is minimising a geometry that stopped existing the moment an atom
+        was moved, so the run is ended rather than raced.  It is not ended the
+        way the switch ends it: nothing has been stopped from where the user
+        is standing, and the frame they were shown is not a result to keep --
+        the optimisation is about to start again from what they have made.
+        """
+        token = state.get('optimize_run')
+        if token is None:
+            return False
+        state['optimize_run'] = None
+        state['optimize_interrupted'] = token
+        # No halt report: "stopped at frame 12" belongs to the switch.
+        state['gfn_halt_sent'] = True
+        # A run number the page has never seen, carrying nothing.  It resets
+        # the player, so the frames of the abandoned run cannot play out over
+        # the geometry the user has just made.
+        blank = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = blank
+        submit_gfn_frame.value = json.dumps({'run': blank, 'frames': []})
+        return True
+
+    def _arm_gfn_restart():
+        """Start the optimisation again, once the changing has stopped."""
+        if state.get('optimize_interrupted') is None:
+            return
+        state['gfn_restart_at'] = time.monotonic() + _GFN_RESTART_DELAY
+        if state.get('gfn_restart_armed'):
+            return                      # already waiting; it will wait longer
+        state['gfn_restart_armed'] = True
+
+        def _wait():
+            while True:
+                left = state.get('gfn_restart_at', 0.0) - time.monotonic()
+                if left <= 0:
+                    break
+                time.sleep(min(left, 0.05))
+            state['gfn_restart_armed'] = False
+            schedule_ui_update(_restart_gfn)
+
+        threading.Thread(target=_wait, daemon=True).start()
+
+    def _restart_gfn():
+        if state.pop('optimize_interrupted', None) is None:
+            return
+        every_frame = bool(state.get('optimize_every_frame'))
+        button = submit_optimize_all_btn if every_frame else submit_optimize_btn
+        if not button.value:
+            return                      # switched off while it was waiting
+        state['gfn_restarting'] = True
+        on_submit_optimize(None, every_frame=every_frame)
+
+    def on_submit_optimize_all(change=None):
+        on_submit_optimize(change, every_frame=True)
+
+    def on_submit_optimize(change=None, every_frame=False):
+        """A switch, not a push: on starts it, off stops it, and it turns
+        itself off when the optimisation has converged or failed.
+
+        *every_frame* is the difference between the two buttons: Optimize takes
+        the frame on screen, all takes the whole set -- one after another,
+        because a login node is shared.
+        """
+        button = submit_optimize_all_btn if every_frame else submit_optimize_btn
+        if isinstance(change, dict) and change.get('name') == 'value':
+            if not button.value:
+                state['optimize_run'] = None      # off: the run ends itself
+                return
+        elif not button.value:
+            return
+        if submit_optimize_btn.value and submit_optimize_all_btn.value:
+            # One run at a time, whichever was asked for second stands down.
+            other = submit_optimize_btn if every_frame else submit_optimize_all_btn
+            other.value = False
+        """Minimise every frame that is loaded, not just the one on screen.
+
+        The Submit tab can hold a whole set at once -- generated isomers, or
+        the frames of a batch -- and any of them can end up submitted, so
+        optimising only the visible one would leave the rest untouched.
+
+        The geometries from before the run are kept so Undo can put them back:
+        the browser's own undo stack cannot, because the results arrive from
+        Python and re-render the viewer.
+        """
+        frames = list(state.get('isomers') or []) if every_frame else []
+        single = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not frames and not single:
+            _set_mol_status('Load a structure before optimising.')
+            return
+        method = submit_ff_dd.value
+        gfn = _gfn.is_gfn_method(method)
+        pm = _mopac.is_mopac_method(method)
+        label = _server_label(method)
+        charge = int(submit_gfn_charge.value or 0)
+        # xtb counts unpaired electrons, not multiplicity: M = 2S+1.
+        uhf = max(0, int(submit_gfn_mult.value or 1) - 1)
+        autospin = bool(submit_gfn_autospin.value)
+        count = len(frames) or 1
+        # Which switch is running, so a restart presses the same one.
+        state['optimize_every_frame'] = bool(every_frame)
+        again = bool(state.pop('gfn_restarting', False))
+        _set_mol_status(
+            (f'Moved while it ran; {label} starts again from the structure '
+             'you made...' if again else
+             f'Optimising {count} frame(s) with {label}...'), spinner=True,
+        )
+        if gfn:
+            # One call, not two: run_js clears its output before displaying,
+            # so a bootstrap followed immediately by a watcher is a bootstrap
+            # the page may never have run.
+            _ensure_manip_bootstrap()
+            schedule_ui_update(_install_gfn_frame_watcher)
+        played = [False]
+        state['gfn_energy'] = None
+        state['gfn_held'] = None
+        state['gfn_halt_sent'] = False
+        run_id = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = run_id
+
+        def _push_frames(frames):
+            """Hand the path over while xtb is still walking it."""
+            played[0] = True
+            walked = list(frames)
+            trail = walked[-400:]
+            begins = len(walked) - len(trail)
+
+            def _write(t=trail, first=begins):
+                # A run that has been replaced does not draw.  An interrupted
+                # one has frames in hand when it is told to stop, and writing
+                # them afterwards played the abandoned path over the structure
+                # the user had just made.
+                if state.get('gfn_run') != run_id:
+                    return
+                submit_gfn_frame.value = json.dumps(
+                    {'run': run_id, 'from': first, 'frames': t})
+
+            schedule_ui_update(_write)
+
+        # Where the optimisation started from, as one step: pressing Undo
+        # after it comes back should return the geometry that was handed to
+        # it, not one of the frames along the way.
+        _remember('an optimisation')
+
+        token = object()
+        state['optimize_run'] = token
+
+        def _stopped():
+            halted = state.get('optimize_run') is not token
+            if halted and not state.get('gfn_halt_sent'):
+                state['gfn_halt_sent'] = True
+                schedule_ui_update(
+                    lambda: setattr(submit_gfn_frame, 'value',
+                                    json.dumps({'run': run_id, 'halt': 1,
+                                                'frames': []})))
+            return halted
+
+        # The run this one replaces, taken before it is overwritten below.
+        earlier = state.get('optimize_thread')
+        # What the user is holding.  Set and Hold mean the same to xtb as they
+        # mean to the browser's field -- a pull negotiates, a fix is met -- so
+        # a value held on screen is held in the optimisation too, rather than
+        # being quietly given up the moment GFN is chosen.
+        held = list(state.get('constraints') or [])
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+
+        def _work():
+            from .molecule_forcefield import relax_xyz
+            # One xtb at a time.  An interrupted run is still shutting its
+            # process down when the replacement starts, and a login node is
+            # shared -- so the new one waits for the old one to be gone rather
+            # than briefly doubling up.
+            if earlier is not None and earlier.is_alive():
+                earlier.join(timeout=15)
+            results, failures = [], []
+            targets = frames or [(single, None, None)]
+            for position, item in enumerate(targets):
+                xyz = item[0]
+                try:
+                    if _stopped():
+                        failures.append(f'frame {position + 1}: stopped')
+                        results.append(item)
+                        continue
+                    # The bonding the editor has been working with, so that
+                    # pressing Optimise on a structure that has been pulled
+                    # about does not re-perceive it and shove the molecule
+                    # apart -- the same cliff the drag had.  Only for the one
+                    # frame on screen: a set of isomers is a set of different
+                    # molecules, and one perception cannot describe them all.
+                    perceived = (None if every_frame
+                                 else _gfn_topology_dir(
+                                     len(_gfn.atom_lines(xyz))))
+                    if pm:
+                        # MOPAC takes the spin state as a word and knows
+                        # nothing of xtb's held internals or its topology
+                        # files -- so it is given what it does take, and the
+                        # rest is not quietly passed along as though it had
+                        # been honoured.  The solvent it does take: its COSMO
+                        # is handed the dielectric constant of the same
+                        # liquid the GFN side is given by name.
+                        outcome = _mopac.optimize_with_mopac(
+                            xyz, method, charge=charge, uhf=uhf,
+                            should_stop=_stopped, timeout=None, solvent=wet,
+                            on_frames=_push_frames if position == 0 else None)
+                    elif gfn and autospin:
+                        outcome = _gfn.optimize_autospin(
+                            xyz, method, charge=charge, should_stop=_stopped,
+                            timeout=None, on_frames=_push_frames,
+                            constraints=held, topology=perceived, solvent=wet,
+                            solvation_model=model)
+                    elif gfn:
+                        outcome = _gfn.optimize_with_gfn(
+                            xyz, method, charge=charge, uhf=uhf,
+                            should_stop=_stopped, timeout=None,
+                            constraints=held, topology=perceived, solvent=wet,
+                            solvation_model=model,
+                            on_frames=_push_frames if position == 0 else None)
+                    else:
+                        outcome = relax_xyz(
+                            xyz,
+                            max_steps=500,
+                            perceived=_perception_for(xyz),
+                            method=method,
+                        )
+                except Exception as exc:
+                    failures.append(f'frame {position + 1}: {exc}')
+                    results.append(item)
+                    continue
+                if outcome.get('ok'):
+                    if outcome.get('energy') is not None and position == 0:
+                        state['gfn_energy'] = float(outcome['energy'])
+                        state['gfn_energy_unit'] = outcome.get('energy_unit')
+                    if position == 0:
+                        state['gfn_held'] = outcome.get('held')
+                        if outcome.get('multiplicity'):
+                            # What the scan settled on, so the live relaxation
+                            # asks the same question this one did rather than
+                            # a different one with the box's fixed M.
+                            state['gfn_scanned_uhf'] = int(outcome['uhf'])
+                    kept = outcome['xyz']
+                    if _stopped() and outcome.get('frames'):
+                        # Stop means the frame that was on screen.  xtb runs
+                        # ahead of the picture, and geometries nobody saw are
+                        # not what the user stopped at.
+                        shown = state.get('gfn_shown_frame')
+                        walked = outcome['frames']
+                        if isinstance(shown, int) and 0 < shown <= len(walked):
+                            symbols = [line.split()[0]
+                                       for line in _gfn.atom_lines(xyz)]
+                            frame = walked[shown - 1]
+                            if len(symbols) * 3 == len(frame):
+                                rows = [
+                                    f'{symbols[i]} {frame[3*i]:.8f} '
+                                    f'{frame[3*i+1]:.8f} {frame[3*i+2]:.8f}'
+                                    for i in range(len(symbols))
+                                ]
+                                kept = (f'{len(rows)}\nstopped at the frame on '
+                                        f'screen\n' + '\n'.join(rows) + '\n')
+                    results.append((kept,) + tuple(item[1:]))
+                    if gfn and outcome.get('frames') and position == 0:
+                        played[0] = True
+                        # xtb writes every cycle to xtbopt.log, so the path
+                        # costs nothing extra -- one run, and the viewer plays
+                        # what the optimiser really walked through.
+                        _push_frames(outcome['frames'])
+                    note = str(outcome.get('status') or '')
+                    if 'before converging' in note:
+                        # It came back with a geometry, but not a finished one.
+                        failures.append(f'frame {position + 1}: {note}')
+                else:
+                    failures.append(
+                        f"frame {position + 1}: {outcome.get('status') or 'failed'}"
+                    )
+                    results.append(item)
+
+            def _apply():
+                if state.get('optimize_interrupted') is token:
+                    # The structure changed under this run.  What it reached is
+                    # a minimum of a geometry that no longer exists, so neither
+                    # the coordinates nor the switch are touched: the run that
+                    # replaces it is already on its way.
+                    return
+                # Converged, failed or stopped -- the switch goes back up by
+                # itself, so it never claims to be working when it is not.
+                if state.get('optimize_run') is token:
+                    state['optimize_run'] = None
+                for switch in (submit_optimize_btn, submit_optimize_all_btn):
+                    if switch.value:
+                        switch.value = False
+                    switch.disabled = False
+                state['pre_optimize_frames'] = {
+                    'isomers': frames,
+                    'coords': coords_widget.value,
+                }
+                if frames:
+                    state['isomers'] = results
+                    if not played[0]:
+                        # Showing the isomer rebuilds the viewer, which is the
+                        # other way the playback was being torn down.
+                        show_isomer_at_index(state.get('isomer_index', 0))
+                else:
+                    lines = [
+                        line for line in results[0][0].splitlines()[2:] if line.strip()
+                    ]
+                    if played[0]:
+                        # The trajectory is playing, and its last frame is this
+                        # very geometry.  Writing the coordinates the ordinary
+                        # way rebuilds the viewer, which tore the playback down
+                        # milliseconds after it started -- so only the end of
+                        # the optimisation was ever seen.  The box is updated
+                        # for Copy and Submit; the picture is already right.
+                        state['manip_inflight'] = True
+                    coords_widget.value = (
+                        f"{len(lines)}\nOptimised in DELFIN viewer\n"
+                        + '\n'.join(lines)
+                    )
+                done = count - len(failures)
+                said = f'Optimised {done} of {count} frame(s) with {label}.'
+                # The energy, the way the force field shows one.  xtb reports
+                # it in hartree; kcal/mol is what the rest of the tab speaks,
+                # and both are given because a total energy is compared
+                # against other totals and a difference against chemistry.
+                energy = state.get('gfn_energy')
+                if energy is not None:
+                    # And in the unit the engine that produced it uses. MOPAC
+                    # reports a heat of formation in kcal/mol, not a total
+                    # energy in hartree: read as hartree and converted, its
+                    # 15.35 came out as 9629.68 kcal/mol, which is not a
+                    # number about this molecule at all.
+                    unit = state.get('gfn_energy_unit')
+                    if unit:
+                        said += f' E = {energy:.4f} {unit}.'
+                    else:
+                        said += (f' E = {energy:.6f} Eh '
+                                 f'({energy * 627.5094740631:.2f} kcal/mol).')
+                # What was held while it ran, and what became of it.  A value
+                # the user is holding on screen that the optimisation quietly
+                # ignored would make the result an answer to a question nobody
+                # asked.
+                said += _solvents.note(_solv_model(), submit_gfn_solvent.value)
+                said += _gfn.held_note(state.get('gfn_held') or {
+                    'held': 0, 'dropped': [], 'mixed': False, 'force': None})
+                state['gfn_last_status'] = said
+                if gfn:
+                    if autospin:
+                        picked = results[0][0] if results else None
+                        del picked
+                        said += f' charge {charge}, multiplicity scanned.'
+                    else:
+                        said += f' charge {charge}, multiplicity {uhf + 1}.'
+                # The page's report about the playback is kept: it arrives
+                # while this message is being built and would otherwise be
+                # wiped by it a moment later.
+                note = state.get('gfn_play_note')
+                extra = [f'Trajectory: {note}.'] if note else []
+                _set_mol_status(said, *(list(failures[:2]) + extra))
+
+            schedule_ui_update(_apply)
+
+        worker = threading.Thread(target=_work, daemon=True)
+        state['optimize_thread'] = worker
+        worker.start()
+
+    def _clear_selection():
+        """Drop the picks so the next constraint starts from a clean set."""
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.clearSelection('
+            f'{json.dumps(submit_scope_id)});'
+        )
+
+    def _step_for_selection(indices):
+        """How far one press of an arrow key moves the value.
+
+        Three different quantities, three different steps.  A bond length is
+        Angstrom, where a hundredth is fine.  An angle is degrees and a tenth
+        is the useful step.  A dihedral is what gets turned through a whole
+        rotation -- half a degree there, so holding the key sweeps it instead
+        of creeping.
+        """
+        picked = len(indices or ())
+        if picked == 2:
+            submit_internal_value.step = 0.01     # bond length, in Angstrom
+        elif picked == 4:
+            submit_internal_value.step = 0.5      # dihedral, swept by hand
+        else:
+            submit_internal_value.step = 0.1      # angle
+
+    def _apply_internal_now():
+        """Put the selection at the value in the box, and leave it selected."""
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setInternal('
+            + json.dumps(submit_scope_id) + ','
+            + repr(float(submit_internal_value.value)) + ');'
+        )
+        # The browser moves the atoms; under GFN the rest of the molecule has
+        # to be given the chance to arrange itself around where they landed.
+        _arm_gfn_takeup('Set')
+
+    def on_submit_set_internal(change=None):
+        """Set is a mode: while it is on, the box turns the selection by hand.
+
+        Switching it on puts the selection at what the box says, and every
+        further change of the box does the same -- so the arrow keys turn a
+        dihedral a tenth of a degree at a time and the structure follows.  The
+        picks are kept, because letting go of them after every step is what
+        made turning something by hand impossible.
+        """
+        if not submit_internal_btn.value:
+            return
+        _apply_internal_now()
+
+    def on_submit_internal_value(change):
+        """The box changed.  Who owns it depends on what is selected."""
+        if change.get('name') != 'value' or state.get('internal_quiet'):
+            return
+        if _selected_constraint()[1] is not None:
+            return          # a held value is being retuned, not the geometry
+        if submit_internal_btn.value:
+            _apply_internal_now()
+
+    def on_submit_pick_sync(change):
+        """Offer the coordination polyhedra of a metal the moment it is picked.
+
+        Which ones are possible follows from its coordination number, and the
+        tables are MANTA's own -- the same ideal donor vectors it builds
+        complexes with.
+        """
+        if change.get('name') != 'value':
+            return
+        raw = (submit_pick_sync.value or '').strip()
+        indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
+        state['picked'] = indices
+        _step_for_selection(indices)
+        _refresh_swap(indices)
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        options = None
+        perceived = None
+        if xyz and indices:
+            # Perceive on demand. Waiting for the cache meant the offer only
+            # appeared once the force field had been switched on at least
+            # once -- tapping a metal before that did nothing at all, and said
+            # nothing either.
+            try:
+                perceived = _perception_for(xyz)
+            except Exception:
+                perceived = None
+        if perceived is not None and len(indices) == 1:
+            try:
+                from .molecule_forcefield import polyhedron_options
+                options = polyhedron_options(perceived, indices[0])
+            except Exception:
+                options = None
+        _refresh_hybridisation(indices, perceived)
+        if not options:
+            # Only the offer follows the selection. The applied polyhedron
+            # stays: clearing it here meant that selecting three ligand atoms
+            # to hold an angle silently threw the polyhedron away, and the very
+            # next export went out without it.
+            submit_poly_dd.layout.display = 'none'
+            submit_poly_dd.disabled = True
+            state['poly_offer_metal'] = None
+            # Say why, when a single atom was picked and could have qualified.
+            if perceived is not None and len(indices) == 1:
+                index = indices[0]
+                symbol = perceived.symbols[index]
+                if index in set(perceived.metal_indices or ()):
+                    donors = sorted(
+                        j for pair in perceived.bonds for j in pair
+                        if index in pair and j != index
+                    )
+                    _set_mol_status(
+                        f'{symbol}: coordination number {len(donors)} — no '
+                        'polyhedron table for that (2 to 9 are covered).'
+                    )
+            return
+
+        coordination, current, choices = options
+        state['poly_offer_metal'] = indices[0]
+        symbol = perceived.symbols[indices[0]]
+        entries = [(f'{symbol} · CN {coordination} · free', '')]
+        for code, label in choices:
+            mark = ' (current)' if code == current else ''
+            entries.append((f'{label}{mark}', code))
+        state['poly_quiet'] = True
+        try:
+            submit_poly_dd.options = entries
+            # Only a code this metal actually offers. A polyhedron held on one
+            # metal has nothing to say about the next one picked, and assigning
+            # a value the options do not contain raises.
+            applied = state.get('poly_applied')
+            offered = {code for code, _label in choices}
+            submit_poly_dd.value = applied if applied in offered else ''
+        finally:
+            state['poly_quiet'] = False
+        submit_poly_dd.disabled = False
+        submit_poly_dd.layout.display = ''
+
+    def _refresh_hybridisation(indices, perceived):
+        """Offer to overrule the hybridisation of the picked atoms.
+
+        Any number of them: a double bond that went unperceived usually cost
+        both of its carbons their type, and retyping a ring one atom at a time
+        is busywork. Metals are dropped from the selection rather than
+        blocking it -- RDKit's UFF has no types for one at all, so its bonds
+        and angles come from the geometry either way.
+        """
+        metals = set(perceived.metal_indices or ()) if perceived else set()
+        # An index the structure no longer has: the browser pushes its picks
+        # after a re-render, and an edit that deleted atoms renumbers them.
+        # Asking the perception about one is an IndexError, and this handler
+        # runs on every click in the viewer.
+        chosen = [
+            i for i in indices
+            if i not in metals and 0 <= i < len(perceived.symbols)
+        ] if perceived else []
+        if not chosen:
+            submit_hyb_dd.layout.display = 'none'
+            submit_hyb_dd.disabled = True
+            state['hyb_offer_atoms'] = []
+            return
+
+        from .molecule_forcefield import (
+            HYBRIDISATION_CHOICES, perceived_hybridisation_of,
+        )
+
+        overrides = state.get('hyb_overrides') or {}
+        auto = {perceived_hybridisation_of(perceived, i) for i in chosen}
+        if len(chosen) == 1:
+            index = chosen[0]
+            head = (f'{perceived.symbols[index]}{index} · '
+                    f'{auto.pop() or "no type"} (automatic)')
+        else:
+            named = ''.join(sorted({perceived.symbols[i] for i in chosen}))
+            found = auto.pop() if len(auto) == 1 else 'mixed'
+            head = f'{len(chosen)} atoms ({named}) · {found or "no type"} (automatic)'
+        entries = [(head, '')]
+        for name in HYBRIDISATION_CHOICES:
+            entries.append((f'force {name}', name))
+        # Only a value they all already share can be shown as the current one.
+        held = {overrides.get(i, '') for i in chosen}
+        state['hyb_offer_atoms'] = chosen
+        state['hyb_quiet'] = True
+        try:
+            submit_hyb_dd.options = entries
+            submit_hyb_dd.value = held.pop() if len(held) == 1 else ''
+        finally:
+            state['hyb_quiet'] = False
+        submit_hyb_dd.disabled = False
+        submit_hyb_dd.layout.display = ''
+
+    def on_submit_hyb_changed(change):
+        if change.get('name') != 'value' or state.get('hyb_quiet'):
+            return
+        atoms = list(state.get('hyb_offer_atoms') or [])
+        if not atoms:
+            return
+        index = atoms[0]
+        overrides = dict(state.get('hyb_overrides') or {})
+        chosen = submit_hyb_dd.value or ''
+        for atom in atoms:
+            if chosen:
+                overrides[atom] = chosen
+            else:
+                overrides.pop(atom, None)
+        state['hyb_overrides'] = overrides
+        # Perception is cached by element sequence, which this does not
+        # change, so the cache has to be dropped or the override never reaches
+        # the force field.
+        state['perceived'] = None
+        state['perceived_for'] = None
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        perceived = state.get('perceived')
+        if len(atoms) == 1:
+            symbol = perceived.symbols[index] if perceived else '?'
+            named = f'{symbol}{index}'
+        else:
+            named = f'{len(atoms)} atoms'
+        if chosen:
+            shape = {'sp': 'linear', 'sp2': 'trigonal planar',
+                     'sp3': 'tetrahedral'}[chosen]
+            _set_mol_status(f'{named} typed as {chosen}: {shape}.')
+        else:
+            _set_mol_status(f'{named} back to the perceived type.')
+        _clear_selection()
+
+    def _refresh_poly_turn():
+        """Offer Turn only where the vertices are not all alike.
+
+        An octahedron has nothing to turn -- every vertex is the same, and
+        which ligand is trans to which is what Swap is for. A trigonal
+        bipyramid has two kinds, so which pair is axial is a real choice.
+        """
+        geometry = state.get('poly_applied')
+        metal = state.get('poly_metal')
+        perceived = state.get('perceived')
+        turnable = False
+        if geometry and metal is not None and perceived is not None:
+            try:
+                from .molecule_forcefield import polyhedron_vertex_classes
+                donors = len(perceived.neighbours()[int(metal)])
+                grouped = polyhedron_vertex_classes(donors, geometry)
+                turnable = bool(grouped) and len(set(grouped[0])) > 1
+            except Exception:
+                turnable = False
+        submit_poly_turn_btn.layout.display = '' if turnable else 'none'
+        submit_poly_turn_btn.disabled = not turnable
+        if not turnable:
+            state['poly_arrangements'] = []
+            state['poly_arrangement_index'] = 0
+
+    def on_submit_poly_turn(_button=None):
+        """Step to the next way the ligands can sit on this polyhedron."""
+        geometry = state.get('poly_applied')
+        metal = state.get('poly_metal')
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not geometry or metal is None or not xyz:
+            _set_mol_status('Choose a polyhedron for a metal first.')
+            return
+        try:
+            from .molecule_forcefield import (
+                describe_polyhedron_arrangement, parse_xyz,
+                polyhedron_arrangements,
+            )
+            perceived = _perception_for(xyz)
+            # The coordinates as they are now, not as they were perceived: a
+            # ligand that has been dragged has to be scored where it sits.
+            parsed = parse_xyz(xyz)
+            coords = perceived.coords
+            if parsed is not None and list(parsed[0]) == list(perceived.symbols):
+                coords = parsed[1]
+            arrangements = polyhedron_arrangements(
+                perceived, int(metal), geometry, coords)
+        except Exception as exc:
+            _set_mol_status(f'Could not work out the arrangements: {exc}')
+            return
+        if len(arrangements) < 2:
+            _set_mol_status(
+                'Every vertex of this polyhedron is the same, so there is '
+                'nothing to turn. Swap exchanges two ligands.'
+            )
+            return
+        position = (int(state.get('poly_arrangement_index') or 0) + 1) % len(arrangements)
+        state['poly_arrangements'] = arrangements
+        state['poly_arrangement_index'] = position
+        state['poly_assignment'] = arrangements[position]
+        _enable_live_forcefield()
+        described = describe_polyhedron_arrangement(
+            perceived, geometry, arrangements[position])
+        _set_mol_status(
+            f'Arrangement {position + 1} of {len(arrangements)} — {described}.'
+        )
+
+    def on_submit_hyb_auto(_button=None):
+        """Derive the carbon types from the connectivity and hold them."""
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            _set_mol_status('Load a structure first.')
+            return
+        try:
+            from .molecule_forcefield import hybridisation_from_connectivity
+            perceived = _perception_for(xyz)
+            picked = list(state.get('picked') or [])
+            derived = hybridisation_from_connectivity(perceived, picked or None)
+        except Exception as exc:
+            _set_mol_status(f'Could not read the types: {exc}')
+            return
+        if not derived:
+            _set_mol_status(
+                'No carbon in the selection — the count only fixes the shape '
+                'for carbon, which has no lone pair.'
+            )
+            return
+        changed = [
+            i for i, name in derived.items()
+            if (state.get('hyb_overrides') or {}).get(i) != name
+        ]
+        overrides = dict(state.get('hyb_overrides') or {})
+        overrides.update(derived)
+        state['hyb_overrides'] = overrides
+        state['perceived'] = None
+        state['perceived_for'] = None
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        where = f'{len(picked)} selected' if picked else 'the whole structure'
+        counts = ', '.join(
+            f'{sum(1 for v in derived.values() if v == name)}x {name}'
+            for name in ('sp', 'sp2', 'sp3')
+            if any(v == name for v in derived.values())
+        )
+        _set_mol_status(
+            f'{len(derived)} carbons typed from their partners in {where} '
+            f'({counts}); {len(changed)} changed.'
+        )
+        _clear_selection()
+
+    #: How many structural edits can be taken back.  The browser keeps 50
+    #: coordinate snapshots; there is no reason for this to be shorter.
+    _STRUCTURE_UNDO_LIMIT = 50
+    #: How many steps back a session keeps. Generous, because each is a
+    #: coordinate block and a hundred of a 400-atom structure is a few
+    #: megabytes -- against a user who cannot get back to where they started.
+    _HISTORY_LIMIT = 200
+
+    _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
+
+    def _describe_constraint(entry):
+        symbols = []
+        perceived = state.get('perceived')
+        for index in entry['atoms']:
+            symbol = perceived.symbols[index] if perceived else '?'
+            symbols.append(f'{symbol}{index}')
+        unit = 'A' if entry['kind'] == 'distance' else 'deg'
+        mode = entry.get('mode', 'pull')
+        return f"{'-'.join(symbols)} = {entry['value']:.3g} {unit} ({mode})"
+
+    def _selected_constraint():
+        """The held entry the list is pointing at, or (None, None)."""
+        key = submit_constraint_dd.value or ''
+        if not key.startswith('c'):
+            return None, None
+        held = list(state.get('constraints') or [])
+        position = int(key[1:])
+        if not (0 <= position < len(held)):
+            return None, None
+        return position, held[position]
+
+    def _sync_constraint_selection():
+        """Mark the atoms of the selected entry and offer its value for editing.
+
+        With nothing selected the picture keeps whatever the user picked and the
+        value box goes back to serving the selection, which is what it does when
+        no held value is being looked at.
+        """
+        _position, entry = _selected_constraint()
+        if entry is None:
+            return
+        state['hold_mode_quiet'] = True
+        try:
+            submit_hold_mode.value = entry.get('mode', 'pull')
+        finally:
+            state['hold_mode_quiet'] = False
+        kind = str(entry['kind'])
+        unit = 'Å' if kind == 'distance' else '°'
+        number = float(entry['value'])
+        value = '{:.3f}'.format(number) if kind == 'distance' else '{:.1f}'.format(number)
+        label = 'held <b>{}</b> ({})'.format(kind, unit)
+        atoms = [int(i) for i in entry['atoms']]
+        _run_manip_js(
+            'if(window.__delfinSubmitManip&&window.__delfinSubmitManip.setPicks)'
+            'window.__delfinSubmitManip.setPicks('
+            + json.dumps(submit_scope_id) + ','
+            + json.dumps(atoms) + ','
+            + json.dumps(value) + ','
+            + json.dumps(label) + ');'
+        )
+
+    def on_submit_constraint_selected(change):
+        if change.get('name') != 'value' or state.get('constraint_quiet'):
+            return
+        if not (submit_constraint_dd.value or ''):
+            _clear_selection()
+            return
+        _sync_constraint_selection()
+
+    def on_submit_constraint_retune(change):
+        """Editing the value while a held entry is selected retunes that entry."""
+        if change.get('name') != 'value':
+            return
+        position, entry = _selected_constraint()
+        if entry is None:
+            return
+        if abs(float(submit_internal_value.value) - float(entry['value'])) < 1e-9:
+            return  # the box was filled with the held value, not edited
+        held = list(state.get('constraints') or [])
+        held[position] = dict(entry, value=float(submit_internal_value.value))
+        state['constraints'] = held
+        _refresh_constraints()
+        _enable_live_forcefield()
+        _set_mol_status(f'Holding {_describe_constraint(held[position])}.')
+
+    def _refresh_constraints():
+        """Show what the field is currently being held to."""
+        entries = []
+        if state.get('poly_applied') and state.get('poly_metal') is not None:
+            entries.append(('poly', f"polyhedron: {state['poly_applied']}"))
+        for position, entry in enumerate(state.get('constraints') or []):
+            entries.append((f'c{position}', _describe_constraint(entry)))
+        visible = bool(entries)
+        submit_constraint_dd.layout.display = '' if visible else 'none'
+        submit_constraint_del.layout.display = '' if visible else 'none'
+        submit_constraint_dd.disabled = not visible
+        submit_constraint_del.disabled = not visible
+        if not visible:
+            # Leave nothing behind: a hidden dropdown that still holds the
+            # last constraint shows it again the moment another one is set.
+            state['constraint_quiet'] = True
+            try:
+                submit_constraint_dd.options = [('no constraints', '')]
+                submit_constraint_dd.value = ''
+            except Exception:
+                pass
+            finally:
+                state['constraint_quiet'] = False
+            return
+        # Nothing is selected to begin with.  Selecting an entry marks the atoms
+        # it holds, so a preselected one would mean the picture always shows a
+        # marked set nobody asked for.
+        previous = submit_constraint_dd.value
+        state['constraint_quiet'] = True
+        try:
+            submit_constraint_dd.options = (
+                [(f'{len(entries)} held · show which', '')]
+                + [(label, key) for key, label in entries]
+            )
+            submit_constraint_dd.value = (
+                previous if previous in dict(submit_constraint_dd.options).values() else ''
+            )
+        finally:
+            state['constraint_quiet'] = False
+        _sync_constraint_selection()
+
+    def _refresh_swap(indices):
+        """Offer an exchange whenever two donors of one metal are selected.
+
+        It does not need a polyhedron: exchanging two ligands is a move across
+        a barrier, which is useful with or without a target shape.
+        """
+        perceived = state.get('perceived')
+        metals = set(getattr(perceived, 'metal_indices', ()) or ())
+        donors = set()
+        if perceived is not None and len(metals) == 1:
+            metal = next(iter(metals))
+            donors = {
+                j for pair in perceived.bonds for j in pair
+                if metal in pair and j != metal
+            }
+        ready = len(indices) == 2 and donors and all(i in donors for i in indices)
+        submit_swap_btn.layout.display = '' if ready else 'none'
+        submit_swap_btn.disabled = not ready
+
+    def _edit_bond(connect):
+        """Draw or remove a bond, and remember it.
+
+        Bond perception reads distances, and in a crowded coordination sphere
+        that is simply not reliable: on a real Pt complex it counted two ipso
+        carbons of a phosphine's phenyls as donors, giving CN 6 for a
+        four-coordinate metal, while the viewer's own perception invented a
+        Pt-H bond instead. Neither is trustworthy, so the correction has to be
+        remembered and re-applied -- otherwise the next perception, which runs
+        from the geometry, would quietly undo it.
+        """
+        indices = list(state.get('picked') or [])
+        if len(indices) != 2:
+            _set_mol_status('Select exactly two atoms to change a bond.')
+            return
+        pair = (min(indices), max(indices))
+        # A bond drawn where there was none costs both ends a valence, and with
+        # Adjust H on the hydrogen standing in its way goes: two methanes
+        # bonded at the carbons are ethane, not C2H8. With it off nothing goes,
+        # which is what correcting a perception needs -- the bond was always
+        # there, so nothing has to make room for it. Removing an atom is a
+        # structural edit and takes the structural path; the bond itself is
+        # still only recorded and drawn, never relaxed into place.
+        made_room = 0
+        if connect and bool(submit_adjust_h_btn.value):
+            from .molecule_builder import connect_atoms
+
+            structure = _structure_now()
+            if structure is not None:
+                before = len(structure)
+                ends = [structure.symbols[i] if i < len(structure) else '?'
+                        for i in pair]
+                mapping = connect_atoms(structure, pair[0], pair[1])
+                if mapping:
+                    made_room = before - len(structure)
+                    _apply_structure(
+                        structure,
+                        f'Bonded {ends[0]}{pair[0]} and {ends[1]}{pair[1]}.')
+                    pair = (mapping.get(pair[0], pair[0]),
+                            mapping.get(pair[1], pair[1]))
+        edits = {tuple(k): v for k, v in (state.get('bond_edits') or {}).items()}
+        edits[pair] = bool(connect)
+        state['bond_edits'] = edits
+        # Separately from the bond list, because after a structural edit that
+        # list is the whole structure and no longer says which bonds came from
+        # a hand rather than from perception -- and only the ones from a hand
+        # have to be put back into a picture that has been rebuilt.
+        hand = {tuple(k): v for k, v in (state.get('hand_bonds') or {}).items()}
+        hand[pair] = bool(connect)
+        state['hand_bonds'] = hand
+        # The perception is cached by element sequence, which a bond edit does
+        # not change -- so the cache has to be dropped explicitly, or the
+        # correction would never reach the force field at all.
+        state['perceived'] = None
+        state['perceived_for'] = None
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.editBond('
+            f'{json.dumps(submit_scope_id)},{pair[0]},{pair[1]},'
+            f'{"true" if connect else "false"});'
+        )
+        # Re-assign the parameters straight away: the topology decides the
+        # bonds, angles and torsions the field works with, and until it is
+        # rebuilt the relaxation is still holding the bond that was just cut.
+        state['poly_assignment'] = None
+        _enable_live_forcefield()
+        verb = 'Bonded' if connect else 'Unbonded'
+        room = (f' {made_room} hydrogen(s) made room for it.'
+                if made_room else '')
+        _set_mol_status(f'{verb} atoms {pair[0]} and {pair[1]}.{room}')
+        _clear_selection()
+
+    def _apply_structure(structure, note):
+        """Put an edited structure back and let the tab rebuild around it.
+
+        The coordinate box is the tab's single source of truth, so writing to
+        it re-renders the viewer and re-perceives everything. What does *not*
+        survive that is the bond orders: perception reads them off the
+        geometry and does not get them back -- ethene built here came back as
+        a single bond at 1.514 A. So the edited topology is re-seeded as the
+        hand corrections it is, which is exactly what it is: the user built
+        this, and their bonds outrank a distance table until a different
+        structure is loaded.
+        """
+        from .molecule_builder import to_xyz
+
+        _remember(note.rstrip('.') or 'an edit')
+
+        # Before the coordinates are written, because writing them rebuilds the
+        # picture and the rebuild is where the hand corrections are re-applied:
+        # at that moment they have to name the atoms of the structure that is
+        # arriving, not of the one being left behind. A removed hydrogen moves
+        # every atom after it, so a bond re-applied on the old numbering would
+        # be drawn between the wrong two atoms.
+        moved = structure.renumbering()
+        state['hand_bonds'] = {
+            (min(moved[i], moved[j]), max(moved[i], moved[j])): connected
+            for (i, j), connected in (state.get('hand_bonds') or {}).items()
+            if i in moved and j in moved
+        }
+
+        # An atom added or taken away is a different molecule from the one xtb
+        # has in hand, down to the number of coordinates -- so a run under it
+        # is ended here and starts again on the molecule that now exists, and
+        # the bonding GFN-FF had perceived goes with it.
+        _drop_gfn_topology()
+        _interrupt_gfn()
+        _arm_gfn_restart()
+
+        xyz = to_xyz(structure, note)
+        lines = [line for line in xyz.splitlines()[2:] if line.strip()]
+        # The write below re-renders through update_view, which
+        # clears the history a new structure invalidates. This is not a new
+        # structure, it is a step in the one being edited.
+        state['structure_edit_inflight'] = True
+        _mark_structure_edit()
+        try:
+            coords_widget.value = f'{len(lines)}\n{note}\n' + '\n'.join(lines)
+        finally:
+            state['structure_edit_inflight'] = False
+        # After update_view, which clears them.
+        state['bond_edits'] = {
+            (int(i), int(j)): int(order)
+            for (i, j), order in structure.bonds.items()
+        }
+        state['perceived'] = None
+        state['perceived_for'] = None
+        # Types, derived and held, after every build step -- which is what
+        # pressing the button by hand after one was doing. Perception reads
+        # bond orders off the geometry, and a structure that has just been
+        # built is exactly where that geometry is least settled: a centre
+        # comes back sp3 and its angles at 109.5 where they should be 120, so
+        # the field pulls the new part into the wrong shape. The number of
+        # partners says it outright and does not depend on the geometry at
+        # all, which is why doing it by hand fixed things.
+        # Everything the tab holds by index has to follow the renumbering an
+        # edit causes -- a deleted hydrogen moves every atom after it. A held
+        # value that quietly pointed at different atoms, or vanished, is worse
+        # than one that is dropped and said so.
+        renumber = structure.renumbering()
+
+        def _follow(indices):
+            moved = [renumber.get(int(i)) for i in indices]
+            return None if any(x is None for x in moved) else moved
+
+        kept, lost = [], 0
+        for entry in (state.get('constraints') or []):
+            moved = _follow(entry.get('atoms') or [])
+            if moved is None:
+                lost += 1
+                continue
+            kept.append(dict(entry, atoms=moved))
+        state['constraints'] = kept
+
+        state['hyb_overrides'] = {
+            renumber[i]: name
+            for i, name in (state.get('hyb_overrides') or {}).items()
+            if i in renumber
+        }
+        metal = state.get('poly_metal')
+        if metal is not None:
+            if metal in renumber:
+                state['poly_metal'] = renumber[metal]
+                assignment = state.get('poly_assignment') or {}
+                followed = {
+                    renumber[d]: v for d, v in assignment.items() if d in renumber
+                }
+                state['poly_assignment'] = (
+                    followed if len(followed) == len(assignment) else None)
+            else:
+                state['poly_applied'] = None
+                state['poly_metal'] = None
+                state['poly_assignment'] = None
+
+        # Straight off the structure that was just built, not off a fresh
+        # perception of it: perception can fail or come back empty at exactly
+        # this moment, and then nothing was derived at all -- which is why the
+        # button still had to be pressed by hand. The builder knows every bond
+        # it made, so the count is certain.
+        by_count = {2: 'sp', 3: 'sp2', 4: 'sp3'}
+        derived = {}
+        for index, symbol in enumerate(structure.symbols):
+            if symbol != 'C':
+                continue
+            partners = structure.neighbours(index)
+            # A side-on alkene is the one case where the metal does not count.
+            side_on = [
+                m for m in partners
+                if structure.symbols[m] not in ('H', 'C', 'N', 'O', 'S', 'P')
+                and any(o in structure.neighbours(m) for o in partners
+                        if structure.symbols[o] == 'C')
+            ]
+            name = by_count.get(len(partners) - len(side_on))
+            if name:
+                derived[index] = name
+        if derived:
+            overrides = dict(state.get('hyb_overrides') or {})
+            overrides.update(derived)
+            state['hyb_overrides'] = overrides
+            state['perceived'] = None
+            state['perceived_for'] = None
+        if lost:
+            note = f'{note} {lost} held value(s) lost their atoms and were dropped.'
+        _set_mol_status(note)
+        _refresh_constraints()
+        _push_bond_orders(structure.bonds)
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+
+    def _remember(what):
+        """Put the state as it is now into the history, under a name.
+
+        One history for everything the viewer can do, and one entry per
+        action. There used to be three -- a stack in the browser for drags, a
+        stack here for structural edits, and a single slot for the geometry
+        before an optimisation -- and none of them knew about the others. Undo
+        walked whichever it found first, so it stopped part way back and there
+        was no way to the beginning; and a re-render clears the browser's,
+        which is to say every draw threw away every drag before it.
+
+        Called *before* the thing it names happens, because what is worth
+        keeping is the state that is about to be left.
+        """
+        history = list(state.get('history') or [])
+        current = coords_widget.value
+        if history and history[-1].get('coords') == current:
+            # Two actions from the same picture are one step back, and the
+            # step is named after the first of them: going back to that state
+            # undoes everything since, and the earliest is what the user would
+            # look for. Overwriting the name here lost "the structure as it
+            # was loaded" the first time anything happened at all.
+            pass
+        else:
+            history.append({
+                'coords': current,
+                'bond_edits': dict(state.get('bond_edits') or {}),
+                'hand_bonds': dict(state.get('hand_bonds') or {}),
+                'constraints': list(state.get('constraints') or []),
+                'what': str(what),
+            })
+        # The first entry is the structure as it arrived and is never dropped:
+        # it is what Reset goes back to, and a long session must not lose it.
+        if len(history) > _HISTORY_LIMIT:
+            history = history[:1] + history[-(_HISTORY_LIMIT - 1):]
+        state['history'] = history
+
+    def _restore(entry, note):
+        """Put a remembered state back on screen."""
+        state['structure_edit_inflight'] = True
+        _mark_structure_edit()
+        # Before the write, because the write rebuilds the picture and the
+        # hand corrections re-applied to it have to be the ones belonging to
+        # the structure coming back.
+        state['hand_bonds'] = dict(entry.get('hand_bonds') or {})
+        try:
+            coords_widget.value = entry['coords']
+        finally:
+            state['structure_edit_inflight'] = False
+        state['bond_edits'] = dict(entry.get('bond_edits') or {})
+        state['constraints'] = list(entry.get('constraints') or [])
+        state['perceived'] = None
+        state['perceived_for'] = None
+        _refresh_constraints()
+        _set_mol_status(note)
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+
+    def _undo_structure():
+        """One step back, whatever kind of step it was.
+
+        A drag, a drawn atom, a bond, an optimisation, switching the
+        continuous relaxation on: each is one entry, so pressing Undo four
+        times walks back through four actions rather than stopping at the
+        first kind it does not recognise.
+        """
+        history = list(state.get('history') or [])
+        if len(history) < 1:
+            _set_mol_status('Nothing left to undo.')
+            return
+        # The last entry is the state before the most recent action, so going
+        # back to it is undoing that action. The first entry stays: it is the
+        # structure as it arrived, and Reset is what returns to it.
+        at_start = len(history) == 1
+        entry = history[0] if at_start else history.pop()
+        state['history'] = history
+        left = 0 if at_start else len(history)
+        _restore(entry, f'Took back: {entry.get("what") or "the last step"}.'
+                        + (f' {left} more to go back through.' if left
+                           else ' That is the structure as it was loaded.'))
+
+    def _push_hand_bonds():
+        """Put the bonds the user drew or cut back into a rebuilt picture.
+
+        A rebuild draws what the distances say, and a bond drawn between two
+        atoms that are not within bonding distance is not in them. So the first
+        drawn bond vanished from the view the moment a second edit rebuilt it,
+        while remaining in force everywhere else -- it was still there in the
+        force field, and an optimisation pulled the two atoms together and made
+        it visible again, which is exactly how it looked from outside: the bond
+        was gone, and then it was back.
+
+        Only what was corrected by hand, never the whole bond list: what
+        perception found is the viewer's own business and is left alone.
+        """
+        hand = state.get('hand_bonds') or {}
+        if not hand:
+            return
+        triples = [
+            [int(i), int(j), 1 if connected else 0]
+            for (i, j), connected in hand.items()
+        ]
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.applyBondEdits('
+            f'{json.dumps(submit_scope_id)},{json.dumps(triples)});'
+        )
+
+    def _push_bond_orders(bonds=None):
+        """Let the picture show what the bonds are.
+
+        A model read from an XYZ block has no orders in it -- the format
+        carries none -- so every bond was drawn as one stick whatever it was.
+        3Dmol draws a double as two cylinders and a triple as three once the
+        model knows, so the orders are handed over after every render.
+        """
+        if bonds is None:
+            xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+            if not xyz:
+                return
+            try:
+                perceived = _perception_for(xyz)
+                from .molecule_forcefield import _orders_from_mol
+                known = _orders_from_mol(perceived.typing_mol)
+                bonds = {
+                    pair: int(known.get(pair, 1)) for pair in perceived.bonds
+                }
+            except Exception:
+                return
+        triples = [
+            [int(i), int(j), int(order)]
+            for (i, j), order in dict(bonds).items() if int(order) > 1
+        ]
+        if not triples:
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setBondOrders('
+            f'{json.dumps(submit_scope_id)},{json.dumps(triples)});'
+        )
+
+    def _mark_structure_edit():
+        """Tell the re-render that this is an edit, not a different molecule.
+
+        Two things follow from it: the camera stays where the user put it, and
+        the continuous relaxation picks up again with the atom that was just
+        drawn in it -- which is the point of being able to draw while it runs.
+        """
+        _ensure_manip_bootstrap()
+        _run_manip_js('window.__delfinStructureEdit = true;')
+
+    def _structure_now():
+        from .molecule_builder import structure_from_xyz
+
+        xyz = (state.get('current_xyz_for_copy') or {}).get('content')
+        if not xyz:
+            return None
+        return structure_from_xyz(xyz, state.get('bond_edits') or {})
+
+    def on_submit_cmd(change):
+        """Carry out a gesture the browser cannot finish on its own.
+
+        The value is ``verb:serial:payload``; the serial only exists to make
+        the same command twice in a row read as two changes. Placing an atom
+        is cheap, but how many hydrogens it needs and where they go is decided
+        here, where RDKit's valences and covalent radii are.
+        """
+        if change.get('name') != 'value':
+            return
+        parts = (submit_cmd_sync.value or '').strip().split(':')
+        if len(parts) != 3:
+            return
+        verb, payload = parts[0], parts[2]
+
+        if verb == 'editor':
+            # The page saying which editor it is running. Until it has, every
+            # rendered structure carries a copy of the editor with it.
+            state['manip_seen_version'] = str(payload)
+            return
+
+        if verb == 'gfnplay':
+            # What the playback is doing, said by the page.  Without this the
+            # only way to tell an invisible trajectory from a missing one was
+            # to read the browser's console.
+            state['gfn_play_note'] = str(payload)
+            if str(payload).startswith('stopped at frame '):
+                try:
+                    state['gfn_shown_frame'] = int(str(payload).rsplit(' ', 1)[1])
+                except ValueError:
+                    pass
+            _set_mol_status(*[line for line in (
+                state.get('gfn_last_status') or '', f'Trajectory: {payload}.'
+            ) if line])
+            return
+
+        if verb == 'grabbed':
+            # A hand on the structure. The step is recorded here rather than
+            # when it is let go of, because by then the coordinate box already
+            # holds what the drag made -- the relaxation pushes into it while
+            # the mouse is still down -- and "before the drag" would not be
+            # anywhere any more.
+            _remember('a drag')
+            return
+
+        if verb == 'gfngrab':
+            # An atom has been picked up while xtb was minimising.  Ending the
+            # run at the grab rather than at the release is the whole point: a
+            # GFN2 run is thirteen seconds, and all of them would otherwise be
+            # spent on a structure the user is in the middle of changing.
+            if _interrupt_gfn():
+                _set_mol_status('Moved while it ran; the optimisation stops '
+                                'there and starts again from what you make.',
+                                spinner=True)
+            _begin_gfn_follow()
+            return
+
+        if verb == 'gfnfree':
+            _end_gfn_follow()
+            # Let go of.  If nothing else has already asked for the restart --
+            # a drag that moved something sends its coordinates first -- this
+            # is what keeps the switch from being left on with nothing running.
+            _arm_gfn_restart()
+            # Letting go leaves the structure where the hand left it.  Dragging
+            # moves along the potential surface; going down it is what Optimise
+            # is for, and doing that unasked took the choice away -- the atom
+            # you had just placed was pulled off the place you placed it.
+            # Settle is the way to ask for it on every release.
+            _arm_gfn_settle()
+            return
+
+        if verb == 'undo':
+            _undo_structure()
+            return
+
+        if verb == 'unbond':
+            indices = [int(p) for p in payload.split(',') if p.strip().isdigit()]
+            if len(indices) == 2:
+                state['picked'] = sorted(indices)
+                _edit_bond(False)
+            return
+
+        from .molecule_builder import (
+            delete_atoms, grow_from, normalise_element, place_atom,
+            set_bond_order, set_element,
+        )
+
+        structure = _structure_now()
+        if structure is None:
+            _set_mol_status('Load a structure first.')
+            return
+        fields = payload.split(',')
+        # Whether an edit fills or trims the hydrogens around it, or leaves
+        # them exactly as they are.
+        keep_h = not bool(submit_adjust_h_btn.value)
+        try:
+            if verb == 'addatom' and len(fields) == 4:
+                element = normalise_element(fields[0])
+                if element is None:
+                    _set_mol_status(f'{fields[0]} is not an element.')
+                    return
+                place_atom(structure, element,
+                           [float(v) for v in fields[1:4]],
+                           adjust_h=not keep_h)
+                _apply_structure(structure, f'Placed {element}.')
+            elif verb == 'grow' and len(fields) in (6, 9):
+                element = normalise_element(fields[1])
+                if element is None:
+                    _set_mol_status(f'{fields[1]} is not an element.')
+                    return
+                # Where the hand let go, when the page said. With the
+                # hydrogens left alone the atom belongs there rather than at
+                # the length its bond would prefer -- that is what switching
+                # the adjustment off is for.
+                landed = [float(v) for v in fields[6:9]] if len(fields) == 9 else None
+                grown = grow_from(structure, int(fields[0]), element,
+                                  order=int(fields[2]),
+                                  direction=[float(v) for v in fields[3:6]],
+                                  adjust_h=not keep_h, at=landed)
+                if grown is None:
+                    _set_mol_status(f'{element} could not be grown there.')
+                    return
+                _apply_structure(
+                    structure,
+                    f'Grew {element}.' if not keep_h else
+                    f'Grew {element} where you let go.')
+            elif verb == 'setelement' and len(fields) == 2:
+                element = normalise_element(fields[1])
+                if element is None:
+                    _set_mol_status(f'{fields[1]} is not an element.')
+                    return
+                index = int(fields[0])
+                was = structure.symbols[index] if index < len(structure) else '?'
+                if set_element(structure, index, element, adjust_h=not keep_h):
+                    _apply_structure(structure, f'{was}{index} is now {element}.')
+            elif verb == 'bondcycle' and len(fields) == 2:
+                first, second = (int(v) for v in fields)
+                ends = [structure.symbols[i] for i in (first, second)]
+                current = structure.order(first, second)
+                stepped = None
+                for step in (1, 2, 3):
+                    candidate = (current - 1 + step) % 3 + 1
+                    if candidate == current:
+                        break
+                    if set_bond_order(structure, first, second, candidate,
+                                      adjust_h=not keep_h):
+                        stepped = candidate
+                        break
+                if stepped is None:
+                    _set_mol_status(
+                        f'{ends[0]}{first}-{ends[1]}{second} can only be '
+                        'single: neither end has valence for more.'
+                    )
+                else:
+                    named = {1: 'single', 2: 'double', 3: 'triple'}[stepped]
+                    _apply_structure(
+                        structure,
+                        f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')
+            elif verb == 'bondorder' and len(fields) == 3:
+                first, second, order = (int(v) for v in fields)
+                named = {1: 'single', 2: 'double', 3: 'triple'}.get(order, '')
+                ends = [structure.symbols[i] for i in (first, second)]
+                if not structure.order(first, second):
+                    # A bond that is not there yet is made the way the Bond
+                    # button makes one: the topology changes and nothing else.
+                    # Moving fragments and re-placing hydrogens to go with it
+                    # was more than was asked for, and it wrecked the molecule
+                    # on the way -- while Bond, which does none of that, has
+                    # always worked.
+                    state['picked'] = [first, second]
+                    _edit_bond(True)
+                elif set_bond_order(structure, first, second, order,
+                                    adjust_h=not keep_h):
+                    _apply_structure(
+                        structure,
+                        f'{ends[0]}{first}-{ends[1]}{second} is now {named}.')
+                else:
+                    _set_mol_status(
+                        f'{ends[0]}{first}-{ends[1]}{second} cannot be '
+                        f'{named}: one of them has no valence left for it.'
+                    )
+            elif verb == 'delatoms':
+                doomed = [int(p) for p in fields if p.strip().lstrip('-').isdigit()]
+                gone = delete_atoms(structure, doomed, adjust_h=not keep_h)
+                if gone:
+                    _apply_structure(structure, f'Deleted {gone} atom(s).')
+        except Exception as exc:
+            _set_mol_status(f'That edit did not work: {exc}')
+
+    def on_submit_centre(_button=None):
+        """Put the system back in the middle of the picture.
+
+        Nothing about the structure changes -- this is the camera and only the
+        camera. It is a button rather than something that happens by itself
+        because a view is the user's: moving in on one corner is a thing
+        people do on purpose, and a picture that re-frames itself while they
+        work is worse than one they have to bring back now and then.
+        """
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            f'window.__delfinSubmitManip.recentreView({json.dumps(submit_scope_id)});'
+        )
+        _set_mol_status('Back in the middle. The structure is unchanged.')
+
+    def on_submit_bond(_button=None):
+        _edit_bond(True)
+
+    def on_submit_unbond(_button=None):
+        _edit_bond(False)
+
+    def on_submit_swap(_button=None):
+        """Exchange two ligands outright rather than dragging one at another.
+
+        The two arrangements are separate minima and the relaxation only runs
+        downhill, so it can never cross between them: a ligand dragged part of
+        the way simply rolls back. The exchange is therefore performed in one
+        step and the field is left to tidy up afterwards.
+        """
+        indices = list(state.get('picked') or [])
+        metal = state.get('poly_metal')
+        if metal is None:
+            perceived = state.get('perceived')
+            metals = list(getattr(perceived, 'metal_indices', ()) or ())
+            metal = metals[0] if len(metals) == 1 else None
+        if len(indices) != 2 or metal is None:
+            _set_mol_status('Select two ligands of one metal to exchange them.')
+            return
+        state['poly_assignment'] = None
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.exchangeLigands('
+            f'{json.dumps(submit_scope_id)},{int(metal)},'
+            f'{int(indices[0])},{int(indices[1])});'
+        )
+        _set_mol_status(
+            'Exchanged the two ligands. The field is settling the result; '
+            'Undo puts them back.'
+        )
+
+    def on_submit_hold(_button=None):
+        """Hold the value the selection describes while the field runs."""
+        indices = list(state.get('picked') or [])
+        kind = _CONSTRAINT_KINDS.get(len(indices))
+        if not kind:
+            _set_mol_status('Pick 2, 3 or 4 atoms before holding a value.')
+            return
+        entry = {
+            'kind': kind,
+            'atoms': indices,
+            'value': float(submit_internal_value.value),
+            # 'pull' negotiates with the chemistry and settles at a compromise;
+            # 'fix' is restored after every relaxation step, so the value is met
+            # exactly and the rest of the molecule arranges itself around it.
+            'mode': submit_hold_mode.value,
+        }
+        held = list(state.get('constraints') or [])
+        held = [c for c in held if c['atoms'] != indices]
+        held.append(entry)
+        state['constraints'] = held
+        _refresh_constraints()
+        _set_mol_status(f'Holding {_describe_constraint(entry)}.')
+        _enable_live_forcefield()
+        # Under GFN nothing is running between drags, so the change is what
+        # starts it: a value set while the switch is down used to sit there
+        # until Optimise was pressed.
+        _arm_gfn_takeup(f'Holding {_describe_constraint(entry)}')
+        # A fresh set for the next one: several values can then be held at
+        # once, which is the whole point of a list.
+        _clear_selection()
+
+    def on_submit_hold_mode(change):
+        """Retune the selected constraint, so a mode can be changed without
+        having to select the atoms and set the value again."""
+        if change.get('name') != 'value':
+            return
+        if state.get('hold_mode_quiet'):
+            return
+        position, entry = _selected_constraint()
+        if entry is None:
+            return
+        held = list(state.get('constraints') or [])
+        held[position] = dict(entry, mode=submit_hold_mode.value)
+        state['constraints'] = held
+        _refresh_constraints()
+        _enable_live_forcefield()
+        _arm_gfn_takeup(f'Holding {_describe_constraint(held[position])}')
+
+    def on_submit_reset(_button=None):
+        """Back to the structure that was loaded, with nothing set on it.
+
+        Editing in the viewer is a one-way street otherwise: undo takes back
+        one step at a time, and a structure that has been pulled apart over
+        twenty of them has no way home short of pasting the coordinates again.
+        """
+        # The first thing in the history is the structure as it arrived. It
+        # was a second remembered place before, set in the render path, and
+        # the two could disagree -- which is how Reset came back to something
+        # that was not the beginning.
+        history = list(state.get('history') or [])
+        pristine = (history[0].get('coords') if history
+                    else state.get('pristine_coords'))
+        if not pristine:
+            _set_mol_status('Nothing to go back to yet.')
+            return
+        state['constraints'] = []
+        state['bond_edits'] = {}
+        state['hand_bonds'] = {}
+        state['hyb_overrides'] = {}
+        state['structure_undo'] = []
+        # The history goes back to its first entry rather than being thrown
+        # away: what Reset undid is one more thing that happened, and a user
+        # who presses it by accident has to be able to come back.
+        state['history'] = history[:1] if history else []
+        state['poly_applied'] = None
+        state['poly_metal'] = None
+        state['poly_assignment'] = None
+        state['poly_arrangements'] = []
+        state['poly_arrangement_index'] = 0
+        submit_poly_turn_btn.layout.display = 'none'
+        submit_poly_turn_btn.disabled = True
+        state['poly_quiet'] = True
+        try:
+            submit_poly_dd.value = ''
+        except Exception:
+            pass
+        finally:
+            state['poly_quiet'] = False
+        state['hold_mode_quiet'] = True
+        try:
+            submit_hold_mode.value = 'pull'
+        except Exception:
+            pass
+        finally:
+            state['hold_mode_quiet'] = False
+        submit_internal_value.value = 0.0
+        _clear_selection()
+        # Writing the coordinates is what re-renders and re-perceives; it also
+        # clears everything above a second time, which is the point.
+        if coords_widget.value == pristine:
+            # Same text, so the write would be a no-op and nothing would be
+            # redrawn -- the whole reason the viewer looks destroyed is that
+            # the *coordinates* changed underneath it.
+            update_view()
+        else:
+            coords_widget.value = pristine
+        _refresh_constraints()
+        _set_mol_status('Back to the structure as it was loaded.')
+
+    def on_submit_constraint_del(_button=None):
+        key = submit_constraint_dd.value or ''
+        if key == 'poly':
+            state['poly_applied'] = None
+            state['poly_metal'] = None
+            state['poly_assignment'] = None
+            state['poly_arrangements'] = []
+            state['poly_arrangement_index'] = 0
+            submit_poly_turn_btn.layout.display = 'none'
+            submit_poly_turn_btn.disabled = True
+            state['poly_quiet'] = True
+            try:
+                submit_poly_dd.value = ''
+            except Exception:
+                pass
+            finally:
+                state['poly_quiet'] = False
+        elif key.startswith('c'):
+            held = list(state.get('constraints') or [])
+            position = int(key[1:])
+            if 0 <= position < len(held):
+                held.pop(position)
+            state['constraints'] = held
+        _refresh_constraints()
+        _enable_live_forcefield()
+
+    def on_submit_poly_changed(change):
+        if change.get('name') != 'value' or state.get('poly_quiet'):
+            return
+        state['poly_applied'] = submit_poly_dd.value or None
+        state['poly_assignment'] = None
+        if state['poly_applied']:
+            state['poly_metal'] = state.get('poly_offer_metal')
+        else:
+            state['poly_metal'] = None
+        if state['poly_applied'] and state.get('poly_metal') is not None:
+            try:
+                from .molecule_forcefield import polyhedron_assignment
+                state['poly_assignment'] = polyhedron_assignment(
+                    state['perceived'], state['poly_metal'], state['poly_applied'],
+                )
+            except Exception:
+                state['poly_assignment'] = None
+        state['poly_arrangements'] = []
+        state['poly_arrangement_index'] = 0
+        _refresh_poly_turn()
+        _refresh_constraints()
+        # Re-assigning the parameters is what makes the pull start; with the
+        # field running the complex visibly moves into the polyhedron.
+        if submit_relax_btn.value or state.get('ff_bootstrap_done'):
+            _enable_live_forcefield()
+        # The metal has done its job once the polyhedron is on, exactly as
+        # after Set or Hold: leaving it picked meant the next atom clicked
+        # joined it, and the highlight sphere read as though something were
+        # still waiting to be chosen. What is held stays in the list below.
+        if state['poly_applied']:
+            _set_mol_status(
+                f'{submit_poly_dd.label}: the donors are pulled onto it.'
+            )
+        else:
+            _set_mol_status('Polyhedron released.')
+        _clear_selection()
+
+    def on_submit_dyn_bonds(change):
+        """Whether the drawn lines follow the distances."""
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_dyn_bonds_btn.value)
+        submit_dyn_bonds_btn.button_style = 'info' if active else ''
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setDynamicBonds('
+            f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
+        )
+        _set_mol_status(
+            'The lines follow the distances now. Only the picture: what the '
+            'calculation holds together is Bond and Unbond\'s business.'
+            if active else
+            'The lines keep the bonds the structure was drawn with.')
+
+    def on_submit_settle_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_settle_btn.value)
+        submit_settle_btn.button_style = 'info' if active else ''
+        if _server_method():
+            # On the server this is the server's job, not the browser's: a release
+            # runs one short optimisation with the method on screen.  Telling
+            # the browser to settle would be telling it to use a field that is
+            # deliberately not installed.
+            label = _server_label(submit_ff_dd.value)
+            _set_mol_status(
+                f'Letting go of an atom now lets {label} tidy the structure '
+                'around it.' if active else
+                'Atoms will stay exactly where you put them.')
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setSettleOnRelease('
+            f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
+        )
+
+    def on_submit_sens_changed(change):
+        if change.get('name') != 'value':
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setDragSensitivity('
+            f'{json.dumps(submit_scope_id)},{float(submit_sens_slider.value)});'
+        )
+
+    def _submit_viewer_js():
+        """The viewer this tab is showing, as an expression for the browser."""
+        return '(window._submitMolViewerByScope||{})[%s]' % json.dumps(
+            submit_scope_id)
+
+    def on_submit_labels_toggle(change):
+        """Numbers on or off, and nothing else.
+
+        The molecule is emphatically not rendered again. Rebuilding it from
+        the coordinates is how a structure loses what only the browser knows:
+        the bonds as they were perceived, and the ones made or broken by hand.
+        Switching the numbers off used to do exactly that, so a molecule that
+        had been optimised came back with bonds missing. The numbers are a
+        layer of sprites over the model -- they can be added and taken away
+        without the model hearing about it.
+        """
+        if change.get('name') != 'value':
+            return
+        on = bool(submit_labels_btn.value)
+        submit_label_size.layout.display = '' if on else 'none'
+        submit_labels_btn.button_style = 'info' if on else ''
+        _run_manip_js(
+            show_atom_numbers_js(
+                var=_submit_viewer_js(), on=on,
+                scale=scale_for_px(submit_label_size.value))
+        )
+
+    def on_submit_label_size(change):
+        """Resize them in the viewer that is already there.
+
+        Nothing is re-rendered: the browser rescales the label sprites it
+        holds, so the size changes as the dropdown closes.
+        """
+        if change.get('name') != 'value':
+            return
+        _run_manip_js(
+            atom_numbers_js()
+            + 'window.__delfinAtomNumbers.setScale(%s,%.4f);'
+            % (_submit_viewer_js(),
+               scale_for_px(submit_label_size.value))
+        )
+
+    def on_submit_strength_changed(change):
+        if change.get('name') != 'value':
+            return
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setOptimizerStrength('
+            f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
+        )
+
+    def _solv_model():
+        """The continuum to run with, or '' when the method has none.
+
+        Read from the dropdown, but never trusted past the method: the two are
+        set separately and a stale model is how a run ends up asking for
+        ddCOSMO under GFN-FF, which does not fail -- it returns a destroyed
+        structure.
+        """
+        offered = _solvents.models_for(submit_ff_dd.value)
+        if not offered:
+            return ''
+        chosen = str(submit_gfn_solv_model.value or '')
+        return chosen if chosen in offered else offered[0]
+
+    def _refresh_solvation_controls():
+        """Put the two solvent controls in step with the chosen method.
+
+        Both lists are properties of the method, not of the tab: GFN-FF has no
+        ddCOSMO, GBSA has eleven fewer solvents than ALPB under GFN-FF and
+        thirteen fewer under GFN1, and a PM method has COSMO alone.  Whatever
+        was chosen is kept if the new method can still do it, and dropped with
+        a word if it cannot -- silently keeping it would leave the control
+        showing one thing and the run doing another.
+        """
+        offered = _solvents.models_for(submit_ff_dd.value)
+        submit_gfn_solvent.layout.display = '' if offered else 'none'
+        # One model is not a choice; it is a label, and the tooltip on the
+        # solvent box already says which it is.
+        submit_gfn_solv_model.layout.display = '' if len(offered) > 1 else 'none'
+        state['solvent_quiet'] = True
+        try:
+            if not offered:
+                submit_gfn_solvent.value = ''
+                return
+            model_options = [(_solvents.model_label(name), name)
+                             for name in offered]
+            if list(submit_gfn_solv_model.options) != model_options:
+                keeping = str(submit_gfn_solv_model.value or '')
+                submit_gfn_solv_model.options = model_options
+                submit_gfn_solv_model.value = (
+                    keeping if keeping in offered else offered[0])
+            model = _solv_model()
+            wet = str(submit_gfn_solvent.value or '')
+            names = _solvents.solvents_for(model, submit_ff_dd.value)
+            wanted = [('none (gas phase)', '')] + [
+                (_solvents.label_of(name), name) for name in names]
+            if list(submit_gfn_solvent.options) != wanted:
+                submit_gfn_solvent.options = wanted
+                submit_gfn_solvent.value = wet if wet in names else ''
+                if wet and wet not in names:
+                    _set_mol_status(
+                        f'{_solvents.model_label(model)} is not parametrised '
+                        f'for {_solvents.label_of(wet)} here, so the solvent '
+                        'was cleared. ALPB covers every solvent in the list.')
+        finally:
+            state['solvent_quiet'] = False
+
+    def on_submit_solv_model(change):
+        if change.get('name') != 'value' or state.get('solvent_quiet'):
+            return
+        _refresh_solvation_controls()
+        wet = str(submit_gfn_solvent.value or '')
+        model = _solv_model()
+        if not wet:
+            return
+        _set_mol_status(
+            f'{_solvents.label_of(wet)} with '
+            f'{_solvents.model_label(model)} from now on. The structure on '
+            'screen was optimised under the previous model, and the two do '
+            'not agree -- on a glycine in water ALPB and ddCOSMO differed by '
+            '2.8 kcal/mol -- so it is worth optimising again.')
+
+    def on_submit_solvent(change):
+        if change.get('name') != 'value' or state.get('solvent_quiet'):
+            return
+        wet = str(submit_gfn_solvent.value or '')
+        model = _solv_model()
+        _set_mol_status(
+            f'Optimising in {_solvents.label_of(wet)} from now on '
+            f'({_solvents.model_label(model)}). The structure on screen was '
+            'not, so it is worth optimising again.'
+            if wet else
+            'Optimising in the gas phase from now on.')
+
+    def on_submit_autospin(change):
+        if change.get('name') != 'value':
+            return
+        scanning = bool(submit_gfn_autospin.value)
+        submit_gfn_mult.disabled = scanning
+        if scanning:
+            _set_mol_status(
+                'The multiplicity is scanned: the ones the electron count '
+                'allows are each optimised and the lowest is kept. Three runs '
+                'instead of one.')
+
+    def _fill_charge_from_smiles():
+        """Take the charge off the SMILES the structure was built from.
+
+        A SMILES states the formal charges outright, so asking the user for a
+        number the input already carries is asking them to repeat themselves.
+        Nothing else can be read that way -- a pasted XYZ says nothing about
+        charge, and no input says anything about the spin -- so those stay the
+        user's to set.  Returns the SMILES it read, or '' when there was none.
+        """
+        smiles = str((state.get('converted_xyz_cache') or {}).get('smiles') or '')
+        if not smiles:
+            return ''
+        try:
+            submit_gfn_charge.value = int(get_smiles_charge(smiles))
+        except Exception:
+            return ''
+        return smiles
+
+    def _server_method(value=None):
+        """Whether this method is computed on the server rather than the page.
+
+        Two engines now: xtb for the GFN family, MOPAC for the PM one. What
+        the rest of the tab needs to know about either is the same -- there is
+        no force field in the browser for it, so the live relaxation and the
+        drag behave differently -- so it asks one question instead of naming
+        engines in a dozen places.
+        """
+        chosen = submit_ff_dd.value if value is None else value
+        return _gfn.is_gfn_method(chosen) or _mopac.is_mopac_method(chosen)
+
+    def _server_binary(value):
+        """The program this method needs, whichever engine it belongs to."""
+        if _mopac.is_mopac_method(value):
+            return _mopac.find_mopac()
+        return _gfn.find_binary(value)
+
+    def _server_label(value):
+        if _gfn.is_gfn_method(value):
+            return _gfn.GFN_METHODS[value]['label']
+        if _mopac.is_mopac_method(value):
+            return _mopac.MOPAC_METHODS[value]['label']
+        return str(value).upper()
+
+    def _live_ff_method():
+        """The method the browser relaxes with while an atom is dragged.
+
+        GFN runs on the server; a round trip per frame would cap a drag at
+        about 13 Hz, so dragging keeps the force field that lives in the
+        browser.  Choosing GFN changes what Optimise does, not what a drag
+        does, and the status line says so once rather than silently.
+        """
+        chosen = str(submit_ff_dd.value or 'uff')
+        return 'uff' if _gfn.is_gfn_method(chosen) else chosen
+
+    def _offer_xtb_install(offer):
+        """Show the offer, or the two buttons that carry it out, or neither."""
+        submit_xtb_install_btn.layout.display = '' if offer else 'none'
+        submit_xtb_confirm_btn.layout.display = 'none'
+        submit_xtb_cancel_btn.layout.display = 'none'
+
+    def _missing_tool():
+        """Which program the chosen method needs and has not got.
+
+        g-xTB is not the xtb beside it: it ships as a build of its own, and an
+        ordinary xtb accepts --gxtb and silently runs GFN2.  So what is missing
+        is a question with two answers, and offering the wrong one would
+        install something that changes nothing.
+        """
+        method = str(submit_ff_dd.value)
+        if not _gfn.is_gfn_method(method):
+            return None
+        return None if _gfn.find_binary(method) else (
+            'gxtb' if method == 'gxtb' else 'xtb')
+
+    def _refresh_xtb_offer():
+        """A missing program under a GFN method is a thing to fix, not a wall."""
+        missing = _missing_tool()
+        state['xtb_install_tool'] = missing
+        submit_xtb_install_btn.description = (
+            'Install g-xTB' if missing == 'gxtb' else 'Install xtb')
+        _offer_xtb_install(
+            missing is not None
+            and _gfn.install_script() is not None
+            and not state.get('xtb_installing'))
+
+    def on_submit_xtb_install(_button=None):
+        """The first press only says what the second one would do.
+
+        Fetching a conda environment of a few hundred megabytes is not a thing
+        to start on a single click, and on a cluster the right answer is often
+        to load the module instead -- so the command is on screen before it
+        runs, and cancelling is as easy as agreeing.
+        """
+        command = _gfn.install_command(state.get('xtb_install_tool') or 'xtb')
+        if command is None:
+            _set_mol_status('DELFIN\'s installer is not next to this copy of '
+                            'the dashboard, so there is nothing to run.')
+            return
+        submit_xtb_install_btn.layout.display = 'none'
+        submit_xtb_confirm_btn.layout.display = ''
+        submit_xtb_cancel_btn.layout.display = ''
+        _set_mol_status(
+            'This will run:  ' + ' '.join(command),
+            'It fetches xtb from conda-forge into DELFIN\'s own tool '
+            'directory -- a few hundred megabytes, several minutes, and it '
+            'needs the network. On a cluster, module load xtb may be the '
+            'better answer.',
+        )
+
+    def on_submit_xtb_cancel(_button=None):
+        _refresh_xtb_offer()
+        _set_mol_status('Left alone. Optimise will say xtb is missing rather '
+                        'than doing nothing.')
+
+    def on_submit_xtb_confirm(_button=None):
+        if state.get('xtb_installing'):
+            return
+        state['xtb_installing'] = True
+        _offer_xtb_install(False)
+        _set_mol_status(
+            f'Installing {state.get("xtb_install_tool") or "xtb"}...',
+            spinner=True)
+
+        def _work():
+            def _line(text):
+                if text.strip():
+                    schedule_ui_update(
+                        _set_mol_status,
+                        f'Installing {state.get("xtb_install_tool") or "xtb"}'
+                        '...', text.strip(), spinner=True)
+
+            outcome = _gfn.install_xtb(
+                on_line=_line, tool=state.get('xtb_install_tool') or 'xtb')
+
+            def _done():
+                state['xtb_installing'] = False
+                _refresh_xtb_offer()
+                if outcome.get('ok'):
+                    # Asked again rather than assumed: the resolver is what
+                    # every run will use, and a binary it cannot see is not
+                    # installed as far as the dashboard is concerned.
+                    _set_mol_status(outcome['status'],
+                                    'Optimise will use it from now on.')
+                else:
+                    _set_mol_status(outcome.get('status') or 'The install '
+                                    'did not finish.',
+                                    *outcome.get('lines', [])[-2:])
+
+            schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def on_submit_ff_changed(change):
+        if change.get('name') != 'value':
+            return
+        gfn = _server_method()
+        submit_gfn_charge.layout.display = '' if gfn else 'none'
+        submit_gfn_mult.layout.display = '' if gfn else 'none'
+        submit_gfn_autospin.layout.display = (
+            '' if _gfn.is_gfn_method(submit_ff_dd.value) else 'none')
+        # A method without solvation gets no solvent box: a control that can
+        # only produce a refusal is worse than no control.  Which models and
+        # which solvents a method does have is the solvents module's answer,
+        # and it differs for every one of them -- so both boxes are rebuilt
+        # here rather than merely shown or hidden.
+        _refresh_solvation_controls()
+        # Relax means the browser's own field running once per frame, and there
+        # is no GFN engine in the browser to run.  Under GFN it means the other
+        # half of the same idea: while an atom is being dragged, the rest of
+        # the molecule follows it -- one short xtb run per push, and nothing at
+        # all when nothing is being dragged.  It was switched off and hidden
+        # here before there was anything for it to do.
+        # A follow armed under the old method must not outlive the choice that
+        # armed it: the toggle handler reads the method that is chosen *now*.
+        _end_gfn_follow()
+        if gfn and submit_settle_btn.value:
+            # Under GFN, letting go leaves the structure where the hand left
+            # it.  Tidying on every release is a thing to ask for, not the
+            # default -- an atom pulled off the place it was just put is the
+            # opposite of placing it.
+            submit_settle_btn.value = False
+        submit_relax_btn.disabled = False
+        # The page reads this switch itself, and only follows when the class is
+        # on it: asking the kernel whether to follow would cost a round trip
+        # per push, and a UFF drag would be pushing for no reason.
+        if gfn:
+            submit_relax_btn.add_class('submit-gfn-follow')
+        else:
+            submit_relax_btn.remove_class('submit-gfn-follow')
+        # Out of the way entirely, not merely greyed: a control that cannot do
+        # anything under the chosen method is clutter that invites the question
+        # of why it is dead.  Strength is how many steps the browser's field
+        # takes per animation frame, and that field does not run here.  Settle
+        # does have a meaning under GFN -- letting go and having the structure
+        # tidied rather than left at the cursor -- so it stays, and the chosen
+        # method is what tidies it.
+        submit_strength_slider.layout.display = 'none' if gfn else ''
+        # Dynamik Opt without an xtb behind it cannot do anything at all, so
+        # it goes rather than sitting there being pressed to no effect.
+        usable = not gfn or _gfn.find_binary(submit_ff_dd.value) is not None
+        submit_relax_btn.layout.display = '' if usable else 'none'
+        if not usable and submit_relax_btn.value:
+            submit_relax_btn.value = False
+        label = (_server_label(submit_ff_dd.value)
+                 if gfn else str(submit_ff_dd.value).upper())
+        submit_relax_btn.tooltip = (
+            f'While this is on, dragging an atom lets the rest of the molecule '
+            f'follow it -- {label} on the server, a few cycles per push, and '
+            f'each step says how long it took. Nothing runs while nothing is '
+            f'being dragged.'
+            if gfn else
+            'Relax the structure continuously while you work on it.'
+        )
+        submit_settle_btn.tooltip = (
+            f'When you let go of an atom, let {label} tidy the structure '
+            f'around its new position instead of leaving it where the cursor '
+            f'stopped. One short run on the server per release.'
+            if gfn else
+            'When you let go of an atom, let the structure relax around its '
+            'new position instead of keeping the strain of the drag. Switch '
+            'off to leave atoms exactly where you put them.'
+        )
+        # The engine follows the method, and the switch keeps its position:
+        # switching back and forth is something a user does constantly, and it
+        # must not cost a press each time -- nor leave the previous engine
+        # running underneath the new choice.
+        if gfn:
+            _stop_browser_field()
+        elif submit_relax_btn.value:
+            _enable_live_forcefield()
+            _run_manip_js(
+                'if(window.__delfinSubmitManip)'
+                'window.__delfinSubmitManip.startAutoOptimize('
+                f'{json.dumps(submit_scope_id)});'
+            )
+        _refresh_xtb_offer()
+        if gfn:
+            label = _server_label(submit_ff_dd.value)
+            source = _fill_charge_from_smiles()
+            if _gfn.find_binary(submit_ff_dd.value) is None:
+                _set_mol_status(
+                    f'{label} needs a program that was not found. The button '
+                    'fetches it with DELFIN\'s own installer, and says what '
+                    'it will run before it runs it.'
+                    if _gfn.install_script() is not None else
+                    f'{label} needs xtb on the PATH; it was not found. '
+                    'Optimise will say so rather than doing nothing.')
+            elif source:
+                _set_mol_status(
+                    f'Optimise now uses {label}. Charge {submit_gfn_charge.value} '
+                    f'read from the SMILES; the multiplicity is yours to set. '
+                    'Switch Relax on to have the molecule follow an atom you '
+                    'drag.')
+            else:
+                _set_mol_status(
+                    f'Optimise now uses {label}. Set the charge (q) and the '
+                    'multiplicity (M): xtb needs both, and a wrong spin on a '
+                    'metal gives a confident wrong answer rather than an error. '
+                    'Switch Relax on to have the molecule follow an atom you '
+                    'drag.')
+        # Re-assign parameters under the newly chosen method, but only if the
+        # live relaxation is actually switched on.
+        if submit_relax_btn.value:
+            _enable_live_forcefield()
+
+    def on_submit_manip_clear(_button=None):
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            f'if(window.__delfinSubmitManip) '
+            f'window.__delfinSubmitManip.clear({json.dumps(submit_scope_id)});'
+        )
+
+    def on_submit_manip_undo(_button=None):
+        """One step back through everything that has been done.
+
+        Through the one history, never the browser's own stack: that one is
+        cleared by every re-render, so a drawn atom used to throw away every
+        drag before it, and Undo then stopped where the history it happened to
+        be reading ran out.
+        """
+        state.pop('pre_optimize_frames', None)
+        _undo_structure()
+
+    def on_submit_manip_sync(change):
+        if change.get('name') != 'value':
+            return
+        new_xyz = submit_manip_sync.value
+        if not new_xyz or not new_xyz.strip():
+            return
+        # Extract only the new coordinate lines; drop JS-side count + comment.
+        new_lines = new_xyz.splitlines()
+        if len(new_lines) >= 2:
+            try:
+                int(new_lines[0].strip())
+                coord_lines = new_lines[2:]
+            except ValueError:
+                coord_lines = new_lines
+        else:
+            coord_lines = new_lines
+        coord_body = '\n'.join(line for line in coord_lines if line.strip())
+        # Preserve the user's original header (atom count + comment line) if
+        # present in the current coords_widget value.
+        old_lines = coords_widget.value.splitlines()
+        header = ''
+        if len(old_lines) >= 2:
+            try:
+                int(old_lines[0].strip())
+                header = f'{old_lines[0]}\n{old_lines[1]}\n'
+            except ValueError:
+                pass
+        # A drag has just finished. If a polyhedron is being held, work out
+        # again which donor is now nearest which vertex: dragging a ligand
+        # towards another position and having the field haul it straight back
+        # is not an exchange, it is a fight. Recomputing here means the
+        # polyhedron accepts the ligand where it has been put and pulls it the
+        # rest of the way onto the vertex it is now closest to.
+        lines = new_xyz.splitlines()
+        note = lines[1].strip() if len(lines) > 1 else ''
+        drag_ended = note.startswith('DELFIN drag-end')
+        # Sent while the mouse is still down, so the molecule can follow the
+        # atom rather than wait for it to be let go.  The comment line names
+        # the atoms the hand is on, so the answer can keep them there.
+        if note.startswith('DELFIN drag-follow'):
+            holding = []
+            for word in note.split():
+                if word.startswith('held='):
+                    holding = [int(n) for n in word[5:].split(',')
+                               if n.strip().lstrip('-').isdigit()]
+            _gfn_follow_step(new_xyz, holding)
+        if (drag_ended and state.get('poly_applied')
+                and state.get('poly_metal') is not None):
+            # Only a real end of a drag, not the twice-a-second heartbeat the
+            # running optimiser sends: reassigning on every heartbeat reloaded
+            # the whole field twice a second and never let a moved ligand
+            # settle onto its new vertex.
+            state['poly_assignment'] = None
+            state['poly_recheck'] = True
+
+        if drag_ended:
+            # Set, Hold, a bond edit and a drag all arrive here.  Any of them
+            # during an optimisation makes what xtb is doing about a structure
+            # that is no longer on the screen, so it starts again from the one
+            # that is -- and the geometry lands first, so it is the new one it
+            # starts from.
+            _interrupt_gfn()
+            _arm_gfn_restart()
+
+        payload = header + coord_body
+        # The guard is cleared by update_view, which traitlets only
+        # calls when the value actually changes. Dragging an atom out and back,
+        # or any edit that lands on the same coordinates, would otherwise leave
+        # the flag set for the rest of the session and swallow the user's next
+        # genuine edit of the coordinate box.
+        if coords_widget.value == payload:
+            state['manip_inflight'] = False
+            return
+        state['manip_inflight'] = True
+        coords_widget.value = payload
+        if state.pop('poly_recheck', False):
+            # After the coordinates have landed, so the assignment is worked
+            # out from where the ligands actually are now.
+            schedule_ui_update(_enable_live_forcefield)
+
+    submit_select_btn.observe(on_submit_select_toggle, names='value')
+    submit_manip_btn.observe(on_submit_manip_toggle, names='value')
+    submit_manip_clear_btn.on_click(on_submit_manip_clear)
+    submit_manip_undo_btn.on_click(on_submit_manip_undo)
+    submit_centre_btn.on_click(on_submit_centre)
+    submit_relax_btn.observe(on_submit_relax_toggle, names='value')
+    # On the page from the start: a player installed at click time races the
+    # run it is meant to show.
+    _install_gfn_frame_watcher()
+    submit_ff_dd.observe(on_submit_ff_changed, names='value')
+    submit_xtb_install_btn.on_click(on_submit_xtb_install)
+    submit_xtb_confirm_btn.on_click(on_submit_xtb_confirm)
+    submit_xtb_cancel_btn.on_click(on_submit_xtb_cancel)
+    submit_gfn_autospin.observe(on_submit_autospin, names='value')
+    submit_gfn_solvent.observe(on_submit_solvent, names='value')
+    submit_gfn_solv_model.observe(on_submit_solv_model, names='value')
+    submit_labels_btn.observe(on_submit_labels_toggle, names='value')
+    submit_label_size.observe(on_submit_label_size, names='value')
+    submit_strength_slider.observe(on_submit_strength_changed, names='value')
+    submit_sens_slider.observe(on_submit_sens_changed, names='value')
+    submit_settle_btn.observe(on_submit_settle_toggle, names='value')
+    submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
+    submit_pick_sync.observe(on_submit_pick_sync, names='value')
+    submit_poly_dd.observe(on_submit_poly_changed, names='value')
+    submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
+    submit_hyb_auto_btn.on_click(on_submit_hyb_auto)
+    submit_poly_turn_btn.on_click(on_submit_poly_turn)
+    submit_cmd_sync.observe(on_submit_cmd, names='value')
+    submit_draw_btn.observe(on_submit_draw_toggle, names='value')
+    submit_element_dd.observe(on_submit_draw_choice, names='value')
+    submit_hold_btn.on_click(on_submit_hold)
+    submit_swap_btn.on_click(on_submit_swap)
+    submit_hold_mode.observe(on_submit_hold_mode, names='value')
+    submit_bond_btn.on_click(on_submit_bond)
+    submit_unbond_btn.on_click(on_submit_unbond)
+    submit_constraint_del.on_click(on_submit_constraint_del)
+    submit_constraint_dd.observe(on_submit_constraint_selected, names='value')
+    submit_internal_value.observe(on_submit_constraint_retune, names='value')
+    submit_reset_btn.on_click(on_submit_reset)
+    submit_internal_btn.observe(on_submit_set_internal, names='value')
+    submit_internal_value.observe(on_submit_internal_value, names='value')
+    # The page watches this button itself: waiting for the kernel to say the
+    # switch went off costs a round trip, and the playback ran on for it.
+    submit_optimize_btn.add_class('submit-optimize-switch')
+    submit_optimize_btn.observe(on_submit_optimize, names='value')
+    submit_optimize_all_btn.add_class('submit-optimize-switch')
+    submit_optimize_all_btn.observe(on_submit_optimize_all, names='value')
+    submit_manip_sync.observe(on_submit_manip_sync, names='value')
+
+    # What the force field had to approximate belongs under the structure it
+    # describes, not in the preview's status line where it competes with
+    # conversion messages and scrolls away.
+    submit_ff_notes = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='4px 0 0 0'),
+    )
+    submit_ff_notes.add_class('submit-ff-notes')
+    return Editor(locals())

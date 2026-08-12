@@ -24,11 +24,11 @@ on and off without the model hearing about it, and the ladder of sizes starts
 where it used to end.
 """
 
-from delfin.dashboard import (molecule_viewer, structure_editor,
-                              tab_orca_builder, tab_submit)
+from delfin.dashboard import molecule_viewer, structure_editor, tab_orca_builder
+from editor_source import SUBMIT_SOURCE as SUBMIT
+from editor_source import TAB_SOURCE
 
 
-SUBMIT = open(tab_submit.__file__, encoding='utf-8').read()
 ORCA = open(tab_orca_builder.__file__, encoding='utf-8').read()
 VIEWER = open(molecule_viewer.__file__, encoding='utf-8').read()
 LAYER = structure_editor.atom_numbers_js()
@@ -45,10 +45,11 @@ def test_the_numbering_names_no_tab():
 
 def test_both_tabs_take_it_from_the_same_place():
     assert '_structure_editor.show_atom_numbers_js(' in ORCA
-    assert '_structure_editor.show_atom_numbers_js(' in SUBMIT
-    # And neither keeps a copy of the occlusion pass.
+    assert 'show_atom_numbers_js(' in SUBMIT
+    # And no tab keeps a copy of the occlusion pass: it is written once, in
+    # the part both of them take their numbering from.
     assert 'grid=Object.create(null)' not in ORCA
-    assert 'grid=Object.create(null)' not in SUBMIT
+    assert 'grid=Object.create(null)' not in TAB_SOURCE
 
 
 def test_the_layer_is_installed_once_per_page():
@@ -79,7 +80,7 @@ def test_switching_them_off_leaves_the_molecule_alone():
     handler = SUBMIT.split('def on_submit_labels_toggle')[1].split('\n    def ')[0]
 
     assert 'update_molecule_view' not in handler
-    assert '_structure_editor.show_atom_numbers_js(' in handler
+    assert 'show_atom_numbers_js(' in handler
     assert 'on=on' in handler
 
     # The layer takes its own sprites out. It does not reach for the model,
@@ -125,10 +126,11 @@ def test_the_size_is_asked_for_in_pixels():
         structure_editor.LABEL_PX_MAX)
 
     # Both tabs ask the same way, so changing it changes it everywhere.
-    for source in (SUBMIT, ORCA):
-        assert 'widgets.BoundedIntText(' in source
-        assert 'min=_structure_editor.LABEL_PX_MIN' in source
-        assert 'max=_structure_editor.LABEL_PX_MAX' in source
+    assert 'widgets.BoundedIntText(' in SUBMIT
+    assert 'min=LABEL_PX_MIN' in SUBMIT and 'max=LABEL_PX_MAX' in SUBMIT
+    assert 'widgets.BoundedIntText(' in ORCA
+    assert 'min=_structure_editor.LABEL_PX_MIN' in ORCA
+    assert 'max=_structure_editor.LABEL_PX_MAX' in ORCA
 
 
 def test_nothing_is_numbered_until_it_is_asked_for():

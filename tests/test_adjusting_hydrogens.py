@@ -15,6 +15,7 @@ from delfin.dashboard.molecule_builder import (
     connect_atoms, delete_atoms, displaced_hydrogens, grow_from, place_atom,
     set_bond_order, set_element, structure_from_xyz,
 )
+from editor_source import SUBMIT_SOURCE
 
 ETHANE = (
     "8\nethane\n"
@@ -149,7 +150,7 @@ def test_every_edit_takes_the_switch():
 def test_the_toolbar_hands_it_to_every_edit():
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "keep_h = not bool(submit_adjust_h_btn.value)" in handler
     assert handler.count("adjust_h=not keep_h") >= 6, (
@@ -161,7 +162,7 @@ def test_the_bond_button_reads_the_switch_too():
     """Bond is the other way a bond gets drawn, and it has to make room."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def _edit_bond")[1].split("\n    def ")[0]
     assert "connect_atoms" in handler, "the Bond button ignores Adjust H"
     assert "if connect and bool(submit_adjust_h_btn.value):" in handler, (
@@ -225,7 +226,7 @@ def test_typing_a_symbol_reaches_the_element_it_names(editor):
 def test_the_switch_stands_beside_the_element_it_draws_with(editor):
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     assert "submit_element_dd, submit_adjust_h_btn," in source, (
         "it belongs behind the element dropdown, where drawing happens"
     )
@@ -367,7 +368,7 @@ def test_the_page_sends_where_the_hand_let_go():
     grow = editor.split("pushCommandToPython(scopeKey, 'grow'")[1][:400]
     assert 'to.x.toFixed' in grow and 'to.z.toFixed' in grow
 
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     handler = source.split('def on_submit_cmd')[1].split('\n    def ')[0]
     assert "verb == 'grow' and len(fields) in (6, 9)" in handler
     assert 'at=landed' in handler

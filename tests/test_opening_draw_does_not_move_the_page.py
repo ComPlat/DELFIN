@@ -20,10 +20,11 @@ deliberate scroll inside those six seconds is undone, and the next one stands.
 """
 
 from delfin.dashboard import tab_submit
+from editor_source import SUBMIT_SOURCE
 
 
 def _hold_js():
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     return source.split('_KETCHER_SCROLL_HOLD_JS = """')[1].split('"""')[0]
 
 
@@ -70,7 +71,7 @@ def test_it_finds_the_pane_that_actually_scrolls():
 
 
 def test_it_runs_when_the_editor_is_opened():
-    source = open(tab_submit.__file__, encoding='utf-8').read()
+    source = SUBMIT_SOURCE
     opener = source.split('def on_submit_draw_open')[1].split('\n    def ')[0]
 
     assert '_run_manip_js(_KETCHER_SCROLL_HOLD_JS)' in opener

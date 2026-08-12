@@ -15,6 +15,7 @@ import pytest
 
 from delfin.dashboard import ketcher
 from delfin.dashboard.context import DashboardContext
+from editor_source import SUBMIT_SOURCE
 
 
 def molblock(smiles):
@@ -214,7 +215,7 @@ def test_the_same_drawing_twice_reads_as_two_answers(editor, tmp_path):
     again would look like an answer that never came."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_draw_get")[1].split("\n    def ")[0]
     assert "Date.now()" in handler
     reader = source.split("def on_submit_draw_sync")[1].split("\n    def ")[0]
@@ -224,7 +225,7 @@ def test_the_same_drawing_twice_reads_as_two_answers(editor, tmp_path):
 def test_the_editor_is_asked_for_a_molfile_not_for_its_own_smiles(editor):
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_draw_get")[1].split("\n    def ")[0]
     assert "getMolfile()" in handler
     assert "getSmiles" not in handler
@@ -241,7 +242,7 @@ def test_it_is_offered_rather_than_fetched(editor):
     is a wait that ends in nothing."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     opening = source.split("def on_submit_draw_open")[1].split("\n    def ")[0]
     assert "_ketcher.install(" not in opening, "opening it must not fetch it"
     assert "latest_release()" in opening
@@ -415,7 +416,7 @@ def test_the_viewers_own_draw_still_offers_an_element(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     assert source.count("    def _refresh_draw_controls():") == 1, (
         "one name, one function"
     )
@@ -438,7 +439,7 @@ def test_a_converted_structure_can_be_worked_on_at_once(editor):
     second step between converting and being able to take hold of it."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     shower = source.split("def _replace_mol_output_view")[1].split("\n    def ")[0]
     assert "_set_manip_toolbar_enabled(True)" in shower
 

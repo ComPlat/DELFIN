@@ -16,6 +16,7 @@ import pytest
 
 from delfin.dashboard import gfn_optimize as gfn
 from delfin.dashboard.context import DashboardContext
+from editor_source import SUBMIT_SOURCE
 
 _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 _needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
@@ -166,7 +167,7 @@ def test_without_a_smiles_the_charge_is_the_users_to_set(editor):
 def test_dragging_keeps_a_force_field_that_lives_in_the_browser(editor):
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     live = source.split("def _live_ff_method")[1].split("\n    def ")[0]
     assert "'uff' if _gfn.is_gfn_method(chosen) else chosen" in live
     # and the live export uses that, not the dropdown
@@ -299,7 +300,7 @@ def test_the_force_field_notes_say_which_field_they_are_about(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     body = source.split("def _set_ff_notes")[1].split("\n    def ")[0]
     assert "_server_method()" in body
     assert "the live field, which is UFF" in body
@@ -337,7 +338,7 @@ def test_the_follow_ends_with_the_drag_and_with_the_method(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "while state.get('gfn_follow')" in follow, (
         "it has to stop when the drag does"
@@ -354,7 +355,7 @@ def test_a_held_value_is_taken_up_without_pressing_optimise(editor):
     for it is the switch claiming to be live and not being it."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     for name in ("on_submit_hold", "on_submit_hold_mode", "_apply_internal_now"):
         body = source.split(f"def {name}")[1].split("\n    def ")[0]
         assert "_arm_gfn_takeup(" in body, name
@@ -395,7 +396,7 @@ def test_the_frames_go_through_a_widget_not_through_run_js(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     for name in ("_gfn_follow_step", "on_submit_optimize(change=None, "
                  "every_frame=False)"):
         body = source.split(f"def {name}")[1].split("\n    def ")[0]
@@ -420,7 +421,7 @@ def test_the_trail_is_sent_not_the_newest_frame_alone(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "frames.append(" in follow
     assert "frames[-40:]" in follow, "one frame per write can be missed"
@@ -439,7 +440,7 @@ def test_the_playback_interpolates_between_computed_frames(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "a[i]+(b[i]-a[i])*t" in watcher, "no interpolation between frames"
     assert "play.queue" in watcher, "frames have to queue, or they are dropped"
@@ -451,7 +452,7 @@ def test_the_bootstrap_is_on_the_page_before_anything_pushes(editor):
     which is exactly what "Relaxing..." and nothing moving looked like."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
     gfn_branch = toggle.split("if _server_method():")[1]
     assert "_ensure_manip_bootstrap()" in gfn_branch
@@ -472,7 +473,7 @@ def test_the_optimised_structure_lands_even_if_the_pushes_do_not(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split(
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
@@ -541,7 +542,7 @@ def test_fullscreen_has_a_status_line_of_its_own():
     from delfin.dashboard import tab_submit
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     assert "mol_status_fs.add_class('submit-fs-member-status')" in source
     setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
     assert "mol_status.value = rendered_html" in setter
@@ -578,7 +579,7 @@ def test_relax_means_the_molecule_follows_the_drag_under_gfn(editor):
 def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "outcome.get('frames')" in handler
     assert "submit_gfn_frame" in handler
@@ -624,7 +625,7 @@ def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "run!==play.run" in watcher, "a new run has to reset the count"
     assert "play.seen=0" in watcher
@@ -659,7 +660,7 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "played = [False]" in handler
     assert "played[0] = True" in handler
@@ -677,7 +678,7 @@ def test_the_playback_finds_its_field_in_fullscreen_too(editor):
     field -- so the playback worked small and showed nothing big."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "querySelectorAll" in watcher, "one root is not enough in fullscreen"
     assert "if(!field) field=document.querySelector(" in watcher
@@ -697,7 +698,7 @@ def test_optimise_is_a_switch_that_can_be_turned_off(editor):
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "state['optimize_run'] = None" in handler, "off has to end the run"
     assert "should_stop=_stopped" in handler, "the run has to watch for it"
@@ -736,7 +737,7 @@ def test_the_page_says_what_the_playback_is_doing(editor):
     instrument."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     for report in ('"received "', '"drawing"', '"setPositions did not draw"',
                    '"no setPositions on the page"'):
@@ -754,7 +755,7 @@ def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
     """Both lines carry the same text, so both visible prints it twice."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     assert "mol_status_fs.layout.display = 'none'" in source
     assert ".submit-fs-overlay .submit-fs-member-status {" in source
     assert "display: block !important;" in source
@@ -768,7 +769,7 @@ def test_fullscreen_is_not_told_to_enter_coordinates(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
     assert "'enter XYZ' in str(line)" in setter
     assert "mol_status_fs.value = '' if prompt else rendered_html" in setter
@@ -809,7 +810,7 @@ def test_the_dashboard_runs_without_a_clock_because_it_has_a_switch(editor):
     watching decides when a run has gone on long enough."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "timeout=None" in handler
     assert "should_stop=_stopped" in handler, "without it nothing could stop it"
@@ -837,7 +838,7 @@ def test_the_path_is_handed_over_while_it_is_still_being_walked(editor):
     xtb writes it as it goes, so it can be read as it goes."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "def _push_frames" in handler
     assert "on_frames=_push_frames" in handler
@@ -911,7 +912,7 @@ def test_the_playback_speeds_up_when_it_falls_behind(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "function stepMs()" in watcher
     assert "play.queue.length" in watcher
@@ -928,7 +929,7 @@ def test_stopping_keeps_the_frame_that_was_on_screen(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "play.shown=(play.shown||0)+1" in watcher, "nothing counts what was shown"
     assert '"stopped at frame "' in watcher
@@ -945,7 +946,7 @@ def test_a_backlog_is_skipped_rather_than_played_out(editor):
     """A queue allowed to grow puts the picture permanently behind the run."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "play.queue.slice(-20)" in watcher
 
@@ -956,7 +957,7 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
     with mod-active; reading that is instant."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     assert "submit_optimize_btn.add_class('submit-optimize-switch')" in source
 
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
@@ -1012,7 +1013,7 @@ def test_only_one_of_them_runs_at_a_time(editor):
     """A login node is shared; two sets of xtb processes is how it is noticed."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "other.value = False" in handler
     # and the frames of a set are walked in one loop, not started side by side
@@ -1023,7 +1024,7 @@ def test_only_one_of_them_runs_at_a_time(editor):
 def test_only_all_takes_the_whole_set(editor):
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "if every_frame else []" in handler
 
@@ -1047,7 +1048,7 @@ def test_the_energy_is_reported_like_the_force_field_reports_one(editor):
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "E = {energy:.6f} Eh" in handler
     assert "kcal/mol" in handler, "the tab speaks kcal/mol elsewhere"
@@ -1068,7 +1069,7 @@ def test_a_whole_optimisation_is_one_step_of_undo(editor):
     from delfin.dashboard import tab_submit
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     undo = source.split("def on_submit_manip_undo")[1].split("\n    def ")[0]
     assert "state.pop('pre_optimize_frames'" in undo, (
         "the geometries from before the run are what one undo restores"
@@ -1155,7 +1156,7 @@ def test_the_playback_lets_go_of_the_picture_while_an_atom_is_dragged(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "function grabbed()" in watcher
     assert "_submitManipStateByScope" in watcher, "it reads the drag off the page"
@@ -1177,7 +1178,7 @@ def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfngrab'" in handler and "_interrupt_gfn()" in handler
     assert "verb == 'gfnfree'" in handler and "_arm_gfn_restart()" in handler
@@ -1493,7 +1494,7 @@ def test_a_truncated_trail_says_where_in_the_run_it_starts(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "var from=(data&&data.from)||0;" in watcher
     assert "play.seen=from+frames.length;" in watcher
@@ -1511,7 +1512,7 @@ def test_the_follow_runs_one_process_at_a_time_and_takes_the_newest(editor):
     the atom used to be is worse than no answer at all."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "state.get('gfn_follow_busy')" in follow
     assert "state.pop('gfn_follow_xyz', None)" in follow, "the newest wins"
@@ -1756,7 +1757,7 @@ def test_nothing_of_the_browsers_field_may_run_under_gfn(editor):
     that reached the coordinate box was UFF's."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     enable = source.split("def _enable_live_forcefield")[1].split("\n    def ")[0]
     head = enable.split("\"\"\"", 2)[2]
     assert "if _server_method():" in head
@@ -1777,7 +1778,7 @@ def test_the_follow_uses_the_method_that_is_on_screen(editor):
     for -- and, from the outside, indistinguishable from the right one."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     began = source.split("def _begin_gfn_follow")[1].split("\n    def ")[0]
     assert "state['gfn_follow_method'] = str(submit_ff_dd.value)" in began
 
@@ -1822,7 +1823,7 @@ def test_switching_methods_back_and_forth_re_arms_the_right_engine(editor):
     each time, nor leave the previous engine running under the new choice."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     changed = source.split("def on_submit_ff_changed")[1].split("\n    def ")[0]
     assert "submit_relax_btn.value = False" not in changed.split(
         "usable = not gfn")[0], "the switch keeps its position"
@@ -1835,7 +1836,7 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
     the atom was put, not wherever the cursor stopped."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
     assert "method = str(submit_ff_dd.value)" in settle
     assert "max_steps=None" in settle, (
@@ -1931,7 +1932,7 @@ def test_the_page_names_the_atoms_the_hand_is_on(player_js):
 
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     sync = source.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
     assert "word.startswith('held=')" in sync
     assert "_gfn_follow_step(new_xyz, holding)" in sync
@@ -2102,7 +2103,7 @@ def test_the_relaxation_ends_three_ways_and_says_which(editor):
     them is worth pressing Optimise on."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
     assert "rounds < _GFN_SETTLE_ROUNDS" in settle
     assert "moved > _GFN_SETTLE_STILL" in settle
@@ -2116,7 +2117,7 @@ def test_the_whole_relaxation_is_one_run_not_one_per_round(editor):
     every few tenths of a second that is a twitch per round."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
     assert "if rounds == 1:" in settle, "only the first round takes a number"
     assert "state['gfn_settle_offset'] = 0" in settle
@@ -2132,7 +2133,7 @@ def test_the_live_relaxation_asks_the_same_spin_optimise_did(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     picked = source.split("def _gfn_uhf_now")[1].split("\n    def ")[0]
     assert "submit_gfn_autospin.value" in picked
     assert "state.get('gfn_scanned_uhf')" in picked
@@ -2153,7 +2154,7 @@ def test_the_status_counts_the_atoms_the_hand_is_on(editor):
     reads as the molecule fighting itself and is otherwise invisible."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "holding {len(holding)} atoms" in follow
 
@@ -2273,7 +2274,7 @@ def test_a_past_drag_has_no_hold_on_the_present(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     fresh = source.split("def _gfn_new_generation")[1].split("\n    def ")[0]
     assert "state['gfn_generation'] = int(state.get('gfn_generation', 0)) + 1" in fresh
     for flag in ("gfn_settle_forced", "gfn_settle_rounds", "gfn_settle_again"):
@@ -2347,7 +2348,7 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
     one, and the count is what says so."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     keeper = source.split("def _gfn_topology_dir")[1].split("\n    def ")[0]
     assert "kept.get('atoms') == atoms" in keeper
     dropper = source.split("def _drop_gfn_topology")[1].split("\n    def ")[0]
@@ -2379,7 +2380,7 @@ def test_optimise_keeps_the_bonding_the_editor_has_been_working_with(editor):
     drag had, in the one place a user reaches for when the drag went wrong."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split(
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
@@ -2396,7 +2397,7 @@ def test_optimise_supersedes_the_live_relaxation(editor):
     and put its own, older geometry back, so a second press was needed."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
     assert "or state.get('optimize_run') is not None" in settle, (
         "the live relaxation has to stop when Optimise starts"
@@ -2417,7 +2418,7 @@ def test_dragging_moves_along_the_surface_and_optimise_goes_down_it(editor):
     """
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     free = handler.split("verb == 'gfnfree'")[1].split("return")[0]
     assert "_arm_gfn_takeup()" not in free, (
@@ -2451,7 +2452,7 @@ def test_a_held_value_is_never_dropped_because_something_else_was_running(editor
     the toggle was switched off and on again."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
     assert "state['gfn_settle_pending'] = True" in settle
     assert "state.pop('gfn_settle_pending', False)" in settle
@@ -2472,7 +2473,7 @@ def test_the_bonding_is_read_before_a_hand_is_laid_on_the_molecule(editor):
     pulled to 2.1 A perceived that way came back at 3.57 A."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     began = source.split("def _begin_gfn_follow")[1].split("\n    def ")[0]
     assert "state['gfn_topology_source']" in began
 
@@ -2601,7 +2602,7 @@ def test_the_solvent_reaches_every_way_of_running_it(editor):
     them would make them disagree."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     for name in ("on_submit_optimize(change=None, every_frame=False)",
                  "_gfn_follow_step", "_gfn_settle_now"):
         body = source.split(f"def {name}")[1].split("\n    def ")[0]

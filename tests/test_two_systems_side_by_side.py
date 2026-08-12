@@ -12,6 +12,7 @@ import math
 import pytest
 
 from delfin.dashboard import separate_systems as separate
+from editor_source import SUBMIT_SOURCE
 
 TWO = ("c1ccc(-c2c(-c3ccccc3)c(-c3ccccc3)c(-c3ccccc3)c(-c3ccccc3)"
        "c2-c2ccccc2)cc1.c1ccccc1")
@@ -136,7 +137,7 @@ def test_both_conversion_paths_build_the_parts_apart():
     all come through the second one."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     worker = source.split("def _start_smiles_conversion")[1].split("\n    def ")[0]
     assert "_separate.has_separate_systems(cleaned_data)" in worker
     assert "_separate.combine_isomers(per_part)" in worker, (
@@ -179,7 +180,7 @@ def test_each_part_gets_the_hapticity_previews_of_its_own_ligands(editor=None):
     part that has the metal, and about no other part."""
     from delfin.dashboard import tab_submit
 
-    source = open(tab_submit.__file__, encoding="utf-8").read()
+    source = SUBMIT_SOURCE
     worker = source.split("def _start_smiles_conversion")[1].split("\n    def ")[0]
 
     quick = worker.split("if quick and separate:")[1].split("elif quick:")[0]

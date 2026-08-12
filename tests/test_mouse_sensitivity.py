@@ -19,10 +19,11 @@ through the running viewer, setDragSensitivity returned and stored 1, 0.5 and
 """
 
 from delfin.dashboard import molecule_viewer, tab_submit
+from editor_source import SUBMIT_SOURCE
 
 
 VIEWER = open(molecule_viewer.__file__, encoding='utf-8').read()
-SUBMIT = open(tab_submit.__file__, encoding='utf-8').read()
+SUBMIT = SUBMIT_SOURCE
 
 
 def _setter():
