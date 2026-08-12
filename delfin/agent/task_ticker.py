@@ -20,28 +20,33 @@ from html import escape
 from pathlib import Path
 from typing import Iterable
 
-from .agent_tasks import get_store
+from .agent_tasks import get_store, resolve_session_scope
 
 
 _GLYPHS = {
     "pending":     "&#9744;",      # ☐
     "in_progress": "&#9658;",      # ▶
+    "blocked":     "&#9940;",      # ⛔
     "completed":   "&#9745;",      # ☑
     "deleted":     "&#9747;",      # ☓
 }
 _TEXT_GLYPHS = {
     "pending":     "[ ]",
     "in_progress": "[>]",
+    "blocked":     "[!]",
     "completed":   "[x]",
     "deleted":     "[-]",
 }
 _COLOURS = {
     "pending":     "#888",
     "in_progress": "#0a84ff",
+    "blocked":     "#d97706",
     "completed":   "#28a745",
     "deleted":     "#aa0000",
 }
-_ORDER = ("in_progress", "pending", "completed", "deleted")
+# Blocked sits directly under in_progress: it is open work the user may
+# have to unblock, so it must not be filed away below the done pile.
+_ORDER = ("in_progress", "blocked", "pending", "completed", "deleted")
 
 
 def _sorted(tasks: Iterable[dict]) -> list[dict]:
@@ -62,9 +67,17 @@ def render_html(
     show_completed: bool = True,
     max_rows: int = 30,
 ) -> str:
-    """Return an HTML fragment listing tasks, ready for ipywidgets HTML."""
+    """Return an HTML fragment listing tasks, ready for ipywidgets HTML.
+
+    The session filter goes through the shared resolver: an empty id is
+    UNSCOPED, the same as everywhere else. Reading it as "no session,
+    therefore no tasks" is what made this panel print "No tasks yet"
+    while the model's own reminder listed the workspace's open work.
+    """
     store = get_store(Path(workspace))
-    raw = store.list(include_deleted=False, session_id=session_id, with_seq=True)
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id),
+                     with_seq=True)
     if not show_completed:
         raw = [t for t in raw if t.get("status") != "completed"]
     if not raw:
@@ -82,6 +95,13 @@ def render_html(
         subject = escape(str(t.get("subject", "")))
         active = escape(str(t.get("active_form", "")))
         label = active if status == "in_progress" and active else subject
+        if status == "blocked":
+            reason = escape(str(t.get("blocked_reason", ""))[:60])
+            label += f" — waiting on {reason}" if reason else ""
+        elif status == "completed" and t.get("verified") == "unmet":
+            # A completion the evidence did not support stays visible as
+            # such; the alternative is a green tick over an open hole.
+            label += " (unverified)"
         decorate = "text-decoration:line-through;" if status == "completed" else ""
         num = t.get("seq") if t.get("seq") is not None else t.get("id")
         rows.append(
@@ -91,7 +111,9 @@ def render_html(
     summary = (
         f"&#9658; {counts.get('in_progress', 0)} &nbsp; "
         f"&#9744; {counts.get('pending', 0)} &nbsp; "
-        f"&#9745; {counts.get('completed', 0)}"
+        + (f"&#9940; {counts.get('blocked', 0)} &nbsp; "
+           if counts.get("blocked", 0) else "")
+        + f"&#9745; {counts.get('completed', 0)}"
     )
     # Bounded, scrollable list: a long backlog stays a compact panel with a
     # side scrollbar instead of growing into a giant wall of tasks that pushes
@@ -115,7 +137,9 @@ def render_text(
 ) -> str:
     """Plain-text rendering for logs / headless contexts."""
     store = get_store(Path(workspace))
-    raw = store.list(include_deleted=False, session_id=session_id, with_seq=True)
+    raw = store.list(include_deleted=False,
+                     session_id=resolve_session_scope(session_id),
+                     with_seq=True)
     if not raw:
         return "(no tasks)"
     lines: list[str] = []
@@ -123,6 +147,8 @@ def render_text(
         status = str(t.get("status", "pending"))
         glyph = _TEXT_GLYPHS.get(status, "[?]")
         subject = str(t.get("subject", ""))
+        if status == "blocked" and t.get("blocked_reason"):
+            subject += f" — waiting on {str(t['blocked_reason'])[:60]}"
         num = t.get("seq") if t.get("seq") is not None else t.get("id")
         lines.append(f"{glyph} #{num} {subject}")
     return "\n".join(lines)

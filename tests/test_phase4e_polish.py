@@ -79,6 +79,7 @@ def test_task_ticker_hide_completed(fresh_workspace):
     store = get_store(fresh_workspace)
     a = store.create("done", "")
     store.create("pending", "")
+    store.update(a["id"], status="in_progress")
     store.update(a["id"], status="completed")
     html = TT.render_html(fresh_workspace, show_completed=False)
     assert "pending" in html
@@ -98,7 +99,12 @@ def test_task_ticker_filters_by_session(fresh_workspace):
     assert "session B" not in html_a
     assert "session B" in html_b
     assert "session A" not in html_b
-    assert "No tasks yet" in html_blank
+    # An EMPTY id is unscoped, not "no session, therefore no tasks". The
+    # opposite reading is what let this panel print "No tasks yet" while
+    # the model's own reminder listed the same store's open work — the
+    # CLI backend mints no session id, so that state is routine. See
+    # test_the_prompt_and_the_panel_agree_on_open_tasks.py.
+    assert "session A" in html_blank and "session B" in html_blank
 
 
 # ---- status_line -----------------------------------------------------------

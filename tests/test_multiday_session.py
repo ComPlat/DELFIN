@@ -205,6 +205,7 @@ def test_task_update_allows_in_progress_after_parent_completes(tmp_path):
     store = TaskStore(tmp_path)
     parent = store.create("setup")
     child = store.create("execute", blocked_by=[parent["id"]])
+    store.update(parent["id"], status="in_progress")
     store.update(parent["id"], status="completed")
     updated = store.update(child["id"], status="in_progress")
     assert updated["status"] == "in_progress"
@@ -232,9 +233,11 @@ def test_find_stalled_returns_only_old_in_progress(tmp_path):
     from delfin.agent.agent_tasks import TaskStore
     import datetime as dt
     store = TaskStore(tmp_path)
-    fresh = store.create("fresh")
+    # Two sessions: one task may be in_progress per session, so the pair
+    # this test needs lives in two of them (the detector spans sessions).
+    fresh = store.create("fresh", session_id="s-fresh")
     store.update(fresh["id"], status="in_progress")
-    old = store.create("old")
+    old = store.create("old", session_id="s-old")
     store.update(old["id"], status="in_progress")
     # Hand-edit the on-disk record to backdate
     data = json.loads(store.path.read_text(encoding="utf-8"))

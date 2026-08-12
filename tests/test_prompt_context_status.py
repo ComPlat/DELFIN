@@ -126,6 +126,7 @@ def test_open_tasks_block_empty_when_no_open_tasks(tmp_path, monkeypatch):
     from delfin.agent.agent_tasks import get_store
     store = get_store(tmp_path)
     done = store.create("already finished", session_id="s2")
+    store.update(done["id"], status="in_progress")
     store.update(done["id"], status="completed")
 
     eng = _bare_engine()

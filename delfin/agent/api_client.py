@@ -1937,6 +1937,13 @@ class KitToolPermissions:
     # the 'orchestrate' tool can drive run_orchestration without the executor
     # holding a client back-reference. Signature: (spec) -> dict.
     orchestration_runner: Optional[Callable[..., dict]] = None
+    # Session grounding ledgers, bound the same way: () -> {"observed":
+    # set[str], "tests": list[dict]}. A callable rather than a snapshot
+    # because the client replaces the test-evidence list at every turn
+    # start. Without it the task tools' completion check has no evidence
+    # to judge a "completed" against — which is how it came to run
+    # against an empty ledger and flag every artefact task as unmet.
+    evidence_provider: Optional[Callable[[], dict]] = None
     read_tracker: dict[str, float] = field(default_factory=dict)
     # Paths the user explicitly REFUSED this session. A refusal has to hold
     # against every tool, not just the one that asked: a denied read_file was
@@ -3278,10 +3285,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "task_create",
             "description": (
                 "Add a task to this session's list; tasks survive restarts of"
-                " the same session. Status starts 'pending' — set "
-                "'in_progress' when you start, 'completed' when done. Always "
-                "pass the global `id` (not the display `seq`) to "
-                "task_update/task_get."
+                " the same session. Starts 'pending'. Always pass the global "
+                "`id` (not the display `seq`) to task_update/task_get."
             ),
             "parameters": {
                 "type": "object",
@@ -3302,10 +3307,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "items": {
                             "type": "integer",
                         },
-                        "description": (
-                            "Task ids that must finish first; 'in_progress' "
-                            "is refused while a blocker is open."
-                        ),
+                        "description": "Task ids that must finish first.",
                     },
                 },
                 "required": ["subject"],
@@ -3317,9 +3319,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_update",
             "description": (
-                "Update a task's status, text or blockers. Set 'in_progress' "
-                "when starting and 'completed' immediately when done — never "
-                "batch completions."
+                "Update status/text/blockers. 'in_progress' when starting "
+                "(one at a time), 'completed' when done (refused from "
+                "'pending'); waiting on something is 'blocked' + "
+                "blocked_reason."
             ),
             "parameters": {
                 "type": "object",
@@ -3330,7 +3333,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "status": {
                         "type": "string",
-                        "enum": ["pending", "in_progress", "completed", "deleted"],
+                        "enum": ["pending", "in_progress", "blocked",
+                                 "completed", "deleted"],
+                    },
+                    "blocked_reason": {
+                        "type": "string",
+                        "description": "What 'blocked' waits on (required).",
                     },
                     "subject": {
                         "type": "string",
@@ -3409,10 +3417,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_adopt",
             "description": (
-                "Take over a task from a PREVIOUS session (rewrites its "
-                "session_id). Required BEFORE working on a foreign task — "
-                "progress tracking and the open-tasks reminder only cover the"
-                " current session."
+                "Take over a PREVIOUS session's task (rewrites session_id). "
+                "Required BEFORE working on it — tracking covers the current "
+                "session only."
             ),
             "parameters": {
                 "type": "object",
@@ -4614,11 +4621,41 @@ _ARTIFACT_PROMISES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+def _artifact_word(subject: str) -> str:
+    """The artefact noun a task subject promises ("" when none does)."""
+    try:
+        text = (subject or "").lower()
+        for word, _ in _ARTIFACT_PROMISES:
+            if word in text:
+                return word
+    except Exception:
+        return ""
+    return ""
+
+
+def _path_suffixes(paths) -> set:
+    """The file extensions of *paths*, per path.
+
+    Per path, not as a substring of a joined blob: ``".pdf" in
+    "notes.pdf.bak archive.pdf.txt"`` is true and neither is a PDF.
+    """
+    out: set = set()
+    for p in (paths or ()):
+        try:
+            out.add(Path(str(p).replace("\\", "/")).suffix.lower())
+        except Exception:
+            continue
+    return out
+
+
 def _unmet_artifact(subject: str, produced) -> str:
     """The artefact a task subject promises but the session never made.
 
     Returns the missing kind, or "" when the subject promises nothing
-    checkable or the evidence shows it was produced.
+    checkable or the evidence shows it was produced. *produced* must be
+    paths the session WROTE -- feeding it a ledger that also counts
+    reads makes "Create the PDF report" satisfiable by having opened an
+    unrelated PDF.
 
     The failure this exists for: a task marked complete as "PDF report"
     while create_pdf had failed for a missing library and only a .docx
@@ -4628,17 +4665,315 @@ def _unmet_artifact(subject: str, produced) -> str:
     the model can correct rather than a refusal it has to fight.
     """
     try:
-        text = (subject or "").lower()
-        made = " ".join(str(p).lower() for p in (produced or ()))
-        for word, extensions in _ARTIFACT_PROMISES:
-            if word not in text:
+        word = _artifact_word(subject)
+        if not word:
+            return ""
+        suffixes = _path_suffixes(produced)
+        for name, extensions in _ARTIFACT_PROMISES:
+            if name != word:
                 continue
-            if any(ext in made for ext in extensions):
-                return ""
-            return word
+            return "" if any(ext in suffixes for ext in extensions) else word
         return ""
     except Exception:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# What a completed task claims, and what the session can show for it
+# ---------------------------------------------------------------------------
+
+# Extensions a subject can name unambiguously enough to key a check on.
+# A closed set on purpose: "version 1.2" and "e.g." are not paths, and a
+# check that treats them as one starts refusing honest completions.
+_TASK_PATH_EXTS: frozenset[str] = frozenset({
+    "py", "pyi", "ipynb", "js", "jsx", "ts", "tsx", "json", "yaml", "yml",
+    "toml", "cfg", "ini", "md", "rst", "txt", "csv", "tsv", "sh", "bash",
+    "c", "h", "cc", "cpp", "hpp", "rs", "go", "java", "kt", "rb", "php",
+    "jl", "sql", "html", "htm", "css", "scss", "xml", "tex", "pdf",
+    "docx", "doc", "xlsx", "xls", "pptx", "png", "svg", "jpg", "jpeg",
+    "log", "inp", "out", "xyz", "mol", "sdf", "cif", "dat", "gjf",
+})
+
+_TASK_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]{3,}")
+
+# Verbs that promise a CHANGE. German included on purpose: the user
+# plans in German, so the subjects the check reads are German.
+_WRITE_VERB_RE = re.compile(
+    r"(?i)\b(?:add|create|write|implement|build|generate|produce|export|"
+    r"save|fix|repair|patch|refactor|rename|move|update|extend|port|"
+    r"migrate|wire|integrate|remove|delete|split|merge|"
+    r"erstell\w*|schreib\w*|füg\w*|hinzufüg\w*|implementier\w*|bau\w*|"
+    r"erzeug\w*|generier\w*|exportier\w*|speicher\w*|beheb\w*|"
+    r"reparier\w*|korrigier\w*|refaktor\w*|umbenenn\w*|verschieb\w*|"
+    r"aktualisier\w*|erweiter\w*|entfern\w*|lösch\w*|anpass\w*|änder\w*|"
+    r"einbau\w*|einbind\w*|ergänz\w*|umstell\w*|überarbeit\w*|"
+    r"integrier\w*|umbau\w*|aufräum\w*|bereinig\w*)\b"
+)
+
+# Verbs that promise only LOOKING. A task like "analysiere core.py" is
+# honestly complete with no write at all, and a check that demands one
+# would be teaching the model to avoid naming the file.
+_READ_VERB_RE = re.compile(
+    r"(?i)\b(?:read|review|analyse|analyze|inspect|examine|check|"
+    r"understand|summarise|summarize|compare|explore|investigate|study|"
+    r"audit|trace|"
+    r"lies|lese\w*|les\w*|prüf\w*|überprüf\w*|analysier\w*|untersuch\w*|"
+    r"sicht\w*|versteh\w*|vergleich\w*|durchsuch\w*|betracht\w*|"
+    r"anschau\w*|ansehen|recherchier\w*|bewert\w*)\b"
+)
+
+_TEST_TASK_RE = re.compile(
+    r"(?i)(?:\b(?:tests?|testing|testsuite|test-suite|pytest|unittest|"
+    r"regression|verify|verification|validate|"
+    r"teste\w*|testen|verifizier\w*|validier\w*)\b"
+    # German compounds ("Regressionstests", "Unittests"). Plural only:
+    # "\w*test" would make "latest" a test task.
+    r"|\b\w+tests\b|\b\w+testsuite\b)"
+)
+
+
+def _paths_in_text(text) -> list[str]:
+    """File paths a task subject/description names, in order."""
+    out: list[str] = []
+    try:
+        for token in _TASK_PATH_TOKEN_RE.findall(str(text or "")):
+            token = token.strip(".,;:/")
+            if "." not in token:
+                continue
+            stem, _, ext = token.rpartition(".")
+            if ext.lower() not in _TASK_PATH_EXTS:
+                continue
+            if not stem or not any(c.isalnum() for c in stem):
+                continue
+            if token not in out:
+                out.append(token)
+    except Exception:
+        return out
+    return out
+
+
+def _path_matches(candidate: str, recorded: str) -> bool:
+    """Whether *recorded* (an absolute ledger path) is the file the task
+    subject named. Suffix match, so "mylib/opt/wrapper.py" matches
+    "/home/u/proj/mylib/opt/wrapper.py" and nothing shorter."""
+    try:
+        c = str(candidate).replace("\\", "/").strip("/").lower()
+        r = str(recorded).replace("\\", "/").strip("/").lower()
+        return bool(c) and bool(r) and (r == c or r.endswith("/" + c))
+    except Exception:
+        return False
+
+
+def _task_ts_epoch(ts) -> float:
+    """A task-store timestamp (UTC, ``...Z``) as epoch seconds."""
+    from datetime import datetime as _dt, timezone as _tz
+    text = str(ts or "").strip()
+    if not text:
+        return 0.0
+    try:
+        if text.endswith("Z"):
+            return _dt.fromisoformat(text[:-1]).replace(
+                tzinfo=_tz.utc).timestamp()
+        return _dt.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _journal_ts_epoch(ts) -> float:
+    """A change-journal timestamp as epoch seconds.
+
+    The journal writes LOCAL naive time and the task store writes UTC,
+    so comparing the two strings raw is wrong by the UTC offset -- in
+    the user's timezone that is a two-hour window in the wrong place.
+    """
+    from datetime import datetime as _dt
+    try:
+        return _dt.fromisoformat(str(ts or "")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _journal_changes(session_id: str) -> list[dict]:
+    """The session's WRITE ledger: ``[{path, ts, created}]``.
+
+    The observed-files ledger cannot serve this: it merges reads and
+    writes into one set, which is what let "the session produced X" be
+    satisfied by having READ an X. The undo journal records mutations
+    only -- write_file / edit_file / multi_edit / notebook_edit /
+    apply_patch and the document writers all capture there -- and it
+    lives on disk, so it survives the restart the in-memory ledger does
+    not. Never raises.
+    """
+    out: list[dict] = []
+    try:
+        from . import change_journal as _cj
+        for rec in _cj.list_changes(session_id) or []:
+            path = str(rec.get("path", "") or "")
+            if not path:
+                continue
+            out.append({
+                "path": path,
+                "ts": _journal_ts_epoch(rec.get("ts")),
+                "created": bool(rec.get("created")),
+            })
+    except Exception:
+        return out
+    return out
+
+
+def _open_tasks_notice(state: dict) -> str:
+    """The end-of-turn line for a session with unfinished tasks ("" when
+    there is demonstrably nothing open). Never raises."""
+    try:
+        from . import agent_tasks as _at
+        return _at.format_open_tasks_notice(state or {})
+    except Exception:
+        return ""
+
+
+def _verdict(kind: str, verdict: str, detail: str = "", note: str = "") -> dict:
+    return {"verdict": verdict, "kind": kind, "detail": detail, "note": note}
+
+
+def check_completion_claim(
+    subject: str,
+    description: str = "",
+    *,
+    changes=(),
+    observed=None,
+    tests=None,
+    window_start: float = 0.0,
+) -> dict:
+    """What the session can show for a task about to be marked completed.
+
+    Returns ``{"verdict", "kind", "detail", "note"}`` where verdict is
+
+    * ``verified``  — a check matched and the evidence supports it
+    * ``unmet``     — a check matched and the evidence contradicts it
+    * ``unchecked`` — nothing in this subject can be keyed on, or the
+      ledger that would decide it is not reachable
+
+    ``unchecked`` is a first-class answer: an honest unknown recorded as
+    such is what separates a checked completion from one nobody looked
+    at, and the store used to write every completion as if it were the
+    first.
+
+    Pure over its arguments — *changes* is the write ledger
+    (``[{path, ts, created}]``), *observed* the read ledger (``None``
+    when unreachable), *tests* the test-evidence ledger (``None`` when
+    unreachable), *window_start* the epoch the task went in_progress
+    (0 when unknown).
+
+    Deliberately quiet: every shape either has evidence to point at or
+    says ``unchecked``. A check that refuses honest work teaches the
+    model to phrase subjects so nothing can key on them, which is worse
+    than no check at all.
+    """
+    try:
+        subject_text = str(subject or "")
+        body = f"{subject_text}\n{description or ''}"
+        changed = [c for c in (changes or ()) if isinstance(c, dict)]
+        written = [str(c.get("path", "")) for c in changed if c.get("path")]
+        read_paths = None if observed is None else [
+            str(p) for p in (observed or ())]
+        wants_write = bool(_WRITE_VERB_RE.search(body))
+        reads_only = (not wants_write
+                      and bool(_READ_VERB_RE.search(subject_text)))
+
+        # 1. A path the subject names is the most specific claim there is.
+        for cand in _paths_in_text(body):
+            if any(_path_matches(cand, p) for p in written):
+                return _verdict("path_write", "verified", cand)
+            seen = (None if read_paths is None
+                    else any(_path_matches(cand, p) for p in read_paths))
+            if reads_only:
+                if seen:
+                    return _verdict("path_read", "verified", cand)
+                if seen is None:
+                    return _verdict("path_read", "unchecked", cand)
+                return _verdict(
+                    "path_untouched", "unmet", cand,
+                    f"names {cand} and this session neither read nor wrote "
+                    f"it.")
+            if wants_write:
+                return _verdict(
+                    "path_unwritten", "unmet", cand,
+                    f"names {cand} and no write of it is recorded"
+                    + (" (it was only read)" if seen else "") + ".")
+            if seen:
+                return _verdict("path_read", "verified", cand)
+            if seen is None:
+                return _verdict("path_read", "unchecked", cand)
+            return _verdict(
+                "path_untouched", "unmet", cand,
+                f"names {cand} and this session neither read nor wrote it.")
+
+        # 2. An artefact noun: match the extension against CREATED files.
+        word = _artifact_word(subject_text)
+        if word:
+            missing = _unmet_artifact(subject_text, written)
+            if missing:
+                return _verdict(
+                    "artifact", "unmet", missing,
+                    f"names a {missing} and no {missing} file was written "
+                    f"in this session.")
+            return _verdict("artifact", "verified", word)
+
+        # 3. A test / verification task needs a run that came back green.
+        if _TEST_TASK_RE.search(subject_text):
+            if tests is None:
+                return _verdict("tests", "unchecked", "no test ledger")
+            entries = [e for e in tests if isinstance(e, dict)]
+            in_window = [
+                e for e in entries
+                if float(e.get("ts", 0) or 0) >= float(window_start or 0)
+            ]
+            green = [
+                e for e in in_window
+                if int(e.get("failed", 0) or 0) == 0
+                and str(e.get("status", "")) not in ("failed", "error",
+                                                     "gave_up")
+            ]
+            if green:
+                return _verdict("tests", "verified",
+                                f"{len(green)} green run(s)")
+            if in_window:
+                worst = max(int(e.get("failed", 0) or 0) for e in in_window)
+                return _verdict(
+                    "tests_red", "unmet", f"{worst} failing",
+                    f"is a test task and the runs recorded since it started "
+                    f"were not green ({worst} failure(s) in the last one).")
+            if entries:
+                return _verdict(
+                    "tests_stale", "unmet", "before the task started",
+                    "is a test task and every recorded test run predates "
+                    "it — nothing was run since the work began.")
+            return _verdict(
+                "tests_none", "unmet", "no run recorded",
+                "is a test task and this session recorded no test run at "
+                "all.")
+
+        # 4. An edit / refactor task with no path named: the change
+        #    journal has to show a mutation. Preferring the in_progress
+        #    window, but a change earlier in the SESSION still counts --
+        #    a model that edits first and flips the status afterwards is
+        #    doing the work, not faking it.
+        if wants_write:
+            if any(c.get("ts", 0) >= float(window_start or 0)
+                   for c in changed):
+                return _verdict("journal_window", "verified",
+                                f"{len(changed)} change(s)")
+            if changed:
+                return _verdict("journal_session", "verified",
+                                "changed before this task started")
+            return _verdict(
+                "no_change", "unmet", "nothing written",
+                "promises a change and this session changed no file at "
+                "all.")
+
+        return _verdict("", "unchecked", "nothing checkable in the subject")
+    except Exception:
+        return _verdict("", "unchecked", "check failed")
 
 
 _SBATCH_SUBMITTED_RE = re.compile(r"Submitted batch job\s+(\d+)")
@@ -11564,17 +11899,28 @@ class _DocToolExecutor:
         fields = {
             k: arguments.get(k)
             for k in ("status", "subject", "description", "active_form",
-                      "add_blocked_by", "remove_blocked_by")
+                      "add_blocked_by", "remove_blocked_by", "blocked_reason")
             if arguments.get(k) is not None
         }
         if not fields:
             return json.dumps({
                 "error": (
                     "at least one field (status / subject / description / "
-                    "active_form / add_blocked_by / remove_blocked_by) "
-                    "must be provided"
+                    "active_form / blocked_reason / add_blocked_by / "
+                    "remove_blocked_by) must be provided"
                 )
             })
+        # Completing a task is a claim about the world, so the check runs
+        # BEFORE the write: the store used to say "completed" on disk by
+        # the time anything looked, which makes the note a comment on an
+        # already-recorded fact instead of a condition of recording it.
+        check = None
+        if str(fields.get("status", "")).strip().lower() == "completed":
+            check = self._check_completion(task_id, perms)
+            if check is not None:
+                fields["verified"] = check["verdict"]
+                if check.get("detail"):
+                    fields["verify_note"] = str(check["detail"])[:200]
         try:
             task = self._task_store(perms).update(task_id, **fields)
         except KeyError as exc:
@@ -11584,46 +11930,77 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps({"error": f"task_update failed: {exc}"})
         payload = {"status": "updated", "task": task}
-        # Completing a task is a claim about the world. Check the cheap,
-        # unambiguous half of it: a subject naming a file type the session
-        # never produced. The consequence is a note in the tool result, the
-        # same shape as the subagent-report notice -- named, advisory, and
-        # in front of the model at the moment it would otherwise move on.
-        try:
-            if str(fields.get("status", "")).strip().lower() == "completed":
-                missing = _unmet_artifact(
-                    str(task.get("subject", "") if isinstance(task, dict)
-                        else ""),
-                    getattr(self, "_observed_files_session", None) or (),
-                )
-                if missing:
-                    payload["note"] = (
-                        f"[task-verify] this task names a {missing} and no "
-                        f"{missing} file was produced in this session. Either "
-                        "produce it, or say plainly which part is missing "
-                        "before reporting the task as done."
-                    )
-        except Exception:
-            pass
+        # The consequence is a note in the tool result, the same shape as
+        # the subagent-report notice -- named, advisory, and in front of
+        # the model at the moment it would otherwise move on. Advisory on
+        # purpose: a refusal here would be answered by rewording the
+        # subject until nothing can key on it.
+        if check is not None and check["verdict"] == "unmet" and check["note"]:
+            payload["note"] = (
+                "[task-verify] this task " + check["note"] + " Either do "
+                "that part, or say plainly which part is missing before "
+                "reporting the task as done."
+            )
+        elif check is not None and check["verdict"] == "unchecked":
+            payload["verified"] = "unchecked"
         return json.dumps(payload, ensure_ascii=False)
+
+    def _check_completion(
+        self, task_id: int, perms: "KitToolPermissions"
+    ) -> Optional[dict]:
+        """Run the completion check for the task about to be completed.
+
+        Gathers the ledgers the executor can reach: the change journal
+        (write evidence, on disk, session-scoped) and — through the
+        provider the client binds onto the permissions — the live read
+        and test-evidence ledgers. Returns None when the task cannot be
+        read; never raises.
+        """
+        try:
+            task = self._task_store(perms).get(task_id)
+        except Exception:
+            return None
+        if not isinstance(task, dict):
+            return None
+        sid = getattr(perms, "task_session_id", "") or ""
+        observed = None
+        tests = None
+        try:
+            provider = getattr(perms, "evidence_provider", None)
+            if callable(provider):
+                ledgers = provider() or {}
+                observed = ledgers.get("observed")
+                tests = ledgers.get("tests")
+        except Exception:
+            observed, tests = None, None
+        return check_completion_claim(
+            str(task.get("subject", "")),
+            str(task.get("description", "")),
+            changes=_journal_changes(sid),
+            observed=observed,
+            tests=tests,
+            window_start=_task_ts_epoch(task.get("started_at")),
+        )
 
     def _execute_task_list(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
+        from . import agent_tasks as _at
         include_deleted = bool(arguments.get("include_deleted", False))
         all_sessions = bool(arguments.get("all_sessions", False))
         _sid = getattr(perms, "task_session_id", "") or ""
         try:
             tasks = self._task_store(perms).list(
                 include_deleted=include_deleted,
-                session_id=None if (all_sessions or not _sid) else _sid,
+                session_id=(None if all_sessions
+                            else _at.resolve_session_scope(_sid)),
                 with_seq=True,
             )
         except Exception as exc:
             return json.dumps({"error": f"task_list failed: {exc}"})
         # Group by status so the agent can summarise progress easily.
         grouped: dict[str, list] = {
-            "in_progress": [], "pending": [],
+            "in_progress": [], "pending": [], "blocked": [],
             "completed": [], "deleted": [],
         }
         for t in tasks:
@@ -12428,21 +12805,38 @@ class OpenAIClient(_BaseClient):
             self._steer_msgs.clear()
             return out
 
-    def _has_pending_tasks(self) -> bool:
-        """True if the current session still has open (pending/in_progress)
-        tasks — used to auto-continue a model that stops mid-build (o3)."""
+    def _open_task_state(self) -> dict:
+        """Tri-state summary of this session's open tasks.
+
+        ``{"state": "open"|"none"|"unknown", ...}``. The state is the
+        point: this used to be a bool that failed CLOSED, so a task
+        store that could not be read was indistinguishable from finished
+        work — and the turn ended silently on both.
+        """
         perms = getattr(self, "_permissions", None)
         if perms is None:
-            return False
+            return {"state": "none", "counts": {}, "in_progress": [],
+                    "pending": [], "blocked": [], "error": ""}
         try:
-            from .agent_tasks import get_store
-            store = get_store(perms.workspace)
-            sid = getattr(perms, "task_session_id", "") or None
-            return any(
-                t.get("status") in ("pending", "in_progress")
-                for t in store.list(session_id=sid))
-        except Exception:
-            return False
+            from . import agent_tasks as _at
+            return _at.open_task_summary(
+                perms.workspace, getattr(perms, "task_session_id", ""))
+        except Exception as exc:
+            return {"state": "unknown", "counts": {}, "in_progress": [],
+                    "pending": [], "blocked": [],
+                    "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+    def _has_pending_tasks(self) -> bool:
+        """True if the session still has work it can advance by itself —
+        used to auto-continue a model that stops mid-build (o3).
+
+        Blocked tasks are deliberately excluded: continuing into work
+        that waits on a user answer or a missing credential is a loop,
+        not progress. They are still reported at turn end.
+        """
+        state = self._open_task_state()
+        counts = state.get("counts") or {}
+        return bool(counts.get("in_progress") or counts.get("pending"))
 
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
@@ -12489,6 +12883,20 @@ class OpenAIClient(_BaseClient):
         """Replace the KIT-Toolbox permissions policy at runtime."""
         self._permissions = permissions
         self._attach_subagent_runner(permissions)
+        # Same pattern as the runners above: the task tools' completion
+        # check needs this turn's grounding ledgers, and the executor
+        # holds no back-reference to the client. Bound as a callable so
+        # it keeps reading the CURRENT ledgers (the test-evidence list is
+        # replaced at every turn start).
+        if permissions is not None:
+            try:
+                permissions.evidence_provider = lambda: {
+                    "observed": set(
+                        getattr(self, "_observed_files_session", None) or ()),
+                    "tests": list(getattr(self, "_test_evidence", None) or ()),
+                }
+            except Exception:
+                pass
 
     def switch_model(self, model: str) -> None:
         """Switch model (no process to kill, just update the name)."""
@@ -14045,6 +14453,22 @@ class OpenAIClient(_BaseClient):
                     "\n⚠️ Response truncated at the max-tokens limit — the "
                     "output above may be incomplete (a tool call may have been "
                     "cut). Send 'continue' to resume.\n"))
+            # The turn is ending. Control reaches here whenever the
+            # auto-continue guard above declines — no tool activity since
+            # the last continue, or the cap spent — and it used to end the
+            # turn on a bare token count while the state that PROVES the
+            # work is unfinished had just been computed and dropped. Say
+            # it, in the stream, so the headless run prints it too.
+            _end_state = self._open_task_state()
+            _end_notice = _open_tasks_notice(_end_state)
+            if _end_notice:
+                yield StreamEvent(type="text_delta",
+                                  text="\n\n" + _end_notice + "\n")
+            _stop = finish_reason or "end_turn"
+            if _stop in ("end_turn", "stop", ""):
+                _stop = {"open": "end_turn_open_tasks",
+                         "unknown": "end_turn_tasks_unknown"}.get(
+                             str(_end_state.get("state", "")), "end_turn")
             cost = self._estimate_cost(_total_in, _total_out)
             yield StreamEvent(
                 type="message_delta",
@@ -14052,7 +14476,7 @@ class OpenAIClient(_BaseClient):
                 output_tokens=_total_out,
                 cost_usd=cost,
                 cached_tokens=_total_cached,
-                stop_reason=finish_reason or "end_turn",
+                stop_reason=_stop,
             )
             break
         else:
@@ -14062,6 +14486,7 @@ class OpenAIClient(_BaseClient):
             # PNG2SMILES task look like the agent had quit (it just hit
             # the round cap mid-pip-install). The user can resume with
             # any message; the next turn picks up the conversation.
+            _cap_notice = _open_tasks_notice(self._open_task_state())
             yield StreamEvent(
                 type="text_delta",
                 text=(
@@ -14070,6 +14495,7 @@ class OpenAIClient(_BaseClient):
                     f"The task isn't necessarily done — send any "
                     f"message (e.g. 'continue') to let me pick up where "
                     f"I left off.\n"
+                    + (_cap_notice + "\n" if _cap_notice else "")
                 ),
             )
             cost = self._estimate_cost(_total_in, _total_out)
