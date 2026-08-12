@@ -197,11 +197,20 @@ def test_distill_and_save_threads_repo_root(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# "global:"-prefixed facts route to the user-wide ~/.delfin/memory store
+# A "global:" prefix the MODEL wrote does not widen a memory's reach
 # ---------------------------------------------------------------------------
+#
+# The distill briefing used to ask for the prefix and ``save_facts`` used to
+# honour it, which made a sentence read in ONE repository into an entry the
+# user-wide store hands to every other workspace. ``save_typed_memory``
+# refuses that prefix by default and states why: text is the one channel the
+# model controls end to end, and the reach of a memory is not its decision.
+# The distiller no longer opts out of that refusal, and no longer solicits
+# the prefix either.
 
 
-def test_save_facts_routes_global_prefix_to_user_store(monkeypatch, tmp_path):
+def test_a_distilled_global_prefix_stays_in_the_project_store(
+        monkeypatch, tmp_path):
     from pathlib import Path
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from delfin.agent import memory_store as ms
@@ -212,12 +221,18 @@ def test_save_facts_routes_global_prefix_to_user_store(monkeypatch, tmp_path):
         repo_root=repo,
     )
     assert n == 2
-    gfiles = [p.name for p in (tmp_path / ".delfin" / "memory").glob("*.md")]
-    assert any(f.startswith("feedback_") for f in gfiles)
+    gdir = tmp_path / ".delfin" / "memory"
+    assert not list(gdir.glob("*.md")) if gdir.is_dir() else True
     pfiles = [p.name for p in ms._delfin_memory_dir(repo).glob("*.md")]
     assert any(f.startswith("project_") for f in pfiles)
-    # The global fact must NOT leak into the project store.
-    assert not any(f.startswith("feedback_") for f in pfiles)
+    assert any(f.startswith("feedback_") for f in pfiles)
+
+
+def test_the_distill_briefing_does_not_ask_for_the_global_prefix():
+    """Soliciting a prefix that is refused teaches the model to emit it."""
+    for system in (md._DISTILL_SYSTEM, md._DISTILL_SYSTEM_STRUCTURED):
+        assert "global:" not in system
+        assert "global: " not in system
 
 
 def test_save_facts_global_dedups_against_user_store(monkeypatch, tmp_path):
@@ -233,10 +248,16 @@ def test_save_facts_global_dedups_against_user_store(monkeypatch, tmp_path):
                          repo_root=repo) == 0
 
 
-def test_save_facts_global_works_without_repo_root(monkeypatch, tmp_path):
+def test_without_a_repo_root_a_global_fact_falls_back_to_the_flat_store(
+        monkeypatch, tmp_path):
+    """No project store to write to ⇒ the legacy flat JSON store, not the
+    user-wide one. The prefix still buys the model nothing."""
     from pathlib import Path
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
     n = md.save_facts(["global: user: identity fact without a repo"])
     assert n == 1
     gdir = tmp_path / ".delfin" / "memory"
-    assert any(p.name.startswith("user_") for p in gdir.glob("*.md"))
+    assert not (gdir.is_dir() and list(gdir.glob("*.md")))
+    assert any("identity fact without a repo" in str(m.get("text", ""))
+               for m in ms.load_memories())

@@ -757,18 +757,20 @@ def test_external_memory_records_only_files_inside_prompt_limit(
     )
     index_chunk = f"# MEMORY.md\n{index.read_text(encoding='utf-8').strip()}"
     # Size the budget by what is actually INJECTED, not by the file on disk:
-    # the frontmatter (name/description/timestamps/use_count/domain) is the
-    # store's bookkeeping and is stripped before the fact reaches the prompt.
-    # Measuring the raw file would leave the budget generous enough for both
-    # entries and the boundary this test exists for would never be reached.
-    from delfin.agent.prompt_loader import _memory_body_only
-    first_chunk = (
-        f"# First ({first.name})\n"
-        f"{_memory_body_only(first.read_text(encoding='utf-8'))}"
+    # the frontmatter is mostly the store's bookkeeping and only its
+    # provenance fields reach the prompt. Measuring the raw file would leave
+    # the budget generous enough for both entries and the boundary this test
+    # exists for would never be reached. The qualifying preamble is charged
+    # to the same budget, so it is part of the sum.
+    from delfin.agent.prompt_loader import (
+        _MEMORY_BLOCK_PREAMBLE, _memory_entry_chunk,
     )
+    first_chunk = _memory_entry_chunk(
+        "First", first.name, first.read_text(encoding="utf-8"))
 
     out = loader._load_external_memory_context(
-        max_chars=len(index_chunk) + 2 + len(first_chunk),
+        max_chars=(len(_MEMORY_BLOCK_PREAMBLE) + 2
+                   + len(index_chunk) + 2 + len(first_chunk)),
     )
 
     assert "first bounded recall entry" in out
@@ -803,13 +805,15 @@ def test_external_memory_ranks_task_relevant_files_first(
         encoding="utf-8",
     )
     index_chunk = f"# MEMORY.md\n{index.read_text(encoding='utf-8').strip()}"
-    orca_chunk = (
-        f"# Orca ({orca.name})\n"
-        f"{orca.read_text(encoding='utf-8').strip()}"
+    from delfin.agent.prompt_loader import (
+        _MEMORY_BLOCK_PREAMBLE, _memory_entry_chunk,
     )
+    orca_chunk = _memory_entry_chunk(
+        "Orca", orca.name, orca.read_text(encoding="utf-8"))
 
     out = loader._load_external_memory_context(
-        max_chars=len(index_chunk) + 2 + len(orca_chunk),
+        max_chars=(len(_MEMORY_BLOCK_PREAMBLE) + 2
+                   + len(index_chunk) + 2 + len(orca_chunk)),
         task_text="fix the orca geometry convergence failure in the run",
     )
 
@@ -927,7 +931,13 @@ def test_external_memory_not_injected_for_other_roles(agent_tree, tmp_path, monk
 
 def test_recall_annotates_stale_reference(agent_tree, tmp_path, monkeypatch):
     """A memory citing a file that vanished is annotated on injection and
-    fed into the rot counter instead of the recall bump."""
+    fed into the rot counter — ON TOP OF the normal recall bump.
+
+    The bump used to be withheld here. That made ``updated_at`` — the field
+    both the prune order and the age cutoff read — the punishment for citing
+    code, which is what a memory written to correct another one does. Rot is
+    a separate signal now and lives in ``stale_hits`` alone.
+    """
     from delfin.agent import memory_store as ms
     from delfin.agent.prompt_loader import PromptLoader
 
@@ -943,7 +953,7 @@ def test_recall_annotates_stale_reference(agent_tree, tmp_path, monkeypatch):
             "the current code before relying on this]") in out
     rec = ms.list_typed_memories(agent_tree)[0]
     assert rec["stale_hits"] == 1
-    assert rec["use_count"] == 1            # rotted recall bumps nothing
+    assert rec["use_count"] == 2            # injected ⇒ seen ⇒ recalled
 
 
 def test_recall_annotates_drifted_reference(agent_tree, tmp_path, monkeypatch):
@@ -1062,7 +1072,10 @@ def test_recall_without_global_store_unchanged(
     out = loader._load_external_memory_context()
 
     assert "GLOBAL MEMORY.md" not in out
-    assert out.startswith("# MEMORY.md")
+    # The block opens with its qualifier; the project index follows it.
+    from delfin.agent.prompt_loader import _MEMORY_BLOCK_PREAMBLE
+    assert out.startswith(_MEMORY_BLOCK_PREAMBLE)
+    assert "\n\n# MEMORY.md" in out
     assert "port 8050" in out
 
 

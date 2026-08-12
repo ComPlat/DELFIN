@@ -66,6 +66,50 @@ def _jaccard(a: str, b: str) -> float:
 _DEFAULT_MERGE_SIMILARITY = 0.72
 
 
+# Words that carry the polarity of a rule. Token SETS cannot encode negation:
+# swapping "never" for "always" in a twenty-token sentence leaves ~0.9 of the
+# tokens in place, which is far above the merge bar — so the store would file
+# the inverse of a rule as the same rule and overwrite the original with it.
+# The markers are compared as SETS, not as a single boolean, because a
+# sentence can carry several ("never … without …") and losing one of them is
+# already a different instruction.
+#
+# German stays German here on purpose: these match what the USER writes.
+_POLARITY_MARKERS: tuple[str, ...] = (
+    # negation — English
+    "never", "not", "no", "don't", "dont", "cannot", "without",
+    # negation — German
+    "nie", "niemals", "nicht", "kein", "keine", "keinen", "keiner", "ohne",
+    # obligation / affirmation — English
+    "always", "must", "only", "every",
+    # obligation / affirmation — German
+    "immer", "stets", "muss", "nur", "jede", "jeden", "jedes",
+)
+
+
+def _polarity_signature(text: str) -> frozenset[str]:
+    """The polarity-bearing words in ``text``, as a set.
+
+    Word-boundary matched on the normalised text so ``nicht`` does not fire
+    inside ``Nichtmetall`` and ``no`` does not fire inside ``node``.
+    """
+    normalised = _normalise_text(text)
+    found = set()
+    for marker in _POLARITY_MARKERS:
+        if re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", normalised):
+            found.add(marker)
+    return frozenset(found)
+
+
+def _inverts_polarity(a: str, b: str) -> bool:
+    """True when two texts do not carry the same polarity words.
+
+    A merge REPLACES the stored body, so two rules that differ only in their
+    polarity words are the two rules the store must never collapse into one.
+    """
+    return _polarity_signature(a) != _polarity_signature(b)
+
+
 def _merge_similarity_threshold() -> float:
     raw = os.environ.get("DELFIN_MEMORY_MERGE_THRESHOLD", "")
     if not raw:
@@ -1033,17 +1077,42 @@ def save_typed_memory(
     # highest-similarity match above the threshold wins and is updated in
     # place. Domain is part of the identity: merging across domains would
     # let an office write reopen a file that code turns still recall.
+    #
+    # Two candidates are refused however similar the token sets are:
+    #
+    #   * the incoming text INVERTS the stored one's polarity. Token sets do
+    #     not encode negation, so "never X" and "always X" score far above
+    #     the bar — and a merge REPLACES the body, so the store would answer
+    #     a later recall with the opposite of the rule it was given.
+    #   * the model is writing over something the USER stated. The merge
+    #     rewrites `source` to the incoming writer's, so an agent write
+    #     landing within the similarity bar of a user memory would delete the
+    #     user's wording AND drop the file to agent grade, where the 90-day
+    #     expiry applies. Nothing the model emits may do that; it gets its
+    #     own file instead, and the user's stays as written.
+    #
+    # Both refusals fall through to the next-best candidate rather than
+    # abandoning dedup: an agent restating its own memory still merges.
     existing = [r for r in list_typed_memories(repo_root, scope=scope)
                 if r["type"] == memory_type
                 and r["domain"] == resolved_domain]
+    threshold = _merge_similarity_threshold()
+    candidates = sorted(
+        ((_jaccard(body, rec["body"]), rec) for rec in existing),
+        key=lambda pair: pair[0], reverse=True,
+    )
     best: dict | None = None
-    best_sim = 0.0
-    for rec in existing:
-        sim = _jaccard(body, rec["body"])
-        if best is None or sim > best_sim:
-            best_sim, best = sim, rec
+    for sim, rec in candidates:
+        if sim < threshold:
+            break
+        if _inverts_polarity(body, rec["body"]):
+            continue
+        if source == SOURCE_AGENT and rec.get("source") != SOURCE_AGENT:
+            continue
+        best = rec
+        break
 
-    if best is not None and best_sim >= _merge_similarity_threshold():
+    if best is not None:
         # Upsert: refresh the existing file's body + description, bump the
         # use_count, and stamp updated_at. Keep its original filename/slug so
         # MEMORY.md pointers and wikilinks stay valid.
@@ -1073,9 +1142,10 @@ def save_typed_memory(
             updated_at=now, use_count=use_count, memory_type=memory_type,
             body=body, superseded=superseded, domain=resolved_domain,
             # The merged file carries the incoming writer's text, so it
-            # carries the incoming writer's trust: the model rewriting the
-            # user's memory drops it to agent-grade, and the user restating
-            # the model's raises it back.
+            # carries the incoming writer's trust. Only ever upward now: the
+            # candidate filter above refuses a merge in which the model would
+            # write over the user, so this can promote an agent file to the
+            # user's when the user restates it, never the reverse.
             source=source,
             extras=extras,
         )
@@ -1465,11 +1535,20 @@ def record_stale_hits(
     """Bump the ``stale_hits`` rot counter for memory files whose injected
     body referenced dead or drifted code. Returns how many were updated.
 
-    Deliberately does NOT touch use_count/updated_at — a rotted memory must
-    keep decaying like an unused one; the counter only serves as a
-    secondary eviction key in ``prune_memories``. Best-effort: never
-    raises, and path-traversal filenames are ignored like in
-    ``record_memory_recall``.
+    Carries use_count/updated_at through unchanged: rot is a SEPARATE
+    signal from recall, and the caller records the recall itself (a rotted
+    memory was still injected, so it was still seen). Coupling the two
+    inverted the decay — ``prune_memories`` orders survivors by
+    ``updated_at`` and ``_expired`` tests the same field, so a memory
+    citing ``path:line`` was queued for eviction the moment the cited line
+    moved, while a memory vague enough to name no code could never rot and
+    was refreshed on every recall. Since a memory written to CORRECT an
+    earlier one is exactly the one that cites the code it corrects, the
+    correction died first. The rot counter alone drives that preference
+    now, as a tiebreak between equally fresh entries.
+
+    Best-effort: never raises, and path-traversal filenames are ignored
+    like in ``record_memory_recall``.
     """
     wanted = {f for f in (filenames or []) if f and f != "MEMORY.md"}
     if not wanted:
@@ -1612,11 +1691,11 @@ def _looks_like_a_path(candidate: str) -> bool:
     exists]". Measured on the live store: 2441 such hits against 2 real
     uses of that memory.
 
-    The damage went past noise. A non-empty note routes the memory to the
-    rotted branch, which skips the recall bookkeeping and freezes
-    ``updated_at`` -- and ``prune_memories`` sorts by ``updated_at``. So
-    the newer memory, written to CORRECT an older one, was the one queued
-    for eviction while the superseded one was refreshed every turn.
+    The damage went past noise, because the rotted branch used to skip the
+    recall bookkeeping entirely and freeze ``updated_at`` -- which is the
+    field ``prune_memories`` sorts by. Narrowing what counts as a path
+    removed one class of false verdict; the recall bump now runs for rotted
+    entries too (see ``record_stale_hits``), which removes the mechanism.
 
     Two ways to qualify: a dotted final segment (``engine.py``,
     ``config.yaml``), or a prefix that actually exists on disk (which is

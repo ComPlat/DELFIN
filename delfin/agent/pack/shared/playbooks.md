@@ -25,7 +25,7 @@ init for bidentate+ ligands (>=2 donors → SVD alignment).
 **Invariants:** Config dicts are mutable — changes propagate. OCCUPIER_parser
 is separate from main CONTROL parser.
 
-## cli.py (2034 lines)
+## cli.py (2155 lines)
 
 1. Grep for the subcommand name — each is a `_run_*_subcommand` function
 2. Check `_load_full_cli_dependencies` (line 24) for lazy imports
@@ -35,33 +35,33 @@ is separate from main CONTROL parser.
 `_parse_occupier_overrides`, `_apply_occupier_overrides`. Downstream cascade:
 `_downstream_stages` invalidates dependent stages.
 
-## orca_recovery.py (1728 lines)
+## orca_recovery.py (1731 lines)
 
 1. `OrcaErrorType` enum (line 28) — all known error types
 2. `OrcaErrorDetector` (line 62) — matches output patterns
 3. `RecoveryStrategy` (line 275) — maps errors to fixes
-4. `OrcaInputModifier` (line 684) — applies input changes
+4. `OrcaInputModifier` (line 687) — applies input changes
 5. Run: `pytest tests/test_orca_workflow_contracts.py -x -q`
 
-**Invariants:** `RetryStateTracker` (line 1633) prevents infinite loops.
+**Invariants:** `RetryStateTracker` (line 1636) prevents infinite loops.
 Recovery must work for both local and SLURM. Never modify the original input.
 
-## smiles_converter.py (18073 lines) — LARGEST MODULE
+## smiles_converter.py (38335 lines) — LARGEST MODULE
 
 1. ALWAYS Grep first — never Read the whole file
 2. Main classes: `_HybridHaptoFragment`, `_PrimaryOrganometalModule`
-3. Entry point: `_try_multiple_strategies` (~line 627)
-4. Metal handling: `_manual_metal_embed` (~line 835)
-5. Hapto groups: `_find_hapto_groups` (~line 1944)
+3. Entry point: `_try_multiple_strategies` (~line 3770)
+4. Metal handling: `_manual_metal_embed` (~line 4353)
+5. Hapto groups: `_find_hapto_groups` (~line 5715)
 
 **Invariants:** Multiple fallback strategies (RDKit → OpenBabel → manual embed).
 Metal bonds → dative bonds via `_convert_metal_bonds_to_dative`. Hapto
 approximation is optional (`_hapto_approx_enabled` flag).
 
-## dashboard/tab_agent.py (7435 lines)
+## dashboard/tab_agent.py (17057 lines)
 
 1. ALWAYS Grep first
-2. Entry point: `create_tab` (line 931)
+2. Entry point: `create_tab` (line 3072)
 3. Grep for specific widget or callback names
 4. Run: `pytest tests/test_agent_*.py -x -q`
 
