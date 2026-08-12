@@ -228,18 +228,43 @@ class _PristineWorkspace:
     def __enter__(self) -> "_PristineWorkspace":
         import shutil
         import tempfile
-        try:
-            live = [ws for ws in self._bases if ws.is_dir()]
-            if live:
+        live = [ws for ws in self._bases if ws.is_dir()]
+        if not live:
+            return self
+        # One retry, then refusal. A file appearing or vanishing mid-copy
+        # makes copytree raise, and that really happens: writing new
+        # fixtures into the workspace while a run was in progress raced it
+        # exactly this way. That is transient and deserves a second try.
+        #
+        # A snapshot that fails twice does not. The guard exists to keep
+        # the user's files; a run that cannot keep them has no business
+        # touching them. Carrying on unprotected and silent is what
+        # happened before, and an attempt then deleted a fixture that
+        # nothing put back.
+        last: Exception | None = None
+        for _attempt in (1, 2):
+            self._pairs = []
+            try:
                 self._snap_root = Path(tempfile.mkdtemp(prefix="bench-ws-"))
                 for i, ws in enumerate(live):
                     snap = self._snap_root / f"ws{i}"
                     shutil.copytree(ws, snap)
                     self._pairs.append((ws, snap))
-        except Exception:
-            self._pairs = []
-            self.failed = True
-        return self
+                self.failed = False
+                return self
+            except Exception as exc:
+                last = exc
+                if self._snap_root is not None:
+                    shutil.rmtree(self._snap_root, ignore_errors=True)
+                    self._snap_root = None
+        self._pairs = []
+        self.failed = True
+        names = ", ".join(ws.name for ws in live)
+        raise RuntimeError(
+            f"could not snapshot the fixture workspace(s) {names}: {last}. "
+            f"Refusing to run: without the snapshot nothing can restore "
+            f"them afterwards, and an attempt that deletes a fixture would "
+            f"leave it deleted.")
 
     def __exit__(self, *exc) -> None:
         import shutil

@@ -114,8 +114,14 @@ def test_an_untouched_checkout_reports_nothing(repo):
 # A guard that could not snapshot says so
 # ---------------------------------------------------------------------------
 
-def test_a_failed_snapshot_is_not_silent(repo, monkeypatch):
-    """It used to set _pairs empty and restore nothing without a word."""
+def test_a_failed_snapshot_stops_the_run(repo, monkeypatch):
+    """Superseded on purpose. This asserted that a failed snapshot is
+    VISIBLE and the run continues; visible was not enough. It happened
+    for real -- fixtures written into the workspace while a run was in
+    progress raced copytree -- and the run carried on unprotected, an
+    attempt deleted a fixture, and nothing put it back. Now it retries
+    once and then refuses, because a guard that cannot keep the user's
+    files has no business letting the run touch them."""
     root, ws, _ = repo
 
     def _boom(*_a, **_k):
@@ -123,8 +129,9 @@ def test_a_failed_snapshot_is_not_silent(repo, monkeypatch):
     monkeypatch.setattr("shutil.copytree", _boom)
 
     guard = BR._PristineWorkspace(root)
-    with guard:
-        pass
+    with pytest.raises(RuntimeError):
+        with guard:
+            pass
     assert guard.failed, "a snapshot that did not happen must be visible"
 
 
