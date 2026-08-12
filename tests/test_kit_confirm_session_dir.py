@@ -1,6 +1,13 @@
-"""Bug 065503: a plain "Erlauben (1×)" on an outside-workspace access grants
-the directory for THIS session (live perms, non-persisted) so the agent stops
-re-prompting per file. 'Dauerhaft' still persists; bash 1× grants nothing.
+"""Bug 065503: a plain "Erlauben (1×)" on an outside-workspace access stops
+the agent re-prompting for every file in that directory. 'Dauerhaft' still
+persists; bash 1× grants nothing.
+
+The session grant used to be made HERE, by handing the parent directory to
+the live permissions as a WRITABLE root — which is not what the dialog said
+and not what the click means. The read gate now makes the grant itself, and
+makes it read-only (see
+test_an_approved_read_does_not_grant_a_writable_directory.py), so what this
+file pins down is that the broker hands out no directory at all.
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ def _buttons(broker, req):
     return approve, approve_persist, deny
 
 
-def test_plain_allow_grants_dir_for_session(tmp_path):
+def test_plain_allow_hands_out_no_directory(tmp_path):
     broker, calls = _broker_with_recorder()
     f = tmp_path / "data" / "mod.py"
     f.parent.mkdir(parents=True)
@@ -74,11 +81,11 @@ def test_plain_allow_grants_dir_for_session(tmp_path):
     approve.click()                            # "Erlauben (1×)"
     t.join(timeout=5)
 
-    parent = str(f.parent.resolve())
-    assert out["ok"] is True
-    # session grant fired with the parent dir, NOT a persisted extra_dir
-    assert ("extra_dir_session", parent) in calls
-    assert all(k != "extra_dir" for k, _ in calls)
+    assert out["ok"] is True                   # the read is approved
+    # ...and no workspace directory changes hands: neither the persisted
+    # kind nor the session one. The read gate opens the directory for
+    # READS on its own.
+    assert calls == []
 
 
 def test_dauerhaft_persists_and_does_not_double_grant(tmp_path):
@@ -164,17 +171,18 @@ def test_header_says_self_mod_only_for_protected_writes():
 
 
 # --- Adversarial-review fix: don't auto-grant sensitive system/secret dirs ---
+# The rule moved to the read gate together with the grant itself, so it is
+# tested where it now runs (api_client._is_grantable_read_dir).
 
 @pytest.mark.parametrize("path,grantable", [
     ("/tmp/project", True),
-    ("/home/u/ka_xn0397/Porpoise", True),
     ("/etc", False), ("/etc/hostname", False),   # system root + child
     ("/root", False), ("/", False), ("/usr/lib", False), ("/var/log", False),
     ("/home/u/.ssh", False),                     # secret dir
 ])
-def test_is_grantable_session_dir(path, grantable):
-    from delfin.agent.kit_confirm import _is_grantable_session_dir
-    assert _is_grantable_session_dir(path) is grantable
+def test_a_single_read_never_opens_a_sensitive_directory(path, grantable):
+    from delfin.agent.api_client import _is_grantable_read_dir
+    assert _is_grantable_read_dir(path) is grantable
 
 
 def test_approving_a_system_file_does_not_grant_its_dir(tmp_path):
@@ -186,4 +194,4 @@ def test_approving_a_system_file_does_not_grant_its_dir(tmp_path):
     approve.click()
     t.join(timeout=5)
     assert out["ok"] is True                         # the read is allowed
-    assert all(k != "extra_dir_session" for k, _ in calls)   # but no broad grant
+    assert calls == []                               # but no broad grant

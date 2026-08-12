@@ -19,13 +19,25 @@ def perms(tmp_path):
 
 
 @pytest.mark.parametrize("cmd", [
-    "cd /pfs/data6/home/ka/Porpoise && python -c \"import x\"",   # the real case
+    "cd /pfs/data6/home/ka/Porpoise && python -m pytest -q",       # the real case
     "cd /path",                                                   # cd alone
     "cd src && pytest",
     "cd ~/proj && python -m pytest -q",
+    "cd src && python check.py",
 ])
 def test_cd_prefix_auto_allowed_for_safe_rest(perms, cmd):
     assert perms.matches_bash_auto_allow(cmd) is True
+
+
+def test_the_cd_prefix_does_not_carry_an_interpreter(perms):
+    """The original trace was `cd <path> && python -c "import x"`, and the
+    cd prefix is still not what stops it: `python -c` hides its target, so
+    it reaches the user in every mode (see
+    test_an_interpreter_is_never_the_way_around_a_write_gate.py). The
+    prefix costs nothing either way."""
+    assert perms.matches_bash_auto_allow(
+        'cd /pfs/data6/home/ka/Porpoise && python -c "import x"') is False
+    assert perms.matches_bash_auto_allow('python -c "import x"') is False
 
 
 @pytest.mark.parametrize("cmd", [
