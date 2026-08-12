@@ -18,6 +18,11 @@ submitted itself was watched by nobody -- while the tool result that
 registered it said, in so many words, that its completion would be
 reported without polling.
 
+What these cost on a shared node: a job that failed at minute three holds
+its allocation until its wall clock runs out, because the one participant
+who could have noticed and resubmitted was told nothing. Everyone else on
+the node waits behind it.
+
 Every scheduler call here is injected. No real queue is touched.
 """
 

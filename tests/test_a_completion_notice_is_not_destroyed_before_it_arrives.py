@@ -18,6 +18,11 @@ tool and the post-merge cleanup still force-removed the tree with no check
 at all -- deleting the working directory of a live process along with the
 registry file that was the only record of it.
 
+The shared-node cost is the same in all three: the calculation keeps its
+cores either way, and losing the record is what makes it unkillable and
+uncounted. A job nobody can name is a job nobody can stop, on a machine
+whose CPU belongs to everyone using it.
+
 Real short-lived subprocesses; no SLURM, no LLM.
 """
 
