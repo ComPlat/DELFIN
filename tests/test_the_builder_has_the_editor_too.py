@@ -440,3 +440,66 @@ def test_the_fullscreen_button_is_there_for_one_structure_too(builder):
     refs['orca_coords'].value = TWO_BLOCKS
     assert row.layout.display == ''
     assert refs['orca_mol_next_btn'].layout.display == ''
+
+
+# ---------------------------------------------------------------------------
+# where a structure comes from
+# ---------------------------------------------------------------------------
+
+
+def test_the_conversions_are_the_editors_too():
+    """CONVERT SMILES, QUICK, + UFF and MANTA are the same four buttons the
+    Submit tab has, wired to the same code."""
+    assert 'orca_editor.convert_smiles_button' in BUILDER
+    assert 'orca_editor.convert_smiles_quick_button' in BUILDER
+    assert 'orca_editor.convert_smiles_uff_button' in BUILDER
+    assert 'orca_editor.manta_button' in BUILDER
+    # ...and the Builder's own one-off conversion is gone with them.
+    assert 'handle_orca_convert_smiles' not in BUILDER
+    assert 'orca_convert_smiles_btn' not in BUILDER
+
+
+def test_several_structures_become_several_named_blocks(builder):
+    """A conversion hands over one structure or several. The Submit tab shows
+    the first and steps through the rest; this tab keeps them all at once, in
+    the layout it reads.
+
+    Converted through the real tab from C/C=C/C(=O)O: two conformers came back
+    and the coordinates box holds two blocks, conf-1.xyz and conf-2.xyz.
+    """
+    refs, _sent = builder
+    taken = refs['editor_state']
+
+    handed = [('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'conf-1'),
+              ('O 0 0 0\nH 0.97 0 0\nH -0.25 0.94 0', 3, 'conf-2')]
+    refs['offer_structures'](handed)
+
+    text = refs['orca_coords'].value
+    assert text.count('\n*') == 2
+    assert 'conf-1.xyz;' in text and 'conf-2.xyz;' in text
+    assert [name for name, _xyz in taken['xyz_blocks']] == ['conf-1.xyz',
+                                                            'conf-2.xyz']
+    # The editor's own isomer stepper stays out of the way: this tab has one.
+    assert refs['isomer_nav_row'].layout.display == 'none'
+
+
+def test_two_structures_with_one_name_still_get_a_block_each(builder):
+    refs, _sent = builder
+
+    refs['offer_structures']([('O 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0', 3, 'quick'),
+                              ('O 0 0 0\nH 0.97 0 0\nH -0.25 0.94 0', 3, 'quick')])
+
+    names = [name for name, _xyz in refs['editor_state']['xyz_blocks']]
+    assert len(names) == 2 and len(set(names)) == 2, names
+
+
+def test_a_smiles_is_read_from_the_box_it_was_typed_into(builder):
+    """In the Submit tab the editor writes structures into the same box a
+    SMILES is typed into. Here they are two different boxes -- the editor has
+    a hidden one of its own, because this tab's box holds named blocks -- so a
+    conversion has to be told where to look."""
+    assert 'read_input=lambda: orca_coords.value' in BUILDER
+
+    refs, _sent = builder
+    refs['orca_coords'].value = 'CCO'
+    assert refs['read_input']() == 'CCO'

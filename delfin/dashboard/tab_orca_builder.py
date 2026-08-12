@@ -140,10 +140,6 @@ def create_tab(ctx):
         continuous_update=False,
     )
     orca_coords.add_class('delfin-debounced')
-    orca_convert_smiles_btn = widgets.Button(
-        description='CONVERT SMILES', button_style='info',
-        layout=widgets.Layout(width='200px'),
-    )
     orca_copy_coords_btn = widgets.Button(
         description='COPY COORDINATES',
         button_style='',
@@ -334,9 +330,12 @@ def create_tab(ctx):
         schedule_ui_update=_orca_schedule_ui_update,
         # Defined further down, so they are looked up when they are called.
         update_view=lambda *a, **k: _orca_editor_wrote(*a, **k),
-        # This tab has no isomers and no SMILES to take a charge from.
-        show_isomer_at_index=lambda *a, **k: None,
+        # This tab takes its charge from its own box, not from a SMILES.
         get_smiles_charge=lambda *a, **k: None,
+        # Several structures belong in several named blocks here.
+        offer_structures=lambda isomers: _take_structures(isomers),
+        # A SMILES is typed into the tab's own box, not the editor's.
+        read_input=lambda: orca_coords.value,
     )
     orca_editor_scope = orca_editor.submit_scope_id
     # This tab has always shown its numbers straight away; the editor's own
@@ -974,6 +973,38 @@ def create_tab(ctx):
             orca_editor._ensure_manip_bootstrap()
         orca_editor._set_manip_toolbar_enabled(bool(full_xyz))
 
+    def _take_structures(isomers):
+        """Every structure a conversion produced, as named blocks.
+
+        A conversion hands over one structure or several -- the isomers of a
+        SMILES, MANTA's ranked candidates, whatever was drawn. The Submit tab
+        shows the first and steps through the rest; this tab keeps them all at
+        once, in the layout it reads: a name, the atoms, a closing star. So
+        they are written that way and the block stepper walks them, which is
+        the stepper this tab already had.
+        """
+        if not isomers:
+            return False
+        blocks = []
+        used = {}
+        for xyz_string, num_atoms, label in isomers:
+            name = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(label or 'structure')).strip('-.')
+            if not name:
+                name = 'structure'
+            if not name.lower().endswith('.xyz'):
+                name += '.xyz'
+            # Two isomers may carry the same label; a block needs its own name.
+            used[name] = used.get(name, 0) + 1
+            if used[name] > 1:
+                name = '%s-%d.xyz' % (name[:-4], used[name])
+            body = strip_xyz_header(xyz_string) or xyz_string
+            rows = [row for row in body.split('\n') if row.strip()]
+            blocks.append('%s;%s\n%d\n%s\n%s\n*' % (
+                name, label or '', num_atoms or len(rows), label or '',
+                '\n'.join(rows)))
+        orca_coords.value = '\n\n'.join(blocks)
+        return True
+
     def _blocks_with_edit(full_xyz):
         """The coordinates box with the shown block replaced by *full_xyz*.
 
@@ -1298,49 +1329,6 @@ def create_tab(ctx):
         if 0 <= idx < len(blocks) and _show_molecule_in_place(blocks[idx][1]):
             return
         _refresh_mol_view(reset_view=False)  # keep orientation
-
-    def handle_orca_convert_smiles(button):
-        raw_input = orca_coords.value.strip()
-        if not raw_input:
-            with orca_output:
-                clear_output(wait=True)
-                print('Please enter a SMILES string in the Coordinates box.')
-            return
-        cleaned_data, input_type = clean_input_data(raw_input)
-        if input_type != 'smiles':
-            with orca_output:
-                clear_output(wait=True)
-                print('Input is not a SMILES string. Please enter a SMILES.')
-            return
-        with orca_output:
-            clear_output(wait=True)
-            print('Converting SMILES to 3D coordinates...')
-        xyz_string, num_atoms, _method, preview_items, error = smiles_to_xyz_quick_with_previews(
-            cleaned_data
-        )
-        if error or not xyz_string:
-            with orca_output:
-                clear_output(wait=True)
-                print(f'Error: {error or "Conversion failed"}')
-            return
-        xyz_blocks = [('quick.xyz', xyz_string)]
-        for _idx, (preview_xyz, _preview_num_atoms, label) in enumerate(preview_items, start=1):
-            safe_label = re.sub(r'[^A-Za-z0-9_.-]+', '-', label or f'preview-{_idx}').strip('-')
-            if not safe_label:
-                safe_label = f'preview-{_idx}'
-            xyz_blocks.append((f'{safe_label}.xyz', preview_xyz))
-        if len(xyz_blocks) == 1:
-            orca_coords.value = xyz_string
-        else:
-            block_text = []
-            for filename, block_xyz in xyz_blocks:
-                block_text.append(f'{filename};\n{block_xyz}\n*')
-            orca_coords.value = '\n\n'.join(block_text)
-        with orca_output:
-            clear_output(wait=True)
-            print(f'Converted SMILES to {num_atoms} atoms.')
-
-    orca_convert_smiles_btn.on_click(handle_orca_convert_smiles)
 
     def _current_xyz_for_copy():
         xyz_blocks = parse_xyz_blocks(orca_coords.value)
@@ -1992,7 +1980,13 @@ def create_tab(ctx):
     orca_left = widgets.VBox([
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
-        _row([orca_convert_smiles_btn, orca_copy_coords_btn, orca_check_numbering_btn, orca_apply_numbering_btn]),
+        # The conversions are the editor's, the same ones the Submit tab has.
+        _row([orca_editor.convert_smiles_button,
+              orca_editor.convert_smiles_quick_button,
+              orca_editor.convert_smiles_uff_button,
+              orca_editor.manta_button]),
+        orca_editor.manta_settings_row,
+        _row([orca_copy_coords_btn, orca_check_numbering_btn, orca_apply_numbering_btn]),
         widgets.HTML('<b>Config Templates:</b>'),
         _row([orca_template_dd, orca_template_load_btn, orca_template_save_btn, orca_template_delete_btn]),
         orca_template_save_dialog,
@@ -2264,7 +2258,6 @@ def create_tab(ctx):
         'orca_template_delete_confirm_btn': orca_template_delete_confirm_btn,
         'orca_preview': orca_preview,
         'orca_submit_btn': orca_submit_btn,          # destructive: starts real ORCA job
-        'orca_convert_smiles_btn': orca_convert_smiles_btn,  # safe: SMILES→XYZ conversion
         'orca_copy_coords_btn': orca_copy_coords_btn,
         'orca_check_numbering_btn': orca_check_numbering_btn,
         'orca_apply_numbering_btn': orca_apply_numbering_btn,
@@ -2279,4 +2272,6 @@ def create_tab(ctx):
         'editor_state': state,
         'editor_coords': orca_editor_coords,
         'editor_scope': orca_editor_scope,
+        'offer_structures': _take_structures,
+        'read_input': lambda: orca_coords.value,
     }
