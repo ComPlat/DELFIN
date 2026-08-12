@@ -39,9 +39,24 @@ def office_engine(tmp_path):
         eng = E.AgentEngine(
             repo_dir=ws, backend="api", provider="kit",
             model="kit.qwen3.5-397b-A17b", mode="office")
+    # A mock client answers ``_permissions`` with another mock, whose
+    # workspace is a mock too -- and the task store built from one lands
+    # under the process CWD, i.e. in the checkout. Real permissions on the
+    # scratch workspace, which is what the fixture claims to hand out.
+    eng.client._permissions = A.KitToolPermissions(workspace=ws)
     # Turn start: this is what freezes the blocks for the rest of the turn.
     eng._build_current_system_prompt("", task_text="Wie viel im Juni?")
     return eng
+
+
+def _real_perms(engine, workspace) -> None:
+    """Replace the mock client's mock permissions with real ones.
+
+    ``engine.kit_permissions`` reads ``client._permissions``; on a mock
+    client that is a mock, and a task store built from a mock workspace
+    resolves relative to the process CWD -- inside the checkout.
+    """
+    engine.client._permissions = A.KitToolPermissions(workspace=workspace)
 
 
 def _open_task(engine, subject: str) -> None:
@@ -82,6 +97,7 @@ def test_a_block_already_in_the_system_prompt_is_not_repeated(tmp_path):
         eng = E.AgentEngine(
             repo_dir=ws, backend="api", provider="kit",
             model="kit.qwen3.5-397b-A17b", mode="office")
+    _real_perms(eng, ws)
     _open_task(eng, "Schon offen vor dem Turn")
     prompt = eng._build_current_system_prompt("", task_text="Weiter")
     assert "Schon offen vor dem Turn" in prompt
@@ -124,6 +140,7 @@ def test_pipeline_roles_get_no_steering(tmp_path):
         eng = E.AgentEngine(
             repo_dir=tmp_path, backend="api", provider="kit",
             model="kit.qwen3.5-397b-A17b", mode="solo")
+    _real_perms(eng, tmp_path)
     eng.route = ["builder_agent"]
     eng.current_role_index = 0
     assert eng.current_role not in E._STEERING_ROLES

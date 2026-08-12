@@ -107,13 +107,61 @@ def test_an_unknown_preset_is_not_assumed_to_write():
 # The tool layer uses the rule
 # ---------------------------------------------------------------------------
 
-def test_the_background_dispatch_asks_for_the_rule():
-    import pathlib
-    src = (pathlib.Path(__file__).resolve().parents[1] / "delfin" / "agent"
-           / "api_client.py").read_text(encoding="utf-8")
-    i = src.index('if bool(arguments.get("background")):')
-    assert "auto_isolation_for" in src[i - 2000:i + 2000], (
-        "the background path still passes the raw isolation argument")
+# The next three tests were one source-text assertion: find the index of
+# ``if bool(arguments.get("background")):`` and assert the name
+# ``auto_isolation_for`` occurs within 2000 CHARACTERS of it. That is
+# satisfied by a comment, by an unrelated function, or by a call on a
+# neighbouring branch -- and it breaks when legitimate code is inserted
+# between the two, which is a test that fails for being right.
+#
+# What the promise actually is: a background writer is LAUNCHED with
+# worktree isolation. So launch one and read what the runner was handed.
+
+def _launched_isolation(subagent_type, *, isolation="", timeout=3.0):
+    """Spawn a background sub-agent and return the isolation it was
+    launched with."""
+    import threading
+
+    from delfin.agent import api_client as A
+
+    received: dict = {}
+    done = threading.Event()
+
+    def _runner(**kw):
+        received.update(kw)
+        done.set()
+        return {"ok": True}
+
+    class _Perms:
+        subagent_runner = staticmethod(_runner)
+
+    args = {"subagent_type": subagent_type,
+            "description": "edit the parser module",
+            "prompt": "rewrite the tokenizer so it handles quoted strings",
+            "background": True}
+    if isolation:
+        args["isolation"] = isolation
+
+    out = json.loads(A._doc_executor._execute_subagent(args, _Perms()))
+    assert out.get("status") == "started_in_background", out
+    assert done.wait(timeout=timeout), "the background runner never ran"
+    return received.get("isolation")
+
+
+def test_a_background_writer_is_launched_in_a_worktree():
+    """The case the rule exists for: it edits the tree while the parent
+    is editing it."""
+    assert _launched_isolation("general-purpose") == "worktree"
+
+
+def test_a_background_reader_is_launched_without_one():
+    """A worktree for a reader is a merge step nobody asked for."""
+    assert not _launched_isolation("explore")
+
+
+def test_an_explicit_choice_survives_the_background_dispatch():
+    """The rule fills a gap; it must not overrule the caller."""
+    assert _launched_isolation("general-purpose", isolation="none") == "none"
 
 
 def test_the_parallel_fan_out_still_isolates_writers():

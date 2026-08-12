@@ -126,13 +126,92 @@ def test_an_unlocked_workspace_still_supplies_its_hooks():
     assert cfg.by_event.get("PreToolUse"), "workspace hooks stopped working"
 
 
-def test_every_hook_load_site_goes_through_the_helper():
-    """Four call sites read hooks; one of them left unguarded is the whole
-    hole back."""
-    source = pathlib.Path(A.__file__).read_text(encoding="utf-8")
-    assert "load_hooks(permissions.workspace)" not in source, (
-        "a hook load site reads the workspace directly again")
-    assert source.count("load_hooks(_hook_workspace(permissions))") == 4
+# The guard used to be two source-text assertions: a NEGATIVE substring
+# ("load_hooks(permissions.workspace)" not in source) and an EXACT COUNT
+# (== 4). Both fail as guards in opposite directions. The negative is
+# satisfied forever by writing the same thing differently --
+# ``load_hooks(permissions.workspace or None)``, or binding the workspace
+# to a local first. The count breaks the moment a FIFTH legitimate load
+# site is added, and stays green when an existing one is renamed away.
+#
+# What is actually promised: under a locked scope, a settings file lying
+# in the documents folder runs nothing. A hook that would leave a trace
+# on disk, and no trace, is that promise -- whatever the call sites are
+# spelled like and however many there are.
+
+def _workspace_with_a_hook_that_leaves_a_trace(tmp_path, event="PreToolUse"):
+    ws = tmp_path / "dokumente"
+    (ws / ".delfin").mkdir(parents=True)
+    marker = tmp_path / "the_hook_ran"
+    (ws / ".delfin" / "settings.json").write_text(json.dumps({
+        "hooks": {event: [{
+            "matcher": "*",
+            "hooks": [{"type": "command",
+                       "command": f"touch {marker}"}],
+        }]}
+    }), encoding="utf-8")
+    (ws / "notiz.txt").write_text("hallo\n", encoding="utf-8")
+    return ws, marker
+
+
+def _hook_perms(ws, *, locked: bool):
+    """Permissions differing ONLY in the lock.
+
+    The lock is carried here by ``lock_workspace`` rather than by the
+    office role, so what these tests measure is the lock and not the
+    role's execution allow-list -- a refused call would skip the
+    post-dispatch hook site and pass the locked case for the wrong
+    reason.
+    """
+    p = A.KitToolPermissions(workspace=ws)
+    p.mode = "acceptEdits"
+    p.confirm_callback = lambda n, a, prev: True
+    p.lock_workspace = locked
+    assert p.scope_locked is locked
+    return p
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "PostToolUse"])
+def test_a_locked_session_runs_no_hook_from_its_documents_folder(tmp_path,
+                                                                 event):
+    """A hooks file is executable configuration: it runs through a shell
+    with the process environment, outside the permission gate and outside
+    any filesystem isolation."""
+    ws, marker = _workspace_with_a_hook_that_leaves_a_trace(tmp_path, event)
+    perms = _hook_perms(ws, locked=True)
+
+    A._doc_executor.execute("read_file", {"path": "notiz.txt"}, perms)
+
+    assert not marker.exists(), (
+        f"a {event} hook from the locked documents folder ran a command")
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "PostToolUse"])
+def test_an_unlocked_session_still_runs_its_workspace_hooks(tmp_path, event):
+    """The other half: hooks that stop working everywhere would pass the
+    test above and remove the feature."""
+    ws, marker = _workspace_with_a_hook_that_leaves_a_trace(tmp_path, event)
+    perms = _hook_perms(ws, locked=False)
+
+    A._doc_executor.execute("read_file", {"path": "notiz.txt"}, perms)
+
+    assert marker.exists(), "workspace hooks stopped running entirely"
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "PostToolUse"])
+def test_the_per_call_hook_helpers_are_locked_too(tmp_path, event):
+    """Two of the load sites live in helpers a backend may call on its
+    own, outside ``execute``. They carry the same promise."""
+    ws, marker = _workspace_with_a_hook_that_leaves_a_trace(tmp_path, event)
+    perms = _hook_perms(ws, locked=True)
+    ex = A._doc_executor
+
+    ex._run_pre_tool_hooks("read_file", {"path": "notiz.txt"}, perms)
+    ex._run_post_tool_hooks("read_file", {"path": "notiz.txt"}, perms,
+                            "hallo")
+
+    assert not marker.exists(), (
+        f"a {event} hook ran from a helper the lock does not reach")
 
 
 def test_the_helper_is_defensive_about_its_input():

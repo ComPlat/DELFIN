@@ -32,6 +32,7 @@ import pathlib
 
 import pytest
 
+from conftest import _CHECKOUT_ROOT, _checkout_entries
 from delfin.agent import memory_store as ms
 
 
@@ -190,3 +191,86 @@ def test_persisting_an_allow_rule_does_not_reach_the_real_settings():
     he._write_settings({"kit": {"allow_patterns": ["^.*$"]}})
     after = real.stat().st_mtime if real.exists() else None
     assert after == stamp
+
+
+# ---------------------------------------------------------------------------
+# ...and the OTHER destination of the same incident: the checkout
+# ---------------------------------------------------------------------------
+# The file above documents the mock directories that landed "inside the
+# DELFIN checkout" and then asserts, in every one of its cases, about
+# ``~/.delfin``. That half was never tested. Re-measured before these
+# tests were written: an ordinary run left 3.1 MB in 560 files under the
+# checkout, and ``git status --porcelain --untracked-files=all MagicMock``
+# printed nothing -- the ``.delfin/`` ignore rule covers the whole shape,
+# so no amount of looking at git would ever have shown it.
+#
+# ``MagicMock.__fspath__`` returns a RELATIVE path, which is why the
+# process CWD is where it lands. Two guards, because they fail at
+# different times: the store refuses the input, and the session fixture
+# in conftest notices any future leak whatever its source.
+
+def test_a_task_store_refuses_a_relative_base_dir():
+    from delfin.agent.agent_tasks import TaskStore
+
+    with pytest.raises(ValueError, match="absolute"):
+        TaskStore(pathlib.Path("relative/workspace"))
+
+
+def test_a_task_store_refuses_a_mock_workspace():
+    """The exact input that produced the 560 files."""
+    from unittest.mock import MagicMock
+
+    from delfin.agent.agent_tasks import TaskStore
+
+    with pytest.raises(ValueError, match="absolute"):
+        TaskStore(MagicMock()._permissions.workspace)
+
+
+def test_a_store_on_a_mock_workspace_creates_nothing_in_the_checkout():
+    """``get_store`` is the reachable entry point; the refusal has to hold
+    there too, and it must not have written before refusing."""
+    from unittest.mock import MagicMock
+
+    from delfin.agent.agent_tasks import get_store
+
+    before = _checkout_entries()
+    with pytest.raises(ValueError):
+        get_store(MagicMock()._permissions.workspace)
+    assert _checkout_entries() - before == set()
+
+
+def test_a_task_store_still_accepts_a_real_directory(tmp_path):
+    """A guard that blocked ordinary use would be reverted within a week."""
+    from delfin.agent.agent_tasks import TaskStore
+
+    store = TaskStore(tmp_path)
+    store.create("etwas zu tun", session_id="s1")
+    assert [t["subject"] for t in store.list(session_id="s1")] == [
+        "etwas zu tun"]
+
+
+def test_the_checkout_snapshot_sees_this_very_file():
+    """The snapshot the session fixture compares has to cover the tree."""
+    entries = _checkout_entries()
+    assert entries, "the checkout snapshot resolved to nothing"
+    assert str(pathlib.Path(__file__).resolve()) in entries
+
+
+def test_the_snapshot_notices_a_stray_entry():
+    """What the fixture does at teardown, done here so the mechanism is
+    tested rather than trusted."""
+    before = _checkout_entries()
+    probe = _CHECKOUT_ROOT / ".delfin_leak_probe"
+    probe.mkdir()
+    try:
+        assert str(probe) in _checkout_entries() - before
+    finally:
+        probe.rmdir()
+    assert _checkout_entries() - before == set()
+
+
+def test_the_snapshot_ignores_build_noise():
+    """Byte-code caches are created by running the suite at all; failing
+    the run on those would get the guard deleted, not fixed."""
+    assert not [p for p in _checkout_entries() if "__pycache__" in p]
+    assert not [p for p in _checkout_entries() if p.endswith(".pyc")]

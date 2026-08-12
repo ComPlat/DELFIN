@@ -83,14 +83,127 @@ def test_permissions_generic_workspace_no_xtb_pattern():
 # ---- tool filtering ------------------------------------------------------
 
 
-def test_delfin_only_tool_names_disjoint_from_universal():
-    """No DELFIN-only tool should also be advertised in the universal set
-    via the coding-tool gate."""
+def test_every_delfin_only_name_exists_in_the_catalogue():
+    """A name that matches nothing filters nothing -- this is the premise
+    the disjointness test below rests on, and nothing more.
+
+    It used to carry the name ``test_delfin_only_tool_names_disjoint_from
+    _universal`` and the docstring "No DELFIN-only tool should also be
+    advertised in the universal set", while asserting ``issubset`` -- that
+    the catalogue contains its own entries, which is definitional. Deleting
+    the filter it claimed to guard left it green.
+    """
     universal_names = {
         t.get("function", {}).get("name") for t in _DOC_TOOLS_OPENAI
     }
-    # All DELFIN-only tools exist in the catalogue
     assert _DELFIN_ONLY_TOOL_NAMES.issubset(universal_names)
+
+
+def _advertised_tool_names(workspace, monkeypatch) -> set:
+    """The tool names the model is actually offered for this workspace.
+
+    Read off the request the client builds, not off the catalogue: the
+    filter under test runs while the request is assembled.
+    """
+    import json
+
+    from delfin.agent import mcp_client as _mcp
+    from delfin.agent import model_capabilities as _mc
+
+    class _Delta:
+        def __init__(self, content=None):
+            self.content = content
+            self.tool_calls = None
+            self.reasoning_content = None
+
+    class _Choice:
+        def __init__(self, delta, finish):
+            self.index, self.delta, self.finish_reason = 0, delta, finish
+
+    class _Chunk:
+        def __init__(self, choices):
+            self.choices, self.usage = choices, None
+
+    class _Stream:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def __iter__(self):
+            return iter(self._chunks)
+
+        def close(self):
+            pass
+
+    class _NoRegistry:
+        def discover_all(self):
+            return []
+
+        def discover_resources(self):
+            return []
+
+        def discover_prompts(self):
+            return []
+
+    caps = _mc.ModelCapabilities(model="m", provider="ollama",
+                                 context_window=200_000, supports_tools=True)
+    # The doc/calc indexes decide availability independently of the
+    # workspace bias; pin them present so this measures the bias alone.
+    monkeypatch.setattr(AC._doc_executor, "_ensure_loaded", lambda: True)
+    monkeypatch.setattr(AC._doc_executor, "_ensure_calc_loaded", lambda: True)
+    monkeypatch.setattr(_mc, "resolve", lambda *a, **k: caps)
+    monkeypatch.setattr(_mcp, "get_registry", lambda *a, **k: _NoRegistry())
+    monkeypatch.setattr(AC.time, "sleep", lambda *a, **k: None)
+
+    # A model whose profile does NOT set core_tools_only: the weak-model
+    # trim drops the chemistry tools for its own reasons and would make
+    # the disjointness below true for the wrong one.
+    from delfin.agent.model_profiles import get_profile as _get_profile
+    model = "qwen2.5-coder:32b"
+    assert not _get_profile(model, None).core_tools_only
+
+    client = AC.create_client(backend="api", provider="ollama",
+                              model=model, cwd=str(workspace))
+    client.set_permissions(KitToolPermissions(workspace=workspace,
+                                              mode="acceptEdits"))
+    seen: dict = {}
+
+    def _create(**kwargs):
+        seen["tools"] = kwargs.get("tools") or []
+        return _Stream([_Chunk([_Choice(_Delta(content="ok"), "stop")])])
+
+    client.client.chat.completions.create = _create
+    list(client.stream_message("sys", [{"role": "user", "content": "hallo"}],
+                               max_tokens=32))
+    assert "tools" in seen, "the client sent no request"
+    return {t.get("function", {}).get("name") for t in seen["tools"]}
+
+
+def test_a_generic_workspace_is_offered_no_chemistry_tool(tmp_path,
+                                                          monkeypatch):
+    """What the filter is for: search_calcs on a workspace with no calcs
+    would return nothing, and costs a slot in every request forever."""
+    ws = tmp_path / "generic"
+    (ws / "src").mkdir(parents=True)
+    (ws / "main.py").write_text("print(1)\n")
+    assert not _is_delfin_workspace(ws)
+
+    offered = _advertised_tool_names(ws, monkeypatch)
+    assert offered, "no tools were advertised at all"
+    assert offered & _DELFIN_ONLY_TOOL_NAMES == set(), (
+        "a non-DELFIN workspace was offered DELFIN-only tools: "
+        f"{sorted(offered & _DELFIN_ONLY_TOOL_NAMES)}")
+
+
+def test_a_delfin_workspace_is_still_offered_them(tmp_path, monkeypatch):
+    """The other half: a filter that drops them everywhere passes the test
+    above and breaks the product."""
+    ws = _make_delfin_workspace(tmp_path / "delfin_repo")
+    assert _is_delfin_workspace(ws)
+
+    offered = _advertised_tool_names(ws, monkeypatch)
+    assert _DELFIN_ONLY_TOOL_NAMES <= offered, (
+        "a DELFIN workspace lost its chemistry tools: "
+        f"{sorted(_DELFIN_ONLY_TOOL_NAMES - offered)}")
 
 
 def test_delfin_bash_patterns_are_separate_from_default():

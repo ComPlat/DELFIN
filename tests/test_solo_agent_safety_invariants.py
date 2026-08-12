@@ -15,22 +15,7 @@ import pytest
 from delfin.agent.api_client import KitToolPermissions
 
 
-def _bwrap_functional() -> bool:
-    """True only if bwrap is installed AND can actually sandbox. On unprivileged
-    CI containers bwrap is often present but cannot create user namespaces, so
-    it exits non-zero — `which("bwrap")` alone would wrongly let the test run."""
-    import shutil
-    import subprocess
-    if shutil.which("bwrap") is None:
-        return False
-    try:
-        r = subprocess.run(
-            ["bwrap", "--ro-bind", "/", "/", "true"],
-            capture_output=True, timeout=10,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+from conftest import requires_a_working_sandbox
 
 
 @pytest.fixture
@@ -310,30 +295,68 @@ def test_isolation_off_is_escape_hatch_even_in_bypass(tmp_path):
         "/bin/bash", "-c", "echo hi"]
 
 
-@pytest.mark.skipif(not _bwrap_functional(),
-                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
+@requires_a_working_sandbox
 def test_bwrap_isolation_blocks_writes_outside_granted_roots(tmp_path):
+    """The probe target deliberately sits OUTSIDE the grant and outside
+    the user's home.
+
+    It used to be ``Path.home()/"delfin_isolation_probe.txt"``, which
+    conftest does not redirect. So the moment the sandbox regressed the
+    test both failed AND wrote into the developer's real home -- and left
+    it there. A sibling of the granted directory is outside the grant just
+    as surely, exists on the host so a lost sandbox really would create
+    the file, and is cleaned up with the rest of the tmp tree.
+    """
     import subprocess
-    from pathlib import Path
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
-    perms = KitToolPermissions(workspace=str(tmp_path))
+    ws = tmp_path / "granted"
+    ws.mkdir()
+    outside_dir = tmp_path / "not_granted"
+    outside_dir.mkdir()
+    probe = outside_dir / "escaped.txt"
+    perms = KitToolPermissions(workspace=str(ws))
     # Inside the granted workspace: writable.
     r1 = subprocess.run(
-        _bash_isolation_argv(f"touch {tmp_path}/inside.txt", tmp_path, perms,
+        _bash_isolation_argv(f"touch {ws}/inside.txt", ws, perms,
                              mode="bwrap"),
         capture_output=True, text=True, timeout=30)
-    assert r1.returncode == 0 and (tmp_path / "inside.txt").exists()
-    # Outside (the user's real home): read-only → blocked.
-    outside = Path.home().resolve() / "delfin_isolation_probe.txt"
+    assert r1.returncode == 0 and (ws / "inside.txt").exists()
+    # One directory over, never granted: not reachable from inside.
     r2 = subprocess.run(
-        _bash_isolation_argv(f"touch {outside}", tmp_path, perms,
+        _bash_isolation_argv(f"touch {probe}", ws, perms, mode="bwrap"),
+        capture_output=True, text=True, timeout=30)
+    assert r2.returncode != 0, (
+        "a write one directory outside the grant succeeded")
+    assert not probe.exists(), (
+        "the sandbox let a write through to a path it never granted")
+
+
+@requires_a_working_sandbox
+def test_bwrap_isolation_hides_the_users_secret_directories(tmp_path):
+    """Masking the credential folders is the other half of confinement:
+    a command that cannot write out can still read a key and print it."""
+    import subprocess
+    from pathlib import Path
+
+    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
+    from delfin.agent.sandbox import _HOME_SECRET_DIRS
+
+    home = Path.home()
+    existing = [home / rel for rel in _HOME_SECRET_DIRS
+                if (home / rel).exists()]
+    if not existing:
+        pytest.skip("this account has none of the masked directories")
+    target = existing[0]
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    r = subprocess.run(
+        _bash_isolation_argv(f"ls -A {target}", tmp_path, perms,
                              mode="bwrap"),
         capture_output=True, text=True, timeout=30)
-    assert r2.returncode != 0 and not outside.exists()
+    assert r.stdout.strip() == "", (
+        f"{target} was readable from inside the sandbox: {r.stdout[:200]}")
 
 
-@pytest.mark.skipif(not _bwrap_functional(),
-                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
+@requires_a_working_sandbox
 def test_bwrap_isolation_grants_extra_dirs(tmp_path):
     import subprocess
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions

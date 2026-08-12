@@ -20,6 +20,7 @@ a word character, so the ``\\b`` boundary never matched.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import pathlib
 import string
@@ -142,10 +143,143 @@ def test_redaction_never_breaks_a_tool_result():
     assert A._redact_tool_result("x" * 500_000) == "x" * 500_000
 
 
-def test_the_hot_path_actually_calls_it():
-    source = pathlib.Path(A.__file__).read_text(encoding="utf-8")
-    assert "_redact_tool_result(result)" in source, (
-        "tool results reach the context unredacted again")
+# ---------------------------------------------------------------------------
+# ...on the path that feeds the MODEL, which is the one that matters
+# ---------------------------------------------------------------------------
+# This was a source-substring assertion: ``"_redact_tool_result(result)"
+# in source``. That substring occurs at three sites which build the
+# ``tool_result`` STREAM EVENT -- the UI preview and the tool trace. The
+# single call that feeds the context is a different expression, and two
+# mutations proved the gap:
+#
+#   * replacing ``_smart_truncate(_redacted, ...)`` with
+#     ``_smart_truncate(result, ...)`` -- the credential goes to the model
+#     verbatim while the event stays clean -- left this whole file green
+#     AND every other test in the suite that touches the emission site.
+#   * deleting the redaction outright (``_redacted = result``) left all 23
+#     tests in this file green; only a test in another file, asserting on
+#     the EVENT, noticed.
+#
+# The messages the client sends on the round AFTER the tool call are the
+# only thing that cannot be satisfied by renaming an expression.
+
+def _messages_after_a_tool_call(tmp_path, tool, arguments):
+    """Drive the real client loop through one tool call and return the
+    message list it sends to the model on the next round."""
+    import json
+    from unittest.mock import patch
+
+    from delfin.agent import mcp_client as _mcp
+    from delfin.agent import model_capabilities as _mc
+
+    class _Delta:
+        def __init__(self, content=None, tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls
+            self.reasoning_content = None
+
+    class _Choice:
+        def __init__(self, delta, finish=None):
+            self.index, self.delta, self.finish_reason = 0, delta, finish
+
+    class _Chunk:
+        def __init__(self, choices):
+            self.choices, self.usage = choices, None
+
+    class _Stream:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def __iter__(self):
+            return iter(self._chunks)
+
+        def close(self):
+            pass
+
+    class _ToolCall:
+        def __init__(self, name, args):
+            self.index, self.id, self.type = 0, "call_1", "function"
+            self.function = type("F", (), {"name": name, "arguments": args})()
+
+    class _NoRegistry:
+        def discover_all(self):
+            return []
+
+        def discover_resources(self):
+            return []
+
+        def discover_prompts(self):
+            return []
+
+    caps = _mc.ModelCapabilities(model="m", provider="ollama",
+                                 context_window=200_000, supports_tools=True)
+    sent: list = []
+    with patch.object(_mc, "resolve", lambda *a, **k: caps), \
+         patch.object(_mcp, "get_registry", lambda *a, **k: _NoRegistry()), \
+         patch.object(A.time, "sleep", lambda *a, **k: None):
+        client = A.create_client(backend="api", provider="ollama",
+                                 model="qwen2.5-coder:7b", cwd=str(tmp_path))
+        rounds = {"n": 0}
+
+        def _create(**kwargs):
+            rounds["n"] += 1
+            sent.append(kwargs.get("messages") or [])
+            if rounds["n"] == 1:
+                return _Stream([
+                    _Chunk([_Choice(_Delta(tool_calls=[
+                        _ToolCall(tool, json.dumps(arguments))]))]),
+                    _Chunk([_Choice(_Delta(), finish="tool_calls")]),
+                ])
+            return _Stream([_Chunk([_Choice(_Delta(content="fertig"),
+                                            finish="stop")])])
+
+        client.client.chat.completions.create = _create
+        list(client.stream_message("sys", [{"role": "user", "content": "los"}],
+                                   max_tokens=64))
+    assert len(sent) >= 2, "the loop never sent a second round"
+    return sent[-1]
+
+
+def test_a_credential_a_tool_printed_never_reaches_the_model(tmp_path):
+    secret = f"sk-proj-{_token(48, 'hotpath')}"
+    (tmp_path / "notes.txt").write_text(
+        f"OPENAI_API_KEY={secret}\n", encoding="utf-8")
+
+    messages = _messages_after_a_tool_call(
+        tmp_path, "read_file", {"path": "notes.txt"})
+
+    tool_messages = [m for m in messages if m.get("role") == "tool"]
+    assert tool_messages, "the tool result was never appended to the context"
+    body = "\n".join(str(m.get("content") or "") for m in tool_messages)
+    assert "notes.txt" in body or body, "the tool produced no output at all"
+    assert secret not in body, (
+        "the credential reached the message the model is sent")
+    assert "[redacted:" in body, (
+        "nothing was redacted, so the assertion above proves nothing")
+
+
+def test_the_whole_request_carries_no_credential(tmp_path):
+    """Not only the tool message: whatever the loop copies the result into
+    (a summary, a nudge, a retry) has to be clean too."""
+    secret = f"sk-proj-{_token(48, 'wholerequest')}"
+    (tmp_path / "notes.txt").write_text(
+        f"OPENAI_API_KEY={secret}\n", encoding="utf-8")
+
+    messages = _messages_after_a_tool_call(
+        tmp_path, "read_file", {"path": "notes.txt"})
+    assert secret not in json.dumps(messages, default=str)
+
+
+def test_ordinary_tool_output_still_reaches_the_model_intact(tmp_path):
+    """A redactor that mangled ordinary results would be turned off."""
+    (tmp_path / "notes.txt").write_text(
+        "Buchungen_2026.xlsx -- 64 rows x 7 columns\n", encoding="utf-8")
+
+    messages = _messages_after_a_tool_call(
+        tmp_path, "read_file", {"path": "notes.txt"})
+    body = "\n".join(str(m.get("content") or "") for m in messages
+                     if m.get("role") == "tool")
+    assert "Buchungen_2026.xlsx -- 64 rows x 7 columns" in body
 
 
 def test_the_boundary_rule_still_prevents_matching_inside_a_word():

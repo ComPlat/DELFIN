@@ -64,8 +64,15 @@ def test_native_applications_are_categorised():
 
 
 @pytest.mark.skipif(not (_HAS_XTB and _HAS_RDKIT), reason="needs xtb + rdkit")
-def test_xtb_thermochemistry_runs_end_to_end():
+def test_xtb_thermochemistry_runs_end_to_end(tmp_path, monkeypatch):
     # fully open-source path: SMILES → native xTB opt → xTB Hessian, no licensed engine
+    #
+    # Run it somewhere disposable. The application writes its step folders
+    # (00_smiles, 01_xtb_opt, 02_xtb_thermo) relative to the process CWD,
+    # so without this the suite left a real xtb calculation inside the
+    # DELFIN checkout on every run — and .gitignore covers those names, so
+    # `git status` never mentioned them.
+    monkeypatch.chdir(tmp_path)
     res = platform.run_application("xtb_thermochemistry", smiles="CO", charge=0, cores=2)
     assert res.ok, res.error
     assert res.outputs["energy_Eh"] < 0

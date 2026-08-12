@@ -79,10 +79,26 @@ class TaskStore:
     so two processes operating on the same file don't lose data
     silently — they just race for the last write, which is acceptable
     for a single-user agent).
+
+    The base directory must be ABSOLUTE. A relative one is resolved
+    against the process CWD, which is not the workspace the caller meant
+    and is not stable across a session. The concrete damage was in the
+    test suite: an object standing in for a workspace produced the
+    relative ``MagicMock/<attribute>/<id>``, and every store built from
+    one created ``<that>/.delfin/session_tasks.json`` under the
+    checkout — 560 files, invisible to ``git status`` because a
+    ``.delfin/`` ignore rule covers them. Refusing the input is what
+    stops the whole class; a fixture can only notice it afterwards.
     """
 
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = Path(base_dir)
+        if not self.base_dir.is_absolute():
+            raise ValueError(
+                "TaskStore needs an absolute base directory; got "
+                f"{str(self.base_dir)!r}. A relative one lands under "
+                "whatever the process CWD happens to be."
+            )
         self.path = self.base_dir / ".delfin" / "session_tasks.json"
         self._lock = threading.Lock()
         # Why the last load produced nothing, when that is not the same

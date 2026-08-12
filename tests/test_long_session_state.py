@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -112,8 +113,11 @@ def test_archive_with_empty_session_id_is_safe(fake_home):
     """Compaction is best-effort; a session that hasn't yet acquired an
     ID must not raise."""
     out = ss.archive_pre_compaction_transcript("", [{"role": "user", "content": "x"}])
-    # Returns os.devnull when no session_id — important: no crash
-    assert str(out).endswith("null") or out.exists() is False or True  # smoke
+    # The assertion used to end in ``or True``, which discarded the whole
+    # contract the comment states.
+    assert out == Path(os.devnull)
+    # ...and nothing was archived under a blank name.
+    assert ss.list_transcript_archives() == []
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,64 @@ from __future__ import annotations
 import pytest
 
 
+# ---------------------------------------------------------------------------
+# The checkout itself is a sink, and it was invisible
+# ---------------------------------------------------------------------------
+# The user-home guard above covers ``~/.delfin``. It does not cover the
+# other half of the same incident: a mock standing in for a workspace
+# yields the RELATIVE path ``MagicMock/<attribute>/<id>``, so every store
+# built from one wrote under the process CWD -- the repository checkout.
+# An ordinary run left 3.1 MB in 560 files there, and
+# ``git status --untracked-files=all`` reported nothing, because the
+# ``.delfin/`` ignore rule structurally covers exactly those paths.
+#
+# ``TaskStore`` now refuses a non-absolute base directory, which stops
+# that particular class at the source. This fixture is the other half:
+# it does not know what the next leak will be, only that the checkout
+# must look the same after a run as before it.
+_CHECKOUT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
+
+# Build noise, not test output: byte-code caches and pytest's own cache
+# are created by running the suite at all.
+_CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
+                   ".ruff_cache", ".hypothesis")
+
+
+def _checkout_entries() -> frozenset:
+    """Every path under the checkout, minus build noise."""
+    import os
+    out = set()
+    for dirpath, dirnames, filenames in os.walk(_CHECKOUT_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _CHECKOUT_NOISE]
+        for name in dirnames + filenames:
+            if name.endswith(".pyc") or name in _CHECKOUT_NOISE:
+                continue
+            out.add(os.path.join(dirpath, name))
+    return frozenset(out)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_suite_does_not_write_into_the_checkout():
+    """Fail the run when new paths appeared in the checkout.
+
+    Known limit, stated rather than implied: this compares the SET of
+    paths, not their contents. A leak that already ran once in this
+    checkout writes the same paths again and is not re-reported until the
+    tree is cleaned. On a fresh clone -- which is what CI is -- every leak
+    is a new path, so nothing escapes there. Comparing contents instead
+    would mean hashing the tree twice per run, and would false-fail on
+    every file the package legitimately rewrites.
+    """
+    before = _checkout_entries()
+    yield
+    new = sorted(p for p in _checkout_entries() - before)
+    assert not new, (
+        f"{len(new)} path(s) appeared in the checkout during the run; "
+        "a git ignore rule may make them invisible to `git status`: "
+        + ", ".join(str(p) for p in new[:20])
+    )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_subagent_state(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
@@ -207,6 +265,69 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
                     return _o()
                 return fallback / ".delfin" / _rel
         monkeypatch.setattr(mod, attr, _resolve)
+
+
+# ---------------------------------------------------------------------------
+# The sandbox-escape gate
+# ---------------------------------------------------------------------------
+# The only tests that put a real command inside a real sandbox and check
+# that it cannot get out were ``skipif``-gated on a functional bwrap. CI
+# runs on a plain ubuntu runner with no bubblewrap installed and no apt
+# step to add it, so the gate evaporates exactly where nobody is
+# watching: the tests report as skipped, the run is green, and no
+# assertion about confinement has been made in months. Everything else in
+# those files inspects an argv LIST -- it asserts what the wrap would be
+# asked to do, never that anything was confined.
+#
+# Skipping is still right on a developer laptop without bwrap. It is not
+# right on a machine that is supposed to have it. ``DELFIN_EXPECT_ISOLATION=1``
+# is the difference: with it set, an unusable sandbox FAILS instead of
+# skipping, so an environment that loses bubblewrap says so.
+_ISOLATION_EXPECTED_ENV = "DELFIN_EXPECT_ISOLATION"
+
+
+def isolation_is_expected() -> bool:
+    """Whether this environment promises a working sandbox."""
+    import os
+    return str(os.environ.get(_ISOLATION_EXPECTED_ENV, "")).strip().lower() in (
+        "1", "true", "yes")
+
+
+def sandbox_is_functional() -> bool:
+    """Whether bwrap can actually confine anything here.
+
+    Production's own probe, not a second one: a private copy in the test
+    file probed the MINIMAL wrap (``bwrap --ro-bind / / true``) while the
+    real wrap also asks for ``--dev /dev --proc /proc --tmpfs /tmp``. On a
+    host where the minimal probe passes and the full one does not, the
+    gate opened for a wrap that cannot be built.
+    """
+    try:
+        from delfin.agent.api_client import _bwrap_functional
+        return bool(_bwrap_functional())
+    except Exception:
+        return False
+
+
+def requires_a_working_sandbox(fn):
+    """Skip without a usable sandbox -- unless one was promised."""
+    import functools
+
+    if sandbox_is_functional():
+        return fn
+    if isolation_is_expected():
+        @functools.wraps(fn)
+        def _fail(*args, **kwargs):
+            pytest.fail(
+                f"{_ISOLATION_EXPECTED_ENV} is set, so this environment "
+                "promises a working sandbox, but bwrap could not build the "
+                "wrap the agent uses. Confinement is NOT being tested here."
+            )
+        return _fail
+    return pytest.mark.skip(
+        reason=("no functional bwrap (unprivileged container?); set "
+                f"{_ISOLATION_EXPECTED_ENV}=1 to make this a failure")
+    )(fn)
 
 
 # Secret API keys delfin resolves, each from the env OR ~/.delfin/credentials.json.

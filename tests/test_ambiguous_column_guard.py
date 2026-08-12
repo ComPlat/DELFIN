@@ -179,15 +179,127 @@ def test_a_good_answer_is_returned_untouched():
     assert eng._append_ambiguous_column_caveat(answer, flagged) == answer
 
 
-def test_the_ledger_is_cleared_for_each_user_turn():
-    """Carrying it across turns would caveat a later, unrelated figure."""
-    import inspect
+# ---------------------------------------------------------------------------
+# The ledger is cleared for each user turn -- driven, not read
+# ---------------------------------------------------------------------------
+# This was:
+#
+#     source = inspect.getsource(AgentEngine.run_turn) if hasattr(
+#         AgentEngine, "run_turn") else inspect.getsource(AgentEngine)
+#     assert "self._ambiguous_columns_turn = []" in source
+#
+# Three independent escape hatches, all three proven:
+#
+#   1. ``AgentEngine.run_turn`` does not exist, so the ``hasattr`` arm
+#      never fired and the whole CLASS source was read instead -- silently.
+#   2. The substring also occurs in ``_note_ambiguous_columns`` as
+#      ``ledger = self._ambiguous_columns_turn = []``, a lazy init. So the
+#      per-turn reset in ``stream_response`` can be deleted outright and
+#      the assertion still holds: deleting it left all 20 tests in this
+#      file green.
+#   3. The ``_Engine`` stub above creates the ledger in its own
+#      ``__init__``, so no behavioural test in this file could see the
+#      reset missing either.
+#
+# Two real turns through ``stream_response`` is the shape that cannot be
+# satisfied by a rename, a lazy init or a stub.
 
+_ENGINE_NOTE = (
+    "NOTE: column 'Anschaffungswert': values like '8.986' read as two "
+    "different numbers depending on the convention, and nothing in the "
+    "column decides it.")
+
+# The answer the model actually produced on the benchmark: one total over
+# the column the reader said it could not read.
+_TOTAL_ANSWER = ("Gesamtwert Anschaffungswert: 25.136 EUR. Hinweis: im "
+                 "deutschen Zahlenformat interpretiert.")
+
+
+@pytest.fixture
+def agent_tree(tmp_path):
+    """The minimum pack an engine needs to build."""
+    import textwrap
+
+    lite = tmp_path / "pack_lite"
+    (lite / "modes").mkdir(parents=True)
+    (lite / "modes" / "solo.md").write_text("# quick mode")
+    (lite / "manifest.yaml").write_text(textwrap.dedent("""\
+        pack_name: DELFIN_AGENT_LITE
+        version: 1
+        modes:
+          - id: solo
+            file: modes/solo.md
+            route:
+              - session_manager
+    """))
+    return tmp_path
+
+
+def _two_turn_engine(agent_tree, first_turn_events):
+    """An engine whose tool results arrive on the FIRST turn only."""
+    from unittest.mock import MagicMock, patch
+
+    from delfin.agent.api_client import StreamEvent
     from delfin.agent.engine import AgentEngine
 
-    source = inspect.getsource(AgentEngine.run_turn) if hasattr(
-        AgentEngine, "run_turn") else inspect.getsource(AgentEngine)
-    assert "self._ambiguous_columns_turn = []" in source
+    turns = {"n": 0}
+
+    def _stream(*a, **k):
+        turns["n"] += 1
+        if turns["n"] == 1:
+            for event in first_turn_events:
+                yield event
+        yield StreamEvent(type="text_delta", text=_TOTAL_ANSWER)
+        yield StreamEvent(type="message_delta", output_tokens=5, cost_usd=0.0)
+
+    client = MagicMock()
+    client._observed_files_session = set()
+    client.stream_message = MagicMock(side_effect=_stream)
+    with patch("delfin.agent.engine.create_client", return_value=client):
+        return AgentEngine(repo_dir=agent_tree, backend="cli",
+                           mode="quick", pack_dir=agent_tree)
+
+
+def _ambiguity_event():
+    from delfin.agent.api_client import StreamEvent
+
+    return StreamEvent(
+        type="tool_result",
+        tool_name="mcp__delfin-docs__read_document",
+        tool_output="| Posten | Anschaffungswert |\n" * 40,
+        output_truncated=True,
+        output_chars=9000,
+        output_notes=_ENGINE_NOTE,
+    )
+
+
+def test_a_flagged_column_caveats_the_answer_of_that_turn(agent_tree):
+    """The turn that was told the column is undecidable."""
+    engine = _two_turn_engine(agent_tree, (_ambiguity_event(),))
+    answer = engine.stream_response("Was ist der Gesamtwert?")
+    assert engine._ambiguous_columns_turn == ["Anschaffungswert"]
+    assert "nicht gemessen" in answer
+
+
+def test_the_next_turn_does_not_inherit_the_flag(agent_tree):
+    """Carrying it across turns caveats a later, unrelated figure -- and a
+    caveat on a figure that is fine teaches the reader to skip caveats."""
+    engine = _two_turn_engine(agent_tree, (_ambiguity_event(),))
+    first = engine.stream_response("Was ist der Gesamtwert?")
+    assert "nicht gemessen" in first, "turn one never armed the ledger"
+
+    second = engine.stream_response("Und wie viele Positionen sind es?")
+    assert engine._ambiguous_columns_turn == [], (
+        "the ledger survived into a turn that was told nothing")
+    assert "nicht gemessen" not in second, (
+        "an answer of a turn with no undecidable column was caveated anyway")
+
+
+def test_a_turn_that_flags_nothing_caveats_nothing(agent_tree):
+    """The control: without the reader's note there is no caveat at all,
+    so the assertion above is about the reset and not about the text."""
+    engine = _two_turn_engine(agent_tree, ())
+    assert "nicht gemessen" not in engine.stream_response("Gesamtwert?")
 
 
 def test_a_total_that_never_names_the_column_is_a_known_gap():

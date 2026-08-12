@@ -62,15 +62,19 @@ def test_ask_user_question_schema_accepts_preview_field():
 # ---------------------------------------------------------------------------
 
 
-def test_bash_job_status_dict_marks_running_and_finished():
+def test_bash_job_status_dict_marks_running_and_finished(tmp_path):
     """The watcher loop in tab_agent uses status_dict()['exit_code'] to
     decide when to auto-stop; this is a regression guard."""
     from delfin.agent.bash_jobs import get_registry
     reg = get_registry()
+    # A scratch cwd, not the process's. The registry lives at
+    # ``<cwd>/.delfin/bash_jobs.json``, so passing ``Path.cwd()`` wrote a
+    # job record into the DELFIN checkout on every run -- and the
+    # ``.delfin/`` ignore rule kept it out of `git status`.
     job = reg.start(
         "echo hi && sleep 0.1",
         description="watcher-smoke",
-        cwd=str(Path.cwd()),
+        cwd=str(tmp_path),
     )
     assert job is not None
     # Block briefly for stdout to be written + process to exit

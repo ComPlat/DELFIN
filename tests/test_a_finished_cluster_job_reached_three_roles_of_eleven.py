@@ -23,7 +23,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from delfin.agent import api_client as A
 from delfin.agent import engine as E
+
+
+def _real_perms(engine, workspace) -> None:
+    """Replace the mock client's mock permissions with real ones.
+
+    ``engine.kit_permissions`` reads ``client._permissions``; on a mock
+    client that is a mock, and a task store built from a mock workspace
+    resolves relative to the process CWD -- inside the checkout.
+    """
+    engine.client._permissions = A.KitToolPermissions(workspace=workspace)
 
 
 @pytest.fixture
@@ -33,6 +44,7 @@ def pipeline_engine(tmp_path):
         eng = E.AgentEngine(
             repo_dir=tmp_path, backend="api", provider="kit",
             model="kit.qwen3.5-397b-A17b", mode="solo")
+    _real_perms(eng, tmp_path)
     eng.route = ["builder_agent"]
     eng.current_role_index = 0
     assert eng.current_role not in E._STEERING_ROLES
@@ -119,6 +131,7 @@ def test_the_interactive_roles_keep_everything(tmp_path, monkeypatch):
         eng = E.AgentEngine(
             repo_dir=tmp_path, backend="api", provider="kit",
             model="kit.qwen3.5-397b-A17b", mode="solo")
+    _real_perms(eng, tmp_path)
     from delfin.agent.agent_tasks import get_store
     perms = eng.kit_permissions
     get_store(perms.workspace).create(
