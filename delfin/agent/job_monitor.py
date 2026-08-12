@@ -496,7 +496,12 @@ def check_agent_jobs(
     for jid, entry in list(jobs.items()):
         entry = entry or {}
         if float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S:
-            if entry.get("last_state") not in _OK_TERMINAL_STATES:
+            # Only an entry that never got an answer is worth an alarm. One
+            # the daemon already reported on is being pruned as bookkeeping.
+            resolved = (entry.get("daemon_notified")
+                        or entry.get("last_state") in _OK_TERMINAL_STATES
+                        or entry.get("last_state") in _FAILURE_STATES)
+            if not resolved:
                 _emit_watch_attention(
                     "run_failed",
                     f"Stopped watching job {jid} without an outcome",
