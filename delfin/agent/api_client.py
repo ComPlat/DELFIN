@@ -1550,7 +1550,8 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # had nothing to do with documents. They were paid for on every turn.
 _OFFICE_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # Documents: the reason this mode exists.
-    "read_document", "edit_sheet", "compare_tables", "fill_series",
+    "read_document", "edit_sheet", "compare_tables", "sum_column",
+    "fill_series",
     "fill_pdf_form", "fill_docx_template", "create_docx", "create_pdf",
     "draft_email",
     "merge_pdfs", "split_pdf",
@@ -1742,7 +1743,8 @@ _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     # Reading the world
     "read_file", "grep_file", "list_files", "find_definition",
     "find_references", "notebook_read", "view_image", "read_document",
-    "compare_tables", "list_docs", "list_sections", "read_section",
+    "compare_tables", "sum_column", "list_docs", "list_sections",
+    "read_section",
     "search_docs", "search_calcs", "get_calc_info", "calc_summary",
     "check_environment", "list_changes_made",
     # Reading this session
@@ -3109,6 +3111,38 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["path", "output", "values"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sum_column",
+            "description": (
+                "Total a column, saying what it left out: unreadable "
+                "values, empty and hidden rows. Never add a grid up "
+                "yourself. group_by totals per group."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "column": {"type": "string"},
+                    "sheet": {"type": "string"},
+                    "group_by": {"type": "string"},
+                    "header_row": {
+                        "type": "integer",
+                        "description": "If a title sits above the names.",
+                    },
+                    "convention": {
+                        "type": "string",
+                        "description": (
+                            "After an ambiguity refusal: 'decimal_comma' "
+                            "or 'decimal_point'."
+                        ),
+                    },
+                },
+                "required": ["path", "column"],
             },
         },
     },
@@ -4650,7 +4684,7 @@ _CALC_INDEX_TOOL_NAMES: frozenset[str] = frozenset({
 _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_document", "edit_sheet", "fill_pdf_form",
     "fill_docx_template", "create_docx", "draft_email", "compare_tables",
-    "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
+    "sum_column", "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
 })
 
 # Which library each document tool actually needs. One flag for the whole
@@ -4663,6 +4697,7 @@ _OFFICE_TOOL_NAMES: frozenset[str] = frozenset({
 _OFFICE_TOOL_BACKENDS: dict[str, tuple[str, ...]] = {
     "read_document": ("spreadsheet", "pdf", "word", "opendocument"),
     "compare_tables": ("spreadsheet", "opendocument"),
+    "sum_column": ("spreadsheet", "opendocument"),
     "edit_sheet": ("spreadsheet",),
     "fill_pdf_form": ("pdf",),
     "merge_pdfs": ("pdf",),
@@ -6006,6 +6041,7 @@ _OFFICE_OBSERVATION_ARGS: dict[str, tuple[str, ...]] = {
     "read_document": ("path",),
     "edit_sheet": ("path", "output"),
     "compare_tables": ("path", "left", "right", "right_path"),
+    "sum_column": ("path",),
     "fill_pdf_form": ("path", "src", "output"),
     "fill_docx_template": ("path", "src", "output"),
     "create_docx": ("path", "output"),
@@ -7531,6 +7567,8 @@ class _DocToolExecutor:
             return self._execute_read_document(arguments, permissions)
         elif name == "compare_tables":
             return self._execute_compare_tables(arguments, permissions)
+        elif name == "sum_column":
+            return self._execute_sum_column(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
         elif name == "forget":
@@ -7831,6 +7869,13 @@ class _DocToolExecutor:
                 {"error": f"could not read the document: {exc}"},
                 ensure_ascii=False)
 
+        # What this read RETURNED, for the figure ledger the answer is
+        # checked against at the end of the turn (office.figure_ledger).
+        # Recorded from the result dict, not from the report below: a
+        # second reading of the rendered text would be a second source of
+        # truth about the same numbers.
+        _office.record_tool_figures("read_document", result)
+
         disp = self._display_path(full, perms)
         lines: list[str] = []
         if "fields" in result:
@@ -7909,6 +7954,67 @@ class _DocToolExecutor:
             lines.append(f"\nNOTE: {note}")
         return "\n".join(lines)
 
+    def _execute_sum_column(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        full, err = self._office_target(arguments, perms)
+        if err is not None:
+            return json.dumps({"error": err})
+        column = str(arguments.get("column", "") or "").strip()
+        if not column:
+            return json.dumps({"error": (
+                "column is required — the column to total. Read the file "
+                "first if you do not know the column names.")})
+        if perms is not None:
+            denied = self._check_read_access(
+                perms, full, label=str(arguments.get("path", "")))
+            if denied is not None:
+                return json.dumps({"error": denied})
+
+        from . import office as _office
+        try:
+            result = _office.sum_column(
+                full, column,
+                sheet=arguments.get("sheet"),
+                group_by=arguments.get("group_by"),
+                convention=arguments.get("convention"),
+                header_row=_as_int(arguments.get("header_row"), 1))
+        except _office.OfficeError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"could not total the column: {exc}"},
+                ensure_ascii=False)
+
+        _office.record_tool_figures("sum_column", result)
+
+        # The total is never printed alone: what it left out is part of
+        # what it is. A number without its coverage is the failure this
+        # tool exists to replace.
+        lines = [
+            f"{self._display_path(full, perms)} — total of "
+            f"'{result['column']}': {result['total']}",
+            f"counted {result['counted']} of {result['rows']} data row(s); "
+            f"{len(result['skipped'])} not readable, {result['blank']} empty",
+        ]
+        if result["skipped"]:
+            shown = ", ".join(result["skipped"][:10])
+            more = (f" … +{len(result['skipped']) - 10}"
+                    if len(result["skipped"]) > 10 else "")
+            lines.append(f"not in the total: {shown}{more}")
+        if result["groups"]:
+            lines.append("")
+            lines.append(f"per '{result['group_by']}':")
+            for entry in result["groups"][:50]:
+                lines.append(
+                    f"  {entry['key']}: {entry['total']} "
+                    f"({entry['counted']} row(s))")
+            if len(result["groups"]) > 50:
+                lines.append(f"  … {len(result['groups']) - 50} more")
+        for note in result["notes"]:
+            lines.append(f"\nNOTE: {note}")
+        return "\n".join(lines)
+
     def _execute_compare_tables(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
@@ -7944,6 +8050,8 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps(
                 {"error": f"comparison failed: {exc}"}, ensure_ascii=False)
+
+        _office.record_tool_figures("compare_tables", result)
 
         lines = [
             f"{self._display_path(left, perms)} ({result['left_rows']} rows) "
@@ -8130,6 +8238,7 @@ class _DocToolExecutor:
             return json.dumps(
                 {"error": f"edit failed: {exc}"}, ensure_ascii=False)
 
+        _office.record_tool_figures("edit_sheet", result)
         self._capture_binary_change("edit_sheet", full, pre_bytes, perms)
         try:
             perms.read_tracker[str(full.resolve())] = full.stat().st_mtime
@@ -8278,6 +8387,8 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps(
                 {"error": f"the series failed: {exc}"}, ensure_ascii=False)
+
+        _office.record_tool_figures("fill_series", result)
 
         counts = result["counts"]
         lines = [

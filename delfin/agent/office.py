@@ -57,6 +57,8 @@ from __future__ import annotations
 
 import csv
 import re
+import threading as _threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -820,6 +822,38 @@ def profile_table(rows: list[list], *, header: bool = True) -> list[dict]:
     return out
 
 
+# How many cell values one read contributes to the figure ledger. A
+# window is at most 200 x 40, and an answer quotes a handful of them.
+MAX_WINDOW_NUMBERS = 600
+
+
+def _window_numbers(
+    window: list[list], profiles: list[dict], *, header: bool,
+) -> list[float]:
+    """Every number the grid actually shows, under its column's convention.
+
+    These are the values an answer quotes back ("R-006 mit 2.145,75 EUR"),
+    so the ledger has to hold them or a correct quotation looks exactly
+    like an invented figure. A column whose convention nothing settles is
+    left out: its values have two readings and neither is what the tool
+    returned.
+    """
+    out: list[float] = []
+    body = window[1:] if header else window
+    for row in body:
+        for index, raw in enumerate(row):
+            profile = profiles[index] if index < len(profiles) else {}
+            convention = str(profile.get("convention") or PLAIN_NUMBER)
+            if convention == AMBIGUOUS:
+                continue
+            value = parse_number(raw, convention)
+            if value is not None:
+                out.append(round(value, 6))
+                if len(out) >= MAX_WINDOW_NUMBERS:
+                    return out
+    return out
+
+
 def column_notes(profiles: list[dict]) -> list[str]:
     """The findings from a profile that a reader must not miss."""
     notes: list[str] = []
@@ -1067,6 +1101,7 @@ def _read_csv(
                             first_col=start_col),
         "column_profile": profiles,
         "profile_rows": min(_PROFILE_ROWS, total_rows),
+        "numbers": _window_numbers(window, profiles, header=(begin == 0)),
         "notes": notes,
     }
 
@@ -1406,6 +1441,8 @@ def _read_ods(
                             first_col=start_col),
         "column_profile": profiles,
         "profile_rows": len(window),
+        "numbers": _window_numbers(window, profiles,
+                                   header=(start_row == 1)),
         "notes": notes,
     }
 
@@ -1599,6 +1636,8 @@ def read_sheet(
                                 first_col=start_col),
             "column_profile": profiles,
             "profile_rows": len(window),
+            "numbers": _window_numbers(window, profiles,
+                                       header=(start_row == 1)),
             "notes": notes,
         }
     finally:
@@ -2177,6 +2216,230 @@ def _comparable(value: Any, profile: dict) -> Any:
     return str(value or "").strip()
 
 
+def _hidden_data_rows(path: Path, sheet: Optional[str]) -> int:
+    """How many rows of this sheet are hidden or filtered out.
+
+    A finance workbook is routinely saved with a filter left switched
+    on. The rows behind it are still in the file and still in a total
+    computed over it, so a total that does not mention them differs from
+    the number on the user's screen for a reason nobody can see.
+    """
+    try:
+        kind = document_kind(path)
+        if kind == "opendocument_sheet":
+            return int(_ods_sheet(path, sheet)[5])
+        if kind != "spreadsheet":
+            return 0
+        openpyxl = _require("spreadsheet")
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=False)
+        try:
+            ws = (wb[sheet] if sheet and sheet in wb.sheetnames else wb.active)
+            return sum(1 for dim in ws.row_dimensions.values()
+                       if getattr(dim, "hidden", False))
+        finally:
+            wb.close()
+    except Exception:
+        return 0
+
+
+def sum_column(
+    path: Any,
+    column: str,
+    *,
+    sheet: Optional[str] = None,
+    group_by: Optional[str] = None,
+    convention: Optional[str] = None,
+    header_row: int = 1,
+) -> dict:
+    """Total one column of a table and say what it could not add.
+
+    The failure this exists for is not a wrong sum; it is a sum that
+    quietly leaves rows out. "1.500,00-" is a credit note, "n/a" is a
+    missing amount, and a naive total over the column reads exactly like
+    a complete one. So every row of the column lands in one of three
+    places — counted, skipped (with the value that could not be read),
+    or blank — and the three add up to the rows of the table.
+
+    The column's own convention decides how its values parse, so
+    "1.234,50" totals as 1234.5 and not as 1.23450. A column nothing in
+    the file settles (every value like "8.986") is REFUSED rather than
+    guessed: the two readings differ by a factor of a thousand, and
+    picking one silently is the failure this whole module exists to
+    avoid. ``convention`` is how the caller says which reading applies
+    once the user has been asked.
+
+    ``group_by`` totals per value of another column — the "Summe je
+    Kostenstelle" every administrative answer is really about.
+    ``header_row`` is for the layout every German cost-centre sheet has:
+    a title in row 1 and the column names below it.
+    """
+    p = _resolve(path)
+    rows = _table_rows(p, sheet)
+    head_at = max(1, int(header_row or 1))
+    if len(rows) < head_at + 1:
+        raise OfficeError(
+            f"{p.name} needs a header row and at least one data row")
+    header = rows[head_at - 1]
+    body = rows[head_at:]
+
+    def _column_index(name: str) -> int:
+        wanted = str(name).strip().lower()
+        for index, cell in enumerate(header):
+            if str(cell or "").strip().lower() == wanted:
+                return index
+        raise OfficeError(
+            f"no column {name!r} in {p.name}. Columns: "
+            + (", ".join(str(h) for h in header if str(h or "").strip())
+               or "(none)"))
+
+    index = _column_index(column)
+    values = [r[index] if index < len(r) else "" for r in body]
+    profile = profile_column(values, name=str(column))
+    # A column too broken to be CALLED numeric still has a convention its
+    # readable values agree on -- and that is the column somebody is about
+    # to total. Gutschriften.xlsx is the case: four credit notes written
+    # as "1.500,00-" and "(340,00)" push it below the numeric threshold,
+    # and refusing it outright would withhold the six amounts that ARE
+    # readable together with the fact that four are missing.
+    detected = profile.get("convention") or detect_number_convention(
+        [v for v in values if str(v or "").strip()])[0]
+    chosen = str(convention or "").strip() or detected or ""
+    if chosen not in (DECIMAL_COMMA, DECIMAL_POINT, PLAIN_NUMBER):
+        reason = profile.get("convention_reason") or detect_number_convention(
+            [v for v in values if str(v or "").strip()])[1]
+        raise OfficeError(
+            f"column {column!r} cannot be totalled as it stands: {reason}. "
+            f"Ask which reading applies and pass convention="
+            f"'{DECIMAL_COMMA}' or '{DECIMAL_POINT}'.")
+
+    group_index = _column_index(group_by) if group_by else -1
+    group_name = str(header[group_index]) if group_index >= 0 else ""
+
+    total = 0.0
+    counted = 0
+    blank = 0
+    skipped: list[str] = []
+    groups: dict[str, list] = {}
+    for offset, raw in enumerate(values):
+        if str(raw if raw is not None else "").strip() == "":
+            blank += 1
+            continue
+        bucket = None
+        if group_index >= 0:
+            row = body[offset]
+            key = str(
+                (row[group_index] if group_index < len(row) else "") or ""
+            ).strip()
+            bucket = groups.setdefault(key, [0.0, 0, 0])
+        parsed = parse_number(raw, chosen)
+        if parsed is None:
+            skipped.append(_fmt(raw))
+            if bucket is not None:
+                bucket[2] += 1
+            continue
+        total += parsed
+        counted += 1
+        if bucket is not None:
+            bucket[0] += parsed
+            bucket[1] += 1
+
+    # Floating point: a column of two-decimal amounts must not come back
+    # as 45231.499999999996. Rounded to the precision money is written
+    # in, and only there -- the parsed values themselves are untouched.
+    total = round(total, 6)
+
+    notes: list[str] = []
+    if skipped:
+        notes.append(
+            f"{len(skipped)} of {counted + len(skipped)} value(s) could not be "
+            f"read as numbers and are NOT in the total (e.g. "
+            f"{', '.join(skipped[:3])}). Resolve them before reporting it.")
+    if blank:
+        notes.append(f"{blank} row(s) have no value in this column.")
+    if chosen == DECIMAL_COMMA:
+        notes.append(
+            "this column is written with a decimal comma (1.234,50 = "
+            "1234.5); the total above is a plain number.")
+    if convention and profile.get("convention") != chosen:
+        notes.append(
+            f"the convention {chosen!r} was given by the caller, not read "
+            "from the column — say so when reporting the total.")
+    hidden = _hidden_data_rows(p, sheet)
+    if hidden:
+        notes.append(
+            f"{hidden} row(s) of this sheet are hidden or filtered out. They "
+            "ARE in this total, so it can differ from what the file shows on "
+            "screen.")
+    names = _workbook_sheets(p)
+    if len(names) > 1 and not sheet:
+        # Same reason compare_tables says it: the active sheet is a silent
+        # default, and a total taken from the wrong month is not wrong in
+        # any way the number itself shows.
+        notes.append(
+            f"this workbook has {len(names)} sheets ({', '.join(names)}) and "
+            "none was named, so its ACTIVE sheet was totalled. Name the "
+            "sheet if that is not the intended scope.")
+    if group_index >= 0 and "" in groups:
+        without = groups[""][1] + groups[""][2]
+        notes.append(
+            f"{without} row(s) have no value in {group_name!r} and are "
+            "grouped under '(ohne)'. In a sheet with merged cells those rows "
+            "belong to the block above them in the file, not to nobody.")
+
+    group_rows = [
+        {"key": key or "(ohne)", "total": round(bucket[0], 6),
+         "counted": bucket[1], "skipped": bucket[2]}
+        for key, bucket in groups.items()
+    ]
+
+    # The figures this call produced, named, for the answer-side ledger:
+    # a caller must not have to parse them back out of the prose above.
+    figures = [
+        {"kind": "sum", "value": total,
+         "label": f"Summe {column!r} in {p.name}"},
+        {"kind": "count", "value": float(counted),
+         "label": f"{counted} counted value(s) in {column!r}"},
+        {"kind": "count", "value": float(len(body)),
+         "label": f"{len(body)} data row(s) in {p.name}"},
+    ]
+    if skipped:
+        figures.append({"kind": "count", "value": float(len(skipped)),
+                        "label": f"{len(skipped)} value(s) not readable"})
+    if blank:
+        figures.append({"kind": "count", "value": float(blank),
+                        "label": f"{blank} blank row(s)"})
+    if hidden:
+        figures.append({"kind": "count", "value": float(hidden),
+                        "label": f"{hidden} hidden or filtered row(s)"})
+    if skipped:
+        # The readable values, which is what "6 von 10" in an answer means.
+        figures.append({"kind": "count", "value": float(counted + len(skipped)),
+                        "label": f"{counted + len(skipped)} value(s) present"})
+    for entry in group_rows:
+        figures.append({
+            "kind": "sum", "value": entry["total"],
+            "label": f"Summe {column!r} für {entry['key']}"})
+        figures.append({
+            "kind": "count", "value": float(entry["counted"]),
+            "label": f"{entry['counted']} row(s) for {entry['key']}"})
+
+    return {
+        "path": str(p),
+        "sheet": sheet or "",
+        "column": str(header[index]),
+        "convention": chosen,
+        "total": total,
+        "counted": counted,
+        "blank": blank,
+        "skipped": skipped,
+        "rows": len(body),
+        "group_by": group_name,
+        "groups": group_rows,
+        "notes": notes,
+        "figures": figures,
+    }
+
+
 def compare_tables(
     left: Any,
     right: Any,
@@ -2462,6 +2725,27 @@ def compare_tables(
         # least one side. A zero here is a column that agreed on every row
         # because there was nothing in it.
         "columns_with_values": dict(with_values),
+        # The counts this comparison produced, named, for the answer-side
+        # ledger. Every one of them is a number an answer states as a
+        # finding ("4 Abweichungen"), and re-parsing them out of the
+        # rendered report would be a second implementation of the same
+        # facts that could disagree with this one.
+        "figures": [
+            {"kind": "count", "value": float(len(equal)),
+             "label": f"{len(equal)} equal row(s)"},
+            {"kind": "count", "value": float(len(differing)),
+             "label": f"{len(differing)} differing row(s)"},
+            {"kind": "count", "value": float(len(only_left)),
+             "label": f"{len(only_left)} row(s) only in the left table"},
+            {"kind": "count", "value": float(len(only_right)),
+             "label": f"{len(only_right)} row(s) only in the right table"},
+            {"kind": "count", "value": float(len(not_comparable)),
+             "label": f"{len(not_comparable)} row(s) not comparable"},
+            {"kind": "count", "value": float(len(left_rows) - 1),
+             "label": f"{len(left_rows) - 1} row(s) in the left table"},
+            {"kind": "count", "value": float(len(right_rows) - 1),
+             "label": f"{len(right_rows) - 1} row(s) in the right table"},
+        ],
         "notes": notes,
     }
 
@@ -4940,3 +5224,654 @@ def draft_email(
             "check it, and send it yourself."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# The figure ledger: what the tools returned, against what the answer states
+# ---------------------------------------------------------------------------
+#
+# Everything above this line reads and writes documents correctly. Nothing
+# above it checks a number an ANSWER states against what the tools actually
+# returned — and in administrative work that is the whole failure mode. A
+# total that silently dropped a row reads exactly like a total that did
+# not; "31 Belege" reads exactly like a count somebody took.
+#
+# So the tools record the figures they produce (the column that was summed
+# and its result, the counts a reconciliation landed on, the shape of a
+# read, the values a grid displayed), and the finished answer is compared
+# against that ledger. The consequence is a caveat naming the figure and
+# the reason, never a refusal: an administrative answer may legitimately
+# name a number the tools did not produce — the user typed it, it is an
+# example, it came from an earlier turn — and those are checked BEFORE
+# anything is flagged.
+#
+# The errors here are deliberately asymmetric. A missed flag costs one
+# unmarked number; a false one costs a caveat on a correct answer, and a
+# caveat on every answer is a caveat nobody reads.
+#
+# The ledger is process-wide and per turn, not per session. Two sessions
+# running at once therefore share it, and the effect of that is one-way:
+# a figure another session's tool produced can only GROUND a claim, never
+# create a flag. Erring towards silence is the direction this mechanism
+# is allowed to err in.
+
+_LEDGER_LOCK = _threading.Lock()
+_LEDGER: list["ToolFigure"] = []
+_LEDGER_PATHS: list[str] = []
+
+# Figures kept per turn. A read contributes its whole window, so this is
+# sized for a few reads and then bounded — an unbounded ledger in a long
+# session is a memory leak with a guard attached to it.
+MAX_LEDGER_FIGURES = 2000
+
+
+@dataclass(frozen=True)
+class ToolFigure:
+    """One number an office tool returned this turn."""
+
+    value: float
+    kind: str      # "sum" | "count" | "cell"
+    label: str     # what it was, in words ("Summe 'Betrag' in Buchungen.xlsx")
+    tool: str      # which tool returned it
+
+    def message(self) -> str:
+        return f"{self.label} ({self.tool})"
+
+
+def reset_figure_ledger() -> None:
+    """Forget the figures of the previous turn.
+
+    Per TURN, like the other evidence ledgers in this framework: the
+    question is whether THIS answer states a figure THIS turn produced.
+    Carried across turns, a stale total would ground a later, unrelated
+    number — which is the failure this exists to catch, one turn late.
+    """
+    with _LEDGER_LOCK:
+        _LEDGER.clear()
+        _LEDGER_PATHS.clear()
+
+
+def figure_ledger() -> list["ToolFigure"]:
+    """The figures the office tools returned this turn.
+
+    The number of documents touched rides along as a figure of its own, so
+    an answer that says "4 Dateien geprüft" is grounded by the reads that
+    happened rather than flagged for a number no single tool returned.
+    """
+    with _LEDGER_LOCK:
+        out = list(_LEDGER)
+        paths = list(_LEDGER_PATHS)
+    if paths:
+        out.append(ToolFigure(
+            value=float(len(paths)), kind="count",
+            label=f"{len(paths)} document(s) read or written this turn",
+            tool="office"))
+    return out
+
+
+def _note_ledger_path(path: str) -> None:
+    name = str(path or "")
+    if not name:
+        return
+    with _LEDGER_LOCK:
+        if name not in _LEDGER_PATHS and len(_LEDGER_PATHS) < 200:
+            _LEDGER_PATHS.append(name)
+
+
+def _figures_from_result(tool: str, result: dict) -> list["ToolFigure"]:
+    """The figures one tool result carries, without re-reading its prose.
+
+    ``sum_column`` and ``compare_tables`` state theirs outright (their
+    ``figures`` key); the readers and the writers are described by their
+    own result fields. Nothing here parses a rendered report — two
+    implementations of the same facts would eventually disagree, and the
+    one the ledger believed would be the wrong one.
+    """
+    out: list[ToolFigure] = []
+
+    def _add(value: Any, kind: str, label: str) -> None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return
+        if number != number or number in (float("inf"), float("-inf")):
+            return
+        out.append(ToolFigure(value=round(number, 6), kind=kind,
+                              label=label, tool=tool))
+
+    declared = result.get("figures")
+    if isinstance(declared, list):
+        for entry in declared:
+            if isinstance(entry, dict):
+                _add(entry.get("value"), str(entry.get("kind") or "count"),
+                     str(entry.get("label") or ""))
+        return out
+
+    name = Path(str(result.get("path") or "")).name or "the document"
+    if "rows" in result and "columns" in result:
+        _add(result.get("rows"), "count",
+             f"{result.get('rows')} row(s) in {name}")
+        _add(result.get("columns"), "count",
+             f"{result.get('columns')} column(s) in {name}")
+    for value in result.get("numbers") or ():
+        _add(value, "cell", f"a value shown in {name}")
+    # A PDF, a .docx or an .odt comes back as text, and the amounts in it
+    # are just as much what the tool returned as the cells of a grid are.
+    # Without this, an answer quoting a figure off an invoice it had just
+    # read would be marked as having invented it.
+    text = result.get("text")
+    if isinstance(text, str) and text:
+        for value in _numbers_in(text)[:MAX_WINDOW_NUMBERS]:
+            _add(value, "cell", f"a value in the text of {name}")
+    if result.get("pages"):
+        _add(result.get("pages"), "count",
+             f"{result.get('pages')} page(s) in {name}")
+    if result.get("field_count"):
+        _add(result.get("field_count"), "count",
+             f"{result.get('field_count')} form field(s) in {name}")
+    if "appended_rows" in result:               # a write says what it wrote
+        _add(result.get("appended_rows"), "count",
+             f"{result.get('appended_rows')} row(s) appended to {name}")
+        _add(len(result.get("applied") or ()), "count",
+             f"{len(result.get('applied') or ())} cell(s) changed in {name}")
+    counts = result.get("counts")
+    if isinstance(counts, dict):                # fill_series
+        for label in ("ok", "incomplete", "failed"):
+            if label in counts:
+                _add(counts[label], "count",
+                     f"{counts[label]} document(s) {label}")
+        _add(result.get("rows"), "count",
+             f"{result.get('rows')} table row(s) in the series")
+        _add(result.get("processed"), "count",
+             f"{result.get('processed')} document(s) attempted")
+    return out
+
+
+def record_tool_figures(tool: str, result: Any) -> list["ToolFigure"]:
+    """Record the figures one office tool returned. Never raises.
+
+    Called by the tool layer with the tool's own result dict, so the
+    ledger holds what the tool computed rather than what its report
+    happened to print.
+    """
+    try:
+        if not isinstance(result, dict):
+            return []
+        found = _figures_from_result(str(tool or "office"), result)
+        for key in ("path", "left", "right", "output", "table", "template"):
+            value = result.get(key)
+            if isinstance(value, str) and value:
+                _note_ledger_path(value)
+        with _LEDGER_LOCK:
+            room = MAX_LEDGER_FIGURES - len(_LEDGER)
+            if room > 0:
+                _LEDGER.extend(found[:room])
+        return found
+    except Exception:
+        return []
+
+
+# --- reading the figures an answer states ----------------------------------
+#
+# The MATCHERS below are German because the files, the questions and the
+# answers here are German. "12.345,67" and "12345.67" are one figure
+# written two ways, and a matcher that does not know that reports every
+# correctly written German total as unsupported.
+
+# A number as an answer writes it: 12.345,67 / 12 345,67 / 12345.67 /
+# 1.234 / 31. The lookbehind keeps the tail of a longer token out.
+_ANSWER_NUMBER_RE = re.compile(
+    r"(?<![\w.,])"
+    r"(\d{1,3}(?:[.   ]\d{3})+(?:,\d{1,4})?|\d+(?:[.,]\d{1,6})?)"
+    r"(?!\d)"
+)
+
+# A figure that is money: a currency on one side of it.
+_CURRENCY_AFTER_RE = re.compile(
+    r"\s*(?:EUR|Euro|EURO|€|CHF|USD|\$|TEUR)\b|\s*€")
+_CURRENCY_BEFORE_RE = re.compile(r"(?:EUR|Euro|€|CHF|USD|\$)\s*$")
+
+# What makes a sentence a statement about a TOTAL. German first: these are
+# the words the user's own files and questions use.
+# German builds these words by compounding, endlessly — Gesamtbudget,
+# Jahressumme, Rechnungsbetrag — so the stems match as stems. A closed
+# list of whole words let "Das Gesamtbudget beträgt ..." through while
+# catching "Die Gesamtsumme beträgt ...", which is the same sentence.
+_TOTAL_CUE_RE = re.compile(
+    r"(?i)\bgesamt\w*|\w*summe\b|\bsummier\w*|\w*betrag\b|\w*beträge\b|"
+    r"\bbeträgt\b|\bbeläuft\b|\bbelaufen\b|\binsgesamt\b|\bzusammen\b|"
+    r"\btotal\b|\bsaldo\b|\bumsatz\w*|\bvolumen\b|\bbilanz\b|\bbudget\w*|"
+    r"\bsum\b|\baltogether\b")
+
+# ... and about a DERIVED figure: a difference, a share, an average, a
+# per-unit value. Those are checked for derivability from the ledger
+# before anything is said about them.
+_DERIVED_CUE_RE = re.compile(
+    r"(?i)\b(?:differenz|abweichung|abweichungen|unterschied|anteil|quote|"
+    r"prozent|durchschnitt|durchschnittlich|mittelwert|im schnitt|je|pro|"
+    r"entspricht|verhältnis|difference|share|average|per)\b|%")
+
+# A percentage is always a derived figure.
+_PERCENT_AFTER_RE = re.compile(r"\s*(?:%|Prozent|Prozentpunkte?)\b|\s*%")
+
+# A sentence that states an amount of money. This is the only thing read
+# in a turn where no office tool ran at all — see the scanner's docstring.
+_MONEY_SENTENCE_RE = re.compile(
+    r"\d\s*(?:EUR|Euro|EURO|CHF|USD|TEUR)\b|\d\s*[€$]"
+    r"|(?:EUR|Euro|€|CHF|USD|\$)\s*\d")
+
+# A figure the answer does not assert: hedged, Konjunktiv, an example, an
+# assumption, or one the answer says it did not compute. Konjunktiv II
+# ("die Summe wäre") is how German says "not measured", and flagging it
+# would caveat the honest answer.
+_NOT_ASSERTED_RE = re.compile(
+    # Abbreviations first: their trailing dot is not a word boundary, and
+    # anchoring them like a word silently switched "ca." off.
+    r"(?i)\bca\.|\bz\.\s?b\.|\bggf\.|"
+    r"\b(?:circa|etwa|ungefähr|ungefaehr|rund|geschätzt|schätzungsweise|"
+    r"vermutlich|womöglich|angenommen|annahme|beispiel|beispielsweise|"
+    r"zum beispiel|fiktiv|platzhalter|wäre|waere|würde|wuerde|läge|"
+    r"ergäbe|betrüge|hypothetisch|nicht berechnet|nicht geprüft|"
+    r"nicht gerechnet|ohne gewähr|approximately|roughly|assumed|example|"
+    r"placeholder)\b")
+
+# Positions where a number is a reference and not a quantity: a cell
+# address, a row or column number, a document number, a date.
+_REFERENCE_BEFORE_RE = re.compile(
+    r"(?i)(?:zeile|zeilen|spalte|spalten|zelle|blatt|seite|tabelle|"
+    r"row|column|cell|sheet|page|nr\.?|nummer|kostenstelle|beleg|"
+    r"rechnung|konto|version|kapitel)\s*[:.]?\s*$")
+_DATE_BEFORE_RE = re.compile(r"\d{1,2}[./-]\d{1,2}[./-]?$")
+
+# A counted thing, in the shape German writes it: a number, an optional
+# adjective, and a capitalised plural noun ("31 Belege", "4 offene
+# Posten"). English plurals count too — a mixed answer happens.
+_COUNT_CLAIM_RE = re.compile(
+    r"(?<![\w.,])(\d{1,6})\s+"
+    r"([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß]*(?:-[\wÄÖÜäöüß]+)*)"
+    r"(?:\s+([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß]*(?:-[\wÄÖÜäöüß]+)*))?")
+
+_COUNT_PLURAL_DE = ("en", "er", "se", "ze", "e", "n")
+_COUNT_NON_PLURAL_EN = ("ss", "us", "is")
+# Words that pass the shape and count no items: measures, money, time.
+_COUNT_STOPWORDS = frozenset({
+    "euro", "euros", "eur", "cent", "cents", "franken", "dollar", "dollars",
+    "prozent", "prozentpunkte", "percent", "stunden", "minuten", "sekunden",
+    "tage", "tagen", "wochen", "monate", "monaten", "jahre", "jahren",
+    "zeichen", "bytes", "chars", "characters", "seiten", "seite",
+    "hours", "minutes", "seconds", "days", "weeks", "months", "years",
+    "mal", "male", "times", "grad", "meter", "gramm", "liter", "kwh",
+})
+
+
+def _is_counted_noun(word: str) -> bool:
+    """True when ``word`` names things somebody counted."""
+    head = str(word or "").rsplit("-", 1)[-1]
+    tail = head.lower()
+    if len(tail) < 3 or not tail.isalpha() or tail in _COUNT_STOPWORDS:
+        return False
+    if head[:1].isupper():                       # a German noun
+        return tail.endswith(_COUNT_PLURAL_DE) or tail.endswith("s")
+    return (len(tail) >= 4 and tail.endswith("s")
+            and not tail.endswith(_COUNT_NON_PLURAL_EN))
+
+
+def _readings(token: str) -> list[tuple[float, float]]:
+    """Every number ``token`` can mean, with the tolerance it was written to.
+
+    "12.345,67" is one figure; "1.234" is two — 1234 under the German
+    convention and 1.234 under the English one, and nothing in an answer
+    settles which. Both are returned and a match against either counts:
+    the alternative is reporting a correctly written German total as
+    unsupported, which is the one error this must not make.
+
+    The tolerance is half a unit in the last place the figure was written
+    to, so "20,9 %" matches a computed 20.9451 and "12.345,67" does not
+    match 12.345,68.
+    """
+    raw = str(token or "").strip()
+    if not raw:
+        return []
+    body = raw.replace(" ", " ").replace(" ", " ")
+    out: list[tuple[float, float]] = []
+
+    def _keep(text: str) -> None:
+        try:
+            value = float(text)
+        except ValueError:
+            return
+        decimals = len(text.split(".")[1]) if "." in text else 0
+        pair = (round(value, 9), 0.5 * (10.0 ** -decimals))
+        if pair not in out:
+            out.append(pair)
+
+    if " " in body:                       # 12 345,67 — spaces group thousands
+        body = body.replace(" ", "")
+    dots, commas = body.count("."), body.count(",")
+    if dots and commas:                   # the LAST separator is the decimal
+        if body.rfind(",") > body.rfind("."):
+            _keep(body.replace(".", "").replace(",", "."))
+        else:
+            _keep(body.replace(",", ""))
+        return out
+    for separator in (".", ","):
+        if not body.count(separator):
+            continue
+        if body.count(separator) > 1:     # only grouping can repeat
+            _keep(body.replace(separator, ""))
+            return out
+        if len(body.split(separator)[1]) == 3:   # 1.234: thousands OR decimals
+            _keep(body.replace(separator, ""))
+            _keep(body.replace(separator, "."))
+        else:
+            _keep(body.replace(separator, "."))
+        return out
+    _keep(body)
+    return out
+
+
+def _numbers_in(text: str) -> list[float]:
+    """Every number a piece of text states, under either reading."""
+    out: list[float] = []
+    for match in _ANSWER_NUMBER_RE.finditer(str(text or "")):
+        for value, _tolerance in _readings(match.group(1)):
+            out.append(value)
+    return out
+
+
+def _matches(readings: list[tuple[float, float]], values) -> bool:
+    for value, tolerance in readings:
+        for known in values:
+            if abs(value - known) <= tolerance:
+                return True
+    return False
+
+
+# How many tool figures take part in deriving a difference or a share.
+# Bounded on purpose: the derived set grows with the square of this, and
+# a large enough base would make every stated number "derivable".
+MAX_DERIVATION_BASE = 24
+
+
+def _derived_values(
+    figures: list["ToolFigure"], *, counts_only: bool = False,
+) -> list[float]:
+    """Differences, sums, ratios and shares of the tool's own figures.
+
+    An answer that reports the difference between two totals, the share
+    one count is of another, or a per-unit value has computed it from
+    figures the tools DID return. Requiring it verbatim would flag exactly
+    the arithmetic the user asked for. Cell values stay out of the base:
+    there are hundreds of them, and pairing those would make anything
+    derivable.
+
+    ``counts_only`` is for a claim that counts things. A derived count is
+    an addition or a subtraction of counts ("148 minus 31 offene"); a
+    RATIO of them is a share and not a count. Measured on the fixture
+    workbooks, letting ratios ground a count made almost half of all
+    random integers below 300 pass — the ratios form a dense set, and an
+    integer is matched to half a unit.
+    """
+    base: list[float] = []
+    for figure in figures:
+        if figure.kind == "cell" or (counts_only and figure.kind != "count"):
+            continue
+        if figure.value not in base:
+            base.append(figure.value)
+        if len(base) >= MAX_DERIVATION_BASE:
+            break
+    out: list[float] = []
+    for index, a in enumerate(base):
+        for b in base[index + 1:]:
+            out.append(a + b)
+            out.append(a - b)
+            out.append(b - a)
+    if counts_only:
+        return out
+    for a in base:
+        for b in base:
+            if b:
+                out.append(a / b)
+                out.append(a / b * 100.0)
+    return out
+
+
+@dataclass(frozen=True)
+class FigureFlag:
+    """One figure an answer states that no tool this turn produced."""
+
+    figure: str    # as written in the answer ("45.231,50")
+    kind: str      # "total" | "count" | "derived"
+    claim: str     # the sentence it stands in, so the reader can find it
+
+    def message(self) -> str:
+        return (f"figure '{self.figure}' ({self.kind}) is not in this "
+                f"turn's tool results")
+
+
+# Sentence boundaries. Conservative on purpose: an abbreviation, a decimal
+# and a file name must not split a cue away from the figure it governs.
+_SENTENCE_SPLIT_RE = re.compile(
+    r"(?<=[.!?;])\s+(?=[\"'“(\[]?[A-ZÄÖÜ])|\n")
+
+_FENCED_RE = re.compile(r"```.*?```", re.DOTALL)
+_BACKTICK_RE = re.compile(r"`[^`\n]*`")
+
+
+def _claimable_text(text: str) -> str:
+    """The answer with everything that is not its own claim blanked out.
+
+    Code blocks, inline code and quoted lines are what the answer SHOWS,
+    not what it says — a number inside a formula or a quoted tool result
+    is not the answer asserting it.
+    """
+    blanked = _FENCED_RE.sub(" ", str(text or ""))
+    blanked = _BACKTICK_RE.sub(" ", blanked)
+    return "\n".join(
+        "" if line.lstrip().startswith(">") else line
+        for line in blanked.split("\n"))
+
+
+def _sentences(text: str) -> list[str]:
+    return [s for s in _SENTENCE_SPLIT_RE.split(text) if s and s.strip()]
+
+
+def _nearest_cue(before: str) -> int:
+    """Where the cue closest in front of a figure ends, or -1.
+
+    Only the POSITION matters: it bounds the window in which a bare
+    number counts as the one the cue announces. What the figure is called
+    is decided by the sentence — a derived cue names a specific thing
+    (Differenz, Anteil, Durchschnitt) where a total cue can be the bare
+    verb 'beträgt', so the specific one wins.
+    """
+    end = -1
+    for pattern in (_TOTAL_CUE_RE, _DERIVED_CUE_RE):
+        for hit in pattern.finditer(before):
+            end = max(end, hit.end())
+    return end
+
+
+def _claims_in_sentence(
+    sentence: str, *, money_only: bool,
+) -> list[tuple[str, str]]:
+    """(figure, kind) for every quantity claim in one sentence, in the
+    order they are written."""
+    total_cue = _TOTAL_CUE_RE.search(sentence) is not None
+    derived_cue = _DERIVED_CUE_RE.search(sentence) is not None
+    if money_only and not _MONEY_SENTENCE_RE.search(sentence):
+        return []
+    if _NOT_ASSERTED_RE.search(sentence):
+        return []
+
+    found: list[tuple[int, str, str]] = []
+    counted: list[tuple[int, int]] = []
+    for match in _COUNT_CLAIM_RE.finditer(sentence):
+        first, second = match.group(2), match.group(3)
+        if first.rsplit("-", 1)[-1].lower() in _COUNT_STOPWORDS:
+            continue
+        if _is_counted_noun(first) or (second and _is_counted_noun(second)):
+            found.append((match.start(1), match.group(1), "count"))
+            counted.append((match.start(1), match.end(1)))
+
+    # A total and a derived figure are only ever read where the sentence
+    # announces one. A number in a sentence that announces nothing is a
+    # reference, a date or a quantity of something else.
+    if not (total_cue or derived_cue):
+        found.sort(key=lambda entry: entry[0])
+        return [(figure, kind) for _at, figure, kind in found]
+
+    for match in _ANSWER_NUMBER_RE.finditer(sentence):
+        start, end = match.start(1), match.end(1)
+        if any(s <= start < e for s, e in counted):
+            continue
+        before, after = sentence[:start], sentence[end:]
+        if _REFERENCE_BEFORE_RE.search(before) or _DATE_BEFORE_RE.search(before):
+            continue
+        if _PERCENT_AFTER_RE.match(after):
+            found.append((start, match.group(1), "derived"))
+            continue
+        kind = "derived" if derived_cue else "total"
+        if _CURRENCY_AFTER_RE.match(after) or _CURRENCY_BEFORE_RE.search(before):
+            found.append((start, match.group(1), kind))
+            continue
+        # A bare number the cue itself governs: "Die Summe beträgt
+        # 12.345,67." The window is one clause, so a row reference further
+        # along the sentence is not read as the total.
+        cue_end = _nearest_cue(before)
+        if cue_end < 0:
+            continue
+        between = before[cue_end:]
+        if len(between) <= 40 and not re.search(r"[,;:(]", between):
+            found.append((start, match.group(1), kind))
+    found.sort(key=lambda entry: entry[0])
+    return [(figure, kind) for _at, figure, kind in found]
+
+
+def scan_answer_for_unledgered_figures(
+    text: str,
+    *,
+    ledger: Optional[list["ToolFigure"]] = None,
+    user_text: str = "",
+    prior_text: str = "",
+    max_flags: int = 3,
+) -> list[FigureFlag]:
+    """Figures an answer states that nothing this turn produced.
+
+    Three claim shapes are read: a total ("die Summe beträgt 12.345,67"),
+    a count ("31 Belege", "4 Abweichungen") and a derived figure (a
+    difference, a share, a per-unit value). A figure is GROUNDED, and
+    nothing is said about it, when any of these holds:
+
+      * a tool returned it this turn — the ledger, under either reading of
+        a German number and within the precision it was written to;
+      * it is derivable from two figures the tools returned;
+      * the user typed it in their own message;
+      * it was already stated earlier in the conversation.
+
+    With an EMPTY ledger — no office tool ran at all — only sentences that
+    state an amount of MONEY are read at all. That is the case this was
+    built for ("Die Gesamtsumme beträgt 45231.50 EUR bei 31 Belegen" after
+    zero evidence acts), and it keeps every other kind of turn out of
+    reach: "Insgesamt 3 Tests sind fehlgeschlagen" in a coding session
+    carries a total cue and a count and is none of this mechanism's
+    business.
+
+    Deterministic, de-duplicated, capped, and it never raises: a guard
+    that can break a turn is worse than the claim it was watching for.
+    """
+    flags: list[FigureFlag] = []
+    try:
+        if not text or not str(text).strip() or max_flags <= 0:
+            return []
+        known = list(ledger) if ledger is not None else figure_ledger()
+        money_only = not known
+        candidates: list[tuple[str, str, str]] = []
+        for sentence in _sentences(_claimable_text(text)):
+            for figure, kind in _claims_in_sentence(sentence,
+                                                    money_only=money_only):
+                candidates.append((figure, kind, " ".join(sentence.split())))
+        if not candidates:
+            return []
+
+        # A count is grounded by something that COUNTED. Measured on the
+        # fixture workbooks: with the values of a read grid in the pool as
+        # well, 87% of random integers between 1 and 300 matched some cell
+        # and passed — a count check that answers "yes" to almost anything
+        # is not a check. A total keeps the whole pool: an answer quoting
+        # a single amount out of the sheet it just read is quoting the
+        # tool, and that is exactly what the cell values are for.
+        values = [f.value for f in known]
+        counts = [f.value for f in known if f.kind == "count"]
+        typed = _numbers_in(user_text) + _numbers_in(prior_text)
+        derived: dict[bool, list[float]] = {}
+        seen: set[str] = set()
+        for figure, kind, sentence in candidates:
+            key = figure.replace(" ", "")
+            if key in seen:
+                continue
+            readings = _readings(figure)
+            if not readings:
+                continue
+            seen.add(key)
+            pool = counts if kind == "count" else values
+            if _matches(readings, pool) or _matches(readings, typed):
+                continue
+            counts_only = kind == "count"
+            if counts_only not in derived:
+                derived[counts_only] = _derived_values(
+                    known, counts_only=counts_only)
+            if _matches(readings, derived[counts_only]):
+                continue
+            flags.append(FigureFlag(figure=figure, kind=kind,
+                                    claim=sentence[:120]))
+            if len(flags) >= max_flags:
+                break
+    except Exception:
+        return flags
+    return flags
+
+
+# The caveat is German for the same reason the matchers are: it is read by
+# the person who asked the question, and they asked it in German.
+_FIGURE_KIND_DE = {"total": "Summe", "count": "Anzahl",
+                   "derived": "abgeleiteter Wert"}
+
+
+def figure_caveat(flags: list[FigureFlag]) -> str:
+    """The note appended to an answer whose figures no tool produced.
+
+    Names every figure and why it is marked, because the reader is the
+    one who can tell an invented total from one they typed themselves. It
+    annotates and never blocks: refusing the answer would withhold the
+    part of it that is right.
+    """
+    if not flags:
+        return ""
+    named = ", ".join(
+        f"'{f.figure}' ({_FIGURE_KIND_DE.get(f.kind, f.kind)})"
+        for f in flags[:3])
+    return (
+        "\n\n> ⚠️ Diese Zahl stammt nicht aus einem Werkzeug-Ergebnis dieses "
+        "Zuges: " + named + ". Kein Aufruf hat sie geliefert, sie lässt sich "
+        "nicht aus den ermittelten Werten ableiten, und sie steht weder in "
+        "Ihrer Nachricht noch weiter oben im Verlauf. Bitte mit sum_column "
+        "bzw. compare_tables nachrechnen oder die Quelle nennen, bevor die "
+        "Zahl weitergegeben wird."
+    )
+
+
+def figure_coverage_caveat(
+    text: str, *, user_text: str = "", prior_text: str = "",
+) -> str:
+    """The whole check for one finished answer, as one call.
+
+    The caller appends the return value and is done: it is "" for an
+    answer whose figures the tools produced, which is nearly every
+    answer. Never raises.
+    """
+    try:
+        return figure_caveat(scan_answer_for_unledgered_figures(
+            text, user_text=user_text, prior_text=prior_text))
+    except Exception:
+        return ""
