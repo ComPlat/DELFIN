@@ -272,8 +272,41 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     ctx.calc_browser_refs = refs5
-    tab6, refs6 = tab_archive_statistics.create_tab(ctx)
-    tab_off, refs_off = tab_office.create_tab(ctx)
+    # A tab hidden in Settings is built anyway today: the preference drops it
+    # from the bar and nothing else. Archive and Office are two more builds of
+    # the calculations browser -- the heaviest thing a cold start does -- so
+    # hiding one and paying for it is the worst of both. They are built when
+    # they are wanted, which for a visible tab is still at startup.
+    try:
+        _hidden_at_start = {
+            str(item) for item in
+            (((load_settings().get('ui', {}) or {}).get('tabs', {}) or {})
+             .get('hidden', []) or [])
+        }
+    except Exception:
+        _hidden_at_start = set()
+
+    refs6, refs_off = {}, {}
+
+    def _clone_of_browser_now(build, refs):
+        """Build one of the browser clones and fill in the refs Settings holds."""
+        widget, made = build(ctx)
+        refs.update(made or {})
+        return widget
+
+    def _clone_of_browser(tab_id, build, refs):
+        """The tab, or None if Settings has it hidden.
+
+        *refs* is the dict the Settings tab is handed further down. It is
+        filled in rather than replaced, because Settings captures it by value
+        and applying a new Archive or Office folder calls back through it.
+        """
+        if tab_id in _hidden_at_start:
+            return None
+        return _clone_of_browser_now(build, refs)
+
+    tab6 = _clone_of_browser('archive', tab_archive_statistics.create_tab, refs6)
+    tab_off = _clone_of_browser('office', tab_office.create_tab, refs_off)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     ctx.remote_archive_refs = refs7
     tab_lit, _ = tab_literature.create_tab(ctx)
@@ -391,6 +424,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'default_visible': True,
             'available': True,
             'fixed': False,
+            # Hidden in Settings means not built; showing it again builds it.
+            'build': lambda: _clone_of_browser_now(tab_archive_statistics.create_tab, refs6),
             'reason': '',
         },
         {
@@ -401,6 +436,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'default_visible': True,
             'available': True,
             'fixed': False,
+            # Hidden in Settings means not built; showing it again builds it.
+            'build': lambda: _clone_of_browser_now(tab_office.create_tab, refs_off),
             'reason': '',
         },
         {
@@ -538,6 +575,26 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     hidden.add(tab_id)
         return order, hidden
 
+    def _build_tab_now(spec):
+        """Build a tab that was left out because Settings had it hidden.
+
+        Its startup script cannot go out through ctx.run_js: that clears the
+        output before it writes, which would wipe the script every tab already
+        on the page is running from.
+        """
+        build = spec.pop('build', None)
+        if not callable(build):
+            return
+        already = len(ctx.init_js_parts)
+        try:
+            spec['widget'] = build()
+        except Exception:
+            spec['widget'] = None
+            return
+        fresh = '\n'.join(ctx.init_js_parts[already:])
+        if fresh.strip():
+            _append_js(ctx, fresh)
+
     def _sorted_visible_specs():
         order, hidden = _resolve_tab_preferences()
         order_index = {tab_id: idx for idx, tab_id in enumerate(order)}
@@ -586,6 +643,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     def _rebuild_dashboard_tabs(selected_title=None):
         specs = _sorted_visible_specs()
+        for spec in specs:
+            if spec.get('widget') is None and callable(spec.get('build')):
+                _build_tab_now(spec)
         children = [spec['widget'] for spec in specs if spec.get('widget') is not None]
         titles = [spec['title'] for spec in specs if spec.get('widget') is not None]
         if ctx.tabs_widget is None:
