@@ -440,7 +440,14 @@ class CLIClient(_BaseClient):
                 # Turn complete — stop reading, wait for next send
                 return
 
-        # If we exit the loop, the process died or finished unexpectedly
+        # Falling off the loop means stdout ended without a ``result``
+        # event, so this turn produced no message_delta. Returning quietly
+        # here -- which three of the four exits below used to do -- hands
+        # the engine a turn with no text and no error, and an answerless
+        # turn takes the user's question with it: the message stays in the
+        # history unanswered, and the next send is merged over it by the
+        # alternation sanitiser. This generator therefore ends in exactly
+        # two ways: a message_delta, or a raise the caller can show.
         rc = proc.poll()
         if rc is not None:
             # Always clear dead process reference so _ensure_proc() restarts
@@ -456,6 +463,44 @@ class CLIClient(_BaseClient):
                     raise RuntimeError(
                         f"CLI backend error (exit {rc}): {stderr.strip()[:500]}"
                     )
+                # Non-zero and NOT one word of stderr. That is what a
+                # process killed from outside looks like -- SIGKILL from
+                # the OOM killer reports rc == -9 and says nothing at all.
+                if rc < 0:
+                    raise RuntimeError(
+                        f"CLI backend was killed by signal {-rc} before it "
+                        f"finished the turn (no error output; signal 9 is "
+                        f"typically the out-of-memory killer). The turn was "
+                        f"not answered and nothing was added to the history."
+                    )
+                raise RuntimeError(
+                    f"CLI backend exited with code {rc} before finishing the "
+                    f"turn and wrote no error output. The turn was not "
+                    f"answered and nothing was added to the history."
+                )
+            # Exit code 0, no result event: a clean exit mid-turn is still
+            # an unanswered turn, and reporting it as success is what let
+            # the question be overwritten.
+            raise RuntimeError(
+                "CLI backend exited cleanly without completing the turn "
+                "(no result event). The turn was not answered and nothing "
+                "was added to the history."
+            )
+        # Still alive, but its stdout is closed or exhausted -- nothing
+        # more will ever arrive on this pipe, so the turn cannot complete.
+        # Retiring the process (rather than just dropping the reference)
+        # keeps the next send from inheriting the same dead pipe, and
+        # leaves no orphan behind. The session id survives, so the
+        # replacement resumes the same conversation.
+        try:
+            self.kill()
+        except Exception:
+            self._proc = None
+        raise RuntimeError(
+            "CLI backend stopped streaming without ending the turn (the "
+            "process is still running but its output stream ended). The "
+            "turn was not answered and nothing was added to the history."
+        )
 
     def switch_model(self, model: str) -> None:
         """Switch the model by killing the current process.
