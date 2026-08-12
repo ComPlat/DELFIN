@@ -1687,11 +1687,23 @@ class AgentEngine:
             # ledger, or the retry would lose the very evidence it is being
             # judged against.
             self._ambiguous_columns_turn = []
+            # The figure guard needs it: a number the USER typed is
+            # grounded, and flagging it would be the fastest way to teach
+            # somebody to ignore the guard.
+            self._last_user_message = user_message or ""
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
             # the caveat, however unrelated.
             self._truncated_tools_turn = []
+            # The office figure ledger is per-turn for the same reason: a
+            # total the tools produced two turns ago must not ground a
+            # figure stated now.
+            try:
+                from . import office as _office_ledger
+                _office_ledger.reset_figure_ledger()
+            except Exception:
+                pass
 
         # UserPromptSubmit hooks — fire BEFORE the message is appended so a
         # blocking hook can short-circuit the turn entirely. Stop hooks are
@@ -2870,7 +2882,42 @@ class AgentEngine:
         out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
         out = self._append_truncated_count_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
+        out = self._append_figure_coverage_caveat(out, on_token, source=source)
         return out
+
+    def _append_figure_coverage_caveat(
+        self, text: str, on_token: Callable[[str], None] | None,
+        *, source: str,
+    ) -> str:
+        """Name a money figure or a count the tools never produced.
+
+        The office path had no mechanism at all: a total that silently
+        dropped a row read exactly like a total that did not, and the
+        quantity scanner only knows the chemistry units — eV, kcal/mol —
+        so a currency amount and a document count passed with zero
+        evidence acts behind them.
+
+        Deliberately quiet. Measured against twelve answers a careful
+        person would write about the fixture workbooks: none flagged. It
+        reads the model's own text, never the caveats appended ahead of
+        it in this chain.
+        """
+        try:
+            from . import office as _office_ledger
+            note = _office_ledger.figure_coverage_caveat(
+                source,
+                user_text=getattr(self, "_last_user_message", "") or "",
+            )
+        except Exception:
+            return text
+        if not note:
+            return text
+        if on_token:
+            try:
+                on_token(note)
+            except Exception:
+                pass
+        return text + note
 
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,

@@ -209,6 +209,12 @@ _NOT_CARRIED = {
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
     "_truncated_tools_turn", "_stop_requested", "_steering_delivered",
     "_steering_refreshes",
+    # -- the message being answered right now -----------------------------
+    #    The figure guard reads it so a number the USER typed grounds
+    #    itself. It is the current turn's input; carrying it across a
+    #    resume would let a figure from a previous conversation excuse
+    #    one stated in this one.
+    "_last_user_message",
     # -- the correction budget, spent at most once per turn ---------------
     #    Kept apart from the VERDICT (_claim_guard_corrected) so the green
     #    "answer corrected" line comes from a re-scan rather than from
