@@ -1567,6 +1567,46 @@ def plan_sheet_edits(
             pass
 
 
+# Labels a bookkeeping sheet puts on its closing row, German and English.
+# A label alone is not enough: "Summe der Belege folgt" is prose. The row
+# has to aggregate something as well, which in practice means a formula.
+_TOTAL_ROW_LABELS = (
+    "summe", "zwischensumme", "gesamt", "gesamtsumme",
+    "total", "subtotal", "sum",
+)
+
+
+def _total_row_above(ws, before_row: int) -> "tuple[int, str] | None":
+    """The last row before ``before_row`` that closes the sheet, if any.
+
+    An append lands at max_row + 1, which on a sheet ending in
+    "Summe | =SUMME(D2:D250)" is BELOW the total and outside its range.
+    The booking is recorded, the workbook's total is not, and the user
+    reads a number off their own file that is now wrong. Nothing in this
+    module looked for one.
+    """
+    try:
+        first = max(1, before_row - 5)
+        for row in range(before_row - 1, first - 1, -1):
+            label = ""
+            has_formula = False
+            for col in range(1, min(int(ws.max_column or 1), 30) + 1):
+                value = ws.cell(row=row, column=col).value
+                if isinstance(value, str):
+                    if value.startswith("="):
+                        has_formula = True
+                    elif not label:
+                        label = value.strip().lower()
+            if not label or not has_formula:
+                continue
+            if any(label.startswith(w) and len(label) <= len(w) + 2
+                   for w in _TOTAL_ROW_LABELS):
+                return row, label
+    except Exception:
+        return None
+    return None
+
+
 def _verify_cells(path: Path, sheet_name: str, applied: list[dict]) -> list[str]:
     """Re-read the saved file and report cells that do not hold the new value.
 
@@ -1783,6 +1823,10 @@ def edit_sheet(
 
         first_appended = 0
         appended = 0
+        # Read back like every other write, but kept out of `applied`:
+        # that field is the reported list of UPDATED cells and callers
+        # read its shape. Only the verification is widened.
+        appended_cells: list[dict] = []
 
         # Records are placed by column NAME. A positional list silently
         # lands in the wrong columns as soon as the sheet's order differs
@@ -1799,6 +1843,14 @@ def edit_sheet(
                     ws.cell(row=target_row, column=col_index).value = value
                     if isinstance(value, str) and value.startswith("="):
                         wrote_formula = True
+                    # Appended cells go into `applied` like every other
+                    # write. They did not, so _verify_cells had nothing to
+                    # read back and an append-only edit answered
+                    # verified: True having checked nothing.
+                    appended_cells.append({
+                        "cell": f"{column_letter(col_index)}{target_row}",
+                        "old": _fmt(None), "new": _fmt(value),
+                    })
                 appended += 1
 
         for new_row in append_rows or []:
@@ -1807,10 +1859,26 @@ def edit_sheet(
                     f"each appended row must be a list, got {new_row!r}")
             if not appended:
                 first_appended = int(ws.max_row or 0) + 1
+            _target = int(ws.max_row or 0) + 1
             ws.append(list(new_row))
+            for _c, _v in enumerate(new_row, start=1):
+                appended_cells.append({
+                    "cell": f"{column_letter(_c)}{_target}",
+                    "old": _fmt(None), "new": _fmt(_v),
+                })
             appended += 1
 
         notes: list[str] = []
+        if appended and first_appended:
+            _total = _total_row_above(ws, first_appended)
+            if _total is not None:
+                _row, _label = _total
+                notes.append(
+                    f"row {_row} of this sheet closes it with a total "
+                    f"({_label!r}). The new row(s) were appended BELOW it, "
+                    f"so they are outside its range and that total no "
+                    f"longer covers them — move the total or extend its "
+                    f"formula.")
         fragile = _fragile_features(wb)
         if fragile:
             notes.append(
@@ -1830,7 +1898,8 @@ def edit_sheet(
             raise OfficeError(f"could not save workbook: {exc}") from exc
 
         sheet_name = ws.title
-        unverified = _verify_cells(p, sheet_name, applied)
+        unverified = _verify_cells(
+            p, sheet_name, applied + appended_cells)
         if unverified:
             notes.append(
                 "these cells do not hold the new value in the saved file: "
