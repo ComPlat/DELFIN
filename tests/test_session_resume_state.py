@@ -72,17 +72,25 @@ def test_everything_the_engine_exports_can_be_saved():
 
 
 def test_the_restore_reads_what_the_store_keeps():
-    """The dashboard hands restore_state a dict it builds by hand; a field
-    kept by the store but not passed there is still lost."""
+    """The dashboard used to hand restore_state a dict it built by hand,
+    so a field kept by the store but not named there was lost -- and this
+    test used to check the names, which meant the next field added to the
+    store passed it just as silently. The saved file is now forwarded
+    whole, and what this checks is that: the call takes the loaded data,
+    not a re-listing of it."""
+    import ast
     import inspect
 
     from delfin.dashboard import tab_agent
 
     source = inspect.getsource(tab_agent)
-    block = source.split("engine.restore_state({", 1)[1][:900]
-    for field in ("engine_messages", "token_usage", "cost_usd",
-                  "project_dir", "last_input_tokens"):
-        assert field in block, field
+    calls = [n for n in ast.walk(ast.parse(source))
+             if isinstance(n, ast.Call)
+             and getattr(n.func, "attr", "") == "restore_state"]
+    assert len(calls) == 1
+    payload = calls[0].args[0]
+    assert isinstance(payload, ast.Dict) and None in payload.keys, (
+        "the dashboard restore lists fields by hand again")
 
 
 def test_resume_state_is_not_mode_specific():
