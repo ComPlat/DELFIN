@@ -195,9 +195,44 @@ def _require(kind: str) -> Any:
         ) from exc
 
 
+def _near_miss(p: Path) -> str:
+    """Names in the same folder that differ from ``p`` only slightly.
+
+    A miss that is only a matter of case cost a real session a whole
+    round: the agent asked for ``kostenstellen.xlsx``, the folder held
+    ``Kostenstellen.xlsx``, and the answer repeated the path back without
+    mentioning the file sitting beside it. On a backend where the first
+    token takes tens of seconds, re-listing the directory is expensive.
+
+    Naming it is not the same as opening it. The caller still gets an
+    error and still has to ask again with the right name -- on someone's
+    real records the difference between two similar filenames can be last
+    year's ledger and this one, so the correction stays theirs to make.
+    """
+    try:
+        siblings = [c.name for c in p.parent.iterdir() if c.is_file()]
+    except OSError:
+        return ""
+    want = p.name.lower()
+    exact_case = [n for n in siblings if n.lower() == want]
+    if exact_case:
+        return exact_case[0]
+    import difflib
+    close = difflib.get_close_matches(want, [n.lower() for n in siblings],
+                                      n=1, cutoff=0.75)
+    if not close:
+        return ""
+    return next(n for n in siblings if n.lower() == close[0])
+
+
 def _resolve(path: Any, *, must_exist: bool = True) -> Path:
     p = Path(str(path)).expanduser()
     if must_exist and not p.exists():
+        hint = _near_miss(p)
+        if hint:
+            raise OfficeError(
+                f"file not found: {p} — the folder does have {hint!r}. "
+                f"Ask again with that exact name if you meant it.")
         raise OfficeError(f"file not found: {p}")
     if must_exist and p.is_dir():
         raise OfficeError(f"{p} is a directory, not a document")
@@ -710,8 +745,28 @@ def profile_column(values: list, *, name: str = "") -> dict:
             "parsed": sum(1 for _, p in parsed if p is not None),
             "unparsed": [str(v) for v, p in parsed if p is None][:10],
         }
+    # Not numeric enough to be called a number column -- but a column that
+    # is PART numbers is the dangerous case, and it used to be the silent
+    # one. At 20 unreadable values in 100 the tool named them and said a
+    # total would leave them out; at 21 the column flipped to text with an
+    # empty `unparsed` list, `column_notes` skipped it because it only
+    # spoke about number and date kinds, and the renderer dropped it for
+    # the same reason. One more bad row turned the warning off, exactly on
+    # the columns where somebody is about to sum money.
+    #
+    # The 80% rule stays -- a column of company names should not be
+    # described as broken numbers. What is added is the share, so a column
+    # that LOOKS like amounts and fails to qualify can say so.
+    numeric_share = numeric_shaped / len(filled)
+    unreadable = [str(v) for v in filled
+                  if not ((isinstance(v, (int, float))
+                           and not isinstance(v, bool))
+                          or _numeric_body(v) is not None)]
     return {"name": name, "kind": "text", "convention": "",
-            "values": len(filled), "parsed": len(filled), "unparsed": []}
+            "values": len(filled), "parsed": len(filled), "unparsed": [],
+            "numeric_share": numeric_share,
+            "numeric_values": numeric_shaped,
+            "unreadable_samples": unreadable[:3]}
 
 
 def profile_table(rows: list[list], *, header: bool = True) -> list[dict]:
@@ -760,6 +815,19 @@ def column_notes(profiles: list[dict]) -> list[str]:
                 f"column '{name}': {missing} of {entry['values']} value(s) "
                 f"are not {entry['kind']}s (e.g. {', '.join(unparsed[:3])}). "
                 "A total over this column would leave them out.")
+        # A column too broken to be CALLED a number column. This is where
+        # the tool used to fall silent -- one unreadable value past the
+        # threshold and nothing was said at all, on the columns most
+        # likely to be summed.
+        elif entry.get("kind") == "text" and entry.get("numeric_values"):
+            bad = entry["values"] - entry["numeric_values"]
+            samples = entry.get("unreadable_samples") or []
+            notes.append(
+                f"column '{name}': {bad} of {entry['values']} value(s) "
+                f"could not be read as numbers"
+                + (f" (e.g. {', '.join(samples)})" if samples else "")
+                + ". Too many to treat this as an amount column — do not "
+                "total it before the unreadable values are resolved.")
     return notes
 
 

@@ -7173,8 +7173,14 @@ class _DocToolExecutor:
             # request: the model decides whether to sum a column while
             # it is looking at it, and "1.234,50" looks like a number
             # long before anyone checks how it would parse.
+            # A part-numeric TEXT column is shown too. Filtering to number
+            # and date kinds hid exactly the dangerous case: a money column
+            # with too many unreadable values to qualify as numeric
+            # disappeared from the output entirely, so the one column
+            # somebody was about to total was the one they could not see.
             profile = [p for p in result.get("column_profile", [])
-                       if p.get("kind") in ("number", "date")]
+                       if p.get("kind") in ("number", "date")
+                       or p.get("numeric_values")]
             if profile:
                 lines.append("")
                 for entry in profile:
@@ -7184,6 +7190,10 @@ class _DocToolExecutor:
                     if entry["parsed"] != entry["values"]:
                         detail += (f", {entry['values'] - entry['parsed']} of "
                                    f"{entry['values']} not parseable")
+                    elif entry.get("numeric_values"):
+                        _bad = entry["values"] - entry["numeric_values"]
+                        detail += (f", {_bad} of {entry['values']} not "
+                                   f"readable as numbers")
                     lines.append(detail)
         else:
             head = f"{disp} — {result.get('kind', 'document')}"
