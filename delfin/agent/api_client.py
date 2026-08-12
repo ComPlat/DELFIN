@@ -39,7 +39,8 @@ class StreamEvent:
 
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
                  "cost_usd", "tool_name", "tool_input", "tool_output",
-                 "cached_tokens")
+                 "cached_tokens", "output_truncated", "output_chars",
+                 "output_notes")
 
     def __init__(
         self,
@@ -53,6 +54,9 @@ class StreamEvent:
         tool_input: str = "",
         tool_output: str = "",
         cached_tokens: int = 0,
+        output_truncated: bool = False,
+        output_chars: int = 0,
+        output_notes: str = "",
     ):
         self.type = type
         self.text = text
@@ -67,6 +71,25 @@ class StreamEvent:
         # ``prompt_tokens_details.cached_tokens`` or Anthropic
         # ``cache_read_input_tokens``). 0 when unreported. Lets us SEE caching.
         self.cached_tokens = cached_tokens
+        # ``tool_output`` is a 2000-char HEAD slice for display. Anything a
+        # consumer needs to know about the REST of the result has to travel
+        # as its own field, or it cannot be recovered downstream:
+        #
+        # * ``output_truncated`` — the model did not see the whole result.
+        #   The engine's count guard used to sniff the "… truncated, N chars
+        #   …" marker out of ``tool_output``, but that marker is written to
+        #   the CONTEXT copy, after this event is built, and bash puts its
+        #   own marker ~4000 chars in — past the slice either way. So the
+        #   guard armed on small results and stayed silent on exactly the
+        #   large ones it exists for.
+        # * ``output_chars`` — full length of the result before slicing.
+        # * ``output_notes`` — the reader's own NOTE lines. read_document
+        #   appends them AFTER the grid, and a 200-row grid is ~10 kB, so
+        #   the note saying a column cannot be read never reached the guard
+        #   that consumes it.
+        self.output_truncated = output_truncated
+        self.output_chars = output_chars
+        self.output_notes = output_notes
 
 
 # ---------------------------------------------------------------------------
@@ -13639,34 +13662,55 @@ class OpenAIClient(_BaseClient):
                     except Exception:
                         pass
 
-                    # Emit tool_result event for UI display.
+                    # Truncate the *context-bound* copy so a 200 kB MCP
+                    # result doesn't blow the next request's input-token
+                    # budget. The UI gets a 2000-char preview; the model
+                    # gets head+tail with a marker so tracebacks survive.
+                    # JSON-error blobs and short results pass through
+                    # untouched.
                     #
-                    # Redacted HERE, not only on the context-bound copy
-                    # below. This event is what the engine writes to
-                    # ~/.delfin/tool_traces/<sid>.jsonl, and that file is
-                    # created with a plain append and no chmod (observed
-                    # 0664, 426 files), then bundled into a bug report
-                    # whose packer explicitly adds group-read to every
-                    # path. So a token that appeared in a traceback was
-                    # stripped from the transcript, which is why nobody
-                    # would notice, and written verbatim to a
-                    # group-readable file that gets shipped.
+                    # Computed BEFORE the event so the event can say
+                    # whether the model saw the whole result. Two
+                    # independent cuts have to be reported: this one, and
+                    # the one a tool already applied to its own output
+                    # (bash caps stdout at max_output_chars and writes its
+                    # marker ~4000 chars in). Neither is recoverable from
+                    # the 2000-char preview, which is why it travels as a
+                    # field instead of a substring to be re-detected.
+                    _redacted = _redact_tool_result(result)
+                    context_result = _smart_truncate(
+                        _redacted, cap=_tool_result_cap, label="tool_result"
+                    )
+                    _tool_cut = ("truncated," in _redacted
+                                 or "[truncated:" in _redacted
+                                 or '"truncated": true' in _redacted)
+                    # The reader's own notes, carried whole: read_document
+                    # appends them after the grid, so on a large sheet the
+                    # note about an undecidable column sits far past the
+                    # preview slice.
+                    _result_notes = "\n".join(
+                        ln for ln in _redacted.split("\n")
+                        if ln.lstrip().startswith("NOTE:")
+                    )[:2000]
                     yield StreamEvent(
                         type="tool_result",
                         tool_name=fn_name if (is_mcp or is_mcp_meta)
                                   else f"mcp__{ns_prefix}__{fn_name}",
-                        tool_output=_redact_tool_result(result)[:2000],
-                    )
-
-                    # Truncate the *context-bound* copy so a 200 kB MCP
-                    # result doesn't blow the next request's input-token
-                    # budget. The UI already got the truncated 2000-char
-                    # preview above; the model now gets head+tail with a
-                    # marker so tracebacks survive. JSON-error blobs and
-                    # short results pass through untouched.
-                    context_result = _smart_truncate(
-                        _redact_tool_result(result),
-                        cap=_tool_result_cap, label="tool_result"
+                        # Redacted HERE, not only on the context-bound copy.
+                        # This event is what the engine writes to
+                        # ~/.delfin/tool_traces/<sid>.jsonl, and that file
+                        # is created with a plain append and no chmod
+                        # (observed 0664, 426 files), then bundled into a
+                        # bug report whose packer explicitly adds group-read
+                        # to every path. So a token that appeared in a
+                        # traceback was stripped from the transcript, which
+                        # is why nobody would notice, and written verbatim
+                        # to a group-readable file that gets shipped.
+                        tool_output=_redacted[:2000],
+                        output_truncated=(len(context_result) != len(_redacted)
+                                          or _tool_cut),
+                        output_chars=len(_redacted),
+                        output_notes=_result_notes,
                     )
                     # Thrash detector: prepend a one-time progress nudge when a
                     # low-progress loop (repeated cleanup, same-file rewrites) is

@@ -93,3 +93,37 @@ def test_a_dotted_module_name_is_still_not_a_path():
 
 def test_an_unknown_extension_is_still_not_a_path():
     assert _scan("See archive.tar:12 for the bundle.") == []
+
+
+# ---------------------------------------------------------------------------
+# ...and the same trap on the other axis: many claims, not one long path
+# ---------------------------------------------------------------------------
+#
+# Deciding whether a claim is hedged means looking at the text around it,
+# and an answer full of numbers asks that question once per number. Doing
+# it by rescanning the surrounding text cost 13 s on 20 kB of measured
+# values -- an answer a real calculation summary produces. Both the
+# sentence bounds and the hedge positions are collected once per answer
+# now, so the per-claim question is a lookup.
+
+def test_an_answer_full_of_quantities_is_scanned_quickly():
+    text = "2.31 eV " * 2500
+    start = time.time()
+    vg.scan_for_unsourced_quantities(text)
+    assert time.time() - start < _BUDGET_S
+
+
+def test_many_functional_claims_are_scanned_quickly():
+    text = "Das Spiel funktioniert im Browser. " * 600
+    start = time.time()
+    vg.scan_for_unexercised_functional_claims(text, exec_commands=[])
+    assert time.time() - start < _BUDGET_S
+
+
+def test_a_hedge_is_still_found_in_a_long_answer():
+    """The speed-up must not cost the detection it is speeding up."""
+    text = "noise. " * 400 + "Die Energie liegt bei ca. 2.31 eV. " + "x. " * 400
+    assert vg.scan_for_unsourced_quantities(text) == []
+    firm = "noise. " * 400 + "Die Energie liegt bei 2.31 eV. " + "x. " * 400
+    assert [f.quantity for f in vg.scan_for_unsourced_quantities(firm)] == [
+        "2.31 eV"]

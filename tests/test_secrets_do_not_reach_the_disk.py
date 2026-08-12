@@ -47,7 +47,16 @@ def test_every_emission_site_redacts():
                      if not l.lstrip().startswith("#"))
     assert "tool_output=result[:2000]" not in code, (
         "a tool_result event still carries unredacted output to the trace")
-    assert code.count("tool_output=_redact_tool_result(result)[:2000]") >= 4
+    # The redacted text may be passed inline or through a local bound to
+    # it: the site that emits a large result needs the whole redacted
+    # string anyway, for the length and the notes it carries alongside.
+    inline = code.count("tool_output=_redact_tool_result(result)[:2000]")
+    via_local = code.count("tool_output=_redacted[:2000]")
+    if via_local:
+        assert "_redacted = _redact_tool_result(result)" in code, (
+            "tool_output is sliced from a local that is not the redacted "
+            "result")
+    assert inline + via_local >= 4
 
 
 # ---------------------------------------------------------------------------

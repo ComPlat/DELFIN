@@ -477,9 +477,36 @@ def test_engine_quantity_claim_forces_correction(agent_tree):
     engine = _engine(agent_tree, client=fake)
     out = engine.stream_response("what is the S1 energy?")
     assert fake.stream_message.call_count == 2
-    # The hedged restatement passes the re-scan: no caveat needed.
-    assert "[verify] Caveat" not in out
     assert "Unverified estimate" in out
+    # A retry that read nothing did not verify anything: the ORIGINAL
+    # claim is named, and the turn is not reported as corrected. Accepting
+    # a rephrasing here made the whole enforcement loop cost one
+    # round-trip and buy zero verification.
+    assert "[verify] Caveat" in out
+    assert "2.31 eV" in out
+    assert engine._claim_guard_corrected is False
+    assert engine._claim_guard_spent is True
+
+
+def test_engine_correction_that_reads_a_file_is_reported_as_verified(
+        agent_tree):
+    """The other side of the same rule: a retry that actually looked gets
+    the marker, and the marker names what it looked at."""
+    fake = _claims_client(
+        ["The S1 energy is 2.31 eV.",
+         "Read tddft.out: the S1 energy is 2.31 eV."],
+        observe_on_reply={1: {"calc/tddft.out"}})
+    engine = _engine(agent_tree, client=fake)
+    streamed: list[str] = []
+    out = engine.stream_response("what is the S1 energy?",
+                                 on_token=streamed.append)
+    assert fake.stream_message.call_count == 2
+    assert "[verify] Caveat" not in out
+    assert "[verify] Self-check" in out
+    assert "tddft.out" in out.split("[verify] Self-check")[1]
+    assert engine._claim_guard_corrected is True
+    # Emitted by the engine, so the CLI and headless paths see it too.
+    assert "[verify] Self-check" in "".join(streamed)
 
 
 def test_engine_correction_budget_is_per_turn(agent_tree):
@@ -872,3 +899,78 @@ def test_hedged_completeness_claim_stays_exempt():
     from delfin.agent.verify_guard import scan_for_unexercised_functional_claims as scan
     assert scan("Vermutlich ist alles getestet, geprüft habe ich es nicht.",
                 exec_commands={"bash pytest"}, exec_ledger_available=True) == []
+
+
+# ---------------------------------------------------------------------------
+# The caveat chain runs at ONE exit
+# ---------------------------------------------------------------------------
+#
+# The no-flag exit applied functional + ambiguous + truncated-count +
+# self-consistency; the other three exits applied only some of them. So any
+# single location or quantity flag silently switched off the two count
+# guards — the ones least related to it — and ``ambiguous`` was computed and
+# then dropped on two branches. An answer is caveated for what it says, not
+# for which branch of the guard happened to return it.
+
+_CONTRADICTORY_ANSWER = (
+    "Zeile 26: class AgentEngine.\n"
+    "Ich habe 31 Rechnungen geprüft:\n"
+    + "\n".join(f"{i}. Rechnung {i}" for i in range(1, 30))
+)
+
+
+def _client_with_cut_short_tool(replies):
+    """Backend that reports one truncated tool result, then answers."""
+    from delfin.agent.api_client import StreamEvent
+    fake = MagicMock()
+    fake._observed_files_session = set()
+    calls = {"n": 0}
+
+    def _stream(*a, **k):
+        i = calls["n"]
+        calls["n"] += 1
+        yield StreamEvent(type="tool_result", tool_name="list_files",
+                          tool_output="Rechnung_1.pdf\n",
+                          output_truncated=True, output_chars=9000)
+        yield StreamEvent(type="text_delta",
+                          text=replies[min(i, len(replies) - 1)])
+        yield StreamEvent(type="message_delta", output_tokens=5, cost_usd=0.0)
+
+    fake.stream_message = MagicMock(side_effect=_stream)
+    return fake
+
+
+def test_a_location_flag_does_not_suppress_the_count_caveats(agent_tree):
+    fake = _client_with_cut_short_tool(
+        [_CONTRADICTORY_ANSWER, "Vermutlich Zeile 26 — nicht geprüft."])
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wie viele rechnungen, und wo ist die klasse?")
+    assert fake.stream_message.call_count == 2
+    # the location claim: corrected, still unverified -> named
+    assert "[verify] Caveat" in out
+    # the count over a cut-short source
+    assert "estimated, not counted" in out
+    # the count that contradicts its own list
+    assert "states 31 but lists 29 entries" in out
+
+
+def test_the_same_chain_runs_when_the_correction_budget_is_spent(agent_tree):
+    fake = _client_with_cut_short_tool([_CONTRADICTORY_ANSWER])
+    engine = _engine(agent_tree, client=fake)
+    engine._claim_guard_spent = True          # e.g. a nested continuation
+    out = engine.stream_response("[Verify] noch einmal bitte")
+    # No second correction turn ...
+    assert fake.stream_message.call_count == 1
+    # ... and every caveat still applied.
+    assert "[verify] Caveat" in out
+    assert "estimated, not counted" in out
+    assert "states 31 but lists 29 entries" in out
+
+
+def test_a_guard_note_is_never_read_back_as_the_models_own_text(agent_tree):
+    """The chain appends in order; a later scanner must read what the model
+    wrote, not what an earlier caveat added."""
+    fake = _client_with_cut_short_tool(["Ich habe 31 Rechnungen geprüft."])
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wie viele?")
+    assert out.count("estimated, not counted") == 1
