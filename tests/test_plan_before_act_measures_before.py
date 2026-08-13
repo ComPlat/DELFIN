@@ -19,36 +19,39 @@ the task exists to measure, and it was the only thing keeping the score
 above zero.
 
 So the check rewarded reporting and punished planning, in a task called
-plan-before-act. The order is now part of the pattern: something has to
-be said before the first ACTION line, and nothing said afterwards can
+plan-before-act. The order is part of the pattern: something has to be
+said before the first ACTION line, and nothing said afterwards can
 substitute for it.
+
+2026-08-13: the expectation was REMOVED from workflow_plan_before_act,
+deliberately — that task's prompt is a numbered list the user wrote, and
+an agent that restates it before executing is paying tokens to repeat the
+question. See the note in tasks.yaml.
+
+The pattern is kept here, and so are its tests. It is correct, it was
+expensive to get right, and plan-before-act still applies where the user
+did NOT enumerate the steps. When that task gets written, the pattern is
+proven and ready instead of re-derived — and these tests are what proves
+it. They no longer read tasks.yaml: a test that follows a file it does
+not own turns a deliberate product decision into a red suite, which is
+what happened when the expectation came out.
 """
 
 from __future__ import annotations
 
-import pathlib
 import re
 
 import pytest
-import yaml
 
 
-_TASKS = (pathlib.Path(__file__).resolve().parents[1] / "delfin" / "agent"
-          / "pack" / "benchmark" / "tasks.yaml")
-
-
-def _plan_pattern() -> str:
-    data = yaml.safe_load(_TASKS.read_text(encoding="utf-8"))
-    tasks = data if isinstance(data, list) else data.get("tasks", [])
-    task = next(t for t in tasks if t["id"] == "workflow_plan_before_act")
-    for sig in task["expected_signals"]:
-        if sig.get("against") == "text":
-            return sig["pattern"]
-    raise AssertionError("the text expectation disappeared")
+#: Something of substance on a line of its own before the first ACTION.
+#: ``\A`` anchors it to the start of the answer, so a summary printed
+#: after the actions cannot satisfy it.
+PLAN_BEFORE_ACT_PATTERN = r'(?sm)\A\s*(?!ACTION:)\S[^\n]{4,}\n[\s\S]*?^ACTION:'
 
 
 def _matches(answer: str) -> bool:
-    return bool(re.search(_plan_pattern(), answer))
+    return bool(re.search(PLAN_BEFORE_ACT_PATTERN, answer))
 
 
 _ACTIONS = (
