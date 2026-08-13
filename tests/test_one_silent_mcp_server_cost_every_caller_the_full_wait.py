@@ -207,6 +207,13 @@ def test_a_second_workspace_does_not_inherit_the_first_ones_servers(
         (repo / ".delfin" / "mcp_servers.json").write_text(json.dumps({
             "servers": {name: {"command": "true", "enabled": True}}}),
             encoding="utf-8")
+    # A workspace's servers are withheld until the user trusts that
+    # directory — a checked-out repository must not be able to spawn a
+    # process by containing one file. This test is about the KEYING, so it
+    # grants trust to both and then asks whether they stay apart.
+    from delfin.agent import workspace_trust as _wt
+    for repo in (repo_a, repo_b):
+        _wt.trust_workspace(repo, (_wt.KIND_MCP_SERVERS,), actor="user")
 
     mcp_client.reset_registry()
     try:

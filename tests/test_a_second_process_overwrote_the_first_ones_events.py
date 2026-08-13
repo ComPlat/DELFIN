@@ -48,7 +48,7 @@ n = int(sys.argv[3])
 
 _EMIT = """
 from delfin.agent import attention
-attention._deliver = lambda event: None
+attention._deliver = lambda event, **kw: None
 for i in range(n):
     attention.emit_attention("run_finished", title=f"{tag}-{i}")
 """
@@ -166,7 +166,11 @@ def test_an_unusable_lock_path_does_not_break_the_caller(tmp_path):
 
 def test_the_inbox_still_answers_the_way_it_did(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    monkeypatch.setattr(attention, "_deliver", lambda event: None)
+    # **kwargs, not a fixed signature: the delivery path grew a `skip`
+    # argument when transports started reporting what they delivered, and
+    # a stub pinned to the old shape fails for a reason that has nothing
+    # to do with what this test is about.
+    monkeypatch.setattr(attention, "_deliver", lambda event, **kw: None)
     event_id = attention.emit_attention(
         "question_pending", session_id="s1", title="which folder?")
     assert [ev["id"] for ev in attention.list_pending()] == [event_id]

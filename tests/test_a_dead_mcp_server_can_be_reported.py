@@ -149,6 +149,12 @@ def test_the_doctor_reports_an_unreachable_server(tmp_path, monkeypatch):
                         lambda: tmp_path / "nonexistent.json")
     # Only the configured server, so the built-ins do not spawn here.
     monkeypatch.setattr(MC, "_BUILTIN_SERVERS", {})
+    # A workspace's servers are withheld until the user trusts the
+    # directory. This test is about REPORTING a server that cannot be
+    # started, so it grants trust and then asks what the doctor says.
+    from delfin.agent import workspace_trust as _wt
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    _wt.trust_workspace(tmp_path, (_wt.KIND_MCP_SERVERS,), actor="user")
 
     rows = doctor._check_mcp({"workspace": str(tmp_path), "fast": False})
     assert rows, "the doctor said nothing about MCP"
@@ -186,6 +192,9 @@ def test_the_doctor_still_passes_a_reachable_server(tmp_path, monkeypatch):
     monkeypatch.setattr(MC, "_user_config_path",
                         lambda: tmp_path / "nonexistent.json")
     monkeypatch.setattr(MC, "_BUILTIN_SERVERS", {})
+    from delfin.agent import workspace_trust as _wt
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    _wt.trust_workspace(tmp_path, (_wt.KIND_MCP_SERVERS,), actor="user")
 
     rows = doctor._check_mcp({"workspace": str(tmp_path), "fast": False})
     assert rows and all(r["status"] == doctor.PASS for r in rows), rows
