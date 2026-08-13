@@ -277,6 +277,11 @@ def _isolate_user_wide_memory(tmp_path, monkeypatch):
 # real content from tests that legitimately read it.
 _USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
+    # The benchmark's per-checkout run lock. It lived under tests/fixtures
+    # first, where the checkout-leak guard would have caught it, and the
+    # move to ~/.delfin brought it into THIS guard's scope instead --
+    # which is the right place for it, redirected like every other sink.
+    ("delfin.agent.benchmark_runner", "_RUN_LOCK_DIR", "benchmark_locks"),
     ("delfin.agent.provider_profile", "_LOCAL_STATE_PATH",
      "provider_profile_state.json"),
     ("delfin.agent.job_fix", "_ATTEMPTS_PATH", "fix_attempts.json"),

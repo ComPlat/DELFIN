@@ -84,12 +84,28 @@ def test_exactly_one_of_many_contenders_gets_in(tmp_path):
     assert all("held by" in r for r in refused)
 
 
-def test_the_lock_file_lives_beside_the_fixtures(tmp_path):
-    """Not in /tmp and not in the user's home: it belongs to the checkout
-    whose fixtures it protects, because that is what two runs share."""
-    with br.fixture_run_lock(tmp_path, owner="first"):
+def test_the_lock_leaves_nothing_in_the_checkout(tmp_path):
+    """It was written into tests/fixtures/ first, and the suite's own leak
+    guard would have reported it -- rightly, because the checkout has to
+    look the same after a run as before it. Runtime coordination state
+    belongs where the rest of this framework's runtime state lives."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    with br.fixture_run_lock(checkout, owner="first"):
         pass
-    assert (tmp_path / "tests" / "fixtures" / ".benchmark-run.lock").exists()
+    left = [p for p in checkout.rglob("*") if p.is_file()]
+    assert left == [], left
+
+
+def test_two_checkouts_do_not_block_each_other(tmp_path):
+    """The lock is keyed by the checkout it protects. A second working copy
+    is a second set of fixtures and has nothing to wait for."""
+    one, two = tmp_path / "checkout-a", tmp_path / "checkout-b"
+    one.mkdir()
+    two.mkdir()
+    with br.fixture_run_lock(one, owner="run in a"):
+        with br.fixture_run_lock(two, owner="run in b"):
+            pass
 
 
 def test_a_filesystem_without_flock_measures_rather_than_refuses(tmp_path,

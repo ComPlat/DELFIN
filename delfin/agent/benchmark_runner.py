@@ -485,7 +485,19 @@ def run_task(
 #
 # The lock does not stop anybody. It tells them, which is the whole
 # difference between a run that is wrong and a run that says why.
-_RUN_LOCK_REL = Path("tests") / "fixtures" / ".benchmark-run.lock"
+# NOT inside the checkout. A sidecar under tests/fixtures/ is a new path
+# appearing during a run, which is exactly what the suite's own leak guard
+# exists to report -- and it would have been right to: the checkout must
+# look the same after a run as before it. Runtime coordination state lives
+# where the rest of this framework's runtime state lives, keyed by the
+# checkout it protects so two checkouts never block each other.
+_RUN_LOCK_DIR = Path.home() / ".delfin" / "benchmark_locks"
+
+
+def _run_lock_path(root: Path) -> Path:
+    import hashlib
+    key = hashlib.sha1(str(Path(root).resolve()).encode("utf-8")).hexdigest()[:16]
+    return _RUN_LOCK_DIR / f"{key}.lock"
 
 
 class BenchmarkRunInProgress(RuntimeError):
@@ -507,7 +519,7 @@ def fixture_run_lock(root: Path | str | None = None, *, owner: str = ""):
     the interference it prevents.
     """
     base = Path(root) if root is not None else Path(os.getcwd())
-    path = base / _RUN_LOCK_REL
+    path = _run_lock_path(base)
     handle = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
