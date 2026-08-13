@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
 dependencies = [
-    "mendeleev>=0.14,<1.0",
+    "mendeleev>=0.14,<2.0",
     "psutil",
     "ase>=3.22.0",
     "numpy>=1.26,<2",
