@@ -620,13 +620,45 @@ class APIClient(_BaseClient):
             )
         import anthropic
 
-        self.model = model or self.DEFAULT_MODEL
+        self.model = self._checked_model(model or self.DEFAULT_MODEL)
         self.client = anthropic.Anthropic(api_key=resolved_key)
+
+    @staticmethod
+    def _checked_model(model: str) -> str:
+        """Refuse a tier alias here rather than let the vendor refuse it.
+
+        The provider dropdown's fallback list ships ``opus`` / ``sonnet``
+        / ``haiku``. They are valid for the CLI backend, which resolves
+        them itself; this client puts the string straight into the
+        request body, so on the API backend every such run died on a
+        vendor 404 -- after the session, the engine and the tool schemas
+        had all been built. One sentence at the point where the contract
+        is known beats an opaque failure on the first turn.
+
+        Resolving the alias to a dated id instead would be a guess about
+        WHICH model the caller gets -- the same guess ``pricing`` refuses
+        to make about the rate behind these three names.
+        """
+        from delfin.agent import pricing
+        mid = (model or "").strip()
+        if mid in pricing.DECLARED_UNPRICED:
+            # Name the pinned ids of that same tier — the alias is
+            # ambiguous precisely because several of them exist.
+            same_tier = sorted(k for k in pricing.ANTHROPIC_RATES
+                               if mid in k)
+            usable = ", ".join(same_tier or sorted(pricing.ANTHROPIC_RATES))
+            raise ValueError(
+                f"'{mid}' is a tier alias, not a model id the Messages API "
+                f"accepts — the API backend needs a pinned id (e.g. "
+                f"{usable}). Aliases work on the CLI backend, which "
+                f"resolves them itself."
+            )
+        return mid
 
     def switch_model(self, model: str) -> None:
         """Switch model (no process to kill, just update the name)."""
         if model and model != self.model:
-            self.model = model
+            self.model = self._checked_model(model)
 
     def kill(self) -> None:
         """No-op — API client has no persistent process."""

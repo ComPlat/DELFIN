@@ -1886,12 +1886,12 @@ class AgentEngine:
         # down). The session is intact — raise the budget or start a new
         # run to continue.
         try:
-            _bfrac, _ = self._run_budget_status()
+            _bfrac, _, _bdim = self._run_budget_detail()
             if _bfrac >= 1.1:
                 _msg = (
                     "🛑 Run budget exhausted (>110%). No further turns will "
                     "run in this session. State is saved — raise "
-                    "agent.run_budget_usd / run_budget_s or start a new run "
+                    f"{_bdim or 'agent.run_budget_usd'} or start a new run "
                     "to continue.")
                 self._emit_budget_attention(
                     "hard_stop",
@@ -4608,6 +4608,37 @@ class AgentEngine:
                 pass
         return usd, secs
 
+    def _run_budget_turns(self) -> int:
+        """Turn ceiling for this run — 0 disables it.
+
+        The third dimension exists because the first one cannot always be
+        measured. A turn is countable whatever the model costs, so this
+        is the ceiling that still holds when the USD one is inert (see
+        :meth:`_usd_budget_enforced`). Same precedence as the other two:
+        an explicit attribute set per scheduler entry beats the setting.
+        """
+        turns = int(getattr(self, "run_budget_turns", 0) or 0)
+        if turns <= 0:
+            try:
+                from delfin.user_settings import load_settings as _ls
+                ag = (_ls() or {}).get("agent", {}) or {}
+                turns = int(ag.get("run_budget_turns", 0) or 0)
+            except Exception:
+                turns = 0
+        return max(0, turns)
+
+    def _turns_taken(self) -> int:
+        """Turns this run has actually run, priced or not.
+
+        Deliberately the SUM of the three price states and not the
+        unpriced count: a run that starts on an unpriced model and
+        switches to a priced one would otherwise stop spending its
+        ceiling half way through.
+        """
+        return (int(getattr(self, "_measured_cost_turns", 0) or 0)
+                + int(getattr(self, "_non_billing_turns", 0) or 0)
+                + int(getattr(self, "_unpriced_turns", 0) or 0))
+
     def _client_retry_count(self) -> int | None:
         """How often the client re-issued this turn's request, if it says.
 
@@ -4688,6 +4719,20 @@ class AgentEngine:
                 or getattr(self, "_unmeasured_budget_notice_shown", False)):
             return ""
         self._unmeasured_budget_notice_shown = True
+        turn_cap = self._run_budget_turns()
+        # The prompt reaches the model and nobody else. A run budget is
+        # what makes an unattended run deployable, so the one fact that
+        # it is not in force has to reach whoever is not watching.
+        self._emit_budget_attention(
+            "unenforceable",
+            "Run budget: the USD ceiling is not in force",
+            f"{unpriced} turn(s) ran on a model with no published rate, so "
+            f"the ${usd:.2f} ceiling cannot be enforced and neither can the "
+            f"per-turn cost breaker."
+            + (f" The {turn_cap}-turn ceiling IS in force."
+               if turn_cap > 0 else
+               " Set agent.run_budget_turns or agent.run_budget_s for a "
+               "ceiling that can be."))
         turns = (unpriced + int(getattr(self, "_measured_cost_turns", 0) or 0)
                  + int(getattr(self, "_non_billing_turns", 0) or 0))
         tok_in = int(self.token_usage.get("input", 0) or 0)
@@ -4702,13 +4747,16 @@ class AgentEngine:
             f"{tok_out:,} output tokens. Judge the size of this run by "
             f"those, not by a dollar figure.",
         ]
+        if turn_cap > 0:
+            lines.append(f"- The {turn_cap} turn(s) ceiling IS measured and "
+                         "still ends this run.")
         if secs > 0:
             lines.append(f"- The {secs:.0f}s wall-clock ceiling IS measured "
                          "and still ends this run.")
-        else:
+        if turn_cap <= 0 and secs <= 0:
             lines.append("- For a ceiling that can be enforced, set "
-                         "agent.run_budget_s or pick a model id with a "
-                         "published rate.")
+                         "agent.run_budget_turns or agent.run_budget_s, or "
+                         "pick a model id with a published rate.")
         return "\n".join(lines)
 
     def _run_budget_status(self) -> tuple[float, bool]:
@@ -4718,16 +4766,34 @@ class AgentEngine:
         The USD term is a sum over measurable turns only — see
         :meth:`_usd_budget_enforced` for what it cannot see.
         """
+        frac, exhausted, _dim = self._run_budget_detail()
+        return frac, exhausted
+
+    def _run_budget_detail(self) -> tuple[float, bool, str]:
+        """As :meth:`_run_budget_status`, plus the setting that is worst.
+
+        A refusal that names ``run_budget_usd`` when the wall clock or the
+        turn count stopped the run sends its reader to the wrong dial.
+        """
         usd, secs = self._run_budget()
-        frac = 0.0
+        turns_cap = self._run_budget_turns()
+        frac, dim = 0.0, ""
         if usd > 0:
-            frac = max(frac, float(self.cost_usd) / usd)
+            share = float(self.cost_usd) / usd
+            if share > frac:
+                frac, dim = share, "agent.run_budget_usd"
         if secs > 0:
             import time as _t
             started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
             if started > 0:
-                frac = max(frac, (_t.time() - started) / secs)
-        return frac, frac >= 1.0
+                share = (_t.time() - started) / secs
+                if share > frac:
+                    frac, dim = share, "agent.run_budget_s"
+        if turns_cap > 0:
+            share = float(self._turns_taken()) / turns_cap
+            if share > frac:
+                frac, dim = share, "agent.run_budget_turns"
+        return frac, frac >= 1.0, dim
 
     def _emit_budget_attention(self, level: str, title: str,
                                detail: str) -> None:
@@ -4778,9 +4844,12 @@ class AgentEngine:
         if frac >= 0.8:
             pct = min(999, int(frac * 100))
             usd, secs = self._run_budget()
+            turn_cap = self._run_budget_turns()
             ceiling = ", ".join(
                 [p for p in (f"${usd:.2f}" if usd > 0 else "",
-                             f"{secs:.0f}s" if secs > 0 else "") if p])
+                             f"{secs:.0f}s" if secs > 0 else "",
+                             f"{turn_cap} turns" if turn_cap > 0 else "")
+                 if p])
             if exhausted:
                 parts.append(
                     "# Run budget EXHAUSTED\n"
