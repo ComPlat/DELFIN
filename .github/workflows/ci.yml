@@ -33,8 +33,15 @@ on:
 # run list shows nothing but "cancelled". A pull request is the other case:
 # only its latest revision is going to be merged, so superseding is exactly
 # right there and stays on.
+#
+# `cancel-in-progress` is only half of it: a run that is still QUEUED is
+# cancelled by the next one to enter its group no matter what that flag
+# says, and with one runner most pushes to main sit queued behind the run
+# before them. So on main the commit itself is the group -- a run there is
+# alone in its group, waits its turn, and is never superseded. Elsewhere
+# the ref is the group, which is what makes a new revision replace the old.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
