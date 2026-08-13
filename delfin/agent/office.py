@@ -59,8 +59,12 @@ import csv
 import re
 import threading as _threading
 from dataclasses import dataclass
+from datetime import date as _dt_date, datetime as _dt_datetime, time as _dt_time
+from decimal import Decimal as _Decimal
 from pathlib import Path
 from typing import Any, Optional
+
+from . import german as _de
 
 # Reading caps. A spreadsheet can be a million rows; the point of the
 # read path is to let the model see the shape and the region it asked
@@ -573,6 +577,74 @@ AMBIGUOUS = "ambiguous"
 DAY_FIRST = "day_first"             # 31.07.2026
 MONTH_FIRST = "month_first"         # 07/31/2026
 ISO_DATE = "iso"                    # 2026-07-31
+
+
+# ---------------------------------------------------------------------------
+# Writing a value back out
+# ---------------------------------------------------------------------------
+
+# Excel's number formats say what a value LOOKS like, and the readers
+# below already decode what it means. Between them sat ``str(value)``:
+# a Serienbrief built from a cell formatted ``#,##0.00 "€"`` and one
+# formatted ``DD.MM.YYYY`` went to a customer reading
+#
+#     wir stellen Ihnen 1234.5 EUR in Rechnung, fällig am
+#     2026-07-31 00:00:00.
+#
+# and the run reported {'ok': 1}. The cell's own number_format was
+# available at every step and consulted at none. Everything that puts a
+# cell value into a document goes through here.
+
+# What a number format says about a NUMBER: how many places, whether it
+# groups, whether it is a percentage. The quoted literals and the colour
+# blocks are stripped first — ``"€"`` is decoration the template already
+# carries, and repeating it turns "1.234,50 EUR" into "1.234,50 € EUR".
+_FORMAT_LITERAL_RE = re.compile(r'"[^"]*"|\[[^\]]*\]|\\.|_.|\*.')
+
+
+def _number_format_spec(number_format: Any) -> tuple[Optional[int], bool, bool]:
+    """``(decimals, grouping, percent)`` for an Excel number format.
+
+    ``decimals`` is None when the format decides nothing (General, or no
+    format at all), which leaves the value's own precision alone.
+    """
+    text = str(number_format or "").strip()
+    if not text or text.lower() == "general":
+        return None, False, False
+    text = text.split(";")[0]
+    percent = "%" in _FORMAT_LITERAL_RE.sub("", text)
+    body = _FORMAT_LITERAL_RE.sub("", text)
+    body = "".join(ch for ch in body if ch in "#0.,%")
+    if not any(ch in body for ch in "#0"):
+        return None, False, percent
+    whole, dot, frac = body.replace("%", "").rpartition(".")
+    if not dot:                      # no decimal point: it is all integer
+        whole, frac = body.replace("%", ""), ""
+    decimals = sum(1 for ch in frac if ch in "#0")
+    grouping = "," in whole
+    return decimals, grouping, percent
+
+
+def _render_for_locale(value: Any, number_format: Any = "") -> str:
+    """One cell value as the document should show it.
+
+    A float becomes ``1.234,50`` and a datetime ``31.07.2026`` — the cell's
+    own format decides the precision and the date pattern, the locale
+    decides the characters. Strings pass through untouched: a CSV already
+    holds the text the user typed, and re-formatting it would be this
+    module's other failure mode in reverse.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Ja" if value else "Nein"
+    if isinstance(value, (_dt_datetime, _dt_date, _dt_time)):
+        return _de.format_date(value, number_format)
+    if isinstance(value, (int, float)) or isinstance(value, _Decimal):
+        decimals, grouping, percent = _number_format_spec(number_format)
+        return _de.format_number(value, decimals=decimals, grouping=grouping,
+                                 percent=percent)
+    return str(value)
 
 
 def _number_evidence(text: str) -> Optional[str]:
@@ -1715,13 +1787,10 @@ def plan_sheet_edits(
             pass
 
 
-# Labels a bookkeeping sheet puts on its closing row, German and English.
-# A label alone is not enough: "Summe der Belege folgt" is prose. The row
+# Which labels a bookkeeping sheet puts on its closing row is a German
+# question, so the vocabulary lives with the other German matchers. A
+# label alone is not enough: "Summe der Belege folgt" is prose. The row
 # has to aggregate something as well, which in practice means a formula.
-_TOTAL_ROW_LABELS = (
-    "summe", "zwischensumme", "gesamt", "gesamtsumme",
-    "total", "subtotal", "sum",
-)
 
 
 def _total_row_above(ws, before_row: int) -> "tuple[int, str] | None":
@@ -1732,6 +1801,12 @@ def _total_row_above(ws, before_row: int) -> "tuple[int, str] | None":
     The booking is recorded, the workbook's total is not, and the user
     reads a number off their own file that is now wrong. Nothing in this
     module looked for one.
+
+    The label is matched by its tokens. A prefix plus a two-character
+    clamp — what stood here — saw "Summe" and "Gesamt" and was silent on
+    "Summe EUR", "Endsumme", "Gesamtbetrag", "Summe gesamt" and "Gesamt
+    netto", which is what German sheets actually write. Every one of
+    those appended below the total with no warning at all.
     """
     try:
         first = max(1, before_row - 5)
@@ -1747,8 +1822,7 @@ def _total_row_above(ws, before_row: int) -> "tuple[int, str] | None":
                         label = value.strip().lower()
             if not label or not has_formula:
                 continue
-            if any(label.startswith(w) and len(label) <= len(w) + 2
-                   for w in _TOTAL_ROW_LABELS):
+            if _de.is_total_row_label(label):
                 return row, label
     except Exception:
         return None
@@ -2191,6 +2265,33 @@ def _table_rows(path: Any, sheet: Optional[str] = None) -> list[list]:
             wb.close()
         except Exception:
             pass
+
+
+def _table_cell_formats(path: Any, sheet: Optional[str] = None) -> list[list]:
+    """The number format of every cell, in the shape ``_table_rows``
+    returns its values.
+
+    Only a workbook has them. A CSV holds text the user already formatted,
+    and an .ods reader gives values without their style, so both come back
+    empty and the renderer falls back to the value's own precision.
+    """
+    try:
+        p = _resolve(path)
+        if document_kind(p) != "spreadsheet":
+            return []
+        openpyxl = _require("spreadsheet")
+        wb = openpyxl.load_workbook(p, data_only=True, read_only=True)
+        try:
+            ws = (wb[sheet] if sheet and sheet in wb.sheetnames else wb.active)
+            return [[getattr(c, "number_format", "") or "" for c in row]
+                    for row in ws.iter_rows()]
+        finally:
+            try:
+                wb.close()
+            except Exception:
+                pass
+    except Exception:
+        return []
 
 
 def _header_index(header: list, column: str, where: str) -> int:
@@ -2817,6 +2918,10 @@ def fill_series(
     header = [str(h or "").strip() for h in rows[0]]
     if not any(header):
         raise OfficeError("the table's first row is empty — no column names")
+    # Read alongside the values, not instead of them: the letter that
+    # leaves the building has to show "1.234,50" and "31.07.2026", and
+    # only the cell knows which of the two it is.
+    formats = _table_cell_formats(table, sheet)
 
     tpl = _resolve(template)
     _refuse_unwritable_format(tpl, what="filling it as a template")
@@ -2896,8 +3001,12 @@ def fill_series(
     results: list[dict] = []
 
     for offset, row in enumerate(data_rows[:limit], start=2):
+        row_formats = (formats[offset - 1]
+                       if offset - 1 < len(formats) else [])
         record = {
-            header[i]: (row[i] if i < len(row) else "")
+            header[i]: _render_for_locale(
+                row[i] if i < len(row) else "",
+                row_formats[i] if i < len(row_formats) else "")
             for i in range(len(header)) if header[i]
         }
         values = {field: record.get(column, "")
@@ -3882,7 +3991,7 @@ def fill_pdf_form(
                 mapped.append(f"{key}={value!r} -> {resolved}")
             resolved_values[str(key)] = resolved
         else:
-            resolved_values[str(key)] = "" if value is None else str(value)
+            resolved_values[str(key)] = _render_for_locale(value)
 
     try:
         writer = pypdf.PdfWriter(clone_from=str(src))
@@ -4606,7 +4715,10 @@ def _fill_paragraph(paragraph: Any, values: dict, unfilled: set) -> int:
             unfilled.add(name)
             offset = match.end()
             continue
-        replacement = "" if values[name] is None else str(values[name])
+        # Not str(): a caller handing the filler a float or a datetime is
+        # handing it a value the LETTER has to show, and str() shows
+        # "1234.5" and "2026-07-31 00:00:00" to a German customer.
+        replacement = _render_for_locale(values[name])
         _splice_runs(runs, match.start(), match.end(), replacement)
         offset = match.start() + len(replacement)
         filled += 1
@@ -5437,11 +5549,30 @@ _CURRENCY_BEFORE_RE = re.compile(r"(?:EUR|Euro|€|CHF|USD|\$)\s*$")
 # Jahressumme, Rechnungsbetrag — so the stems match as stems. A closed
 # list of whole words let "Das Gesamtbudget beträgt ..." through while
 # catching "Die Gesamtsumme beträgt ...", which is the same sentence.
+#
+# Compounding was handled and INFLECTION was not, which is the bigger
+# hole: German states a total with "betragen" more often than with any
+# noun, and the list carried the third-person singular only. Measured —
+#
+#     flags=0 | Die Kosten betragen 99.999,99 EUR.
+#     flags=0 | Die Summen der Konten betragen 99.999,99 EUR.
+#     flags=0 | Die Personalkosten liegen bei 99.999,99 EUR.
+#     flags=1 | Die Gesamtsumme beträgt 99.999,99 EUR.
+#
+# — the same fabricated figure, three of four times unseen. Plurals,
+# preterites and the "liegt bei" phrasing are below.
 _TOTAL_CUE_RE = re.compile(
-    r"(?i)\bgesamt\w*|\w*summe\b|\bsummier\w*|\w*betrag\b|\w*beträge\b|"
-    r"\bbeträgt\b|\bbeläuft\b|\bbelaufen\b|\binsgesamt\b|\bzusammen\b|"
+    r"(?i)\bgesamt\w*|\w*summ(?:e|en)\b|\bsummier\w*|"
+    r"\w*betr(?:ag|ags|äge|ägen)\b|"
+    r"\bbeträgt\b|\bbetragen\b|\bbetrug\b|\bbetrugen\b|"
+    r"\bbeläuft\b|\bbelaufen\b|\bbelief\b|\bbeliefen\b|"
+    r"\bliegt\s+bei\b|\bliegen\s+bei\b|\blag\s+bei\b|\blagen\s+bei\b|"
+    r"\bergibt\s+sich\b|\bmacht\s+(?:das\s+)?\w*\s*aus\b|"
+    r"\w*kosten\b|\w*aufwand\b|\w*aufwände\b|\w*erlös\w*|\w*ausgaben\b|"
+    r"\w*einnahmen\b|\bendstand\b|\bendbetrag\b|"
+    r"\binsgesamt\b|\bzusammen\b|"
     r"\btotal\b|\bsaldo\b|\bumsatz\w*|\bvolumen\b|\bbilanz\b|\bbudget\w*|"
-    r"\bsum\b|\baltogether\b")
+    r"\bsum\b|\bsums\b|\btotals?\b|\bamounts?\s+to\b|\baltogether\b")
 
 # ... and about a DERIVED figure: a difference, a share, an average, a
 # per-unit value. Those are checked for derivability from the ledger
@@ -5464,16 +5595,13 @@ _MONEY_SENTENCE_RE = re.compile(
 # assumption, or one the answer says it did not compute. Konjunktiv II
 # ("die Summe wäre") is how German says "not measured", and flagging it
 # would caveat the honest answer.
-_NOT_ASSERTED_RE = re.compile(
-    # Abbreviations first: their trailing dot is not a word boundary, and
-    # anchoring them like a word silently switched "ca." off.
-    r"(?i)\bca\.|\bz\.\s?b\.|\bggf\.|"
-    r"\b(?:circa|etwa|ungefähr|ungefaehr|rund|geschätzt|schätzungsweise|"
-    r"vermutlich|womöglich|angenommen|annahme|beispiel|beispielsweise|"
-    r"zum beispiel|fiktiv|platzhalter|wäre|waere|würde|wuerde|läge|"
-    r"ergäbe|betrüge|hypothetisch|nicht berechnet|nicht geprüft|"
-    r"nicht gerechnet|ohne gewähr|approximately|roughly|assumed|example|"
-    r"placeholder)\b")
+#
+# THE SAME list the answer guard uses. They were two lists, and they
+# disagreed inside one answer: "Die Summe liegt bei rund 45.000 EUR." was
+# an honest hedge here ("rund") and a confident claim there, so one
+# sentence got a caveat from one guard and none from the other. A user
+# cannot act on a guard that contradicts itself in the same paragraph.
+_NOT_ASSERTED_RE = _de.HEDGE_RE
 
 # Positions where a number is a reference and not a quantity: a cell
 # address, a row or column number, a document number, a date.

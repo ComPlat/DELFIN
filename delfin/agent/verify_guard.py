@@ -41,6 +41,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from . import german as _german
+
 
 _HERE = Path(__file__).resolve().parent
 _GROUNDTRUTH_PATH = _HERE / "pack" / "benchmark" / "keywords_groundtruth_orca.json"
@@ -699,33 +701,20 @@ def _governs(sentence: str, rx: "re.Pattern[str]", pos: int) -> bool:
 # enforcement exists to stop CONFIDENT fabrication, and an answer that says
 # it is guessing has already disclosed its grounding status.
 
-_HEDGE_MARKERS = re.compile(
-    # Abbreviated hedges END in a period, and a trailing \b after "." never
-    # matches (both sides are non-word), so the German "ca." — the most
-    # ordinary hedge there is — was in the list and could not fire. It
-    # therefore stands OUTSIDE the \b-wrapped alternation.
-    r"(?i)\bca\.|\bz\.\s?T\.|"
-    r"\b(?:"
-    # German
-    r"vermutlich|wahrscheinlich|m(?:ö|oe)glicherweise|vielleicht|"
-    r"ungef(?:ä|ae)hr|etwa|circa|sch(?:ä|ae)tzungsweise|grob|"
-    r"unsicher|ungepr(?:ü|ue)ft|unverifiziert|"
-    r"nicht\s+(?:gepr(?:ü|ue)ft|verifiziert|(?:ü|ue)berpr(?:ü|ue)ft|sicher|"
-    r"nachgesehen|nachgeschaut)|"
-    r"k(?:ö|oe)nnte|d(?:ü|ue)rfte|scheint|offenbar|"
-    r"aus\s+dem\s+(?:ged(?:ä|ae)chtnis|kopf)|"
-    # English
-    r"probably|likely|perhaps|maybe|possibly|approximately|roughly|around|"
-    r"unsure|uncertain|unverified|presumably|"
-    r"not\s+(?:sure|certain|verified|checked|confirmed)|"
-    r"i\s+(?:think|believe|guess|assume|recall|suspect|expect)|"
-    r"have\s*n(?:o|')t\s+(?:checked|verified|looked|read|confirmed)|"
-    r"did\s*n(?:o|')t\s+(?:check|verify|look|read|confirm)|"
-    r"without\s+(?:checking|looking|verifying)|"
-    r"from\s+memory|iirc|if\s+i\s+recall|"
-    r"might|may\s+be|should\s+be|seems?|estimated?"
-    r")\b"
-)
+# THE SAME list the office figure guard uses — see delfin/agent/german.py.
+# They used to be two, and the German half here was adverbs only while the
+# English half had a full first-person vocabulary ("i think", "from
+# memory", "iirc"). Measured on the shipped list, none of these was a
+# hedge:
+#
+#     Die Summe liegt bei rund 45.000 EUR.
+#     Ich schätze die Summe auf 45.000 EUR.
+#     Ich glaube, es sind 45.000 EUR.
+#     Soweit ich weiß sind es 45.000 EUR.
+#
+# and the first of them WAS a hedge to the other guard, in the same
+# answer.
+_HEDGE_MARKERS = _german.HEDGE_RE
 
 
 @lru_cache(maxsize=8)
@@ -998,11 +987,38 @@ def verification_marker(new_files) -> str:
     shown = ", ".join(names[:3])
     more = f" (+{len(names) - 3})" if len(names) > 3 else ""
     return (
-        f"\n\n[verify] Self-check: the claims above were re-checked against "
-        f"{shown}{more}, read during the correction turn."
+        f"\n\n[verify] Self-check: die Angaben oben wurden gegen "
+        f"{shown}{more} geprüft, gelesen im Korrekturzug."
     )
 
 
+# ---------------------------------------------------------------------------
+# The language a caveat is written in
+# ---------------------------------------------------------------------------
+#
+# German, all of them. The line drawn here is not "user-facing text" —
+# it is who READS the string and whether anything translates it:
+#
+#   * A tool result, an error, a note the model gets back — ENGLISH. The
+#     model reads it and answers the user in the user's language, so it
+#     is translated on the way out. Every message in office.py is that
+#     kind and stays English.
+#   * A caveat — GERMAN. It is appended to the FINISHED answer, after the
+#     model's last turn; nothing comes after it to translate it, and it
+#     asks the reader to do something ("bitte nachrechnen, bevor die Zahl
+#     weitergegeben wird"). An instruction the reader skips is not a
+#     warning.
+#
+# The ``[verify] Caveat:`` / ``[verify] Self-check:`` tags stay as they
+# are: they are machine markers the engine and the tests key on, not
+# prose, and translating a marker breaks what reads it.
+#
+# It used to be decided per function rather than by a rule, so one German
+# answer about one spreadsheet came back with three caveats — German,
+# English, German — two of them from this file, and the English one
+# quoted the German noun back at the reader ("This answer states 31
+# Belege"). The users of this framework write German; a warning they
+# stop reading is worse than no warning.
 def grounding_caveat(
     location_flags: list[LocationClaimFlag],
     quantity_flags: list[QuantityClaimFlag],
@@ -1015,9 +1031,9 @@ def grounding_caveat(
     if not items:
         return ""
     return (
-        "\n\n[verify] Caveat: the following claims remain unverified — no "
-        "file read or lookup in this session backs them: "
-        + ", ".join(items) + ". Treat them as unconfirmed."
+        "\n\n[verify] Caveat: die folgenden Angaben sind unbelegt — kein "
+        "Datei-Zugriff und keine Recherche in dieser Sitzung deckt sie ab: "
+        + ", ".join(items) + ". Bitte als unbestätigt behandeln."
     )
 
 
@@ -1536,25 +1552,29 @@ def functional_claim_caveat(flags: list[FunctionalClaimFlag]) -> str:
     for f in flags:
         if f.kind == "completeness":
             items.append(
-                f"'{f.claim}' — a completeness claim cannot be established "
-                "by a test run: it says what was covered, never what was "
-                "left out. Name the parts you did NOT exercise")
+                f"'{f.claim}' — eine Vollständigkeitsaussage lässt sich "
+                "durch einen Testlauf nicht belegen: er sagt, was geprüft "
+                "wurde, nie was ausgelassen wurde. Bitte benennen, was NICHT "
+                "ausgeführt wurde")
         elif f.kind == "interactive":
-            items.append(f"'{f.claim}' — interactive/browser behavior was "
-                         f"never exercised in this session")
+            items.append(f"'{f.claim}' — interaktives Verhalten bzw. das "
+                         f"Verhalten im Browser wurde in dieser Sitzung nie "
+                         f"ausgeführt")
         elif f.kind == "unexercised":
-            items.append(f"'{f.claim}' — '{f.subject}' was never executed in "
-                         f"this session (starting a server is not evidence "
-                         f"that it works)")
+            items.append(f"'{f.claim}' — '{f.subject}' wurde in dieser "
+                         f"Sitzung nie ausgeführt (einen Server zu starten "
+                         f"belegt nicht, dass er funktioniert)")
         else:
-            items.append(f"'{f.claim}' — this session executed nothing")
+            items.append(f"'{f.claim}' — in dieser Sitzung wurde nichts "
+                         f"ausgeführt")
     note = ""
     if any(f.kind == "interactive" for f in flags):
-        note = (" Interactive and browser behavior cannot be checked "
-                "headlessly here.")
+        note = (" Interaktives Verhalten und Browser-Verhalten lassen sich "
+                "hier ohne Anzeige nicht prüfen.")
     return (
-        "\n\n[verify] Caveat: the following was NOT verified in this session: "
-        + "; ".join(items) + "." + note + " Treat it as unconfirmed."
+        "\n\n[verify] Caveat: das Folgende wurde in dieser Sitzung NICHT "
+        "geprüft: " + "; ".join(items) + "." + note
+        + " Bitte als unbestätigt behandeln."
     )
 
 
@@ -1840,8 +1860,9 @@ def count_vs_enumeration_caveat(pairs: list[tuple[int, int]]) -> str:
         return ""
     claimed, listed = pairs[0]
     return (
-        f"\n\n> ⚠️ This answer states {claimed} but lists {listed} entries. "
-        "One of the two is wrong — count them again before passing it on."
+        f"\n\n> ⚠️ Diese Antwort nennt {claimed}, führt aber {listed} "
+        "Einträge auf. Eines von beiden ist falsch — bitte nachzählen, "
+        "bevor die Zahl weitergegeben wird."
     )
 
 
@@ -1850,12 +1871,13 @@ def truncated_output_caveat(counts: list[str], tools: list[str]) -> str:
     if not counts:
         return ""
     named = ", ".join(counts[:3])
-    where = ", ".join(sorted(set(tools))[:3]) or "a tool result"
+    where = ", ".join(sorted(set(tools))[:3]) or "ein Werkzeug-Ergebnis"
     return (
-        "\n\n> ⚠️ This answer states " + named + ", but the output of "
-        + where + " was truncated this turn. A number whose only source was "
-        "cut short is estimated, not counted — check it against the full "
-        "list before passing it on."
+        "\n\n> ⚠️ Diese Antwort nennt " + named + ", aber die Ausgabe von "
+        + where + " wurde in diesem Zug abgeschnitten. Eine Zahl, deren "
+        "einzige Quelle abgeschnitten war, ist geschätzt und nicht gezählt "
+        "— bitte gegen die vollständige Liste prüfen, bevor sie "
+        "weitergegeben wird."
     )
 
 

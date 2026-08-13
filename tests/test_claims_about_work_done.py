@@ -108,14 +108,18 @@ def test_the_caveat_names_the_number_and_the_tool():
     text = vg.truncated_output_caveat(["31 PDF-Dateien"], ["list_files"])
     assert "31 PDF-Dateien" in text
     assert "list_files" in text
-    assert "truncated" in text
+    assert "abgeschnitten" in text
 
 
 def test_the_caveat_says_what_the_number_is_worth():
-    """"Estimated, not counted" is the sentence the user needs; "warning"
-    on its own tells them nothing they can act on."""
+    """"Geschätzt und nicht gezählt" is the sentence the user needs;
+    "Warnung" on its own tells them nothing they can act on.
+
+    German because the caveat is appended to the FINISHED answer — no
+    model turn follows it to translate it, and the reader is the person
+    who asked, in German."""
     text = vg.truncated_output_caveat(["31 files"], ["list_files"])
-    assert "estimated, not counted" in text
+    assert "geschätzt und nicht gezählt" in text
 
 
 def test_the_ledger_is_per_turn_and_bounded():

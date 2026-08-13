@@ -19,6 +19,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from . import german as _german
+
 
 _DEFAULT_PATH = Path.home() / ".delfin" / "agent_memory.json"
 _STOPWORDS = {
@@ -393,11 +395,20 @@ _GLOBAL_PREFIX_RE = re.compile(r"^global\s*:\s*", re.IGNORECASE)
 # then project (time/deadline cues), then reference (external pointers),
 # then user as the fallback. Patterns are intentionally conservative so a
 # misclassification stays an editable text file the user can re-tag.
+#
+# Matched as WORDS, not as substrings with a trailing space. Every German
+# hint used to end in one, and German puts its negation at the end of the
+# sentence — so "Committe niemals ohne Test", the strongest prohibition a
+# user can write, was filed as background, and "Bitte nicht ohne Test
+# committen" was filed as feedback only because "nicht" happened to have
+# a word after it. "niemals" and "nie" were absent from the list outright.
 _FEEDBACK_HINTS = (
-    "don't ", "do not ", "never ", "stop ", "always ",
-    "nicht ", "keine ", "kein ", "immer ", "stets ",
+    "don't", "do not", "never", "stop", "always", "avoid",
+    "nicht", "nie", "niemals", "keine", "kein", "keinen", "keinesfalls",
+    "immer", "stets", "grundsätzlich", "grundsaetzlich", "unbedingt",
+    "bloß nicht", "bloss nicht", "auf keinen fall", "vermeide",
     "use ... instead", "use x instead of",
-    "prefer ", "should not ", "must not ", "muss nicht ",
+    "prefer", "should not", "must not", "muss nicht", "darf nie",
     "muss immer", "darf nicht", "anti-pattern", "anti pattern",
 )
 _PROJECT_HINTS = (
@@ -415,17 +426,36 @@ _REFERENCE_HINTS = (
 )
 
 
+def _hint_pattern(hints: tuple[str, ...]) -> "re.Pattern[str]":
+    """One word-boundary matcher for a hint set.
+
+    Word-bounded so a hint can sit at the end of a sentence, which is
+    where German puts it. ``...`` in a hint stands for anything up to the
+    end of the line ("use ... instead").
+    """
+    parts = []
+    for hint in hints:
+        pieces = [re.escape(p.strip()) for p in hint.split("...")]
+        parts.append(r"\s.*?\s".join(p for p in pieces if p))
+    return re.compile(r"(?i)(?:^|\b)(?:" + "|".join(parts) + r")(?:\b|$)")
+
+
+_FEEDBACK_RE = _hint_pattern(_FEEDBACK_HINTS)
+_PROJECT_RE = _hint_pattern(_PROJECT_HINTS)
+_REFERENCE_RE = _hint_pattern(_REFERENCE_HINTS)
+
+
 def _classify_by_heuristic(text: str) -> str:
     """Pick a memory type when the user didn't supply a prefix.
 
     Returns one of ``"feedback" | "project" | "reference" | "user"``.
     """
     lowered = (text or "").lower()
-    if any(h in lowered for h in _FEEDBACK_HINTS):
+    if _FEEDBACK_RE.search(lowered):
         return "feedback"
-    if any(h in lowered for h in _PROJECT_HINTS):
+    if _PROJECT_RE.search(lowered):
         return "project"
-    if any(h in lowered for h in _REFERENCE_HINTS):
+    if _REFERENCE_RE.search(lowered):
         return "reference"
     return "user"
 
@@ -783,9 +813,15 @@ def assert_office_convention(text: str, *, what: str = "memory") -> None:
 
 
 def _slugify(text: str, max_len: int = 60) -> str:
-    s = re.sub(r"[^a-z0-9\s\-]", "", (text or "").lower())
-    s = re.sub(r"\s+", "-", s).strip("-")
-    return (s or "memory")[:max_len].rstrip("-") or "memory"
+    """The memory slug. Shared with every other slug in the framework.
+
+    It used to strip anything outside ``[a-z0-9\\s-]``, which DELETES an
+    umlaut instead of spelling it: "Müller GmbH" and "Möller GmbH" both
+    became ``mller-gmbh``. The filename got a numeric suffix, but the
+    slug is what the index shows the user and what a merge and a delete
+    match on, so one customer's note answered for the other's.
+    """
+    return _german.slugify(text, max_len=max_len, fallback="memory")
 
 
 def _project_slug(repo_root: Path) -> str:

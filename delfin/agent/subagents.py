@@ -72,6 +72,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from . import german as _de
+
 # Structured returns — the JSON-Schema subset validator, JSON extraction
 # and the schema-contract instruction moved to ``structured_output`` as a
 # reusable harness service (any caller can request schema-validated JSON,
@@ -1304,11 +1306,20 @@ _TEST_CLAIM_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 # Completion claims, by family. The families differ in what evidence would
 # back them, so they are judged by different rules (see _judge_completion).
 _COMPLETION_FAMILIES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    # The ordinary way a delegate says it changed a file — in either
+    # language. Measured on the shipped pattern, none of "geschrieben",
+    # "erstellt", "eingetragen", "übertragen", "angelegt", "ergänzt",
+    # "gespeichert" produced a claim; only "aktualisiert" did. The same
+    # gap ran the other way: the list carried "rewrote" and not "wrote",
+    # and no "saved" at all, so "I wrote the file" was no claim either.
+    # The vocabulary is shared with the write-verb matchers.
     ("mutation", re.compile(
         r"(?i)\b(?:implemented|fixed|patched|refactored|migrated|"
         r"wired(?:\s+up)?|added|created|removed|deleted|renamed|updated|"
-        r"rewrote|implementiert|umgesetzt|behoben|gefixt|"
-        r"hinzugef(?:ü|ue)gt|entfernt|umbenannt|aktualisiert|eingebaut)\b")),
+        r"rewrote|" + "|".join(_de.ENGLISH_WRITE_PARTICIPLES) + r"|"
+        r"implementiert|umgesetzt|behoben|gefixt|"
+        r"hinzugef(?:ü|ue)gt|entfernt|umbenannt|aktualisiert|eingebaut|"
+        + "|".join(_de.GERMAN_WRITE_PARTICIPLES) + r")\b")),
     ("verification", re.compile(
         r"(?i)\b(?:verified|validated|confirmed|double[\s-]?checked|"
         r"cross[\s-]?checked|bit[\s-]?identical|identical|unchanged|"

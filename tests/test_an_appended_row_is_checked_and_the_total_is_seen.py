@@ -145,3 +145,47 @@ def test_a_row_that_merely_says_summary_is_not_a_total(tmp_path):
     out = O.edit_sheet(p, append_records=[
         {"Beleg": "R-003", "Kreditor": "Institut", "Betrag": 300}])
     assert "outside" not in _notes(out).lower()
+
+
+# ---------------------------------------------------------------------------
+# A QUALIFIED label is still a label
+# ---------------------------------------------------------------------------
+#
+# The matcher was a prefix plus a two-character clamp: "summe" and at most
+# two more characters. Measured on the shipped clamp, every label a German
+# bookkeeping sheet actually carries was invisible —
+#
+#     seen: Summe, Gesamt, Gesamtsumme, Zwischensumme, Summe:
+#     NOT:  Summe EUR, Endsumme, Gesamtbetrag, Summe gesamt, Gesamt netto
+#
+# — and the booking landed below the total, outside its range, with no
+# warning at all.
+
+@pytest.mark.parametrize("label", [
+    "Summe EUR", "Endsumme", "Gesamtbetrag", "Summe gesamt", "Gesamt netto",
+    "Summe brutto", "Gesamt EUR", "Jahressumme", "Summe (netto)",
+    "Grand Total", "Total EUR", "Zwischensumme netto",
+])
+def test_a_qualified_closing_label_is_still_a_closing_label(tmp_path, label):
+    p = _book(tmp_path, _BOOKINGS + [[label, None, "=SUM(C2:C3)"]])
+    out = O.edit_sheet(p, append_records=[
+        {"Beleg": "R-003", "Kreditor": "Institut", "Betrag": 300}])
+    assert "outside" in _notes(out).lower(), label
+
+
+@pytest.mark.parametrize("label", [
+    # Prose that happens to start with a total word.
+    "Summe der Belege folgt",
+    "Gesamt siehe Anlage 3",
+    # Ordinary column headers and comments that must stay quiet, even
+    # standing over a formula.
+    "Betrag", "Datum", "Bemerkung", "Kreditor", "Konsum", "Summand",
+    "Betrag netto",
+])
+def test_a_label_that_is_not_a_closing_row_stays_quiet(tmp_path, label):
+    """Widening the matcher must not make it fire on everything: a warning
+    the user learns to skip is worse than none."""
+    p = _book(tmp_path, _BOOKINGS + [[label, None, "=SUM(C2:C3)"]])
+    out = O.edit_sheet(p, append_records=[
+        {"Beleg": "R-003", "Kreditor": "Institut", "Betrag": 300}])
+    assert "outside" not in _notes(out).lower(), label
