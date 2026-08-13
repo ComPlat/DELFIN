@@ -574,9 +574,13 @@ def test_settling_on_release_can_be_switched_off():
     source = _EDITOR_PY
     assert 'submit_settle_btn' in source
     assert 'setSettleOnRelease' in source
-    # On by default: it is what keeps a submitted geometry sane.
+    # Off by default.  It was on, on the grounds that it keeps a submitted
+    # geometry sane -- and it does, but it was also the one thing that moved a
+    # molecule while every switch the user had touched said off, and being
+    # right about the strain of a drag does not buy the right to do that
+    # unasked.  Switching it on is a press.
     settle = source.split('submit_settle_btn = widgets.ToggleButton')[1].split(')\n')[0]
-    assert 'value=True' in settle
+    assert 'value=False' in settle
     # And the choice survives a re-assignment of the parameters.
     assert source.count('setSettleOnRelease') >= 2
 

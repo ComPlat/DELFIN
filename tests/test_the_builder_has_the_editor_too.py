@@ -796,15 +796,17 @@ def test_a_new_structure_starts_the_editor_over(builder):
     refs['orca_coords'].value = '3\nwater\n' + WATER + '\n'
     for name in ('submit_relax_btn', 'submit_manip_btn', 'submit_draw_btn'):
         refs[name].value = True
-    refs['submit_settle_btn'].value = False
+    refs['submit_settle_btn'].value = True
 
     refs['orca_coords'].value = '3\nanother\n' + WATER + '\n'
 
     for name in ('submit_relax_btn', 'submit_manip_btn', 'submit_draw_btn'):
         assert refs[name].value is False, name
-    # To the defaults, not to off: letting go of an atom and leaving the strain
-    # of the drag in the structure is the surprising answer, not the useful one.
-    assert refs['submit_settle_btn'].value is True
+    # To the defaults, and the default is off.  Relaxing a structure the
+    # moment an atom is let go was the one thing that moved a molecule while
+    # every switch the user had touched said off; being right about the
+    # strain of a drag does not buy the right to do that unasked.
+    assert refs['submit_settle_btn'].value is False
 
 
 def test_an_edit_keeps_the_header_of_a_plain_xyz(builder):
@@ -878,12 +880,18 @@ def test_drawing_on_and_asking_again_gives_the_new_structure(builder):
     assert refs['orca_coords'].value == 'CCCCCC'
 
 
-def test_settle_is_on_to_begin_with_in_both_tabs():
+def test_settle_is_off_to_begin_with_in_both_tabs():
+    """Nothing moves a structure until something on screen says it will.
+
+    Settle used to start on, which made letting go of an atom relax it with
+    Dynamik Opt and Optimise both off -- and under a server method the switch
+    was not even beside them to be found and turned off.
+    """
     from delfin.dashboard import structure_editor as editor
 
     source = open(editor.__file__, encoding='utf-8').read()
     made = source.split('submit_settle_btn = widgets.ToggleButton')[1].split(')\n')[0]
-    assert 'value=True' in made
+    assert 'value=False' in made
     # ...and a structure the editor has not seen starts from how the switches
     # read on an editor that has just been built, taken from the widgets
     # rather than written down a second time.

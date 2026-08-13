@@ -159,8 +159,12 @@ def create_tab(ctx):
     )
     orca_charge = widgets.IntText(value=0, description='Charge:',
                                   layout=widgets.Layout(width='200px'), style=ws)
-    orca_multiplicity = widgets.IntText(value=1, description='Multiplicity:',
-                                        layout=widgets.Layout(width='200px'), style=ws)
+    # M = 2S+1: the smallest multiplicity there is is 1.  A 0 or a negative
+    # number went into the input file as written, and ORCA stops on it after
+    # the job has been queued and waited for.
+    orca_multiplicity = widgets.BoundedIntText(value=1, min=1, max=20,
+                                               description='Multiplicity:',
+                                               layout=widgets.Layout(width='200px'), style=ws)
     orca_method = widgets.Dropdown(options=method_options, value='PBE0',
                                    description='Method:',
                                    layout=widgets.Layout(width='250px'), style=ws)
