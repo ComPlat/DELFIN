@@ -1041,6 +1041,35 @@ def sniff_delimiter(text: str, suffix: str = "") -> str:
     return best
 
 
+def window_record(*, first_row: int, shown_rows: int,
+                  total_rows: int) -> dict:
+    """Which rows the caller actually got — as data, not as prose.
+
+    The note beside it says the same thing in words, for the model. This
+    says it for the mechanisms, because a figure taken from a window is
+    not a figure about the file: the largest value among the first five
+    rows of twenty-six is not the largest booking, and the two are
+    indistinguishable once the number is out of the grid and in a
+    sentence.
+
+    Costs nothing in the context window. The result dict is rendered into
+    a report for the model, never handed over as it stands, so a field
+    here is read by code and by nobody else.
+    """
+    first = max(1, int(first_row or 1))
+    shown = max(0, int(shown_rows or 0))
+    total = max(0, int(total_rows or 0))
+    last = first + shown - 1 if shown else first - 1
+    return {
+        "first_row": first,
+        "last_row": last,
+        "total_rows": total,
+        # A window is complete when it starts at the top and reaches the
+        # bottom. Anything else is a page, however large.
+        "complete": bool(shown and first <= 1 and last >= total),
+    }
+
+
 def _window_notes(
     window: list[list[Any]], *, total_cols: int, start_col: int,
     max_cols: int, cell_limit: int = 40,
@@ -1174,6 +1203,8 @@ def _read_csv(
                             first_col=start_col),
         "column_profile": profiles,
         "profile_rows": min(_PROFILE_ROWS, total_rows),
+        "window": window_record(first_row=begin + 1, shown_rows=len(window),
+                                total_rows=total_rows),
         "numbers": _window_numbers(window, profiles, header=(begin == 0)),
         "notes": notes,
     }
@@ -1514,6 +1545,8 @@ def _read_ods(
                             first_col=start_col),
         "column_profile": profiles,
         "profile_rows": len(window),
+        "window": window_record(first_row=start_row, shown_rows=len(window),
+                                total_rows=total_rows),
         "numbers": _window_numbers(window, profiles,
                                    header=(start_row == 1)),
         "notes": notes,
@@ -1709,6 +1742,9 @@ def read_sheet(
                                 first_col=start_col),
             "column_profile": profiles,
             "profile_rows": len(window),
+            "window": window_record(first_row=start_row,
+                                    shown_rows=len(window),
+                                    total_rows=total_rows),
             "numbers": _window_numbers(window, profiles,
                                        header=(start_row == 1)),
             "notes": notes,
@@ -5471,6 +5507,15 @@ class ToolFigure:
     kind: str      # "sum" | "count" | "cell"
     label: str     # what it was, in words ("Summe 'Betrag' in Buchungen.xlsx")
     tool: str      # which tool returned it
+    # True when the read that produced it covered a WINDOW of the table
+    # rather than all of it. The value is real either way -- it was in the
+    # grid -- but what may be said about it is not: the largest number
+    # among five rows of twenty-six is not the largest booking, and once
+    # it is out of the grid and inside a sentence the two look alike.
+    partial: bool = False
+    # The window it came from, for a message that names it rather than
+    # asking the reader to go and find out.
+    window: str = ""
 
     def message(self) -> str:
         return f"{self.label} ({self.tool})"
@@ -5535,6 +5580,18 @@ def _figures_from_result(tool: str, result: dict) -> list["ToolFigure"]:
     """
     out: list[ToolFigure] = []
 
+    # A read that showed a page of the table produced values that are real
+    # and a picture that is not. Counts are exempt: ``rows`` is the file's
+    # own total, stated by the reader regardless of how much it showed.
+    win = result.get("window") if isinstance(result, dict) else None
+    partial_window = bool(isinstance(win, dict) and not win.get("complete"))
+    window_text = ""
+    if partial_window:
+        # German, because this string ends up inside the caveat the user
+        # reads, not in a log.
+        window_text = (f"Zeilen {win.get('first_row')}–{win.get('last_row')} "
+                       f"von {win.get('total_rows')}")
+
     def _add(value: Any, kind: str, label: str) -> None:
         try:
             number = float(value)
@@ -5542,8 +5599,12 @@ def _figures_from_result(tool: str, result: dict) -> list["ToolFigure"]:
             return
         if number != number or number in (float("inf"), float("-inf")):
             return
+        cell = kind == "cell"
         out.append(ToolFigure(value=round(number, 6), kind=kind,
-                              label=label, tool=tool))
+                              label=label, tool=tool,
+                              partial=partial_window and cell,
+                              window=window_text if (partial_window and cell)
+                              else ""))
 
     declared = result.get("figures")
     if isinstance(declared, list):
@@ -5681,6 +5742,27 @@ _DERIVED_CUE_RE = re.compile(
     r"prozent|durchschnitt|durchschnittlich|mittelwert|im schnitt|je|pro|"
     r"entspricht|verhältnis|difference|share|average|per)\b|%")
 
+# ... and about an EXTREME: the largest, the smallest, the top one. This
+# was the shape with no cue at all, so the sentence that carries the most
+# dangerous kind of figure was the one nothing read. Measured on the real
+# reader and the real workbook, before this existed:
+#
+#     flags=0 | Die höchste Kostenstelle ist KST 4711 mit 128.430,55 €.
+#
+# — with an EMPTY ledger, so it was not a coverage problem: no claim shape
+# matched it. An extreme is worse than a total because a total taken from
+# a page is at least visibly a part of something, while "the highest" over
+# a window reads as a fact about the file and is wrong by construction
+# unless the whole file was seen.
+_EXTREMUM_CUE_RE = re.compile(
+    r"(?i)\b(?:höchst\w*|hoechst\w*|größt\w*|groesst\w*|max(?:imal\w*|imum)?|"
+    r"niedrigst\w*|kleinst\w*|geringst\w*|min(?:imal\w*|imum)?|"
+    r"teuerst\w*|billigst\w*|meist\w*|wenigst\w*|"
+    r"spitzenreiter|ausrei(?:ß|ss)er|"
+    r"am\s+(?:höchsten|hoechsten|meisten|wenigsten|größten|groessten)|"
+    r"highest|largest|biggest|smallest|lowest|cheapest|"
+    r"top|maximum|minimum)\b")
+
 # A percentage is always a derived figure.
 _PERCENT_AFTER_RE = re.compile(r"\s*(?:%|Prozent|Prozentpunkte?)\b|\s*%")
 
@@ -5707,7 +5789,13 @@ _NOT_ASSERTED_RE = _de.HEDGE_RE
 _REFERENCE_BEFORE_RE = re.compile(
     r"(?i)(?:zeile|zeilen|spalte|spalten|zelle|blatt|seite|tabelle|"
     r"row|column|cell|sheet|page|nr\.?|nummer|kostenstelle|beleg|"
-    r"rechnung|konto|version|kapitel)\s*[:.]?\s*$")
+    r"rechnung|konto|version|kapitel|"
+    # The abbreviations a German office actually writes. Spelled-out
+    # "Kostenstelle" was here and "KST 4711" was not, so an identifier
+    # was read as a figure -- and a guard that flags a cost-centre number
+    # as an invented amount is the kind of noise that gets guards
+    # switched off.
+    r"kst|pos|id|az|\w+-nr)\s*[:.]?\s*$")
 _DATE_BEFORE_RE = re.compile(r"\d{1,2}[./-]\d{1,2}[./-]?$")
 
 # A counted thing, in the shape German writes it: a number, an optional
@@ -5913,7 +6001,7 @@ def _nearest_cue(before: str) -> int:
     verb 'beträgt', so the specific one wins.
     """
     end = -1
-    for pattern in (_TOTAL_CUE_RE, _DERIVED_CUE_RE):
+    for pattern in (_TOTAL_CUE_RE, _DERIVED_CUE_RE, _EXTREMUM_CUE_RE):
         for hit in pattern.finditer(before):
             end = max(end, hit.end())
     return end
@@ -5926,6 +6014,7 @@ def _claims_in_sentence(
     order they are written."""
     total_cue = _TOTAL_CUE_RE.search(sentence) is not None
     derived_cue = _DERIVED_CUE_RE.search(sentence) is not None
+    extremum_cue = _EXTREMUM_CUE_RE.search(sentence) is not None
     if money_only and not _MONEY_SENTENCE_RE.search(sentence):
         return []
     if _NOT_ASSERTED_RE.search(sentence):
@@ -5944,7 +6033,7 @@ def _claims_in_sentence(
     # A total and a derived figure are only ever read where the sentence
     # announces one. A number in a sentence that announces nothing is a
     # reference, a date or a quantity of something else.
-    if not (total_cue or derived_cue):
+    if not (total_cue or derived_cue or extremum_cue):
         found.sort(key=lambda entry: entry[0])
         return [(figure, kind) for _at, figure, kind in found]
 
@@ -5958,7 +6047,8 @@ def _claims_in_sentence(
         if _PERCENT_AFTER_RE.match(after):
             found.append((start, match.group(1), "derived"))
             continue
-        kind = "derived" if derived_cue else "total"
+        kind = ("extremum" if extremum_cue else
+                "derived" if derived_cue else "total")
         if _CURRENCY_AFTER_RE.match(after) or _CURRENCY_BEFORE_RE.search(before):
             found.append((start, match.group(1), kind))
             continue
@@ -6031,6 +6121,15 @@ def scan_answer_for_unledgered_figures(
         # tool, and that is exactly what the cell values are for.
         values = [f.value for f in known]
         counts = [f.value for f in known if f.kind == "count"]
+        # An extreme is the one claim a value cannot ground by being
+        # present. "Die höchste Buchung ist 1.234,50" is backed by that
+        # number appearing in the grid only if the grid was the whole
+        # table -- over a window it is the largest of what was SHOWN, and
+        # says nothing about the file. So an extreme is grounded by the
+        # complete figures alone, and the window that produced a partial
+        # one is named in the caveat.
+        whole = [f.value for f in known if not f.partial]
+        windows = sorted({f.window for f in known if f.partial and f.window})
         typed = _numbers_in(user_text) + _numbers_in(prior_text)
         derived: dict[bool, list[float]] = {}
         seen: set[str] = set()
@@ -6042,6 +6141,23 @@ def scan_answer_for_unledgered_figures(
             if not readings:
                 continue
             seen.add(key)
+            if kind == "extremum":
+                if _matches(readings, typed):
+                    continue
+                if _matches(readings, whole):
+                    continue
+                # It IS in the ledger, and only from a window: the claim
+                # is not invented, it is over-reaching, and saying so
+                # names a different repair than "where does this come
+                # from" -- read the rest, or ask sum_column.
+                over = _matches(readings, values)
+                flags.append(FigureFlag(
+                    figure=figure,
+                    kind="extremum_window" if over else "extremum",
+                    claim=sentence[:120]))
+                if len(flags) >= max_flags:
+                    break
+                continue
             pool = counts if kind == "count" else values
             if _matches(readings, pool) or _matches(readings, typed):
                 continue
@@ -6063,30 +6179,53 @@ def scan_answer_for_unledgered_figures(
 # The caveat is German for the same reason the matchers are: it is read by
 # the person who asked the question, and they asked it in German.
 _FIGURE_KIND_DE = {"total": "Summe", "count": "Anzahl",
-                   "derived": "abgeleiteter Wert"}
+                   "derived": "abgeleiteter Wert",
+                   "extremum": "Höchst-/Tiefstwert",
+                   "extremum_window": "Höchst-/Tiefstwert"}
 
 
-def figure_caveat(flags: list[FigureFlag]) -> str:
+def figure_caveat(flags: list[FigureFlag], windows: list[str] | None = None
+                  ) -> str:
     """The note appended to an answer whose figures no tool produced.
 
     Names every figure and why it is marked, because the reader is the
     one who can tell an invented total from one they typed themselves. It
     annotates and never blocks: refusing the answer would withhold the
     part of it that is right.
+
+    An extreme taken from a window gets its OWN sentence. It is a
+    different mistake with a different repair: the number was really in
+    the file, so "where does this come from" is the wrong question and
+    "you have not seen the rest of the table" is the right one.
     """
     if not flags:
         return ""
-    named = ", ".join(
-        f"'{f.figure}' ({_FIGURE_KIND_DE.get(f.kind, f.kind)})"
-        for f in flags[:3])
-    return (
-        "\n\n> ⚠️ Diese Zahl stammt nicht aus einem Werkzeug-Ergebnis dieses "
-        "Zuges: " + named + ". Kein Aufruf hat sie geliefert, sie lässt sich "
-        "nicht aus den ermittelten Werten ableiten, und sie steht weder in "
-        "Ihrer Nachricht noch weiter oben im Verlauf. Bitte mit sum_column "
-        "bzw. compare_tables nachrechnen oder die Quelle nennen, bevor die "
-        "Zahl weitergegeben wird."
-    )
+    over_reach = [f for f in flags if f.kind == "extremum_window"]
+    invented = [f for f in flags if f.kind != "extremum_window"]
+    parts: list[str] = []
+    if invented:
+        named = ", ".join(
+            f"'{f.figure}' ({_FIGURE_KIND_DE.get(f.kind, f.kind)})"
+            for f in invented[:3])
+        parts.append(
+            "\n\n> ⚠️ Diese Zahl stammt nicht aus einem Werkzeug-Ergebnis "
+            "dieses Zuges: " + named + ". Kein Aufruf hat sie geliefert, sie "
+            "lässt sich nicht aus den ermittelten Werten ableiten, und sie "
+            "steht weder in Ihrer Nachricht noch weiter oben im Verlauf. "
+            "Bitte mit sum_column bzw. compare_tables nachrechnen oder die "
+            "Quelle nennen, bevor die Zahl weitergegeben wird.")
+    if over_reach:
+        named = ", ".join(f"'{f.figure}'" for f in over_reach[:3])
+        scope = (" — gelesen wurden " + "; ".join(windows[:2])
+                 if windows else "")
+        parts.append(
+            "\n\n> ⚠️ " + named + " wird als Höchst- bzw. Tiefstwert "
+            "genannt, belegt ist aber nur ein Ausschnitt der Tabelle" + scope +
+            ". Der größte Wert eines Ausschnitts ist nicht der größte Wert "
+            "der Datei. Bitte die Tabelle vollständig lesen (start_row/"
+            "max_rows) oder mit sum_column über alle Zeilen auswerten, bevor "
+            "die Zahl weitergegeben wird.")
+    return "".join(parts)
 
 
 def figure_coverage_caveat(
@@ -6101,7 +6240,14 @@ def figure_coverage_caveat(
     answer is checked against the ledger ITS turn wrote. Never raises.
     """
     try:
-        return figure_caveat(scan_answer_for_unledgered_figures(
-            text, user_text=user_text, prior_text=prior_text, token=token))
+        flags = scan_answer_for_unledgered_figures(
+            text, user_text=user_text, prior_text=prior_text, token=token)
+        if not flags:
+            return ""
+        # Named rather than described: the reader can act on "rows 1-5 of
+        # 26" and cannot act on "the read was incomplete".
+        windows = sorted({f.window for f in figure_ledger(token)
+                          if f.partial and f.window})
+        return figure_caveat(flags, windows)
     except Exception:
         return ""
