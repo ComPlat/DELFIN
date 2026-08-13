@@ -257,7 +257,9 @@ def create_tab(ctx):
         overflow='hidden', box_sizing='border-box', padding='0', margin='0',
     ))
     orca_mol_output.add_class('orca-mol-output')
-    orca_mol_output.add_class('delfin-structure-fs-member')
+    # Not a member itself: the stack around it is, and it travels with the
+    # status line lying on it. Marked a member here too, fullscreen would lift
+    # it straight out of that stack and leave the line behind on the page.
     orca_mol_output.add_class('delfin-structure-fs-viewer')
     orca_scope_id = f'orca-scope-{abs(id(orca_mol_output))}'
 
@@ -2172,10 +2174,19 @@ def create_tab(ctx):
     )
     orca_mol_header.add_class('delfin-structure-fs-member')
     orca_mol_header.add_class('delfin-structure-fs-header')
+    # The picture with the status line lying along its bottom edge, the way the
+    # Submit tab has it: above the picture a message of a different length
+    # moved the structure being aimed at, and here it costs no layout at all.
+    orca_mol_stack = widgets.Box(
+        [orca_mol_output, orca_editor.mol_status],
+        layout=widgets.Layout(width='100%', min_width='0'),
+    )
+    orca_mol_stack.add_class('delfin-structure-viewer-stack')
+    orca_mol_stack.add_class('delfin-structure-fs-member')
+    orca_mol_stack.add_class('delfin-structure-fs-viewer')
     orca_mol_module = widgets.VBox(
         [orca_mol_header, orca_mol_nav_row, orca_editor.submit_manip_toolbar,
-         orca_editor.mol_status, orca_editor.mol_status_fs, orca_mol_output,
-         orca_editor.submit_ff_notes],
+         orca_mol_stack, orca_editor.submit_ff_notes],
         layout=widgets.Layout(width='100%', min_width='0', gap='6px'),
     )
     # The editor finds its own controls by this class, and only inside it.

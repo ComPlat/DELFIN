@@ -540,40 +540,42 @@ def test_what_is_wrong_with_the_structure_is_said_without_xtb(monkeypatch):
     assert "needs xtb" in gfn.optimize_with_gfn(fine, "gfnff")["status"]
 
 
-def test_fullscreen_has_a_status_line_of_its_own():
-    """Both views need it, and neither may take the other's.
+def test_fullscreen_gets_the_status_line_because_it_gets_the_picture():
+    """It travels inside the stack, so there is nothing to lend and nothing
+    to copy.
 
-    Fullscreen relocates its members by hand; ipywidgets knows nothing about
-    that, so the line borrowed for the big view came back somewhere else and
-    was lost from the small one.  Two widgets carrying the same text is the
-    version where nothing is moved that the small view needs.
+    Fullscreen relocates its members by hand and ipywidgets knows nothing
+    about such a move, so a status line borrowed for the big view did not come
+    back to the small one. The answer used to be a second widget carrying the
+    same text -- one that stays, one that goes. The line lies on the picture
+    now and the picture is what travels: it leaves and returns with the thing
+    it is about, in both tabs, and neither view is ever without it.
     """
-    from delfin.dashboard import tab_submit
+    from delfin.dashboard import tab_orca_builder, tab_submit
 
-    source = SUBMIT_SOURCE
-    assert "mol_status_fs.add_class('delfin-structure-fs-member')" in source
-    assert "mol_status_fs.add_class('delfin-structure-fs-status')" in source
-    setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
+    setter = SUBMIT_SOURCE.split(
+        "def _set_mol_status")[1].split("\n    def ")[0]
     assert "mol_status.value = rendered_html" in setter
     assert "mol_status_fs.value = '' if prompt else rendered_html" in setter, (
-        "they must agree on everything except a prompt to load a structure"
+        "a tab that still places the twin has to get the same text"
     )
-    assert "mol_status_fs.value = ''" in setter, "and agree when empty too"
 
-    # It is the editor that marks it, so the copy exists wherever the editor
-    # is built -- the ORCA Builder holds one too, rather than lending out the
-    # line its own small view needs.
-    assert "mol_status_fs.add_class" in EDITOR_SOURCE
-    from delfin.dashboard import tab_orca_builder
+    for module in (tab_submit, tab_orca_builder):
+        source = open(module.__file__, encoding='utf-8').read()
+        stack = source.split('delfin-structure-viewer-stack')[0]
+        stack = stack.rsplit('widgets.Box(', 1)[1]
+        assert 'mol_status' in stack, (
+            f'{module.__name__}: the line has to be in the stack, or the big '
+            f'view has none')
+        assert 'mol_output' in stack, f'{module.__name__}: and so does the view'
+        assert "add_class('delfin-structure-fs-member')" in source
+
+    # And the picture itself is not a member on its own: lifted straight out
+    # of the stack, it would leave the line behind on the page.
     builder = open(tab_orca_builder.__file__, encoding='utf-8').read()
-    assert 'orca_editor.mol_status_fs' in builder, (
-        'the Builder has to place the copy, or its overlay has no status line')
-    assert "orca_editor.mol_status.add_class('delfin-structure-fs-member')" \
-        not in builder, 'the line the small view keeps must not travel'
-
-    # And the overlay shows it, wherever it came from.
-    assert '.delfin-structure-fs-overlay .delfin-structure-fs-status {' \
-        in FULLSCREEN_CSS
+    marks = builder.split('orca_mol_output.add_class')
+    assert not any(m.startswith("('delfin-structure-fs-member')")
+                   for m in marks[1:]), 'the stack is the member, not the view'
 
 
 def test_relax_means_the_molecule_follows_the_drag_under_gfn(editor):
@@ -919,32 +921,46 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
     assert faulted.count("<br>") == 0, "still one row"
 
 
-def test_the_status_line_keeps_its_height_so_the_picture_does_not_move(
-        bare_editor):
-    """The line stands above the viewer, so its height is the picture's place.
+def test_the_status_line_lies_on_the_picture_and_costs_it_no_room(bare_editor):
+    """Not a row above the viewer, where its height was the picture's place.
 
     Messages are not the same length -- one row while the structure follows the
-    hand, two when the optimisation reports an energy, a solvent and what it
-    held. Grown to fit, every one of those moves everything below it.
+    hand, two when the optimisation reports an energy and what it held, more
+    when it refuses and explains itself. In a row above the picture, every one
+    of those moved the structure the user was aiming at. Giving that row a
+    fixed height stopped the movement by spending two rows of height, empty
+    most of the time.
 
-    Measured in chromium at the panel's width of 620 px, with the box fixed::
+    On the picture it costs nothing: it is positioned against the stack, grows
+    upwards into the view when there is more to say, and disappears when there
+    is nothing. Measured in chromium, a 660 px panel and a 300 px picture::
 
-        follow step        41 px
-        run finished       41 px
-        and with charge    41 px
-        a long refusal     41 px   (scrolls inside, nothing cut)
+        message           viewer top   viewer height   line height
+        nothing yet       92           304             0
+        follow step       92           304             26
+        run finished      92           304             44
+        a long refusal    92           304             61
 
-        movement between any two:  0 px
+    The first two columns are the point: the picture does not move and does not
+    change size, whatever is being said over it. The third is what used to be
+    taken out of the layout.
     """
     part, _state = bare_editor
     for status in (part.mol_status, part.mol_status_fs):
-        assert status.layout.height, 'a line that grows moves the picture'
-        assert status.layout.height == status.layout.min_height
-        assert status.layout.overflow == 'auto', (
-            'a message longer than the box has to be reachable, not cut')
-        # overflow_y is not a trait of this Layout; written that way it would
-        # be dropped without failing and the box would simply not scroll.
-        assert 'overflow_y' not in status.layout.trait_names()
+        assert 'delfin-structure-status-over' in status._dom_classes
+        assert not status.layout.height, (
+            'a height here is layout the picture pays for')
+
+    rules = FULLSCREEN_CSS.split('.delfin-structure-viewer-stack {')[1]
+    assert 'position: relative' in rules.split('}')[0], (
+        'the stack is what the line is positioned against')
+    over = FULLSCREEN_CSS.split(
+        '.delfin-structure-viewer-stack > .delfin-structure-status-over {')[1]
+    over = over.split('}')[0]
+    assert 'position: absolute' in over
+    assert 'bottom:' in over, 'anchored to the bottom, so it grows upwards'
+    assert 'pointer-events: none' in over, (
+        'the structure underneath is being dragged')
 
 
 def test_letting_go_of_an_atom_does_one_thing_or_the_other_and_says_which(
@@ -1034,6 +1050,108 @@ def test_the_restart_is_gated_where_every_path_goes_through_it():
     guard = source.split('def _arm_gfn_restart')[1].split('\n    def ')[0]
     assert 'submit_auto_btn.value' in guard
     assert '_stand_down_after_interrupt()' in guard
+
+
+def test_one_press_keeps_running_until_there_is_nothing_left_to_do(bare_editor):
+    """A press was one xtb run, and one run is often not a minimum.
+
+    xtb's optimiser has a cycle limit of its own. At the limit it hands back
+    the geometry it reached and reports that it did not converge -- and that
+    was taken as the end: the switch went up over a structure better than it
+    had been and not at a minimum, and the user pressed again. Pressing again
+    worked because it is a NEW process from that geometry, with a fresh cycle
+    budget and a fresh optimiser history. Nothing was stuck; the run had run
+    out of room.
+
+    Measured on a pulled-about propane under GFN-FF at three cycles a run,
+    each row one press::
+
+        press  converged  C-C      energy / Eh   largest shift
+        start  -          1.735
+        1      False      1.509    -1.514088     0.253 A
+        2      False      1.523    -1.515532     0.066 A
+        3      True       1.523    -1.515536     0.002 A
+
+    The pressing is done for the user now, and it ends the three ways a settle
+    has always ended: converged, no longer moving, or out of rounds. The last
+    two matter -- held values that cannot all be met at once never converge,
+    and a run that will not end is a process per round for as long as the
+    switch is down.
+    """
+    part, _state = bare_editor
+    part.submit_optimize_btn.unobserve_all()
+    part.submit_optimize_btn.value = True
+    asks = dict(converged=False, moved=0.25, rounds=1, failed=False,
+                every_frame=False)
+
+    assert part._optimise_carries_on(**asks) is True, (
+        'a run that stopped for want of cycles is exactly the case to carry on')
+    assert part._optimise_carries_on(**{**asks, 'converged': True}) is False
+    assert part._optimise_carries_on(**{**asks, 'failed': True}) is False, (
+        'a run that produced no geometry ends the press')
+    assert part._optimise_carries_on(**{**asks, 'moved': 0.0}) is False, (
+        'a structure that has stopped improving is as far as this goes')
+    assert part._optimise_carries_on(**{**asks, 'rounds': 99}) is False, (
+        'held values that cannot all be met never converge; it has to end')
+
+    part.submit_optimize_btn.value = False
+    assert part._optimise_carries_on(**asks) is False, (
+        'the switch is up: the user asked it to stop')
+
+    # And an engine that cannot say whether it converged counts as finished,
+    # or it would be run again for ever.
+    assert "outcome.get('converged', True)" in EDITOR_SOURCE
+
+
+def test_a_run_that_stopped_short_is_not_counted_among_the_failures(
+        bare_editor):
+    """It is a geometry, and it is the reason the rounds exist.
+
+    Written into the same list as a run that produced nothing -- which is
+    where it went, because both end up on the status line -- it made the
+    decision above answer False for the only situation it was written for.
+    The rounds were there, the tests were green, and the user went on pressing
+    Optimize because nothing ever carried on.
+    """
+    body = EDITOR_SOURCE.split(
+        'def on_submit_optimize(change=None, every_frame=False)')[1]
+    body = body.split('\n    def on_submit')[0]
+
+    assert 'results, failures, unfinished = [], [], []' in body
+    # Just that branch: the one beside it is a run that produced nothing, and
+    # that one belongs among the failures.
+    note = body.split("if 'before converging' in note:")[1]
+    note = note.split('\n                else:')[0]
+    assert 'unfinished.append(' in note
+    assert 'failures.append(' not in note, (
+        'counted as a failure, it stops the rounds it is supposed to start')
+    # Both are still said, so a press that gives up still explains itself.
+    assert '(failures + unfinished)[:2]' in body
+
+
+def test_carrying_a_press_on_does_not_take_a_second_undo_point(bare_editor):
+    """Undo after it should reach the geometry the user pressed on.
+
+    Each round is another call into the same handler, so without this the
+    undo history filled with one entry per round and Undo walked back through
+    the optimisation a step at a time instead of leaving it.
+    """
+    part, state = bare_editor
+    part.coords_widget.value = _WATER
+    state['history'] = []
+
+    part.submit_optimize_btn.unobserve_all()
+    state['optimize_carrying_on'] = True
+    part.submit_optimize_btn.value = True
+    part.on_submit_optimize(None)
+    carried = len(state.get('history') or [])
+
+    state['optimize_carrying_on'] = False
+    part.on_submit_optimize(None)
+    pressed = len(state.get('history') or [])
+
+    assert carried == 0, 'a round in the middle of a press is not a new start'
+    assert pressed > carried, 'and a press of its own still is'
 
 
 def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
@@ -2892,7 +3010,11 @@ def test_with_auto_on_letting_go_reaches_the_minimum_without_being_asked(editor)
     refs["submit_cmd_sync"].value = "gfnfree:0:"
 
     # Letting go is the whole instruction. Nothing is pressed below this line.
-    deadline = _time.time() + 150
+    # The wait is generous because two xtb runs stand between the release and
+    # the answer, and this suite is run on machines that are busy with other
+    # things -- a short deadline here fails for want of a core, which reads as
+    # the release having started nothing.
+    deadline = _time.time() + 600
     while _time.time() < deadline and not refs["submit_optimize_btn"].value:
         _time.sleep(0.05)
     assert refs["submit_optimize_btn"].value, "letting go started nothing"

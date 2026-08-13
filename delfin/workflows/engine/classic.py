@@ -28,6 +28,7 @@ from delfin.esd_input_generator import (
     append_properties_of_interest_jobs,
     append_reorganisation_energy_jobs,
 )
+from delfin.cluster_utils import get_walltime_limit
 from delfin.workflows.scheduling.manager import get_global_manager
 from delfin.orca import run_orca
 from delfin.imag import run_IMAG
@@ -1254,7 +1255,18 @@ class _WorkflowManager:
             )
             return {job.job_id: target}, {job.job_id: cap}
 
-        # Multiple jobs ready: distribute available capacity as evenly as possible.
+        # Multiple jobs ready: when the walltime that is left covers none of
+        # them at an even split but would cover one at full width, running them
+        # one after another finishes something instead of finishing nothing.
+        # Splitting is otherwise the better choice, so this only engages when
+        # both the remaining walltime and a runtime estimate are known — with
+        # either missing, the distribution below is exactly as it was.
+        serialized = self._serialize_for_walltime(ready_jobs, total, available)
+        if serialized is not None:
+            chosen, chosen_cores = serialized
+            return {chosen.job_id: chosen_cores}, {chosen.job_id: False}
+
+        # Distribute available capacity as evenly as possible.
         # Fall back to base share if available cores are insufficient.
         if available < ready_count:
             available = max(ready_count, self._base_share() * ready_count)
@@ -1634,6 +1646,82 @@ class _WorkflowManager:
         if raw in {"live", "adaptive", "history"}:
             return "live"
         return "duration_only"
+
+    @staticmethod
+    def _scaled_duration(duration_s: float, from_cores: int, to_cores: int) -> float:
+        """Project a measured runtime onto a different core count.
+
+        Assumes the parallel part dominates, which overstates the speed-up.
+        That bias is the safe one here: the projection is only ever used to
+        decide that an even split cannot finish, so being optimistic means
+        serialising strictly less often than a stricter model would.
+        """
+        if to_cores <= 0 or from_cores <= 0:
+            return duration_s
+        return duration_s * (float(from_cores) / float(to_cores))
+
+    def _serialize_for_walltime(
+        self,
+        ready_jobs: List[WorkflowJob],
+        total: int,
+        available: int,
+    ) -> Optional[tuple]:
+        """Pick one job to run at full width, or None to keep splitting.
+
+        Returns (job, cores) when an even split would leave every ready job
+        unfinished at walltime while one of them would still fit alone.
+        """
+        if len(ready_jobs) < 2:
+            return None
+
+        try:
+            remaining = get_walltime_limit()
+        except Exception:  # noqa: BLE001
+            return None
+        if not remaining or remaining <= 0:
+            return None
+
+        even_share = max(1, available // len(ready_jobs))
+        best_job = None
+        best_cores = None
+        best_duration = None
+
+        for job in ready_jobs:
+            hint = self._get_duration_hint(job)
+            if hint is None:
+                # No estimate for even one ready job means no basis to judge
+                # the round; leave the behaviour untouched.
+                return None
+            reference = max(1, job.cores_optimal)
+
+            split_cores = max(job.cores_min, min(even_share, job.cores_max))
+            if self._scaled_duration(hint, reference, split_cores) <= remaining:
+                # At least one job still finishes split — splitting is fine.
+                return None
+
+            alone_cores = max(job.cores_min, min(total, job.cores_max))
+            alone = self._scaled_duration(hint, reference, alone_cores)
+            # Compare durations, not core counts: the job that lands soonest is
+            # the one with the most room against an estimate that is only ever
+            # approximate.
+            if alone <= remaining and (best_duration is None or alone < best_duration):
+                best_job, best_cores, best_duration = job, alone_cores, alone
+
+        if best_job is None:
+            # Nothing fits either way. Splitting at least spreads the partial
+            # progress, which is now resumable, so change nothing.
+            return None
+
+        logger.info(
+            "[%s] %d jobs ready but only ~%dh of walltime left: running %s alone "
+            "on %d cores so one finishes, instead of splitting and finishing none",
+            self.label,
+            len(ready_jobs),
+            int(remaining // 3600),
+            best_job.job_id,
+            best_cores,
+        )
+        return best_job, best_cores
 
     def _get_duration_hint(self, job: WorkflowJob) -> Optional[float]:
         history = JOB_DURATION_HISTORY.get(self._duration_key(job))

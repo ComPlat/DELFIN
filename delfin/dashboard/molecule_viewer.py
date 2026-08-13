@@ -4724,6 +4724,47 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
 .delfin-structure-fs-overlay .delfin-structure-fs-status {
     display: block !important;
 }
+/* What a run is doing, written along the bottom edge of the picture instead of
+   in a row above it.
+
+   Above it, a message of a different length moved everything below: a run
+   reports several times a second and the reports are not the same size, so the
+   atom being aimed stepped up and down under the cursor.  A fixed row stopped
+   that and spent two rows of height, empty most of the time, to do it.  Lying
+   on the picture it costs no layout at all -- it grows upwards when there is
+   more to say, and nothing outside it moves.
+
+   It does not take the mouse: the structure underneath is being dragged. */
+.delfin-structure-viewer-stack {
+    position: relative !important;
+    width: 100% !important;
+    min-width: 0 !important;
+}
+.delfin-structure-viewer-stack > .delfin-structure-status-over {
+    position: absolute !important;
+    left: 10px !important;
+    right: 10px !important;
+    bottom: 10px !important;
+    width: auto !important;
+    max-height: 60% !important;
+    overflow: auto !important;
+    margin: 0 !important;
+    padding: 4px 8px !important;
+    border-radius: 4px !important;
+    background: rgba(255, 255, 255, 0.86) !important;
+    z-index: 5 !important;
+    pointer-events: none !important;
+}
+/* Nothing to look at when there is nothing to say, rather than an empty white
+   band lying across the structure. */
+.delfin-structure-viewer-stack > .delfin-structure-status-over:empty,
+.delfin-structure-viewer-stack
+    > .delfin-structure-status-over .widget-html-content:empty {
+    display: none !important;
+}
+.delfin-structure-viewer-stack > .delfin-structure-status-over > .widget-label {
+    display: none !important;
+}
 body.delfin-structure-fs-open {
     overflow: hidden !important;
 }

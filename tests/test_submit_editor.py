@@ -802,7 +802,10 @@ def test_force_field_notes_sit_under_the_structure_they_describe():
     # order in the overlay is the order of these children, so this is the
     # thing worth pinning.
     children = source.split('submit_right = widgets.VBox([')[1].split('])')[0]
-    order = ['mol_output', 'isomer_nav_row', 'xyz_copy_row', 'submit_ff_notes']
+    # mol_viewer_stack is the picture: the viewer with the status line lying
+    # along its bottom edge rather than standing in a row above it.
+    order = ['mol_viewer_stack', 'isomer_nav_row', 'xyz_copy_row',
+             'submit_ff_notes']
     positions = [children.index(name) for name in order]
     assert positions == sorted(positions), children
 

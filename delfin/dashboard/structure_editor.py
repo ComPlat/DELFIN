@@ -538,37 +538,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                          ('batch_preview_busy', False)):
         state.setdefault(_key, _value)
 
-    #: The status line's own height, in rows of its 13 px monospace at line
-    #: height 1.35 -- 17.6 px each, so two rows and the 6 px under them.
-    #:
-    #: Fixed rather than grown to fit, because this line stands above the
-    #: viewer and everything below it moves when it changes.  A run reports
-    #: several times a second and the reports are not the same length: one row
-    #: while the structure follows the hand, two when the optimisation says
-    #: what it reached.  Measured at 1440x900 in the panel's own width, that is
-    #: the picture stepping 17 px under the cursor the user is aiming with.
-    #: A message longer than the box scrolls inside it; nothing is cut, and
-    #: nothing below it moves.
-    _STATUS_ROWS_PX = 41
-
+    # The status line lies ON the picture, along its bottom edge, rather than
+    # in a row above it.
+    #
+    # Above it, every message of a different length moved the structure: a run
+    # reports several times a second and the reports are not the same size --
+    # one row while it follows the hand, two when it says what it reached --
+    # so the atom the user was aiming stepped up and down under the cursor.
+    # Giving that row a fixed height stopped the movement and spent the height
+    # of two rows, empty most of the time, to do it.
+    #
+    # Anchored to the bottom of the viewer, it costs no layout at all: it grows
+    # upwards into the picture when there is more to say and shrinks again,
+    # and nothing outside it can move. The tab puts it and the viewer in a box
+    # carrying `delfin-structure-viewer-stack`; the rules are in the shared
+    # sheet, with the rest of what a molecule panel looks like.
     def _status_layout():
-        # overflow, not overflow_y: this ipywidgets Layout has no per-axis
-        # trait and drops the ones it does not know without failing, so a box
-        # written that way would simply not scroll.
-        return widgets.Layout(
-            width='100%', margin='0 0 6px 0',
-            height=f'{_STATUS_ROWS_PX}px', min_height=f'{_STATUS_ROWS_PX}px',
-            overflow='auto',
-        )
+        return widgets.Layout(width='auto', margin='0')
 
     mol_status = widgets.HTML(value='', layout=_status_layout())
-    # A second one, for the overlay.  Not the same widget moved: fullscreen
-    # relocates its members by hand and ipywidgets knows nothing about it, so
-    # the line borrowed for the big view came back somewhere else and was lost
-    # from the small one.  Two widgets, one text, nothing moved.
+    mol_status.add_class('delfin-structure-status-over')
+    # A second one, kept and written but no longer a member of anything.  It
+    # existed because fullscreen relocated the status line by hand and
+    # ipywidgets knows nothing about such a move, so the line borrowed for the
+    # big view did not come back to the small one.  The line lives inside the
+    # stack with the picture now, and the stack is what fullscreen takes -- it
+    # goes and comes back with the thing it is about, so there is nothing left
+    # for a stand-in to do.  A tab that places it still gets the same text.
     mol_status_fs = widgets.HTML(value='', layout=_status_layout())
-    mol_status_fs.add_class('delfin-structure-fs-member')
-    mol_status_fs.add_class('delfin-structure-fs-status')
+    mol_status_fs.add_class('delfin-structure-status-over')
     # It lives in the ordinary layout so fullscreen can pick it up from there,
     # but it must not be seen next to the line it is a copy of -- the message
     # would simply be printed twice.  Hidden here, shown in the overlay.
@@ -1974,6 +1972,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: two fixed distances and an angle fighting each other, not converged in
     #: any round -- and a relaxation that will not end is a process per round
     #: for as long as the switch is down, and a structure that visibly jitters.
+    #: How many xtb runs one press of Optimise may chain before it stops and
+    #: says so.
+    #:
+    #: A run is one xtb ``--opt`` and xtb's optimiser has a cycle limit of its
+    #: own: at the limit it hands back the geometry it reached and reports that
+    #: it did not converge.  That was taken as the end, so the switch went up
+    #: over a structure that was better than it had been and not at a minimum,
+    #: and the user pressed again -- which worked, because pressing again is a
+    #: new process from that geometry with a fresh cycle budget and a fresh
+    #: optimiser history.  Measured on a pulled-about propane under GFN-FF at
+    #: three cycles a run: three runs to converge, the largest shift falling
+    #: 0.253, 0.066, 0.002 A.  The pressing is done here now.
+    _OPTIMISE_ROUNDS = 12
+    #: A structure that has stopped improving is finished as far as this can
+    #: take it, whatever xtb says about convergence.  Same figure as a settle:
+    #: below this, another round is another process for nothing.
+    _OPTIMISE_STILL = 0.005
+
     _GFN_SETTLE_ROUNDS = 12
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
@@ -2666,6 +2682,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_restarting'] = True
         on_submit_optimize(None, every_frame=every_frame)
 
+    def _optimise_carries_on(*, converged, moved, rounds, failed, every_frame):
+        """Whether one more xtb run belongs to the press that is running.
+
+        A run is one xtb ``--opt`` and its optimiser has a cycle limit of its
+        own; at the limit it hands back the geometry it reached and says it did
+        not converge.  Another run from there is a fresh cycle budget and a
+        fresh optimiser history, which is why pressing again always got
+        further.  The pressing is done here instead.
+
+        *failed* is a run that produced no geometry, and it ends the press.
+        "Stopped before converging" is NOT that: it is a geometry, and it is
+        the case these rounds exist for.  Counted among the failures -- as it
+        was, because it is written into the same list the status line reads --
+        this returned False for the only situation it was written for, and the
+        user went on pressing.  That is why the two are counted apart, and why
+        this is a function with a test that drives it rather than a condition
+        buried in a closure.
+
+        It ends the three ways a settle has always ended: converged, no longer
+        moving, or out of rounds.  The last two are not decoration -- held
+        values that cannot all be met at once never converge, and a run that
+        will not end is one process per round for as long as the switch is down.
+        """
+        if failed or converged:
+            return False
+        if rounds >= _OPTIMISE_ROUNDS:
+            return False
+        if moved <= _OPTIMISE_STILL:
+            return False
+        # And only while the switch the user pressed is still down.
+        switch = submit_optimize_all_btn if every_frame else submit_optimize_btn
+        return bool(switch.value)
+
     def on_submit_optimize_all(change=None):
         on_submit_optimize(change, every_frame=True)
 
@@ -2715,11 +2764,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Which switch is running, so a restart presses the same one.
         state['optimize_every_frame'] = bool(every_frame)
         again = bool(state.pop('gfn_restarting', False))
-        _set_mol_status(
-            (f'Moved while it ran; {label} starts again from the structure '
-             'you made...' if again else
-             f'Optimising {count} frame(s) with {label}...'), spinner=True,
-        )
+        # A round of the same press, rather than a press.  It keeps the undo
+        # point and the round count of the press it belongs to, and it does not
+        # announce itself: the line already says which round is running.
+        carrying_on = bool(state.pop('optimize_carrying_on', False))
+        if not carrying_on:
+            state['optimize_rounds'] = 0
+            _set_mol_status(
+                (f'Moved while it ran; {label} starts again from the structure '
+                 'you made...' if again else
+                 f'Optimising {count} frame(s) with {label}...'), spinner=True,
+            )
         if gfn:
             # One call, not two: run_js clears its output before displaying,
             # so a bootstrap followed immediately by a watcher is a bootstrap
@@ -2759,8 +2814,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         # Where the optimisation started from, as one step: pressing Undo
         # after it comes back should return the geometry that was handed to
-        # it, not one of the frames along the way.
-        _remember('an optimisation')
+        # it, not one of the frames along the way.  A round that carries the
+        # same press on does not take a second one: Undo after it should reach
+        # the geometry the user pressed on, not the round before last.
+        if not carrying_on:
+            _remember('an optimisation')
 
         token = object()
         state['optimize_run'] = token
@@ -2804,7 +2862,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # than briefly doubling up.
             if earlier is not None and earlier.is_alive():
                 earlier.join(timeout=15)
-            results, failures = [], []
+            # Two lists, because they mean opposite things to the rounds below.
+            # A failure is a run that did not produce a geometry, and it ends
+            # the press. "Stopped before converging" IS a geometry, and it is
+            # the whole case the rounds exist for -- counted as a failure, as
+            # it was at first, it stopped the rounds before they ever ran.
+            results, failures, unfinished = [], [], []
             targets = frames or [(single, None, None)]
             for position, item in enumerate(targets):
                 xyz = item[0]
@@ -2862,6 +2925,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         state['gfn_energy'] = float(outcome['energy'])
                         state['gfn_energy_unit'] = outcome.get('energy_unit')
                     if position == 0:
+                        # Whether this run finished the job, and how far it got
+                        # if it did not.  An engine that does not report either
+                        # counts as finished: a run that cannot say it is
+                        # unconverged must not be run again for ever.
+                        state['optimize_converged'] = bool(
+                            outcome.get('converged', True))
+                        try:
+                            state['optimize_moved'] = _gfn.largest_shift(
+                                xyz, outcome['xyz'])
+                        except Exception:
+                            state['optimize_moved'] = 0.0
                         state['gfn_held'] = outcome.get('held')
                         if outcome.get('multiplicity'):
                             # What the scan settled on, so the live relaxation
@@ -2897,7 +2971,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     note = str(outcome.get('status') or '')
                     if 'before converging' in note:
                         # It came back with a geometry, but not a finished one.
-                        failures.append(f'frame {position + 1}: {note}')
+                        unfinished.append(f'frame {position + 1}: {note}')
                 else:
                     failures.append(
                         f"frame {position + 1}: {outcome.get('status') or 'failed'}"
@@ -2911,14 +2985,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the coordinates nor the switch are touched: the run that
                     # replaces it is already on its way.
                     return
+                # A run is one xtb --opt, and xtb's optimiser has a cycle limit
+                # of its own: when it reaches it, it hands back the geometry it
+                # got to and reports that it did not converge.  That was taken
+                # as the end -- the switch went up over a structure that was
+                # better than it had been and not at a minimum, and the user
+                # pressed again.  Pressing again is a NEW process from that
+                # geometry, with a fresh cycle budget and a fresh optimiser
+                # history, which is the whole reason it got further.
+                #
+                # So the pressing is done here.  It ends the three ways Settle
+                # has always ended -- converged, no longer moving, or out of
+                # rounds -- because a structure whose held values cannot all be
+                # met at once never converges, and a run that will not end is a
+                # process per round for as long as the switch is down.
+                rounds = int(state.get('optimize_rounds', 0)) + 1
+                carry_on = _optimise_carries_on(
+                    converged=bool(state.get('optimize_converged', True)),
+                    moved=float(state.get('optimize_moved') or 0.0),
+                    rounds=rounds,
+                    failed=bool(failures),
+                    every_frame=every_frame,
+                )
+                state['optimize_rounds'] = rounds if carry_on else 0
                 # Converged, failed or stopped -- the switch goes back up by
                 # itself, so it never claims to be working when it is not.
                 if state.get('optimize_run') is token:
                     state['optimize_run'] = None
-                for switch in (submit_optimize_btn, submit_optimize_all_btn):
-                    if switch.value:
-                        switch.value = False
-                    switch.disabled = False
+                if not carry_on:
+                    for switch in (submit_optimize_btn, submit_optimize_all_btn):
+                        if switch.value:
+                            switch.value = False
+                        switch.disabled = False
                 state['pre_optimize_frames'] = {
                     'isomers': frames,
                     'coords': coords_widget.value,
@@ -3004,7 +3102,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # playback did wrong still gets said; that it worked does not
                 # need a row of its own.
                 state['gfn_last_status'] = said
-                _set_mol_status(*_gfn_status_lines(said), *failures[:2])
+                if carry_on:
+                    # Where it has got to, rather than a result: the same press
+                    # is still running and the coordinates above are what the
+                    # next round starts from.
+                    said = (f'{label} is still going: round {rounds}, '
+                            f'{state.get("optimize_moved", 0.0):.3f} A moved.')
+                    state['gfn_last_status'] = said
+                    _set_mol_status(*_gfn_status_lines(said), spinner=True)
+                    state['optimize_carrying_on'] = True
+                    schedule_ui_update(
+                        lambda: on_submit_optimize(None, every_frame=every_frame))
+                    return
+                _set_mol_status(*_gfn_status_lines(said),
+                                *(failures + unfinished)[:2])
 
             schedule_ui_update(_apply)
 
