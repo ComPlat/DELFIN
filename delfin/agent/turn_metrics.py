@@ -213,22 +213,36 @@ def is_crashed(entry: dict) -> bool:
         return False
 
 
-def _produced_no_token(entry: dict) -> bool:
-    """The record says, and can prove, that not one token arrived.
+def _delivered_nothing(entry: dict) -> bool:
+    """The turn reached its end without giving the user anything.
 
-    The shared precondition of :func:`is_never_started` and
-    :func:`silence_kind`: an instrumented ``ttft_ms`` that stayed ``None``,
-    no crash to explain it, and the rest of the record agreeing (no text,
-    no tools, no counted output tokens). What the two do with it differs —
-    one asks how long the silence lasted, the other what kind it was.
+    No text, no tool call, no counted output token, and no crash to
+    explain it. Says nothing about whether the model was working — a turn
+    that reasoned for three minutes and then stopped delivered nothing,
+    and that is a fault worth naming even though the backend was busy.
     """
     if is_crashed(entry):
-        return False
-    if "ttft_ms" not in entry or entry.get("ttft_ms") is not None:
         return False
     return (_int(entry, "output_chars") == 0
             and _int(entry, "tool_calls") == 0
             and _int(entry, "output_tokens") == 0)
+
+
+def _produced_no_token(entry: dict) -> bool:
+    """The record says, and can prove, that the model never began.
+
+    :func:`is_never_started` asks this one: an instrumented ``ttft_ms``
+    that stayed ``None``, and the rest of the record agreeing.
+
+    A reasoning delta STAMPS ttft — it is the model producing output —
+    so a turn that thought and then said nothing fails this predicate and
+    passes :func:`_delivered_nothing`. The two used to share one field
+    and therefore one answer, which made a busy model that delivered
+    nothing indistinguishable from an endpoint that never spoke.
+    """
+    if "ttft_ms" not in entry or entry.get("ttft_ms") is not None:
+        return False
+    return _delivered_nothing(entry)
 
 
 def silence_kind(entry: dict) -> str:
@@ -240,21 +254,20 @@ def silence_kind(entry: dict) -> str:
         ``first_event_ms is None``: not one event of any kind arrived, so
         the connection itself never delivered.
     ``"model"``
-        A first event arrived and no token followed — the stream was
-        alive and the model said nothing. This is the discriminator that
-        time-to-first-TOKEN cannot make, because ``message_start`` and
-        thinking deltas never stamp it.
+        A first event arrived and nothing was delivered — the stream was
+        alive and the user got nothing. This is the discriminator that
+        time-to-first-TOKEN cannot make, because ``message_start`` never
+        stamps it and a reasoning delta stamps it without answering.
     ``"unclassified"``
         The record predates ``first_event_ms``. It is silent, and which
         kind cannot be recovered; guessing would invent evidence.
 
-    Unlike :func:`is_never_started` this asks nothing about duration: a
-    turn that failed in milliseconds with nothing on the wire is a
-    different defect from a long wait, but it is still worth knowing
-    whether anything was ever delivered.
+    Unlike :func:`is_never_started` this asks nothing about duration, and
+    nothing about whether the model was working: a turn that reasoned at
+    length and then stopped is silence to the person waiting for it.
     """
     try:
-        if not _produced_no_token(entry):
+        if not _delivered_nothing(entry):
             return ""
         if "first_event_ms" not in entry:
             return "unclassified"

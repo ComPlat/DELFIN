@@ -243,7 +243,11 @@ def test_max_tokens_truncation_is_surfaced(client):
                usage=_Usage()),
     ])
     events, _ = _drive(client, [truncated])
+    # The harness says this, not the model — it rides the notice channel
+    # so a verifier or a benchmark cannot read it as the answer.
     assert any("truncated" in (getattr(e, "text", "") or "").lower()
-               for e in events if getattr(e, "type", "") == "text_delta")
+               for e in events if getattr(e, "type", "") == "notice")
+    assert not any("truncated" in (getattr(e, "text", "") or "").lower()
+                   for e in events if getattr(e, "type", "") == "text_delta")
     md = [e for e in events if getattr(e, "type", "") == "message_delta"]
     assert md and md[-1].stop_reason == "length"

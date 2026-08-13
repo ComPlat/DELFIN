@@ -155,12 +155,18 @@ def test_transient_error_after_partial_output_retries_round(client):
         return _final("full answer")
 
     events, n_calls = _drive_seq(client, _factory)
-    joined = "".join(e.text for e in events
-                     if e.type == "text_delta" and e.text)
+    said = "".join(e.text for e in events
+                   if e.type == "text_delta" and e.text)
+    told = "".join(e.text for e in events
+                   if e.type == "notice" and e.text)
     assert n_calls == 2
-    assert "full answer" in joined
-    assert "retrying" in joined.lower()
-    assert "restarts below" in joined            # partial-output marker
+    assert "full answer" in said
+    # The retry banner is the harness talking about itself. It still
+    # reaches the reader, on the channel that is not the model's answer —
+    # it used to be scored as one.
+    assert "retrying" in told.lower()
+    assert "restarts below" in told              # partial-output marker
+    assert "retrying" not in said.lower()
     # The turn ended normally, not via an exception.
     assert any(e.type == "message_delta" for e in events)
 

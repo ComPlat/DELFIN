@@ -66,17 +66,111 @@ def test_already_elided_not_doubled():
         assert m["content"].count(_ELIDED_PREFIX) == 1
 
 
-def test_called_each_round_in_source():
-    from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent
-           / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
-    i = src.find("for _round in range(_MAX_TOOL_ROUNDS")
-    assert i != -1
-    # Called each round with the context-scaled budget (bug 172455). The
-    # window is generous because the top of the loop also carries the
-    # per-round Stop check and the cost ceiling -- both of which have to
-    # run before any work, so they sit above this call.
-    assert "_elide_old_tool_results(api_messages, char_budget=" in src[i:i + 2500]
+# --- Minimal fake OpenAI stream, enough to drive N tool rounds -------------
+
+class _D:
+    def __init__(self, content=None, tool_calls=None):
+        self.content, self.tool_calls = content, tool_calls
+
+
+class _C:
+    def __init__(self, delta, finish=None):
+        self.delta, self.finish_reason = delta, finish
+
+
+class _U:
+    prompt_tokens, completion_tokens = 5, 3
+
+
+class _Ch:
+    def __init__(self, choices, usage=None):
+        self.choices, self.usage = choices, usage
+
+
+class _S:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __iter__(self):
+        return iter(self._chunks)
+
+    def close(self):
+        pass
+
+
+class _TC:
+    """One streamed tool_call delta — a read_file the gate will refuse,
+    which is enough: the round happened and its result is in the list."""
+    def __init__(self, i):
+        self.index, self.id, self.type = 0, f"c{i}", "function"
+        self.function = type("F", (), {"name": "read_file",
+                                       "arguments": '{"path": "nope.txt"}'})()
+
+
+def _driven_client(monkeypatch, *, tool_rounds):
+    from delfin.agent import mcp_client as M
+    from delfin.agent import model_capabilities as mc
+    from delfin.agent.api_client import KitToolPermissions, create_client
+
+    caps = mc.ModelCapabilities(model="m", provider="ollama",
+                                context_window=262_144, supports_tools=True)
+    monkeypatch.setattr(mc, "resolve", lambda *a, **k: caps)
+    monkeypatch.setattr(M, "get_registry", lambda *a, **k: type(
+        "R", (), {"discover_all": lambda s: [],
+                  "discover_resources": lambda s: [],
+                  "discover_prompts": lambda s: []})())
+
+    import tempfile
+    ws = tempfile.mkdtemp()
+    client = create_client(backend="api", provider="ollama",
+                           model="qwen2.5-coder:7b", cwd=ws)
+    client.set_permissions(KitToolPermissions(workspace=ws, mode="default"))
+
+    state = {"n": 0}
+
+    def _create(**kw):
+        state["n"] += 1
+        if state["n"] <= tool_rounds:
+            return _S([_Ch([_C(_D(tool_calls=[_TC(state["n"])]),
+                               finish="tool_calls")], usage=_U())])
+        return _S([_Ch([_C(_D(content="done"), finish="stop")], usage=_U())])
+
+    client.client.chat.completions.create = _create
+    return client
+
+
+def test_called_every_round_with_the_context_scaled_budget(monkeypatch):
+    """Elision runs once per tool round, on the live message list.
+
+    This was a source-text assertion: it read api_client.py and required
+    the call to appear within 2500 characters of the loop head. Anything
+    added at the top of that loop pushed it out of the window and the
+    test failed while the behaviour was untouched — a failure that names
+    the wrong thing is worse than no test. What actually matters is that
+    the call happens each round, with the budget scaled to the model's
+    context and not the fixed default.
+    """
+    import delfin.agent.api_client as A
+
+    seen: list[int] = []
+    real = A._elide_old_tool_results
+
+    def _spy(messages, *, char_budget, **kw):
+        seen.append(char_budget)
+        return real(messages, char_budget=char_budget, **kw)
+
+    monkeypatch.setattr(A, "_elide_old_tool_results", _spy)
+
+    client = _driven_client(monkeypatch, tool_rounds=2)
+    list(client.stream_message("sys", [{"role": "user", "content": "go"}],
+                               max_tokens=64))
+
+    assert len(seen) >= 3, "elision did not run on every round"
+    assert all(b == seen[0] for b in seen), "the budget changed mid-turn"
+    # A 262k-context model must keep far more tool output than the fixed
+    # default, or it spends the turn re-paging files it already read.
+    assert seen[0] > A._TOOL_CONTEXT_CHAR_BUDGET, (
+        "the fixed default was used instead of the model's context")
 
 
 # ---------------------------------------------------------------------------

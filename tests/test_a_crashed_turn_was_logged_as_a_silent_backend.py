@@ -267,7 +267,14 @@ def test_a_turn_that_never_reached_the_transport_stamps_no_first_event(
 
 def test_a_live_connection_to_a_silent_model_stamps_the_first_event(
         agent_tree, home):
-    """message_start and thinking arrived; not one token did."""
+    """The model thought, and then said nothing to the user.
+
+    A thinking delta IS the model producing output — it is billed as
+    output and it is the moment the wait ended. Treating it as no token
+    put a turn that reasoned for three minutes and a turn that never
+    heard from the endpoint into the same bucket, which is the whole
+    distinction this file exists for.
+    """
     def quiet(system, messages, **kw):
         yield StreamEvent(type="message_start", input_tokens=900)
         yield StreamEvent(type="thinking_delta", text="hmm")
@@ -275,8 +282,24 @@ def test_a_live_connection_to_a_silent_model_stamps_the_first_event(
     eng = _engine(agent_tree, quiet)
     eng.stream_response("hi")
     entry = _last(eng)
-    assert entry["ttft_ms"] is None             # no token was ever produced
+    assert entry["ttft_ms"] is not None         # thinking is production
     assert entry["first_event_ms"] is not None  # the stream was alive
+    # ... and it still answered nothing, which is a different fault.
+    assert tm.silence_kind(entry) == "model"
+
+
+def test_a_backend_that_produced_nothing_at_all_stamps_no_ttft(
+        agent_tree, home):
+    """The other side of the same distinction: the envelope arrived and
+    the model never began. That is the turn with no first token."""
+    def quiet(system, messages, **kw):
+        yield StreamEvent(type="message_start", input_tokens=900)
+
+    eng = _engine(agent_tree, quiet)
+    eng.stream_response("hi")
+    entry = _last(eng)
+    assert entry["ttft_ms"] is None
+    assert entry["first_event_ms"] is not None
     assert tm.silence_kind(entry) == "model"
 
 

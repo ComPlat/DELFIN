@@ -128,7 +128,13 @@ def test_report_contains_tool_and_turn_health(tmp_path, monkeypatch):
     assert "**bash**: 100% errors (1/1 calls)" in report
     assert 'e.g. "exit 1"' in report
     assert "## Turn health" in report
-    assert "turns: 1, stalls: 1, stopped: 1" in report
+    # The three kinds of bad turn are named apart — a crash has an error,
+    # a never-started turn produced no token, a stall produced one late.
+    # Asserting the fields rather than one concatenation, so adding a
+    # fourth counter is not a test failure.
+    for field in ("turns: 1", "stalls: 1", "crashes: 0",
+                  "never started: 0", "stopped: 1"):
+        assert field in report, field
     assert "p90 89.0s" in report
     # fewer than two benchmark runs → no drift section
     assert "## Benchmark drift" not in report
