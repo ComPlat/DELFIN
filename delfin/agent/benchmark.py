@@ -930,6 +930,19 @@ def aggregate_replicates(
         the fraction of passes; ``per_run_*`` keep the raw samples for
         deeper analysis.
 
+    UNMEASURED replicates are excluded from every one of those, and the
+    aggregate is unmeasured only when none of them measured anything.
+    ``is_unmeasured`` guarded the single-run path and this one dropped
+    the flag, so with ``--repeats`` the whole mechanism was bypassed:
+    observed live, an engine that never started -- a missing provider
+    argument -- came back 0/11 at quality 35 with no NOT MEASURED notice
+    at all, and would have been written to the file baselines compare
+    against. One hop in the middle is all a guard needs to lose.
+
+    A partial outage is the more common shape: two replicates ran, the
+    third hit an endpoint with no capacity. Medianing that third one's
+    zero in punishes the model for the network.
+
     Raises ``ValueError`` on empty input or task_id mismatch.
     """
     if not results:
@@ -938,6 +951,9 @@ def aggregate_replicates(
     if not all(r.task_id == first.task_id for r in results):
         raise ValueError("aggregate_replicates: all results must share task_id")
 
+    all_unmeasured = all(r.unmeasured for r in results)
+    if not all_unmeasured:
+        results = [r for r in results if not r.unmeasured]
     n = len(results)
     qualities = [int(r.quality_0_100) for r in results]
     durations = [float(r.duration_s) for r in results]
@@ -1023,6 +1039,7 @@ def aggregate_replicates(
         text_excerpt=excerpt,
         tool_names=tool_names_union,
         behavior=behavior_agg,
+        unmeasured=all_unmeasured,
         caveats=int(_median([float(r.caveats) for r in results])),
         answer_chars=int(_median([float(r.answer_chars) for r in results])),
         # Unobserved stays unobserved: a median over a list with holes in

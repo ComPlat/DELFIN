@@ -158,6 +158,45 @@ def test_replicates_report_the_median_hedging(monkeypatch):
     assert agg.answer_chars == 200
 
 
+def test_three_unmeasured_replicates_are_not_a_failing_model():
+    """The single-run path had this guard and the replicate path dropped
+    the flag, so --repeats bypassed the whole mechanism. Found live: an
+    engine that never started -- a missing provider argument -- came back
+    0/11 at quality 35 with no NOT MEASURED notice, on its way into the
+    file baselines are compared against."""
+    from delfin.agent.benchmark import aggregate_replicates
+    reps = [BenchmarkResult(task_id="a", task_class="office", model="m",
+                            success=False, quality_0_100=35, unmeasured=True,
+                            error="engine init failed: no api key")
+            for _ in range(3)]
+    agg = aggregate_replicates(reps)
+    assert agg.unmeasured is True
+    s = summarise_run([agg])
+    assert s["n_unmeasured"] == 1
+    assert s["n_tasks"] == 0, "an outage must not be counted as a scored task"
+
+
+def test_one_outage_among_three_does_not_drag_the_median_down():
+    """The commoner shape: two replicates ran, the third hit an endpoint
+    with no capacity. Medianing its zero in punishes the model for the
+    network."""
+    from delfin.agent.benchmark import aggregate_replicates
+    reps = [
+        BenchmarkResult(task_id="a", task_class="office", model="m",
+                        success=True, quality_0_100=93),
+        BenchmarkResult(task_id="a", task_class="office", model="m",
+                        success=True, quality_0_100=91),
+        BenchmarkResult(task_id="a", task_class="office", model="m",
+                        success=False, quality_0_100=35, unmeasured=True,
+                        error="no deployments available"),
+    ]
+    agg = aggregate_replicates(reps)
+    assert agg.unmeasured is False
+    assert agg.quality_0_100 == 92
+    assert agg.n_samples == 2, "the outage is not a sample of the model"
+    assert agg.success is True
+
+
 def test_one_unobserved_replicate_leaves_the_aggregate_unobserved():
     from delfin.agent.benchmark import aggregate_replicates
     reps = [
