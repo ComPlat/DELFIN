@@ -242,6 +242,16 @@ def cross_process_lock(path: Path):
     handle = None
     try:
         lock_path = Path(str(path) + _LOCK_SUFFIX)
+        # A state path is absolute or it is not a state path. A relative
+        # one resolves against the process CWD, which for a mocked
+        # workspace is the string a MagicMock renders to -- that is how
+        # lock files came to sit in the repository checkout, under a
+        # directory name a git ignore rule hides from `git status`. The
+        # task store already refuses a relative base; the lock arrived
+        # afterwards and inherited the hole.
+        if not lock_path.is_absolute():
+            yield
+            return
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         handle = open(lock_path, "a+")
         deadline = time.monotonic() + _LOCK_TIMEOUT_S

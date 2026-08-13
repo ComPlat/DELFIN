@@ -209,6 +209,13 @@ def test_an_unlocked_session_still_runs_its_workspace_hooks(tmp_path, event):
     test above and remove the feature."""
     ws, marker = _workspace_with_a_hook_that_leaves_a_trace(tmp_path, event)
     perms = _hook_perms(ws, locked=False)
+    # Unlocked is no longer enough on its own: a workspace's hooks are
+    # withheld until the USER trusts that directory, because a repository
+    # somebody merely checked out must not be able to run commands. This
+    # test is the other half of the lock -- that hooks did not stop
+    # working everywhere -- so it grants trust and then asks its question.
+    from delfin.agent import workspace_trust as _wt
+    _wt.trust_workspace(ws, (_wt.KIND_HOOKS,), actor="user")
 
     A._doc_executor.execute("read_file", {"path": "notiz.txt"}, perms)
 

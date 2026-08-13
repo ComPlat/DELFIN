@@ -32,7 +32,14 @@ _CHECKOUT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 # Build noise, not test output: byte-code caches and pytest's own cache
 # are created by running the suite at all.
 _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
-                   ".ruff_cache", ".hypothesis")
+                   ".ruff_cache", ".hypothesis",
+                   # Parallel agents check worktrees out under `.claude`.
+                   # Each is a separate working copy with its own runs
+                   # going on in it, so what appears there is not this
+                   # run's doing, and reporting it buries the finding that
+                   # is. The walk is also O(every file in every worktree)
+                   # before it says anything at all.
+                   ".claude", ".venv", "node_modules")
 
 
 def _checkout_entries() -> frozenset:
