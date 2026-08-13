@@ -1962,6 +1962,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if not state.get('gfn_follow') and not _begin_gfn_follow():
             return          # not following: Relax is up, or GFN is not chosen
+        if state.get('optimize_run') is not None:
+            # An optimisation owns the structure, so the follow does not get
+            # to move it as well.  Picking an atom up interrupts a run before
+            # the follow begins, so the ordinary way round never reaches this;
+            # pressing Optimise while an atom is already held does, and two
+            # xtb processes then arranged the same molecule around each other
+            # -- the same collision the coordinate box was given an owner for,
+            # one step earlier in the same path.  The press is the later of
+            # the two things the user asked for, so it wins.
+            return
         state['gfn_follow_xyz'] = (xyz, tuple(holding or ()))
         if state.get('gfn_follow_busy'):
             return
@@ -2082,6 +2092,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: take it, whatever xtb says about convergence.  Same figure as a settle:
     #: below this, another round is another process for nothing.
     _OPTIMISE_STILL = 0.005
+    #: How many of those in a row it takes to believe it.  One is not proof: a
+    #: run that reached its cycle limit in a flat stretch moves almost nothing
+    #: and its successor -- a new process, fresh budget, fresh optimiser
+    #: history -- can still take a real step.  Two costs one xtb run at most.
+    _OPTIMISE_STILL_ROUNDS = 2
 
     _GFN_SETTLE_ROUNDS = 12
     #: And a round that moved nothing has settled, whatever xtb calls it.
@@ -2786,7 +2801,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_restarting'] = True
         on_submit_optimize(None, every_frame=every_frame)
 
-    def _optimise_carries_on(*, converged, moved, rounds, failed, every_frame):
+    def _optimise_carries_on(*, converged, moved, rounds, failed, every_frame,
+                             still):
         """Whether one more xtb run belongs to the press that is running.
 
         A run is one xtb ``--opt`` and its optimiser has a cycle limit of its
@@ -2808,12 +2824,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         moving, or out of rounds.  The last two are not decoration -- held
         values that cannot all be met at once never converge, and a run that
         will not end is one process per round for as long as the switch is down.
+
+        *still* counts how many rounds in a row have moved next to nothing,
+        this one included, and one of them is not enough to call it finished.
+        The whole reason these rounds exist is that a new process starts with a
+        fresh cycle budget AND a fresh optimiser history -- so a run that ran
+        out of cycles in a flat stretch and moved four thousandths of an
+        angstrom is exactly the run whose successor can still take a real step.
+        Stopping on the first quiet one made "no longer moving" mean "did not
+        move much just then", and the user pressed Optimise again and watched
+        it move: the very thing these rounds were written to stop.  Two in a
+        row is the proof, and it costs one xtb run at most.  Held values that
+        cannot all be met at once oscillate, so they reach two quickly.
         """
         if failed or converged:
             return False
         if rounds >= _OPTIMISE_ROUNDS:
             return False
-        if moved <= _OPTIMISE_STILL:
+        if moved <= _OPTIMISE_STILL and still >= _OPTIMISE_STILL_ROUNDS:
             return False
         # And only while the switch the user pressed is still down.
         switch = submit_optimize_all_btn if every_frame else submit_optimize_btn
@@ -2874,6 +2902,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         carrying_on = bool(state.pop('optimize_carrying_on', False))
         if not carrying_on:
             state['optimize_rounds'] = 0
+            state['optimize_still'] = 0
             _set_mol_status(
                 (f'Moved while it ran; {label} starts again from the structure '
                  'you made...' if again else
@@ -3113,14 +3142,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # met at once never converges, and a run that will not end is a
                 # process per round for as long as the switch is down.
                 rounds = int(state.get('optimize_rounds', 0)) + 1
+                moved_now = float(state.get('optimize_moved') or 0.0)
+                # Rounds in a row that moved next to nothing, this one counted.
+                still = (int(state.get('optimize_still', 0)) + 1
+                         if moved_now <= _OPTIMISE_STILL else 0)
                 carry_on = _optimise_carries_on(
                     converged=bool(state.get('optimize_converged', True)),
-                    moved=float(state.get('optimize_moved') or 0.0),
+                    moved=moved_now,
                     rounds=rounds,
                     failed=bool(failures),
                     every_frame=every_frame,
+                    still=still,
                 )
                 state['optimize_rounds'] = rounds if carry_on else 0
+                state['optimize_still'] = still if carry_on else 0
                 # Converged, failed or stopped -- the switch goes back up by
                 # itself, so it never claims to be working when it is not.
                 if state.get('optimize_run') is token:
