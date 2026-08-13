@@ -131,7 +131,11 @@ def test_the_size_is_asked_for_in_pixels():
     # from -- the Builder used to keep a second pair of its own.
     assert 'widgets.BoundedIntText(' in SUBMIT
     assert 'min=LABEL_PX_MIN' in SUBMIT and 'max=LABEL_PX_MAX' in SUBMIT
-    assert 'widgets.BoundedIntText(' not in ORCA
+    # Named for what it is, rather than "no bounded box anywhere in the
+    # Builder": that stood in for this while the Builder happened to have no
+    # other, and then a bounded multiplicity -- a different control for a
+    # different reason -- made the guard fire over a thing it was not about.
+    assert 'LABEL_PX' not in ORCA and 'submit_label_size = ' not in ORCA
     assert 'orca_mol_labels_btn' not in ORCA
 
 

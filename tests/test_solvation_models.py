@@ -217,9 +217,13 @@ def test_the_tab_offers_the_model_and_hands_it_to_both_engines():
     assert 'def _solv_model(' in source
     assert 'def _refresh_solvation_controls(' in source
     # Both lists are rebuilt when the method changes: what is available is a
-    # property of the method, not of the tab.
+    # property of the method, not of the tab.  Through the one function that
+    # puts every per-method control in step -- the solvent boxes are not a
+    # special case, they are the case that came first.
     changed = source.split('def on_submit_ff_changed')[1].split('\n    def ')[0]
-    assert '_refresh_solvation_controls()' in changed
+    assert '_refresh_method_controls()' in changed
+    controls = source.split('def _refresh_method_controls')[1].split('\n    def ')[0]
+    assert '_refresh_solvation_controls()' in controls
     # Every run path is given the model, and the PM paths the solvent.
     assert source.count('solvation_model=model') >= 4
     assert source.count('solvent=wet') >= 3

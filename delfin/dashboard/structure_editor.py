@@ -3707,6 +3707,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['constraints'] = held
         _refresh_constraints()
         _enable_live_forcefield()
+        # And under GFN, where nothing runs between drags, the change is what
+        # has to start it.  This was the one of the three ways of altering a
+        # held value that did not: Hold arms it, changing pull to fix arms it,
+        # and typing a new number into the box did not -- so the list said one
+        # thing, the structure went on standing at another, and pressing Hold
+        # again was what made it happen.  The browser's field needs no such
+        # push, which is why it only showed under a server method.
+        _arm_gfn_takeup(f'Holding {_describe_constraint(held[position])}')
         _set_mol_status(f'Holding {_describe_constraint(held[position])}.')
 
     def _refresh_constraints():
@@ -4993,6 +5001,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_settle_btn.layout.display = 'none' if server else ''
         if server and submit_settle_btn.value:
             submit_settle_btn.value = False
+        # Auto is the other way round -- a server method's, and dead under a
+        # browser one.  What it is for is going down to a minimum when an atom
+        # is let go, and that is refused outright for a browser method: the
+        # field is already running there, and Settle is the switch for what a
+        # release does.  It kept one working half under UFF, resuming an
+        # Optimise run a drag had interrupted, and that goes with it: the run
+        # stands down and the switch comes back up, which is what the two
+        # visible switches already say is happening.
+        #
+        # Hidden, and its value left alone -- unlike Settle, which is switched
+        # off as well.  Nothing reads this under a browser method, so an Auto
+        # left on there does nothing at all; switching it off would mean that
+        # picking UFF for a moment and going back to GFN2 quietly cost the
+        # user the switch they had set.  Settle is the opposite case: under a
+        # browser method its value is what the page settles by, so it has to
+        # be off in fact and not merely out of sight.
+        submit_auto_btn.layout.display = '' if server else 'none'
         # A method without solvation gets no solvent box: a control that can
         # only produce a refusal is worse than no control.  Which models and
         # which solvents a method does have is the solvents module's answer,

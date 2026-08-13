@@ -3689,6 +3689,11 @@ def test_the_toolbar_shows_what_the_method_has_and_nothing_else(editor, monkeypa
     assert editor["submit_gfn_autospin"].layout.display == "none"
     assert editor["submit_strength_slider"].layout.display == ""
     assert editor["submit_settle_btn"].layout.display in (None, "")
+    # Auto is the other way round: going down to a minimum on release is
+    # refused outright for a browser method, so the switch has nothing to do.
+    # Its value is left as it stands -- nothing reads it here, and switching
+    # it off would cost the user their setting for stepping through UFF.
+    assert editor["submit_auto_btn"].layout.display == "none"
 
     dd.value = "gfn2"
     assert editor["submit_gfn_charge"].layout.display == ""
@@ -3696,6 +3701,7 @@ def test_the_toolbar_shows_what_the_method_has_and_nothing_else(editor, monkeypa
     assert editor["submit_gfn_autospin"].layout.display == ""
     assert editor["submit_strength_slider"].layout.display == "none"
     assert editor["submit_settle_btn"].layout.display == "none"
+    assert editor["submit_auto_btn"].layout.display == ""
 
     dd.value = "pm7"
     assert editor["submit_gfn_charge"].layout.display == ""
@@ -3703,6 +3709,7 @@ def test_the_toolbar_shows_what_the_method_has_and_nothing_else(editor, monkeypa
     assert editor["submit_gfn_autospin"].layout.display == "none"
     assert editor["submit_settle_btn"].layout.display == "none"
     assert editor["submit_strength_slider"].layout.display == "none"
+    assert editor["submit_auto_btn"].layout.display == ""
 
 
 def test_a_multiplicity_of_zero_or_below_is_refused_by_the_box(editor):
@@ -3849,3 +3856,54 @@ def test_a_restored_structure_cannot_hand_back_a_switch_the_method_lacks(editor,
 
     apply_body = EDITOR_SOURCE.split("def _apply_controls")[1].split("\n    def ")[0]
     assert "_refresh_method_controls()" in apply_body
+
+
+def test_retuning_a_held_value_reaches_the_engine_without_pressing_hold():
+    """Three ways to alter a held value, and one of them went nowhere.
+
+    Hold arms the take-up, and so does changing pull to fix; typing a new
+    number into the box did not.  Under the browser's field that never showed,
+    because its restraints ride along with the parameters that are handed over
+    again -- but under GFN nothing runs between drags, so the change is what
+    has to start it.  The list said one thing, the structure went on standing
+    at another, and pressing Hold again was what made it happen.
+    """
+    for name in ("on_submit_hold", "on_submit_hold_mode",
+                 "on_submit_constraint_retune"):
+        body = EDITOR_SOURCE.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "_arm_gfn_takeup(" in body, name
+        assert "_enable_live_forcefield()" in body, name
+
+
+def test_xtb_holds_a_value_with_one_force_constant_for_the_whole_set():
+    """pull and fix are two force constants, not two mechanisms.
+
+    xtb takes one ``force constant=`` for the whole ``$constrain`` block -- a
+    second is read and ignored -- so a set with anything exact in it is held
+    exact throughout, and the caller is told so rather than left to wonder why
+    a pull stopped negotiating.
+    """
+    pull = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "pull"}]
+    fix = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "fix"}]
+
+    assert gfn.constraint_input(pull)["force"] == gfn.PULL_FORCE_CONSTANT
+    assert gfn.constraint_input(fix)["force"] == gfn.FIX_FORCE_CONSTANT
+    assert not gfn.constraint_input(pull)["mixed"]
+    assert not gfn.constraint_input(fix)["mixed"]
+
+    both = gfn.constraint_input(pull + [
+        {"kind": "angle", "atoms": [0, 1, 2], "value": 109.5, "mode": "fix"}])
+    assert both["held"] == 2
+    assert both["force"] == gfn.FIX_FORCE_CONSTANT, (
+        "one constant for the block, and anything exact in it decides"
+    )
+    assert both["mixed"] is True
+    assert "held as firmly as the exact values" in gfn.held_note(both)
+
+    # Only internal coordinates.  xtb's own $fix atoms: is not asked for --
+    # three fixed carbons of a propane came back at 0.4623 A under GFN2.
+    assert set(gfn.CONSTRAINT_ATOMS) == {"distance", "angle", "dihedral"}
+    assert "$fix" not in gfn.constraint_input(fix)["text"]
+    assert gfn.constraint_input(
+        [{"kind": "atom", "atoms": [0], "value": 0.0, "mode": "fix"}]
+    )["held"] == 0
