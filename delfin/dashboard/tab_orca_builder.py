@@ -99,6 +99,14 @@ def _orca_kabsch_align(reference_coords, target_coords, mapping=None):
     return aligned, rmsd
 
 
+#: How the two structures of a numbering comparison are drawn, and the only
+#: thing that says which is which.  The names in the navigation label are put
+#: in these same colours, because an overlay of two molecules with no legend
+#: is two molecules and no legend.
+_OVERLAY_REFERENCE_COLOUR = '#d32f2f'   # the block everything is compared to
+_OVERLAY_TARGET_COLOUR = '#1f5fff'      # the block being checked
+
+
 def create_tab(ctx):
     """Create the ORCA Input Builder tab.
 
@@ -156,6 +164,17 @@ def create_tab(ctx):
         button_style='success',
         disabled=True,
         layout=widgets.Layout(width='220px'),
+    )
+    # The way out.  Check Numbering put the preview into a comparison of three
+    # pictures, and nothing but loading another structure or resetting the tab
+    # took it out again -- so a user who looked, found the numbering already
+    # right, and wanted to carry on editing had nowhere to go.  Shown only
+    # while there is something to leave.
+    orca_back_to_editor_btn = widgets.Button(
+        description='BACK TO EDITOR',
+        icon='arrow-left',
+        button_style='info',
+        layout=widgets.Layout(width='180px', display='none'),
     )
     orca_charge = widgets.IntText(value=0, description='Charge:',
                                   layout=widgets.Layout(width='200px'), style=ws)
@@ -715,12 +734,48 @@ def create_tab(ctx):
     _ORCA_CONSTRAINT = {'distance': ('B', 2), 'angle': ('A', 3),
                         'dihedral': ('D', 4)}
 
+    def _input_structure_text():
+        """The structure this input reads -- always the first block."""
+        blocks = state.get('xyz_blocks') or []
+        return blocks[0][1] if blocks else orca_coords.value
+
     def _input_structure_atom_count():
         """How many atoms the structure this input reads actually has."""
-        blocks = state.get('xyz_blocks') or []
-        text = blocks[0][1] if blocks else orca_coords.value
-        return len([row for row in strip_xyz_header(text).split('\n')
+        return len([row for row in strip_xyz_header(_input_structure_text()).split('\n')
                     if len(row.split()) >= 4])
+
+    def _input_structure_elements():
+        """Its element column, which is what says which molecule it is."""
+        out = []
+        for row in strip_xyz_header(_input_structure_text()).split('\n'):
+            parts = row.split()
+            if len(parts) < 4:
+                continue
+            try:
+                float(parts[1]), float(parts[2]), float(parts[3])
+            except ValueError:
+                continue
+            out.append(parts[0])
+        return tuple(out)
+
+    def _unstamped_note(held):
+        """The warning for a held value that cannot say where it came from.
+
+        Hold writes the structure down with the value, so which molecule the
+        numbers belong to is knowable and the value is simply left out when it
+        is the wrong one.  A value from before that -- one restored with an
+        older session -- carries numbers and nothing else, and there is no way
+        to tell.  Those are still written, because refusing them would throw
+        away every constraint a returning user had, and the old warning stands
+        over them: it is the one case where the reader has to check.
+        """
+        blocks = state.get('xyz_blocks') or []
+        shown = int(state.get('xyz_view_idx', 0))
+        blind = [c for c in held if not c.get('structure')]
+        if not (blind and len(blocks) > 1 and shown != 0):
+            return ''
+        return (f'# Held in the editor on {blocks[shown][0]}, while this\n'
+                f'# input reads {blocks[0][0]}. Check the atom numbers.\n')
 
     def _build_constraints_block():
         """The coordinates held in the editor, in ORCA's own syntax.
@@ -737,6 +792,19 @@ def create_tab(ctx):
                 if c.get('mode') == 'fix']
         if not held:
             return ''
+        # And only the ones set on the structure this input actually reads.
+        # A held value names atoms by number and nothing else, so it means
+        # something about every structure with that many atoms: a C-C held at
+        # 1.700 A on a cyclobutane went into a benzene's input as
+        # "{ B 0 1 1.7000 C }", both being twelve atoms, and pulled an
+        # aromatic bond a third of an angstrom out of the ring.  There was a
+        # comment above it saying so, addressed to a program that does not
+        # read comments.  The element column is what tells two structures
+        # apart, and Hold writes it down with the value.
+        elsewhere = [c for c in held
+                     if c.get('structure')
+                     and tuple(c['structure']) != _input_structure_elements()]
+        held = [c for c in held if c not in elsewhere]
         # A held value names atoms by number, and the numbers belong to the
         # structure it was set on. Held between atoms 0 and 2 of a water and
         # then asked of a two-atom CO, "{ B 0 2 1.5000 C }" reaches ORCA, which
@@ -750,8 +818,18 @@ def create_tab(ctx):
             dropped = len(held) - len(keep)
             held = keep
         if not held:
-            return (f'# {dropped} held value(s) name atoms this structure does '
-                    f'not have, and are left out.\n') if dropped else ''
+            said = ''
+            if elsewhere:
+                blocks = state.get('xyz_blocks') or []
+                reads = blocks[0][0] if blocks else 'this structure'
+                said += (f'# {len(elsewhere)} held value(s) were set on another '
+                         f'structure and are left out:\n'
+                         f'# this input reads {reads}. Hold them again while '
+                         f'that one is on screen.\n')
+            if dropped:
+                said += (f'# {dropped} held value(s) name atoms this structure '
+                         f'does not have, and are left out.\n')
+            return said
         lines = []
         for entry in held:
             word, wanted = _ORCA_CONSTRAINT.get(entry.get('kind'), ('', 0))
@@ -764,14 +842,14 @@ def create_tab(ctx):
         if not lines:
             return ''
         note = ''
-        blocks = state.get('xyz_blocks') or []
-        shown = int(state.get('xyz_view_idx', 0))
-        if len(blocks) > 1 and shown != 0:
-            # The input reads the first block; the editor was working on
-            # another one. Saying so is the only honest thing to do -- the
-            # numbers below name atoms of a structure ORCA will not see.
-            note = (f'# Held in the editor on {blocks[shown][0]}, while this\n'
-                    f'# input reads {blocks[0][0]}. Check the atom numbers.\n')
+        if elsewhere:
+            blocks = state.get('xyz_blocks') or []
+            reads = blocks[0][0] if blocks else 'this structure'
+            note = (f'# {len(elsewhere)} held value(s) were set on another '
+                    f'structure and are left out:\n'
+                    f'# this input reads {reads}. Hold them again while that '
+                    f'one is on screen.\n')
+        note += _unstamped_note(held)
         if dropped:
             note += (f'# {dropped} more held value(s) name atoms this structure '
                      f'does not have, and are left out.\n')
@@ -845,6 +923,7 @@ def create_tab(ctx):
             state['numbering_check_results'] = {}
             state['numbering_check_block_idx'] = 1
             state['numbering_view_step'] = 0
+            _refresh_numbering_controls()
             try:
                 orca_file_upload.value = ()
             except Exception:
@@ -1209,8 +1288,10 @@ def create_tab(ctx):
         mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
         zoom = str(DEFAULT_3DMOL_ZOOM if DEFAULT_3DMOL_ZOOM is not None else 0.9)
         reset_js = 'window._orcaBuildViewState=null;' if reset_view else ''
-        target_style_js = molecule_view_style_js(profile['style'], color='#1f5fff')
-        reference_style_js = molecule_view_style_js(profile['style'], color='#d32f2f')
+        target_style_js = molecule_view_style_js(
+            profile['style'], color=_OVERLAY_TARGET_COLOUR)
+        reference_style_js = molecule_view_style_js(
+            profile['style'], color=_OVERLAY_REFERENCE_COLOUR)
         return (
             '<div id="' + div_id + '" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
             '<script>\n'
@@ -1275,15 +1356,25 @@ def create_tab(ctx):
         if state.get('numbering_check_active'):
             block_idx = int(state.get('numbering_check_block_idx', 1))
             step = int(state.get('numbering_view_step', 0))
+            # Which structure is which, by name and in the colour it is drawn
+            # in.  "Overlay" alone is two molecules on top of each other and
+            # no way to tell them apart -- the reader has to know that the red
+            # one is the reference every other block is compared against and
+            # the blue one is the block being checked, and the only place that
+            # can be said is here.
+            target = (blocks[block_idx][0]
+                      if 0 <= block_idx < len(blocks) else 'target')
+            reference = blocks[0][0] if blocks else 'reference'
+            red = f'<b style="color:{_OVERLAY_REFERENCE_COLOUR};">{reference}</b>'
+            blue = f'<b style="color:{_OVERLAY_TARGET_COLOUR};">{target}</b>'
             labels = [
-                'Overlay',
-                'Aligned reference',
-                'Reordered target',
+                f'Overlay: {red} over {blue}',
+                f'Aligned reference: {red}, turned to lie over {blue}',
+                f'Reordered target: {blue}, renumbered to match {red}',
             ]
-            block_name = blocks[block_idx][0] if 0 <= block_idx < len(blocks) else 'Comparison'
             orca_mol_nav_label.value = (
                 f'<span style="font-size:12px;">'
-                f'{step + 1}&thinsp;/&thinsp;3: {labels[step]} for {block_name}'
+                f'{step + 1}&thinsp;/&thinsp;3: {labels[step]}'
                 f'</span>'
             )
             orca_mol_prev_btn.layout.display = ''
@@ -1380,6 +1471,10 @@ def create_tab(ctx):
                     # geometry. So they are shown and numbered, and the toolbar
                     # waits until there is a structure to edit again.
                     _hand_to_editor('')
+                    # Handing over nothing switches the toolbar off, these two
+                    # with it -- and they are the only ones this picture has
+                    # any use for.
+                    _refresh_numbering_controls()
                     orca_editor._set_mol_status(*{
                         0: ('Overlay: reference in red, target in blue.',),
                         1: ('The reference, turned to lie over the target.',),
@@ -1444,6 +1539,7 @@ def create_tab(ctx):
         state['numbering_check_results'] = {}
         state['numbering_check_block_idx'] = 1
         state['numbering_view_step'] = 0
+        _refresh_numbering_controls()
         _refresh_mol_view(reset_view=True)  # new coords → reset camera
 
     def on_mol_prev(btn):
@@ -1616,6 +1712,7 @@ def create_tab(ctx):
                 lines.append(f'- {name}: not comparable ({exc})')
 
         state['numbering_check_active'] = True
+        _refresh_numbering_controls()
         state['numbering_check_results'] = results
         if len(xyz_blocks) > 1:
             state['xyz_view_idx'] = min(max(state.get('xyz_view_idx', 1), 1), len(xyz_blocks) - 1)
@@ -1629,6 +1726,63 @@ def create_tab(ctx):
             print('Molecule Preview cycles through overlay, aligned reference, and reordered target for the selected comparison block.')
 
     orca_check_numbering_btn.on_click(handle_orca_check_numbering)
+
+    def _leave_numbering_check(said=''):
+        """Out of the comparison and back to the block that was checked.
+
+        The three comparison pictures are not blocks -- an overlay of two
+        structures, a reference turned to lie over the target, and a proposal
+        that has not been applied -- so the editor is handed nothing while they
+        are up and its toolbar waits.  Coming back means saying which block is
+        on screen again, and it is the one that was being checked rather than
+        the first: that is the structure the user was working on.
+        """
+        if not state.get('numbering_check_active'):
+            return
+        idx = int(state.get('numbering_check_block_idx', 1))
+        state['numbering_check_active'] = False
+        state['numbering_check_results'] = {}
+        state['numbering_view_step'] = 0
+        blocks = state.get('xyz_blocks') or []
+        if 0 <= idx < len(blocks):
+            state['xyz_view_idx'] = idx
+        _refresh_numbering_controls()
+        _update_nav_label()
+        # The camera is kept: the comparison was turned to where the user
+        # wanted it, and the structure coming back is the same one.
+        _refresh_mol_view(reset_view=False)
+        if said:
+            with orca_output:
+                clear_output(wait=True)
+                print(said)
+
+    def _refresh_numbering_controls():
+        """Which of the numbering buttons make sense right now."""
+        checking = bool(state.get('numbering_check_active'))
+        orca_back_to_editor_btn.layout.display = '' if checking else 'none'
+
+    def _on_numbering_labels_changed(change=None):
+        """Redraw the comparison when the numbering is turned on or resized.
+
+        The three comparison pictures are built here, and _labels_js reads the
+        toggle and the size box while building them -- so the numbers only
+        change when the picture is made again.  The editor's own handler for
+        these two speaks to the viewer it is holding, and during a comparison
+        it is holding none: the size box moved and nothing on screen did.
+        Which is the one thing this view is for -- reading atom numbers off
+        two structures and telling them apart.
+        """
+        if not state.get('numbering_check_active'):
+            return              # not ours; the editor's handler has the viewer
+        _refresh_mol_view(reset_view=False)
+
+    orca_editor.submit_labels_btn.observe(_on_numbering_labels_changed, names='value')
+    orca_editor.submit_label_size.observe(_on_numbering_labels_changed, names='value')
+
+    def handle_orca_back_to_editor(button):
+        _leave_numbering_check('Back in the editor.')
+
+    orca_back_to_editor_btn.on_click(handle_orca_back_to_editor)
 
     def handle_orca_apply_numbering_fix(button):
         xyz_records = _orca_parse_xyz_block_records(orca_coords.value)
@@ -1663,11 +1817,14 @@ def create_tab(ctx):
         finally:
             state['editor_quiet'] = False
         result['reordered_target_xyz'] = reordered_xyz
-        _refresh_mol_view(reset_view=False)
-        with orca_output:
-            clear_output(wait=True)
-            print(f'Applied numbering fix to block {idx + 1}.')
-            print('Please inspect the Molecule Preview again to confirm the reordered block looks correct.')
+        # And out of the comparison, onto the block that has just been fixed.
+        # Staying in it was meant to keep the comparison up to be checked, but
+        # the comparison is of the proposal against the reference -- once the
+        # proposal is the block, there is nothing left to compare, and the user
+        # was held in three pictures of a job already done.
+        _leave_numbering_check(
+            f'Applied numbering fix to block {idx + 1}. '
+            'Back in the editor, on that block.')
 
     orca_apply_numbering_btn.on_click(handle_orca_apply_numbering_fix)
 
@@ -2129,7 +2286,14 @@ def create_tab(ctx):
             ),
         )
 
-    orca_save_submit_row = _row([orca_save_btn, orca_submit_btn], wrap=False)
+    # The walltime stands with the two buttons rather than up among the
+    # resources.  It is the field a job is most often stopped by and the one
+    # most easily left at whatever the last job used, and it sat between
+    # MaxCore and the uploads -- half a screen above the button that spends
+    # it, and past the point where anyone was still reading.  Between SAVE and
+    # SUBMIT it is the last thing under the eye before the job goes.
+    orca_save_submit_row = _row(
+        [orca_save_btn, orca_slurm_time, orca_submit_btn], wrap=False)
     orca_save_submit_row.layout.margin = '14px 0 0 0'
 
     orca_left = widgets.VBox([
@@ -2147,7 +2311,8 @@ def create_tab(ctx):
               orca_editor.submit_draw_update_btn]),
         orca_editor.submit_draw_frame,
         orca_editor.submit_draw_sync,
-        _row([orca_copy_coords_btn, orca_check_numbering_btn, orca_apply_numbering_btn]),
+        _row([orca_copy_coords_btn, orca_check_numbering_btn,
+              orca_apply_numbering_btn, orca_back_to_editor_btn]),
         widgets.HTML('<b>Config Templates:</b>'),
         _row([orca_template_dd, orca_template_load_btn, orca_template_save_btn, orca_template_delete_btn]),
         orca_template_save_dialog,
@@ -2161,7 +2326,6 @@ def create_tab(ctx):
         _row([orca_solvation_type, orca_solvent]),
         _row([orca_print_mos, orca_print_basis]),
         _row([orca_pal, orca_maxcore]),
-        _row([orca_slurm_time]),
         widgets.VBox([orca_drop_zone, orca_file_upload, orca_uploaded_files_label],
                      layout=widgets.Layout(width='100%', min_width='0', overflow='hidden', padding='0 8px 0 0')),
         _row([orca_path_files], wrap=False),
@@ -2435,7 +2599,9 @@ def create_tab(ctx):
         'orca_check_numbering_btn': orca_check_numbering_btn,
         'orca_apply_numbering_btn': orca_apply_numbering_btn,
         'orca_save_btn': orca_save_btn,
+        'orca_back_to_editor_btn': orca_back_to_editor_btn,
         'orca_mol_prev_btn': orca_mol_prev_btn,
+        'orca_mol_nav_label': orca_mol_nav_label,
         'orca_mol_next_btn': orca_mol_next_btn,
         'orca_mol_fullscreen_btn': orca_mol_fullscreen_btn,
         'orca_mol_nav_row': orca_mol_nav_row,

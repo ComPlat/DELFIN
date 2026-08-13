@@ -1041,7 +1041,11 @@ def _ensure_process_group_terminated(process: subprocess.Popen, grace_timeout: f
         logger.debug(f"Orphan cleanup via psutil failed: {e}, using fallback")
         try:
             os.killpg(pgid, signal.SIGTERM)
-            import time
+            # `time` is imported at module level. Importing it again here made
+            # it a local name for the whole function, so the psutil-less branch
+            # above raised UnboundLocalError on its own time.sleep and never
+            # reached its SIGKILL — the orphaned MPI workers it exists to
+            # remove kept running and holding cores.
             time.sleep(grace_timeout)
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, OSError):
@@ -1875,6 +1879,9 @@ def run_orca_with_intelligent_recovery(
         # Get recovery strategy
         attempt = tracker.get_attempt(job_name, error_type) + 1
         strategy = RecoveryStrategy(error_type, attempt, config)
+        # Let the strategy read what ORCA actually reported. The memory fix
+        # uses it to retry with the MaxCore ORCA named rather than a guess.
+        strategy.output_file = Path(output_log)
 
         # Get modifications to check for backoff delay
         mods = strategy.get_modifications()

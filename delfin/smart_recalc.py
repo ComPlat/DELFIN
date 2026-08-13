@@ -132,9 +132,45 @@ def required_orca_outputs(inp_path=None, out_path=None) -> List[Path]:
     return []
 
 
+#: How far back from the end of an output the optimiser's verdict is looked
+#: for. ORCA prints it before the final energy evaluation, the property
+#: section and any frequency job that follows, so it can sit well before the
+#: end — measured at 1 MB in a real ESD run. Bounded because these outputs
+#: reach hundreds of MB and this is consulted for every job on every recalc.
+_OPT_VERDICT_TAIL_BYTES = 8 * 1024 * 1024
+
+#: ORCA's own words when an optimisation runs out of cycles. Testing for this
+#: rather than for the absence of "THE OPTIMIZATION HAS CONVERGED" keeps job
+#: types that never print a convergence banner — single points, frequency-only
+#: runs, compound inputs — out of it entirely.
+_OPT_GAVE_UP_MARKER = "The optimization did not converge"
+
+
+def optimization_gave_up(out_path) -> bool:
+    """True when ORCA reported an optimisation that ran out of cycles.
+
+    Such a run still ends with ``ORCA TERMINATED NORMALLY``, so on the marker
+    alone it is indistinguishable from a finished one. Left at that, recalc
+    skips it on every resubmission — the job can never finish — and dependent
+    jobs go on to use a geometry that is not a stationary point.
+    """
+    try:
+        p = Path(out_path)
+        size = p.stat().st_size
+        with p.open(encoding="utf-8", errors="replace") as f:
+            if size > _OPT_VERDICT_TAIL_BYTES:
+                f.seek(size - _OPT_VERDICT_TAIL_BYTES)
+            return _OPT_GAVE_UP_MARKER in f.read()
+    except Exception:
+        return False
+
+
 def outputs_complete(inp_path, out_path, required_outputs: Optional[Iterable] = None) -> bool:
     """Return True when the main output and required generated files all exist."""
     if not has_ok_marker(out_path):
+        return False
+
+    if optimization_gave_up(out_path):
         return False
 
     if required_outputs is None:

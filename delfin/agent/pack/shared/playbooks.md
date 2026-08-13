@@ -35,15 +35,15 @@ is separate from main CONTROL parser.
 `_parse_occupier_overrides`, `_apply_occupier_overrides`. Downstream cascade:
 `_downstream_stages` invalidates dependent stages.
 
-## orca_recovery.py (1731 lines)
+## orca_recovery.py (1827 lines)
 
-1. `OrcaErrorType` enum (line 28) — all known error types
-2. `OrcaErrorDetector` (line 62) — matches output patterns
-3. `RecoveryStrategy` (line 275) — maps errors to fixes
-4. `OrcaInputModifier` (line 687) — applies input changes
+1. `OrcaErrorType` enum (line 33) — all known error types
+2. `OrcaErrorDetector` (line 67) — matches output patterns
+3. `RecoveryStrategy` (line 303) — maps errors to fixes
+4. `OrcaInputModifier` (line 756) — applies input changes
 5. Run: `pytest tests/test_orca_workflow_contracts.py -x -q`
 
-**Invariants:** `RetryStateTracker` (line 1636) prevents infinite loops.
+**Invariants:** `RetryStateTracker` (line 1732) prevents infinite loops.
 Recovery must work for both local and SLURM. Never modify the original input.
 
 ## smiles_converter.py (38346 lines) — LARGEST MODULE

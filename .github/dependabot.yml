@@ -1,0 +1,62 @@
+# Dependency updates.
+#
+# Two ecosystems, deliberately treated differently:
+#
+#   github-actions — the workflows are the merge gate, and a compromised or
+#     abandoned action runs with whatever the workflow grants it. These updates
+#     are small, readable and safe to take, so they arrive individually.
+#
+#   pip — DELFIN's results depend on the numerics underneath it (rdkit, numpy,
+#     ase, scipy). A version bump there can change a computed number without
+#     changing a line of DELFIN, so these are grouped into one weekly pull
+#     request that a person reads, rather than a stream of separate ones that
+#     invite rubber-stamping. Major versions are left out entirely: they need
+#     a deliberate migration with the suite run against real calculations, not
+#     a bot's pull request.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Majors are migrations, not updates.
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+
+      # DELFIN declares ranges rather than pinned versions, so Dependabot also
+      # proposes widening the ranges themselves — and the first thing it did
+      # was open a pull request lifting exactly the two ceilings that are there
+      # on purpose. A range-widening is not classified as a major update, so
+      # the rule above does not stop it; these have to be named.
+      #
+      # numpy <2: the scientific stack around it (rdkit, ase, stk, the MLP
+      # extras) is not ready, and DELFIN's results run through it.
+      # mendeleev <1.0: element data feeding basis-set and radius selection.
+      #
+      # Raising either is a deliberate migration, verified against real
+      # calculations — not something to accept from a bot.
+      - dependency-name: "numpy"
+      - dependency-name: "mendeleev"

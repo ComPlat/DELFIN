@@ -4466,6 +4466,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # 'fix' is restored after every relaxation step, so the value is met
             # exactly and the rest of the molecule arranges itself around it.
             'mode': submit_hold_mode.value,
+            # And which structure the numbers above belong to.  They are atom
+            # indices and nothing more, so they mean something about every
+            # structure with that many atoms -- which is how a C-C held at
+            # 1.700 A on a cyclobutane reached an ORCA input for a benzene as
+            # "{ B 0 1 1.7000 C }", both being twelve atoms.  The element
+            # column is what tells the two apart, and it is written down here
+            # while the structure it was set on is the one on screen.
+            'structure': _structure_fingerprint(_current_xyz() or ''),
         }
         held = list(state.get('constraints') or [])
         held = [c for c in held if c['atoms'] != indices]

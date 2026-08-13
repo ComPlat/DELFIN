@@ -24,6 +24,11 @@ from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
 
+# How much of the end of an ORCA output is searched for error signatures.
+# ORCA reports what went wrong immediately before it aborts, so the tail is
+# where the evidence is; reading more only costs memory at the worst moment.
+_ERROR_SCAN_TAIL_BYTES = 2 * 1024 * 1024
+
 
 class OrcaErrorType(Enum):
     """Classification of ORCA error types."""
@@ -155,6 +160,22 @@ class OrcaErrorDetector:
             "priority": 6,
         },
         # Memory errors
+        # Memory exhaustion as ORCA 6.x words it. This needs to outrank the
+        # generic "error termination in LEANSCF" rule below, because ORCA
+        # routes an out-of-memory abort through LEANSCF as well: measured
+        # against ORCA 6.1.1, a run capped at %maxcore 1 was classified as an
+        # MPI crash and answered with MPI fixes, while ORCA had plainly written
+        # what it needed. The message also carries the required MaxCore, which
+        # _memory_error_fixes reads back instead of guessing.
+        {
+            "type": OrcaErrorType.MEMORY_ERROR,
+            "patterns": [
+                "Not enough memory available",
+                "Please increase MaxCore to more than",
+            ],
+            "all_required": False,
+            "priority": 2,
+        },
         {
             "type": OrcaErrorType.MEMORY_ERROR,
             "patterns": [
@@ -216,10 +237,17 @@ class OrcaErrorDetector:
             return None
 
         try:
+            # Read a bounded tail rather than the whole file. ORCA outputs
+            # reach hundreds of MB, and this runs on every failure — often for
+            # several parallel jobs at once, which is exactly when memory is
+            # already tight. 2 MB is more context than the previous "last
+            # 10000 lines" (~1 MB at ORCA's line length) and costs a seek
+            # instead of loading the file into a list of lines.
             with open(output_file, 'r', encoding='utf-8', errors='replace') as f:
-                # Read last 10000 lines for error detection
-                lines = f.readlines()
-                content = '\n'.join(lines[-10000:])
+                size = output_file.stat().st_size
+                if size > _ERROR_SCAN_TAIL_BYTES:
+                    f.seek(size - _ERROR_SCAN_TAIL_BYTES)
+                content = f.read()
 
             # Check for successful termination first
             if "ORCA TERMINATED NORMALLY" in content:
@@ -287,6 +315,10 @@ class RecoveryStrategy:
         self.attempt = attempt
         self.config = config
         self.parsed_input = None  # Will be set by apply_recovery before get_modifications
+        # Optional: the output that failed. Set by the caller the same way as
+        # parsed_input; when present, strategies can read what ORCA itself
+        # reported instead of guessing. Absent, every strategy behaves as before.
+        self.output_file: Optional[Path] = None
 
     def get_modifications(self) -> Dict:
         """Get input file modifications for this error/attempt combination.
@@ -658,28 +690,65 @@ class RecoveryStrategy:
                 "skip_freq": True,  # Skip frequency calculation
             }
 
+    def _required_maxcore_mb(self) -> Optional[int]:
+        """The MaxCore ORCA asked for, if it said so.
+
+        ORCA does not merely report that memory ran out, it prints the figure
+        that would have been enough:
+
+            Error  (ORCA_SCF): Not enough memory available!
+                  ====>        Please increase MaxCore to more than:  29.9 MB
+
+        Reading that back beats halving the core count and hoping, which is
+        what the fallback below does when the message is absent.
+        """
+        if self.output_file is None:
+            return None
+        try:
+            size = self.output_file.stat().st_size
+            with self.output_file.open(encoding="utf-8", errors="replace") as handle:
+                if size > _ERROR_SCAN_TAIL_BYTES:
+                    handle.seek(size - _ERROR_SCAN_TAIL_BYTES)
+                tail = handle.read()
+        except OSError:
+            return None
+
+        matches = re.findall(
+            r"Please increase MaxCore to more than:\s*([0-9]+(?:\.[0-9]+)?)\s*MB",
+            tail,
+            re.IGNORECASE,
+        )
+        if not matches:
+            return None
+        # Several modules can complain in one run; the largest demand is the
+        # one that has to be satisfied. A margin on top keeps the retry from
+        # failing again just short of the mark.
+        return int(max(float(m) for m in matches) * 1.5) + 1
+
     def _memory_error_fixes(self) -> Dict:
         """Fixes for memory errors.
 
         Memory errors often occur with SOSCF (needs Hessian) or high parallelization.
         Strategy:
-        1. Disable SOSCF (most memory-intensive)
-        2. Reduce cores significantly (more memory per core)
-        3. Optionally increase MaxCore
+        1. Raise MaxCore to what ORCA asked for, when it named a figure
+        2. Disable SOSCF (most memory-intensive)
+        3. Reduce cores significantly (more memory per core)
         """
-        if self.attempt == 1:
-            return {
-                "keywords_remove": ["SOSCF"],  # Disable SOSCF keyword if present
-                "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
-                "reduce_pal": 0.5,  # Half the cores = double memory per core
-            }
-        else:
-            # Attempt 2: Even fewer cores
-            return {
-                "keywords_remove": ["SOSCF"],
-                "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
-                "reduce_pal": 0.25,  # Quarter cores = 4x memory per core
-            }
+        fixes: Dict = {
+            "keywords_remove": ["SOSCF"],  # Disable SOSCF keyword if present
+            "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
+            # Attempt 1 halves the cores, attempt 2 quarters them: fewer ranks
+            # means more memory per rank.
+            "reduce_pal": 0.5 if self.attempt == 1 else 0.25,
+        }
+
+        required = self._required_maxcore_mb()
+        if required is not None:
+            fixes["set_maxcore"] = required
+            logger.info(
+                "ORCA reported it needed more MaxCore; retrying with %d MB", required
+            )
+        return fixes
 
 
 
@@ -737,6 +806,9 @@ class OrcaInputModifier:
 
             if mods.get("reduce_maxcore"):
                 parsed = self._reduce_maxcore(parsed, mods["reduce_maxcore"])
+
+            if mods.get("set_maxcore"):
+                parsed = self._set_maxcore(parsed, mods["set_maxcore"])
 
             if mods.get("skip_freq"):
                 parsed = self._remove_freq(parsed)
@@ -1243,6 +1315,30 @@ class OrcaInputModifier:
             parsed["blocks"]["maxcore"] = f"%maxcore {new_maxcore}"
             logger.info(f"Reduced maxcore: {current_maxcore} → {new_maxcore}")
 
+        return parsed
+
+    def _set_maxcore(self, parsed: Dict, megabytes: int) -> Dict:
+        """Raise maxcore to a figure ORCA named, never lower it.
+
+        The value comes from ORCA's own "Please increase MaxCore to more than"
+        line. Lowering here would be a bug: the retry exists precisely because
+        the previous allocation was too small, and a run that already asks for
+        more per rank must not be given less.
+        """
+        current = 0
+        if "maxcore" in parsed["blocks"]:
+            match = re.search(r"(\d+)", parsed["blocks"]["maxcore"])
+            if match:
+                current = int(match.group(1))
+
+        if megabytes <= current:
+            logger.debug(
+                "Keeping maxcore at %d MB; ORCA asked for %d MB", current, megabytes
+            )
+            return parsed
+
+        parsed["blocks"]["maxcore"] = f"%maxcore {megabytes}"
+        logger.info("Raised maxcore: %d → %d MB", current, megabytes)
         return parsed
 
     def _remove_freq(self, parsed: Dict) -> Dict:

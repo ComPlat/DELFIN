@@ -1,0 +1,23 @@
+# Review ownership for the paths where a mistake is hardest to undo.
+#
+# CODEOWNERS only takes effect once "Require review from Code Owners" is
+# enabled in the branch protection rules for main; without that it is
+# documentation. It is listed here so the intent is recorded either way.
+#
+# Everything else is deliberately left unowned: DELFIN takes contributions
+# across the whole tree, and requiring a named reviewer everywhere would slow
+# that down for no gain.
+
+# The workflows are the merge gate, and they run with repository permissions.
+/.github/                @hmaximilian
+
+# How jobs are scheduled, restarted and recovered. A change here can silently
+# discard hours of computation or let an unfinished calculation pass as done.
+/delfin/orca.py                    @hmaximilian
+/delfin/orca_recovery.py           @hmaximilian
+/delfin/smart_recalc.py            @hmaximilian
+/delfin/workflows/scheduling/      @hmaximilian
+/delfin/submit_templates/          @hmaximilian
+
+# The agent's permission boundaries.
+/delfin/agent/                     @hmaximilian
