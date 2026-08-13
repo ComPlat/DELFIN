@@ -118,18 +118,26 @@ jobs:
     name: lint (ruff)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Reporting, not gating — and it stays green while it reports. ruff's
-    # bug-finding rules currently return 17 findings across the tree, one of
-    # them a real NameError waiting to be executed. Failing the job over that
-    # would put a red mark beside every commit until they are cleared, which
-    # teaches the same habit as a gate that is red on its first run: to stop
-    # looking. The findings appear as annotations and as a count in the run
-    # summary instead. Once they reach zero, drop the `|| true` below and add
-    # "lint (ruff)" to the required checks for main.
+    # A required check, and scoped so that a failure means something is broken.
     #
-    # Only the F rules run. The rest of the configured set is dominated by
-    # ~7600 pure modernisation findings (typing.List -> list and friends) that
-    # say nothing about whether the code works.
+    # The rules below are the ones that describe a defect: a name that does not
+    # exist, a definition silently replacing another, a duplicate dictionary
+    # key, an import shadowed by a loop variable, a local used before it is
+    # bound. Every one of them has already cost this project something — the
+    # NameError in dashboard/__init__.py, the test in test_office_documents.py
+    # that never ran because a later function took its name, the UnboundLocal
+    # in the ORCA process-group cleanup that stopped it ever sending SIGKILL.
+    #
+    # Deliberately not gated: F401 (500), F841 (120) and F541 (117). Unused
+    # imports, unused variables and f-strings without placeholders are untidy,
+    # not broken, and a gate that fails on untidiness trains people to look for
+    # the incantation that makes it pass. They stay visible through `ruff check
+    # --select F` when anybody wants to work them down.
+    #
+    # ruff is pinned. Unpinned, a release that adds or widens a rule turns main
+    # red for everybody without a line having changed — the same shape of
+    # accident as an unbounded dependency. Raising the pin is a small, ordinary
+    # pull request: bump it, see what the new version says, fix or accept.
 
     steps:
       - name: Checkout
@@ -144,20 +152,13 @@ jobs:
       - name: Install ruff
         run: |
           python -m pip install --upgrade pip
-          pip install ruff
+          pip install ruff==0.16.3
 
-      - name: Lint for real defects (pyflakes rules)
+      - name: Lint for real defects
         run: |
-          # Annotations for the diff view; the exit code is deliberately not
-          # propagated (see the note on this job).
-          ruff check delfin/ tests/ --select F --output-format github || true
-          {
-            echo "### ruff — pyflakes rules"
-            echo
-            echo '```'
-            ruff check delfin/ tests/ --select F --statistics || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          ruff check delfin/ tests/ \
+            --select F821,F811,F601,F402,F823 \
+            --output-format github
 
   audit:
     name: dependency audit

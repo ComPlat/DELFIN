@@ -46,7 +46,7 @@ is separate from main CONTROL parser.
 **Invariants:** `RetryStateTracker` (line 1732) prevents infinite loops.
 Recovery must work for both local and SLURM. Never modify the original input.
 
-## smiles_converter.py (38346 lines) — LARGEST MODULE
+## smiles_converter.py (38344 lines) — LARGEST MODULE
 
 1. ALWAYS Grep first — never Read the whole file
 2. Main classes: `_HybridHaptoFragment`, `_PrimaryOrganometalModule`
