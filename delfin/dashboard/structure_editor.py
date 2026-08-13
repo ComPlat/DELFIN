@@ -2682,6 +2682,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_restarting'] = True
         on_submit_optimize(None, every_frame=every_frame)
 
+    def _optimise_carries_on(*, converged, moved, rounds, failed, every_frame):
+        """Whether one more xtb run belongs to the press that is running.
+
+        A run is one xtb ``--opt`` and its optimiser has a cycle limit of its
+        own; at the limit it hands back the geometry it reached and says it did
+        not converge.  Another run from there is a fresh cycle budget and a
+        fresh optimiser history, which is why pressing again always got
+        further.  The pressing is done here instead.
+
+        *failed* is a run that produced no geometry, and it ends the press.
+        "Stopped before converging" is NOT that: it is a geometry, and it is
+        the case these rounds exist for.  Counted among the failures -- as it
+        was, because it is written into the same list the status line reads --
+        this returned False for the only situation it was written for, and the
+        user went on pressing.  That is why the two are counted apart, and why
+        this is a function with a test that drives it rather than a condition
+        buried in a closure.
+
+        It ends the three ways a settle has always ended: converged, no longer
+        moving, or out of rounds.  The last two are not decoration -- held
+        values that cannot all be met at once never converge, and a run that
+        will not end is one process per round for as long as the switch is down.
+        """
+        if failed or converged:
+            return False
+        if rounds >= _OPTIMISE_ROUNDS:
+            return False
+        if moved <= _OPTIMISE_STILL:
+            return False
+        # And only while the switch the user pressed is still down.
+        switch = submit_optimize_all_btn if every_frame else submit_optimize_btn
+        return bool(switch.value)
+
     def on_submit_optimize_all(change=None):
         on_submit_optimize(change, every_frame=True)
 
@@ -2829,7 +2862,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # than briefly doubling up.
             if earlier is not None and earlier.is_alive():
                 earlier.join(timeout=15)
-            results, failures = [], []
+            # Two lists, because they mean opposite things to the rounds below.
+            # A failure is a run that did not produce a geometry, and it ends
+            # the press. "Stopped before converging" IS a geometry, and it is
+            # the whole case the rounds exist for -- counted as a failure, as
+            # it was at first, it stopped the rounds before they ever ran.
+            results, failures, unfinished = [], [], []
             targets = frames or [(single, None, None)]
             for position, item in enumerate(targets):
                 xyz = item[0]
@@ -2933,7 +2971,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     note = str(outcome.get('status') or '')
                     if 'before converging' in note:
                         # It came back with a geometry, but not a finished one.
-                        failures.append(f'frame {position + 1}: {note}')
+                        unfinished.append(f'frame {position + 1}: {note}')
                 else:
                     failures.append(
                         f"frame {position + 1}: {outcome.get('status') or 'failed'}"
@@ -2962,13 +3000,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # met at once never converges, and a run that will not end is a
                 # process per round for as long as the switch is down.
                 rounds = int(state.get('optimize_rounds', 0)) + 1
-                carry_on = (
-                    not state.get('optimize_converged', True)
-                    and not failures
-                    and rounds < _OPTIMISE_ROUNDS
-                    and float(state.get('optimize_moved') or 0.0) > _OPTIMISE_STILL
-                    and (submit_optimize_all_btn.value if every_frame
-                         else submit_optimize_btn.value)
+                carry_on = _optimise_carries_on(
+                    converged=bool(state.get('optimize_converged', True)),
+                    moved=float(state.get('optimize_moved') or 0.0),
+                    rounds=rounds,
+                    failed=bool(failures),
+                    every_frame=every_frame,
                 )
                 state['optimize_rounds'] = rounds if carry_on else 0
                 # Converged, failed or stopped -- the switch goes back up by
@@ -3077,7 +3114,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     schedule_ui_update(
                         lambda: on_submit_optimize(None, every_frame=every_frame))
                     return
-                _set_mol_status(*_gfn_status_lines(said), *failures[:2])
+                _set_mol_status(*_gfn_status_lines(said),
+                                *(failures + unfinished)[:2])
 
             schedule_ui_update(_apply)
 

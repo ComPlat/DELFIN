@@ -1052,7 +1052,7 @@ def test_the_restart_is_gated_where_every_path_goes_through_it():
     assert '_stand_down_after_interrupt()' in guard
 
 
-def test_one_press_keeps_running_until_there_is_nothing_left_to_do():
+def test_one_press_keeps_running_until_there_is_nothing_left_to_do(bare_editor):
     """A press was one xtb run, and one run is often not a minimum.
 
     xtb's optimiser has a cycle limit of its own. At the limit it hands back
@@ -1078,23 +1078,55 @@ def test_one_press_keeps_running_until_there_is_nothing_left_to_do():
     and a run that will not end is a process per round for as long as the
     switch is down.
     """
-    body = EDITOR_SOURCE.split(
-        'def on_submit_optimize(change=None, every_frame=False)')[1]
-    body = body.split('\n    def ')[0]
-    apply_body = body.split('def _apply():')[1]
+    part, _state = bare_editor
+    part.submit_optimize_btn.unobserve_all()
+    part.submit_optimize_btn.value = True
+    asks = dict(converged=False, moved=0.25, rounds=1, failed=False,
+                every_frame=False)
 
-    assert 'carry_on = (' in apply_body
-    for ending in ("not state.get('optimize_converged', True)",
-                   '< _OPTIMISE_ROUNDS',
-                   '> _OPTIMISE_STILL'):
-        assert ending in apply_body, f'the run has to end on {ending}'
-    assert 'if not carry_on:' in apply_body, (
-        'the switch stays down while the same press is still working')
-    assert "state['optimize_carrying_on'] = True" in apply_body
+    assert part._optimise_carries_on(**asks) is True, (
+        'a run that stopped for want of cycles is exactly the case to carry on')
+    assert part._optimise_carries_on(**{**asks, 'converged': True}) is False
+    assert part._optimise_carries_on(**{**asks, 'failed': True}) is False, (
+        'a run that produced no geometry ends the press')
+    assert part._optimise_carries_on(**{**asks, 'moved': 0.0}) is False, (
+        'a structure that has stopped improving is as far as this goes')
+    assert part._optimise_carries_on(**{**asks, 'rounds': 99}) is False, (
+        'held values that cannot all be met never converge; it has to end')
+
+    part.submit_optimize_btn.value = False
+    assert part._optimise_carries_on(**asks) is False, (
+        'the switch is up: the user asked it to stop')
 
     # And an engine that cannot say whether it converged counts as finished,
     # or it would be run again for ever.
-    assert "outcome.get('converged', True)" in body
+    assert "outcome.get('converged', True)" in EDITOR_SOURCE
+
+
+def test_a_run_that_stopped_short_is_not_counted_among_the_failures(
+        bare_editor):
+    """It is a geometry, and it is the reason the rounds exist.
+
+    Written into the same list as a run that produced nothing -- which is
+    where it went, because both end up on the status line -- it made the
+    decision above answer False for the only situation it was written for.
+    The rounds were there, the tests were green, and the user went on pressing
+    Optimize because nothing ever carried on.
+    """
+    body = EDITOR_SOURCE.split(
+        'def on_submit_optimize(change=None, every_frame=False)')[1]
+    body = body.split('\n    def on_submit')[0]
+
+    assert 'results, failures, unfinished = [], [], []' in body
+    # Just that branch: the one beside it is a run that produced nothing, and
+    # that one belongs among the failures.
+    note = body.split("if 'before converging' in note:")[1]
+    note = note.split('\n                else:')[0]
+    assert 'unfinished.append(' in note
+    assert 'failures.append(' not in note, (
+        'counted as a failure, it stops the rounds it is supposed to start')
+    # Both are still said, so a press that gives up still explains itself.
+    assert '(failures + unfinished)[:2]' in body
 
 
 def test_carrying_a_press_on_does_not_take_a_second_undo_point(bare_editor):
