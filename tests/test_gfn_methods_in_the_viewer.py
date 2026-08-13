@@ -820,7 +820,94 @@ def test_the_page_says_what_the_playback_is_doing(editor):
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfnplay'" in handler
     assert "state['gfn_play_note'] = str(payload)" in handler
-    assert "Trajectory: {payload}" in handler
+    assert "_gfn_status_lines()" in handler, (
+        "and it says it in the shape the follow step says its half in")
+
+
+@pytest.fixture
+def bare_editor(tmp_path):
+    """One structure editor, over a coordinate box of its own.
+
+    Built here rather than reached through a tab: what the status line does is
+    the part's, and the tab hands out only the widgets it places.
+    """
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir()
+    ctx = DashboardContext(
+        calc_dir=tmp_path / "calc",
+        archive_dir=tmp_path / "archive",
+        office_dir=tmp_path / "office",
+    )
+    ctx.run_js = lambda _script: None
+    state = {}
+    part = structure_editor.build(
+        ctx,
+        state=state,
+        coords_widget=widgets.Textarea(value=_WATER),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None,
+    )
+    return part, state
+
+
+def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
+    """A drag is reported from both ends, and they used to fight over the line.
+
+    The kernel counts the follow steps it has run; the page counts the frames
+    it has drawn. Each wrote the status line for itself and wiped the other:
+    one row with a spinner, then two rows without, then one again, several
+    times a second for as long as the drag lasted. The status line stands
+    above the viewer in the column, so the structure the user was aiming at
+    stepped up and down with it.
+
+    Measured in chromium at 1440x900 against the tab's own stylesheet, one
+    drag, the two ends reporting in turn::
+
+                          before                     after
+        follow step 14    18 px  1 row,  spinner     36 px  2 rows, spinner
+        page drew 14      35 px  2 rows, no spinner  36 px  2 rows, spinner
+        follow step 15    18 px  1 row,  spinner     36 px  2 rows, spinner
+        page drew 15      35 px  2 rows, no spinner  36 px  2 rows, spinner
+
+        movement per report:  17 px            ->    0 px
+
+    The first row of a fresh drag says the page has drawn nothing yet, rather
+    than being left out until the first frame lands -- leaving it out is the
+    same step, once, at the start of every drag.
+    """
+    part, state = bare_editor
+    part.submit_ff_dd.value = "gxtb"
+    # The switch is detached from its own observer: that one refuses to stay
+    # on where xtb is not installed, which is a different question.
+    part.submit_relax_btn.unobserve_all()
+    part.submit_relax_btn.value = True
+    assert part._begin_gfn_follow(), "the follow did not start"
+    assert state["gfn_play_note"] == "no frames yet", (
+        "a fresh drag must not show the last drag's count, nor no row at all")
+
+    said = "g-xTB is following the drag: 15 step(s), 973 ms each."
+    state["gfn_last_status"] = said
+    part._set_mol_status(*part._gfn_status_lines(said), spinner=True)
+    from_kernel = part.mol_status.value
+
+    part.submit_cmd_sync.value = "gfnplay:7:received 15 frames"
+    from_page = part.mol_status.value
+
+    assert from_page != from_kernel, "the page's report never arrived"
+    for name, html_value in (("kernel", from_kernel), ("page", from_page)):
+        assert html_value.count("<br>") == 1, f"{name}: not two rows"
+        assert "delfin-busy" in html_value, f"{name}: no spinner"
+    # Both rows are there in both, so only the numbers move.
+    for html_value in (from_kernel, from_page):
+        assert "is following the drag" in html_value
+        assert "Trajectory:" in html_value
 
 
 def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
