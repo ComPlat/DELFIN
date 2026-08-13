@@ -1070,6 +1070,227 @@ def _kill_process_group(process: subprocess.Popen) -> None:
         except Exception as e:
             logger.error(f"Error killing process group: {e}")
 
+
+_RESUME_BASE_RE = re.compile(r'^[^\S\n]*%base[^\S\n]+"?([^"\s]+)"?', re.IGNORECASE | re.MULTILINE)
+_RESUME_KEYWORD_RE = re.compile(r"^[^\S\n]*!(.*)$", re.MULTILINE)
+_RESUME_COORD_RE = re.compile(
+    r"^([^\S\n]*\*[^\S\n]*xyz[^\S\n]+\S+[^\S\n]+\S+[^\S\n]*\n)(.*?)(^[^\S\n]*\*[^\S\n]*$)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+_RESUME_XYZFILE_RE = re.compile(
+    r"^([^\S\n]*\*[^\S\n]*xyzfile[^\S\n]+\S+[^\S\n]+\S+[^\S\n]+)(\S+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_RESUME_FREQ_BLOCK_RE = re.compile(
+    r"^[^\S\n]*%freq\b(.*?)^[^\S\n]*end[^\S\n]*$",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+_RESUME_FREQ_KEYWORDS = {"FREQ", "NUMFREQ", "ANFREQ"}
+
+
+def _read_xyz_atoms(path: Path) -> Optional[List[str]]:
+    """Return the atom lines of an XYZ file, or None if it is not usable."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    if len(lines) < 3:
+        return None
+    try:
+        count = int(lines[0].split()[0])
+    except (ValueError, IndexError):
+        return None
+    atoms = [line.rstrip() for line in lines[2:2 + count] if line.strip()]
+    if len(atoms) != count or count == 0:
+        return None
+    return atoms
+
+
+def _ended_in_error(out_path: Path) -> bool:
+    """Whether ORCA stopped on an error rather than being cut off mid-run.
+
+    A job killed by the walltime simply stops writing; one that failed says so.
+    The distinction matters for resuming: continuing from the last geometry of
+    a run that blew up on that very geometry would just reproduce the failure,
+    and would spend the recovery attempts doing it.
+    """
+    try:
+        size = out_path.stat().st_size
+        with out_path.open(encoding="utf-8", errors="replace") as handle:
+            if size > 8192:
+                handle.seek(size - 8192)
+            tail = handle.read().lower()
+    except OSError:
+        return False
+    return (
+        "error termination" in tail
+        or "aborting the run" in tail
+        or "orca finished by error" in tail
+    )
+
+
+def _atom_elements(atom_lines: Iterable[str]) -> List[str]:
+    """Element symbols of coordinate lines, upper-cased for comparison."""
+    elements = []
+    for line in atom_lines:
+        parts = line.split()
+        if len(parts) >= 4:
+            elements.append(parts[0].upper())
+    return elements
+
+
+def _resume_partial_orca_run(
+    content: str,
+    input_path: Path,
+    parent_dir: Path,
+    output_path: Path,
+    work_dir: Optional[Path] = None,
+) -> Tuple[str, List[str]]:
+    """Let a re-submitted ORCA job continue where the previous attempt died.
+
+    When a job is killed — walltime, OOM, scancel — ORCA leaves behind exactly
+    two things this can build on, and both are ORCA's own restart mechanisms:
+
+    * ``<base>.xyz``, rewritten after every completed optimisation cycle, so a
+      geometry optimisation can start from the last accepted structure instead
+      of from the original input geometry.
+    * ``<base>.hess``, which ORCA reads back under ``%freq restart true``.
+      Verified against ORCA 6.1.1: it reports "<<<RESTART CALCULATION>>> /
+      Found Hessian file" and recomputes none of the displacements. Note that
+      ORCA writes this file only once the Hessian is complete — a numerical
+      frequency run killed midway leaves no partial Hessian and unavoidably
+      starts over.
+
+    Nothing about the calculation itself changes: same keywords, same method,
+    same basis. Only the starting coordinates move forward, to the point ORCA
+    would itself have continued from. The edit is applied to the isolated copy
+    of the input, so the file in the job directory stays exactly as written.
+
+    Resuming is gated on the element sequence still matching, which is what
+    catches the case of a job directory reused for a different molecule. The
+    stored fingerprint cannot serve as that gate: it is only written on
+    success, so a killed job never has one.
+
+    Returns the (possibly rewritten) input text and a list of human-readable
+    notes describing what was reused — empty when nothing was.
+    """
+    notes: List[str] = []
+    try:
+        if not output_path.exists() or smart_recalc.has_ok_marker(output_path):
+            # Either a fresh run, or one that finished — smart_recalc decides.
+            return content, notes
+
+        new_job = re.search(r"\$new_job", content, re.IGNORECASE)
+        split_at = new_job.start() if new_job else len(content)
+        first_job, rest = content[:split_at], content[split_at:]
+
+        keywords = {
+            token.upper()
+            for line in _RESUME_KEYWORD_RE.findall(first_job)
+            for token in line.split()
+        }
+        wants_opt = any(kw.startswith("OPT") for kw in keywords)
+        wants_freq = bool(keywords & _RESUME_FREQ_KEYWORDS)
+
+        base_match = _RESUME_BASE_RE.search(first_job)
+        base = base_match.group(1) if base_match else input_path.stem
+
+        if wants_opt and not _ended_in_error(output_path):
+            geom_path = parent_dir / f"{base}.xyz"
+            resumed = _read_xyz_atoms(geom_path)
+            if resumed:
+                coord_match = _RESUME_COORD_RE.search(first_job)
+                xyzfile_match = _RESUME_XYZFILE_RE.search(first_job)
+                if coord_match:
+                    current = [
+                        line for line in coord_match.group(2).splitlines() if line.strip()
+                    ]
+                    if _atom_elements(current) == _atom_elements(resumed):
+                        first_job = (
+                            first_job[:coord_match.start(2)]
+                            + "\n".join(resumed)
+                            + "\n"
+                            + first_job[coord_match.end(2):]
+                        )
+                        notes.append(
+                            f"geometry continued from {geom_path.name} "
+                            f"({len(resumed)} atoms)"
+                        )
+                elif xyzfile_match:
+                    current_path = Path(xyzfile_match.group(2))
+                    if not current_path.is_absolute():
+                        current_path = parent_dir / current_path
+                    current = _read_xyz_atoms(current_path) or []
+                    if (
+                        current
+                        and current_path != geom_path
+                        and _atom_elements(current) == _atom_elements(resumed)
+                    ):
+                        first_job = (
+                            first_job[:xyzfile_match.start(2)]
+                            + str(geom_path)
+                            + first_job[xyzfile_match.end(2):]
+                        )
+                        notes.append(f"geometry continued from {geom_path.name}")
+
+        hess_path = parent_dir / f"{base}.hess"
+        if wants_freq and hess_path.is_file():
+            # ORCA derives the restart file from %base and looks for it in its
+            # working directory, not next to the input. Running isolated, that
+            # directory is empty, and ORCA answers with "No Restart data found
+            # - Restarting from scratch" while still reporting a restart — so
+            # the Hessian has to travel with the job or the flag is a lie.
+            if work_dir is not None and work_dir != parent_dir:
+                try:
+                    shutil.copy2(hess_path, work_dir / hess_path.name)
+                except OSError as exc:
+                    logger.debug(f"Could not stage {hess_path.name} for restart: {exc}")
+                    return (first_job + rest, notes) if notes else (content, notes)
+
+            freq_block = _RESUME_FREQ_BLOCK_RE.search(first_job)
+            if freq_block:
+                if not re.search(r"\brestart\b", freq_block.group(1), re.IGNORECASE):
+                    insert_at = freq_block.start(1)
+                    first_job = (
+                        first_job[:insert_at]
+                        + "\n  restart true"
+                        + first_job[insert_at:]
+                    )
+                    notes.append(f"Hessian restart enabled from {base}.hess")
+            else:
+                anchor = _RESUME_COORD_RE.search(first_job) or _RESUME_XYZFILE_RE.search(first_job)
+                insert_at = anchor.start() if anchor else len(first_job)
+                first_job = (
+                    first_job[:insert_at]
+                    + "%freq\n  restart true\nend\n"
+                    + first_job[insert_at:]
+                )
+                notes.append(f"Hessian restart enabled from {base}.hess")
+
+        if notes:
+            return first_job + rest, notes
+        return content, notes
+    except Exception as exc:  # noqa: BLE001
+        # Resuming is an optimisation, never a precondition: any surprise here
+        # must leave the job running exactly as it would have without it.
+        logger.debug(f"Could not prepare resume for {input_path.name}: {exc}")
+        return content, []
+
+
+def _path_is_within(candidate: Path, root: Path) -> bool:
+    """Return True when *candidate* lies inside *root*.
+
+    Both paths are resolved first so a symlinked scratch mount (common on
+    clusters, e.g. /scratch -> /mnt/local) still compares equal. A path that
+    cannot be resolved is treated as "outside", which keeps the caller on its
+    previous, more conservative behaviour.
+    """
+    try:
+        return root.resolve() in (candidate.resolve(), *candidate.resolve().parents)
+    except OSError:
+        return False
+
+
 def _run_orca_isolated(
     orca_path: str,
     input_path: Path,
@@ -1122,8 +1343,19 @@ def _run_orca_isolated(
             return False
 
     # Place iso_dir on scratch when available to avoid HOME filesystem I/O.
+    #
+    # When parent_dir already lives on that scratch, keep the isolated
+    # directory next to it instead of parking it at the scratch root. The job
+    # wrapper only walks its own RUN_DIR ($DELFIN_SCRATCH/run) when it rescues
+    # and syncs results, so an iso_dir one level above RUN_DIR is invisible to
+    # it: everything inside (.gbw, .hess, .opt, .engrad) then exists only until
+    # the copy-back at the end of this function runs. If the job is killed
+    # first — walltime, OOM, scancel — the whole run is unrecoverable even
+    # though the wrapper performed a full backup. Keeping iso_dir under
+    # parent_dir also gives the wrapper the correct destination for free,
+    # because it restores each rescued file to dirname(iso_dir).
     scratch_env = os.environ.get("DELFIN_SCRATCH") or os.environ.get("ORCA_SCRDIR")
-    if scratch_env:
+    if scratch_env and not _path_is_within(parent_dir, Path(scratch_env)):
         iso_base = Path(scratch_env)
         iso_base.mkdir(parents=True, exist_ok=True)
     else:
@@ -1196,6 +1428,17 @@ def _run_orca_isolated(
                 iso_inp_content = new_content
                 modified = True
                 logger.debug(f"Rewrote {n} .hess reference(s) to absolute path")
+
+            # Continue a previous attempt that was killed before ORCA could
+            # terminate normally, rather than repeating work it already did.
+            resumed_content, resume_notes = _resume_partial_orca_run(
+                iso_inp_content, input_path, parent_dir, output_path, work_dir=iso_dir
+            )
+            if resume_notes:
+                iso_inp_content = resumed_content
+                modified = True
+                for note in resume_notes:
+                    logger.info("[resume] %s: %s", input_path.name, note)
 
             # Write back if modified
             if modified:

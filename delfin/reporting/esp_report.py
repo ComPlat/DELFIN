@@ -96,8 +96,14 @@ def _orca_plot_run(gbw_path: Path, stdin: str) -> bool:
         )
         elapsed = time.time() - start
         if proc.returncode != 0:
-            logger.error(
-                "orca_plot failed (rc=%s, %.1fs).\nstdout:\n%s\nstderr:\n%s",
+            # A missing plot costs a picture in the report, not the result the
+            # job was submitted for — the caller carries on without it. Logging
+            # it at ERROR made it by far the most frequent ERROR line in the
+            # run archive, all of it inside jobs that completed successfully,
+            # which taught the eye to skim past ERROR lines that do matter.
+            logger.warning(
+                "orca_plot failed (rc=%s, %.1fs); report continues without this "
+                "plot.\nstdout:\n%s\nstderr:\n%s",
                 proc.returncode,
                 elapsed,
                 (proc.stdout or "").strip(),
