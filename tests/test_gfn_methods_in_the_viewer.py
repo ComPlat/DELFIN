@@ -684,17 +684,42 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     assert apply_body.index("if played[0]:") < apply_body.index("coords_widget.value = (")
 
 
-def test_the_playback_finds_its_field_in_fullscreen_too(editor):
-    """Fullscreen moves the viewer into an overlay carrying the same scope
-    class, and the frame field is not one of the things it takes.  Looking
-    only inside the first element with that class found the overlay and no
-    field -- so the playback worked small and showed nothing big."""
-    from delfin.dashboard import tab_submit
+def test_the_playback_finds_its_field_in_fullscreen_but_only_its_own(player_js):
+    """In every root carrying the scope, and nowhere else.
 
-    source = SUBMIT_SOURCE
-    watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
-    assert "querySelectorAll" in watcher, "one root is not enough in fullscreen"
-    assert "if(!field) field=document.querySelector(" in watcher
+    Fullscreen moves the toolbar into an overlay carrying the same scope class,
+    so one root is not enough -- that is what the loop over roots is for, and
+    the playback showed nothing in the big view before it was there.
+
+    Behind the loop stood the whole document, which was written down as safe
+    while there was one editor per dashboard.  There are two.  A page-wide
+    lookup answers with the first field in document order, which belongs to
+    whichever editor was written out first -- so an editor that could not find
+    its own would play the other one's trajectory into its viewer.
+
+    Two players driven in chromium on one page, each field naming its own run,
+    read back as the run each player believes it is playing::
+
+                              before        after
+        both fields present   A-run B-run   A-run B-run
+        A's toolbar in an     A-run B-run   A-run B-run
+          overlay
+        B's field removed     A-run A-run   A-run None
+
+    The third row is the point, and the second is what must not break to get
+    it: B is told there is none rather than handed A's.
+    """
+    reader = player_js.split("function read(")[1].split("function ")[0]
+
+    assert "var field=inScope(" in reader, (
+        "the reader walks every root carrying the scope, which is the helper")
+    assert "document.querySelector(" not in reader, (
+        "no page-wide fallback: with two editors that is the other one's field")
+
+    found = player_js.split("function inScope(selector){")[1].split("function ")[0]
+    assert 'document.querySelectorAll("."+scope)' in found
+    assert "roots[i].querySelector(selector)" in found
+    assert "document.querySelector(selector)" not in found
 
 
 def test_optimise_is_a_switch_that_can_be_turned_off(editor):
