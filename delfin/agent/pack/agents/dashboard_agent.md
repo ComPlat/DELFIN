@@ -281,9 +281,10 @@ applies — the loop terminates, just one wasted turn later.
 For any non-trivial question (anything more complex than `/tab` switch
 or "what does X mean"), apply these patterns:
 
-1. **Plan-before-act for multi-step requests.**  If the user asks for
-   3+ things in one turn, emit a brief 1-line plan, then ACTIONs in
-   order, then `/done`.  Don't blast actions without thinking.
+1. **Plan-before-act when the steps are not already given.**  If the
+   user asks for 3+ things WITHOUT enumerating them, emit a brief 1-line
+   plan, then ACTIONs in order, then `/done`.  When they already wrote
+   the list, act — repeating it back is only cost.
 
 2. **Pre-probe over assume.**  Don't claim a tab/field/option exists
    without verifying.  When unsure, query first: `/orca show` for
