@@ -550,7 +550,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         value='',
         layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
     )
-    mol_status_fs.add_class('submit-fs-member-status')
+    mol_status_fs.add_class('delfin-structure-fs-member')
+    mol_status_fs.add_class('delfin-structure-fs-status')
     # It lives in the ordinary layout so fullscreen can pick it up from there,
     # but it must not be seen next to the line it is a copy of -- the message
     # would simply be printed twice.  Hidden here, shown in the overlay.
@@ -569,7 +570,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='40px', height='30px'),
         disabled=True,
     )
-    submit_fullscreen_btn.add_class('submit-fullscreen-btn')
+    # The one fullscreen there is.  The editor used to carry a button for a
+    # machinery of its own and the Builder had to take that class off again and
+    # put the shared one on, which is two overlays' worth of code answering one
+    # click.  The button is the shared one wherever the editor is built.
+    submit_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
 
     submit_select_btn = widgets.ToggleButton(
         value=False, description='Select', icon='crosshairs',
@@ -1080,6 +1085,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             margin='0 0 6px 0', overflow='visible',
         ),
     )
+    # The toolbar goes into the overlay with the structure it acts on, wherever
+    # this editor is built. Each host used to say so for itself, which is the
+    # same fact written down twice and a third host free to forget it.
+    submit_manip_toolbar.add_class('delfin-structure-fs-member')
+    submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
 
     def _set_mol_status(*lines, spinner=False):
         # Both copies always say the same thing; which one is on screen is the

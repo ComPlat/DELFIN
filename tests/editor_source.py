@@ -11,6 +11,7 @@ is a fact about the tab. Which of the two a given line landed in is not what
 those tests are about, so they read the pair.
 """
 
+from delfin.dashboard import molecule_viewer as _molecule_viewer
 from delfin.dashboard import structure_editor as _structure_editor
 from delfin.dashboard import tab_submit as _tab_submit
 
@@ -27,3 +28,12 @@ TAB_SOURCE = _read(_tab_submit)
 
 #: The Submit tab and the editor it holds, as one text.
 SUBMIT_SOURCE = TAB_SOURCE + '\n' + EDITOR_SOURCE
+
+#: The one fullscreen: the sheet every molecule overlay is laid out by, and
+#: the script that moves the members into it and back. The Submit tab used to
+#: describe an overlay of its own here, beside a second implementation for the
+#: other three tabs, so a test about what fullscreen does had to know which tab
+#: it was asking about. It does not any more -- these are the answer for all of
+#: them, and a test that reads them is testing every tab at once.
+FULLSCREEN_CSS = _molecule_viewer.STRUCTURE_VIEWER_FULLSCREEN_CSS
+FULLSCREEN_JS = _molecule_viewer.STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS

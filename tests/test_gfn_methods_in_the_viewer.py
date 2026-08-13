@@ -16,7 +16,9 @@ import pytest
 
 from delfin.dashboard import gfn_optimize as gfn
 from delfin.dashboard.context import DashboardContext
-from editor_source import SUBMIT_SOURCE
+from editor_source import (
+    EDITOR_SOURCE, FULLSCREEN_CSS, FULLSCREEN_JS, SUBMIT_SOURCE,
+)
 
 _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 _needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
@@ -547,10 +549,10 @@ def test_fullscreen_has_a_status_line_of_its_own():
     version where nothing is moved that the small view needs.
     """
     from delfin.dashboard import tab_submit
-    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     source = SUBMIT_SOURCE
-    assert "mol_status_fs.add_class('submit-fs-member-status')" in source
+    assert "mol_status_fs.add_class('delfin-structure-fs-member')" in source
+    assert "mol_status_fs.add_class('delfin-structure-fs-status')" in source
     setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
     assert "mol_status.value = rendered_html" in setter
     assert "mol_status_fs.value = '' if prompt else rendered_html" in setter, (
@@ -558,8 +560,20 @@ def test_fullscreen_has_a_status_line_of_its_own():
     )
     assert "mol_status_fs.value = ''" in setter, "and agree when empty too"
 
-    enter = submit_manip_bootstrap_js().split("function enterFullscreen")[1][:1100]
-    assert "'.submit-fs-member-status'" in enter
+    # It is the editor that marks it, so the copy exists wherever the editor
+    # is built -- the ORCA Builder holds one too, rather than lending out the
+    # line its own small view needs.
+    assert "mol_status_fs.add_class" in EDITOR_SOURCE
+    from delfin.dashboard import tab_orca_builder
+    builder = open(tab_orca_builder.__file__, encoding='utf-8').read()
+    assert 'orca_editor.mol_status_fs' in builder, (
+        'the Builder has to place the copy, or its overlay has no status line')
+    assert "orca_editor.mol_status.add_class('delfin-structure-fs-member')" \
+        not in builder, 'the line the small view keeps must not travel'
+
+    # And the overlay shows it, wherever it came from.
+    assert '.delfin-structure-fs-overlay .delfin-structure-fs-status {' \
+        in FULLSCREEN_CSS
 
 
 def test_relax_means_the_molecule_follows_the_drag_under_gfn(editor):
@@ -649,19 +663,39 @@ def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
 
 
 def test_leaving_fullscreen_puts_every_member_back():
-    """The status line is needed in both views, not only the big one.
+    """In every tab, not only the one that was burned by it.
 
     Fullscreen moves the widgets into an overlay and the overlay is removed on
-    exit -- so a member that could not be put back where it came from would be
-    carried out of the page with it and be missing from the small view.
+    exit -- so a member whose recorded parent was replaced in the meantime has
+    nowhere to go back to and is carried out of the page with it.
+
+    The Submit tab grew a rescue for this; the other three had a fullscreen of
+    their own and did not. Driven in chromium with the box under the members
+    replaced while the overlay was open, before and after the two were made
+    one::
+
+        tab                       before   after
+        Submit                    back     back
+        ORCA Builder              lost     back
+        Calculations browser      lost     back
+        Remote archive            lost     back
+
+    "lost" is every member of the molecule panel at once -- toolbar, status
+    line and viewer -- gone from the tab with nothing to say they existed.
     """
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
-    editor_js = submit_manip_bootstrap_js()
-    exit_body = editor_js.split("function exitFullscreen")[1][:2600]
-    assert "insertBefore" in exit_body and "appendChild" in exit_body
-    assert "isConnected" in exit_body, "an orphaned member is a lost control"
-    assert "root.appendChild(el)" in exit_body
+    exit_body = FULLSCREEN_JS.split('function exitFullscreen')[1].split(
+        '\n    function ')[0]
+    assert 'insertBefore' in exit_body and 'appendChild' in exit_body
+    assert 'isConnected' in exit_body, 'an orphaned member is a lost control'
+    assert 'home.appendChild(member)' in exit_body
+
+    # One rescue for every tab: there is one exitFullscreen in the dashboard.
+    assert FULLSCREEN_JS.count('function exitFullscreen') == 1
+    assert 'exitFullscreen' not in submit_manip_bootstrap_js(), (
+        'the editor carried a second fullscreen of its own, and a fix to one '
+        'was never a fix to the other')
 
 
 def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
@@ -795,8 +829,9 @@ def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
 
     source = SUBMIT_SOURCE
     assert "mol_status_fs.layout.display = 'none'" in source
-    assert ".submit-fs-overlay .submit-fs-member-status {" in source
-    assert "display: block !important;" in source
+    rule = FULLSCREEN_CSS.split(
+        '.delfin-structure-fs-overlay .delfin-structure-fs-status {')[1]
+    assert 'display: block !important;' in rule.split('}')[0]
 
 
 def test_fullscreen_is_not_told_to_enter_coordinates(editor):

@@ -49,6 +49,7 @@ from .molecule_viewer import (
     render_fukui_panel,
     structure_viewer_fullscreen_bootstrap_js,
     structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
     viewer_disabled_html,
 )
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
@@ -14839,6 +14840,11 @@ def create_tab(ctx):
         + _explorer_interactions_js
         + "\n"
         + structure_viewer_fullscreen_bootstrap_js()
+        + "\n"
+        # A structure and a trajectory, and the structure answers first.
+        + structure_viewer_fullscreen_kind_js(
+            'calc', 'calc-scope-',
+            ['_calcMolViewerByScope', '_calcTrajViewerByScope'])
         + "\n"
         + f"""
     (function() {{

@@ -33,6 +33,7 @@ from .molecule_viewer import (
     patch_viewer_mouse_controls_js,
     structure_viewer_fullscreen_bootstrap_js,
     structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
 )
 from .input_processing import (
     parse_inp_resources, sanitize_orca_input, clean_input_data,
@@ -345,16 +346,18 @@ def create_tab(ctx):
     )
     orca_editor_scope = orca_editor.submit_scope_id
     # The editor's own fullscreen button, at the head of its toolbar where the
-    # Submit tab has it, rather than a second one in a row of its own. It is
-    # made over to this tab's fullscreen: the Submit tab's overlay is built
-    # from members carrying submit-fs-* classes, which the Builder's are not.
+    # Submit tab has it, rather than a second one in a row of its own. There is
+    # nothing to make over any more: the editor carries the shared button, and
+    # its toolbar is a member of whatever overlay it finds itself in. This tab
+    # only says which of the shared overlays is being opened.
     orca_mol_fullscreen_btn = orca_editor.submit_fullscreen_btn
-    orca_mol_fullscreen_btn.remove_class('submit-fullscreen-btn')
-    orca_mol_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
     orca_mol_fullscreen_btn.add_class('orca-structure-fullscreen-btn')
-    orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-member')
-    orca_editor.submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
-    orca_editor.mol_status.add_class('delfin-structure-fs-member')
+    # The status line that travels is the copy, not the one the small view
+    # keeps. Lending the real one out is a move ipywidgets knows nothing about,
+    # and the small view did not get it back -- the Submit tab was burned by
+    # that and grew a second widget for it; this tab holds the same second
+    # widget rather than finding out again.
+    orca_editor.mol_status_fs.layout.margin = '0 0 6px 0'
     # The force-field notes stay in the small view, as they do in the Submit
     # tab: they are several lines of prose about what had to be approximated,
     # and in fullscreen they take that space off the structure they describe.
@@ -2171,7 +2174,8 @@ def create_tab(ctx):
     orca_mol_header.add_class('delfin-structure-fs-header')
     orca_mol_module = widgets.VBox(
         [orca_mol_header, orca_mol_nav_row, orca_editor.submit_manip_toolbar,
-         orca_editor.mol_status, orca_mol_output, orca_editor.submit_ff_notes],
+         orca_editor.mol_status, orca_editor.mol_status_fs, orca_mol_output,
+         orca_editor.submit_ff_notes],
         layout=widgets.Layout(width='100%', min_width='0', gap='6px'),
     )
     # The editor finds its own controls by this class, and only inside it.
@@ -2388,6 +2392,8 @@ def create_tab(ctx):
     # another, and a merge that keeps only one of the two loses a
     # feature without any test noticing which.
     ctx.add_init_js(structure_viewer_fullscreen_bootstrap_js()
+                    + '\n' + structure_viewer_fullscreen_kind_js(
+                        'orca', 'orca-scope-', ['_orcaBuildViewer'])
                     + '\n' + _orca_drop_js)
 
     return tab_widget, {
