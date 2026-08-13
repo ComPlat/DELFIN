@@ -589,8 +589,10 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     # The set goes back the way it came -- to the tab that keeps blocks as
     # blocks, or to the isomer stepper -- and showing one re-renders, which is
     # why a running playback keeps the results without being shown.
-    assert "if played[0]:" in handler, "the isomer path re-renders too"
-    assert "_offer_isomers(results)" in handler
+    assert "show=not played[0]" in handler, "the isomer path re-renders too"
+    assert "_offer_isomers(results, show=not played[0])" in handler, (
+        "the set goes back to the tab whatever the picture is doing -- held "
+        "back, every optimised geometry was lost in a tab that keeps blocks")
 
 
 @_needs_xtb
@@ -2354,7 +2356,7 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
 
     source = SUBMIT_SOURCE
     keeper = source.split("def _gfn_topology_dir")[1].split("\n    def ")[0]
-    assert "kept.get('atoms') == atoms" in keeper
+    assert "kept.get('who') == who" in keeper
     dropper = source.split("def _drop_gfn_topology")[1].split("\n    def ")[0]
     assert "shutil.rmtree" in dropper
 
@@ -2364,7 +2366,7 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "topology=_gfn_topology_dir(" in follow
     settle = source.split("def _gfn_settle_now")[1].split("\n    def ")[0]
-    assert "_gfn_topology_dir(len(_gfn.atom_lines(xyz)))" in settle
+    assert "_gfn_topology_dir(xyz)" in settle
     assert "topology=perceived" in settle
     # And asking for one makes a directory, so the engine that has no topology
     # does not ask: MOPAC works the bonding out for itself every run.

@@ -1777,8 +1777,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
                             constraints=constraints, solvent=wet,
                             solvation_model=model,
-                            topology=_gfn_topology_dir(
-                                len(_gfn.atom_lines(current))),
+                            topology=_gfn_topology_dir(current),
                         )
                     if not outcome.get('ok'):
                         note = str(outcome.get('status') or 'it did not run')
@@ -1845,7 +1844,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
 
-    def _gfn_topology_dir(atoms):
+    def _gfn_topology_dir(xyz):
         """Where GFN-FF's perceived bonding is kept while a structure is worked
         on.
 
@@ -1857,17 +1856,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the browser's field assigns its parameters once when the switch goes
         down -- at 2.33 A it then still pulls back, to 1.51.
 
-        It belongs to one molecule: an atom added or taken away makes it a
-        different one, and the count is what says so.
+        It belongs to one molecule, and the element column is what says which:
+        the count alone said a benzene and a cyclobutane were the same
+        molecule, both being twelve atoms, so the second was optimised with the
+        first one's bonding. It came back with a hydrogen 5.9 A from its carbon
+        and the ring torn open -- at an energy that looked perfectly ordinary.
         """
         import tempfile
 
+        who = _structure_fingerprint(xyz)
+        atoms = len(who)
         kept = state.get('gfn_topology')
-        if kept and kept.get('atoms') == atoms:
+        if kept and kept.get('who') == who and atoms:
             return Path(kept['dir'])
         _drop_gfn_topology()
         folder = tempfile.mkdtemp(prefix='delfin-gfnff-topo-')
-        state['gfn_topology'] = {'dir': folder, 'atoms': atoms}
+        state['gfn_topology'] = {'dir': folder, 'atoms': atoms, 'who': who}
         # Perceived here and now, from the structure as it stood before a hand
         # was laid on it.  Left to the first calculation that needs it, the
         # perception is made from a geometry that has already been pulled
@@ -2039,7 +2043,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             + (f' (round {rounds})' if rounds > 1 else ''), spinner=True)
         # Only GFN-FF has a topology to keep, and asking for one makes a
         # directory -- so a PM settle does not ask.
-        perceived = (_gfn_topology_dir(len(_gfn.atom_lines(xyz)))
+        perceived = (_gfn_topology_dir(xyz)
                      if _gfn.is_gfn_method(method) else None)
         # Auto M, and no scan has happened yet: this run does the scanning, so
         # that it and Optimise are asking about the same molecule.  Only xtb
@@ -2548,6 +2552,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # a value held on screen is held in the optimisation too, rather than
         # being quietly given up the moment GFN is chosen.
         held = list(state.get('constraints') or [])
+        if every_frame and held:
+            # A held value names atoms of the structure it was set on, and
+            # "all" walks a set of different molecules. Applied to the rest it
+            # is not a constraint but a distortion: a C-C held at 1.700 A on a
+            # cyclobutane was written into benzene's xtb input as
+            # "distance: 1, 2, 1.700000" with force constant 20, pulling an
+            # aromatic bond a third of an Angstrom out of the ring.
+            state['held_set_aside'] = len(held)
+            held = []
+        else:
+            state.pop('held_set_aside', None)
         wet = str(submit_gfn_solvent.value or '') or None
         model = _solv_model()
 
@@ -2575,8 +2590,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # frame on screen: a set of isomers is a set of different
                     # molecules, and one perception cannot describe them all.
                     perceived = (None if every_frame
-                                 else _gfn_topology_dir(
-                                     len(_gfn.atom_lines(xyz))))
+                                 else _gfn_topology_dir(xyz))
                     if pm:
                         # MOPAC takes the spin state as a word and knows
                         # nothing of xtb's held internals or its topology
@@ -2680,15 +2694,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'coords': coords_widget.value,
                 }
                 if frames:
-                    # Back the way they came: a tab that keeps its structures
-                    # as blocks gets them as blocks, and one that steps through
-                    # isomers gets the one it was on. Showing an isomer rebuilds
-                    # the viewer, which is the other way the playback was being
-                    # torn down.
-                    if played[0]:
-                        state['isomers'] = results
-                    else:
-                        _offer_isomers(results)
+                    # Back the way they came, whatever the picture is doing:
+                    # a tab that keeps its structures as blocks gets them as
+                    # blocks, and one that steps through isomers gets the one
+                    # it was on. Only the showing is held back while a
+                    # trajectory plays -- showing an isomer rebuilds the
+                    # viewer, and that is what used to tear the playback down.
+                    #
+                    # Held back was the handing over as well, and that lost
+                    # every optimised geometry in a tab whose structures are
+                    # blocks: the status line said "Optimised 2 of 2 frames"
+                    # over a coordinates box that had not changed a character.
+                    _offer_isomers(results, show=not played[0])
                 else:
                     lines = [
                         line for line in results[0][0].splitlines()[2:] if line.strip()
@@ -2731,6 +2748,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 said += _solvents.note(_solv_model(), submit_gfn_solvent.value)
                 said += _gfn.held_note(state.get('gfn_held') or {
                     'held': 0, 'dropped': [], 'mixed': False, 'force': None})
+                aside = int(state.pop('held_set_aside', 0) or 0)
+                if aside:
+                    # Said out loud rather than done quietly: a value held on
+                    # one structure names atoms of that structure, and "all"
+                    # walks a set of different molecules.
+                    said += (f' The {aside} held value(s) were not applied -- '
+                             'they name atoms of the structure they were set '
+                             'on. Optimise that one on its own to keep them.')
                 state['gfn_last_status'] = said
                 if gfn:
                     if autospin:
@@ -5084,7 +5109,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # A list that no longer offers what it offered then.
                 pass
 
-    _CONTROL_START = [w.value for w in _structure_controls()]
+    def _controls_a_new_structure_resets():
+        """What an unseen structure starts over with.
+
+        Not everything the memory holds. The charge and the multiplicity are
+        the calculation's own quantities and belong to one molecule: carrying a
+        cation's charge into the next block is a wrong answer waiting to
+        happen. The method, the solvent and its model are how the user is
+        working, and they do not stop being that because another structure
+        arrived -- picking GFN2 and having it fall back to UFF on every paste
+        is its own kind of wrong.
+        """
+        return (submit_relax_btn, submit_settle_btn, submit_select_btn,
+                submit_manip_btn, submit_draw_btn, submit_dyn_bonds_btn,
+                submit_gfn_charge, submit_gfn_mult, submit_gfn_autospin,
+                submit_hold_mode)
+
+    _CONTROL_START = {id(w): w.value for w in _structure_controls()}
 
     def remember_structure():
         """What the editor knows about the structure it is on, to be given back.
@@ -5150,9 +5191,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         To the defaults, not to off -- switching Settle off here took away
         something the editor is supposed to start with.
         """
-        _apply_controls(_CONTROL_START)
+        for widget in _controls_a_new_structure_resets():
+            start = _CONTROL_START.get(id(widget))
+            try:
+                if widget.value != start:
+                    widget.value = start
+            except Exception:
+                pass
 
-    def _offer_isomers(isomers, quick=False):
+    def _offer_isomers(isomers, quick=False, show=True):
         """Every structure a conversion produced, to wherever they belong.
 
         A tab that keeps more than one -- the ORCA Builder, with its named
@@ -5177,7 +5224,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # "Converting SMILES..." spinner sat there for good.
             _clear_mol_status()
             return
-        _show_isomer_at_index(0)
+        if show:
+            _show_isomer_at_index(state.get('isomer_index', 0)
+                                  if len(isomers) > 1 else 0)
 
     def _show_isomer_at_index(index):
         isomers = state['isomers']

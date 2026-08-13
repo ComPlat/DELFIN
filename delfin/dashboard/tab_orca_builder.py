@@ -703,6 +703,13 @@ def create_tab(ctx):
     _ORCA_CONSTRAINT = {'distance': ('B', 2), 'angle': ('A', 3),
                         'dihedral': ('D', 4)}
 
+    def _input_structure_atom_count():
+        """How many atoms the structure this input reads actually has."""
+        blocks = state.get('xyz_blocks') or []
+        text = blocks[0][1] if blocks else orca_coords.value
+        return len([row for row in strip_xyz_header(text).split('\n')
+                    if len(row.split()) >= 4])
+
     def _build_constraints_block():
         """The coordinates held in the editor, in ORCA's own syntax.
 
@@ -718,6 +725,21 @@ def create_tab(ctx):
                 if c.get('mode') == 'fix']
         if not held:
             return ''
+        # A held value names atoms by number, and the numbers belong to the
+        # structure it was set on. Held between atoms 0 and 2 of a water and
+        # then asked of a two-atom CO, "{ B 0 2 1.5000 C }" reaches ORCA, which
+        # stops on it. Anything naming an atom this input does not have is left
+        # out and said out loud rather than written down.
+        reads = _input_structure_atom_count()
+        dropped = 0
+        if reads:
+            keep = [c for c in held
+                    if all(0 <= int(i) < reads for i in (c.get('atoms') or []))]
+            dropped = len(held) - len(keep)
+            held = keep
+        if not held:
+            return (f'# {dropped} held value(s) name atoms this structure does '
+                    f'not have, and are left out.\n') if dropped else ''
         lines = []
         for entry in held:
             word, wanted = _ORCA_CONSTRAINT.get(entry.get('kind'), ('', 0))
@@ -738,6 +760,9 @@ def create_tab(ctx):
             # numbers below name atoms of a structure ORCA will not see.
             note = (f'# Held in the editor on {blocks[shown][0]}, while this\n'
                     f'# input reads {blocks[0][0]}. Check the atom numbers.\n')
+        if dropped:
+            note += (f'# {dropped} more held value(s) name atoms this structure '
+                     f'does not have, and are left out.\n')
         return note + '%geom Constraints\n' + '\n'.join(lines) + '\n  end\nend'
 
     def generate_orca_input():
@@ -1380,9 +1405,14 @@ def create_tab(ctx):
         # and reset the camera in the middle of a drag.
         if state.get('editor_quiet'):
             return
-        # A structure the editor has not seen: it starts on this one the way
-        # it starts on any other.
-        orca_editor.reset_controls()
+        # Coordinates the editor has not seen: everything it knew about the
+        # last ones goes, not only the switches. A held value names atoms of
+        # the structure it was set on -- kept across a paste, a bond held
+        # between atoms 0 and 2 of a water was written into the input for a
+        # two-atom CO as "{ B 0 2 1.5000 C }", and ORCA stops on it.
+        orca_editor.restore_structure(None)
+        state.pop('editor_memory', None)
+        state.pop('editor_block', None)
         state['xyz_blocks'] = parse_xyz_blocks(orca_coords.value) or []
         state['xyz_view_idx'] = 0
         state['numbering_check_active'] = False
@@ -1813,11 +1843,16 @@ def create_tab(ctx):
 
     for w in [orca_method, orca_job_type, orca_basis, orca_dispersion, orca_ri,
               orca_aux_basis, orca_charge, orca_multiplicity, orca_pal, orca_maxcore,
-              orca_coords, orca_solvation_type,
+              orca_solvation_type,
               orca_solvent, orca_print_mos, orca_print_basis, orca_autoaux]:
         w.observe(update_orca_preview, names='value')
 
+    # The coordinates box, in this order: what the editor knew about the last
+    # structure goes first, and only then is the input written. The other way
+    # round, the input was built from held values that belonged to coordinates
+    # that had just been replaced.
     orca_coords.observe(update_orca_molecule_view, names='value')
+    orca_coords.observe(update_orca_preview, names='value')
     orca_mol_prev_btn.on_click(on_mol_prev)
     orca_mol_next_btn.on_click(on_mol_next)
     orca_editor_coords.observe(_orca_editor_wrote, names='value')

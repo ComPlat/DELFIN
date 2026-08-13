@@ -871,8 +871,8 @@ def test_settle_is_on_to_begin_with_in_both_tabs():
     # ...and a structure the editor has not seen starts from how the switches
     # read on an editor that has just been built, taken from the widgets
     # rather than written down a second time.
-    assert '_CONTROL_START = [w.value for w in _structure_controls()]' in source
-    assert '_apply_controls(_CONTROL_START)' in source
+    assert '_CONTROL_START = {id(w): w.value for w in _structure_controls()}' in source
+    assert 'for widget in _controls_a_new_structure_resets():' in source
 
 
 def test_converting_again_builds_what_is_in_the_box_now(builder):
