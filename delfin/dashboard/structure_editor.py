@@ -538,18 +538,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                          ('batch_preview_busy', False)):
         state.setdefault(_key, _value)
 
-    mol_status = widgets.HTML(
-        value='',
-        layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
-    )
+    #: The status line's own height, in rows of its 13 px monospace at line
+    #: height 1.35 -- 17.6 px each, so two rows and the 6 px under them.
+    #:
+    #: Fixed rather than grown to fit, because this line stands above the
+    #: viewer and everything below it moves when it changes.  A run reports
+    #: several times a second and the reports are not the same length: one row
+    #: while the structure follows the hand, two when the optimisation says
+    #: what it reached.  Measured at 1440x900 in the panel's own width, that is
+    #: the picture stepping 17 px under the cursor the user is aiming with.
+    #: A message longer than the box scrolls inside it; nothing is cut, and
+    #: nothing below it moves.
+    _STATUS_ROWS_PX = 41
+
+    def _status_layout():
+        # overflow, not overflow_y: this ipywidgets Layout has no per-axis
+        # trait and drops the ones it does not know without failing, so a box
+        # written that way would simply not scroll.
+        return widgets.Layout(
+            width='100%', margin='0 0 6px 0',
+            height=f'{_STATUS_ROWS_PX}px', min_height=f'{_STATUS_ROWS_PX}px',
+            overflow='auto',
+        )
+
+    mol_status = widgets.HTML(value='', layout=_status_layout())
     # A second one, for the overlay.  Not the same widget moved: fullscreen
     # relocates its members by hand and ipywidgets knows nothing about it, so
     # the line borrowed for the big view came back somewhere else and was lost
     # from the small one.  Two widgets, one text, nothing moved.
-    mol_status_fs = widgets.HTML(
-        value='',
-        layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
-    )
+    mol_status_fs = widgets.HTML(value='', layout=_status_layout())
     mol_status_fs.add_class('delfin-structure-fs-member')
     mol_status_fs.add_class('delfin-structure-fs-status')
     # It lives in the ordinary layout so fullscreen can pick it up from there,
@@ -1794,12 +1811,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_follow'] = True
         state['gfn_follow_steps'] = 0
         state['gfn_follow_frames'] = []
-        # The page has drawn nothing of THIS drag yet, and says so.  Leaving
-        # the row out until the first frame arrives would grow the line by a
-        # row at that moment and step the picture down with it; leaving the
-        # last drag's count standing would put a number there that is not
-        # about what the user is doing.
-        state['gfn_play_note'] = 'no frames yet'
+        # Whatever the page said about the last drag's playback is not about
+        # this one.
+        state['gfn_play_note'] = ''
         run = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run
         state['gfn_follow_run'] = run
@@ -1808,27 +1822,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _end_gfn_follow():
         state['gfn_follow'] = False
 
+    #: What the page says about the playback that the user could not see for
+    #: themselves.  "received 41 frames" and "drawing" are the playback
+    #: working; a trajectory that is not drawing is not.
+    _PLAY_NOTE_FAULTS = ('setPositions did not draw', 'no setPositions on the page')
+
     def _gfn_status_lines(said=None):
-        """What a drag is doing, from both ends, in a shape that does not move.
+        """One row, whoever is writing it.
 
-        Both ends report on the same line: the kernel counts the follow steps
-        it has run and how long each took, the page counts the frames it has
-        drawn.  They used to write it in turn, each wiping the other -- one row
-        with a spinner, then two rows without, then one again, for as long as
-        the drag lasted.  The status line stands above the viewer in the
-        column, so that swap moved the picture: measured at 1440x900 against
-        the tab's own stylesheet, 18 px against 35 px, the structure stepping
-        17 px up and down while the user was trying to aim an atom with it.
+        Three things report while a structure is being worked on: the kernel
+        counts the follow steps it has run, the optimisation says what it
+        reached, and the page counts the frames it has drawn.  They wrote the
+        line in turn and in different shapes -- one row, then two, then one
+        again, several times a second -- and the status line stands above the
+        viewer in the column, so the picture stepped up and down with it while
+        the user was trying to aim an atom.
 
-        One message with a row for each end.  Whichever end has something new
-        to say fills in its own row and leaves the other's standing, so the
-        text changes and the height does not.
+        The page's count is not a row.  It was there to tell an invisible
+        trajectory from a missing one, and "received 41 frames" is the case
+        where nothing is wrong; a fault goes on the end of the line that is
+        already there rather than under it.
         """
-        note = state.get('gfn_play_note')
-        return (
-            said if said is not None else (state.get('gfn_last_status') or ''),
-            f'Trajectory: {note}.' if note else '',
-        )
+        line = said if said is not None else (state.get('gfn_last_status') or '')
+        note = str(state.get('gfn_play_note') or '')
+        if note and any(fault in note for fault in _PLAY_NOTE_FAULTS):
+            return ((f'{line} Trajectory: {note}.' if line
+                     else f'Trajectory: {note}.'),)
+        return (line,)
 
     def _gfn_is_working():
         """Whether there is a calculation behind what the line is reporting."""
@@ -2933,7 +2953,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         + '\n'.join(lines)
                     )
                 done = count - len(failures)
-                said = f'Optimised {done} of {count} frame(s) with {label}.'
+                # "1 of 1 frame(s)" is a count of a thing there is one of, and
+                # it cost the line the width that pushed it onto a second row.
+                said = (f'Optimised with {label}.' if count == 1 else
+                        f'Optimised {done} of {count} frame(s) with {label}.')
                 # The energy, the way the force field shows one.  xtb reports
                 # it in hartree; kcal/mol is what the rest of the tab speaks,
                 # and both are given because a total energy is compared
@@ -2974,12 +2997,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         said += f' charge {charge}, multiplicity scanned.'
                     else:
                         said += f' charge {charge}, multiplicity {uhf + 1}.'
-                # The page's report about the playback is kept: it arrives
-                # while this message is being built and would otherwise be
-                # wiped by it a moment later.
-                note = state.get('gfn_play_note')
-                extra = [f'Trajectory: {note}.'] if note else []
-                _set_mol_status(said, *(list(failures[:2]) + extra))
+                # The page's count of the frames it drew does not go under
+                # this. It arrives while this message is being built, so the
+                # two took turns -- one row, then two, then one -- and the
+                # viewer stands under them and moved with every swap. What the
+                # playback did wrong still gets said; that it worked does not
+                # need a row of its own.
+                state['gfn_last_status'] = said
+                _set_mol_status(*_gfn_status_lines(said), *failures[:2])
 
             schedule_ui_update(_apply)
 
