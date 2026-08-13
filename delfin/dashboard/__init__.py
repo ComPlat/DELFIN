@@ -65,6 +65,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
     from .helpers import (
+        _append_js,
         apply_branding,
         create_busy_css,
         create_page_css,

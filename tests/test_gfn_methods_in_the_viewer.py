@@ -1083,15 +1083,23 @@ def test_one_press_keeps_running_until_there_is_nothing_left_to_do(bare_editor):
     part.submit_optimize_btn.unobserve_all()
     part.submit_optimize_btn.value = True
     asks = dict(converged=False, moved=0.25, rounds=1, failed=False,
-                every_frame=False)
+                every_frame=False, still=0)
 
     assert part._optimise_carries_on(**asks) is True, (
         'a run that stopped for want of cycles is exactly the case to carry on')
     assert part._optimise_carries_on(**{**asks, 'converged': True}) is False
     assert part._optimise_carries_on(**{**asks, 'failed': True}) is False, (
         'a run that produced no geometry ends the press')
-    assert part._optimise_carries_on(**{**asks, 'moved': 0.0}) is False, (
-        'a structure that has stopped improving is as far as this goes')
+    # One quiet round is not proof.  A run that reached its cycle limit in a
+    # flat stretch moves almost nothing, and its successor -- a new process
+    # with a fresh cycle budget and a fresh optimiser history -- can still
+    # take a real step.  Stopping on the first made "no longer moving" mean
+    # "did not move much just then", and the user pressed again and watched it
+    # move: the very thing these rounds were written to stop.
+    assert part._optimise_carries_on(**{**asks, 'moved': 0.0, 'still': 1}) is True, (
+        'one quiet round earns the fresh optimiser one more go')
+    assert part._optimise_carries_on(**{**asks, 'moved': 0.0, 'still': 2}) is False, (
+        'two in a row is a structure that has stopped improving')
     assert part._optimise_carries_on(**{**asks, 'rounds': 99}) is False, (
         'held values that cannot all be met never converge; it has to end')
 
@@ -3998,3 +4006,95 @@ def test_undoing_a_drag_in_the_browser_counts_as_an_edit():
     sync = EDITOR_SOURCE.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
     assert "note.startswith('DELFIN undo')" in sync
     assert "_interrupt_gfn()" in sync
+
+
+def test_the_follow_does_not_move_a_structure_an_optimisation_owns(editor, monkeypatch):
+    """Two xtb processes arranging the same molecule around each other.
+
+    Picking an atom up interrupts a running optimisation before the follow
+    begins, so the ordinary way round never reaches this.  Pressing Optimise
+    while an atom is already held does: the follow went on asking for a run per
+    push while the press was running.  It is the same collision the coordinate
+    box was given an owner for, one step earlier in the same path, and the
+    press is the later of the two things the user asked for.
+
+    Driven on gfn_follow_busy, which _gfn_follow_step sets before it starts its
+    thread -- the run itself happens off this one, so waiting for it to appear
+    is a race and its absence would prove nothing.
+    """
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+    editor["submit_relax_btn"].value = True
+
+    def push():
+        state["gfn_follow"] = True
+        state["gfn_follow_method"] = "gfn2"
+        state.pop("gfn_follow_busy", None)
+        editor["submit_manip_sync"].value = (
+            f"3\nDELFIN drag-follow held=0 n={state.get('optimize_run') is None}\n"
+            "O 0.100000 0.000000 0.000000\n"
+            "H 0.960000 0.000000 0.000000\n"
+            "H -0.240000 0.930000 0.000000\n"
+        )
+        return bool(state.get("gfn_follow_busy"))
+
+    state["optimize_run"] = object()          # a press is running
+    assert push() is False, 'the follow must not run against a press'
+
+    # The other way round, so the check above is worth something: with nothing
+    # optimising, the same push does start a follow.
+    state["optimize_run"] = None
+    assert push() is True, 'and it still follows when nothing owns the structure'
+
+    follow = EDITOR_SOURCE.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "if state.get('optimize_run') is not None:" in follow
+
+
+def test_one_quiet_round_is_not_a_finished_structure(bare_editor):
+    """"No longer moving" used to mean "did not move much just then".
+
+    A run is one xtb --opt and its optimiser has a cycle limit of its own; one
+    that reaches that limit in a flat stretch hands back a geometry that moved
+    almost nothing.  Its successor is a new process with a fresh cycle budget
+    and a fresh optimiser history, which is the whole reason these rounds
+    exist -- so stopping on the first quiet one ended the press exactly where
+    another round would still have got somewhere, and the user pressed again
+    and watched it move.
+    """
+    part, _state = bare_editor
+    part.submit_optimize_btn.unobserve_all()
+    part.submit_optimize_btn.value = True
+    quiet = dict(converged=False, moved=0.0, rounds=1, failed=False,
+                 every_frame=False)
+
+    assert part._optimise_carries_on(**{**quiet, 'still': 1}) is True
+    assert part._optimise_carries_on(**{**quiet, 'still': 2}) is False
+    assert part._OPTIMISE_STILL_ROUNDS == 2
+
+    # It never outranks the endings that are certain.
+    assert part._optimise_carries_on(
+        **{**quiet, 'still': 1, 'converged': True}) is False
+    assert part._optimise_carries_on(
+        **{**quiet, 'still': 1, 'failed': True}) is False
+    assert part._optimise_carries_on(
+        **{**quiet, 'still': 1, 'rounds': 99}) is False
+
+    # And a round that moved is not quiet at all, whatever came before it.
+    assert part._optimise_carries_on(
+        **{**quiet, 'moved': 0.25, 'still': 0}) is True
+
+
+def test_the_quiet_count_starts_over_with_each_press(bare_editor):
+    """A press that ended on two quiet rounds must not hand its count to the
+    next one, or the next press stops after a single round."""
+    apply_body = SUBMIT_SOURCE.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    # Reset beside the round counter, on a press that is not carrying on.
+    assert "state['optimize_still'] = 0" in apply_body
+    assert "state['optimize_still'] = still if carry_on else 0" in apply_body
+    # Counted from the movement of this round, not from what xtb called it.
+    assert "if moved_now <= _OPTIMISE_STILL else 0" in apply_body

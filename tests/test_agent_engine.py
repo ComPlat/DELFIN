@@ -114,7 +114,6 @@ def test_engine_stream_response(agent_tree, mock_client):
 def test_engine_records_turn_metrics(agent_tree, mock_client, monkeypatch, tmp_path):
     """Each turn records timing (total + time-to-first-token + tool count) so a
     slow turn is diagnosable after the fact."""
-    from pathlib import Path
     from delfin.agent import turn_metrics as tm
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(tm, "_DIR", tmp_path / ".delfin" / "turn_metrics")

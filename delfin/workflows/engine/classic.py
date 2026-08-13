@@ -12,7 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Optional, Set, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Set, List
 
 from delfin.common.logging import get_logger
 from delfin.workflows.scheduling.pool import (
@@ -38,6 +38,12 @@ from delfin.scheduler_profiles import (
     predict_stage_profile,
 )
 from delfin.xyz_io import read_and_modify_file_1, read_xyz_and_create_input3
+
+# scheduler.py imports from this module, so GlobalOrcaScheduler cannot be
+# imported at runtime without a cycle — hence the quoted annotations. This
+# makes the name resolvable for type checkers and linters without creating one.
+if TYPE_CHECKING:
+    from delfin.workflows.engine.scheduler import GlobalOrcaScheduler
 
 logger = get_logger(__name__)
 

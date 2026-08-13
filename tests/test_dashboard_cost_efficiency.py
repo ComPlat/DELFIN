@@ -53,7 +53,6 @@ def test_dashboard_auto_exec_returns_done_marker_when_sentinel_present():
     the continuation loop can break without re-prompting."""
     # We mirror the production logic here rather than calling the
     # closure directly (it's a nested function inside create_tab).
-    import re
 
     def _detect_done(agent_text: str) -> bool:
         lines = agent_text.split("\n")
