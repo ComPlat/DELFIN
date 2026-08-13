@@ -1755,6 +1755,16 @@ class AgentEngine:
                     self.session_id)
             except Exception:
                 self._figure_ledger_token = ""
+            # The same question on the scientific side, and per-turn for
+            # the same reason: is the energy in this answer one the tools
+            # returned THIS turn. Kept apart from the ledger above because
+            # the evidence has a different shape -- an ORCA output is text
+            # a tool returned, not a result dict it filled in.
+            try:
+                from . import verify_guard as _vg_numbers
+                _vg_numbers.reset_observed_numbers()
+            except Exception:
+                pass
 
         # UserPromptSubmit hooks — fire BEFORE the message is appended so a
         # blocking hook can short-circuit the turn entirely. Stop hooks are
@@ -2122,6 +2132,17 @@ class AgentEngine:
                     _notes = str(getattr(event, "output_notes", "") or "")
                     self._note_ambiguous_columns(
                         _out + ("\n" + _notes if _notes else ""))
+                    # Every number this result carried, so a quantity in
+                    # the answer can be checked against what came back
+                    # rather than against the fact that something ran.
+                    try:
+                        from . import verify_guard as _vg_numbers
+                        _vg_numbers.record_tool_numbers(
+                            _out,
+                            truncated=bool(
+                                getattr(event, "output_truncated", False)))
+                    except Exception:
+                        pass
                     # And whether the model saw the whole result. A count
                     # taken from output that was cut short is an estimate
                     # wearing the clothes of a measurement. The backend
@@ -2999,7 +3020,8 @@ class AgentEngine:
                 text, observed_files=observed, ledger_available=ledger)
             qty = _vg.scan_for_unsourced_quantities(
                 text, observed_files=observed,
-                evidence_tools_used=set(turn_tools or ()))
+                evidence_tools_used=set(turn_tools or ()),
+                numbers=_vg.observed_numbers())
             return loc, qty
         except Exception:
             return [], []

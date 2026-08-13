@@ -34,6 +34,7 @@ Nothing here touches the network or RDKit; it only reads the committed
 from __future__ import annotations
 
 import bisect
+import contextvars as _contextvars
 import json
 import re
 from dataclasses import dataclass
@@ -524,11 +525,174 @@ def _used_evidence_tool(tools) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# What the tools actually returned this turn
+# ---------------------------------------------------------------------------
+#
+# The turn-level gate below used to read: any lookup tool ran, or any
+# calculation-output-like file was observed, therefore nothing is flagged.
+# Measured on the shipped scanner:
+#
+#     3 flags | Die Messung ergab 2.31 eV für S1, 3.90 eV für S2 …
+#     0 flags | ... with evidence_tools_used={"read_document"}
+#
+# One read of one unrelated spreadsheet exempted every energy in the
+# answer. That is the same defect the office ledger was built to close on
+# the other side of the house, and it has the same repair: a claim is
+# grounded when the FIGURE appears in what a tool returned, not when some
+# tool ran at all.
+#
+# The office ledger takes its figures from result dicts on purpose --
+# never from rendered prose, so two readings of the same facts cannot
+# disagree. Here there is no dict: the evidence for "2.31 eV" is the text
+# of an ORCA output the agent read, and that text IS the primary source
+# rather than a rendering of one.
+#
+# Bounded twice over. Only the head of a tool result is scanned, and only
+# so many numbers are kept, because an .out file is megabytes and this
+# module has already had one incident where a single long line made the
+# grounding scan take minutes.
+_TOOL_OUTPUT_SCAN_CHARS = 200_000
+MAX_OBSERVED_NUMBERS = 5000
+
+_OBSERVED_NUMBER_RE = re.compile(r"(?<![\w.])[-+−]?\d+(?:\.\d+)?(?![\w.])")
+
+_observed_numbers: "_contextvars.ContextVar[Optional[list[float]]]" = (
+    _contextvars.ContextVar("delfin_observed_numbers", default=None))
+# Whether this pool can answer "the tools did NOT return that number".
+# A tool result reaches the recorder as a HEAD slice, so a truncated one
+# leaves the pool with a hole in it of unknown size -- and absence from a
+# pool with a hole is not evidence of anything. This is the same rule the
+# rest of the framework already runs on: unobserved is not zero.
+_observed_complete: "_contextvars.ContextVar[bool]" = (
+    _contextvars.ContextVar("delfin_observed_complete", default=True))
+
+
+def reset_observed_numbers() -> None:
+    """Forget what the previous turn's tools returned.
+
+    Per TURN, like the other evidence ledgers here: the question is
+    whether THIS answer states a figure THIS turn produced. Carried over,
+    a stale energy would ground a later, unrelated one -- which is the
+    failure this exists to catch, one turn late.
+
+    Cleared to None and NOT to an empty list. The two say different
+    things and the scanner turns on the difference: None is "no result
+    reached this pool, so there is nothing to judge against", an empty
+    list is "results came back and carried no number at all". Setting []
+    here made every turn look like the second, and a turn whose evidence
+    this pool cannot see -- one where the results never arrive through
+    the recording path -- would have had its every quantity flagged.
+    """
+    _observed_numbers.set(None)
+    _observed_complete.set(True)
+
+
+def record_tool_numbers(output: Any, *, truncated: bool = False) -> int:
+    """Take the numbers out of one tool result. Never raises.
+
+    Returns how many were added, so a caller can tell "nothing numeric
+    came back" from "this was never called" -- the distinction the gate
+    below turns on.
+
+    ``truncated`` says the result reached here as a HEAD slice, so the
+    numbers past the cut were never seen. One such result puts a hole of
+    unknown size in the pool, and a pool with a hole cannot answer "the
+    tools did not return that number" -- so from then on the turn reports
+    itself as unable to say. Getting this wrong would flag a chemist's
+    correctly-quoted energy from deep inside an .out file.
+    """
+    try:
+        if truncated:
+            _observed_complete.set(False)
+        pool = _observed_numbers.get()
+        if pool is None:
+            pool = []
+            _observed_numbers.set(pool)
+        if len(pool) >= MAX_OBSERVED_NUMBERS:
+            return 0
+        body = str(output or "")[:_TOOL_OUTPUT_SCAN_CHARS]
+        added = 0
+        for match in _OBSERVED_NUMBER_RE.finditer(body):
+            try:
+                pool.append(float(match.group(0).replace("−", "-")))
+            except ValueError:
+                continue
+            added += 1
+            if len(pool) >= MAX_OBSERVED_NUMBERS:
+                break
+        return added
+    except Exception:
+        return 0
+
+
+def observations_are_complete() -> bool:
+    """False once any result arrived truncated. Said out loud rather than
+    folded into the pool, so a caller can tell the two apart."""
+    return bool(_observed_complete.get())
+
+
+def observed_numbers() -> Optional[list[float]]:
+    """Every number this turn's tools returned, or None if it cannot say.
+
+    None and [] are different answers and the scanner treats them so:
+    None means there is nothing to judge against -- no result reached
+    this pool, or one arrived cut short and the pool has a hole in it.
+    An empty list means results came back and carried no number at all,
+    which is a fact about the turn and gets checked like any other.
+    """
+    if not _observed_complete.get():
+        return None
+    return _observed_numbers.get()
+
+
+def _grounded_in_observations(value: float, pool: list[float]) -> bool:
+    """Is this value one the tools returned, or a difference of two?
+
+    The difference is in because an energy gap is the most ordinary
+    derived quantity there is: an answer that reads 2.31 and 3.90 out of
+    an output and reports a 1.59 eV gap has done arithmetic, not
+    invention, and flagging it would teach the model to stop reporting
+    gaps. Bounded to the same base size the office ledger uses, because
+    the derived set grows with its square and a large enough base makes
+    every number derivable.
+    """
+    tolerance = max(abs(value) * 1e-4, 5e-3)
+    for known in pool:
+        if abs(value - known) <= tolerance:
+            return True
+    base = pool[:MAX_DERIVATION_BASE]
+    for i, a in enumerate(base):
+        for b in base[i + 1:]:
+            if abs(value - abs(a - b)) <= tolerance:
+                return True
+    return False
+
+
+# How many observed numbers take part in deriving a difference.
+MAX_DERIVATION_BASE = 24
+
+_CLAIM_VALUE_RE = re.compile(r"[-+−]?\d+(?:\.\d+)?")
+
+
+def _claim_is_observed(quantity: str, pool: list[float]) -> bool:
+    """Does the number inside a matched claim come from the tools?"""
+    match = _CLAIM_VALUE_RE.search(str(quantity or ""))
+    if not match:
+        return False
+    try:
+        value = float(match.group(0).replace("−", "-"))
+    except ValueError:
+        return False
+    return _grounded_in_observations(value, pool)
+
+
 def scan_for_unsourced_quantities(
     text: str,
     *,
     observed_files: Optional[frozenset[str] | set[str]] = None,
     evidence_tools_used: Optional[frozenset[str] | set[str]] = None,
+    numbers: Optional[list[float]] = None,
     max_flags: int = 6,
 ) -> list[QuantityClaimFlag]:
     """Scan ``text`` for physical-quantity claims made in a turn with no
@@ -539,11 +703,19 @@ def scan_for_unsourced_quantities(
     K, kcal, GHz). Backticked spans, fenced code blocks, blockquoted
     lines, percentages and version strings never count.
 
-    Turn-level gate (documented design decision): when ``observed_files``
-    contains any calculation-output-like file OR ``evidence_tools_used``
-    contains any lookup tool, the turn had an evidence act and NOTHING is
-    flagged — per-number attribution to per-file sources is out of scope.
-    Only the zero-evidence turn is flagged.
+    Evidence is PER CLAIM. ``numbers`` is what this turn's tools actually
+    returned (``observed_numbers()``); a quantity is grounded when its
+    value is in there, or is the difference of two that are. What is not
+    in there is flagged even in a turn full of tool calls -- which is the
+    whole point, because the old rule exempted every energy in an answer
+    on the strength of one read of one unrelated spreadsheet.
+
+    ``numbers=None`` means no tool returned anything to judge against. The
+    turn-level shape survives only for that case: a calculation output
+    observed or a lookup tool used still exempts the turn, because
+    without a pool there is nothing to check a value against and flagging
+    an answer whose evidence this function simply cannot see would be a
+    guard punishing work it is blind to.
 
     Deterministic, order-stable (text position), de-duplicated, capped at
     ``max_flags``. Never raises.
@@ -552,10 +724,12 @@ def scan_for_unsourced_quantities(
     try:
         if not text or not text.strip() or max_flags <= 0:
             return []
-        if _observed_calc_output(observed_files):
-            return []
-        if _used_evidence_tool(evidence_tools_used):
-            return []
+        pool = numbers
+        if pool is None:
+            if _observed_calc_output(observed_files):
+                return []
+            if _used_evidence_tool(evidence_tools_used):
+                return []
         scrubbed = _strip_non_claim_regions(text)
         matches: list[tuple[int, str, str]] = []
         for unit, rx in _QUANTITY_PATTERNS:
@@ -571,6 +745,8 @@ def scan_for_unsourced_quantities(
             if key in seen:
                 continue
             seen.add(key)
+            if pool is not None and _claim_is_observed(qty, pool):
+                continue
             flags.append(QuantityClaimFlag(quantity=qty, unit=unit))
             if len(flags) >= max_flags:
                 break
