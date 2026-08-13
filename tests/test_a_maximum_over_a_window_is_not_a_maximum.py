@@ -28,15 +28,30 @@ import pytest
 
 from delfin.agent import office
 
+# Every assertion here reads a real .xlsx. openpyxl is a base dependency
+# and CI has it, so coverage there is unchanged -- but a developer
+# environment without the office stack is common enough in this project
+# that eleven failures reading "your env lacks a package" would train the
+# reader to skip the file. Same guard the other office suites use.
+pytest.importorskip("openpyxl")
 
-BOOK = Path("tests/fixtures/office_workspace/Buchungen_2026.xlsx")
+
+# Resolved from THIS FILE, never from the process CWD. Written relative
+# first, which passed alone and failed eleven times inside the full run:
+# something earlier changes the working directory, so the fixture
+# resolved to nothing and every window assertion collapsed. A test whose
+# result depends on where the runner was started measures the runner.
+BOOK = (Path(__file__).resolve().parent
+        / "fixtures" / "office_workspace" / "Buchungen_2026.xlsx")
 
 
 @pytest.fixture
 def book() -> str:
     if not BOOK.exists():                       # generated before every run
         from delfin.agent.benchmark_fixtures import ensure_office_fixtures
-        ensure_office_fixtures()
+        # The root is passed, not defaulted: ensure_office_fixtures falls
+        # back to os.getcwd(), which is the same trap as the path above.
+        ensure_office_fixtures(BOOK.parents[2])
     return str(BOOK)
 
 

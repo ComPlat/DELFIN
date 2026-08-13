@@ -148,6 +148,51 @@ def _the_suite_does_not_write_into_the_checkout():
     )
 
 
+_CWD_BEFORE_TEST: dict[str, str] = {}
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    import os
+    _CWD_BEFORE_TEST[item.nodeid] = os.getcwd()
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item, nextitem):
+    """A test may not leave the process somewhere else.
+
+    The process CWD is shared by every test that follows, so one chdir
+    that is not undone turns every later relative path into a different
+    file -- and the failure then lands on whoever wrote the relative path
+    rather than on whoever moved the ground under it. Observed on both
+    sides of that: a file of mine that passes alone and fails eleven
+    times inside the full run, and a test named for launch-directory
+    independence failing only in the big block.
+
+    A hook and not an autouse fixture, which is where the first attempt
+    was wrong: fixture teardown runs BEFORE ``monkeypatch`` undoes its
+    own chdir, so the guard accused a test that had done exactly the
+    right thing. ``trylast`` puts this after every finalizer, so what it
+    sees is what the next test will get. A guard that blames correct work
+    is one somebody switches off.
+
+    Restored as well as reported: a run that stops dead at the first
+    polluter tells you less than one that names it and carries on.
+    """
+    import os
+    before = _CWD_BEFORE_TEST.pop(item.nodeid, None)
+    if before is None:
+        return
+    after = os.getcwd()
+    if after != before:
+        os.chdir(before)
+        raise AssertionError(
+            f"this test left the process in {after} instead of {before}; "
+            "a chdir from a test must be undone (monkeypatch.chdir, or a "
+            "try/finally), or every later relative path reads a "
+            "different file")
+
+
 @pytest.fixture(autouse=True)
 def _reset_workspace_trust_caches():
     """Trust state is process-global: a parsed store and a record of which
