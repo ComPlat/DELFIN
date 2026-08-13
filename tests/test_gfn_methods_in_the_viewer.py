@@ -871,16 +871,17 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
     drag, the two ends reporting in turn::
 
                           before                     after
-        follow step 14    18 px  1 row,  spinner     36 px  2 rows, spinner
-        page drew 14      35 px  2 rows, no spinner  36 px  2 rows, spinner
-        follow step 15    18 px  1 row,  spinner     36 px  2 rows, spinner
-        page drew 15      35 px  2 rows, no spinner  36 px  2 rows, spinner
+        follow step 14    18 px  1 row,  spinner     18 px  1 row, spinner
+        page drew 14      35 px  2 rows, no spinner  18 px  1 row, spinner
+        follow step 15    18 px  1 row,  spinner     18 px  1 row, spinner
+        page drew 15      35 px  2 rows, no spinner  18 px  1 row, spinner
 
         movement per report:  17 px            ->    0 px
 
-    The first row of a fresh drag says the page has drawn nothing yet, rather
-    than being left out until the first frame lands -- leaving it out is the
-    same step, once, at the start of every drag.
+    The page's count is gone from the line entirely: it was there to tell an
+    invisible trajectory from a missing one, and "received 41 frames" is the
+    case where nothing is wrong. What the playback could not do still gets
+    said, on the end of the line that is already there.
     """
     part, state = bare_editor
     part.submit_ff_dd.value = "gxtb"
@@ -889,8 +890,8 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
     part.submit_relax_btn.unobserve_all()
     part.submit_relax_btn.value = True
     assert part._begin_gfn_follow(), "the follow did not start"
-    assert state["gfn_play_note"] == "no frames yet", (
-        "a fresh drag must not show the last drag's count, nor no row at all")
+    assert not state["gfn_play_note"], (
+        "whatever the page said about the last drag is not about this one")
 
     said = "g-xTB is following the drag: 15 step(s), 973 ms each."
     state["gfn_last_status"] = said
@@ -900,14 +901,50 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
     part.submit_cmd_sync.value = "gfnplay:7:received 15 frames"
     from_page = part.mol_status.value
 
-    assert from_page != from_kernel, "the page's report never arrived"
     for name, html_value in (("kernel", from_kernel), ("page", from_page)):
-        assert html_value.count("<br>") == 1, f"{name}: not two rows"
+        assert html_value.count("<br>") == 0, f"{name}: more than one row"
         assert "delfin-busy" in html_value, f"{name}: no spinner"
-    # Both rows are there in both, so only the numbers move.
-    for html_value in (from_kernel, from_page):
-        assert "is following the drag" in html_value
-        assert "Trajectory:" in html_value
+        assert "is following the drag" in html_value, name
+    # The page's count is not a row. It said the playback was working, several
+    # times a second, under a viewer that moved every time it appeared.
+    assert "received 15 frames" not in from_page
+    assert from_page == from_kernel, (
+        "the page's report must not change what the line looks like at all")
+
+    # A fault does get said -- that is the case the row was added for -- and it
+    # goes on the end of the line rather than under it.
+    part.submit_cmd_sync.value = "gfnplay:8:setPositions did not draw"
+    faulted = part.mol_status.value
+    assert "setPositions did not draw" in faulted
+    assert faulted.count("<br>") == 0, "still one row"
+
+
+def test_the_status_line_keeps_its_height_so_the_picture_does_not_move(
+        bare_editor):
+    """The line stands above the viewer, so its height is the picture's place.
+
+    Messages are not the same length -- one row while the structure follows the
+    hand, two when the optimisation reports an energy, a solvent and what it
+    held. Grown to fit, every one of those moves everything below it.
+
+    Measured in chromium at the panel's width of 620 px, with the box fixed::
+
+        follow step        41 px
+        run finished       41 px
+        and with charge    41 px
+        a long refusal     41 px   (scrolls inside, nothing cut)
+
+        movement between any two:  0 px
+    """
+    part, _state = bare_editor
+    for status in (part.mol_status, part.mol_status_fs):
+        assert status.layout.height, 'a line that grows moves the picture'
+        assert status.layout.height == status.layout.min_height
+        assert status.layout.overflow == 'auto', (
+            'a message longer than the box has to be reachable, not cut')
+        # overflow_y is not a trait of this Layout; written that way it would
+        # be dropped without failing and the box would simply not scroll.
+        assert 'overflow_y' not in status.layout.trait_names()
 
 
 def test_letting_go_of_an_atom_does_one_thing_or_the_other_and_says_which(
