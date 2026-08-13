@@ -3755,6 +3755,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }, {passive: false});
 
         ov.addEventListener('mousedown', function(e) {
+            // Which editor the hand is in. A key pressed afterwards belongs to
+            // this one: with two editors on the page, Ctrl-Z was taking the
+            // first entry of the state map and undoing a drag in the other tab.
+            state.lastUsed = (window.performance && window.performance.now)
+                ? window.performance.now() : (+new Date());
             if (state.mode === 'off') return;
             var rect = ov.getBoundingClientRect();
             var x = e.clientX - rect.left, y = e.clientY - rect.top;
@@ -4394,6 +4399,21 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 if (s.mode === 'select') setOverlayInteractive(k);
             });
         }
+        function scopesByUse() {
+            // The editor the user is working in first: the one whose viewer is
+            // on screen and was touched most recently. Taking whichever came
+            // first out of the state map meant a key pressed in the ORCA
+            // Builder acted on the Submit tab -- its atom snapped back and the
+            // reverted coordinates were written into its box.
+            var states = window._submitManipStateByScope || {};
+            return Object.keys(states).sort(function(a, b) {
+                var sa = states[a] || {}, sb = states[b] || {};
+                var va = (sa.viewerEl && sa.viewerEl.offsetParent) ? 1 : 0;
+                var vb = (sb.viewerEl && sb.viewerEl.offsetParent) ? 1 : 0;
+                if (va !== vb) return vb - va;
+                return (sb.lastUsed || 0) - (sa.lastUsed || 0);
+            });
+        }
         on(window, 'keydown', function(e) {
             if (e.key === 'Shift') { propagateShift(true); }
             var key = e.key || '';
@@ -4403,7 +4423,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 // silently moved atoms instead.
                 if (typingInAField()) return;
                 var states = window._submitManipStateByScope || {};
-                var keys = Object.keys(states);
+                var keys = scopesByUse();
                 for (var i = 0; i < keys.length; i++) {
                     var s = states[keys[i]];
                     if (s && (s.mode === 'select' || s.mode === 'manipulate') && s.undo.length) {
@@ -4416,7 +4436,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (key === 'Delete' || key === 'Backspace') {
                 if (typingInAField()) return;
                 var scopes = window._submitManipStateByScope || {};
-                var names = Object.keys(scopes);
+                var names = scopesByUse();
                 for (var s = 0; s < names.length; s++) {
                     var scope = scopes[names[s]];
                     if (!scope || (scope.mode !== 'select'

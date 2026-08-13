@@ -20,8 +20,11 @@ a frame, and leaves the model -- and with it the bonds -- untouched.
 
 from __future__ import annotations
 
+import base64
 import html
+import importlib.resources
 import json
+import os
 import shutil
 import threading
 import time
@@ -292,6 +295,9 @@ def show_atom_numbers_js(var='viewer', on=True, scale=None):
 
 
 
+from delfin.cli_manta import _CHAMPION_FLAGS as _MANTA_CHAMPION_FLAGS
+_MANTA_OPT_TOPN = 10
+_MANTA_OPT_WORKERS = 4
 _MANTA_GIF_DATA_URI_CACHE = None
 
 def _manta_gif_data_uri():
@@ -1382,6 +1388,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    if(play.follow&&play.gap&&n<=3) return play.gap;\n'
             '    return STEP_MS;\n'
             '  }\n'
+            '  function inScope(selector){\n'
+            '    /* Every element carrying this editor\'s scope, not the first.\n'
+            '       Fullscreen adds one, and the 2D drawing frame carries the\n'
+            '       scope too and sits in the other column holding none of\n'
+            '       these parts -- so taking the first found the drawing frame\n'
+            '       and the report channel went nowhere at all. */\n'
+            '    var roots=document.querySelectorAll("."+scope);\n'
+            '    for(var i=0;i<roots.length;i++){\n'
+            '      var hit=roots[i].querySelector(selector);\n'
+            '      if(hit) return hit;\n'
+            '    }\n'
+            '    return null;\n'
+            '  }\n'
             '  function read(arrivedAt){\n'
             '    /* Fullscreen moves the viewer into an overlay that carries\n'
             '       the same scope class, and the frame field is not one of the\n'
@@ -1499,8 +1518,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '       already has, so a playback that does not appear says why by\n'
             '       itself instead of being read out of a console. */\n'
             '    try{\n'
-            '      var root=document.querySelector("."+scope);\n'
-            '      var wrap=root&&root.querySelector(".submit-cmd-sync");\n'
+            '      var wrap=inScope(".submit-cmd-sync");\n'
             '      var input=wrap&&wrap.querySelector("input, textarea");\n'
             '      if(!input) return;\n'
             '      play.serial=(play.serial||0)+1;\n'
@@ -1559,7 +1577,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '  function followIsOn(){\n'
             '    /* Relax, read off the page rather than asked of the kernel --\n'
             '       the same reason as the switch below. */\n'
-            '    var holder=document.querySelector(".submit-gfn-follow");\n'
+            '    var holder=inScope(".submit-gfn-follow")'
+            '||(document.querySelector("."+scope+".submit-gfn-follow"));\n'
             '    if(!holder) return false;\n'
             '    var btn=(holder.tagName==="BUTTON")?holder'
             ':holder.querySelector("button");\n'
@@ -1570,7 +1589,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    /* ipywidgets marks a pressed toggle with mod-active.  Reading\n'
             '       it here is instant; asking the kernel costs a round trip,\n'
             '       and the picture ran on for the length of it. */\n'
-            '    var holder=document.querySelector(".submit-optimize-switch");\n'
+            '    var holder=inScope(".submit-optimize-switch")'
+            '||(document.querySelector("."+scope+".submit-optimize-switch"));\n'
             '    if(!holder) return true;\n'
             '    var btn=(holder.tagName==="BUTTON")?holder'
             ':holder.querySelector("button");\n'

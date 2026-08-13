@@ -272,10 +272,7 @@ def _smiles_to_architector_input(smiles):
 # dashboard was not even byte-deterministic) + METALLOID_MD_LEN/JOINT_DECLASH/
 # DECLASH_METALLOID_LIGAND/SP3C_TET_SEAT/METALLOID_MD_CLAMP(#17)/D8_SQ_ADD(#19)/
 # CN6_OH_ADD(#20)/AROM_SEAT(#21).  Now the dashboard and CLI can never diverge.
-from delfin.cli_manta import _CHAMPION_FLAGS as _MANTA_CHAMPION_FLAGS
 # Top-N to GFN2-optimize + parallel worker count (laptop-bounded; tune here).
-_MANTA_OPT_TOPN = 10
-_MANTA_OPT_WORKERS = 4
 
 
 
