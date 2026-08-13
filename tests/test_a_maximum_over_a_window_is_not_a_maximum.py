@@ -51,7 +51,18 @@ def book() -> str:
         from delfin.agent.benchmark_fixtures import ensure_office_fixtures
         # The root is passed, not defaulted: ensure_office_fixtures falls
         # back to os.getcwd(), which is the same trap as the path above.
-        ensure_office_fixtures(BOOK.parents[2])
+        # It appends tests/fixtures/office_workspace itself, so the root is
+        # the REPOSITORY, not tests/ — parents[2] looked for
+        # tests/tests/fixtures/office_workspace, found nothing, and said so
+        # in a return value this threw away. The workbooks are gitignored,
+        # so a checkout that had not run a benchmark (CI, and any fresh
+        # clone) failed all eleven of these with "file not found" pointing
+        # at the workbook instead of at the reason.
+        _written, reason = ensure_office_fixtures(BOOK.parents[3])
+        if reason or not BOOK.exists():
+            pytest.skip(
+                "the .xlsx fixtures could not be built, so these tests "
+                f"would measure that and not the guard: {reason or 'unknown'}")
     return str(BOOK)
 
 
