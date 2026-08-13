@@ -1972,6 +1972,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: two fixed distances and an angle fighting each other, not converged in
     #: any round -- and a relaxation that will not end is a process per round
     #: for as long as the switch is down, and a structure that visibly jitters.
+    #: How many xtb runs one press of Optimise may chain before it stops and
+    #: says so.
+    #:
+    #: A run is one xtb ``--opt`` and xtb's optimiser has a cycle limit of its
+    #: own: at the limit it hands back the geometry it reached and reports that
+    #: it did not converge.  That was taken as the end, so the switch went up
+    #: over a structure that was better than it had been and not at a minimum,
+    #: and the user pressed again -- which worked, because pressing again is a
+    #: new process from that geometry with a fresh cycle budget and a fresh
+    #: optimiser history.  Measured on a pulled-about propane under GFN-FF at
+    #: three cycles a run: three runs to converge, the largest shift falling
+    #: 0.253, 0.066, 0.002 A.  The pressing is done here now.
+    _OPTIMISE_ROUNDS = 12
+    #: A structure that has stopped improving is finished as far as this can
+    #: take it, whatever xtb says about convergence.  Same figure as a settle:
+    #: below this, another round is another process for nothing.
+    _OPTIMISE_STILL = 0.005
+
     _GFN_SETTLE_ROUNDS = 12
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
@@ -2713,11 +2731,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Which switch is running, so a restart presses the same one.
         state['optimize_every_frame'] = bool(every_frame)
         again = bool(state.pop('gfn_restarting', False))
-        _set_mol_status(
-            (f'Moved while it ran; {label} starts again from the structure '
-             'you made...' if again else
-             f'Optimising {count} frame(s) with {label}...'), spinner=True,
-        )
+        # A round of the same press, rather than a press.  It keeps the undo
+        # point and the round count of the press it belongs to, and it does not
+        # announce itself: the line already says which round is running.
+        carrying_on = bool(state.pop('optimize_carrying_on', False))
+        if not carrying_on:
+            state['optimize_rounds'] = 0
+            _set_mol_status(
+                (f'Moved while it ran; {label} starts again from the structure '
+                 'you made...' if again else
+                 f'Optimising {count} frame(s) with {label}...'), spinner=True,
+            )
         if gfn:
             # One call, not two: run_js clears its output before displaying,
             # so a bootstrap followed immediately by a watcher is a bootstrap
@@ -2757,8 +2781,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         # Where the optimisation started from, as one step: pressing Undo
         # after it comes back should return the geometry that was handed to
-        # it, not one of the frames along the way.
-        _remember('an optimisation')
+        # it, not one of the frames along the way.  A round that carries the
+        # same press on does not take a second one: Undo after it should reach
+        # the geometry the user pressed on, not the round before last.
+        if not carrying_on:
+            _remember('an optimisation')
 
         token = object()
         state['optimize_run'] = token
@@ -2860,6 +2887,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         state['gfn_energy'] = float(outcome['energy'])
                         state['gfn_energy_unit'] = outcome.get('energy_unit')
                     if position == 0:
+                        # Whether this run finished the job, and how far it got
+                        # if it did not.  An engine that does not report either
+                        # counts as finished: a run that cannot say it is
+                        # unconverged must not be run again for ever.
+                        state['optimize_converged'] = bool(
+                            outcome.get('converged', True))
+                        try:
+                            state['optimize_moved'] = _gfn.largest_shift(
+                                xyz, outcome['xyz'])
+                        except Exception:
+                            state['optimize_moved'] = 0.0
                         state['gfn_held'] = outcome.get('held')
                         if outcome.get('multiplicity'):
                             # What the scan settled on, so the live relaxation
@@ -2909,14 +2947,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the coordinates nor the switch are touched: the run that
                     # replaces it is already on its way.
                     return
+                # A run is one xtb --opt, and xtb's optimiser has a cycle limit
+                # of its own: when it reaches it, it hands back the geometry it
+                # got to and reports that it did not converge.  That was taken
+                # as the end -- the switch went up over a structure that was
+                # better than it had been and not at a minimum, and the user
+                # pressed again.  Pressing again is a NEW process from that
+                # geometry, with a fresh cycle budget and a fresh optimiser
+                # history, which is the whole reason it got further.
+                #
+                # So the pressing is done here.  It ends the three ways Settle
+                # has always ended -- converged, no longer moving, or out of
+                # rounds -- because a structure whose held values cannot all be
+                # met at once never converges, and a run that will not end is a
+                # process per round for as long as the switch is down.
+                rounds = int(state.get('optimize_rounds', 0)) + 1
+                carry_on = (
+                    not state.get('optimize_converged', True)
+                    and not failures
+                    and rounds < _OPTIMISE_ROUNDS
+                    and float(state.get('optimize_moved') or 0.0) > _OPTIMISE_STILL
+                    and (submit_optimize_all_btn.value if every_frame
+                         else submit_optimize_btn.value)
+                )
+                state['optimize_rounds'] = rounds if carry_on else 0
                 # Converged, failed or stopped -- the switch goes back up by
                 # itself, so it never claims to be working when it is not.
                 if state.get('optimize_run') is token:
                     state['optimize_run'] = None
-                for switch in (submit_optimize_btn, submit_optimize_all_btn):
-                    if switch.value:
-                        switch.value = False
-                    switch.disabled = False
+                if not carry_on:
+                    for switch in (submit_optimize_btn, submit_optimize_all_btn):
+                        if switch.value:
+                            switch.value = False
+                        switch.disabled = False
                 state['pre_optimize_frames'] = {
                     'isomers': frames,
                     'coords': coords_widget.value,
@@ -3002,6 +3065,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # playback did wrong still gets said; that it worked does not
                 # need a row of its own.
                 state['gfn_last_status'] = said
+                if carry_on:
+                    # Where it has got to, rather than a result: the same press
+                    # is still running and the coordinates above are what the
+                    # next round starts from.
+                    said = (f'{label} is still going: round {rounds}, '
+                            f'{state.get("optimize_moved", 0.0):.3f} A moved.')
+                    state['gfn_last_status'] = said
+                    _set_mol_status(*_gfn_status_lines(said), spinner=True)
+                    state['optimize_carrying_on'] = True
+                    schedule_ui_update(
+                        lambda: on_submit_optimize(None, every_frame=every_frame))
+                    return
                 _set_mol_status(*_gfn_status_lines(said), *failures[:2])
 
             schedule_ui_update(_apply)

@@ -1052,6 +1052,76 @@ def test_the_restart_is_gated_where_every_path_goes_through_it():
     assert '_stand_down_after_interrupt()' in guard
 
 
+def test_one_press_keeps_running_until_there_is_nothing_left_to_do():
+    """A press was one xtb run, and one run is often not a minimum.
+
+    xtb's optimiser has a cycle limit of its own. At the limit it hands back
+    the geometry it reached and reports that it did not converge -- and that
+    was taken as the end: the switch went up over a structure better than it
+    had been and not at a minimum, and the user pressed again. Pressing again
+    worked because it is a NEW process from that geometry, with a fresh cycle
+    budget and a fresh optimiser history. Nothing was stuck; the run had run
+    out of room.
+
+    Measured on a pulled-about propane under GFN-FF at three cycles a run,
+    each row one press::
+
+        press  converged  C-C      energy / Eh   largest shift
+        start  -          1.735
+        1      False      1.509    -1.514088     0.253 A
+        2      False      1.523    -1.515532     0.066 A
+        3      True       1.523    -1.515536     0.002 A
+
+    The pressing is done for the user now, and it ends the three ways a settle
+    has always ended: converged, no longer moving, or out of rounds. The last
+    two matter -- held values that cannot all be met at once never converge,
+    and a run that will not end is a process per round for as long as the
+    switch is down.
+    """
+    body = EDITOR_SOURCE.split(
+        'def on_submit_optimize(change=None, every_frame=False)')[1]
+    body = body.split('\n    def ')[0]
+    apply_body = body.split('def _apply():')[1]
+
+    assert 'carry_on = (' in apply_body
+    for ending in ("not state.get('optimize_converged', True)",
+                   '< _OPTIMISE_ROUNDS',
+                   '> _OPTIMISE_STILL'):
+        assert ending in apply_body, f'the run has to end on {ending}'
+    assert 'if not carry_on:' in apply_body, (
+        'the switch stays down while the same press is still working')
+    assert "state['optimize_carrying_on'] = True" in apply_body
+
+    # And an engine that cannot say whether it converged counts as finished,
+    # or it would be run again for ever.
+    assert "outcome.get('converged', True)" in body
+
+
+def test_carrying_a_press_on_does_not_take_a_second_undo_point(bare_editor):
+    """Undo after it should reach the geometry the user pressed on.
+
+    Each round is another call into the same handler, so without this the
+    undo history filled with one entry per round and Undo walked back through
+    the optimisation a step at a time instead of leaving it.
+    """
+    part, state = bare_editor
+    part.coords_widget.value = _WATER
+    state['history'] = []
+
+    part.submit_optimize_btn.unobserve_all()
+    state['optimize_carrying_on'] = True
+    part.submit_optimize_btn.value = True
+    part.on_submit_optimize(None)
+    carried = len(state.get('history') or [])
+
+    state['optimize_carrying_on'] = False
+    part.on_submit_optimize(None)
+    pressed = len(state.get('history') or [])
+
+    assert carried == 0, 'a round in the middle of a press is not a new start'
+    assert pressed > carried, 'and a press of its own still is'
+
+
 def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
     """Both lines carry the same text, so both visible prints it twice."""
     from delfin.dashboard import tab_submit
