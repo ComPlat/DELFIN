@@ -65,6 +65,16 @@ _WRITE_SUBJECTS = (
     "Sortiere die Liste nach Datum",
     "Storniere die doppelte Buchung",
     "Beschrifte die Spalten neu",
+    # Found by running the SHIPPED matcher over a corpus written from the
+    # intent rather than from the table. Each of these was read as a task
+    # that wants no write, so a session that had merely opened the file
+    # reported it verified.
+    "Setze das Datum auf den 31.07.2026",
+    "Hinterlege die Bankverbindung im Stammblatt",
+    "Streiche die Position 7 aus dem Angebot",
+    # A rename is a write, and only the joined form was ever matched.
+    "Benenne die Datei um",
+    "Benenne das Tabellenblatt in Q3 um",
 )
 
 
@@ -91,6 +101,11 @@ _NOT_WRITE_SUBJECTS = (
     "Das passiert an manchen Tagen",
     "Ein Beispiel für eine Tabelle",
     "Das Ergebnis liegt an der Konfiguration",
+    # "setzen" is the finite half of several verbs and only one of them
+    # writes. The prefix at the end of the clause is what tells them apart.
+    "Setze die Recherche fort",
+    "Das ist eine Voraussetzung",
+    "Setze die Auswertung morgen fort",
 )
 
 
@@ -108,6 +123,18 @@ def test_a_task_that_changes_nothing_is_not_read_as_a_write(subject):
     "Sieh dir die Tabelle an",
     "Gleiche die beiden Listen ab",
     "Sieh in Buchungen.csv nach",
+    # Read verbs the tables did not have. A read task that matches no read
+    # verb is not merely unrecognised: the artefact branch then runs on it
+    # and reports it unmet for having produced no document.
+    "Zeig mir die Umsatzliste",
+    "Öffne die Kostenstellenübersicht",
+    "Nenne mir die zehn größten Posten",
+    # A question is a read intent even without a read verb, and it is the
+    # most ordinary way somebody asks for a figure.
+    "Wie hoch ist die Gesamtsumme?",
+    "Wie viele Belege fehlen?",
+    "Was steht in der Spalte D?",
+    "Berichte mir über die Kosten",
 ])
 def test_a_german_compute_task_is_read_as_reading(subject):
     """"Rechne die Summe aus" is answered by reading and arithmetic. Calling
@@ -129,6 +156,12 @@ def _verdict(subject, *, written=(), read=()):
     "Trage die Werte in Buchungen.csv ein",
     "Übertrage die Beträge nach Journal.xlsx",
     "Passe Buchungen.csv an",
+    # The verbs added after measuring: the point is not that the regex
+    # matches, it is that opening the file no longer finishes the task.
+    "Setze das Datum in Buchungen.csv auf den 31.07.2026",
+    "Hinterlege die Bankverbindung in Journal.xlsx",
+    "Streiche die Position 7 in Buchungen.csv",
+    "Benenne Buchungen.csv um",
 ])
 def test_a_read_does_not_finish_a_german_write_task(subject):
     assert _verdict(subject, read=["/w/Buchungen.csv", "/w/Journal.xlsx"]

@@ -185,6 +185,22 @@ def _plain(*stems: str) -> str:
     return r"\b(?:" + "|".join(stems) + rf"){_VERB_TAIL}\b"
 
 
+def _plain_unless(stem: str, *prefixes: str) -> str:
+    """A plain stem that is NOT the finite half of a separable verb.
+
+    "Setze das Datum auf den 31.07." changes a file; "Setze die Recherche
+    fort" is the same finite form of a different verb, and reading it as a
+    write accuses a finished reading task of having written nothing. The
+    prefix is what tells them apart, and in verb-second order it sits at
+    the end of the clause -- so this is :func:`_separable` inverted: match
+    the stem only when none of these prefixes closes the clause after it.
+    """
+    escaped = "|".join(prefixes)
+    return (rf"\b{stem}{_VERB_TAIL}\b"
+            rf"(?![^;:!?\n]{{0,{_PREFIX_WINDOW}}}?\b(?:{escaped})"
+            rf"{_CLAUSE_END})")
+
+
 # The office work a German user asks for. These CHANGE a file, which is
 # what separates them from the reading half below.
 _SEPARABLE_WRITE: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
@@ -209,6 +225,10 @@ _SEPARABLE_WRITE: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("auf", ("teil",), ("teile", "teilst", "teilt", "teil")),
     ("zu", ("ordn",), ("ordne", "ordnest", "ordnet")),
     ("zusammen", ("führ",), ("führe", "führst", "führt")),
+    # A rename IS a write, and only the joined form was ever matched --
+    # "Benenne die Datei um", which is how somebody actually asks for it,
+    # matched nothing at all.
+    ("um", ("benenn",), ("benenne", "benennst", "benennt", "benenn")),
 )
 
 # Verbs that only LOOK at a file. "Rechne die Summe aus" is answered by
@@ -243,22 +263,52 @@ _PLAIN_WRITE = (
     "eintrag", "austrag", "umbuch",
     "buche", "buchen", "gebucht",
     "fülle", "füllen", "gefüllt", "fuelle", "fuellen",
+    # Measured against the shipped matcher, not guessed: "Setze das Datum
+    # auf den 31.07.2026", "Hinterlege die Bankverbindung" and "Streiche
+    # die Position 7" were all read as tasks that want no write, so a
+    # session that had only READ the file reported them verified.
+    "hinterleg", "streich",
+)
+
+# "setzen" needs the inverted-prefix guard: see _plain_unless.
+_PLAIN_WRITE_GUARDED = (
+    _plain_unless("setz", "fort", "voraus", "durch", "aus", "ab", "um"),
 )
 
 _PLAIN_READ = (
     "auswert", "ermittl", "ermittel", "berechn", "errechn", "ausrechn",
     "nachrechn", "abgleich", "gegenrechn", "zusammenfass", "aufliste",
     "kontrollier", "durchseh", "sichte", "zähl", "zaehl",
+    # Same measurement, other direction. A read task that matches no read
+    # verb is not merely unrecognised: the artefact branch runs on it, and
+    # "Öffne den Bericht" was reported unmet for having produced no PDF.
+    # "benennen" and "umbenennen" are writes and the word boundary keeps
+    # them out of "nenn".
+    "zeig", "öffn", "oeffn", "nenn",
+)
+
+# A question is a read intent even when it carries no read verb, and the
+# most ordinary German way to ask for a figure is exactly that: "Wie hoch
+# ist die Gesamtsumme?", "Was steht in Spalte D?". Left out of the verb
+# tables because they are not verbs -- naming them separately keeps
+# _PLAIN_READ honest about what it holds.
+GERMAN_ASKING_SOURCE = (
+    r"\bwie\s+hoch\b|\bwie\s+viele?\b|\bwieviel\w*\b|\bwas\s+steht\b"
+    r"|\bwas\s+ergibt\b|\bwelche\s+(?:summe|beträge|betraege|posten|"
+    r"zeilen|werte)\b|\bberichte?\s+mir\b"
 )
 
 #: Everything a German office task can say that means "change the file".
 GERMAN_WRITE_VERB_SOURCE = "|".join(
-    [_separable(*entry) for entry in _SEPARABLE_WRITE] + [_plain(*_PLAIN_WRITE)]
+    [_separable(*entry) for entry in _SEPARABLE_WRITE]
+    + [_plain(*_PLAIN_WRITE)] + list(_PLAIN_WRITE_GUARDED)
 )
 
-#: Everything that means "look at the file and tell me".
+#: Everything that means "look at the file and tell me" — the verbs, and
+#: the question forms that say the same thing without one.
 GERMAN_READ_VERB_SOURCE = "|".join(
-    [_separable(*entry) for entry in _SEPARABLE_READ] + [_plain(*_PLAIN_READ)]
+    [_separable(*entry) for entry in _SEPARABLE_READ]
+    + [_plain(*_PLAIN_READ), GERMAN_ASKING_SOURCE]
 )
 
 GERMAN_WRITE_VERB_RE = re.compile("(?i)" + GERMAN_WRITE_VERB_SOURCE)
