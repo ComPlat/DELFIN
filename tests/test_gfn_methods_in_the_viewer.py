@@ -910,6 +910,95 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
         assert "Trajectory:" in html_value
 
 
+def test_letting_go_of_an_atom_does_one_thing_or_the_other_and_says_which(
+        bare_editor):
+    """Auto: down to a minimum on release, or stop where the hand left it.
+
+    It used to be neither, reliably. A drag that interrupted a running Optimise
+    brought that run back and the structure went down to a minimum; the same
+    drag with no run behind it got Settle's short tidy and nothing else. One
+    gesture, two outcomes, decided by a switch on the other side of the
+    toolbar -- which from the user's seat is it finishing the structure only
+    sometimes.
+
+    Off is the other mode, asked for by name: it stops, you move what else you
+    want to move, and Optimize takes it down when the structure is what you
+    meant.
+    """
+    part, state = bare_editor
+    assert part.submit_auto_btn.value is True, 'the mode that finishes is first'
+    assert part.submit_auto_btn in part.submit_manip_toolbar.children
+
+    # A run was going when the atom was picked up. On, it comes back.
+    part.submit_optimize_btn.unobserve_all()
+    part.submit_optimize_btn.value = True
+    state['optimize_interrupted'] = 'token'
+    part._arm_gfn_restart()
+    assert state.get('gfn_restart_armed') is True
+    assert part.submit_optimize_btn.value is True, 'it is still running'
+
+
+def test_with_auto_off_nothing_carries_on_and_the_switch_says_so(bare_editor):
+    """Off, the run does not come back -- and the switch goes up with it.
+
+    Left lit over a structure nobody is minimising, the switch says a
+    calculation is running that is not.
+    """
+    part, state = bare_editor
+    part.submit_auto_btn.value = False
+    part.submit_optimize_btn.unobserve_all()
+    part.submit_optimize_btn.value = True
+    state['optimize_interrupted'] = 'token'
+
+    part._arm_gfn_restart()
+
+    assert state.get('gfn_restart_armed') is None, 'nothing was armed'
+    assert state.get('optimize_interrupted') is None, 'and nothing is pending'
+    assert part.submit_optimize_btn.value is False, 'the switch must not lie'
+    assert 'press Optimize' in part.mol_status.value, (
+        'the way back has to be said, or the structure just stops')
+
+
+def test_a_drag_with_no_run_behind_it_still_reaches_a_minimum(bare_editor):
+    """The half that was missing: nothing to resume is not nothing to do.
+
+    _minimise_now is what the wait lands on. It presses the switch rather than
+    calling the handler, because the switch has to be seen to be down for as
+    long as the run lasts -- it is what the user presses to stop it again.
+    """
+    part, state = bare_editor
+    part.submit_optimize_btn.unobserve_all()
+    assert part.submit_optimize_btn.value is False
+
+    part._minimise_now()
+    assert part.submit_optimize_btn.value is True, 'Auto is on; one should start'
+
+
+def test_with_auto_off_a_drag_starts_nothing_at_all(bare_editor):
+    part, _state = bare_editor
+    part.submit_auto_btn.value = False
+    part.submit_optimize_btn.unobserve_all()
+
+    part._minimise_now()
+
+    assert part.submit_optimize_btn.value is False, 'Auto is off; none should'
+
+
+def test_the_restart_is_gated_where_every_path_goes_through_it():
+    """Three things ask for the restart, not one.
+
+    A release asks for it; so does the arrival of the coordinates a drag
+    produced, which happens first; so does adding or removing an atom. Gating
+    only the release would have left the switch working for a drag that moved
+    nothing and not for one that did.
+    """
+    source = EDITOR_SOURCE
+    assert source.count('_arm_gfn_restart()') >= 3
+    guard = source.split('def _arm_gfn_restart')[1].split('\n    def ')[0]
+    assert 'submit_auto_btn.value' in guard
+    assert '_stand_down_after_interrupt()' in guard
+
+
 def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
     """Both lines carry the same text, so both visible prints it twice."""
     from delfin.dashboard import tab_submit
@@ -1341,7 +1430,11 @@ def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
     source = SUBMIT_SOURCE
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfngrab'" in handler and "_interrupt_gfn()" in handler
-    assert "verb == 'gfnfree'" in handler and "_arm_gfn_restart()" in handler
+    # A release goes through _after_release, which is where the one question
+    # about what a release means is asked.
+    assert "verb == 'gfnfree'" in handler and "_after_release()" in handler
+    release = EDITOR_SOURCE.split("def _after_release")[1].split("\n    def ")[0]
+    assert "_arm_gfn_restart()" in release
 
     # Set, Hold and a bond edit arrive as coordinates, and count the same
     sync = source.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
@@ -2005,8 +2098,8 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
     assert "on_frames=_push" in settle
     assert "coords_widget.value = (" in settle, "the result has to land"
 
-    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
-    assert "_arm_gfn_settle()" in handler, "a release is what triggers it"
+    release = EDITOR_SOURCE.split("def _after_release")[1].split("\n    def ")[0]
+    assert "_arm_gfn_settle()" in release, "a release is what triggers it"
 
     toggle = source.split("def on_submit_settle_toggle")[1].split("\n    def ")[0]
     # Settle belongs to whichever engine computes on the server: it re-runs
@@ -2579,12 +2672,14 @@ def test_dragging_moves_along_the_surface_and_optimise_goes_down_it(editor):
     from delfin.dashboard import tab_submit
 
     source = SUBMIT_SOURCE
-    handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
-    free = handler.split("verb == 'gfnfree'")[1].split("return")[0]
-    assert "_arm_gfn_takeup()" not in free, (
+    release = EDITOR_SOURCE.split("def _after_release")[1].split("\n    def ")[0]
+    assert "_arm_gfn_takeup()" not in release, (
         "letting go must not walk the structure downhill unasked"
     )
-    assert "_arm_gfn_settle()" in free, "Settle is how that is asked for"
+    assert "_arm_gfn_settle()" in release, "Settle is how that is asked for"
+    # And with Auto on it is asked for: going to a minimum on release is a
+    # mode with a switch on it, not something that happens unannounced.
+    assert "submit_auto_btn.value" in release
 
     toggle = source.split("def on_submit_relax_toggle")[1].split("\n    def ")[0]
     gfn_branch = toggle.split("if _server_method():")[1]
@@ -2650,9 +2745,12 @@ def test_the_bonding_is_read_before_a_hand_is_laid_on_the_molecule(editor):
 def test_the_whole_cycle_end_to_end(editor):
     """Drag, let go, drag again, let go, press Optimise once.
 
-    The structure stays where each drag left it, the bond survives being
-    pulled well past where GFN-FF would otherwise stop seeing it, and one
-    press takes it to the minimum.
+    This is the mode Auto is off for: the structure stays where each drag left
+    it, the bond survives being pulled well past where GFN-FF would otherwise
+    stop seeing it, and one press takes it to the minimum. Placing an atom and
+    having it pulled off the place you placed it is what that mode exists to
+    avoid; with Auto on it is the other way round, and that is the point of
+    there being a switch.
     """
     import time as _time
 
@@ -2675,6 +2773,7 @@ def test_the_whole_cycle_end_to_end(editor):
     refs["coords_widget"].value = propane
     state["current_xyz_for_copy"] = {"content": propane}
     refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_auto_btn"].value = False        # the mode under test
     refs["submit_relax_btn"].value = True
     assert refs["submit_relax_btn"].value is True, "xtb was not found"
 
@@ -2708,6 +2807,63 @@ def test_the_whole_cycle_end_to_end(editor):
     assert gfn.largest_shift(minimised, again["xyz"]) < 0.02, (
         "and there must be nothing left for a second press"
     )
+
+
+def test_with_auto_on_letting_go_reaches_the_minimum_without_being_asked(editor):
+    """The other mode, driven the same way and end to end.
+
+    The same drag, and no press: letting go is the ask. It used to depend on
+    whether an optimisation happened to be running when the atom was picked up
+    -- one had something to come back to and the other did not, so the same
+    gesture finished the structure or left it strained.
+    """
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
+    )
+
+    def carbon_carbon(xyz):
+        rows = [line.split() for line in gfn.atom_lines(xyz)]
+        a = [float(v) for v in rows[0][1:4]]
+        b = [float(v) for v in rows[1][1:4]]
+        return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+    assert refs["submit_relax_btn"].value is True, "xtb was not found"
+    refs["submit_auto_btn"].value = True       # nothing was running: the mode
+    assert state.get("optimize_interrupted") is None
+
+    refs["submit_cmd_sync"].value = "gfngrab:0:"
+    rows = [line.split()
+            for line in gfn.atom_lines(state["current_xyz_for_copy"]["content"])]
+    rows[0][1] = f"{float(rows[0][1]) + 0.7:.6f}"
+    body = "\n".join(" ".join(r) for r in rows)
+    refs["submit_manip_sync"].value = (
+        f"{len(rows)}\nDELFIN drag-follow held=0\n{body}\n")
+    _time.sleep(0.5)
+    refs["submit_manip_sync"].value = f"{len(rows)}\nDELFIN drag-end\n{body}\n"
+    refs["submit_cmd_sync"].value = "gfnfree:0:"
+
+    # Letting go is the whole instruction. Nothing is pressed below this line.
+    deadline = _time.time() + 150
+    while _time.time() < deadline and not refs["submit_optimize_btn"].value:
+        _time.sleep(0.05)
+    assert refs["submit_optimize_btn"].value, "letting go started nothing"
+    while _time.time() < deadline and refs["submit_optimize_btn"].value:
+        _time.sleep(0.05)
+
+    reached = carbon_carbon(state["current_xyz_for_copy"]["content"])
+    assert reached < 1.6, f"it did not reach a minimum on its own: {reached:.3f} A"
     refs["submit_relax_btn"].value = False
 
 

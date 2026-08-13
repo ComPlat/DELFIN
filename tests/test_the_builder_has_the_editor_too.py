@@ -1204,16 +1204,26 @@ def test_every_frame_has_its_own_editor(builder):
 
 
 def test_how_the_editor_feels_is_not_per_structure():
-    """Strength and Mouse stay where the user put them."""
+    """Strength, Mouse and Auto stay where the user put them.
+
+    Auto is how someone is working -- placing atoms one at a time, or pulling
+    something into shape and letting it fall to a minimum each time. Loading
+    the next structure is not a reason to change that under them, and having
+    it differ from block to block would make the same gesture do two things in
+    one session, which is what the switch was added to end.
+    """
     source = open(structure_editor.__file__, encoding='utf-8').read()
     controls = source.split('def _structure_controls():')[1].split('\n    def ')[0]
+    resets = source.split(
+        'def _controls_a_new_structure_resets():')[1].split('\n    def ')[0]
 
     for name in ('submit_relax_btn', 'submit_settle_btn', 'submit_ff_dd',
                  'submit_gfn_charge', 'submit_gfn_mult', 'submit_gfn_solvent'):
         assert name in controls, name
     for name in ('submit_strength_slider', 'submit_sens_slider',
-                 'submit_labels_btn', 'submit_label_size'):
+                 'submit_labels_btn', 'submit_label_size', 'submit_auto_btn'):
         assert name not in controls, name
+        assert name not in resets, name
 
 
 def test_a_wrong_number_is_never_written_quietly(builder):
