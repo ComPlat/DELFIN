@@ -2801,11 +2801,14 @@ def run_subagent(
 def _jobs_holding_worktree(path) -> list[dict]:
     """Background jobs still running inside a sub-agent's isolated tree.
 
-    Best-effort: a registry that cannot be read reports nothing, which
-    keeps the teardown behaving exactly as it did before this check."""
+    One implementation, in :mod:`delfin.agent.worktree`, so the sub-agent
+    teardown, the ``exit_worktree`` tool and the post-merge cleanup cannot
+    drift apart on which of them checks. Best-effort: a registry that
+    cannot be read reports nothing, which keeps the teardown behaving
+    exactly as it did before this check."""
     try:
-        from .bash_jobs import running_jobs_for_workspace
-        return running_jobs_for_workspace(path) or []
+        from .worktree import jobs_holding_worktree
+        return jobs_holding_worktree(path) or []
     except Exception:
         return []
 

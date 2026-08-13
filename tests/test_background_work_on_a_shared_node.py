@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import pathlib
 import tempfile
+import time
 
 import pytest
 
@@ -84,14 +85,31 @@ def test_the_registry_refuses_rather_than_queues(monkeypatch):
         "the refusal must name the action that clears it")
 
 
-def test_counting_uses_poll_not_a_stored_flag():
+def test_counting_uses_live_pids_not_a_stored_flag(tmp_path, monkeypatch):
     """A process that died without anyone asking would otherwise hold a
     slot forever, and a cap that leaks slots stops the agent working for a
-    reason nobody can act on."""
-    source = pathlib.Path(bash_jobs.__file__).read_text(encoding="utf-8")
-    body = source[source.index("def count_running"):]
-    body = body[:body.index("def list_jobs")]
-    assert "poll()" in body
+    reason nobody can act on.
+
+    The check is now a live pid rather than ``poll()`` on an in-memory
+    handle, because the in-memory handle is exactly what a restart loses --
+    see test_the_cap_survives_a_restart_and_a_second_front_end.py.
+    """
+    monkeypatch.setattr(bash_jobs, "_INDEX_PATH", tmp_path / "index.json")
+    bash_jobs._REGISTRY._jobs.clear()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    bash_jobs._persist_job_start(str(ws), {
+        "job_id": "deadjob0", "pid": 999999999, "proc_start_ticks": None,
+        "command": "orca big.inp", "description": "", "cwd": str(ws),
+        "workspace": str(ws), "stdout_path": "", "stderr_path": "",
+        "started_at": time.time(), "timeout_s": 3600,
+        "deadline_at": time.time() + 3600,
+        "cores": 8, "exit_code": None, "finished_at": None,
+        "acknowledged": False,
+    })
+    bash_jobs._note_job_workspace("deadjob0", str(ws))
+    # The record says "not finished"; the process is gone. No slot held.
+    assert bash_jobs.get_registry().count_running() == 0
 
 
 # ---------------------------------------------------------------------------

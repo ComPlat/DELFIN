@@ -36,6 +36,20 @@ unrecoverable once init reaped the orphan). ``drain_finished_events()``
 turns the registry into a cheap, restart-safe completion-event source:
 the watchdog marks the exit in the file at the moment it happens, and
 each finished job is reported exactly once across drains and restarts.
+Delivery is two-phase — the drain claims, ``confirm_finished_events()``
+acknowledges — so a caller that dies in between gets the event again
+instead of losing it.
+
+Shared-node discipline, which is what most of this module is for: the
+cap counts LIVE PIDS across every persisted registry of this user (not
+an in-process list that a restart resets) and it caps REQUESTED CORES
+parsed from the command, not process count. The wall-clock cap is stored
+as an absolute deadline in the record so it outlives the process that
+armed it, and the 7-day prune skips records whose pid is still alive —
+deleting the record of a running 32-core job is how a calculation
+becomes unkillable. Liveness is the process GROUP, not the wrapper
+shell's pid: ``bash_background("sbatch run.sh")`` exits in two seconds
+and the cluster job it queued runs for twelve hours.
 
 The job's stdout / stderr tempfiles are opened with ``unbuffered=False``
 in line-buffered mode so the agent can read partial progress while a
@@ -57,6 +71,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -144,6 +159,72 @@ def _max_background_jobs() -> int:
         return max(1, min(_MAX_BG_JOBS_CEILING, _available_cpus() // 2))
     except Exception:
         return 1
+
+
+# How a command states the width it wants. ORCA takes ``-np`` / ``PAL``, xtb
+# and CREST take ``-T`` / ``--threads``, sbatch and srun take
+# ``--cpus-per-task``, and the OpenMP/MKL environment variables cover the
+# rest. Bare ``-c`` is deliberately NOT read as ``--cpus-per-task``: it is
+# also ``head -c 100``, and a cap that refuses ordinary commands gets
+# switched off.
+_CORE_FLAG_RE = re.compile(
+    r"(?:"
+    r"(?<![\w-])-np[= ]\s*(?P<np>\d+)"
+    r"|(?<![\w-])-nt[= ]\s*(?P<nt>\d+)"
+    r"|(?<![\w-])(?:-T|--threads)[= ]\s*(?P<threads>\d+)"
+    r"|(?<![\w-])--cpus-per-task[= ]\s*(?P<cpt>\d+)"
+    r"|(?<![\w-])--ntasks[= ]\s*(?P<ntasks>\d+)"
+    r"|(?i:%\s*pal\s+nprocs)\s+(?P<palnprocs>\d+)"
+    r"|(?i:(?<![\w-])pal)\s*(?P<pal>\d+)"
+    r"|(?i:OMP_NUM_THREADS|MKL_NUM_THREADS|NUMEXPR_NUM_THREADS)"
+    r"\s*=\s*(?P<omp>\d+)"
+    r")"
+)
+
+
+def _requested_cores(command: str) -> int:
+    """How many cores this command asks for, read from the command itself.
+
+    The concurrency cap counted PROCESSES. Eight ``orca -np 64`` therefore
+    passed a cap of eight — 512 cores of somebody else's queue, from a
+    module whose whole premise is that this is other people's CPU. A cap
+    that cannot see width is not a cap on a shared node.
+
+    Unstated width means one core; that is what a command without a
+    parallel flag actually takes, and guessing higher would refuse ordinary
+    work. Multiple flags in one command line take the largest — a pipeline
+    runs its stages one after another, so the widest stage is the peak.
+    """
+    best = 1
+    for match in _CORE_FLAG_RE.finditer(str(command or "")):
+        for value in match.groupdict().values():
+            if not value:
+                continue
+            try:
+                n = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 < n <= 4096:
+                best = max(best, n)
+    return best
+
+
+def _core_budget() -> int:
+    """Cores background commands may hold at once (an explicit setting wins)."""
+    try:
+        from delfin.user_settings import load_settings
+        raw = ((load_settings() or {}).get("agent") or {}).get(
+            "max_background_cores")
+        if raw is not None:
+            return max(1, int(raw))
+    except Exception:
+        pass
+    try:
+        return max(1, _available_cpus())
+    except Exception:
+        return 1
+
+
 _OUTPUT_HEAD_DEFAULT = 60            # lines kept from head
 _OUTPUT_TAIL_DEFAULT = 200           # lines kept from tail
 _KILL_GRACE_S = 3.0                  # SIGTERM → SIGKILL gap
@@ -167,6 +248,38 @@ _LOCK_SUFFIX = ".lock"
 # How long a cycle waits for the lock before proceeding without it. A
 # bookkeeping file must never become a way to stop the agent.
 _LOCK_TIMEOUT_S = 5.0
+
+# How long a drained-but-unconfirmed completion event stays claimed. The
+# drain used to write "acknowledged" BEFORE its caller had done anything
+# with the list, so a turn that died between the drain and the prompt took
+# the only notice of a multi-hour run with it -- silently, for ever. A claim
+# that is never confirmed expires and the event is delivered again.
+_EVENT_CLAIM_GRACE_S = 300.0
+
+# Cycles that ran WITHOUT the lock because the wait ran out. Proceeding is
+# the right call -- see cross_process_lock -- but proceeding quietly is not:
+# the deadline expires under exactly the contention that makes a lost update
+# likely, and a lost update here is a live job nothing can address any more.
+# Bounded, because a wedged holder would otherwise grow this without limit.
+_LOCK_TIMEOUTS: list[str] = []
+_LOCK_TIMEOUT_CAP = 20
+
+
+def _note_lock_timeout(path: Path) -> None:
+    if len(_LOCK_TIMEOUTS) < _LOCK_TIMEOUT_CAP:
+        _LOCK_TIMEOUTS.append(str(path))
+
+
+def take_lock_timeouts() -> list[str]:
+    """The unlocked cycles since the last call, and forget them.
+
+    Read by the engine when it assembles the background-jobs block, so the
+    degradation arrives in the turn beside the events it may have damaged
+    rather than in a log nobody opens.
+    """
+    out = list(_LOCK_TIMEOUTS)
+    _LOCK_TIMEOUTS.clear()
+    return out
 
 
 @dataclass
@@ -195,9 +308,15 @@ class BashJob:
         end = self.finished_at if self.finished_at is not None else time.monotonic()
         return round(end - self.started_at, 3)
 
+    def children_running(self) -> bool:
+        """Does the job's process group outlive its leader?"""
+        if self.poll() is None:
+            return False
+        return _group_children_alive(self.proc.pid, self.proc.pid)
+
     def status_dict(self) -> dict:
         rc = self.poll()
-        return {
+        status = {
             "job_id": self.job_id,
             "running": rc is None,
             "exit_code": rc,
@@ -208,6 +327,13 @@ class BashJob:
             "stdout_path": str(self.stdout_path),
             "stderr_path": str(self.stderr_path),
         }
+        if rc is not None and self.children_running():
+            status["children_running"] = True
+            status["note"] = (
+                "finished (children still running) — the shell exited but "
+                "processes it started are still alive in its process group. "
+                "Do not treat this exit code as the work's result.")
+        return status
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +364,12 @@ def cross_process_lock(path: Path):
     cannot end would turn a bookkeeping file into a way to stop the
     agent, so after the deadline the caller proceeds unlocked — exactly
     as it did before this existed.
+
+    Proceeding unlocked is deliberate; proceeding SILENTLY is not. The
+    deadline runs out under precisely the contention that makes a lost
+    update likely, so the quietest moment would be the one that most
+    needs a word. Every expiry is recorded and delivered to the turn by
+    :func:`take_lock_timeouts`.
     """
     handle = None
     try:
@@ -261,6 +393,7 @@ def cross_process_lock(path: Path):
                 break
             except OSError:
                 if time.monotonic() >= deadline:
+                    _note_lock_timeout(lock_path)
                     handle.close()
                     handle = None
                     break
@@ -359,21 +492,116 @@ def _unlink_job_outputs(rec: dict) -> None:
             pass
 
 
+def _record_deadline(rec: dict) -> float:
+    """Absolute epoch moment this job's wall-clock cap expires.
+
+    The cap used to be enforced ONLY by the watchdog thread inside the
+    process that started the job. The child is deliberately in its own
+    session and survives that process, so after any restart the surviving
+    job had no wall-clock bound at all: ``timeout_s`` was re-read into the
+    re-attached view and never looked at again. An absolute deadline in the
+    record is enforceable by whoever reads it next.
+    """
+    started = float((rec or {}).get("started_at") or 0.0)
+    explicit = (rec or {}).get("deadline_at")
+    if explicit:
+        try:
+            return float(explicit)
+        except (TypeError, ValueError):
+            pass
+    timeout_s = float((rec or {}).get("timeout_s") or _DEFAULT_BG_TIMEOUT_S)
+    return started + min(timeout_s, float(_DEFAULT_BG_TIMEOUT_S))
+
+
+def _record_alive(rec: dict) -> bool:
+    """Is the process behind this record still running?"""
+    try:
+        if (rec or {}).get("finished_at") is not None:
+            return False
+        return _pid_alive(int((rec or {}).get("pid") or 0),
+                          (rec or {}).get("proc_start_ticks"))
+    except Exception:
+        return False
+
+
+def _record_holds_the_node(rec: dict, live_pgids: Optional[set] = None,
+                           now: Optional[float] = None) -> bool:
+    """Is this record's work still occupying the machine?
+
+    Wider than :func:`_record_alive`, which asks only about the direct
+    child — and the direct child is ``/bin/bash -c <command>``, a wrapper
+    that exits the moment its last foreground command returns. A job whose
+    wrapper exited while its process GROUP kept running was reported
+    finished, released its slot in the concurrency cap, and let its
+    worktree be torn down, all while real processes held real cores.
+
+    Bounded by the wall-clock deadline so a recycled pid cannot make an
+    ancient record look busy for ever. ``live_pgids`` is the one-pass
+    optimisation for callers judging many records; ``None`` falls back to
+    a per-record probe.
+    """
+    if _record_alive(rec):
+        return True
+    pid = int((rec or {}).get("pid") or 0)
+    if pid <= 0:
+        return False
+    if (now if now is not None else time.time()) >= _record_deadline(rec):
+        return False
+    if live_pgids is None:
+        return _group_children_alive(pid, pid)
+    return pid in live_pgids
+
+
 def _prune_old_records(jobs: dict, now: float) -> bool:
-    """Drop records started more than ~7 days ago. The 24 h hard timeout
-    guarantees any such job is long over. Returns True when pruned.
+    """Drop records older than ~7 days whose process is NOT still running.
+
+    The old rule was "started more than ~7 days ago", justified by the 24 h
+    hard timeout — but that timeout died with the process that armed it, so
+    a job re-attached after a restart could outlive both. The prune then
+    deleted the record of a LIVE process: a 32-core calculation nobody can
+    name, with ``bash_status`` and ``bash_kill`` both answering "unknown
+    job_id" while it holds the node. An aliveness check is cheap and the
+    record of a running process is exactly the one worth keeping.
 
     Dropping the record is also the last moment anything knows where the
     job's output files are, so they are unlinked here — otherwise the only
     map to them is gone and they stay in ``/tmp`` forever.
+
+    Returns True when anything was pruned.
     """
     cutoff = now - _REGISTRY_MAX_AGE_S
     stale = [jid for jid, rec in jobs.items()
-             if float((rec or {}).get("started_at") or 0.0) < cutoff]
+             if float((rec or {}).get("started_at") or 0.0) < cutoff
+             and not _record_alive(rec)]
     for jid in stale:
         _unlink_job_outputs(jobs.get(jid) or {})
         jobs.pop(jid, None)
     return bool(stale)
+
+
+def _enforce_deadline(rec: dict, now: float) -> bool:
+    """Kill a re-attached job that has outlived its wall-clock cap.
+
+    The counterpart to :func:`_record_deadline`: whichever process next
+    reads the record re-arms the bound the restart lost. Returns True when
+    the record was changed. Best-effort — a process we may not signal (a
+    different user's recycled pid) is simply left alone.
+    """
+    if not _record_alive(rec):
+        return False
+    if now < _record_deadline(rec):
+        return False
+    pid = int((rec or {}).get("pid") or 0)
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            return False
+    rec["finished_at"] = now
+    rec["timed_out"] = True
+    return True
 
 
 def _persist_job_start(workspace: str, record: dict) -> None:
@@ -435,6 +663,129 @@ def _pid_alive(pid: int, start_ticks: Optional[int] = None) -> bool:
         if current is not None and current != start_ticks:
             return False   # pid was reused by an unrelated process
     return True
+
+
+def _proc_pgrp(pid: int) -> Optional[int]:
+    """Process group of ``pid`` (``/proc/<pid>/stat`` field 5). None off Linux."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return int(stat[stat.rindex(")") + 1:].split()[2])
+    except Exception:
+        return None
+
+
+def _live_pgids() -> Optional[set[int]]:
+    """Every process group that currently has a member, in ONE ``/proc`` pass.
+
+    The per-record form of this question is :func:`_group_children_alive`;
+    a caller with many records to judge (the concurrency cap, a teardown
+    guard) asks once and tests membership, so the cost does not scale with
+    the size of the registry. ``None`` where ``/proc`` is unavailable, which
+    every caller reads as "fall back to the leader pid alone".
+    """
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    live: set[int] = set()
+    try:
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            pgrp = _proc_pgrp(int(entry.name))
+            if pgrp:
+                live.add(pgrp)
+    except OSError:
+        return None
+    return live
+
+
+def _group_children_alive(pgid: int, leader_pid: int) -> bool:
+    """Are there processes OTHER than the leader left in its process group?
+
+    Liveness used to be the direct child's pid alone — but the direct child
+    is ``/bin/bash -c <command>``, a wrapper that exits the moment its last
+    foreground command returns. ``bash_background("sbatch run.sh")`` then
+    reported "finished, ok, 2s" while the 12-hour job it had just queued
+    ran on, watched by nobody, with its concurrency slot already released.
+    The kill path has always known there is a process GROUP; the completion
+    check should use it too.
+
+    Enumerating ``/proc`` rather than probing with ``killpg(pgid, 0)``: once
+    the leader is reaped its pid can be recycled, and the recycled process
+    is its own group leader with the same pgid, which the probe cannot tell
+    from a surviving child. Falls back to the probe where ``/proc`` is not
+    available, where the recycled-pid window is the lesser problem.
+    """
+    if not pgid or pgid <= 0:
+        return False
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for entry in proc_root.iterdir():
+            name = entry.name
+            if not name.isdigit():
+                continue
+            pid = int(name)
+            if pid == leader_pid:
+                continue
+            if _proc_pgrp(pid) == pgid:
+                return True
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+# ``sbatch`` says exactly this, on stdout, and nothing else parses it.
+_SBATCH_SUBMITTED_RE = re.compile(r"Submitted batch job\s+(\d+)")
+
+
+def _submitted_slurm_ids(stdout_path: str | Path) -> list[str]:
+    """SLURM job ids a finished background command submitted, from its output."""
+    try:
+        text = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    seen: list[str] = []
+    for match in _SBATCH_SUBMITTED_RE.finditer(text):
+        jid = match.group(1)
+        if jid not in seen:
+            seen.append(jid)
+    return seen
+
+
+def _watch_submitted_jobs(workspace: str | Path, rec: dict) -> list[str]:
+    """Register every cluster job this background command submitted.
+
+    The foreground bash path has done this since the auto-watch existed;
+    the background path did not, which is the worse of the two — a
+    foreground ``sbatch`` at least returns its output into the turn, while
+    a background one returns a job id nobody reads. Best-effort and
+    idempotent (registering the same id twice overwrites one entry).
+    """
+    ids = _submitted_slurm_ids((rec or {}).get("stdout_path") or "")
+    if not ids:
+        return []
+    try:
+        from delfin.agent.job_monitor import register_agent_job
+    except Exception:
+        return []
+    watched: list[str] = []
+    for jid in ids:
+        try:
+            register_agent_job(
+                workspace, jid,
+                description="submitted by background job "
+                            f"{(rec or {}).get('job_id') or '?'}")
+            watched.append(jid)
+        except Exception:
+            continue
+    return watched
 
 
 def _note_job_workspace(job_id: str, workspace: str) -> None:
@@ -506,20 +857,41 @@ class ReattachedJob:
         self.finished_at = record.get("finished_at")               # epoch|None
         self.exit_code = record.get("exit_code")
         self._start_ticks = record.get("proc_start_ticks")
+        self._record = dict(record)
+        self.deadline_at = _record_deadline(record)
+        self.timed_out = bool(record.get("timed_out"))
         self.proc = _ReattachedProc(int(record.get("pid") or 0), self.exit_code)
 
     def poll(self) -> Optional[int]:
         if self.finished_at is None:
             if _pid_alive(self.proc.pid, self._start_ticks):
-                return None
-            # Died while no agent process was attached — record the moment we
-            # noticed; the real exit status is unrecoverable.
-            self.finished_at = time.time()
-            _update_job_record(self.workspace, self.job_id,
-                               finished_at=self.finished_at,
-                               exit_code=self.exit_code)
+                # Re-arm the wall-clock bound the restart lost: the watchdog
+                # that would have enforced it died with its process, and the
+                # setsid child did not.
+                now = time.time()
+                if now < self.deadline_at:
+                    return None
+                if not _enforce_deadline(self._record, now):
+                    return None
+                self.finished_at = self._record["finished_at"]
+                self.timed_out = True
+                _update_job_record(self.workspace, self.job_id,
+                                   finished_at=self.finished_at,
+                                   timed_out=True)
+            else:
+                # Died while no agent process was attached — record the moment
+                # we noticed; the real exit status is unrecoverable.
+                self.finished_at = time.time()
+                _update_job_record(self.workspace, self.job_id,
+                                   finished_at=self.finished_at,
+                                   exit_code=self.exit_code)
         self.proc.returncode = self.exit_code
         return self.exit_code if self.exit_code is not None else _RC_UNKNOWN
+
+    def children_running(self) -> bool:
+        if self.poll() is None:
+            return False
+        return _group_children_alive(self.proc.pid, self.proc.pid)
 
     def elapsed_s(self) -> float:
         # Epoch-based (monotonic clocks do not survive a restart).
@@ -607,6 +979,24 @@ class _Registry:
                 f"is {cap}. Wait for one to finish (bash_status) before "
                 "starting another, or raise agent.max_background_jobs if "
                 "this machine can carry more.")
+        wanted = _requested_cores(command)
+        budget = _core_budget()
+        if wanted > budget:
+            raise ValueError(
+                f"this command asks for {wanted} core(s) and this process "
+                f"was granted {budget}. Narrow its core count, submit it to "
+                "the batch scheduler instead, or raise "
+                "agent.max_background_cores if the grant is larger than it "
+                "looks.")
+        held = sum(int(j.get("cores") or 1) for j in live_jobs())
+        if held + wanted > budget:
+            raise ValueError(
+                f"this command asks for {wanted} core(s), {held} are already "
+                f"held by {running} running background job(s), and the "
+                f"budget is {budget}. Wait for one to finish (bash_status), "
+                "narrow the command's core count, or raise "
+                "agent.max_background_cores if this allocation is larger "
+                "than it looks.")
         timeout_s = min(timeout_s, _DEFAULT_BG_TIMEOUT_S)
 
         # tempfiles for stdout/stderr — opened append+text so the
@@ -658,6 +1048,7 @@ class _Registry:
         # only map back to the (setsid-surviving) child's pid, output files,
         # and start time.
         ws = str(Path(workspace).expanduser()) if workspace else cwd
+        started_epoch = time.time()
         _persist_job_start(ws, {
             "job_id": jid,
             "pid": proc.pid,
@@ -668,8 +1059,12 @@ class _Registry:
             "workspace": ws,
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
-            "started_at": time.time(),      # epoch — survives restarts
+            "started_at": started_epoch,    # epoch — survives restarts
             "timeout_s": timeout_s,
+            # Absolute, so the wall-clock cap outlives the process that
+            # armed it; the watchdog below is only the fast path.
+            "deadline_at": started_epoch + timeout_s,
+            "cores": wanted,
             "exit_code": None,
             "finished_at": None,
             "acknowledged": False,
@@ -705,9 +1100,15 @@ class _Registry:
                     pass
                 if job.finished_at is None:
                     job.finished_at = time.monotonic()
+                # The wrapper shell exiting is not the work finishing when
+                # the command queued a cluster job: register what it
+                # submitted so the completion is watched by someone.
+                watched = _watch_submitted_jobs(ws, {
+                    "job_id": jid, "stdout_path": str(stdout_path)})
                 _update_job_record(ws, jid,
                                    exit_code=rc_final,
-                                   finished_at=time.time())
+                                   finished_at=time.time(),
+                                   watched_slurm_jobs=watched)
 
         t = threading.Thread(target=_watch, daemon=True, name=f"bashjob-{jid}")
         t.start()
@@ -726,16 +1127,19 @@ class _Registry:
         return _reattach(job_id, workspace)
 
     def count_running(self) -> int:
-        """How many jobs this registry still has in flight.
+        """How many background jobs are in flight for this user.
 
-        Counted from poll() rather than from a stored flag: a process that
-        died without anyone asking would otherwise hold a slot forever, and
-        a cap that leaks slots is worse than no cap -- it stops the agent
-        working and gives no reason a user can act on.
+        Counted from live pids rather than from a stored flag: a process
+        that died without anyone asking would otherwise hold a slot
+        forever, and a cap that leaks slots is worse than no cap -- it
+        stops the agent working and gives no reason a user can act on.
+
+        Across every persisted registry, not just this process's in-memory
+        one: the in-memory list is exactly what a restart loses, and two
+        front ends meant two lists and twice the cap.
         """
         try:
-            return sum(1 for j in self.list_jobs(include_finished=False)
-                       if j.poll() is None)
+            return len(live_jobs())
         except Exception:
             return 0
 
@@ -803,18 +1207,26 @@ def _tail_chars(path: str | Path, limit: int = _EVENT_TAIL_CHARS) -> str:
 def drain_finished_events(workspace: str | Path) -> list[dict]:
     """Return jobs that finished since the last drain — exactly once.
 
-    The acknowledged flag lives in the registry file, so the exactly-once
-    contract survives restarts: a new process only sees what no previous
-    process drained. Jobs whose pid vanished while nobody was attached
-    (agent restart during a multi-hour ORCA/xtb run) are folded in with
-    ``exit_code=None``. This gives the engine an event-driven "job
-    finished" signal to inject into the next turn — no blocking
-    ``bash_status(wait_seconds=...)`` poll needed.
+    Two-phase. The drain CLAIMS an event (a timestamp in the record) and
+    returns it; :func:`confirm_finished_events` writes the permanent
+    acknowledgement once the caller has actually done something with the
+    list. The single-phase version wrote "acknowledged" before the caller
+    had seen anything, so a turn that died between the drain and the
+    prompt it was being built into took the only notice of a twelve-hour
+    run with it — permanently, and without a trace. An unconfirmed claim
+    expires after :data:`_EVENT_CLAIM_GRACE_S` and the event comes back.
 
-    Each event: ``job_id``, ``command`` (truncated), ``description``,
-    ``exit_code`` (None when unrecoverable), ``runtime_s``, and ~500-char
-    ``stdout_tail`` / ``stderr_tail``."""
+    Both flags live in the registry file, so both survive restarts: a new
+    process only sees what no previous process confirmed. Jobs whose pid
+    vanished while nobody was attached (agent restart during a multi-hour
+    ORCA/xtb run) are folded in with ``exit_code=None``.
+
+    Each event: ``job_id``, ``workspace`` (for the confirmation), ``command``
+    (truncated), ``description``, ``exit_code`` (None when unrecoverable),
+    ``timed_out``, ``children_running``, ``watched_slurm_jobs``,
+    ``runtime_s``, and ~500-char ``stdout_tail`` / ``stderr_tail``."""
     events: list[dict] = []
+    unscanned: list[tuple[str, str]] = []      # (job_id, stdout_path)
     try:
         # Locked around the whole cycle: the acknowledged flag is set here
         # and the exit code is written by the watchdog, and without this
@@ -828,21 +1240,36 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
             for jid, rec in jobs.items():
                 if rec.get("acknowledged"):
                     continue
+                claimed_at = float(rec.get("claimed_at") or 0.0)
+                if claimed_at and (now - claimed_at) < _EVENT_CLAIM_GRACE_S:
+                    continue          # another caller holds this event
                 finished_at = rec.get("finished_at")
                 if finished_at is None:
-                    if _pid_alive(int(rec.get("pid") or 0),
-                                  rec.get("proc_start_ticks")):
+                    if _enforce_deadline(rec, now):
+                        finished_at = rec["finished_at"]
+                    elif _record_alive(rec):
                         continue                    # still running
-                    # Orphan died unattached — exit moment approximated now.
-                    finished_at = rec["finished_at"] = now
-                rec["acknowledged"] = True
+                    else:
+                        # Orphan died unattached — moment approximated now.
+                        finished_at = rec["finished_at"] = now
+                if rec.get("watched_slurm_jobs") is None:
+                    # A job that finished while nobody was attached never ran
+                    # the watchdog's submission scan; do it after the lock.
+                    unscanned.append((jid, str(rec.get("stdout_path") or "")))
+                rec["claimed_at"] = now
                 changed = True
                 started = float(rec.get("started_at") or finished_at)
+                pid = int(rec.get("pid") or 0)
                 events.append({
                     "job_id": jid,
+                    "workspace": str(workspace),
                     "command": str(rec.get("command") or "")[:300],
                     "description": str(rec.get("description") or ""),
                     "exit_code": rec.get("exit_code"),
+                    "timed_out": bool(rec.get("timed_out")),
+                    "children_running": _group_children_alive(pid, pid),
+                    "watched_slurm_jobs": list(rec.get("watched_slurm_jobs")
+                                               or []),
                     "runtime_s": round(max(0.0, finished_at - started), 3),
                     "stdout_tail": _tail_chars(rec.get("stdout_path") or ""),
                     "stderr_tail": _tail_chars(rec.get("stderr_path") or ""),
@@ -853,7 +1280,58 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
         # Event delivery is best-effort; a broken registry file must never
         # take the tool layer down.
         return events
+    for jid, stdout_path in unscanned:
+        try:
+            watched = _watch_submitted_jobs(
+                workspace, {"job_id": jid, "stdout_path": stdout_path})
+            _update_job_record(workspace, jid, watched_slurm_jobs=watched)
+            for event in events:
+                if event["job_id"] == jid:
+                    event["watched_slurm_jobs"] = watched
+        except Exception:
+            continue
     return events
+
+
+def confirm_finished_events(events: list[dict]) -> int:
+    """Phase two: mark drained events permanently acknowledged.
+
+    Call this only once the events have reached wherever they were going
+    (a built prompt block, a written notice). Until then the claim expires
+    on its own and the completion is delivered again — losing a turn is
+    survivable, losing the only notice of a finished calculation is not.
+
+    Returns how many records were acknowledged. Never raises."""
+    if not events:
+        return 0
+    by_workspace: dict[str, list[str]] = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        ws = str(event.get("workspace") or "")
+        jid = str(event.get("job_id") or "")
+        if ws and jid:
+            by_workspace.setdefault(ws, []).append(jid)
+    done = 0
+    for ws, ids in by_workspace.items():
+        try:
+            with _FILE_LOCK, cross_process_lock(_registry_path(ws)):
+                data = _load_registry_file(ws)
+                jobs = data.get("jobs", {})
+                touched = False
+                for jid in ids:
+                    rec = jobs.get(jid)
+                    if rec is None or rec.get("acknowledged"):
+                        continue
+                    rec["acknowledged"] = True
+                    rec.pop("claimed_at", None)
+                    touched = True
+                    done += 1
+                if touched:
+                    _atomic_write_json(_registry_path(ws), data)
+        except Exception:
+            continue
+    return done
 
 
 def running_jobs_for_workspace(workspace: str | Path) -> list[dict]:
@@ -872,22 +1350,78 @@ def running_jobs_for_workspace(workspace: str | Path) -> list[dict]:
         jobs = _load_registry_file(workspace).get("jobs", {})
     except Exception:
         return out
+    live_pgids = _live_pgids()
+    now = time.time()
     for jid, rec in (jobs or {}).items():
         try:
-            if (rec or {}).get("finished_at") is not None:
-                continue
-            pid = int((rec or {}).get("pid") or 0)
-            if not _pid_alive(pid, (rec or {}).get("proc_start_ticks")):
+            # The GROUP, not just the wrapper shell: a tree whose wrapper
+            # exited while `orca &` runs on inside it is still in use, and
+            # removing it deletes a live process's working directory.
+            if not (_record_alive(rec)
+                    or _record_holds_the_node(rec, live_pgids, now)):
                 continue
             out.append({
                 "job_id": jid,
-                "pid": pid,
+                "pid": int((rec or {}).get("pid") or 0),
                 "command": str((rec or {}).get("command") or "")[:200],
                 "cwd": str((rec or {}).get("cwd") or ""),
             })
         except Exception:
             continue
     return out
+
+
+def live_jobs() -> list[dict]:
+    """Every background job of this user that is still running, anywhere.
+
+    The concurrency cap used to count an in-memory list, which made it
+    per-process and resettable: a re-attached job never entered that list,
+    so after a dashboard restart the cap read zero while N jobs held the
+    node, and two front ends meant two registries and twice the cap. The
+    persisted records plus the per-user locator index are the one view
+    that survives both.
+
+    Each entry: ``job_id``, ``pid``, ``cores``, ``command``, ``workspace``.
+    Best-effort — an unreadable registry contributes nothing rather than
+    raising, which is the same failure direction the cap already had.
+    """
+    seen: dict[str, dict] = {}
+    now = time.time()
+    live_pgids = _live_pgids()          # one /proc pass for every record
+    for ws in _known_workspaces():
+        try:
+            jobs = _load_registry_file(ws).get("jobs", {}) or {}
+        except Exception:
+            continue
+        for jid, rec in jobs.items():
+            if jid in seen:
+                continue
+            if now >= _record_deadline(rec):
+                continue      # past its wall clock; the next read ends it
+            if not _record_holds_the_node(rec, live_pgids, now):
+                continue
+            seen[jid] = {
+                "job_id": jid,
+                "pid": int((rec or {}).get("pid") or 0),
+                "cores": int((rec or {}).get("cores") or 1),
+                "command": str((rec or {}).get("command") or "")[:200],
+                "workspace": str((rec or {}).get("workspace") or ws),
+            }
+    # Jobs this process started but whose registry write failed still count.
+    try:
+        for job in _REGISTRY.list_jobs(include_finished=False):
+            if job.job_id in seen or job.poll() is not None:
+                continue
+            seen[job.job_id] = {
+                "job_id": job.job_id,
+                "pid": job.proc.pid,
+                "cores": _requested_cores(job.command),
+                "command": job.command[:200],
+                "workspace": job.cwd,
+            }
+    except Exception:
+        pass
+    return list(seen.values())
 
 
 def _known_workspaces() -> list[str]:

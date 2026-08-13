@@ -20,6 +20,14 @@ Communication with the dashboard is file-based (robust on HPC, no
 sockets): ``~/.delfin/watched_jobs.json`` (watch list, shared),
 ``~/.delfin/monitor_findings.jsonl`` (append-only findings the dashboard
 polls), ``~/.delfin/job_monitor.pid`` (single-instance guard).
+
+Every scheduler query is TRI-state — a state, "the scheduler does not
+know this id", or "the scheduler could not be asked".  Collapsing the last
+two into one empty answer is what made an unreachable queue look like a
+quiet one, indefinitely.  And the daemon polls the agent's own
+per-workspace watch lists as well as the shared one: those are where a
+job the agent submitted itself is recorded, and they used to be read only
+from inside a turn.
 """
 
 from __future__ import annotations
@@ -173,37 +181,98 @@ def remove_watch(job_id: str, path: Path | None = None) -> dict:
 # SLURM polling (LLM-free, injectable for tests)
 # ---------------------------------------------------------------------------
 
-def _default_run(cmd: list[str]) -> str:
+# "The scheduler could not be asked" — as distinct from "the scheduler
+# answered and does not know this id". Both used to arrive as the empty
+# string, which is why a watch list could sit for days reporting nothing
+# changed while the queue it was watching was unreachable.
+STATE_UNAVAILABLE = "UNAVAILABLE"
+
+
+def _default_run(cmd: list[str]) -> Optional[str]:
+    """Run a scheduler query. ``None`` means it could not be run at all."""
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        return out.stdout if out.returncode == 0 else ""
+        return out.stdout if out.returncode == 0 else None
     except Exception:
-        return ""
+        return None
+
+
+def _parse_state_lines(text: Optional[str]) -> dict[str, str]:
+    states: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            states[parts[0]] = parts[1].upper().rstrip("+")
+    return states
+
+
+# One id at a time is the fallback, not the normal path; a watch list that
+# has grown large must not turn one aged-out id into N slow queries.
+_MAX_PER_ID_RETRIES = 24
+
+
+def query_job_states_detailed(
+    job_ids: list[str],
+    run_fn: Callable[[list[str]], Optional[str]] = _default_run,
+) -> dict[str, str]:
+    """Return {job_id: STATE | "" | STATE_UNAVAILABLE} for EVERY id asked.
+
+    Three answers, deliberately kept apart:
+
+    * a state — the scheduler answered about this job;
+    * ``""`` — the scheduler answered and does not know this id (it aged
+      out of accounting, or was never real);
+    * :data:`STATE_UNAVAILABLE` — the scheduler could not be asked.
+
+    ``squeue -j`` fails as a whole as soon as ONE id has left the queue, so
+    a batch that comes back empty-handed is retried per id before anything
+    is concluded from it. Dropping the batch silently is how a watch list
+    of ten jobs stopped reporting because the eleventh had finished.
+    """
+    result: dict[str, str] = {j: STATE_UNAVAILABLE for j in job_ids}
+    if not job_ids:
+        return result
+
+    def _squeue(ids: list[str]) -> Optional[dict[str, str]]:
+        out = run_fn(["squeue", "-j", ",".join(ids), "-h", "-o", "%i %T"])
+        return None if out is None else _parse_state_lines(out)
+
+    found = _squeue(job_ids)
+    if found is None and len(job_ids) > 1:
+        found = {}
+        for jid in job_ids[:_MAX_PER_ID_RETRIES]:
+            one = _squeue([jid])
+            if one:
+                found.update(one)
+    for jid, state in (found or {}).items():
+        if jid in result:
+            result[jid] = state
+
+    # Anything squeue did not place is asked of accounting. sacct answers
+    # for finished jobs and is happy to be asked about ids it does not know.
+    missing = [j for j in job_ids
+               if result.get(j) in ("", STATE_UNAVAILABLE)]
+    if missing:
+        out = run_fn(["sacct", "-j", ",".join(missing), "-n", "-X",
+                      "-o", "JobID,State"])
+        if out is not None:
+            acct = _parse_state_lines(out)
+            for jid in missing:
+                result[jid] = acct.get(jid, "")
+    return result
 
 
 def query_job_states(
     job_ids: list[str],
-    run_fn: Callable[[list[str]], str] = _default_run,
+    run_fn: Callable[[list[str]], Optional[str]] = _default_run,
 ) -> dict[str, str]:
-    """Return {job_id: STATE}. squeue for running, sacct for finished."""
-    states: dict[str, str] = {}
-    if not job_ids:
-        return states
-    ids = ",".join(job_ids)
-    sq = run_fn(["squeue", "-j", ids, "-h", "-o", "%i %T"])
-    for line in (sq or "").splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            states[parts[0]] = parts[1].upper()
-    missing = [j for j in job_ids if j not in states]
-    if missing:
-        sa = run_fn(["sacct", "-j", ",".join(missing), "-n", "-X",
-                     "-o", "JobID,State"])
-        for line in (sa or "").splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                states[parts[0]] = parts[1].upper().rstrip("+")
-    return states
+    """{job_id: STATE} for the ids the scheduler could actually place.
+
+    The narrow view, for callers that only branch on a known state. Use
+    :func:`query_job_states_detailed` to tell "not known" from "not asked".
+    """
+    return {j: s for j, s in query_job_states_detailed(job_ids, run_fn).items()
+            if s and s != STATE_UNAVAILABLE}
 
 
 def scan_error_signatures(folder: str, max_bytes: int = 65536) -> list[str]:
@@ -234,18 +303,27 @@ def scan_error_signatures(folder: str, max_bytes: int = 65536) -> list[str]:
 
 def check_once(
     path: Path | None = None,
-    run_fn: Callable[[list[str]], str] = _default_run,
+    run_fn: Callable[[list[str]], Optional[str]] = _default_run,
 ) -> list[Finding]:
-    """One LLM-free poll: detect newly failed watched jobs."""
+    """One LLM-free poll: detect newly failed watched jobs.
+
+    A job the scheduler could not be asked about keeps its last known
+    state rather than reading as "nothing changed" — the two look
+    identical in the file, and only one of them is a reason to stop
+    worrying."""
     data = load_watched(path)
     jobs = data.get("jobs", {})
     if not jobs:
         return []
-    states = query_job_states(list(jobs.keys()), run_fn)
+    states = query_job_states_detailed(list(jobs.keys()), run_fn)
     findings: list[Finding] = []
     for job_id, info in jobs.items():
         state = states.get(job_id, "")
         prev = info.get("last_state", "")
+        if state == STATE_UNAVAILABLE:
+            info["unavailable_since"] = info.get("unavailable_since") or time.time()
+            continue
+        info.pop("unavailable_since", None)
         if state:
             info["last_state"] = state
         terminal_fail = state in _FAILURE_STATES
@@ -266,10 +344,52 @@ def check_once(
 
 _AGENT_WATCH_FILENAME = "agent_watched_jobs.json"
 _AGENT_WATCH_MAX_AGE_S = 7 * 24 * 3600   # prune abandoned entries (~7 days)
+# Per-user list of workspaces that hold an agent watch file, so the headless
+# daemon can find them. Without it the daemon polled ONLY its own
+# ~/.delfin/watched_jobs.json while everything the agent registered went to
+# a per-workspace file that is read from inside a turn -- so once the
+# session ended, the agent's own twelve-hour job was watched by nobody,
+# while the tool result had promised the opposite in so many words.
+_AGENT_WATCH_INDEX_PATH = _DELFIN_DIR / "agent_watch_index.json"
 
 
 def _agent_watch_path(workspace: str | Path) -> Path:
     return Path(workspace).expanduser() / ".delfin" / _AGENT_WATCH_FILENAME
+
+
+def _note_agent_watch_workspace(workspace: str | Path) -> None:
+    """Record that ``workspace`` holds an agent watch file. Best-effort."""
+    try:
+        ws = str(Path(workspace).expanduser())
+        now = time.time()
+        try:
+            data = json.loads(
+                _AGENT_WATCH_INDEX_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        seen = data.get("workspaces") if isinstance(data, dict) else None
+        if not isinstance(seen, dict):
+            seen = {}
+        seen = {w: t for w, t in seen.items()
+                if float(t or 0.0) >= now - _AGENT_WATCH_MAX_AGE_S}
+        seen[ws] = now
+        _AGENT_WATCH_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        save_watched({"workspaces": seen}, _AGENT_WATCH_INDEX_PATH)
+    except Exception:
+        pass
+
+
+def agent_watch_workspaces() -> list[str]:
+    """Workspaces with an agent watch file, newest registration first."""
+    try:
+        data = json.loads(_AGENT_WATCH_INDEX_PATH.read_text(encoding="utf-8"))
+        seen = data.get("workspaces") if isinstance(data, dict) else None
+        if not isinstance(seen, dict):
+            return []
+        return [w for w, _ in sorted(seen.items(), key=lambda kv: -float(kv[1] or 0))
+                if _agent_watch_path(w).is_file()]
+    except Exception:
+        return []
 
 
 def _classify_job_id(jid: str, workspace: str | Path) -> str:
@@ -318,24 +438,46 @@ def register_agent_job(
     }
     data.setdefault("jobs", {})[jid] = entry
     save_watched(data, path)
+    _note_agent_watch_workspace(workspace)
     return entry
+
+
+def _emit_watch_attention(kind: str, title: str, detail: str,
+                          workspace: str | Path) -> None:
+    """Surface a watch-list problem where a user will see it. Never raises."""
+    try:
+        from delfin.agent.attention import emit_attention
+        emit_attention(kind, title=title, detail=detail,
+                       workspace=str(workspace))
+    except Exception:
+        pass
 
 
 def check_agent_jobs(
     workspace: str | Path,
-    run_fn: Callable[[list[str]], str] = _default_run,
+    run_fn: Callable[[list[str]], Optional[str]] = _default_run,
+    *,
+    consume: bool = True,
 ) -> list[dict]:
     """Report agent-registered jobs that reached a terminal state — once.
 
     LLM-free like :func:`check_once`. Terminal entries are removed from the
     persistent watch file (atomic write), so each completion/failure is
     reported exactly once, even across restarts. Entries older than ~7 days
-    are pruned (a lost SLURM id must not be polled forever).
+    are pruned — and a pruned entry that never reached a terminal state
+    emits an attention event, because "we gave up watching your job" is
+    exactly the thing the silent version of this loop never said.
+
+    ``consume=False`` reports without removing anything and marks the entry
+    ``daemon_notified`` instead: that is how the headless daemon can watch
+    the same list without eating the completion the next agent turn is
+    waiting for.
 
     Each result: ``job_id``, ``kind`` ("slurm"/"bash"), ``description``,
     ``state``, ``ok``, ``exit_code`` (bash only; None when the code was
     unrecoverable after a restart), ``signatures`` (failed SLURM jobs
-    only, via :func:`scan_error_signatures`)."""
+    only, via :func:`scan_error_signatures`), and ``degraded`` when the
+    scheduler could not be asked about this job."""
     path = _agent_watch_path(workspace)
     data = load_watched(path)
     jobs = data.get("jobs", {})
@@ -346,22 +488,63 @@ def check_agent_jobs(
         return entry.get("kind") or ("slurm" if jid.isdigit() else "bash")
 
     slurm_ids = [j for j, e in jobs.items() if _kind(j, e or {}) == "slurm"]
-    states = query_job_states(slurm_ids, run_fn) if slurm_ids else {}
+    states = (query_job_states_detailed(slurm_ids, run_fn)
+              if slurm_ids else {})
     done: list[dict] = []
     changed = False
     now = time.time()
     for jid, entry in list(jobs.items()):
         entry = entry or {}
         if float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S:
+            # Only an entry that never got an answer is worth an alarm. One
+            # the daemon already reported on is being pruned as bookkeeping.
+            resolved = (entry.get("daemon_notified")
+                        or entry.get("last_state") in _OK_TERMINAL_STATES
+                        or entry.get("last_state") in _FAILURE_STATES)
+            if not resolved:
+                _emit_watch_attention(
+                    "run_failed",
+                    f"Stopped watching job {jid} without an outcome",
+                    f"{entry.get('description') or 'watched job'} was "
+                    f"registered "
+                    f"{int((now - float(entry.get('added_at') or now)) / 86400)}"
+                    f" day(s) ago and never reached a terminal state "
+                    f"(last seen: {entry.get('last_state') or 'never'}). "
+                    f"The watch entry has been dropped; check the job "
+                    f"yourself if it still matters.",
+                    entry.get("folder") or workspace)
             jobs.pop(jid)
             changed = True
             continue
         if _kind(jid, entry) == "slurm":
             state = states.get(jid, "")
+            if state == STATE_UNAVAILABLE:
+                # Degradation, not silence: the entry stays, and it says
+                # WHY nothing is being reported about it.
+                if not entry.get("unavailable_since"):
+                    entry["unavailable_since"] = now
+                    changed = True
+                done.append({
+                    "job_id": jid,
+                    "kind": "slurm",
+                    "description": entry.get("description", ""),
+                    "state": STATE_UNAVAILABLE,
+                    "ok": False,
+                    "exit_code": None,
+                    "signatures": [],
+                    "degraded": (
+                        "the scheduler could not be asked about this job — "
+                        "its state is unknown, not unchanged"),
+                })
+                continue
+            if entry.pop("unavailable_since", None) is not None:
+                changed = True
             if state and state != entry.get("last_state"):
                 entry["last_state"] = state
                 changed = True
             if state in _OK_TERMINAL_STATES or state in _FAILURE_STATES:
+                if not consume and entry.get("daemon_notified"):
+                    continue
                 done.append({
                     "job_id": jid,
                     "kind": "slurm",
@@ -372,7 +555,10 @@ def check_agent_jobs(
                     "signatures": (scan_error_signatures(entry.get("folder", ""))
                                    if state in _FAILURE_STATES else []),
                 })
-                jobs.pop(jid)
+                if consume:
+                    jobs.pop(jid)
+                else:
+                    entry["daemon_notified"] = True
                 changed = True
         else:
             # Background-bash job: the bash_jobs registry is the source of
@@ -385,22 +571,52 @@ def check_agent_jobs(
                 job = None
             if job is None or job.poll() is None:
                 continue        # unknown yet (age prune applies) or running
+            if not consume and entry.get("daemon_notified"):
+                continue
             status = job.status_dict()
             rc = status.get("exit_code")
             done.append({
                 "job_id": jid,
                 "kind": "bash",
                 "description": entry.get("description", ""),
-                "state": "FINISHED",
-                "ok": rc == 0,
+                "state": ("FINISHED (children still running)"
+                          if status.get("children_running") else "FINISHED"),
+                "ok": rc == 0 and not status.get("children_running"),
                 "exit_code": rc,
                 "signatures": [],
             })
-            jobs.pop(jid)
+            if consume:
+                jobs.pop(jid)
+            else:
+                entry["daemon_notified"] = True
             changed = True
     if changed:
         save_watched(data, path)
     return done
+
+
+def check_all_agent_jobs(
+    run_fn: Callable[[list[str]], Optional[str]] = _default_run,
+    *,
+    consume: bool = False,
+) -> list[dict]:
+    """Sweep EVERY workspace that has an agent watch file.
+
+    The daemon's counterpart to :func:`check_agent_jobs`: the agent's own
+    submissions live in per-workspace files that only an open session
+    reads, so between sessions nobody was looking at them at all. Defaults
+    to ``consume=False`` so the daemon reports without eating the event the
+    next turn is owed. Each result carries its ``workspace``."""
+    out: list[dict] = []
+    for ws in agent_watch_workspaces():
+        try:
+            for item in check_agent_jobs(ws, run_fn, consume=consume) or []:
+                item = dict(item)
+                item["workspace"] = ws
+                out.append(item)
+        except Exception:
+            continue
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -697,13 +913,52 @@ def monitor_status(path: Path | None = None) -> dict:
     }
 
 
+def check_agent_workspaces_once(settings: dict | None = None) -> list[dict]:
+    """The daemon's pass over the AGENT's own watch lists. LLM-free.
+
+    Reports what finished, failed, or could not be asked about, and
+    notifies out of band — the whole point is the stretch of time when no
+    session is open, so the in-turn completion block cannot be the only
+    delivery. Does not consume: the entry stays for the next turn, which
+    is the caller that was actually promised it.
+    """
+    reported: list[dict] = []
+    for item in check_all_agent_jobs(consume=False) or []:
+        reported.append(item)
+        state = str(item.get("state") or "")
+        if state == STATE_UNAVAILABLE:
+            continue        # degradation is reported in-turn, not notified
+        jid = str(item.get("job_id") or "?")
+        if item.get("ok"):
+            _emit_watch_attention(
+                "run_finished", f"Job {jid} finished",
+                f"{item.get('description') or 'watched job'} — {state}",
+                item.get("workspace") or "")
+            continue
+        finding = Finding(
+            job_id=jid,
+            folder=str(item.get("workspace") or ""),
+            state=state or "FAILED",
+            signatures=list(item.get("signatures") or []),
+        )
+        finding = diagnose_finding(finding, settings=settings)
+        record_finding(finding)
+        announce(finding, settings=settings)
+    return reported
+
+
 def run_loop(
     *,
     settings: dict | None = None,
     max_iterations: int = 0,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> int:
-    """The daemon loop. ``max_iterations=0`` = run until killed."""
+    """The daemon loop. ``max_iterations=0`` = run until killed.
+
+    Polls BOTH watch lists: the shared ``~/.delfin/watched_jobs.json`` the
+    dashboard writes, and the per-workspace lists the agent's own tool
+    layer writes. Watching only the first meant a job the agent submitted
+    itself was watched by nobody the moment the session ended."""
     n = 0
     while True:
         cfg = monitor_settings(settings)
@@ -714,6 +969,10 @@ def run_loop(
             finding = diagnose_finding(finding, settings=settings)
             record_finding(finding)
             announce(finding, settings=settings)
+        try:
+            check_agent_workspaces_once(settings)
+        except Exception:
+            pass        # one bad workspace must not stop the daemon
         n += 1
         if max_iterations and n >= max_iterations:
             return 0

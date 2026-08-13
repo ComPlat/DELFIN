@@ -1031,6 +1031,7 @@ class AgentEngine:
         except Exception:
             return ""
         events: list[str] = []
+        rendered: list[dict] = []
         try:
             # The sweep, not the single-folder drain: a job belongs to the
             # workspace it was started in, which is not always the one the
@@ -1040,32 +1041,71 @@ class AgentEngine:
                 rc = ev.get("exit_code")
                 state = "ok" if rc == 0 else (
                     f"exit {rc}" if rc is not None else "finished (exit unknown)")
+                if ev.get("timed_out"):
+                    state = "killed at its wall-clock cap"
+                elif ev.get("children_running"):
+                    state = f"{state}, children still running"
                 tail = (ev.get("stderr_tail") if rc not in (0, None)
                         else ev.get("stdout_tail")) or ""
                 tail = " ".join(str(tail).split())[:200]
+                submitted = ev.get("watched_slurm_jobs") or []
                 events.append(
                     f"- bash job {ev.get('job_id')} [{state}, "
                     f"{ev.get('runtime_s', 0):.0f}s] "
                     f"{str(ev.get('command', ''))[:100]}"
-                    + (f" → {tail}" if tail else ""))
+                    + (f" → {tail}" if tail else "")
+                    + (f" (submitted cluster job(s) {', '.join(submitted)}; "
+                       f"now watched)" if submitted else ""))
+                rendered.append(ev)
         except Exception:
             pass
         try:
             from delfin.agent.job_monitor import check_agent_jobs
             for ev in check_agent_jobs(ws) or []:
                 sig = ", ".join(ev.get("signatures") or [])
+                degraded = str(ev.get("degraded") or "")
                 events.append(
                     f"- {ev.get('kind', 'job')} {ev.get('job_id')} "
                     f"[{ev.get('state', '?')}] "
                     f"{str(ev.get('description', ''))[:80]}"
-                    + (f" — signatures: {sig}" if sig else ""))
+                    + (f" — signatures: {sig}" if sig else "")
+                    + (f" — {degraded}" if degraded else ""))
+        except Exception:
+            pass
+        try:
+            # A registry cycle that ran without its cross-process lock is
+            # reported here rather than nowhere. It belongs beside the
+            # completions because those are what it may have damaged: the
+            # lost update is an acknowledged flag or an exit code, which
+            # shows up as a job id nothing can address or a completion
+            # announced a second time.
+            from delfin.agent.bash_jobs import take_lock_timeouts
+            unlocked = take_lock_timeouts()
+            if unlocked:
+                events.append(
+                    f"- NOTE: {len(unlocked)} job-registry write(s) went "
+                    "through WITHOUT the cross-process lock (another process "
+                    "held it past the wait). A record may have been "
+                    "overwritten: an unknown job id or a completion you have "
+                    "already seen has this as its cause, not the job.")
         except Exception:
             pass
         if not events:
             return ""
-        return "\n".join(
+        block = "\n".join(
             ["# Background jobs finished since your last turn "
              "(act on these results now)"] + events)
+        # Phase two: each event that actually reached the block being
+        # returned can now become a permanent acknowledgement. Confirming
+        # here rather than inside the drain is what makes a turn that dies
+        # BEFORE this point re-deliver instead of losing the only word a
+        # twelve-hour calculation ever gets.
+        try:
+            from delfin.agent.bash_jobs import confirm_finished_events
+            confirm_finished_events(rendered)
+        except Exception:
+            pass
+        return block
 
     # How much of a finished delegate's report the push carries. The report
     # IS the deliverable, so a 200-character tail (right for a job's stdout)
