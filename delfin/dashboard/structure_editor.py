@@ -1118,11 +1118,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         mol_status_fs.value = ''
 
     def _ensure_manip_bootstrap():
-        if state['manip_bootstrap_done']:
+        # Once per page, not once per editor. The script is 159 KiB and does
+        # nothing the second time -- it guards on its own version -- but with
+        # two editors it was still being written out and shipped twice, and
+        # each host kept its own "done" flag so neither could tell.
+        if state.get('manip_bootstrap_done') or getattr(ctx, '_delfin_manip_sent', False):
+            state['manip_bootstrap_done'] = True
             return
         try:
             ctx.run_js(submit_manip_bootstrap_js())
             state['manip_bootstrap_done'] = True
+            try:
+                ctx._delfin_manip_sent = True
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1258,12 +1267,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         )
 
     def _ensure_ff_bootstrap():
-        if state.get('ff_bootstrap_done'):
+        # The same, for the 116 KiB force field.
+        if state.get('ff_bootstrap_done') or getattr(ctx, '_delfin_ff_sent', False):
+            state['ff_bootstrap_done'] = True
             return
         try:
             from .molecule_forcefield_js import molecule_ff_bootstrap_js
             ctx.run_js(molecule_ff_bootstrap_js())
             state['ff_bootstrap_done'] = True
+            try:
+                ctx._delfin_ff_sent = True
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1419,6 +1434,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '".submit-gfn-frame textarea, .submit-gfn-frame input");\n'
             '    if(!field) return;\n'
             '    var text=field.value||"";\n'
+            '    /* The same text as last time is the same frames. Nothing\n'
+            '       below has anything to do a second time -- frames past the\n'
+            '       ones already queued is all it takes from here -- and\n'
+            '       parsing it again ran 60 times a second on a payload that\n'
+            '       had not changed, megabytes per second of work on the\n'
+            '       thread that also has to draw. */\n'
+            '    if(text===play.parsedText) return;\n'
+            '    play.parsedText=text;\n'
             '    if(!text){ play.queue=[]; play.seen=0; play.last=null;'
             ' play.run=null; return; }\n'
             '    var data=null;\n'
@@ -2085,7 +2108,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         def _push(frames):
             walked = list(frames)
-            trail = walked[-60:]
+            trail = walked[-8:]
             state['gfn_settle_walked'] = len(walked)
             schedule_ui_update(
                 lambda t=trail, f=offset + len(walked) - len(trail): setattr(
@@ -2532,7 +2555,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             """Hand the path over while xtb is still walking it."""
             played[0] = True
             walked = list(frames)
-            trail = walked[-400:]
+            # What the page has not seen, not a long tail of what it has.
+            # The reader runs at 60 Hz and the writer at 20, so eight frames
+            # cover a 400 ms gap with room to spare. At 400 atoms a 400-frame
+            # trail is 9.6 MB of JSON per push, serialised in 169 ms on the
+            # kernel's thread -- for frames the browser already holds.
+            trail = walked[-8:]
             begins = len(walked) - len(trail)
 
             def _write(t=trail, first=begins):

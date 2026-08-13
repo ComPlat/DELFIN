@@ -418,6 +418,12 @@ def test_the_trail_is_sent_not_the_newest_frame_alone(editor):
     A frame sent on its own is a frame that can be missed -- which is why only
     the last structures were arriving.  Every write carries a run of frames, so
     a page that looked once still has the ones it did not see.
+
+    A run of them, not a long tail of what the page already holds: the reader
+    runs at 60 Hz and the writer at 20, so eight cover a 400 ms gap with room
+    to spare. Four hundred of them was 5.1 MB of JSON per push at 400 atoms,
+    serialised in 196 ms on the kernel's own thread; eight is 0.12 MB and
+    5.3 ms.
     """
     from delfin.dashboard import tab_submit
 
@@ -429,7 +435,8 @@ def test_the_trail_is_sent_not_the_newest_frame_alone(editor):
     handler = source.split(
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
-    assert "walked[-400:]" in handler
+    assert "walked[-8:]" in handler
+    assert "walked[-400:]" not in handler, 'a tail of what the page holds'
 
 
 def test_the_playback_interpolates_between_computed_frames(editor):
