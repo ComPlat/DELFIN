@@ -31,37 +31,59 @@ _CHECKOUT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 
 # Build noise, not test output: byte-code caches and pytest's own cache
 # are created by running the suite at all.
+# Directories the PRODUCT or the suite populates on purpose. Each is a
+# declared output location, not test spill, and each is named here with
+# the reason -- an entry may not be added on the grounds that git ignores
+# it, because catching a gitignored write is exactly what this guard is
+# for. The incident it was built for hid under the `.delfin/` rule.
+#
+# Enumerated from two CI failures rather than guessed a third time: this
+# guard cannot fail on a machine where the toolchain is already installed
+# and the fixtures already built, and a fresh clone -- which is what CI
+# is -- creates every one of them. Roots, not leaf names, so the next
+# file the installer adds does not need a third round.
+_GENERATED_ROOTS = (
+    # The chemistry toolchain, installed on demand by runtime_setup.
+    "delfin/qm_tools",
+    # The benchmark workbooks, materialised from a reviewable spec before
+    # every run -- see delfin/agent/benchmark_fixtures.py.
+    "tests/fixtures/office_workspace",
+)
+
+# Build noise: byte-code caches and tool caches created by running at all,
+# plus the worktrees parallel agents check out under `.claude`, which are
+# separate working copies with their own runs going on in them.
 _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
                    ".ruff_cache", ".hypothesis",
-                   # Parallel agents check worktrees out under `.claude`.
-                   # Each is a separate working copy with its own runs
-                   # going on in it, so what appears there is not this
-                   # run's doing, and reporting it buries the finding that
-                   # is. The walk is also O(every file in every worktree)
-                   # before it says anything at all.
-                   ".claude", ".venv", "node_modules",
-                   # Where the runtime installs the chemistry toolchain on
-                   # demand. CI does exactly that, so a first run creates
-                   # 594 paths here and every one of them is the product
-                   # working. Being gitignored is NOT what earns the
-                   # exemption -- catching gitignored writes is this
-                   # guard's whole purpose -- it is that the package
-                   # installs here deliberately, and the directory is
-                   # named in .gitignore for that reason rather than to
-                   # hide a mistake.
-                   ".mamba_env")
+                   ".claude", ".venv", "node_modules")
 
 
 def _checkout_entries() -> frozenset:
-    """Every path under the checkout, minus build noise."""
+    """Every path under the checkout, minus build noise and declared
+    output locations."""
     import os
+    roots = tuple(str(_CHECKOUT_ROOT / r) for r in _GENERATED_ROOTS)
+
+    def _is_generated(path: str) -> bool:
+        # Containment, not a string prefix. Comparing the raw strings would
+        # exempt a sibling whose name merely begins with a declared root --
+        # `qm_tools_backup` under `qm_tools` -- and an exemption this guard
+        # never announces is the one place it must not be generous.
+        return any(path == r or path.startswith(r + os.sep) for r in roots)
+
     out = set()
     for dirpath, dirnames, filenames in os.walk(_CHECKOUT_ROOT):
         dirnames[:] = [d for d in dirnames if d not in _CHECKOUT_NOISE]
+        if _is_generated(dirpath):
+            dirnames[:] = []
+            continue
         for name in dirnames + filenames:
             if name.endswith(".pyc") or name in _CHECKOUT_NOISE:
                 continue
-            out.add(os.path.join(dirpath, name))
+            full = os.path.join(dirpath, name)
+            if _is_generated(full):
+                continue
+            out.add(full)
     return frozenset(out)
 
 

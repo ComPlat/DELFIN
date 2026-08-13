@@ -32,7 +32,7 @@ import pathlib
 
 import pytest
 
-from conftest import _CHECKOUT_ROOT, _checkout_entries
+from conftest import _CHECKOUT_ROOT, _GENERATED_ROOTS, _checkout_entries
 from delfin.agent import memory_store as ms
 
 
@@ -267,6 +267,37 @@ def test_the_snapshot_notices_a_stray_entry():
     finally:
         probe.rmdir()
     assert _checkout_entries() - before == set()
+
+
+def test_the_snapshot_skips_the_declared_output_locations():
+    """Twice the guard failed a run on the package installing its own
+    toolchain and on fixtures built from a spec. Neither can be reproduced
+    on a machine where both already exist, which is why it took two CI runs
+    to see -- so the exemption is asserted here rather than on a fresh
+    clone."""
+    for rel in _GENERATED_ROOTS:
+        root = _CHECKOUT_ROOT / rel
+        root.mkdir(parents=True, exist_ok=True)
+        before = _checkout_entries()
+        probe = root / "leak_probe_file"
+        probe.write_text("")
+        try:
+            assert _checkout_entries() - before == set(), rel
+        finally:
+            probe.unlink()
+
+
+def test_a_sibling_of_a_declared_location_is_not_exempt():
+    """The exemption is containment, not a name that happens to start the
+    same way: a backup or a copy beside a declared root is ordinary tree,
+    and a leak into it has to be reported."""
+    sibling = _CHECKOUT_ROOT / (_GENERATED_ROOTS[0] + "_probe")
+    before = _checkout_entries()
+    sibling.mkdir(parents=True)
+    try:
+        assert str(sibling) in _checkout_entries() - before
+    finally:
+        sibling.rmdir()
 
 
 def test_the_snapshot_ignores_build_noise():
