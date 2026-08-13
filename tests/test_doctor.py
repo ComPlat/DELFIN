@@ -198,14 +198,71 @@ def test_scheduler_idle_without_entries_passes(monkeypatch):
     assert row["status"] == "PASS"
 
 
-def test_attention_pending_warns(monkeypatch):
+def test_attention_blocking_warns_notices_do_not(monkeypatch):
+    """WARN is reserved for events the agent is BLOCKED on.
+
+    Every pending event used to warn, so a run-finished notice read like
+    an open to-do — on the real inbox, 893 of them, which is how the one
+    parked question stopped being findable."""
     from delfin.agent import attention
+    monkeypatch.setattr(attention, "list_undelivered", lambda: [])
     monkeypatch.setattr(
-        attention, "list_pending", lambda *a, **k: [{"id": "1"}, {"id": "2"}],
+        attention, "list_pending",
+        lambda *a, **k: [{"id": "1", "kind": "run_finished"},
+                         {"id": "2", "kind": "run_finished"}],
+    )
+    (row,) = doctor._check_attention(_ctx())
+    assert row["status"] == "PASS"
+    assert "2 unread notice(s)" in row["detail"]
+
+    monkeypatch.setattr(
+        attention, "list_pending",
+        lambda *a, **k: [{"id": "1", "kind": "question_pending"},
+                         {"id": "2", "kind": "run_finished"}],
     )
     (row,) = doctor._check_attention(_ctx())
     assert row["status"] == "WARN"
-    assert "2 pending" in row["detail"]
+    assert "1 event(s) blocking the agent" in row["detail"]
+    assert "1 notice(s)" in row["detail"]
+
+
+def test_attention_undelivered_answer_is_reported(monkeypatch):
+    """An answer the user gave that no session has picked up yet."""
+    from delfin.agent import attention
+    monkeypatch.setattr(attention, "list_pending", lambda *a, **k: [])
+    monkeypatch.setattr(
+        attention, "list_undelivered",
+        lambda: [{"id": "1", "kind": "question_pending", "title": "basis?"}],
+    )
+    rows = doctor._check_attention(_ctx())
+    assert [r["status"] for r in rows] == ["PASS", "WARN"]
+    assert rows[1]["check"] == "attention answers"
+    assert "not yet delivered" in rows[1]["detail"]
+
+
+def test_attention_transports_warn_when_none_are_usable(monkeypatch):
+    """The check that grounds every "the user was told" in this codebase."""
+    from delfin.agent import attention
+    monkeypatch.setattr(
+        attention, "transport_status",
+        lambda *a, **k: {"usable": [],
+                         "detail": {"desktop": "notify-send not on PATH",
+                                    "webhook": "not configured",
+                                    "hook": "not configured"}},
+    )
+    (row,) = doctor._check_attention_transports(_ctx())
+    assert row["status"] == "WARN"
+    assert "no usable transport" in row["detail"]
+    assert "notify-send not on PATH" in row["detail"]
+    assert row["fix"]
+
+    monkeypatch.setattr(
+        attention, "transport_status",
+        lambda *a, **k: {"usable": ["hook"], "detail": {"hook": "/bin/echo"}},
+    )
+    (row,) = doctor._check_attention_transports(_ctx())
+    assert row["status"] == "PASS"
+    assert "1 usable: hook" in row["detail"]
 
 
 def test_benchmark_summary_reuses_optimize_check(monkeypatch):

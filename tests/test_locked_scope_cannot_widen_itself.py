@@ -118,12 +118,29 @@ def test_a_locked_workspace_supplies_no_hooks():
 
 
 def test_an_unlocked_workspace_still_supplies_its_hooks():
-    """The feature is good; it is the folder it is read from that is wrong."""
+    """The feature is good; it is the folder it is read from that is wrong.
+
+    Unlocked is now necessary and not sufficient: the workspace also has
+    to be one the USER trusted, because "not a registered office folder"
+    was true of every directory including a fresh clone. See
+    tests/test_a_checked_out_repository_cannot_run_commands.py.
+    """
+    import delfin.agent.hooks as H
+    from delfin.agent import workspace_trust as WT
+
+    ws = _workspace_with_hook()
+    WT.trust_workspace(ws, [WT.KIND_HOOKS], actor=WT.ACTOR_USER)
+    cfg = H.load_hooks(A._hook_workspace(_perms(locked=False, ws=ws)))
+    assert cfg.by_event.get("PreToolUse"), "workspace hooks stopped working"
+
+
+def test_an_unlocked_but_untrusted_workspace_supplies_none():
+    """The lock was never the only reason to refuse."""
     import delfin.agent.hooks as H
 
     ws = _workspace_with_hook()
     cfg = H.load_hooks(A._hook_workspace(_perms(locked=False, ws=ws)))
-    assert cfg.by_event.get("PreToolUse"), "workspace hooks stopped working"
+    assert not cfg.by_event
 
 
 # The guard used to be two source-text assertions: a NEGATIVE substring

@@ -71,9 +71,22 @@ def test_no_other_mode_is_affected(tmp_path, mode):
     assert out is None or "plan mode" not in out
 
 
-def test_a_session_without_permissions_is_unchanged(tmp_path):
-    assert _doc_executor._gate_mcp_tool(
-        "mcp__github__create_pull_request", {}, None) is None
+def test_a_session_without_permissions_is_not_refused_for_the_mode(tmp_path):
+    """No permissions means no mode, so the PLAN check cannot fire.
+
+    This asserted ``is None`` — that a session without permissions passed
+    the gate untouched — which was true only because the gate ended in a
+    blanket ``return None``. With deny-by-default the call is still
+    refused, for the reason it deserves: ``_permissions=None`` is the
+    profile that "disables write/edit/bash", and reaching a server's own
+    mutation from inside it is the same leak by another route. What the
+    test is about — that plan mode is not blamed for it — is unchanged.
+    """
+    out = _doc_executor._gate_mcp_tool(
+        "mcp__github__create_pull_request", {}, None)
+    assert out is not None
+    assert "plan mode" not in out
+    assert "no permissions are configured" in out
 
 
 # ---------------------------------------------------------------------------

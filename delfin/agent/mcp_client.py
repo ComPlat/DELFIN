@@ -41,9 +41,22 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
 A server is treated as HTTP when ``type`` is ``http``/``sse``/
 ``streamable-http`` or a ``url`` is present; otherwise stdio.
 
-The registry is a singleton — first call to ``get_registry()``
-loads all configured servers; further calls reuse the running
-processes / sessions. Servers fail closed: a crash during discovery
+The user's own config is always read. A WORKSPACE's config is read only
+when the user has explicitly trusted that directory for MCP servers —
+see ``workspace_trust``. A server definition is the most powerful thing
+a folder can ship: it is spawned with the parent environment while the
+tool surface is being assembled, before the model emits a token, so a
+repository the user merely checked out could run a command of its
+choosing by containing one file. What a lack of trust withheld is
+reported on the registry rather than dropped.
+
+A registry is cached per resolved WORKSPACE — the first
+``get_registry(ws)`` loads that workspace's configured servers and
+further calls with the same workspace reuse the running processes /
+sessions. Keyed by nothing, as it was, a second session in another repo
+was silently handed the first repo's servers with the first repo's
+environment, and its own project config was never read. Servers fail
+closed: a crash during discovery
 just leaves that server's tool set empty, and so does silence — every
 stdio read is bounded by ``_RPC_TIMEOUT_S``, with the reason kept in
 the server's ``last_error``.
@@ -57,6 +70,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -68,8 +82,6 @@ from typing import Any, Optional
 
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 _RPC_TIMEOUT_S = 15.0
-# Lines a stdio server may run ahead of the client before it is made to wait.
-_STDOUT_QUEUE_LINES = 1000
 _NAMESPACE_PREFIX = "mcp__"
 _HTTP_TYPES = {"http", "sse", "streamable-http", "streamablehttp"}
 
@@ -79,30 +91,83 @@ def _user_config_path() -> Path:
 
 
 def _project_config_path(workspace: Path) -> Path:
-    return Path(workspace) / ".delfin" / "mcp_servers.json"
+    """Where a workspace's server config lives.
+
+    Derived from the trust registry rather than spelled out here, so the
+    file that SPAWNS processes and the file that needs a trust decision
+    (and a protected glob) cannot drift apart.
+    """
+    from . import workspace_trust as _trust
+    rel = _trust.get_kind(_trust.KIND_MCP_SERVERS).relative_paths[0]
+    return Path(workspace) / rel
 
 
 # Built-in MCP servers that ship WITH DELFIN — always available so a mode like
 # Pipeline works out-of-the-box without each user hand-registering them. The
 # user config can override an entry's command/args or disable it entirely
 # (set ``"enabled": false`` for that name).
+#
+# ``delfin-ops`` is here because the role prompt MANDATES it: the first tool
+# call for any ORCA question must be ``mcp__delfin-ops__extract_*`` or
+# ``parse_orca_output``. Only ``delfin-tools`` was registered, and the config
+# the dashboard auto-injected for the ops server was written to a different
+# file (``~/.delfin/mcp_ops_config.json``) under a different top-level key
+# (``mcpServers``) that reaches only the legacy CLI subprocess — this registry
+# reads ``~/.delfin/mcp_servers.json`` / ``servers``. So the mandated first
+# move answered "unknown MCP server: 'delfin-ops'" and the fallback the prompt
+# forbids was the only thing that worked.
+#
+# ``delfin-docs`` is deliberately NOT here. Every one of its seven tools
+# (search_docs, read_section, list_docs, list_sections, search_calcs,
+# get_calc_info, calc_summary) is already advertised natively under exactly
+# those names and served from the same index by ``_DocToolExecutor``.
+# Registering it would pay for seven duplicate schemas on every request and
+# give the model two names for one thing.
+#
+# ``sys.executable``, not ``"python"``: the interpreter running DELFIN is the
+# one with DELFIN importable, and on a host that only has ``python3`` the
+# literal spawns nothing — which, before the reachability fix below, was
+# indistinguishable from a healthy server with no tools.
 _BUILTIN_SERVERS: dict[str, dict] = {
     "delfin-tools": {
-        "command": "python",
+        "command": sys.executable or "python3",
         "args": ["-m", "delfin.tools.mcp_server"],
+        "enabled": True,
+    },
+    "delfin-ops": {
+        "command": sys.executable or "python3",
+        "args": ["-m", "delfin.ops_server"],
         "enabled": True,
     },
 }
 
 
-def _load_configs(workspace: Path | None) -> dict[str, dict]:
-    """Merge built-in defaults + user-global + project-scoped MCP configs."""
+def _load_configs_with_sources(
+    workspace: Path | None,
+) -> tuple[dict[str, dict], dict[str, str], str]:
+    """``(configs, source-per-server, trust notice)``.
+
+    The trust gate lives HERE, in the loader, and not at the callers:
+    the tool-surface assembly, ``/mcp reload``, the doctor and every
+    future caller reach a workspace's config only through this function,
+    so the question is asked once and cannot be forgotten by the next
+    caller added.
+
+    The source of each entry is carried out with it because ``/mcp``
+    listed only the user's own file — a server a workspace added was
+    spawned and never appeared in the listing at all.
+    """
     out: dict[str, dict] = {
         name: dict(cfg) for name, cfg in _BUILTIN_SERVERS.items()
     }
+    sources: dict[str, str] = {name: "built-in" for name in _BUILTIN_SERVERS}
     paths = [(_user_config_path(), True)]
+    notice = ""
     if workspace:
-        paths.append((_project_config_path(workspace), False))
+        from . import workspace_trust as _trust
+        decision = _trust.gate(_trust.KIND_MCP_SERVERS, workspace)
+        notice = decision.notice
+        paths.extend((p, False) for p in decision.paths)
     for path, is_user in paths:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -129,9 +194,16 @@ def _load_configs(workspace: Path | None) -> dict[str, dict]:
                 continue
             if cfg.get("enabled", True):
                 out[name] = cfg                 # add or override (incl. a builtin)
+                sources[name] = str(path)
             else:
                 out.pop(name, None)             # explicit disable (also disables a builtin)
-    return out
+                sources.pop(name, None)
+    return out, sources, notice
+
+
+def _load_configs(workspace: Path | None) -> dict[str, dict]:
+    """Merge built-in defaults + user-global + trusted project MCP configs."""
+    return _load_configs_with_sources(workspace)[0]
 
 
 def _flatten_content(content: Any) -> str:
@@ -229,60 +301,91 @@ class MCPServer:
     session_id: str = ""        # Mcp-Session-Id, set from the initialize reply
     proc: Optional[subprocess.Popen] = None
     _id_counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    # Guards the process handle, the id draw and the stdin write — and
+    # nothing else. It used to be held across the whole reply wait as
+    # well, and the registry hands one server object to the parent turn
+    # and to every background sub-agent, so a server that accepted and
+    # never answered cost each waiter the full deadline one after the
+    # other: four callers, four times fifteen seconds.
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _initialised: bool = False
     tools: list[MCPTool] = field(default_factory=list)
     last_error: str = ""
-    # Lines drained off the subprocess by ``_reader_lines``; ``None`` is the
-    # EOF sentinel. Bound to the process they came from, so a restart cannot
-    # be served stale output from the previous one.
-    _lines: Optional["queue.Queue"] = None
-    _lines_proc: Optional[subprocess.Popen] = None
+    # Reply slots by request id, filled by the reader thread. Bound to the
+    # process they belong to, so a restart cannot be served stale output
+    # from the previous one.
+    _waiters: dict = field(default_factory=dict)
+    _waiters_lock: threading.Lock = field(default_factory=threading.Lock)
+    _reader_proc: Optional[subprocess.Popen] = None
+    _closed_reason: str = ""
 
     def start(self) -> None:
         if self.transport == "http":
             return  # HTTP is connectionless — nothing to spawn
-        if self.proc is not None and self.proc.poll() is None:
-            return
-        env = dict(os.environ)
-        env.update(self.env or {})
-        try:
-            self.proc = subprocess.Popen(
-                [self.command, *self.args],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env=env, text=True, bufsize=1,
-            )
-        except FileNotFoundError as exc:
-            self.last_error = f"command not found: {self.command} ({exc})"
-            self.proc = None
-        except Exception as exc:    # pragma: no cover
-            self.last_error = f"start failed: {exc}"
-            self.proc = None
+        with self._lock:
+            if self.proc is not None and self.proc.poll() is None:
+                return
+            env = dict(os.environ)
+            env.update(self.env or {})
+            try:
+                self.proc = subprocess.Popen(
+                    [self.command, *self.args],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    env=env, text=True, bufsize=1,
+                )
+                self._closed_reason = ""
+                self._reader_proc = None
+            except FileNotFoundError as exc:
+                self.last_error = f"command not found: {self.command} ({exc})"
+                self.proc = None
+            except Exception as exc:    # pragma: no cover
+                self.last_error = f"start failed: {exc}"
+                self.proc = None
 
     def stop(self) -> None:
+        """Shut the server down. Safe against a concurrent ``_send``.
+
+        The handle is dropped under the lock — clearing it outside meant a
+        caller could be dereferencing ``self.proc.stdin`` at the moment it
+        became ``None``. Terminating is done after the lock is released:
+        waiting two seconds for a child to die is exactly the blocking
+        call this lock must not span."""
         if self.transport == "http":
-            self.session_id = ""
-            self._initialised = False
+            with self._lock:
+                self.session_id = ""
+                self._initialised = False
             return
-        if self.proc is None:
+        with self._lock:
+            proc, self.proc = self.proc, None
+            self._initialised = False
+            self._reader_proc = None
+            self._closed_reason = "server stopped"
+        if proc is None:
             return
         try:
-            self.proc.terminate()
-            self.proc.wait(timeout=2)
+            proc.terminate()
+            proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
+            proc.kill()
         except Exception:    # pragma: no cover
             pass
-        self.proc = None
-        self._initialised = False
-        # Drop the reader's queue with the process it belonged to, so a
-        # restart cannot be handed lines the previous process left behind.
-        self._lines = None
-        self._lines_proc = None
+        # Anyone still waiting is waiting on a process that is gone.
+        self._release_waiters("server stopped")
 
-    def _reader_lines(self) -> "queue.Queue":
-        """Queue of stdout lines, filled by a daemon thread we may abandon.
+    def _release_waiters(self, reason: str) -> None:
+        """Hand every outstanding caller the same ending. Never raises."""
+        with self._waiters_lock:
+            slots = list(self._waiters.values())
+            self._waiters.clear()
+        for slot in slots:
+            try:
+                slot.put_nowait({"error": {"message": reason}})
+            except Exception:   # pragma: no cover - slot already answered
+                pass
+
+    def _ensure_reader(self, proc: subprocess.Popen) -> None:
+        """Start the daemon that reads this process's stdout, once.
 
         The deadline in ``_send`` has to be enforceable while NOTHING is
         arriving, and a blocking ``readline()`` cannot be interrupted: it
@@ -293,25 +396,24 @@ class MCPServer:
         the ``TextIOWrapper`` already holds a complete buffered line, and
         putting the fd in non-blocking mode makes that same wrapper raise on
         a short read instead of waiting. Moving the blocking read to a thread
-        keeps the stream exactly as it was and lets the caller wait on
-        ``Queue.get(timeout=...)`` -- on something it is allowed to give up
-        on -- instead of on the kernel. The thread is a daemon and holds no
+        keeps the stream exactly as it was and lets each caller wait on a
+        slot of its own -- on something it is allowed to give up on --
+        instead of on the kernel. The thread is a daemon and holds no server
         lock, so a server that never speaks again costs one parked thread
         until the process is stopped rather than the turn it was blocking.
+
+        This thread also does the DISPATCH: it matches each reply to the
+        request that is waiting for it. Draining a shared queue inside
+        ``_send`` meant the reply belonging to caller B could only be seen
+        by whoever held the lock, which is why the wait had to hold it.
+        Memory stays bounded without the old queue cap for a better
+        reason than before: a line nobody is waiting for is dropped where
+        it is read rather than buffered.
         """
-        proc = self.proc
-        if self._lines is not None and self._lines_proc is proc:
-            return self._lines
-        # Bounded on purpose. Reading only inside ``_send`` meant an idle
-        # client left the server's output in the OS pipe buffer, which stops
-        # a server that floods; draining into an unbounded queue would remove
-        # that brake and let one chatty server grow the agent's memory instead
-        # of its own. Full queue -> the pump blocks -> the pipe fills -> the
-        # server waits, exactly as before.
-        lines: "queue.Queue" = queue.Queue(maxsize=_STDOUT_QUEUE_LINES)
-        self._lines = lines
-        self._lines_proc = proc
-        stdout = proc.stdout if proc is not None else None
+        if self._reader_proc is proc:
+            return
+        self._reader_proc = proc
+        stdout = proc.stdout
 
         def _pump() -> None:
             try:
@@ -319,66 +421,82 @@ class MCPServer:
                     raw = stdout.readline()     # type: ignore[union-attr]
                     if not raw:
                         break
-                    lines.put(raw)
+                    self._deliver(raw)
             except Exception:   # pragma: no cover - pipe torn down under us
                 pass
             finally:
-                lines.put(None)                 # EOF sentinel
+                # EOF is terminal for this process: recorded so every later
+                # call sees it at once, rather than each waiting out the
+                # budget on a pipe that can no longer produce anything.
+                if self._reader_proc is proc:
+                    self._closed_reason = "EOF from server"
+                self._release_waiters("EOF from server")
         threading.Thread(
             target=_pump, name=f"mcp-reader-{self.name}", daemon=True,
         ).start()
-        return lines
+
+    def _deliver(self, raw: str) -> None:
+        """Route one stdout line to the caller waiting on its id."""
+        raw = raw.strip()
+        if not raw:
+            return
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(msg, dict):
+            return
+        rid = msg.get("id")
+        if rid is None:
+            return          # a notification: nobody is waiting for it
+        with self._waiters_lock:
+            slot = self._waiters.pop(rid, None)
+        if slot is None:
+            return          # a reply the caller already gave up on
+        try:
+            slot.put_nowait(msg)
+        except Exception:   # pragma: no cover
+            pass
 
     def _send(self, method: str, params: dict | None = None) -> dict:
         if self.transport == "http":
             return self._send_http(method, params)
-        if self.proc is None or self.proc.poll() is not None:
-            return {"error": {"message": "server not running"}}
-        rid = next(self._id_counter)
-        req = {
-            "jsonrpc": "2.0",
-            "id": rid,
-            "method": method,
-            "params": params or {},
-        }
-        line = json.dumps(req) + "\n"
+        req_id: Any
+        slot: "queue.Queue" = queue.Queue(maxsize=1)
+        # The lock covers the write and the id registration. The WAIT is
+        # deliberately outside it: it is this caller's wait, and holding
+        # the lock across it made every other caller of the same server
+        # queue up behind the full deadline.
         with self._lock:
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                return {"error": {"message": "server not running"}}
+            if self._closed_reason:
+                return {"error": {"message": self._closed_reason}}
+            self._ensure_reader(proc)
+            req_id = next(self._id_counter)
+            with self._waiters_lock:
+                self._waiters[req_id] = slot
+            line = json.dumps({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "method": method,
+                "params": params or {},
+            }) + "\n"
             try:
-                assert self.proc.stdin is not None
-                self.proc.stdin.write(line)
-                self.proc.stdin.flush()
+                assert proc.stdin is not None
+                proc.stdin.write(line)
+                proc.stdin.flush()
             except (BrokenPipeError, OSError) as exc:
+                with self._waiters_lock:
+                    self._waiters.pop(req_id, None)
                 return {"error": {"message": f"write failed: {exc}"}}
-            t_end = time.monotonic() + _RPC_TIMEOUT_S
-            assert self.proc.stdout is not None
-            lines = self._reader_lines()
-            while True:
-                remaining = t_end - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    raw = lines.get(timeout=remaining)
-                except queue.Empty:
-                    break
-                if raw is None:
-                    # EOF is terminal for this process: put the sentinel back
-                    # so every later call sees it too, rather than the first
-                    # one consuming it and the rest waiting out the budget on
-                    # a pipe that can no longer produce anything.
-                    lines.put(None)
-                    return {"error": {"message": "EOF from server"}}
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if msg.get("id") == rid:
-                    return msg
-                # ignore notifications / unrelated messages -- including a
-                # reply that a PREVIOUS call already gave up on, which the
-                # id check discards here.
+        try:
+            return slot.get(timeout=_RPC_TIMEOUT_S)
+        except queue.Empty:
+            pass
+        with self._waiters_lock:
+            self._waiters.pop(req_id, None)
         # Recorded, not just returned: a server that accepts a request and
         # never answers looks identical to a healthy one from the outside,
         # and this field is the only place the reason survives the empty
@@ -393,35 +511,41 @@ class MCPServer:
         *, is_notification: bool = False,
     ) -> dict:
         """Streamable-HTTP JSON-RPC. Handles JSON and SSE responses and the
-        Mcp-Session-Id lifecycle. Notifications return ``{}``."""
+        Mcp-Session-Id lifecycle. Notifications return ``{}``.
+
+        The lock covers the id draw and the session-id read/write, not the
+        request: one server object is shared by the whole process, and a
+        slow endpoint held every other caller for the full timeout each,
+        one after another."""
         body: dict[str, Any] = {"jsonrpc": "2.0", "method": method,
                                 "params": params or {}}
         rid: Any = None
-        if not is_notification:
-            rid = next(self._id_counter)
-            body["id"] = rid
-        data = json.dumps(body).encode("utf-8")
         req_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
         req_headers.update(self.headers or {})
-        if self.session_id:
-            req_headers["Mcp-Session-Id"] = self.session_id
+        with self._lock:
+            if not is_notification:
+                rid = next(self._id_counter)
+                body["id"] = rid
+            if self.session_id:
+                req_headers["Mcp-Session-Id"] = self.session_id
+        data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             self.url, data=data, headers=req_headers, method="POST")
-        with self._lock:
-            try:
-                with urllib.request.urlopen(req, timeout=_RPC_TIMEOUT_S) as resp:
-                    sid = resp.headers.get("Mcp-Session-Id")
-                    if sid:
+        try:
+            with urllib.request.urlopen(req, timeout=_RPC_TIMEOUT_S) as resp:
+                sid = resp.headers.get("Mcp-Session-Id")
+                if sid:
+                    with self._lock:
                         self.session_id = sid
-                    ctype = (resp.headers.get("Content-Type") or "").lower()
-                    raw = resp.read().decode("utf-8", "replace")
-            except urllib.error.HTTPError as exc:
-                return {"error": {"message": f"http {exc.code}: {exc.reason}"}}
-            except Exception as exc:
-                return {"error": {"message": f"http request failed: {exc}"}}
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            return {"error": {"message": f"http {exc.code}: {exc.reason}"}}
+        except Exception as exc:
+            return {"error": {"message": f"http request failed: {exc}"}}
         if is_notification:
             return {}
         if "text/event-stream" in ctype:
@@ -441,12 +565,16 @@ class MCPServer:
             self._send_http(method, params, is_notification=True)
             return
         try:
-            assert self.proc is not None and self.proc.stdin is not None
             msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
             if params:
                 msg["params"] = params
-            self.proc.stdin.write(json.dumps(msg) + "\n")
-            self.proc.stdin.flush()
+            # Under the lock like every other write: interleaving with a
+            # concurrent _send would put two half-lines on one pipe.
+            with self._lock:
+                proc = self.proc
+                assert proc is not None and proc.stdin is not None
+                proc.stdin.write(json.dumps(msg) + "\n")
+                proc.stdin.flush()
         except Exception as exc:    # pragma: no cover
             self.last_error = f"{method} notify failed: {exc}"
 
@@ -686,15 +814,26 @@ class MCPRegistry:
     workspace: Optional[Path] = None
     loaded: bool = False
     last_discovery: dict = field(default_factory=dict)
+    # Config file each server came from, by name. ``/mcp`` read only the
+    # user's own file, so a server a workspace contributed was spawned
+    # and never listed — invisible in exactly the case that matters.
+    sources: dict[str, str] = field(default_factory=dict)
+    # What a lack of trust withheld, in one sentence, or "".
+    trust_notice: str = ""
 
     def load(self, workspace: Path | None = None) -> None:
-        configs = _load_configs(workspace)
+        configs, sources, notice = _load_configs_with_sources(workspace)
         for name, cfg in configs.items():
             if name in self.servers:
                 continue
             self.servers[name] = _server_from_config(name, cfg)
+        self.sources.update(sources)
+        self.trust_notice = notice
         self.workspace = Path(workspace) if workspace else self.workspace
         self.loaded = True
+
+    def source_of(self, name: str) -> str:
+        return self.sources.get(name, "")
 
     def discover_all(self, budget: "_DiscoveryBudget | None" = None
                      ) -> list[MCPTool]:
@@ -778,10 +917,14 @@ class MCPRegistry:
 
         Empty when it did. A discovery that quietly returned fewer tools
         than the config declares is indistinguishable from a config with
-        fewer tools in it, and that is the state this reports."""
+        fewer tools in it, and that is the state this reports.
+
+        The trust notice rides along: servers a workspace declared and
+        the user has not trusted are the other reason the surface is
+        smaller than the configuration reads."""
         rep = self.last_discovery or {}
         if not rep.get("skipped") and not rep.get("failed"):
-            return ""
+            return self.trust_notice
         parts = []
         if rep.get("skipped"):
             parts.append(
@@ -791,9 +934,10 @@ class MCPRegistry:
         if rep.get("failed"):
             parts.append(f"{len(rep['failed'])} did not answer: "
                          + "; ".join(rep["failed"]))
-        return ("MCP discovery took "
+        text = ("MCP discovery took "
                 f"{rep.get('seconds')}s and did not complete: "
                 + ". ".join(parts) + ".")
+        return f"{text} {self.trust_notice}".strip()
 
     def read_resource(self, server: str, uri: str) -> str:
         srv = self.servers.get(server)
@@ -820,7 +964,12 @@ class MCPRegistry:
 
 
 _REGISTRY_LOCK = threading.Lock()
-_REGISTRY: MCPRegistry | None = None
+# One registry PER WORKSPACE. It used to be a single global keyed by
+# nothing: whoever called first fixed the configuration, and a second
+# session in another repo silently got the first repo's servers, spawned
+# with the first repo's environment — its own project config was never
+# read and there was no symptom to see.
+_REGISTRIES: dict[str, MCPRegistry] = {}
 
 
 def count_live_tools(registry: "MCPRegistry") -> int:
@@ -847,42 +996,114 @@ def count_live_tools(registry: "MCPRegistry") -> int:
 def unreachable_servers(registry: "MCPRegistry") -> list[str]:
     """``name: reason`` for every server that could not be asked.
 
-    MCPServer.start already records the cause in ``last_error`` and
-    nothing surfaced it, so a server that failed to start looked exactly
-    like one that worked."""
+    The verdict comes from ``last_error`` AFTER the call, not from an
+    exception. ``list_tools`` fails CLOSED by contract — a missing binary,
+    a server that exits on startup, a refused HTTP request, a timeout: each
+    records the cause in ``last_error`` and returns ``[]``. Deciding by
+    ``except`` therefore never fired, and the list was empty for a dead
+    server exactly as much as for a healthy one, while the doctor printed
+    "configured + reachable" and the dashboard printed "0 tools, no
+    problems". Measured on a server with a missing binary: ``list_tools ->
+    []``, ``last_error -> "command not found: …"``, ``unreachable_servers
+    -> []``.
+
+    A server that answered WITH tools is reachable whatever an earlier call
+    left behind, so a stale error is cleared rather than reported. A server
+    that answered with an empty list and no error is not a failure — it is
+    a server that offers nothing.
+    """
     out: list[str] = []
     for name, server in (getattr(registry, "servers", None) or {}).items():
+        tools: Any = None
+        reason = ""
         try:
-            server.list_tools()
-            continue
+            tools = server.list_tools()
         except Exception as exc:
-            reason = ""
-            try:
-                reason = str(getattr(server, "last_error", "") or "")
-            except Exception:
-                reason = ""
-            out.append(f"{name}: {reason or exc}")
+            reason = str(exc)
+        if tools:
+            continue
+        try:
+            recorded = str(getattr(server, "last_error", "") or "")
+        except Exception:
+            recorded = ""
+        reason = recorded or reason
+        if reason:
+            out.append(f"{name}: {reason}")
     return out
 
 
+def registry_key(workspace: Path | None = None) -> str:
+    """The identity a registry is cached under: the resolved workspace.
+
+    Resolved, so ``/repo``, ``/repo/`` and a symlink to it are one entry
+    rather than three sets of server subprocesses."""
+    if not workspace:
+        return ""
+    try:
+        return str(Path(workspace).expanduser().resolve())
+    except (OSError, ValueError):
+        return str(workspace)
+
+
 def get_registry(workspace: Path | None = None) -> MCPRegistry:
-    """Return the process-wide MCP registry, lazily creating it."""
-    global _REGISTRY
+    """Return the MCP registry for ``workspace``, lazily creating it."""
+    key = registry_key(workspace)
     with _REGISTRY_LOCK:
-        if _REGISTRY is None:
-            _REGISTRY = MCPRegistry()
-        if not _REGISTRY.loaded:
-            _REGISTRY.load(workspace)
-    return _REGISTRY
+        registry = _REGISTRIES.get(key)
+        if registry is None:
+            registry = _REGISTRIES[key] = MCPRegistry()
+        if not registry.loaded:
+            registry.load(workspace)
+    return registry
 
 
-def reset_registry() -> None:
-    """Stop and clear the global registry. Used by tests."""
-    global _REGISTRY
+def reset_registry(workspace: Path | None = None) -> None:
+    """Stop and clear registries — one workspace's, or all of them.
+
+    Used by ``/mcp reload`` and by tests. Shutdown happens after the lock
+    is released: it terminates subprocesses and waits on them, which is
+    not work to hold a lock across."""
     with _REGISTRY_LOCK:
-        if _REGISTRY is not None:
-            _REGISTRY.shutdown()
-        _REGISTRY = None
+        if workspace is None:
+            stopping = list(_REGISTRIES.values())
+            _REGISTRIES.clear()
+        else:
+            found = _REGISTRIES.pop(registry_key(workspace), None)
+            stopping = [found] if found is not None else []
+    for registry in stopping:
+        try:
+            registry.shutdown()
+        except Exception:
+            pass
+
+
+def effective_servers(workspace: Path | None) -> list[dict]:
+    """Every server that WOULD load, with the file it came from.
+
+    The ``/mcp`` listing read the user-global config directly, so it
+    could not show a builtin, could not show a workspace's entry, and
+    could not say which file any line came from. This is what actually
+    loads, named by source.
+    """
+    configs, sources, _notice = _load_configs_with_sources(workspace)
+    out: list[dict] = []
+    for name, cfg in configs.items():
+        out.append({
+            "name": name,
+            "command": cfg.get("command", ""),
+            "args": list(cfg.get("args") or []),
+            "env": dict(cfg.get("env") or {}),
+            "url": cfg.get("url", ""),
+            "enabled": bool(cfg.get("enabled", True)),
+            "source": sources.get(name, ""),
+        })
+    out.sort(key=lambda r: r["name"])
+    return out
+
+
+def trust_notice(workspace: Path | None) -> str:
+    """What a lack of trust withheld for *workspace*, or ""."""
+    return _load_configs_with_sources(workspace)[2]
 
 
 __all__ = [
@@ -891,6 +1112,9 @@ __all__ = [
     "MCPPrompt",
     "MCPServer",
     "MCPRegistry",
+    "effective_servers",
     "get_registry",
+    "registry_key",
     "reset_registry",
+    "trust_notice",
 ]

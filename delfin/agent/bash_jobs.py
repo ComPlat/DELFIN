@@ -39,13 +39,22 @@ each finished job is reported exactly once across drains and restarts.
 
 The job's stdout / stderr tempfiles are opened with ``unbuffered=False``
 in line-buffered mode so the agent can read partial progress while a
-script is still running. Tempfiles are removed when the job is
-explicitly killed or when the registry shuts down. They survive a
-crash so post-mortem inspection is possible.
+script is still running.
+
+They are NOT removed when the job ends, is killed, or when the process
+exits: ``bash_output`` is read after a job finishes, and reading a killed
+job's output is how one finds out why it was killed. Their single
+cleanup point is the registry record's ~7-day prune, which is the last
+moment anything still knows where they are. (This paragraph used to claim
+removal on kill and on shutdown; neither existed, and 6740 orphaned
+``kit_bg_*`` files had accumulated in ``/tmp`` by the time it was
+checked. They are 0600, so the content stays private to the owner.)
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import secrets
@@ -150,8 +159,14 @@ _RC_UNKNOWN = -257                   # poll() sentinel: finished, code unknown
 # bash_output / bash_kill carry no workspace argument).
 _INDEX_PATH = Path.home() / ".delfin" / "bash_jobs_index.json"
 # Serializes read-modify-write cycles on the registry/index files within
-# this process (watchdog threads vs. drain/status calls).
+# this process (watchdog threads vs. drain/status calls). Cross-process
+# exclusion is the sidecar flock below — a thread lock says nothing about
+# the second dashboard.
 _FILE_LOCK = threading.Lock()
+_LOCK_SUFFIX = ".lock"
+# How long a cycle waits for the lock before proceeding without it. A
+# bookkeeping file must never become a way to stop the agent.
+_LOCK_TIMEOUT_S = 5.0
 
 
 @dataclass
@@ -204,12 +219,71 @@ def _registry_path(workspace: str | Path) -> Path:
     return Path(workspace).expanduser() / _REGISTRY_DIRNAME / _REGISTRY_FILENAME
 
 
+@contextlib.contextmanager
+def cross_process_lock(path: Path):
+    """Hold an exclusive lock over one state file — across PROCESSES.
+
+    ``os.replace`` makes a write atomic, and that is all it does: it stops
+    a reader seeing a torn file. It has nothing to say about two processes
+    that both read the file, both mutate their own copy in memory, and
+    both write it back — the second write IS the first one's update, gone.
+    Measured on the attention inbox before this existed: four processes
+    emitting forty events each left 48 of 160 records. Same shape on the
+    job registry, where a lost update makes a live job unaddressable, so
+    ``bash_status`` from another process answers "unknown job_id".
+
+    Wrap the whole load → mutate → write cycle, not the write. The lock
+    lives in a sidecar beside the data so taking it can never truncate,
+    create or replace the file it guards, and it is bounded: a wait that
+    cannot end would turn a bookkeeping file into a way to stop the
+    agent, so after the deadline the caller proceeds unlocked — exactly
+    as it did before this existed.
+    """
+    handle = None
+    try:
+        lock_path = Path(str(path) + _LOCK_SUFFIX)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+")
+        deadline = time.monotonic() + _LOCK_TIMEOUT_S
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    handle.close()
+                    handle = None
+                    break
+                time.sleep(0.005)
+    except Exception:
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
 def _atomic_write_json(path: Path, data: dict) -> None:
     """Write JSON atomically (temp file + ``os.replace``).
 
     Same crash-safe pattern as ``memory_store._atomic_write``: a reader
     racing the writer (dashboard vs. watchdog thread vs. a second CLI
-    session) must never observe an empty or torn registry file."""
+    session) must never observe an empty or torn registry file. Atomic
+    against a READER; ``cross_process_lock`` is what makes a read-modify-
+    write cycle atomic against another WRITER."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
@@ -236,13 +310,58 @@ def _load_registry_file(workspace: str | Path) -> dict:
     return data
 
 
+def _base_child_env() -> dict:
+    """The environment a background command starts from.
+
+    Foreground bash already ran on a scrubbed environment; this path took
+    ``os.environ.copy()``, so backgrounding a command — a choice the MODEL
+    makes, ``bash_background`` being model-callable — handed the child the
+    provider key the agent itself is running on. Anything that prints its
+    environment then wrote that key into the job's output file and returned
+    it as a tool result.
+
+    Falls back to the raw environment only if the scrubber cannot be
+    imported at all, which would mean a broken install rather than a
+    running agent.
+    """
+    try:
+        from .api_client import _scrubbed_bash_env
+        return _scrubbed_bash_env()
+    except Exception:
+        return os.environ.copy()
+
+
+def _unlink_job_outputs(rec: dict) -> None:
+    """Remove a finished job's stdout/stderr tempfiles.
+
+    Nothing ever deleted these: 6740 orphaned ``kit_bg_*`` files were
+    observed in ``/tmp``. They are 0600, so no third party reads them, but
+    they hold whatever the command printed and they accumulate without
+    limit. Best-effort — a file already gone is the expected case.
+    """
+    for key in ("stdout_path", "stderr_path"):
+        raw = (rec or {}).get(key)
+        if not raw:
+            continue
+        try:
+            Path(str(raw)).unlink()
+        except (OSError, ValueError):
+            pass
+
+
 def _prune_old_records(jobs: dict, now: float) -> bool:
     """Drop records started more than ~7 days ago. The 24 h hard timeout
-    guarantees any such job is long over. Returns True when pruned."""
+    guarantees any such job is long over. Returns True when pruned.
+
+    Dropping the record is also the last moment anything knows where the
+    job's output files are, so they are unlinked here — otherwise the only
+    map to them is gone and they stay in ``/tmp`` forever.
+    """
     cutoff = now - _REGISTRY_MAX_AGE_S
     stale = [jid for jid, rec in jobs.items()
              if float((rec or {}).get("started_at") or 0.0) < cutoff]
     for jid in stale:
+        _unlink_job_outputs(jobs.get(jid) or {})
         jobs.pop(jid, None)
     return bool(stale)
 
@@ -251,11 +370,12 @@ def _persist_job_start(workspace: str, record: dict) -> None:
     """Write the just-started job into the workspace registry. Best-effort —
     persistence must never prevent a job from starting."""
     try:
-        with _FILE_LOCK:
+        path = _registry_path(workspace)
+        with _FILE_LOCK, cross_process_lock(path):
             data = _load_registry_file(workspace)
             _prune_old_records(data["jobs"], time.time())
             data["jobs"][record["job_id"]] = record
-            _atomic_write_json(_registry_path(workspace), data)
+            _atomic_write_json(path, data)
     except Exception:
         pass
 
@@ -263,13 +383,14 @@ def _persist_job_start(workspace: str, record: dict) -> None:
 def _update_job_record(workspace: str | Path, job_id: str, **fields) -> None:
     """Merge ``fields`` into one job's persisted record. Best-effort."""
     try:
-        with _FILE_LOCK:
+        path = _registry_path(workspace)
+        with _FILE_LOCK, cross_process_lock(path):
             data = _load_registry_file(workspace)
             rec = data["jobs"].get(job_id)
             if rec is None:
                 return
             rec.update(fields)
-            _atomic_write_json(_registry_path(workspace), data)
+            _atomic_write_json(path, data)
     except Exception:
         pass
 
@@ -308,9 +429,14 @@ def _pid_alive(pid: int, start_ticks: Optional[int] = None) -> bool:
 
 def _note_job_workspace(job_id: str, workspace: str) -> None:
     """Record job_id → workspace in the per-user locator index (pruned to
-    the same ~7-day horizon as the registry). Best-effort."""
+    the same ~7-day horizon as the registry). Best-effort.
+
+    Locked across processes: this index is per USER, so every session on
+    the machine writes it, and a lost update here leaves a live job with
+    no route back to its registry — ``bash_status`` from another process
+    then answers "unknown job_id" about a job that is running fine."""
     try:
-        with _FILE_LOCK:
+        with _FILE_LOCK, cross_process_lock(_INDEX_PATH):
             try:
                 data = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))
             except Exception:
@@ -482,7 +608,7 @@ class _Registry:
         sout = open(stdout_path, "w", buffering=1)   # line-buffered
         serr = open(stderr_path, "w", buffering=1)
 
-        run_env = os.environ.copy()
+        run_env = _base_child_env()
         run_env.setdefault("LC_ALL", "C.UTF-8")
         run_env.setdefault("LANG", "C.UTF-8")
         # Buffering off in the child Python so output appears live.
@@ -680,7 +806,11 @@ def drain_finished_events(workspace: str | Path) -> list[dict]:
     ``stdout_tail`` / ``stderr_tail``."""
     events: list[dict] = []
     try:
-        with _FILE_LOCK:
+        # Locked around the whole cycle: the acknowledged flag is set here
+        # and the exit code is written by the watchdog, and without this
+        # the two overwrite each other — whichever loses is a completion
+        # announced twice or a job that never reports finishing.
+        with _FILE_LOCK, cross_process_lock(_registry_path(workspace)):
             data = _load_registry_file(workspace)
             jobs = data.get("jobs", {})
             now = time.time()

@@ -117,12 +117,65 @@ def _delfin_version() -> str:
         return ""
 
 
-def settings_snapshot(settings: dict | None = None) -> dict:
-    """Return a redacted, debugging-relevant slice of the settings.
+# The agent settings a maintainer needs to reproduce a bad turn. This is an
+# ALLOW-list, and that direction is the whole point: the previous code took
+# the agent block wholesale, so every field anyone ever adds to it was
+# published by default. The live settings file on the audited machine
+# already carried an ``agent.api_key`` field — legacy, empty, read by
+# nothing — which is exactly the shape that would have shipped.
+_AGENT_SETTINGS_ALLOWED = frozenset({
+    "action_repeat_limit", "auto_memory", "auto_verify",
+    "auto_verify_command", "backend", "bash_isolation", "bug_archive_dir",
+    "compact_resets_cli", "cost_soft_limit_usd", "effort", "eval_loop",
+    "job_monitor", "max_action_rounds", "max_background_jobs", "max_tokens",
+    "max_tool_rounds", "output_guard", "permission_mode",
+    "permission_profile", "provider", "model", "role_models", "routing",
+    "session_retention_days", "state_retention_days", "subagents",
+})
 
-    Includes the agent + runtime-backend + transfer-target sections (which
-    shape agent behaviour) but NEVER secrets: no API keys (those live in
-    credentials/env, not settings) and no SSH password fields.
+# Key names whose VALUE is never published, at any depth. The allow-list
+# above governs the top level; several allowed entries are nested dicts
+# (routing, subagents, role_models) that a future release could extend with
+# a per-provider credential, and a nested secret is not something the
+# top-level list can see.
+_SECRET_KEY_HINT = re.compile(
+    r"(?i)(api[_-]?key|apikey|secret|password|passwd|token|credential"
+    r"|passphrase|private[_-]?key|auth)"
+)
+
+_REDACTED = "[redacted:settings-key]"
+
+
+def _scrub_settings_value(value: Any, depth: int = 0) -> Any:
+    """Drop credential-shaped keys at any depth of an allowed value."""
+    if depth > 12:
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and _SECRET_KEY_HINT.search(k):
+                out[k] = _REDACTED
+            else:
+                out[k] = _scrub_settings_value(v, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_scrub_settings_value(v, depth + 1) for v in value]
+    return value
+
+
+def settings_snapshot(settings: dict | None = None) -> dict:
+    """Return a debugging-relevant slice of the settings.
+
+    The agent section is filtered through :data:`_AGENT_SETTINGS_ALLOWED`,
+    so a field nobody listed is absent rather than published; every allowed
+    value is then scrubbed of credential-shaped keys at any depth.  The
+    runtime backend and the transfer TARGET (host/user/path/port, never a
+    password) come along because they shape the run.
+
+    This report is made group-readable and rsynced into a shared archive,
+    so "no secrets" has to be a property of the construction, not of a
+    docstring: a report is not the place to find out that a settings field
+    turned out to hold a credential.
     """
     if settings is None:
         try:
@@ -131,7 +184,15 @@ def settings_snapshot(settings: dict | None = None) -> dict:
         except Exception:
             settings = {}
     settings = settings or {}
-    agent = dict((settings.get("agent") or {}))
+    raw_agent = settings.get("agent") or {}
+    agent: dict = {}
+    if isinstance(raw_agent, dict):
+        for key, value in raw_agent.items():
+            if key not in _AGENT_SETTINGS_ALLOWED:
+                continue
+            if _SECRET_KEY_HINT.search(str(key)):
+                continue        # belt and braces: never allow-list a secret
+            agent[key] = _scrub_settings_value(value)
     runtime = settings.get("runtime") or {}
     transfer = settings.get("transfer") or {}
     return {
@@ -144,7 +205,7 @@ def settings_snapshot(settings: dict | None = None) -> dict:
             "remote_path": transfer.get("remote_path", ""),
             "port": transfer.get("port", 22),
         },
-        "features": settings.get("features") or {},
+        "features": _scrub_settings_value(settings.get("features") or {}),
     }
 
 
@@ -291,6 +352,34 @@ def _bundle_files(
         except Exception:
             pass
     return records
+
+
+def _guarded_write(path: Path, text: str) -> int:
+    """Write a rendered report file with the secret redactor applied.
+
+    Everything that reaches this function is about to be chgrp'ed to the
+    archive's maintainer group, given group-read, and rsynced into a shared
+    archive: the system prompt, the raw traceback, every chat and engine
+    message, and the tool trace with its raw tool outputs.  The output
+    guard existed and ran on the final ANSWER only — nothing inspected any
+    of this.
+
+    Returns the number of redactions.  A failing guard must not cost the
+    report, so on any error the unguarded text is still written: losing the
+    bug report is the worse outcome, and the caller reports the count.
+    """
+    guarded = text
+    findings: list = []
+    try:
+        from .output_guard import run_output_guards
+        result = run_output_guards(text)
+        guarded = result.text
+        findings = [f for f in result.findings
+                    if f.get("check") == "secret_redaction"]
+    except Exception:
+        guarded = text
+    path.write_text(guarded, encoding="utf-8")
+    return len(findings)
 
 
 def _report_dirname(user: str, session_id: str) -> str:
@@ -507,9 +596,10 @@ def write_bug_report(
         from . import tool_trace as _tt
         tool_trace = _tt.read(trace_session or session_id)
         if tool_trace:
-            (report_dir / "tool_trace.jsonl").write_text(
+            _guarded_write(
+                report_dir / "tool_trace.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False) for e in tool_trace)
-                + "\n", encoding="utf-8")
+                + "\n")
     except Exception:
         tool_trace = []
 
@@ -521,9 +611,10 @@ def write_bug_report(
         from . import turn_metrics as _tm
         turn_metrics = _tm.read(trace_session or session_id)
         if turn_metrics:
-            (report_dir / "turn_metrics.jsonl").write_text(
-                "\n".join(json.dumps(e, ensure_ascii=False) for e in turn_metrics)
-                + "\n", encoding="utf-8")
+            _guarded_write(
+                report_dir / "turn_metrics.jsonl",
+                "\n".join(json.dumps(e, ensure_ascii=False)
+                          for e in turn_metrics) + "\n")
     except Exception:
         turn_metrics = []
 
@@ -543,10 +634,13 @@ def write_bug_report(
         "last_compaction_info": last_compaction_info or {},
     }
 
-    (report_dir / "report.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
-    (report_dir / "report.md").write_text(
+    # Redact BEFORE _make_group_readable — that call is the moment the
+    # report stops being private.
+    n_redacted = _guarded_write(
+        report_dir / "report.json",
+        json.dumps(payload, ensure_ascii=False, indent=2))
+    n_redacted += _guarded_write(
+        report_dir / "report.md",
         _render_markdown(
             meta, chat_messages or [],
             error_text=error_text,
@@ -556,8 +650,16 @@ def write_bug_report(
             tool_trace=tool_trace,
             turn_metrics=turn_metrics,
         ),
-        encoding="utf-8",
     )
+    if n_redacted:
+        try:
+            (report_dir / "REDACTIONS.txt").write_text(
+                f"{n_redacted} credential-shaped value(s) were redacted from "
+                "this report before it left the writer's machine.\n"
+                "Ask the reporter directly if a redacted value is needed to "
+                "reproduce.\n", encoding="utf-8")
+        except OSError:
+            pass
     _make_group_readable(report_dir)
     return report_dir
 

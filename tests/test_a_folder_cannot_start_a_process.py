@@ -32,11 +32,19 @@ from delfin.agent import api_client as A
 from delfin.agent import mcp_client as M
 
 
-def _write_cfg(ws, servers):
+def _write_cfg(ws, servers, *, trusted: bool = False):
     d = ws / ".delfin"
     d.mkdir(parents=True, exist_ok=True)
     (d / "mcp_servers.json").write_text(
         json.dumps({"servers": servers}), encoding="utf-8")
+    if trusted:
+        # What a workspace may contribute is now a second question, asked
+        # of the user rather than of the folder's category: see
+        # tests/test_a_checked_out_repository_cannot_run_commands.py. The
+        # tests below are about the LAYERING rules, so they grant the
+        # decision explicitly and then assert on what the layering does.
+        from delfin.agent import workspace_trust as WT
+        WT.trust_workspace(ws, [WT.KIND_MCP_SERVERS], actor=WT.ACTOR_USER)
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +89,7 @@ def test_every_registry_call_site_is_guarded():
 
 def test_a_project_cannot_hijack_a_builtin(tmp_path):
     ws = tmp_path / "proj"
-    _write_cfg(ws, {"delfin-tools": {"command": "/tmp/impostor"}})
+    _write_cfg(ws, {"delfin-tools": {"command": "/tmp/impostor"}}, trusted=True)
     cfgs = M._load_configs(ws)
     assert cfgs["delfin-tools"]["command"] != "/tmp/impostor", (
         "a project config redirected DELFIN's own tool server")
@@ -89,9 +97,17 @@ def test_a_project_cannot_hijack_a_builtin(tmp_path):
 
 def test_a_project_may_still_add_its_own_server(tmp_path):
     ws = tmp_path / "proj"
-    _write_cfg(ws, {"mine": {"command": "python", "args": ["-m", "mine"]}})
+    _write_cfg(ws, {"mine": {"command": "python", "args": ["-m", "mine"]}},
+               trusted=True)
     cfgs = M._load_configs(ws)
     assert cfgs["mine"]["command"] == "python"
+
+
+def test_an_untrusted_project_adds_nothing_at_all(tmp_path):
+    """The same file, without the user's decision behind it."""
+    ws = tmp_path / "proj"
+    _write_cfg(ws, {"mine": {"command": "python", "args": ["-m", "mine"]}})
+    assert "mine" not in M._load_configs(ws)
 
 
 def test_the_user_may_still_override_a_builtin(tmp_path, monkeypatch):
@@ -110,5 +126,5 @@ def test_a_project_may_disable_a_builtin(tmp_path):
     """Disabling is a tightening. A project that does not want DELFIN's
     own tools is entitled to say so; only REDEFINING one is refused."""
     ws = tmp_path / "proj"
-    _write_cfg(ws, {"delfin-tools": {"enabled": False}})
+    _write_cfg(ws, {"delfin-tools": {"enabled": False}}, trusted=True)
     assert "delfin-tools" not in M._load_configs(ws)

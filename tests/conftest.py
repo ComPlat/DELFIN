@@ -71,6 +71,17 @@ def _the_suite_does_not_write_into_the_checkout():
 
 
 @pytest.fixture(autouse=True)
+def _reset_workspace_trust_caches():
+    """Trust state is process-global: a parsed store and a record of which
+    refusals have already been reported. Both would otherwise leak from one
+    test's tmp workspace into the next one's assertions."""
+    from delfin.agent import workspace_trust as wt
+    wt.reset_announcements()
+    yield
+    wt.reset_announcements()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_subagent_state(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
     monkeypatch.setattr(sa, "_RUNNING_DIR",
@@ -194,6 +205,19 @@ def _user_state_targets():
 # was measured, and it breaks 357 tests that legitimately read the real home.
 _USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
+    # Which directories the user has trusted to run commands. A test that
+    # granted trust must never grant it in the real store: the entry would
+    # outlive the run and let a later, real session honour a workspace's
+    # hooks and MCP servers on the strength of a pytest tmp directory.
+    ("delfin.agent.workspace_trust", "_trust_store_path",
+     "trusted_workspaces.json"),
+    # The state-tree maintenance sweep walks these three, and its prune
+    # DELETES: pointed at the real home from inside a test run it would
+    # remove the user's archived transcripts, handoffs and bundles.
+    ("delfin.agent.session_store", "_transcript_archive_path",
+     "transcript_archive"),
+    ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
+    ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
@@ -412,6 +436,25 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _mute_out_of_band_notifications(monkeypatch):
+    """No test may reach the user's desktop or the network.
+
+    The attention inbox itself is redirected to tmp above, but its
+    delivery fan-out is not a file: it shells out to ``notify-send`` and
+    POSTs to the configured webhook. Any test that emits an attention
+    event — a confirm timing out, a scheduled run failing, and now a
+    containment block — would pop a real notification on the developer's
+    screen. Tests that assert on the transports patch these themselves,
+    after this fixture.
+    """
+    from delfin.agent import notify as _n
+    monkeypatch.setattr(_n, "send_notification", lambda *a, **k: False)
+    monkeypatch.setattr(
+        _n, "send_remote_trigger",
+        lambda *a, **k: _n.TriggerResult(sent=False, error="muted in tests"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_telemetry(monkeypatch, tmp_path):
     """Redirect the agent's per-user telemetry sinks into the test tmp dir.
 
@@ -426,3 +469,17 @@ def _isolate_agent_telemetry(monkeypatch, tmp_path):
     monkeypatch.setattr(_tm, "_DIR", tmp_path / "turn_metrics")
     monkeypatch.setattr(_tt, "_DIR", tmp_path / "tool_trace")
     monkeypatch.setattr(_fl, "_LOG_PATH", tmp_path / "failure_log.jsonl")
+
+
+@pytest.fixture(autouse=True)
+def _state_maintenance_runs_once_per_test(monkeypatch):
+    """Keep the one-shot state sweep from leaking across tests.
+
+    ``run_startup_maintenance`` latches a module global so it costs nothing
+    after the first session write. Left alone in a suite, whichever test
+    ran first would consume the latch and every later test would silently
+    skip the sweep — including the tests that assert it happens.
+    """
+    from delfin.agent import state_paths as _sp
+    monkeypatch.setattr(_sp, "_MAINTENANCE_DONE", False)
+    yield

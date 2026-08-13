@@ -19,6 +19,9 @@ from delfin.agent import (
 from delfin.agent.agent_tasks import get_store
 from delfin.agent.api_client import _DocToolExecutor
 
+# Captured before the suite-wide fixture mutes the transports.
+_REAL_REMOTE_TRIGGER = N.send_remote_trigger
+
 
 # ---- task_ticker -----------------------------------------------------------
 
@@ -292,15 +295,18 @@ def test_send_notification_no_crash():
 
 
 def test_remote_trigger_requires_url():
+    # The real implementation: the suite-wide fixture mutes this transport
+    # so no test can POST anywhere, and this test is about what the
+    # function itself does with no URL configured.
     with tempfile.TemporaryDirectory() as d:
-        result = N.send_remote_trigger({"x": 1}, workspace=Path(d))
+        result = _REAL_REMOTE_TRIGGER({"x": 1}, workspace=Path(d))
         assert result.sent is False
         assert "url" in result.error.lower()
 
 
 def test_remote_trigger_blocks_http():
     with tempfile.TemporaryDirectory() as d:
-        result = N.send_remote_trigger(
+        result = _REAL_REMOTE_TRIGGER(
             {"x": 1}, workspace=Path(d),
             override_url="http://example.com",
         )
@@ -310,7 +316,7 @@ def test_remote_trigger_blocks_http():
 
 def test_remote_trigger_blocks_localhost():
     with tempfile.TemporaryDirectory() as d:
-        result = N.send_remote_trigger(
+        result = _REAL_REMOTE_TRIGGER(
             {"x": 1}, workspace=Path(d),
             override_url="https://localhost/hook",
         )
@@ -320,7 +326,7 @@ def test_remote_trigger_blocks_localhost():
 
 def test_remote_trigger_blocks_internal_tld():
     with tempfile.TemporaryDirectory() as d:
-        result = N.send_remote_trigger(
+        result = _REAL_REMOTE_TRIGGER(
             {"x": 1}, workspace=Path(d),
             override_url="https://something.internal/hook",
         )

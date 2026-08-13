@@ -325,7 +325,8 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
     (name · task · steps · status) without sharing memory with the worker
     thread."""
     try:
-        _RUNNING_DIR.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, write_text
+        ensure_dir(_RUNNING_DIR)
         f = _RUNNING_DIR / f"{sa_id}.json"
         if entry is None:
             try:
@@ -338,8 +339,7 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
                 # and cheap enough to carry the cleanup of what an earlier
                 # crash left behind.
                 reap_dead_running()
-            f.write_text(
-                json.dumps({**entry, **_owner_stamp()}), encoding="utf-8")
+            write_text(f, json.dumps({**entry, **_owner_stamp()}))
     except Exception:
         pass
 
@@ -487,28 +487,50 @@ def _pending_path(sa_id: str) -> Path:
     return _PENDING_DIR / f"{(sa_id or '').strip()}.json"
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write a marker so no reader can ever see it half-written.
+
+    ``bash_jobs._atomic_write_json`` is the pattern this codebase already
+    uses for exactly this — temp file beside the target, then
+    ``os.replace``, which is atomic within a directory."""
+    from .bash_jobs import _atomic_write_json as _write
+    _write(path, data)
+
+
 def _note_pending_report(sa_id: str, *, subagent_type: str = "",
                          description: str = "") -> None:
     """Record that this process owes its parent agent a report for ``sa_id``.
 
     Best-effort: a delegation must never fail because bookkeeping could
     not be written. The owner stamp is what keeps two concurrent sessions
-    on one machine from draining each other's reports."""
+    on one machine from draining each other's reports.
+
+    Written atomically. ``write_text`` opens with ``"w"``, which truncates
+    before it writes, so a marker existed as an empty file for as long as
+    the write took — and the reaper that runs on every reservation reads
+    exactly this directory. Measured over 24 concurrent reservations, two
+    live markers per trial were destroyed at birth: the parent was never
+    told the sub-agent had finished, and the report was not late but
+    gone."""
     sa_id = (sa_id or "").strip()
     if not sa_id:
         return
     try:
-        _PENDING_DIR.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, write_text
+        ensure_dir(_PENDING_DIR)
         # Starting one is the moment to clear what an earlier crash left
         # behind — the same place the live registry does its reaping.
         reap_pending_reports()
-        _pending_path(sa_id).write_text(json.dumps({
+        # Atomic AND owner-only: mkstemp creates the temporary file 0600
+        # and os.replace carries that mode over, so this satisfies both the
+        # torn-read fix and the state-file permission rule.
+        _atomic_write_json(_pending_path(sa_id), {
             "sa_id": sa_id,
             "type": subagent_type or "",
             "description": (description or "")[:120],
             "started_at": time.time(),
             **_owner_stamp(),
-        }), encoding="utf-8")
+        })
     except Exception:
         pass
 
@@ -532,7 +554,15 @@ def reap_pending_reports() -> list[str]:
     """Drop markers nobody can be told about any more. Returns the ids.
 
     A marker outlives its process only when that process died; nothing
-    else would ever remove it, so without this they accumulate for good."""
+    else would ever remove it, so without this they accumulate for good.
+
+    A record that cannot be read is skipped, exactly as the sibling reaper
+    over the running registry skips one. Substituting an empty record
+    instead read as "owner pid 0" — which counts as alive — with a
+    ``started_at`` of 0.0, so its age came out around 1.8e9 seconds, past
+    every TTL, and the marker was deleted. The unreadable case is a marker
+    being written this instant, so the one it deleted was always a live
+    one."""
     removed: list[str] = []
     now = time.time()
     try:
@@ -540,7 +570,9 @@ def reap_pending_reports() -> list[str]:
             try:
                 rec = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
-                rec = {}
+                continue
+            if not isinstance(rec, dict):
+                continue
             if _entry_owner_alive(rec):
                 try:
                     age = now - float(rec.get("started_at") or 0.0)
@@ -589,8 +621,8 @@ def drain_finished_subagents(limit: int = _PENDING_DRAIN_LIMIT) -> list[dict]:
         try:
             rec = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
-            rec = {}
-        if not _entry_owner_alive(rec):
+            continue                    # unreadable this instant, not gone
+        if not isinstance(rec, dict) or not _entry_owner_alive(rec):
             continue                    # another session's leftover; reaped
         # Terminality is decided BEFORE the claim, and without
         # get_subagent_result -- that call acknowledges the report itself
@@ -717,10 +749,14 @@ def _save_subagent_session(
                             + f"{_MAX_STORED_REPORT_CHARS} characters]")
                 record["final_report"] = full
                 break
-        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        path = _SESSIONS_DIR / f"{sa_id}.json"
-        path.write_text(json.dumps(record, ensure_ascii=False),
-                        encoding="utf-8")
+        # Owner-only from creation. This record is the densest single file
+        # the agent writes: up to 60 tool outputs at 2000 chars each plus
+        # the delegate's whole report, and it had no mode of its own at all
+        # — all 108 on disk were observed group-readable.
+        from .state_paths import ensure_dir, write_text
+        ensure_dir(_SESSIONS_DIR)
+        write_text(_SESSIONS_DIR / f"{sa_id}.json",
+                   json.dumps(record, ensure_ascii=False))
     except Exception:
         pass
 
@@ -799,10 +835,13 @@ def _write_telemetry(record: dict) -> None:
     cheap to read for ``/agents stats``.
     """
     try:
+        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import write_text as _write_secure
         path = _TELEMETRY_PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
+        ensure_dir(path.parent)
+        with open_append(path) as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        secure_file(path)
         # Best-effort trim — only every 50 writes to avoid I/O thrash
         try:
             stat = path.stat()
@@ -810,7 +849,7 @@ def _write_telemetry(record: dict) -> None:
                 lines = path.read_text(encoding="utf-8").splitlines()
                 if len(lines) > _TELEMETRY_MAX_LINES:
                     tail = lines[-_TELEMETRY_MAX_LINES:]
-                    path.write_text("\n".join(tail) + "\n", encoding="utf-8")
+                    _write_secure(path, "\n".join(tail) + "\n")
         except Exception:
             pass
     except Exception:

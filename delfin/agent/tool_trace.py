@@ -11,8 +11,6 @@ per-file size, and silently no-ops on any IO error.
 
 from __future__ import annotations
 
-import os
-
 import json
 import time
 from collections import Counter
@@ -57,13 +55,15 @@ def record(
 ) -> None:
     """Append one tool-call entry to the session trace. Never raises."""
     try:
-        _DIR.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import write_text as _write_secure
+        ensure_dir(_DIR)
         p = trace_path(session)
         # Bound the file: when it gets big, keep only the recent tail.
         try:
             if p.exists() and p.stat().st_size > _MAX_BYTES:
                 lines = p.read_text(encoding="utf-8").splitlines()[-_KEEP_TAIL:]
-                p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                _write_secure(p, "\n".join(lines) + "\n")
         except Exception:
             pass
         entry = {
@@ -75,17 +75,14 @@ def record(
             "ok": bool(ok),
             "error": str(error or "")[:300],
         }
-        with p.open("a", encoding="utf-8") as f:
+        # Created 0600 by ``open_append`` rather than chmod'ed afterwards:
+        # a chmod after the first write leaves the file group-readable for
+        # the length of that write. These files carry raw tool output,
+        # commands and paths, and a bug report bundles them, adding
+        # group-read on the way out.
+        with open_append(p) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        # 0600 AFTER the write: on the first append the file does
-        # not exist yet, so a chmod before it silently did nothing.
-        # These files carry raw tool output, commands and paths;
-        # they were created at the process umask (observed 0664)
-        # and a bug report bundles them, adding group-read.
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
+        secure_file(p)          # tighten a file that already existed
     except Exception:
         pass
 

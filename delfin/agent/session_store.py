@@ -73,10 +73,8 @@ def _is_json_safe(value: Any) -> bool:
 
 
 def _chmod_user_only(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    from .state_paths import secure_file
+    secure_file(path)
 
 
 def tasks_as_todo_payload(workspace: Any, session_id: Any) -> list[dict]:
@@ -169,9 +167,50 @@ def _migrate_mode(mode: str) -> str:
 _SESSIONS_DIR = Path.home() / ".delfin" / "agent_sessions"
 
 
+# The three directories below stay resolved per call, through
+# ``Path.home()``, because tests redirect them by pointing ``Path.home``
+# at a fixture root. Each accessor is split in two: a ``_path`` half that
+# only names the directory, and the accessor proper that also creates it.
+# The state-tree sweep walks the ``_path`` half — asking a creating
+# accessor where a directory is would create it, and a machine that has
+# never filed a handoff should not grow a ``handoffs/`` folder because
+# something went looking for one.
+
+def _transcript_archive_path() -> Path:
+    return Path.home() / ".delfin" / "transcript_archive"
+
+
+def _handoffs_path() -> Path:
+    return Path.home() / ".delfin" / "handoffs"
+
+
+def _bundles_path() -> Path:
+    return Path.home() / ".delfin" / "bundles"
+
+
 def _ensure_dir() -> Path:
-    _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    return _SESSIONS_DIR
+    from .state_paths import ensure_dir
+    _startup_maintenance()
+    return ensure_dir(_SESSIONS_DIR)
+
+
+def _startup_maintenance() -> None:
+    """Run the one-shot state-tree sweep on this process's first state write.
+
+    The sweep belongs at engine start, and this is the earliest point every
+    entry point shares: the dashboard, the headless CLI, the scheduler
+    daemon and a sub-agent host all reach the session store before they get
+    anywhere. Hanging it off ``AgentEngine.__init__`` instead would leave
+    the other three unswept.
+
+    Guarded inside :func:`state_paths.run_startup_maintenance`, which is a
+    no-op after its first call, so this stays cheap on the hot path.
+    """
+    try:
+        from .state_paths import run_startup_maintenance
+        run_startup_maintenance()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +315,45 @@ def _turn_checkpoint_path(session_id: str) -> Path:
     return _SESSIONS_DIR / f"{session_id}.turn.json"
 
 
+def _redact_checkpoint(data: dict[str, Any]) -> dict[str, Any]:
+    """Run the secret redactor over every string a checkpoint carries.
+
+    The checkpoint is written from inside the tool loop, and the output
+    guard runs at the END of the turn — so the partial answer reaches disk
+    before anything has looked at it. That is only half the problem: on the
+    next start :func:`consume_crash_recovery_note` appends the partial
+    straight into the message list, where it re-enters the model context
+    and the next session save. Redacting here guards the disk and the
+    replay with one call, which is why it belongs in the writer rather than
+    at either use site.
+
+    Best-effort: a checkpoint that fails to save costs a crashed turn's
+    progress, so a broken redactor must not stop the write.
+    """
+    try:
+        from .output_guard import _redact_secrets
+    except Exception:
+        return data
+    findings: list = []
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                return _redact_secrets(value, findings)
+            except Exception:
+                return value
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        return value
+
+    try:
+        return _walk(data)
+    except Exception:
+        return data
+
+
 def save_turn_checkpoint(session_id: str, payload: dict[str, Any]) -> Path | None:
     """Atomically persist a lightweight mid-turn checkpoint.
 
@@ -283,11 +361,13 @@ def save_turn_checkpoint(session_id: str, payload: dict[str, Any]) -> Path | Non
     response text so far, the tool-call count and a timestamp. Returns
     the checkpoint path, or ``None`` when there is no session id or the
     write failed (callers treat this as best-effort).
+
+    The payload is redacted here — see :func:`_redact_checkpoint`.
     """
     if not session_id:
         return None
     _ensure_dir()
-    data = dict(payload or {})
+    data = _redact_checkpoint(dict(payload or {}))
     data.setdefault("ts", time.time())
     data["session_id"] = session_id
     p = _turn_checkpoint_path(session_id)
@@ -371,9 +451,8 @@ def _transcript_archive_dir() -> Path:
     """Directory where full pre-compaction transcripts are archived so
     long sessions never truly lose information — the user can scroll
     back even after the in-memory ``messages`` list was compacted."""
-    p = Path.home() / ".delfin" / "transcript_archive"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    from .state_paths import ensure_dir
+    return ensure_dir(_transcript_archive_path())
 
 
 def archive_pre_compaction_transcript(
@@ -1125,9 +1204,8 @@ def build_handoff_brief(data: dict[str, Any]) -> str:
 
 
 def _handoffs_dir() -> Path:
-    p = Path.home() / ".delfin" / "handoffs"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    from .state_paths import ensure_dir
+    return ensure_dir(_handoffs_path())
 
 
 def save_handoff_brief(session_id: str, brief: str) -> Path:
@@ -1151,9 +1229,8 @@ BUNDLE_FORMAT_VERSION = 1
 
 
 def _bundles_dir() -> Path:
-    p = Path.home() / ".delfin" / "bundles"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    from .state_paths import ensure_dir
+    return ensure_dir(_bundles_path())
 
 
 def export_bundle(session_id: str) -> Path | None:

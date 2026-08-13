@@ -8214,6 +8214,44 @@ def create_tab(ctx):
             if arg in ("reload", "refresh"):
                 _hot_reload_mcp("manual reload")
                 return True
+            # /mcp trust | untrust | trust-status — the ONLY way a
+            # workspace's server definitions are ever honoured. Trust is
+            # the user's decision, so it is granted where the user types
+            # and nowhere else: no tool, no hook and no model output
+            # reaches these.
+            if arg in ("trust", "untrust", "trust-status", "trust status"):
+                if not (ctx.repo_dir or ""):
+                    _append_system_message(
+                        "No workspace is open, so there is nothing to trust. "
+                        "Only your own ~/.delfin/mcp_servers.json is read."
+                    )
+                    return True
+                try:
+                    if arg == "trust":
+                        rec = _me.trust_this_workspace(ctx.repo_dir)
+                        kinds = rec.get("kinds", {}).get("mcp_servers", {})
+                        _append_system_message(
+                            f"✅ Trusted {rec['workspace']} for MCP server "
+                            f"definitions: {kinds.get('definitions', 0)} "
+                            f"server(s) in "
+                            f"{', '.join(kinds.get('files') or []) or '—'}.\n"
+                            "Trust covers exactly this content — if the file "
+                            "changes, DELFIN asks again."
+                        )
+                        _hot_reload_mcp("workspace trusted")
+                    elif arg == "untrust":
+                        gone = _me.untrust_this_workspace(ctx.repo_dir)
+                        _append_system_message(
+                            f"🔒 MCP trust withdrawn for {ctx.repo_dir}."
+                            if gone else
+                            f"{ctx.repo_dir} was not trusted for MCP servers."
+                        )
+                        _hot_reload_mcp("workspace untrusted")
+                    else:
+                        _append_system_message(_me.trust_state(ctx.repo_dir))
+                except Exception as exc:
+                    _append_system_message(f"Trust command failed: {exc}")
+                return True
             # /mcp add <name> <command> [arg ...]
             if arg.startswith("add "):
                 rest = arg[4:].strip()
@@ -8279,26 +8317,36 @@ def create_tab(ctx):
                         )
                         _hot_reload_mcp(f"{'enabled' if flag else 'disabled'} '{name}'")
                     return True
-            # /mcp  → list
+            # /mcp  → list. What ACTUALLY loads, each line named by the
+            # file it came from: the old listing read the user-global
+            # config alone, so a builtin never showed and a server a
+            # workspace contributed was spawned and never listed.
             try:
-                rows = _me.list_mcp_servers()
+                rows = _me.list_effective_mcp_servers(ctx.repo_dir or None)
+                withheld = _me.mcp_trust_notice(ctx.repo_dir or None)
             except Exception as exc:
                 _append_system_message(f"Could not list MCP servers: {exc}")
                 return True
-            if not rows:
+            if not rows and not withheld:
                 _append_system_message(
-                    "No user-global MCP servers configured.\n"
+                    "No MCP servers configured.\n"
                     "Add one with: /mcp add <name> <command> [args ...]\n"
                     "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp"
                 )
                 return True
-            lines = ["User-global MCP servers (~/.delfin/mcp_servers.json):"]
+            lines = ["MCP servers in effect (source shown per entry):"]
             for r in rows:
                 badge = "✓" if r["enabled"] else "✗"
-                argv = " ".join([r["command"]] + list(r["args"]))[:80]
-                lines.append(f"  [{badge}] {r['name']:<14}  {argv}")
+                argv = " ".join(
+                    [r.get("command", "")] + list(r.get("args") or [])
+                ).strip() or r.get("url", "")
+                lines.append(f"  [{badge}] {r['name']:<14}  {argv[:70]}")
+                lines.append(f"        source: {r.get('source') or 'unknown'}")
+            if withheld:
+                lines.append(f"\n⚠️ {withheld}")
             lines.append(
                 "\nCommands: /mcp add | remove | enable | disable | reload\n"
+                "           /mcp trust | untrust | trust-status\n"
                 "Note: add/remove/toggle auto-reload the registry; "
                 "use /mcp reload to pick up hand-edits to mcp_servers.json."
             )
@@ -8705,6 +8753,41 @@ def create_tab(ctx):
             from delfin.agent import hooks_editor as _he
             arg = cmd[len("/hooks "):].strip() if cmd.startswith("/hooks ") else ""
             repo = ctx.repo_dir or None
+            # /hooks trust | untrust | trust-status — the ONLY way a
+            # workspace's hook commands are ever honoured. Trust is the
+            # user's decision, so it is granted where the user types and
+            # nowhere else: no tool, no hook and no model output reaches
+            # these.
+            if arg in ("trust", "untrust", "trust-status", "trust status"):
+                if repo is None:
+                    _append_system_message(
+                        "No workspace is open, so there is nothing to trust. "
+                        "Only your own ~/.delfin/settings.json is read."
+                    )
+                    return True
+                try:
+                    if arg == "trust":
+                        rec = _he.trust_this_workspace(repo)
+                        kinds = rec.get("kinds", {}).get("hooks", {})
+                        _append_system_message(
+                            f"✅ Trusted {rec['workspace']} for hook "
+                            f"definitions: {kinds.get('definitions', 0)} "
+                            f"command(s) in "
+                            f"{', '.join(kinds.get('files') or []) or '—'}.\n"
+                            "Trust covers exactly this content — if a hook "
+                            "command changes, DELFIN asks again."
+                        )
+                    elif arg == "untrust":
+                        gone = _he.untrust_this_workspace(repo)
+                        _append_system_message(
+                            f"🔒 Hook trust withdrawn for {repo}." if gone
+                            else f"{repo} was not trusted for hooks."
+                        )
+                    else:
+                        _append_system_message(_he.trust_state(repo))
+                except Exception as exc:
+                    _append_system_message(f"Trust command failed: {exc}")
+                return True
             # /hooks dry-run <event> [tool]
             if arg.startswith("dry-run") or arg.startswith("dry "):
                 parts = arg.split(None, 2)
@@ -8740,6 +8823,8 @@ def create_tab(ctx):
                         f"  [{flag}] exit={r['exit_code']:<3} "
                         f"{r['duration_s']:>5.2f}s  {r['command'][:80]}"
                     )
+                    lines.append(
+                        f"        source: {r.get('source') or 'unknown'}")
                     if r["decision"]:
                         lines.append(f"    → decision={r['decision']} ({r['reason'][:60]})")
                     if r["stderr_tail"].strip():
@@ -8793,10 +8878,11 @@ def create_tab(ctx):
             # /hooks  → list
             try:
                 rows = _he.list_hooks(repo)
+                warnings = _he.hook_warnings(repo)
             except Exception as exc:
                 _append_system_message(f"Could not load hooks: {exc}")
                 return True
-            if not rows:
+            if not rows and not warnings:
                 _append_system_message(
                     "No hooks registered.\n\n"
                     "Add one with: /hooks add <event> <matcher> <command>\n"
@@ -8814,9 +8900,17 @@ def create_tab(ctx):
                     f"  [{r['index']}] matcher={r['matcher']!r:<24}  "
                     f"{r['command'][:80]}"
                 )
+                # A hook the user wrote and a hook a repository shipped
+                # ran identically and printed identically. The source is
+                # the difference, so it is on the line.
+                lines.append(
+                    f"        source: {r.get('source') or 'unknown'}")
+            for note in warnings:
+                lines.append(f"\n⚠️ {note}")
             lines.append(
                 "\nDry-run a hook: /hooks dry-run <event> [tool_name]"
                 "\nRemove: /hooks remove <event> <index>"
+                "\nWorkspace hooks: /hooks trust | untrust | trust-status"
             )
             _append_system_message("\n".join(lines))
             return True

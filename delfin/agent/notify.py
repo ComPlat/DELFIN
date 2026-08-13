@@ -52,16 +52,28 @@ def _platform() -> str:
     return platform.system().lower()
 
 
+def _ok(proc: Any) -> bool:
+    """Did the notifier actually accept it? ``check=False`` means a
+    non-zero exit — no display, no notification daemon, refused bus
+    connection — comes back as an ordinary result, and reporting success
+    for it is how a headless machine can look like it told the user.
+    A stub that returns no process object is treated as success."""
+    code = getattr(proc, "returncode", 0)
+    try:
+        return int(code) == 0
+    except (TypeError, ValueError):
+        return True
+
+
 def _send_linux(title: str, body: str, urgency: str) -> bool:
     if not shutil.which("notify-send"):
         return False
     try:
-        subprocess.run(
+        return _ok(subprocess.run(
             ["notify-send", "-u", urgency, title, body],
             timeout=_NOTIFY_TIMEOUT_S, check=False,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        return True
+        ))
     except (FileNotFoundError, subprocess.SubprocessError):
         return False
 
@@ -69,12 +81,12 @@ def _send_linux(title: str, body: str, urgency: str) -> bool:
 def _send_macos(title: str, body: str, urgency: str) -> bool:
     if shutil.which("terminal-notifier"):
         try:
-            subprocess.run(
+            if _ok(subprocess.run(
                 ["terminal-notifier", "-title", title, "-message", body],
                 timeout=_NOTIFY_TIMEOUT_S, check=False,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            return True
+            )):
+                return True
         except (FileNotFoundError, subprocess.SubprocessError):
             pass
     # Fall back to AppleScript
@@ -84,11 +96,10 @@ def _send_macos(title: str, body: str, urgency: str) -> bool:
             f'with title {json.dumps(title)}'
         )
         try:
-            subprocess.run(
+            return _ok(subprocess.run(
                 ["osascript", "-e", script],
                 timeout=_NOTIFY_TIMEOUT_S, check=False,
-            )
-            return True
+            ))
         except (FileNotFoundError, subprocess.SubprocessError):
             return False
     return False
@@ -107,12 +118,11 @@ def _send_windows(title: str, body: str, urgency: str) -> bool:
         '</binding></visual></toast>";'
     )
     try:
-        subprocess.run(
+        return _ok(subprocess.run(
             [pw, "-NoProfile", "-Command", script],
             timeout=_NOTIFY_TIMEOUT_S, check=False,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        return True
+        ))
     except (FileNotFoundError, subprocess.SubprocessError):
         return False
 
@@ -120,7 +130,13 @@ def _send_windows(title: str, body: str, urgency: str) -> bool:
 def send_notification(
     title: str, body: str = "", *, urgency: str = "normal",
 ) -> bool:
-    """Best-effort desktop notification. Returns True on dispatch."""
+    """Best-effort desktop notification.
+
+    Returns True only when a notifier accepted it — callers record that
+    flag (see ``attention._deliver``) instead of assuming the user was
+    told. ``notification_backend()`` answers the same question without
+    sending anything.
+    """
     title = str(title)[:120] or "delfin agent"
     body = str(body)[:400]
     if urgency not in ("low", "normal", "critical"):
@@ -133,6 +149,48 @@ def send_notification(
     if plat == "windows":
         return _send_windows(title, body, urgency)
     return False
+
+
+def notification_backend() -> dict:
+    """Can a desktop notification reach anyone here? Probe only — this
+    sends nothing.
+
+    Returns ``{"available": bool, "backend": str, "detail": str}``. On
+    Linux the binary is not enough: ``notify-send`` on a cluster login
+    node with no session bus exits non-zero and nothing is ever shown,
+    which is exactly the machine an unattended run lives on.
+    """
+    plat = _platform()
+    if plat == "linux":
+        exe = shutil.which("notify-send")
+        if not exe:
+            return {"available": False, "backend": "",
+                    "detail": "notify-send not on PATH"}
+        if not any(os.environ.get(v) for v in (
+                "DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS")):
+            return {
+                "available": False, "backend": "notify-send",
+                "detail": "notify-send found but no desktop session "
+                          "(DISPLAY / WAYLAND_DISPLAY / "
+                          "DBUS_SESSION_BUS_ADDRESS unset)",
+            }
+        return {"available": True, "backend": "notify-send", "detail": exe}
+    if plat == "darwin":
+        for name in ("terminal-notifier", "osascript"):
+            exe = shutil.which(name)
+            if exe:
+                return {"available": True, "backend": name, "detail": exe}
+        return {"available": False, "backend": "",
+                "detail": "neither terminal-notifier nor osascript found"}
+    if plat == "windows":
+        exe = shutil.which("powershell") or shutil.which("powershell.exe")
+        if exe:
+            return {"available": True, "backend": "powershell",
+                    "detail": exe}
+        return {"available": False, "backend": "",
+                "detail": "powershell not found"}
+    return {"available": False, "backend": "",
+            "detail": f"no desktop notifier for platform {plat!r}"}
 
 
 def _is_blocked_host(host: str) -> bool:
@@ -213,6 +271,7 @@ def send_remote_trigger(
 
 __all__ = [
     "TriggerResult",
+    "notification_backend",
     "send_notification",
     "send_remote_trigger",
 ]
