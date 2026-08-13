@@ -3749,7 +3749,7 @@ def test_held_values_survive_a_change_of_method_and_are_spoken_for(editor, monke
     expected = {
         "gfn2": "will hold all 1",
         "gfnff": "will hold all 1",
-        "pm7": "not given held values",
+        "pm7": "holds them its own way",
         "uff": "pulls towards a held value rather than fixing it",
     }
     for method, phrase in expected.items():
@@ -3760,15 +3760,47 @@ def test_held_values_survive_a_change_of_method_and_are_spoken_for(editor, monke
         assert phrase in editor["mol_status"].value, method
 
 
-def test_mopac_says_it_is_not_given_the_held_values(editor):
-    """This editor writes no constraint block for MOPAC, so a value held on
-    screen while PM7 runs is one the run never hears about."""
+def test_mopac_holds_a_value_by_fixing_the_atoms_that_name_it(editor):
+    """MOPAC's Cartesian input carries an optimisation flag per coordinate,
+    and that is the only constraint it has.  Measured on a propane with PM7:
+    free, C1 and C3 relax from 3.000 A to 2.523 and each moves 0.302 A; with
+    their flags at zero each moves 0.0000 A and the distance stays 3.000."""
     state = editor["editor_state"]
     state["constraints"] = [
         {"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "fix"}
     ]
     editor["submit_ff_dd"].value = "pm7"
-    assert "not given held values" in editor["mol_status"].value
+    said = editor["mol_status"].value
+    assert "holds them its own way" in said
+    # And says what that is not: it fixes the atoms, not the value between
+    # them, so those atoms also stop turning and moving.
+    assert "fixes atoms, not the value between them" in said
+
+
+def test_a_pull_is_refused_by_mopac_rather_than_frozen(editor):
+    """One flag, on or off, so there is nothing to negotiate with.  Freezing a
+    pull would hold as exact a value the user asked to have argued with."""
+    from delfin.dashboard import mopac_optimize as mopac
+
+    pull = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "pull"}]
+    fix = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "fix"}]
+
+    assert mopac.freeze_flags(pull)["frozen"] == set()
+    assert mopac.freeze_flags(pull)["pulls"] == 1
+    assert mopac.freeze_flags(pull)["held"] == 0
+    assert "not honoured" in mopac.freeze_note(mopac.freeze_flags(pull))
+
+    assert mopac.freeze_flags(fix)["frozen"] == {0, 1}
+    assert mopac.freeze_flags(fix)["held"] == 1
+
+    # An atom this structure does not have is dropped, not passed on.
+    assert mopac.freeze_flags(fix, atoms=1)["dropped"]
+    assert mopac.freeze_flags(fix, atoms=1)["frozen"] == set()
+
+    state = editor["editor_state"]
+    state["constraints"] = pull
+    editor["submit_ff_dd"].value = "pm7"
+    assert "not honoured" in editor["mol_status"].value
 
 
 def test_with_every_switch_off_letting_go_of_an_atom_runs_nothing(editor, monkeypatch):
@@ -3907,3 +3939,62 @@ def test_xtb_holds_a_value_with_one_force_constant_for_the_whole_set():
     assert gfn.constraint_input(
         [{"kind": "atom", "atoms": [0], "value": 0.0, "mode": "fix"}]
     )["held"] == 0
+
+
+def test_the_optimisation_owns_the_coordinate_box_while_it_runs(editor, monkeypatch):
+    """The browser's own field reports where it has got to twice a second and
+    once more when it is switched off.
+
+    Those arrived with no reason on them, took neither the edit path nor any
+    other, and wrote the coordinate box regardless -- so the picture's idea of
+    the geometry landed on top of the calculation's, and which of the two the
+    user was left with came down to which wrote last.  That is the shape the
+    "Optimised in DELFIN viewer" header was found over a structure no run had
+    produced.
+    """
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+    before = editor["coords_widget"].value
+
+    token = object()
+    state["optimize_run"] = token
+    editor["submit_manip_sync"].value = (
+        "3\nEdited in DELFIN viewer\n"
+        "O 9.000000 0.000000 0.000000\n"
+        "H 0.960000 0.000000 0.000000\n"
+        "H -0.240000 0.930000 0.000000\n"
+    )
+    assert editor["coords_widget"].value == before, (
+        "a report from the field must not land on a running optimisation"
+    )
+    assert state["optimize_run"] is token, "and must not stop it either"
+
+    # A hand still takes it back: an edit interrupts the run and lands.
+    editor["submit_manip_sync"].value = (
+        "3\nDELFIN drag-end\n"
+        "O 8.000000 0.000000 0.000000\n"
+        "H 0.960000 0.000000 0.000000\n"
+        "H -0.240000 0.930000 0.000000\n"
+    )
+    assert "8.00000000000000" in editor["coords_widget"].value
+    assert state["optimize_run"] is None, "the run is about a structure that is gone"
+
+
+def test_undoing_a_drag_in_the_browser_counts_as_an_edit():
+    """It went back with no reason on it, so it was neither an edit nor
+    anything else: the optimisation ran on over a geometry that had just been
+    taken back."""
+    from delfin.dashboard import tab_submit
+
+    js = tab_submit.submit_manip_bootstrap_js()
+    assert "pushXyzToPython(scopeKey, 'undo')" in js
+    # And the field's own reports say which they are, so they can be told apart.
+    assert "pushXyzToPython(scopeKey, 'field')" in js
+    assert "pushXyzToPython(scopeKey);" not in js, "every push carries a reason"
+
+    sync = EDITOR_SOURCE.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
+    assert "note.startswith('DELFIN undo')" in sync
+    assert "_interrupt_gfn()" in sync

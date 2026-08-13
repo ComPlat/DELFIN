@@ -1057,20 +1057,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='84px', height='30px'),
         disabled=True,
     )
-    #: Off to begin with.  It was on, on the grounds that leaving the strain of
-    #: a drag in the structure is the surprising answer -- and it is, but the
-    #: switch was the only thing moving a structure while everything the user
-    #: had touched said off, and being right about the chemistry does not buy
-    #: the right to move a molecule nobody asked to have moved.  Dragging with
-    #: nothing switched on now puts the atom where the hand put it, which is
-    #: what dragging with nothing switched on should do.
+    #: On to begin with, and only ever the browser's.  Leaving the strain of a
+    #: drag in the structure is the surprising answer, not the useful one: a
+    #: hand-placed atom measured 176 kcal/mol above a settled one on a real
+    #: complex, and that is what would go to the queue.
+    #:
+    #: It was briefly off, because it was the one thing moving a structure
+    #: while everything the user had touched said off -- but that was the
+    #: server methods, where the switch is not on the toolbar to be found and
+    #: what it started was the whole minimisation rather than a tidy-up.  That
+    #: is fixed where it was broken: the toolbar takes it away under a server
+    #: method and switches it off with it, and the gate on the release path no
+    #: longer reads this widget at all.  So under the browser's field, where it
+    #: means what its name says and costs nothing, it can go back to on.
     submit_settle_btn = widgets.ToggleButton(
-        value=False, description='Settle', icon='level-down',
-        button_style='',
+        value=True, description='Settle', icon='level-down',
+        button_style='info',
         tooltip=(
             'When you let go of an atom, let the structure relax around its '
-            'new position instead of keeping the strain of the drag. Off, so '
-            'atoms stay exactly where you put them until you ask for this.'
+            'new position instead of keeping the strain of the drag. Switch '
+            'off to leave atoms exactly where you put them.'
         ),
         layout=widgets.Layout(width='92px', height='30px'),
         disabled=True,
@@ -1988,7 +1994,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         outcome = _mopac.optimize_with_mopac(
                             current, method, charge=charge, uhf=uhf,
                             max_steps=_GFN_FOLLOW_CYCLES, timeout=30.0,
-                            solvent=wet)
+                            constraints=constraints, solvent=wet)
                     else:
                         outcome = _gfn.relax_steps(
                             current, method=method, charge=charge, uhf=uhf,
@@ -2323,12 +2329,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         def _work():
             began = time.perf_counter()
             if _mopac.is_mopac_method(method):
-                # No held internals and no topology to carry, but the solvent
-                # is carried: a settle in water after a drag in water is the
-                # same question the drag was asking.
+                # No topology to carry, but the held values and the solvent
+                # both are: a settle in water after a drag in water is the
+                # same question the drag was asking, and a value held while
+                # the drag ran is still held when the hand lets go.
                 outcome = _mopac.optimize_with_mopac(
                     xyz, method, charge=charge, uhf=uhf,
                     max_steps=None, timeout=None, on_frames=_push,
+                    constraints=constraints,
                     should_stop=_settle_stopped, solvent=wet)
             elif scanning:
                 # Auto M with nothing scanned yet.  Optimise would scan and
@@ -2982,15 +2990,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                  else _gfn_topology_dir(xyz))
                     if pm:
                         # MOPAC takes the spin state as a word and knows
-                        # nothing of xtb's held internals or its topology
-                        # files -- so it is given what it does take, and the
-                        # rest is not quietly passed along as though it had
-                        # been honoured.  The solvent it does take: its COSMO
-                        # is handed the dielectric constant of the same
-                        # liquid the GFN side is given by name.
+                        # MOPAC takes the spin state as a word and knows
+                        # nothing of xtb's topology files, so those are not
+                        # quietly passed along as though they had been
+                        # honoured.  The held values it does take, in its own
+                        # terms: its Cartesian input carries an optimisation
+                        # flag per coordinate, and an atom a held value names
+                        # is handed over with those at zero -- measured on a
+                        # propane, a frozen carbon moves 0.0000 A where a free
+                        # one moves 0.302.  That fixes the atoms rather than
+                        # the value between them, and a pull cannot be said at
+                        # all, so the run says which of the two it did.  The
+                        # solvent it takes as well: its COSMO is handed the
+                        # dielectric constant of the same liquid the GFN side
+                        # is given by name.
                         outcome = _mopac.optimize_with_mopac(
                             xyz, method, charge=charge, uhf=uhf,
                             should_stop=_stopped, timeout=None, solvent=wet,
+                            constraints=held,
                             on_frames=_push_frames if position == 0 else None)
                     elif gfn and autospin:
                         outcome = _gfn.optimize_autospin(
@@ -3181,8 +3198,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # ignored would make the result an answer to a question nobody
                 # asked.
                 said += _solvents.note(_solv_model(), submit_gfn_solvent.value)
-                said += _gfn.held_note(state.get('gfn_held') or {
-                    'held': 0, 'dropped': [], 'mixed': False, 'force': None})
+                # In the terms of whichever engine ran.  xtb restrains the
+                # value with one force constant for the whole set; MOPAC fixes
+                # the atoms that name it and cannot express a pull at all.
+                # Read out with the wrong one, a MOPAC result would claim a
+                # force constant that no MOPAC run has.
+                kept = state.get('gfn_held')
+                if pm:
+                    said += _mopac.freeze_note(kept or {
+                        'held': 0, 'pulls': 0, 'dropped': [], 'frozen': set()})
+                else:
+                    said += _gfn.held_note(kept or {
+                        'held': 0, 'dropped': [], 'mixed': False,
+                        'force': None})
                 aside = int(state.pop('held_set_aside', 0) or 0)
                 if aside:
                     # Said out loud rather than done quietly: a value held on
@@ -3611,12 +3639,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not held:
             return ''
         if _mopac.is_mopac_method(method):
-            return (
-                f'{_server_label(method)} is not given held values: this '
-                f'editor writes no constraint block for MOPAC. The '
-                f'{len(held)} in the list are kept and will be held again '
-                'under a GFN method or in the browser, but they are not part '
-                'of a PM run.')
+            reading = _mopac.freeze_flags(
+                held, atoms=len(_gfn.atom_lines(_current_xyz() or '')) or None)
+            return (f'{_server_label(method)} holds them its own way.'
+                    + _mopac.freeze_note(reading))
         if _gfn.is_gfn_method(method):
             # Said from the same function the run uses, so what is promised
             # here is what will actually be written into xtb.inp.
@@ -5214,6 +5240,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['poly_assignment'] = None
             state['poly_recheck'] = True
 
+        # Undoing a drag in the browser is a change the user made, the same as
+        # making it was.  It arrived without a reason on it, so it took neither
+        # of the two paths below: the optimisation went on running over a
+        # geometry that had just been taken back, and whichever of the two
+        # wrote the coordinate box last is what the user was left with.
+        if note.startswith('DELFIN undo'):
+            drag_ended = True
+
         if drag_ended:
             # Set, Hold, a bond edit and a drag all arrive here.  Any of them
             # during an optimisation makes what xtb is doing about a structure
@@ -5222,6 +5256,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # starts from.
             _interrupt_gfn()
             _arm_gfn_restart()
+        elif state.get('optimize_run') is not None:
+            # Not an edit, and something is optimising.  The browser's own
+            # field reports where it has got to twice a second and once more
+            # when it is switched off; those are the field talking about a
+            # structure the optimiser now owns, and writing them puts the
+            # picture's idea of the geometry over the calculation's.  That is
+            # the shape the "Optimised in DELFIN viewer" header was found in:
+            # a box holding something no run had produced.  The optimisation
+            # owns the box until it is done or a hand takes it back.
+            return
 
         payload = header + coord_body
         # The guard is cleared by update_view, which traitlets only

@@ -3447,7 +3447,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 // each push is a widget round trip.
                 if (now - (state.autoPushed || 0) > 500) {
                     state.autoPushed = now;
-                    pushXyzToPython(scopeKey);
+                    // Named, so the kernel can tell it from an edit.  This is
+                    // the field reporting where it has got to, not the user
+                    // doing anything, and a running optimisation owns the
+                    // coordinate box against it.
+                    pushXyzToPython(scopeKey, 'field');
                 }
             }
             // The next frame is asked for once this one has been answered, so
@@ -3479,7 +3483,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             state.autoRaf = null;
         }
         // The last frames since the throttled push have to reach Python too.
-        pushXyzToPython(scopeKey);
+        pushXyzToPython(scopeKey, 'field');
         updateStatus(scopeKey);
         return true;
     }
@@ -4361,7 +4365,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var snap = state.undo.pop();
         restoreFromSnapshot(scopeKey, snap);
         redrawHighlights(scopeKey);
-        pushXyzToPython(scopeKey);
+        // A structure the user has just changed back, so it counts as an edit
+        // and not as the field talking: whatever is optimising is optimising
+        // a geometry that has stopped existing.
+        pushXyzToPython(scopeKey, 'undo');
     }
 
     // Window-level mousedown intercept: the apply_molecule_view_style patch
