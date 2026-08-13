@@ -362,16 +362,22 @@ def test_none_of_the_check_views_can_be_edited(compared):
     assert refs['orca_coords'].value == kept
 
 
-def test_the_comparison_stays_up_after_the_fix(compared):
-    """The reordered block is the thing to look at once it has been applied.
-    Rewriting the coordinates box the ordinary way dropped the tab back to the
-    first structure with nothing left to compare against."""
+def test_the_fix_lands_on_the_block_it_fixed(compared):
+    """The reordered block is the thing to look at once it has been applied,
+    and the tab must not drop back to the first structure.
+
+    It used to hold the comparison up instead, on the grounds that it was
+    there to be checked -- but the comparison is of the proposal against the
+    reference, and once the proposal is the block there is nothing left to
+    compare.  The editor comes back, on the block that was fixed.
+    """
     refs, _sent, _drawn = compared
     refs['editor_state']['numbering_check_block_idx'] = 1
 
     refs['orca_apply_numbering_btn'].click()
 
-    assert refs['editor_state']['numbering_check_active']
+    assert refs['editor_state']['numbering_check_active'] is False
+    assert refs['editor_state']['xyz_view_idx'] == 1, 'not back to the first'
     fixed = refs['orca_coords'].value.split('b.xyz;')[1]
     assert fixed.index('H  -0.75700000') < fixed.index('H   0.75700000')
 
@@ -1281,3 +1287,195 @@ def test_a_held_value_is_set_aside_for_all_and_said_out_loud():
     assert 'if every_frame and held:' in body
     assert "state['held_set_aside'] = len(held)" in body
     assert 'were not applied' in source
+
+
+CYCLOBUTANE = "\n".join(
+    [f"C 0.000 {i}.000 0.000" for i in range(4)]
+    + [f"H 1.000 {i}.000 0.000" for i in range(8)])
+TWO_TWELVES = (f"benzene.xyz;the ring\n12\n\n{BENZENE}\n*\n\n"
+               f"cyclobutane.xyz;the square\n12\n\n{CYCLOBUTANE}\n*")
+
+
+def _elements(text):
+    return tuple(row.split()[0] for row in text.splitlines()
+                 if len(row.split()) >= 4)
+
+
+def _held(structure, value=1.700):
+    return [{'kind': 'distance', 'atoms': [0, 1], 'value': value,
+             'mode': 'fix', 'structure': _elements(structure)}]
+
+
+def _input_lines(refs):
+    refs['update_orca_preview']()
+    return refs['orca_preview'].value
+
+
+def test_a_value_held_on_one_block_is_not_written_into_another_ones_input(builder):
+    """A held value names atoms by number and nothing else.
+
+    So it means something about every structure with that many atoms.  The
+    input reads the first block whichever one is on screen, and a C-C held at
+    1.700 A on a cyclobutane went into a benzene's input as
+    "{ B 0 1 1.7000 C }" -- both being twelve atoms -- pulling an aromatic
+    bond a third of an angstrom out of the ring.  There was a comment above it
+    saying so, addressed to a program that does not read comments.
+    """
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_TWELVES
+    refs['orca_mol_next_btn'].click()          # looking at the cyclobutane
+    assert refs['editor_state']['xyz_view_idx'] == 1
+
+    refs['editor_state']['constraints'] = _held(CYCLOBUTANE)
+    written = _input_lines(refs)
+    assert '{ B 0 1' not in written, 'a cyclobutane value in a benzene input'
+    assert '%geom Constraints' not in written
+    assert 'were set on another structure and are left out' in written
+    assert 'benzene.xyz' in written, 'and it says which structure this reads'
+
+
+def test_a_value_held_on_the_block_the_input_reads_is_written(builder):
+    """The other half: the guard must not cost the case it is guarding.
+
+    Looking at another block is not the same as having held the value there,
+    and asking which one is *shown* would have thrown away a constraint that
+    was set on the right structure.
+    """
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_TWELVES
+    refs['orca_mol_next_btn'].click()          # shown: the cyclobutane
+    refs['editor_state']['constraints'] = _held(BENZENE)   # held: the benzene
+
+    written = _input_lines(refs)
+    assert '{ B 0 1 1.7000 C }' in written
+    assert '%geom Constraints' in written
+    assert 'set on another structure' not in written
+
+
+def test_hold_writes_down_which_structure_the_numbers_belong_to():
+    """Without it the numbers are the only thing a held value carries, and
+    numbers alone cannot say which molecule they are about."""
+    source = open(structure_editor.__file__, encoding='utf-8').read()
+    hold = source.split('def on_submit_hold(')[1].split('\n    def ')[0]
+    assert "'structure': _structure_fingerprint(" in hold
+
+
+SWAPPED_WATER = "O 0.000 0.000 0.000\nH -0.757 0.586 0.000\nH 0.757 0.586 0.000"
+TWO_CONFS = (f"conf-1.xyz;ref\n3\n\n{WATER}\n*\n\n"
+             f"conf-2.xyz;target\n3\n\n{SWAPPED_WATER}\n*")
+
+
+def _picture(refs):
+    """The HTML the preview is showing."""
+    text = ''
+    for out in (refs['orca_mol_output'].outputs or ()):
+        data = out.get('data', {}) if isinstance(out, dict) else {}
+        text += str(data.get('text/html', ''))
+    return text
+
+
+def test_check_numbering_can_be_left_again(builder):
+    """It was a room with no door.
+
+    numbering_check_active was cleared by loading another structure or
+    resetting the tab, and by nothing else -- so a user who looked at the
+    comparison, found the numbering already right, and wanted to carry on
+    editing had nowhere to go.
+    """
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_CONFS
+    back = refs['orca_back_to_editor_btn']
+    assert back.layout.display == 'none', 'nothing to leave yet'
+
+    refs['orca_check_numbering_btn'].click()
+    assert refs['editor_state']['numbering_check_active'] is True
+    assert back.layout.display == '', 'the way out has to be on screen'
+
+    back.click()
+    assert refs['editor_state']['numbering_check_active'] is False
+    assert back.layout.display == 'none'
+    # And back on the block that was being checked, not on the first one:
+    # that is the structure the user was working on.
+    assert refs['editor_state']['xyz_view_idx'] == 1
+
+
+def test_applying_the_fix_puts_you_back_in_the_editor(builder):
+    """Staying in the comparison was meant to keep it up to be checked, but
+    the comparison is of the proposal against the reference -- once the
+    proposal *is* the block there is nothing left to compare, and the user was
+    held in three pictures of a job already done."""
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_CONFS
+    refs['orca_check_numbering_btn'].click()
+    assert refs['editor_state']['numbering_check_active'] is True
+
+    refs['orca_apply_numbering_btn'].click()
+
+    assert refs['editor_state']['numbering_check_active'] is False
+    assert refs['orca_back_to_editor_btn'].layout.display == 'none'
+    assert refs['editor_state']['xyz_view_idx'] == 1
+    blocks = refs['editor_state']['xyz_blocks']
+    assert blocks[1][0] == 'conf-2.xyz', 'on the block it just fixed'
+
+
+def test_the_comparison_says_which_structure_is_which_colour(builder):
+    """An overlay of two molecules with no legend is two molecules and no
+    legend: the reader has to be told that the red one is the reference and
+    the blue one is the block being checked."""
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_CONFS
+    refs['orca_check_numbering_btn'].click()
+    label = refs['orca_mol_nav_label']
+
+    red = tab_orca_builder._OVERLAY_REFERENCE_COLOUR
+    blue = tab_orca_builder._OVERLAY_TARGET_COLOUR
+    for _step in range(3):
+        shown = label.value
+        assert f'color:{red};">conf-1.xyz' in shown, shown
+        assert f'color:{blue};">conf-2.xyz' in shown, shown
+        refs['orca_mol_next_btn'].click()
+
+    # The same two colours the picture is drawn in, named once.
+    overlay = tab_orca_builder.__dict__
+    assert red == '#d32f2f' and blue == '#1f5fff'
+
+
+def test_the_atom_numbers_can_be_resized_while_comparing(builder):
+    """The comparison is a numbering comparison, so reading it means being
+    able to make the numbers bigger.
+
+    The editor's own handler for these two speaks to the viewer it is holding,
+    and during a comparison it is holding none -- the box moved and nothing on
+    screen did.  The pictures are built here, and _labels_js reads both
+    controls while building them, so the redraw has to happen here too.
+    """
+    import re
+
+    refs, _sent = builder
+    refs['orca_coords'].value = TWO_CONFS
+    refs['orca_check_numbering_btn'].click()
+    refs['orca_mol_next_btn'].click()          # the aligned reference
+
+    def drawn():
+        found = re.findall(r'__delfinAtomNumbers\.set\([^,]+,(\w+),([0-9.]+)\)',
+                           _picture(refs))
+        return found[-1] if found else None
+
+    assert drawn() is None, 'numbers are off until asked for'
+
+    refs['submit_labels_btn'].value = True
+    small = drawn()
+    assert small and small[0] == 'true'
+
+    refs['submit_label_size'].value = 20
+    bigger = drawn()
+    assert bigger and float(bigger[1]) > float(small[1]), (
+        f'the size box has to reach the picture: {small} -> {bigger}'
+    )
+
+    refs['submit_label_size'].value = 10
+    middle = drawn()
+    assert float(small[1]) < float(middle[1]) < float(bigger[1])
+
+    refs['submit_labels_btn'].value = False
+    assert drawn() is None
