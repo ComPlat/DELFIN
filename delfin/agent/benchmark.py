@@ -138,6 +138,11 @@ class BenchmarkResult:
     matched_signals: list[str] = field(default_factory=list)
     violated_signals: list[str] = field(default_factory=list)
     missing_signals: list[str] = field(default_factory=list)
+    #: Matched in some replicates and missed in others. Only ever set by
+    #: ``aggregate_replicates``; a single run has nothing to be flaky
+    #: about. Kept apart from ``missing_signals`` because "never matched"
+    #: and "matched twice of three" call for different next steps.
+    flaky_signals: list[str] = field(default_factory=list)
     budget_violations: list[str] = field(default_factory=list)
     error: str = ""
     # A run whose request never reached the model. Not a score: the
@@ -981,6 +986,30 @@ def aggregate_replicates(
                     out.append(s)
         return out
 
+    def _matched_every_time(missing: list[str]) -> list[str]:
+        """Signals that matched in EVERY scored replicate.
+
+        The union was applied to matched and missing alike, so a signal
+        that matched twice out of three came back in BOTH lists. Observed
+        live on workflow_plan_before_act: four signals listed as matched
+        and as missing at once, and the audit printed five missing
+        patterns where exactly one was genuinely absent — which is how a
+        reader gets sent to the wrong defect. (It sent me there.)
+
+        The union stays right for ``missing`` and ``violated``: a signal
+        the model dropped even once is not something the run can vouch
+        for. So ``matched`` becomes the complement, and the two lists are
+        disjoint by construction.
+        """
+        gone = set(missing)
+        return [s for s in _union("matched_signals") if s not in gone]
+
+    def _flaky(missing: list[str]) -> list[str]:
+        """Matched sometimes and missed sometimes — the run-to-run noise
+        that "missing" alone flattens into a verdict."""
+        gone = set(missing)
+        return [s for s in _union("matched_signals") if s in gone]
+
     # Pick the first non-empty excerpt — gives forensic value without
     # bloating storage with N copies; tool_names unioned the same way
     # as signals (a flaky tool-call still surfaces).
@@ -1026,9 +1055,10 @@ def aggregate_replicates(
         input_tokens=int(_median([float(x) for x in in_toks])),
         output_tokens=int(_median([float(x) for x in out_toks])),
         tool_calls=int(_median([float(x) for x in tool_counts])),
-        matched_signals=_union("matched_signals"),
+        matched_signals=_matched_every_time(_union("missing_signals")),
         violated_signals=_union("violated_signals"),
         missing_signals=_union("missing_signals"),
+        flaky_signals=_flaky(_union("missing_signals")),
         budget_violations=_union("budget_violations"),
         error="; ".join(sorted({r.error for r in results if r.error}))[:500],
         n_samples=n,

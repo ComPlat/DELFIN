@@ -446,9 +446,15 @@ def cmd_bench(args: argparse.Namespace) -> int:
         if result.violated_signals or result.missing_signals or result.error:
             for v in result.violated_signals:
                 print(f"        violated: {v}", flush=True)
+            _flaky = set(getattr(result, "flaky_signals", None) or ())
             for m in result.missing_signals:
-                if not m.endswith(":optional"):
-                    print(f"        missing:  {m}", flush=True)
+                if m.endswith(":optional"):
+                    continue
+                # A signal that matched in some replicates is a different
+                # fact from one that never matched, and printing them the
+                # same way sends the reader to the wrong defect.
+                label = "flaky:   " if m in _flaky else "missing: "
+                print(f"        {label} {m}", flush=True)
             if result.error:
                 print(f"        error:    {result.error[:120]}", flush=True)
 
