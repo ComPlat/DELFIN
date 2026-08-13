@@ -99,10 +99,13 @@ def test_created_file_revert_deletes(home, ws):
     assert res["reverted"] == [str(p)]
     assert not p.exists()
 
-    # Second revert of the same entry: file already absent → skipped.
+    # Second revert: the entry is marked undone, so the user is told
+    # that rather than being handed three empty lists ("no-op") or a
+    # conflict blaming them for the agent's own undo.
     res2 = cj.revert("s1", scope="last")
     assert res2["reverted"] == []
-    assert res2["skipped"] and "absent" in res2["skipped"][0]["reason"]
+    assert res2["conflicts"] == []
+    assert res2["skipped"] and "already been undone" in res2["skipped"][0]["reason"]
 
 
 def test_post_hash_mismatch_is_conflict_file_untouched(home, ws):
@@ -136,9 +139,12 @@ def test_created_file_conflict_when_user_changed_it(home, ws):
 # ---------------------------------------------------------------------------
 
 def test_session_revert_unwinds_chain_newest_first(home, ws):
-    p = _edit(ws, "a.txt", "v1", "v3")  # disk ends at v3
+    # Each record is taken right after ITS OWN write, exactly as the
+    # write path does it — the post-image hash comes from the file.
+    p = _edit(ws, "a.txt", "v1", "v2")
     cj.record_change("s1", tool="edit_file", path=p,
                      old_text="v1", new_text="v2")
+    p.write_text("v3", encoding="utf-8")
     cj.record_change("s1", tool="edit_file", path=p,
                      old_text="v2", new_text="v3")
 
@@ -162,9 +168,11 @@ def test_turn_scope_reverts_only_given_seqs(home, ws):
     assert pb.read_text(encoding="utf-8") == "b1"
     assert pa.read_text(encoding="utf-8") == "a2"  # untouched
 
-    # Empty / unknown seqs → nothing happens.
-    assert cj.revert("s1", scope="turn", turn_seqs=[999]) == {
-        "reverted": [], "conflicts": [], "skipped": []}
+    # Empty / unknown seqs → no file is touched, and the caller is told
+    # why rather than getting a silent no-op.
+    res2 = cj.revert("s1", scope="turn", turn_seqs=[999])
+    assert res2["reverted"] == [] and res2["conflicts"] == []
+    assert "in this session's journal" in res2["skipped"][0]["reason"]
 
 
 def test_workspace_guard_skips_outside_paths(home, ws, tmp_path):
@@ -240,7 +248,12 @@ def test_cap_pruning_drops_oldest_and_unlinks_pre_images(home, ws, monkeypatch):
         files.append(cj.list_changes("s1")[-1]["pre_file"])
 
     records = cj.list_changes("s1")
-    assert [r["seq"] for r in records] == [3, 4, 5]
+    # The pruned entries stay as TOMBSTONES: their pre-image is gone but
+    # the change is still on record, so an undo of one can say the
+    # pre-image was dropped at the cap instead of looking like a no-op.
+    assert [r["seq"] for r in records] == [1, 2, 3, 4, 5]
+    assert [r["seq"] for r in records if r.get("dropped")] == [1, 2]
+    assert [r["seq"] for r in records if not r.get("dropped")] == [3, 4, 5]
     sdir = home / ".delfin" / "undo" / "s1"
     assert not (sdir / files[0]).exists()
     assert not (sdir / files[1]).exists()
@@ -256,15 +269,15 @@ def test_record_never_raises_on_unwritable_store(home, ws, monkeypatch):
     import os
 
     p = _edit(ws, "a.txt", "v1", "v2")
-    original_write = cj._atomic_write
+    original_write = cj._atomic_write_bytes
 
     def boom(path, text):
         raise OSError("disk full")
 
-    monkeypatch.setattr(cj, "_atomic_write", boom)
+    monkeypatch.setattr(cj, "_atomic_write_bytes", boom)
     assert cj.record_change("s1", tool="write_file", path=p,
                             old_text="v1", new_text="v2") is None
-    monkeypatch.setattr(cj, "_atomic_write", original_write)
+    monkeypatch.setattr(cj, "_atomic_write_bytes", original_write)
 
     # A read-only undo root must not raise either (chmod is advisory for
     # root, so only assert the None contract when it can actually block).

@@ -1235,6 +1235,107 @@ def _slash_is_user_only(cmd: str) -> bool:
     return first in _USER_ONLY_SLASH_COMMANDS
 
 
+# Every command token the slash dispatcher (_handle_slash_command)
+# actually handles. A command missing here does NOT reach its handler:
+# the send path treats an unknown /token as a command-template or skill
+# name, finds neither, and sends the literal text to the model as chat.
+# That is how /undo-file — advertised in the palette as the one command
+# that RESTORES file content — went to the model as a sentence while its
+# handler stayed reachable only through the agent's own action
+# dispatcher. Kept at module scope so a test can drive the same routing
+# decision the send path makes.
+_BUILTIN_SLASH_PREFIXES = frozenset({
+    "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
+    "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
+    "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
+    "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
+    "/changes", "/doctor", "/attention", "/pin", "/batch",
+    "/pending", "/approve", "/reject",
+    "/bugs", "/watch", "/fix", "/grant",
+    "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
+    "/workspace", "/tab", "/ui",
+    "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
+    "/check", "/recalc", "/cancel", "/context", "/agents", "/skills",
+    "/trace", "/loop",
+    "/undo-file", "/profile", "/skill", "/tools",
+})
+
+
+def slash_command_routes_to_builtin(user_text: str) -> bool:
+    """True when the send path hands ``user_text`` to the dispatcher.
+
+    The same predicate the send path applies, so what a test asks is
+    what the chat box does. False means the text goes down the
+    template/skill expansion route and, failing that, to the model.
+    """
+    text = (user_text or "").strip()
+    if not text.startswith("/"):
+        return False
+    first = text.split()[0].lower()
+    return first in _BUILTIN_SLASH_PREFIXES
+
+
+def format_undo_listing(records) -> str:
+    """Render the undo journal for ``/undo-file list``.
+
+    A record with no restorable pre-image (pruned at the session cap,
+    stored truncated) says so on its own line: a listing that shows it
+    like any other entry offers an undo that cannot happen.
+    """
+    lines = ["**Recorded file changes** (newest last):"]
+    for rec in records or []:
+        if rec.get("dropped"):
+            kind = "pre-image dropped at the session cap — cannot undo"
+        elif rec.get("truncated"):
+            kind = "truncated pre-image — cannot undo"
+        elif rec.get("lossy"):
+            kind = "pre-image not exactly storable — cannot undo"
+        elif rec.get("undone"):
+            kind = f"already undone at {(rec.get('undone') or {}).get('ts', '?')}"
+        elif rec.get("deleted"):
+            kind = "deleted"
+        elif rec.get("created"):
+            kind = "created"
+        else:
+            kind = "edited"
+        by = " (undo)" if str(rec.get("tool", "") or "") == "undo" else ""
+        lines.append(
+            f"- [{rec.get('seq', '?')}] {rec.get('path', '?')} ({kind}){by}")
+    lines.append(
+        "\nUndo with `/undo-file last`, `/undo-file turn` or "
+        "`/undo-file session`. A file changed since the agent wrote it is "
+        "reported as a conflict and never overwritten.")
+    return "\n".join(lines)
+
+
+def format_undo_result(scope: str, result: dict) -> str:
+    """Render what an undo did — and, for anything it did NOT do, why.
+
+    The reason was dropped here: "pre-image was stored truncated" and
+    "content changed since the agent's edit" both came out as a bare
+    path under "Skipped", so a refusal to corrupt the file and a refusal
+    to overwrite the user's own later edit were the same message.
+    """
+    out = [f"**Undo ({scope})**"]
+    for key, label in (("reverted", "Restored"),
+                       ("conflicts", "Conflicts — NOT touched"),
+                       ("skipped", "Skipped")):
+        items = (result or {}).get(key) or []
+        if not items:
+            continue
+        out.append(f"{label}:")
+        for item in items:
+            if isinstance(item, str):
+                out.append(f"- {item}")
+                continue
+            path = str(item.get("path", "") or "(no path)")
+            why = str(item.get("reason", "") or "").strip()
+            out.append(f"- {path}" + (f" — {why}" if why else ""))
+    if len(out) == 1:
+        out.append("Nothing to undo.")
+    return "\n".join(out)
+
+
 def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
     """Whether switching between these modes moves the working folder.
 
@@ -10279,43 +10380,51 @@ def create_tab(ctx):
                     _append_system_message(
                         "No file changes recorded this session.")
                     return True
-                _lines = ["**Recorded file changes** (newest last):"]
-                for _r in _recs:
-                    _kind = ("created" if _r.get("created")
-                             else "truncated pre-image — cannot undo"
-                             if _r.get("truncated") else "edited")
-                    _lines.append(
-                        f"- [{_r.get('seq', '?')}] {_r.get('path', '?')}"
-                        f" ({_kind})")
-                _lines.append(
-                    "\nUndo with `/undo-file last`, `/undo-file turn` or "
-                    "`/undo-file session`. A file changed since the agent "
-                    "wrote it is reported as a conflict and never "
-                    "overwritten.")
-                _append_system_message("\n".join(_lines))
+                _append_system_message(format_undo_listing(_recs))
                 return True
             if _arg not in ("last", "turn", "session"):
                 _append_system_message(
                     f"Unknown scope '{_arg}'. Use: list | last | turn | "
                     "session.")
                 return True
-            _seqs = list(state.get("_turn_change_seqs") or [])
+            # The turn cursor lives on the tool executor that writes the
+            # journal. The dashboard used to read a state key nothing
+            # ever wrote, so `/undo-file turn` was permanently empty.
+            _seqs: list = []
+            try:
+                from delfin.agent.api_client import _doc_executor as _dex
+                _seqs = list(_dex._turn_seqs_for(_sid))
+            except Exception:
+                _seqs = []
+            if not _seqs:
+                _seqs = list(state.get("_turn_change_seqs") or [])
+            if _arg == "turn" and not _seqs:
+                _append_system_message(
+                    "No file changes recorded in the current turn. Use "
+                    "`/undo-file last` or `/undo-file session`.")
+                return True
             _res = _cj.revert(_sid, scope=_arg, turn_seqs=_seqs,
                               workspace=Path(_ws) if _ws else None)
-            _out = [f"**Undo ({_arg})**"]
-            for _key, _label in (("reverted", "Restored"),
-                                 ("conflicts", "Conflicts — NOT touched"),
-                                 ("skipped", "Skipped")):
-                _items = _res.get(_key) or []
-                if _items:
-                    _out.append(f"{_label}:")
-                    for _it in _items:
-                        _out.append(
-                            "- " + (_it if isinstance(_it, str)
-                                    else str(_it.get("path", _it))))
-            if len(_out) == 1:
-                _out.append("Nothing to undo.")
-            _append_system_message("\n".join(_out))
+            # An undo overwrites user files; it belongs in the audit
+            # trail /changes reads, and its own journal entries belong
+            # in the turn so it can itself be undone.
+            try:
+                from delfin.agent import audit_log as _al_undo
+                for _p in _res.get("reverted", []) or []:
+                    _al_undo.append(_al_undo.make_record(
+                        tool="undo_changes", decision="ok",
+                        path=str(_p), session_id=_sid,
+                        extra={"scope": _arg, "source": "dashboard"}))
+            except Exception:
+                pass
+            try:
+                from delfin.agent.api_client import _doc_executor as _dex2
+                _kp2 = getattr(state.get("engine"), "kit_permissions", None)
+                for _s in _res.get("undo_seqs", []) or []:
+                    _dex2._note_change_seq({"seq": _s}, _kp2)
+            except Exception:
+                pass
+            _append_system_message(format_undo_result(_arg, _res))
             return True
 
         if cmd in ("/changes", "/changes all"):
@@ -13693,20 +13802,7 @@ def create_tab(ctx):
         # But file paths like /home/... are NOT slash commands — only
         # short tokens like /help, /calc, /orca etc. count.
         _first_token = user_text.split()[0].lower() if user_text else ""
-        _SLASH_PREFIXES = {
-            "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
-            "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
-            "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
-            "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
-            "/changes", "/doctor", "/attention", "/pin", "/batch",
-            "/pending", "/approve", "/reject",
-            "/bugs", "/watch", "/fix", "/grant",
-            "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
-            "/workspace", "/tab", "/ui",
-            "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
-            "/check", "/recalc", "/cancel", "/context", "/agents", "/skills",
-            "/trace", "/loop",
-        }
+        _SLASH_PREFIXES = _BUILTIN_SLASH_PREFIXES
         # User-defined slash commands and skill expansion: when /<name>
         # doesn't match a built-in slash command, first look in the
         # commands/ markdown templates (lightweight $ARGUMENTS-style
