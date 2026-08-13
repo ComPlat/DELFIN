@@ -1624,11 +1624,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
         }
     }
-                    }
-                }
-            }
-        }
-    }
 
     function invalidateGeometry(viewer) {
         try {
