@@ -19,7 +19,7 @@ from pathlib import Path
 
 import re
 import time
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 from .benchmark import (
     BenchmarkResult,
@@ -99,6 +99,51 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0) 
 
 EngineFactory = Callable[[str, str, str, str], Any]
 """(model, backend, provider, mode) -> engine."""
+
+
+def _iso(epoch: float) -> str:
+    """Audit-log timestamps are ISO strings compared lexicographically."""
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromtimestamp(
+            float(epoch), _dt.timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _denials_during(engine: Any, *, since_ts: str) -> Optional[int]:
+    """How many tool calls the gates refused in this task's window.
+
+    A cost-side number: guards are supposed to refuse the wrong thing, and
+    a rising count over a suite that already passed means they started
+    refusing the right thing too. That direction never shows up in a pass
+    rate, and it is how a check teaches the model to phrase work so
+    nothing keys on it.
+
+    Returns ``None`` when there was no way to look -- no audit log, no
+    workspace, a mocked engine in a unit test. Reporting 0 there would say
+    "nothing was refused", which is a different sentence from "nobody
+    looked", and this framework has already shipped that confusion once.
+    """
+    try:
+        from delfin.agent import audit_log as _audit
+        perms = getattr(engine, "kit_permissions", None)
+        workspace = getattr(perms, "workspace", None) if perms else None
+        if not workspace:
+            return None
+        report = _audit.build_changes_report(
+            since_ts=since_ts or None, workspace=str(workspace))
+        denied = report.get("denied")
+        # An empty skeleton comes back on any failure, and its window
+        # records count is 0 -- indistinguishable from a clean run that
+        # simply refused nothing. Only a window that actually saw records
+        # can say zero.
+        window = report.get("window") or {}
+        if not window.get("records") and not denied:
+            return None
+        return len(denied or [])
+    except Exception:
+        return None
 
 
 def _default_engine_factory(model: str, backend: str, provider: str, mode: str) -> Any:
@@ -355,6 +400,7 @@ def _run_task_once(
     traj = trajectory_from_run(
         raw, duration_s=t1 - t0, cost_usd=_cost_delta(cost_before, cost_after),
     )
+    traj.denials = _denials_during(engine, since_ts=_iso(t0))
     return score_outcome(
         task, traj, model=model, profile_name=profile_name, ts=clock(),
     )

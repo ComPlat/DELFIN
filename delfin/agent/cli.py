@@ -385,6 +385,20 @@ def cmd_bench(args: argparse.Namespace) -> int:
               f"→ ${new['total_cost_usd']:.4f}")
         print(f"  duration(total) {old['total_duration_s']:.1f}s "
               f"→ {new['total_duration_s']:.1f}s")
+        # The cost side of the same two runs. The verdict above is built
+        # from quality; these can get worse while it does not move, which
+        # is exactly the regression a wave of guard work produces.
+        _oc, _nc = old.get("avg_caveats"), new.get("avg_caveats")
+        if _oc is not None and _nc is not None:
+            _worse = _nc > _oc + 0.25
+            print(f"  caveats/answer {_oc:.1f} → {_nc:.1f}"
+                  + ("   ← MORE HEDGING, treat as a regression" if _worse
+                     else ""))
+        _ot, _nt = old.get("avg_output_tokens"), new.get("avg_output_tokens")
+        if _ot is not None and _nt is not None:
+            print(f"  out-tok/task {_ot:.0f} → {_nt:.0f}"
+                  + ("   ← LONGER ANSWERS for the same score"
+                     if _ot and _nt > _ot * 1.15 else ""))
         print()
         print(f"  {'task_id':<28} {'cls':<8} {'qual':>9} "
               f"{'Δcost':>9} {'Δdur':>8}")
@@ -478,6 +492,18 @@ def cmd_bench(args: argparse.Namespace) -> int:
         for _tid in s.get("unmeasured_tasks") or []:
             print(f"       {_tid}")
         print("     Re-run them before comparing this to anything.")
+    # The cost side, printed whether or not anything went wrong. The rate
+    # above cannot move when an answer grows a third hedge or a guard
+    # starts refusing honest work -- these are the only numbers that can,
+    # and a number nobody prints is a number nobody compares.
+    _denials = s.get("total_denials")
+    print(f"  cost side: {s['avg_caveats']:.1f} caveats/answer "
+          f"(max {s['max_caveats']})   "
+          f"{s['avg_output_tokens']:.0f} out-tok/task   "
+          f"{s['avg_answer_chars']:.0f} chars/answer   "
+          f"denials {'not observed' if _denials is None else _denials}")
+    print("     Rising here is a regression even at an unchanged pass "
+          "rate: an answer nobody finishes reading says nothing.")
     _print_behavior_rates(_bm, results)
     print(f"\nWritten to: {path}")
     return 0

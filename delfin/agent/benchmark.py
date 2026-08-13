@@ -30,7 +30,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from . import pricing as _pricing
 
@@ -95,6 +95,9 @@ class Trajectory:
     input_tokens: int = 0
     output_tokens: int = 0
     error: str = ""
+    # Gate denials observed during the run; ``None`` when the runner had
+    # no way to look. Unobserved is not zero.
+    denials: Optional[int] = None
 
     def as_string(self) -> str:
         parts = [self.text]
@@ -158,6 +161,15 @@ class BenchmarkResult:
     # Kept OUT of ``components`` on purpose — ``quality = sum(components)``,
     # so mixing behaviour flags in would corrupt the quality score.
     behavior: dict[str, float] = field(default_factory=dict)
+    # --- cost side: what the guards charge for what they catch ---
+    # See caveat_count. Aggregated across replicates these are medians,
+    # like duration and quality.
+    caveats: int = 0
+    answer_chars: int = 0
+    # Gate denials during the run. ``None`` means NOT OBSERVED -- the
+    # runner could not reach the audit log -- and must never be reported
+    # as zero, which is the same sentence as "nothing was refused".
+    denials: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +682,38 @@ _RETRY_NOTICE_RE = re.compile(
     r"(?m)^\s*[\u23f3\u26a0\u23f9\U0001f6d1][^\n]*$")
 
 
+# ---------------------------------------------------------------------------
+# The cost side of a guard
+# ---------------------------------------------------------------------------
+#
+# Pass rate and quality are HIT-side numbers. Almost every fix in this
+# framework has the same shape -- a path that used to be silent now says
+# something -- and every one of those costs text, a check or a refusal.
+# None of that can move a pass/fail number, so a suite can go on reading
+# 11/11 while the answers grow a hedge apron nobody finishes reading. An
+# answer carrying three caveats is as silent as one carrying none.
+#
+# These are the markers the framework itself emits, so this counts what
+# was actually appended rather than guessing at wording:
+_CAVEAT_MARKERS = (
+    "> ⚠️ ",        # figure ledger, count-vs-enumeration,
+                              # truncated output, ambiguous column
+    "[verify] Caveat:",       # grounding, functional claims
+)
+
+
+def caveat_count(text: str) -> int:
+    """How many caveats the framework appended to one answer.
+
+    Counted, not judged: a caveat is worth its space exactly once. The
+    number belongs beside the pass rate because it is the one quantity a
+    wave of "say it out loud" fixes can push in the wrong direction
+    without a single test going red.
+    """
+    body = str(text or "")
+    return sum(body.count(marker) for marker in _CAVEAT_MARKERS)
+
+
 def score_outcome(
     task: Task,
     traj: Trajectory,
@@ -833,6 +877,9 @@ def score_outcome(
         text_excerpt=excerpt,
         tool_names=tool_names,
         behavior=behavior_flags(task, traj),
+        caveats=caveat_count(traj.text),
+        answer_chars=len(str(traj.text or "")),
+        denials=traj.denials,
     )
 
 
@@ -976,6 +1023,12 @@ def aggregate_replicates(
         text_excerpt=excerpt,
         tool_names=tool_names_union,
         behavior=behavior_agg,
+        caveats=int(_median([float(r.caveats) for r in results])),
+        answer_chars=int(_median([float(r.answer_chars) for r in results])),
+        # Unobserved stays unobserved: a median over a list with holes in
+        # it would report a number for samples that never looked.
+        denials=(None if any(r.denials is None for r in results)
+                 else int(_median([float(r.denials or 0) for r in results]))),
     )
 
 
@@ -1037,10 +1090,13 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     ]
     if not rows:
         return {
-            "n_tasks": 0, "n_pass": 0, "pass_rate": 0.0,
+            "n_tasks": 0, "n_pass": 0, "n_fail": 0, "pass_rate": 0.0,
             "n_unmeasured": 0, "unmeasured_tasks": [],
             "avg_quality": 0.0, "total_cost_usd": 0.0,
             "total_duration_s": 0.0, "total_tool_calls": 0,
+            "avg_caveats": 0.0, "max_caveats": 0,
+            "avg_output_tokens": 0.0, "avg_answer_chars": 0.0,
+            "total_denials": None,
         }
     # A task whose request never reached the model is excluded from both
     # the rate and the average, and counted separately. Including it
@@ -1065,6 +1121,26 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "total_cost_usd": sum(float(r.get("cost_usd") or 0) for r in rows),
         "total_duration_s": sum(float(r.get("duration_s") or 0) for r in rows),
         "total_tool_calls": sum(int(r.get("tool_calls") or 0) for r in rows),
+        # The cost side. These do not judge the run, they are what a
+        # later run is compared against: a suite can hold 11/11 while
+        # every answer grows another hedge, and only these move.
+        "avg_caveats": (sum(int(r.get("caveats") or 0)
+                            for r in scored) / n) if n else 0.0,
+        "max_caveats": max((int(r.get("caveats") or 0) for r in scored),
+                           default=0),
+        "avg_output_tokens": (sum(int(r.get("output_tokens") or 0)
+                                  for r in scored) / n) if n else 0.0,
+        "avg_answer_chars": (sum(int(r.get("answer_chars") or 0)
+                                 for r in scored) / n) if n else 0.0,
+        # Kept apart from the rate: a task that fails IS a cost signal,
+        # but a task nobody could measure is not.
+        "n_fail": n - n_pass,
+        # None when any scored task did not observe denials at all. A
+        # zero here would read as "nothing was refused", which is a
+        # different sentence from "nobody looked".
+        "total_denials": (
+            None if any(r.get("denials") is None for r in scored)
+            else sum(int(r.get("denials") or 0) for r in scored)),
     }
 
 
