@@ -23,10 +23,19 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-# Cancel superseded runs on the same branch/PR to save CI minutes.
+# Cancel superseded runs on the same branch/PR to save CI minutes -- but not
+# on main. There, a superseded run is not wasted work: every commit on the
+# default branch is a state somebody may check out, and the only report on
+# whether it holds is its own run. Cancelling it leaves that commit
+# unverified and says nothing about it, and with several people pushing, a
+# run that takes longer than the gap between pushes is cancelled every time,
+# so main can go a whole morning without a single completed check while the
+# run list shows nothing but "cancelled". A pull request is the other case:
+# only its latest revision is going to be merged, so superseding is exactly
+# right there and stays on.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

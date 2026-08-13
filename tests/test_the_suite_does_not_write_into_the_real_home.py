@@ -287,6 +287,39 @@ def test_the_snapshot_skips_the_declared_output_locations():
             probe.unlink()
 
 
+def test_inside_a_declared_location_git_says_what_belongs_there():
+    """Both declared roots hold tracked source, and one is where the office
+    benchmark writes. Exempting them wholesale would have made that the one
+    place a leak stayed quiet, so inside them the ignore rules -- written by
+    hand, and reviewed -- are what decides."""
+    from conftest import _unexpected_under_a_generated_root
+
+    for rel in _GENERATED_ROOTS:
+        root = _CHECKOUT_ROOT / rel
+        root.mkdir(parents=True, exist_ok=True)
+        before = _unexpected_under_a_generated_root()
+        probe = root / "leak_probe.json"
+        probe.write_text("{}")
+        try:
+            appeared = _unexpected_under_a_generated_root() - before
+            assert any(p.endswith("leak_probe.json") for p in appeared), rel
+            # And the walk still says nothing about it, which is why the
+            # two halves are both needed.
+            assert not any("leak_probe.json" in p for p in _checkout_entries())
+        finally:
+            probe.unlink()
+
+
+def test_what_the_installer_and_the_generator_produce_is_not_reported():
+    """The other half: with the toolchain installed and the workbooks built,
+    which is this machine, git must have nothing to say about either root.
+    When that stops holding, .gitignore has drifted from what the installer
+    writes, and the run should say so."""
+    from conftest import _unexpected_under_a_generated_root
+
+    assert _unexpected_under_a_generated_root() == frozenset()
+
+
 def test_a_sibling_of_a_declared_location_is_not_exempt():
     """The exemption is containment, not a name that happens to start the
     same way: a backup or a copy beside a declared root is ordinary tree,

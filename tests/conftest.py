@@ -29,8 +29,6 @@ import pytest
 # must look the same after a run as before it.
 _CHECKOUT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 
-# Build noise, not test output: byte-code caches and pytest's own cache
-# are created by running the suite at all.
 # Directories the PRODUCT or the suite populates on purpose. Each is a
 # declared output location, not test spill, and each is named here with
 # the reason -- an entry may not be added on the grounds that git ignores
@@ -87,6 +85,43 @@ def _checkout_entries() -> frozenset:
     return frozenset(out)
 
 
+def _unexpected_under_a_generated_root() -> frozenset:
+    """What appeared inside a declared output location that its own ignore
+    rules do not describe.
+
+    Exempting the two roots wholesale would have cost real coverage: both
+    hold tracked source -- the installer scripts and the CSV fixtures --
+    and one of them is where the office benchmark writes. A leak there
+    would have been the one place this guard stayed quiet.
+
+    Git already carries the distinction, written by hand and reviewed:
+    ``.gitignore`` names the seven directories the installer fills and the
+    workbook patterns the generator writes, under the heading that says to
+    keep the scripts and ignore the local install. So the rule inside a
+    declared root is git's answer, not a second list here that would drift
+    from the first. ``docs`` is created empty and never filled, and an
+    empty directory does not exist as far as git is concerned.
+
+    No git, or a checkout that is not a repository: the roots stay exempt,
+    which is where this stood before. Reporting nothing beats failing a
+    run over a missing tool.
+    """
+    import subprocess
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(_CHECKOUT_ROOT), "status", "--porcelain", "-z",
+             "--", *_GENERATED_ROOTS],
+            capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    if done.returncode != 0:
+        return frozenset()
+    # `XY <path>` per entry, NUL-separated; a rename adds its source as a
+    # second entry, which is a path either way.
+    return frozenset(
+        entry[3:] for entry in done.stdout.split("\0") if entry[3:])
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_does_not_write_into_the_checkout():
     """Fail the run when new paths appeared in the checkout.
@@ -100,8 +135,12 @@ def _the_suite_does_not_write_into_the_checkout():
     every file the package legitimately rewrites.
     """
     before = _checkout_entries()
+    before_generated = _unexpected_under_a_generated_root()
     yield
     new = sorted(p for p in _checkout_entries() - before)
+    new += sorted(
+        str(_CHECKOUT_ROOT / p)
+        for p in _unexpected_under_a_generated_root() - before_generated)
     assert not new, (
         f"{len(new)} path(s) appeared in the checkout during the run; "
         "a git ignore rule may make them invisible to `git status`: "
