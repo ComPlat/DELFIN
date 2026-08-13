@@ -41,9 +41,22 @@ updates:
           - minor
           - patch
     ignore:
-      # Majors are migrations, not updates. numpy is pinned <2 in pyproject.toml
-      # because the scientific stack around it is not ready; lifting that is a
-      # project of its own.
+      # Majors are migrations, not updates.
       - dependency-name: "*"
         update-types:
           - version-update:semver-major
+
+      # DELFIN declares ranges rather than pinned versions, so Dependabot also
+      # proposes widening the ranges themselves — and the first thing it did
+      # was open a pull request lifting exactly the two ceilings that are there
+      # on purpose. A range-widening is not classified as a major update, so
+      # the rule above does not stop it; these have to be named.
+      #
+      # numpy <2: the scientific stack around it (rdkit, ase, stk, the MLP
+      # extras) is not ready, and DELFIN's results run through it.
+      # mendeleev <1.0: element data feeding basis-set and radius selection.
+      #
+      # Raising either is a deliberate migration, verified against real
+      # calculations — not something to accept from a bot.
+      - dependency-name: "numpy"
+      - dependency-name: "mendeleev"
