@@ -88,16 +88,62 @@ def _check_doc_index(ctx: dict) -> list[dict]:
     if isinstance(data, list) and data:
         data = data[0]
     docs = data.get("documents", {}) if isinstance(data, dict) else {}
+    failed = data.get("failed_documents", []) if isinstance(data, dict) else []
+    failed = [f for f in failed if isinstance(f, dict)]
     if not docs:
+        detail = f"index at {_tilde(idx_path)} contains no documents"
+        if failed:
+            detail += f" ({len(failed)} could not be extracted)"
         return [_row(
-            "doc index", WARN,
-            f"index at {_tilde(idx_path)} contains no documents",
+            "doc index", WARN, detail,
             "re-run delfin-docs-index over the literature/ directory",
         )]
-    return [_row(
+    rows = [_row(
         "doc index", PASS,
         f"{len(docs)} document(s) indexed at {_tilde(idx_path)}",
     )]
+    if failed:
+        # A file that yielded no text is not a document with nothing in
+        # it — it is a file that was never indexed, and every search
+        # against it returns nothing forever. Named here with the reason
+        # because "indexed" was the only word the user got.
+        names = ", ".join(
+            f"{f.get('doc_id') or f.get('path', '?')}: {f.get('reason', '?')}"
+            for f in failed[:4])
+        rows.append(_row(
+            "doc index", WARN,
+            f"{len(failed)} document(s) yielded no text — {names}",
+            "install pypdf for PDF text, or OCR a scanned manual before "
+            "indexing it",
+        ))
+    stale = _stale_documents(data)
+    if stale:
+        rows.append(_row(
+            "doc index", WARN,
+            f"{len(stale)} indexed document(s) changed or vanished since the "
+            f"index was built ({data.get('built_at', 'unknown time')}): "
+            + ", ".join(stale[:4]),
+            "re-run delfin-docs-index",
+        ))
+    return rows
+
+
+def _stale_documents(index: dict) -> list[str]:
+    """doc_ids whose source changed or disappeared after the index was built.
+
+    ``built_at`` was written by both indexers and read by nobody: no
+    consumer ever compared it to a source mtime, so a section deleted from
+    the source last month still answered today, byte-identical to a fresh
+    hit.
+    """
+    try:
+        from delfin.doc_server.indexer import stale_documents
+    except Exception:       # pragma: no cover - doc_server not importable
+        return []
+    try:
+        return [s["doc_id"] for s in stale_documents(index)]
+    except Exception:       # pragma: no cover
+        return []
 
 
 def _check_credentials(ctx: dict) -> list[dict]:
@@ -186,17 +232,17 @@ def _check_mcp(ctx: dict) -> list[dict]:
             "mcp servers", PASS,
             f"{len(configs)} configured: {names} (not probed; fast mode)",
         )]
-    # Slow path: actually start each server and list its tools.
-    from .mcp_client import MCPRegistry
+    # Slow path: actually start each server and list its tools. The verdict
+    # comes from ``unreachable_servers``, which reads ``last_error`` after
+    # the call — this loop used to catch an exception that ``list_tools``
+    # never raises (it fails closed and returns ``[]``), so a server with a
+    # missing binary was reported as "configured + reachable".
+    from .mcp_client import MCPRegistry, unreachable_servers
     reg = MCPRegistry()
     unreachable: list[str] = []
     try:
         reg.load(Path(workspace) if workspace else None)
-        for name, srv in reg.servers.items():
-            try:
-                srv.list_tools()
-            except Exception:
-                unreachable.append(name)
+        unreachable = unreachable_servers(reg)
     finally:
         try:
             reg.shutdown()
@@ -206,7 +252,7 @@ def _check_mcp(ctx: dict) -> list[dict]:
         return [_row(
             "mcp servers", WARN,
             f"{len(configs)} configured, unreachable: "
-            f"{', '.join(sorted(unreachable))}",
+            f"{'; '.join(sorted(unreachable))}",
             "check the server command/URL in mcp_servers.json",
         )]
     return [_row(

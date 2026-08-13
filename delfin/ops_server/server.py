@@ -12,7 +12,7 @@ Read-only (safe):
     - ``analysis_check``   — analysis tool availability
     - ``stop_dry_run``     — list DELFIN processes that *would* be signaled
 
-Mutating (require explicit ``allow_mutate=True``):
+Mutating (require the host's grant):
     - ``cleanup``          — remove scratch artifacts (supports dry_run)
     - ``stop``             — signal DELFIN processes
     - ``pipeline_run``     — full DELFIN pipeline
@@ -22,9 +22,14 @@ Mutating (require explicit ``allow_mutate=True``):
     - ``tadf_xtb``         — TADF xTB workflow
     - ``hyperpol``         — hyperpolarisability workflow
 
-Mutating tools refuse to execute unless the ``allow_mutate`` parameter is
-passed explicitly.  This matches the dashboard's rule that destructive
-agent actions require user confirmation.
+Mutating tools refuse to execute unless the process that started this server
+set ``DELFIN_OPS_ALLOW_MUTATE``.  The consent used to be an ``allow_mutate``
+parameter ON the mutating tool, which meant the caller being gated supplied
+its own permission — self-attested consent, invisible to every gate
+upstream.  The MCP-facing wrappers therefore drop the parameter from the
+schema entirely: there is nothing for a caller to pass.  The Python
+functions keep the keyword so in-process callers (dashboard, tests) can
+still pass a decision they actually made.
 
 The tool functions are defined at module level so they can be imported and
 tested without the optional FastMCP dependency.  ``run_server`` only loads
@@ -73,16 +78,80 @@ def _format_result(rc: delfin_api.CommandResult, *, action: str, dry_run: bool =
 
 
 def _refuse_mutation(action: str) -> str:
-    """Standard refusal payload when ``allow_mutate`` is not set."""
+    """Standard refusal payload when the host has not granted mutation.
+
+    The message deliberately does NOT tell the caller to pass a flag. It
+    used to, and that was the whole gate: ``allow_mutate`` was a parameter
+    on the tool the model was calling, so the consent for
+    delete-calc-folder, kill-all-user-jobs, pipeline-run and move-to-archive
+    was supplied by the same party the consent was protecting against, and
+    the permission gate upstream never saw it. Consent now comes from the
+    process that STARTED this server.
+    """
     return json.dumps({
         "action": action,
         "ok": False,
         "error": "mutation_blocked",
         "message": (
-            f"The tool '{action}' modifies state. Pass allow_mutate=True "
-            "to execute. The agent should ask the user before doing so."
+            f"The tool '{action}' modifies state and this server was not "
+            "started with mutation granted. Ask the USER to approve the "
+            f"action; there is no argument that turns it on."
         ),
     }, indent=2, ensure_ascii=False)
+
+
+# Environment variable the host sets when the user has granted this server
+# permission to change things. Read at call time, never taken from the tool
+# arguments, so nothing the model emits can set it.
+_MUTATION_ENV = "DELFIN_OPS_ALLOW_MUTATE"
+
+
+def host_grants_mutation() -> bool:
+    """Whether the process that started this server granted mutation.
+
+    Out of band by construction: an MCP tool argument travels with the
+    model's message, so a boolean parameter named ``allow_mutate`` is the
+    model attesting its own consent. This is read from the environment the
+    host controls.
+    """
+    raw = (os.environ.get(_MUTATION_ENV) or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _host_gated(fn):
+    """Expose *fn* without its ``allow_mutate`` parameter.
+
+    The wrapper keeps the same call, drops the flag from the schema the
+    model sees, and supplies the value from :func:`host_grants_mutation`.
+    Anything the model sends under that name is discarded.
+    """
+    import functools
+    import inspect
+
+    sig = inspect.signature(fn)
+    params = [p for n, p in sig.parameters.items() if n != "allow_mutate"]
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        kwargs.pop("allow_mutate", None)
+        return fn(*args, allow_mutate=host_grants_mutation(), **kwargs)
+
+    wrapper.__signature__ = sig.replace(parameters=params)
+    wrapper.__doc__ = _strip_allow_mutate_doc(fn.__doc__)
+    return wrapper
+
+
+def _strip_allow_mutate_doc(doc: str | None) -> str:
+    """Drop any ``allow_mutate`` line from a docstring shown to the model.
+
+    A description that tells the model to pass a flag it no longer has
+    teaches it to retry with an argument that is thrown away.
+    """
+    if not doc:
+        return ""
+    kept = [ln for ln in doc.splitlines()
+            if "allow_mutate" not in ln]
+    return "\n".join(kept).rstrip()
 
 
 # ---------------------------------------------------------------------------
@@ -1512,8 +1581,8 @@ def run_server(argv: list[str] | None = None) -> None:
             "DELFIN operations server. Run DELFIN workflows (pipeline, "
             "ORCA, TADF, hyperpol, CO2), inspect tool availability, and "
             "control running processes. Read-only tools are always safe; "
-            "mutating tools require allow_mutate=True and should be "
-            "confirmed with the user first."
+            "mutating tools need the host's grant, which no tool argument "
+            "can set — ask the user, then let them grant it."
         ),
     )
 
@@ -1566,19 +1635,19 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="validate_orca_input")(tool_validate_orca_input)
     # Job lifecycle (read-only list + mutating submit/cancel)
     mcp.tool(name="list_active_calculations")(tool_list_active_calculations)
-    mcp.tool(name="submit_calculation")(tool_submit_calculation)
-    mcp.tool(name="cancel_calculation")(tool_cancel_calculation)
+    mcp.tool(name="submit_calculation")(_host_gated(tool_submit_calculation))
+    mcp.tool(name="cancel_calculation")(_host_gated(tool_cancel_calculation))
     # Calc folder management (mutating, allow_mutate-gated)
-    mcp.tool(name="rename_calc_folder")(tool_rename_calc_folder)
-    mcp.tool(name="create_calc_folder")(tool_create_calc_folder)
-    mcp.tool(name="move_calc_folder")(tool_move_calc_folder)
-    mcp.tool(name="move_to_archive")(tool_move_to_archive)
-    mcp.tool(name="delete_calc_folder")(tool_delete_calc_folder)
+    mcp.tool(name="rename_calc_folder")(_host_gated(tool_rename_calc_folder))
+    mcp.tool(name="create_calc_folder")(_host_gated(tool_create_calc_folder))
+    mcp.tool(name="move_calc_folder")(_host_gated(tool_move_calc_folder))
+    mcp.tool(name="move_to_archive")(_host_gated(tool_move_to_archive))
+    mcp.tool(name="delete_calc_folder")(_host_gated(tool_delete_calc_folder))
     # Bulk job control + recalc preparation + Options dispatcher
-    mcp.tool(name="kill_all_user_jobs")(tool_kill_all_user_jobs)
-    mcp.tool(name="prepare_recalc")(tool_prepare_recalc)
+    mcp.tool(name="kill_all_user_jobs")(_host_gated(tool_kill_all_user_jobs))
+    mcp.tool(name="prepare_recalc")(_host_gated(tool_prepare_recalc))
     mcp.tool(name="list_calc_options")(tool_list_calc_options)
-    mcp.tool(name="run_calc_option")(tool_run_calc_option)
+    mcp.tool(name="run_calc_option")(_host_gated(tool_run_calc_option))
     mcp.tool(name="list_ssh_transfer_jobs")(tool_list_ssh_transfer_jobs)
     # ORCA-manual lookup + literature indexing
     mcp.tool(name="check_orca_manual_indexed")(tool_check_orca_manual_indexed)
@@ -1597,42 +1666,43 @@ def run_server(argv: list[str] | None = None) -> None:
     def _stop_dry_run(workspace: str = "") -> str:
         return tool_stop_dry_run(workspace or default_workspace)
 
-    # Mutating wrappers default workspace = server cwd
-    @mcp.tool(name="cleanup", description=tool_cleanup.__doc__)
+    # Mutating wrappers default workspace = server cwd. No allow_mutate
+    # parameter: the value comes from the host, never from the caller.
+    @mcp.tool(name="cleanup",
+              description=_strip_allow_mutate_doc(tool_cleanup.__doc__))
     def _cleanup(
         orca: bool = False,
         dry_run: bool = True,
         workspace: str = "",
         scratch: str = "",
-        allow_mutate: bool = False,
     ) -> str:
         return tool_cleanup(
             orca=orca, dry_run=dry_run,
             workspace=workspace or default_workspace,
-            scratch=scratch, allow_mutate=allow_mutate,
+            scratch=scratch, allow_mutate=host_grants_mutation(),
         )
 
-    @mcp.tool(name="stop", description=tool_stop.__doc__)
+    @mcp.tool(name="stop",
+              description=_strip_allow_mutate_doc(tool_stop.__doc__))
     def _stop(
         signal_name: str = "INT",
         workspace: str = "",
         dry_run: bool = True,
         cleanup_after: bool = False,
         wait_seconds: float = 3.0,
-        allow_mutate: bool = False,
     ) -> str:
         return tool_stop(
             signal_name=signal_name,
             workspace=workspace or default_workspace,
             dry_run=dry_run, cleanup_after=cleanup_after,
-            wait_seconds=wait_seconds, allow_mutate=allow_mutate,
+            wait_seconds=wait_seconds, allow_mutate=host_grants_mutation(),
         )
 
-    mcp.tool(name="pipeline_prepare")(tool_pipeline_prepare)
-    mcp.tool(name="pipeline_run")(tool_pipeline_run)
-    mcp.tool(name="run_orca_input")(tool_run_orca_input)
-    mcp.tool(name="co2")(tool_co2)
-    mcp.tool(name="tadf_xtb")(tool_tadf_xtb)
-    mcp.tool(name="hyperpol")(tool_hyperpol)
+    mcp.tool(name="pipeline_prepare")(_host_gated(tool_pipeline_prepare))
+    mcp.tool(name="pipeline_run")(_host_gated(tool_pipeline_run))
+    mcp.tool(name="run_orca_input")(_host_gated(tool_run_orca_input))
+    mcp.tool(name="co2")(_host_gated(tool_co2))
+    mcp.tool(name="tadf_xtb")(_host_gated(tool_tadf_xtb))
+    mcp.tool(name="hyperpol")(_host_gated(tool_hyperpol))
 
     mcp.run(transport="stdio")

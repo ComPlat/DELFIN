@@ -270,11 +270,13 @@ def test_registry_resources_and_prompts(monkeypatch, tmp_path):
 def test_registry_loads_http_and_discovers(monkeypatch, tmp_path):
     fake, _ = make_fake_endpoint()
     monkeypatch.setattr(M.urllib.request, "urlopen", fake)
-    cfg = {"servers": {"remote": {"type": "http",
-                                  "url": "https://mcp.example.com/mcp"},
-                       # disable the built-in default so this stays focused on
-                       # the HTTP server under test (no real subprocess spawn).
-                       "delfin-tools": {"enabled": False}}}
+    # Disable EVERY built-in so this stays focused on the HTTP server under
+    # test (no real subprocess spawn). Named one at a time, this silently
+    # started spawning the moment a second built-in was registered.
+    servers = {"remote": {"type": "http",
+                          "url": "https://mcp.example.com/mcp"}}
+    servers.update({name: {"enabled": False} for name in M._BUILTIN_SERVERS})
+    cfg = {"servers": servers}
     (tmp_path / ".delfin").mkdir()
     (tmp_path / ".delfin" / "mcp_servers.json").write_text(json.dumps(cfg))
     monkeypatch.setattr(M, "_user_config_path",

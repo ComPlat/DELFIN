@@ -1494,6 +1494,83 @@ _MCP_WRITE_GATE_MAP: dict[str, str] = {
     "apply_patch": "apply_patch",
 }
 
+# MCP tools that write source and execute it. Not a file write with a path
+# the write gate could judge — the payload IS code and the server runs it
+# where it likes. ``register_module`` writes ``<adapters_dir>/<name>.py``
+# and imports it in the same call; the cleanup that removes the file on
+# failure runs AFTER the import, so the file never surviving is true of the
+# file and false of the execution. Held to the strictest branch below.
+_MCP_CODE_EXEC_TOOL_BASES: frozenset[str] = frozenset({
+    "register_module",
+    "run_python", "python", "eval_python", "execute_code", "run_code",
+    "eval", "exec",
+})
+
+# The MCP tools that change NOTHING. This is the list that has to be
+# enumerated, and enumerating the other one is what went wrong: writes were
+# classified by a five-name map, so ``_gate_mcp_tool`` returned None for
+# every name it did not recognise — which is the normal case, because a
+# server names its own actions. Measured before this changed:
+# ``mcp__delfin-tools__register_module`` (write a Python file, import it)
+# was ALLOWED in default, acceptEdits and bypassPermissions, while
+# ``mcp__kit-coding__write_file`` into the same directory was blocked; the
+# ops server's delete-calc-folder / kill-all-user-jobs / pipeline-run were
+# gated only by an ``allow_mutate`` flag the model itself supplied.
+#
+# Membership means "cannot change anything, cannot spend anything, cannot
+# start anything". Judged on the bare tool name, like every other rule
+# here, so the namespace cannot route around it. A tool not on this list is
+# not refused outright — it is routed to the side-effect gate, which asks
+# the user (or refuses when nobody can be asked).
+_MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
+    # --- generic server vocabulary (filesystem/search backends) ---
+    "read_file", "read_text_file", "read_media_file", "read_multiple_files",
+    "grep_file", "grep", "search", "search_files", "glob", "glob_files",
+    "list_files", "list_directory", "list_directory_with_sizes",
+    "directory_tree", "get_file_info", "list_allowed_directories",
+    "find_definition", "find_references", "notebook_read", "view_image",
+    # --- reading this session / this machine (the native reads, in case a
+    #     backend offers them under the same names) ---
+    "read_document", "compare_tables", "sum_column", "check_environment",
+    "list_changes_made", "history_search", "history_get", "task_list",
+    "task_get", "bash_status", "bash_output", "subagent_result",
+    "cron_list",
+    # --- DELFIN tools server: discovery, description, dry validation ---
+    "get_manifest", "get_guide", "resolve_spec", "scientific_lint",
+    "list_capabilities", "describe_capability", "catalog",
+    "compatible_successors", "new_capability_template",
+    "list_keys", "describe_key",
+    "list_applications", "describe_application",
+    "validate_application", "validate_spec",
+    "run_diagnostics", "run_status", "list_runs", "run_metrics",
+    "probe", "install_plan",
+    # --- DELFIN docs server: reading the index ---
+    "search_docs", "read_section", "list_docs", "list_sections",
+    "search_calcs", "get_calc_info", "calc_summary",
+    # --- DELFIN ops server: checks ---
+    "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
+    # --- DELFIN ops server: output parsing (reads .out files) ---
+    "parse_orca_output", "find_orca_errors", "extract_thermochem",
+    "extract_energy_table", "find_calculation_extreme",
+    "extract_imaginary_frequencies", "extract_orbital_energies",
+    "extract_excited_states", "extract_dipole",
+    "extract_optimization_trajectory", "extract_scf_convergence",
+    "extract_mulliken_charges", "extract_loewdin_charges",
+    "extract_vibrational_modes", "extract_delfin_json",
+    "extract_calc_summary_table", "compare_calculations",
+    "compare_across_functionals",
+    # --- DELFIN ops server: catalogs, guidance, validation, explainer ---
+    "list_tools", "describe_tool", "list_dashboard_patterns",
+    "get_dashboard_pattern", "list_dashboard_widgets", "get_widget_options",
+    "validate_orca_input", "list_delfin_features", "explain_delfin_feature",
+    # --- DELFIN ops server: listings ---
+    "list_active_calculations", "list_ssh_transfer_jobs",
+    "list_calc_options", "list_literature_files",
+    # --- DELFIN ops server: literature reading ---
+    "check_orca_manual_indexed", "read_pdf", "search_pdf_local",
+    "extract_pdf_section",
+})
+
 
 # DELFIN-only tool names. Filtered out of the advertised tool list when
 # the workspace isn't a DELFIN repo, so generic projects don't see a
@@ -1769,6 +1846,16 @@ _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     "ask_user_question", "report_verdict", "skill",
 })
 
+# What plan mode may run THROUGH AN MCP SERVER. The native list above plus
+# every server tool already established to change nothing. Without the
+# union a planning turn could not call `list_capabilities`, `get_guide` or
+# `parse_orca_output` — discovery tools, refused for being unrecognised —
+# so the mode meant to be spent investigating could not investigate the
+# one surface the role prompt points it at.
+_PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
+    _PLAN_READONLY_TOOLS | _MCP_READONLY_TOOL_BASES
+)
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
@@ -1802,6 +1889,20 @@ def _tool_action_signature(name: str, args: dict) -> str:
     except Exception:
         payload = str(args)
     return f"{base}|{payload[:400]}"
+
+
+def _preview_args(args: dict) -> str:
+    """The arguments of an MCP call, short enough to read in a dialog.
+
+    The user is being asked about a tool whose name means nothing outside
+    its server, so the arguments are the whole of what they have to judge.
+    """
+    try:
+        text = json.dumps(args or {}, indent=2, ensure_ascii=False,
+                          sort_keys=True, default=str)
+    except Exception:
+        text = str(args)
+    return text if len(text) <= 1200 else text[:1200] + "\n… (truncated)"
 
 
 def _tool_denied_for_role(role: str, name: str) -> bool:
@@ -9944,7 +10045,7 @@ class _DocToolExecutor:
         """Apply the native permission gate to side-effecting MCP tools.
 
         MCP tools (``mcp__<server>__<tool>``) are dispatched straight to the
-        remote server, bypassing ``_run_permission_gate``. Two families let a
+        remote server, bypassing ``_run_permission_gate``. Families that let a
         model reach past the sandbox that way:
 
         * shells (``mcp__kit-coding__bash`` …) — arbitrary commands (``git
@@ -9954,10 +10055,19 @@ class _DocToolExecutor:
           ``multi_edit`` / ``notebook_edit``) — writes outside the sandbox,
           into the read-only archive, the agent's own safety layer, or a
           stored calc; remapped onto the matching write gate.
+        * everything else the server offers — deleting a calc folder,
+          cancelling every job, starting a pipeline, writing a Python file
+          and importing it. These have no native counterpart to remap onto,
+          and they were the majority.
 
-        Returns an error string to BLOCK the call, or None to allow it. Every
-        other (read-only / neutral) MCP tool returns None immediately, so its
-        existing behaviour is untouched.
+        Deny-by-default: only ``_MCP_READONLY_TOOL_BASES`` returns None
+        without a decision. Anything else reaches the side-effect gate, which
+        asks the user and refuses when nobody can be asked. Enumerating the
+        WRITES was the defect — the map knew five names and returned None for
+        the rest, so a five-name allow-all sat behind a gate labelled
+        deny-by-default.
+
+        Returns an error string to BLOCK the call, or None to allow it.
         """
         if not isinstance(name, str) or not name.startswith("mcp__"):
             return None
@@ -9988,9 +10098,12 @@ class _DocToolExecutor:
         # read-only, mcp__github__create_pull_request,
         # mcp__jira__create_issue and mcp__db__delete_row all dispatched.
         # Judged on the bare name, like the native check, so a namespaced
-        # read (mcp__coding__read_file) still works.
+        # read (mcp__coding__read_file) still works. The list is the native
+        # one plus the server tools established to change nothing — without
+        # them a planning turn could not call list_capabilities or
+        # parse_orca_output, which is the investigation plan mode is for.
         if perms is not None and getattr(perms, "mode", "") == "plan":
-            if (_bare_tool_name(name) not in _PLAN_READONLY_TOOLS
+            if (_bare_tool_name(name) not in _PLAN_READONLY_MCP_TOOLS
                     and not bool((args or {}).get("check_only"))):
                 _record_security_event("plan_mode_mcp", name, "", blocked=True)
                 return (
@@ -10073,6 +10186,83 @@ class _DocToolExecutor:
                 )
             return self._run_permission_gate(gate_name, args, perms)
 
+        # (3) Everything else. A tool this gate does not recognise is a tool
+        # whose effects it cannot judge, and "cannot judge" was silently
+        # spelled "allow". Read-only names pass; the rest need a decision.
+        if base in _MCP_READONLY_TOOL_BASES:
+            return None
+        return self._gate_side_effecting_mcp_tool(name, base, args, perms)
+
+    def _gate_side_effecting_mcp_tool(
+        self, name: str, base: str, args: dict,
+        perms: Optional["KitToolPermissions"],
+    ) -> Optional[str]:
+        """The decision for an MCP tool that is not on the read-only list.
+
+        There is no native counterpart to remap onto — the arguments are the
+        server's own and mean nothing here — so the only honest gate is the
+        user: ask when someone can be asked, refuse when nobody can, and let
+        bypassPermissions through because that profile's promise is that it
+        asks nothing.
+        """
+        # A dry run changes nothing, so there is nothing to decide — the
+        # same exemption the plan-mode and native checks make.
+        if bool((args or {}).get("check_only")):
+            return None
+
+        executes_code = base in _MCP_CODE_EXEC_TOOL_BASES
+
+        # Arguments a code-writing tool cannot be allowed to carry, checked
+        # before any approval so the user is never asked to approve a
+        # traversal. Same rule the writer itself applies, so the refusal and
+        # the write agree on what a module name is.
+        if base == "register_module":
+            try:
+                from delfin.tools.platform import module_name_error
+                bad = module_name_error((args or {}).get("name"))
+            except Exception:      # pragma: no cover - platform not importable
+                bad = None
+            if bad is not None:
+                _record_security_event("mcp_module_name", name,
+                                       str((args or {}).get("name"))[:80],
+                                       blocked=True)
+                return f"'{name}' refused: {bad}"
+
+        what = ("writes source and executes it" if executes_code
+                else "is not a read-only tool")
+        if perms is None:
+            _record_security_event("mcp_side_effect_no_perms", name, base,
+                                   blocked=True)
+            return (
+                f"'{name}' {what} and no permissions are configured, so it "
+                "is refused."
+            )
+        mode = getattr(perms, "mode", "")
+        if mode == "bypassPermissions":
+            return None
+        if perms.confirm_callback is None:
+            _record_security_event("mcp_side_effect", name, base, blocked=True)
+            return (
+                f"'{name}' {what}, and no approval dialog is configured "
+                f"(mode={mode}), so it is refused. Do NOT look for another "
+                "server that offers the same thing — TELL THE USER what this "
+                "call would do and why, and let them approve it or switch "
+                "the Perms mode chip."
+            )
+        preview = f"{name}\n" + _preview_args(args)
+        try:
+            ok = bool(perms.confirm_callback(name, args or {}, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        _record_security_event("mcp_side_effect", name, base, blocked=not ok)
+        if not ok:
+            if not self._confirm_timed_out(perms):
+                perms.record_denied_action(
+                    "tool", _tool_action_signature(name, args or {}))
+            return (
+                f"user denied '{name}'. Do NOT retry it or reach the same "
+                "effect through another server."
+            )
         return None
 
     def _build_change_preview(

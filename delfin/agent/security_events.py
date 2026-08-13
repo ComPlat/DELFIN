@@ -68,6 +68,9 @@ _KINDS = {
     "role_denied_mcp":   ("🎭", "Role: MCP tool refused"),
     "mcp_bash_no_perms": ("🔌", "MCP shell without permissions"),
     "mcp_write_no_perms": ("🔌", "MCP write without permissions"),
+    "mcp_side_effect":   ("🔌", "MCP tool that is not read-only"),
+    "mcp_side_effect_no_perms": ("🔌", "MCP side effect without permissions"),
+    "mcp_module_name":   ("🔌", "MCP module name outside the adapters dir"),
     "mcp_budget":        ("🔌", "MCP tool surface over budget"),
 }
 

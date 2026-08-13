@@ -70,6 +70,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -105,10 +106,37 @@ def _project_config_path(workspace: Path) -> Path:
 # Pipeline works out-of-the-box without each user hand-registering them. The
 # user config can override an entry's command/args or disable it entirely
 # (set ``"enabled": false`` for that name).
+#
+# ``delfin-ops`` is here because the role prompt MANDATES it: the first tool
+# call for any ORCA question must be ``mcp__delfin-ops__extract_*`` or
+# ``parse_orca_output``. Only ``delfin-tools`` was registered, and the config
+# the dashboard auto-injected for the ops server was written to a different
+# file (``~/.delfin/mcp_ops_config.json``) under a different top-level key
+# (``mcpServers``) that reaches only the legacy CLI subprocess — this registry
+# reads ``~/.delfin/mcp_servers.json`` / ``servers``. So the mandated first
+# move answered "unknown MCP server: 'delfin-ops'" and the fallback the prompt
+# forbids was the only thing that worked.
+#
+# ``delfin-docs`` is deliberately NOT here. Every one of its seven tools
+# (search_docs, read_section, list_docs, list_sections, search_calcs,
+# get_calc_info, calc_summary) is already advertised natively under exactly
+# those names and served from the same index by ``_DocToolExecutor``.
+# Registering it would pay for seven duplicate schemas on every request and
+# give the model two names for one thing.
+#
+# ``sys.executable``, not ``"python"``: the interpreter running DELFIN is the
+# one with DELFIN importable, and on a host that only has ``python3`` the
+# literal spawns nothing — which, before the reachability fix below, was
+# indistinguishable from a healthy server with no tools.
 _BUILTIN_SERVERS: dict[str, dict] = {
     "delfin-tools": {
-        "command": "python",
+        "command": sys.executable or "python3",
         "args": ["-m", "delfin.tools.mcp_server"],
+        "enabled": True,
+    },
+    "delfin-ops": {
+        "command": sys.executable or "python3",
+        "args": ["-m", "delfin.ops_server"],
         "enabled": True,
     },
 }
@@ -968,21 +996,39 @@ def count_live_tools(registry: "MCPRegistry") -> int:
 def unreachable_servers(registry: "MCPRegistry") -> list[str]:
     """``name: reason`` for every server that could not be asked.
 
-    MCPServer.start already records the cause in ``last_error`` and
-    nothing surfaced it, so a server that failed to start looked exactly
-    like one that worked."""
+    The verdict comes from ``last_error`` AFTER the call, not from an
+    exception. ``list_tools`` fails CLOSED by contract — a missing binary,
+    a server that exits on startup, a refused HTTP request, a timeout: each
+    records the cause in ``last_error`` and returns ``[]``. Deciding by
+    ``except`` therefore never fired, and the list was empty for a dead
+    server exactly as much as for a healthy one, while the doctor printed
+    "configured + reachable" and the dashboard printed "0 tools, no
+    problems". Measured on a server with a missing binary: ``list_tools ->
+    []``, ``last_error -> "command not found: …"``, ``unreachable_servers
+    -> []``.
+
+    A server that answered WITH tools is reachable whatever an earlier call
+    left behind, so a stale error is cleared rather than reported. A server
+    that answered with an empty list and no error is not a failure — it is
+    a server that offers nothing.
+    """
     out: list[str] = []
     for name, server in (getattr(registry, "servers", None) or {}).items():
+        tools: Any = None
+        reason = ""
         try:
-            server.list_tools()
-            continue
+            tools = server.list_tools()
         except Exception as exc:
-            reason = ""
-            try:
-                reason = str(getattr(server, "last_error", "") or "")
-            except Exception:
-                reason = ""
-            out.append(f"{name}: {reason or exc}")
+            reason = str(exc)
+        if tools:
+            continue
+        try:
+            recorded = str(getattr(server, "last_error", "") or "")
+        except Exception:
+            recorded = ""
+        reason = recorded or reason
+        if reason:
+            out.append(f"{name}: {reason}")
     return out
 
 

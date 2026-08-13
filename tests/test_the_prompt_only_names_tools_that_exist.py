@@ -34,24 +34,55 @@ def _advertised() -> set[str]:
 
 
 def _mcp_registry() -> dict[str, set[str]]:
-    """Tool names per MCP server this repository itself defines.
+    """Tool names per MCP server the agent can ACTUALLY reach.
 
-    Read out of the servers' registration calls rather than restated here,
-    so a renamed tool fails this test instead of drifting past it.
+    Derived end to end, because the hand-listed version passed while the
+    thing it described did not exist: it mapped ``delfin-docs`` and
+    ``delfin-ops`` to their servers' source files, so
+    ``mcp__delfin-ops__extract_*`` resolved — but only ``delfin-tools`` was
+    in the native registry's built-in set, and the config the dashboard
+    auto-injected for the other two went to a different filename under a
+    different top-level key that only the legacy CLI subprocess ever read.
+    So the FIRST tool call the role prompt mandates returned "unknown MCP
+    server", and the fallback the prompt tells the model not to use was the
+    only one that worked.
+
+    The server names come from ``mcp_client._BUILTIN_SERVERS``; each one's
+    tool names come from the module that entry actually spawns.
     """
-    root = Path(__file__).resolve().parents[1] / "delfin"
+    from delfin.agent.mcp_client import _BUILTIN_SERVERS
+
+    root = Path(__file__).resolve().parents[1]
     registry: dict[str, set[str]] = {}
-    docs = (root / "doc_server" / "server.py").read_text(encoding="utf-8")
-    registry["delfin-docs"] = set(
-        re.findall(r"@mcp\.tool\(\)\s*\n\s*def\s+([a-z_][a-z0-9_]*)", docs))
-    ops = (root / "ops_server" / "server.py").read_text(encoding="utf-8")
-    registry["delfin-ops"] = set(
-        re.findall(r"mcp\.tool\(name=\"([a-z_][a-z0-9_]*)\"\)", ops))
+    for server, cfg in _BUILTIN_SERVERS.items():
+        args = list(cfg.get("args") or [])
+        assert "-m" in args, f"{server} is not spawned as a python module"
+        module = args[args.index("-m") + 1]
+        candidates = [
+            root / Path(module.replace(".", "/")) / "server.py",
+            root / Path(module.replace(".", "/") + ".py"),
+        ]
+        source = next((p for p in candidates if p.is_file()), None)
+        assert source is not None, (
+            f"{server} spawns {module!r}, which has no server module here")
+        text = source.read_text(encoding="utf-8")
+        registry[server] = (
+            set(re.findall(
+                r"@mcp\.tool\(\)\s*\n\s*def\s+([a-z_][a-z0-9_]*)", text))
+            | set(re.findall(r"mcp\.tool\(name=\"([a-z_][a-z0-9_]*)\"", text))
+        )
+        assert registry[server], f"{server} registers no tools"
     return registry
 
 
 def _pack_files() -> list[Path]:
-    return sorted(_PACK.rglob("*.md"))
+    """Everything the model or the harness reads out of the pack.
+
+    The benchmark's YAML named ``mcp__delfin-docs__grep_file`` — a server
+    the registry does not have, offering a tool that server never had —
+    and the scan stopped at ``*.md``, so nothing saw it.
+    """
+    return sorted(list(_PACK.rglob("*.md")) + list(_PACK.rglob("*.yaml")))
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +119,46 @@ def test_every_namespaced_tool_name_resolves_to_a_real_server_tool():
                     f"{path.name}: {match.group(0)} — {server} has no tool "
                     f"{tool!r} (it has {sorted(known)})")
     assert not bad, "namespaced tool names that do not exist:\n" + "\n".join(bad)
+
+
+def test_the_mandated_first_tool_call_reaches_a_registered_server():
+    """The role prompt says the FIRST call for an ORCA question MUST be
+    ``mcp__delfin-ops__extract_*`` or ``parse_orca_output``. That name has
+    to reach a server the registry knows, or the mandated first move
+    returns "unknown MCP server" and the model falls back to the tools the
+    same page tells it not to use."""
+    from delfin.agent.mcp_client import MCPRegistry, _BUILTIN_SERVERS
+
+    assert "delfin-ops" in _BUILTIN_SERVERS, (
+        "the prompt mandates delfin-ops tools and nothing registers the "
+        "server; either register it or stop mandating it")
+
+    reg = MCPRegistry()
+    reg.load(None)
+    # The dispatch path splits the namespaced name exactly this way, and
+    # this is the lookup that used to miss.
+    server_name = "mcp__delfin-ops__parse_orca_output".removeprefix(
+        "mcp__").partition("__")[0]
+    assert server_name in reg.servers, (
+        f"dispatch would answer: unknown MCP server: {server_name!r}")
+    for _name, cfg in _BUILTIN_SERVERS.items():
+        assert cfg["command"] != "python", (
+            "a built-in spawns the bare name 'python'; a host with only "
+            "python3 gets a server that never starts")
+
+
+def test_the_docs_server_tools_are_advertised_natively_instead():
+    """delfin-docs is deliberately NOT a built-in: every one of its tools
+    already exists natively under the same name, so registering it would
+    pay for duplicate schemas on every request."""
+    from delfin.agent.mcp_client import _BUILTIN_SERVERS
+
+    assert "delfin-docs" not in _BUILTIN_SERVERS
+    docs = (Path(__file__).resolve().parents[1] / "delfin" / "doc_server"
+            / "server.py").read_text(encoding="utf-8")
+    docs_tools = set(re.findall(
+        r"@mcp\.tool\(\)\s*\n\s*def\s+([a-z_][a-z0-9_]*)", docs))
+    assert docs_tools <= _advertised(), sorted(docs_tools - _advertised())
 
 
 # ---------------------------------------------------------------------------
