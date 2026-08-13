@@ -53,8 +53,12 @@ def test_status_block_reflects_last_compaction():
         "tokens_saved": 87_000,
     }
     block = eng._build_context_status_block()
-    assert "compacted 9" in block
-    assert "87,000" in block or "87000" in block
+    assert "9" in block                          # how many it compacted
+    assert "87,000" in block or "87000" in block  # what that saved
+    # A compaction that went fine says nothing more; the warning marker is
+    # reserved for the records that carry a reason (see
+    # test_a_compaction_that_failed_says_so.py).
+    assert "⚠️" not in block
 
 
 def test_status_block_only_injected_for_solo_role(monkeypatch):
