@@ -1020,11 +1020,19 @@ class PromptLoader:
     # Substrings are kept long enough not to fire on an unrelated word
     # ("formular", not "form", which lives inside "format"; "code-zelle",
     # not "zelle", which is how a spreadsheet cell is named).
+    # No trigger may be a superstring of another in the same module:
+    # "tabellen" can never decide anything "tabelle" has not already
+    # decided, so it is dead weight that reads as coverage. Twenty of
+    # them were in here, and the test that measured the sets did not see
+    # it because it only ever asked whether a phrase activated. See
+    # tests/test_a_prompt_module_triggers_on_what_a_user_writes.py, which
+    # now requires every single trigger to be load-bearing for a witness
+    # line — deleting any one of them has to change an answer.
     _MODULE_TRIGGERS: dict[str, tuple[str, ...]] = {
         "chemistry": (
             "orca", "dft", "xtb", "calc/", "archive/", ".out",
             "frequencies", "orbital", "imag", "homo", "lumo",
-            "tddft", "uv/vis", "dipole", "scf", "mulliken", "loewdin",
+            "uv/vis", "dipole", "scf", "mulliken", "loewdin",
             "extract_", "search_calcs", "search_docs",
             "explain_delfin_feature", "thermochem", "vibrational",
             "molecule", "complex", "ligand", "ml potential",
@@ -1032,15 +1040,15 @@ class PromptLoader:
             "geometry optimi", "transition state", "basis set",
             "single point", "solvent", "energ", "quantum chem",
             # German
-            "geometrie", "komplex", "molekül", "molekul", "ligand",
+            "geometrie", "komplex", "molekül", "molekul",
             "schwingung", "frequenzrechnung", "übergangszustand",
             "basissatz", "funktional", "lösungsmittel", "rechenlauf",
-            "quantenchem",
+            "quantenchem", "verbindung", "struktur der", "bindungslänge",
+            "ladungsverteilung", "anregung",
         ),
         "web": (
             "http://", "https://", "web_search", "web_fetch",
             "duckduckgo", "google", "stackoverflow",
-            "documentation online", "look up online",
             # English, as a user phrases it
             "the internet", "the web", "online", "web search",
             "search for the paper", "look it up", "release notes",
@@ -1051,8 +1059,7 @@ class PromptLoader:
             "veröffentlichung", "publikation",
         ),
         "notebook": (
-            ".ipynb", "notebook_read", "notebook_edit", "jupyter",
-            "notebook", "kernel",
+            ".ipynb", "jupyter", "notebook", "kernel",
             # German
             "notizbuch", "code-zelle", "codezelle", "zellen ausführen",
             "markdown-zelle",
@@ -1062,17 +1069,23 @@ class PromptLoader:
         # same module as "evaluate the spreadsheet".
         "documents": (
             ".xlsx", ".xlsm", ".csv", ".pdf", ".docx",
-            "spreadsheet", "excel", "tabelle", "tabellen",
+            "spreadsheet", "excel", "tabelle",
             "formular", "pdf form", "form field", "acroform",
             "invoice", "rechnung", "vorlage", "template", "serienbrief",
             "anschreiben", "read_document", "edit_sheet",
-            "fill_pdf_form", "fill_docx_template", "create_docx",
-            # English, as a user phrases it
+            "fill_pdf_form", "create_docx",
+            # English, as a user phrases it. "the table" and "a letter"
+            # carry their article: bare "table" lives inside "editable"
+            # and "acceptable", and bare "letter" inside "newsletter".
             "word file", "word document", "fill in the", "fill out the",
-            "column", "worksheet",
-            # German
-            "arbeitsmappe", "tabellenblatt", "word-datei", "pdf-datei",
-            "ausfüllen", "spalte", "briefvorlage",
+            "column", "worksheet", "the table", "a letter", "mail merge",
+            # German. The office nouns a user names instead of a file
+            # type — a bookkeeping task says "Belege" and "Buchungen"
+            # and never says "spreadsheet".
+            "arbeitsmappe", "word-datei", "pdf-datei", "csv-datei",
+            "ausfüllen", "spalte", "buchung", "beleg", "kostenstelle",
+            "umsatz", "journal", "kontoauszug", "quittung", "mahnung",
+            "gutschrift", "lieferschein", "zeile eintragen",
         ),
         "project_dev": (
             "pyproject.toml", "package.json", "cargo.toml", "go.mod",
@@ -1083,8 +1096,7 @@ class PromptLoader:
             "set up the project", "lockfile", "scaffold",
             # German
             "abhängigkeit", "abhaengigkeit", "installier",
-            "virtuelle umgebung", "virtuellen umgebung", "projekt aufsetzen",
-            "projekt einrichten", "paketverwaltung",
+            "projekt aufsetzen", "einrichten", "paket", "umgebung",
         ),
         "kit": (
             "kit-toolbox", "kit_coding", "mcp__kit-coding__",
@@ -1093,19 +1105,23 @@ class PromptLoader:
             "permanently allow", "allow the command", "allowed director",
             "remember the permission", "sandbox", "auto-allow",
             # German
-            "dauerhaft erlauben", "immer erlauben", "erlaubte verzeichnis",
-            "erlaubten verzeichnis", "verzeichnis freigeben",
-            "berechtigung", "dauerhaft erlaub",
+            "immer erlauben", "erlaubte verzeichnis",
+            "erlaubten verzeichnis", "berechtigung", "dauerhaft erlaub",
+            "freigabe", "freigeben", "zugriff erlauben",
+            "nicht mehr fragen",
         ),
         "bash_bg": (
             "bash_background", "long running", "long-running",
             "in the background", "background job", "watch progress",
             # English, as a user phrases it
-            "run it in the background", "long job", "takes a while",
-            "while it runs", "kick it off", "don't block",
-            # German
-            "im hintergrund", "hintergrund laufen", "läuft lange",
+            "long job", "takes a while", "while it runs", "kick it off",
+            "don't block",
+            # German. No "hintergrund laufen": every German sentence that
+            # says it says "im Hintergrund laufen", so it could never
+            # decide anything the shorter one had not already decided.
+            "im hintergrund", "läuft lange",
             "laeuft lange", "lange laufen", "nebenher", "dauert lange",
+            "parallel", "stunden", "nebenbei", "weiterarbeiten",
         ),
     }
 

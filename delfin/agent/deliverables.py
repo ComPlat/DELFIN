@@ -16,13 +16,18 @@ import re
 import time
 from pathlib import Path
 
-
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
+from . import german as _german
 
 
 def _slugify(title: str, max_len: int = 48) -> str:
-    slug = _SLUG_RE.sub("-", (title or "report").lower()).strip("-")
-    return (slug or "report")[:max_len].rstrip("-")
+    """The report slug. The framework's one slug rule — see german.py.
+
+    This was a SECOND implementation, and it disagreed with the memory
+    store's about the same title: ``Müller GmbH`` came out ``m-ller-gmbh``
+    here and ``mller-gmbh`` there, and neither told ``Möller GmbH`` apart
+    from it.
+    """
+    return _german.slugify(title, max_len=max_len, fallback="report")
 
 
 _CSS = (

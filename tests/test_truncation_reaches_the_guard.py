@@ -303,5 +303,5 @@ def test_the_count_caveat_reaches_a_real_answer(agent_tree):
     answer = "Ich habe 31 Rechnungen geprüft."
     engine = _engine(agent_tree, _client([answer], (_BIG_GRID_EVENT,)))
     out = engine.stream_response("wie viele rechnungen?")
-    assert "estimated, not counted" in out
+    assert "geschätzt und nicht gezählt" in out
     assert "31 Rechnungen" in out

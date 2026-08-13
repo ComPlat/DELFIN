@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
+from . import german as _german
 from . import pricing
 from . import text_files as _text_files
 
@@ -5112,18 +5113,35 @@ _ARTIFACT_PROMISES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("csv", (".csv",)),
     ("bericht", (".pdf", ".docx", ".md", ".html")),
     ("report", (".pdf", ".docx", ".md", ".html")),
+    # German compounds, before the word they end in: matched as whole
+    # words, "Serienbrief" is not "Brief".
+    ("serienbrief", (".docx", ".pdf")),
+    ("anschreiben", (".docx", ".pdf")),
+    ("rechnung", (".pdf", ".docx")),
     ("brief", (".docx", ".pdf")),
     ("letter", (".docx", ".pdf")),
     ("presentation", (".pptx",)),
 )
 
 
+# German inflects its nouns and English does not stop at them: matched as
+# a substring, "brief" sat inside "briefly" and "debrief", so
+# "Summarize the findings briefly" promised a letter. Matched as a bare
+# word it would miss "Berichte" and "Tabellen", which is what a user
+# writes. So: the word, plus the German plural/genitive endings, and
+# nothing else.
+_ARTIFACT_WORD_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
+    (word, re.compile(rf"(?i)\b{re.escape(word)}(?:e|es|s|en|n)?\b"))
+    for word, _ in _ARTIFACT_PROMISES
+)
+
+
 def _artifact_word(subject: str) -> str:
     """The artefact noun a task subject promises ("" when none does)."""
     try:
-        text = (subject or "").lower()
-        for word, _ in _ARTIFACT_PROMISES:
-            if word in text:
+        text = subject or ""
+        for word, pattern in _ARTIFACT_WORD_RES:
+            if pattern.search(text):
                 return word
     except Exception:
         return ""
@@ -5195,28 +5213,50 @@ _TASK_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]{3,}")
 
 # Verbs that promise a CHANGE. German included on purpose: the user
 # plans in German, so the subjects the check reads are German.
+#
+# The German half used to be a CODING vocabulary — erstell, implementier,
+# refaktor — with no office verb in it at all, and every pattern in it
+# assumed the prefix stays on the stem. German puts the prefix of a
+# separable verb at the end of the clause, so ``anpass\w*`` cannot see
+# "Passe die Tabelle an". Both together produced this, with nothing
+# written and the files only read:
+#
+#     verified  path_read      | Trage die Werte in Buchungen.csv ein
+#     verified  path_read      | Übertrage die Beträge nach Journal.xlsx
+#     unmet     path_unwritten | Write the values into Buchungen.csv
+#
+# The same task, done in German, was signed off. The office half of the
+# vocabulary and the separable-prefix machinery live in german.py.
 _WRITE_VERB_RE = re.compile(
     r"(?i)\b(?:add|create|write|implement|build|generate|produce|export|"
     r"save|fix|repair|patch|refactor|rename|move|update|extend|port|"
-    r"migrate|wire|integrate|remove|delete|split|merge|"
+    r"migrate|wire|integrate|remove|delete|split|merge|fill\s+in|"
+    r"fill\s+out|enter|record|book|sort|"
     r"erstell\w*|schreib\w*|füg\w*|hinzufüg\w*|implementier\w*|bau\w*|"
     r"erzeug\w*|generier\w*|exportier\w*|speicher\w*|beheb\w*|"
     r"reparier\w*|korrigier\w*|refaktor\w*|umbenenn\w*|verschieb\w*|"
     r"aktualisier\w*|erweiter\w*|entfern\w*|lösch\w*|anpass\w*|änder\w*|"
     r"einbau\w*|einbind\w*|ergänz\w*|umstell\w*|überarbeit\w*|"
     r"integrier\w*|umbau\w*|aufräum\w*|bereinig\w*)\b"
+    r"|" + _german.GERMAN_WRITE_VERB_SOURCE
 )
 
 # Verbs that promise only LOOKING. A task like "analysiere core.py" is
 # honestly complete with no write at all, and a check that demands one
 # would be teaching the model to avoid naming the file.
+#
+# "Rechne die Summe aus" belongs HERE and not above. It is answered by
+# reading and arithmetic — the answer is a number in the chat, not a
+# changed file — and calling it a write would tell a user their finished,
+# honest task wrote nothing.
 _READ_VERB_RE = re.compile(
     r"(?i)\b(?:read|review|analyse|analyze|inspect|examine|check|"
     r"understand|summarise|summarize|compare|explore|investigate|study|"
-    r"audit|trace|"
+    r"audit|trace|total|count|"
     r"lies|lese\w*|les\w*|prüf\w*|überprüf\w*|analysier\w*|untersuch\w*|"
     r"sicht\w*|versteh\w*|vergleich\w*|durchsuch\w*|betracht\w*|"
     r"anschau\w*|ansehen|recherchier\w*|bewert\w*)\b"
+    r"|" + _german.GERMAN_READ_VERB_SOURCE
 )
 
 _TEST_TASK_RE = re.compile(
@@ -5406,7 +5446,11 @@ def check_completion_claim(
                 f"names {cand} and this session neither read nor wrote it.")
 
         # 2. An artefact noun: match the extension against CREATED files.
-        word = _artifact_word(subject_text)
+        #    Not for a task that only READS one. "Prüfe den Bericht auf
+        #    Fehler" names a report and promises to make none, and this
+        #    branch used to run before any read/write distinction and
+        #    report it unmet for having written no PDF.
+        word = "" if reads_only else _artifact_word(subject_text)
         if word:
             missing = _unmet_artifact(subject_text, written)
             if missing:
