@@ -165,6 +165,85 @@ def optimization_gave_up(out_path) -> bool:
         return False
 
 
+#: ORCA copies the input it was given into the head of its output, one line at
+#: a time behind a `|  12> ` marker. That echo is the only self-contained
+#: record of which input produced a given output.
+_ECHOED_INPUT_RE = re.compile(r"^\|\s*\d+>\s?(.*)$")
+
+#: The echo sits just after the banner. Reading the first megabyte finds it in
+#: any real output without pulling a hundreds-of-MB file into memory.
+_ECHO_SCAN_HEAD_BYTES = 1024 * 1024
+
+
+def _normalise_input_lines(lines: Iterable[str]) -> List[str]:
+    """Reduce input lines to what has to match for an output to be reusable.
+
+    Blank lines and comments go, whitespace collapses, and anything that looks
+    like a path keeps only its final component. That last part matters: ORCA is
+    run in an isolated directory, and the copy it actually sees has its
+    %moinp/xyzfile/hess references rewritten to absolute paths. Comparing those
+    verbatim would report a difference on every single job.
+    """
+    out: List[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = " ".join(line.split())
+        line = re.sub(r'(?<=[\s"])/\S+/([^/\s"]+)', r"\1", line)
+        out.append(line)
+    return out
+
+
+def echoed_input(out_path) -> Optional[List[str]]:
+    """The input ORCA recorded in *out_path*, or None when it recorded none."""
+    echoed: List[str] = []
+    try:
+        with Path(out_path).open(encoding="utf-8", errors="replace") as f:
+            # Line by line, and stopping at ORCA's own end marker: the echo is
+            # in the first pages, and nothing here should scale with the size
+            # of an output that can run to hundreds of megabytes.
+            budget = _ECHO_SCAN_HEAD_BYTES
+            for line in f:
+                budget -= len(line)
+                if budget <= 0:
+                    break
+                m = _ECHOED_INPUT_RE.match(line.rstrip("\n"))
+                if m is None:
+                    continue
+                body = m.group(1)
+                if "END OF INPUT" in body:
+                    break
+                echoed.append(body)
+    except OSError:
+        return None
+    return echoed or None
+
+
+def output_matches_input(inp_path, out_path) -> Optional[bool]:
+    """Whether *out_path* was produced by the input currently in *inp_path*.
+
+    Returns None when the output carries no echo — an xTB run driven through a
+    wrapper, a truncated file — because then there is nothing to compare and
+    the caller has to fall back on its own judgement.
+
+    This exists because a complete output is not evidence that it belongs to
+    the input sitting next to it. Recalc used to treat it as such whenever the
+    fingerprint sidecar was missing, and would then stamp the current input as
+    the one that produced it. Change a functional, resubmit after a walltime
+    kill, and the finished jobs are skipped and reported under settings they
+    were never computed with.
+    """
+    echoed = echoed_input(out_path)
+    if echoed is None:
+        return None
+    try:
+        current = Path(inp_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    return _normalise_input_lines(echoed) == _normalise_input_lines(current)
+
+
 def outputs_complete(inp_path, out_path, required_outputs: Optional[Iterable] = None) -> bool:
     """Return True when the main output and required generated files all exist."""
     if not has_ok_marker(out_path):

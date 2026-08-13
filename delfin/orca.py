@@ -1672,12 +1672,23 @@ def run_orca(
 
     # Legacy completed runs may predate the .fprint sidecar. Bootstrap it here so
     # recalc can resume deterministically for xTB/GOAT/GUPPY and regular ORCA jobs.
+    #
+    # A complete output is not on its own evidence that it belongs to the input
+    # beside it, and this branch used to treat it as such — then stamp the
+    # current input as the one that produced it. Change a functional and
+    # resubmit after a walltime kill and the finished jobs are skipped, their
+    # old numbers reported under the new settings, with the fresh fingerprint
+    # asserting that everything agrees. ORCA copies its input into the head of
+    # the output, so that claim can simply be checked. Where it cannot be —
+    # output without an echo, e.g. a raw xTB log — the previous behaviour
+    # stands, since there is nothing to contradict.
     fp_path = input_path.with_suffix(input_path.suffix + ".fprint")
     required_outputs = smart_recalc.required_orca_outputs(inp_path=input_path, out_path=output_path)
     if (
         smart_recalc.recalc_enabled()
         and smart_recalc.smart_mode_enabled()
         and not fp_path.exists()
+        and smart_recalc.output_matches_input(input_path, output_path) is not False
         and smart_recalc.outputs_complete(
             input_path,
             output_path,
