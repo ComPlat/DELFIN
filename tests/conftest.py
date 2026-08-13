@@ -39,7 +39,17 @@ _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
                    # run's doing, and reporting it buries the finding that
                    # is. The walk is also O(every file in every worktree)
                    # before it says anything at all.
-                   ".claude", ".venv", "node_modules")
+                   ".claude", ".venv", "node_modules",
+                   # Where the runtime installs the chemistry toolchain on
+                   # demand. CI does exactly that, so a first run creates
+                   # 594 paths here and every one of them is the product
+                   # working. Being gitignored is NOT what earns the
+                   # exemption -- catching gitignored writes is this
+                   # guard's whole purpose -- it is that the package
+                   # installs here deliberately, and the directory is
+                   # named in .gitignore for that reason rather than to
+                   # hide a mistake.
+                   ".mamba_env")
 
 
 def _checkout_entries() -> frozenset:
