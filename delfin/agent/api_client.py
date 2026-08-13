@@ -7063,6 +7063,22 @@ def _language_hint_for_write(path: Path, text: str,
         return ""
 
 
+def _decode_exact(data: "Optional[bytes]") -> "Optional[str]":
+    """``data`` as text that re-encodes to exactly these bytes, else None.
+
+    The undo journal's text side can only restore what survives a
+    round-trip. ``errors="replace"`` never fails, which is why it was
+    used, and that is precisely the problem: it turns bytes it cannot
+    read into U+FFFD and hands that over as if it were the file.
+    """
+    if data is None:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -7090,12 +7106,84 @@ class _DocToolExecutor:
                 tool=tool, path=str(resolved),
                 old_text=old_text, new_text=new_text,
             )
-            if rec is not None:
-                if not hasattr(self, "_turn_change_seqs"):
-                    self._turn_change_seqs = []
-                self._turn_change_seqs.append(rec["seq"])
+            self._note_change_seq(rec, perms)
         except Exception:
             pass
+
+    def _capture_raw_change(
+        self, tool: str, resolved: Path, pre_bytes: "Optional[bytes]",
+        perms: "KitToolPermissions", *, deleted: bool = False,
+    ) -> None:
+        """Journal a change whose pre-image is only safe as raw BYTES.
+
+        Two cases the text entry point cannot serve:
+
+        * the file is not exactly re-encodable UTF-8, so handing over a
+          decoded pre-image would store ``errors="replace"`` damage that
+          the revert then writes into the user's file — and, because the
+          post-image is decoded the same lossy way, the guard matches and
+          the restore fires;
+        * the write DELETED the file, so there is no post-image at all
+          and the pre-image in hand is the last copy in existence.
+
+        Never raises, like its text sibling.
+        """
+        try:
+            from . import change_journal as _cj
+            if deleted:
+                rec = _cj.record_deletion(
+                    getattr(perms, "task_session_id", "") or "",
+                    tool=tool, path=str(resolved), pre_bytes=pre_bytes)
+            else:
+                rec = _cj.record_binary_change(
+                    getattr(perms, "task_session_id", "") or "",
+                    tool=tool, path=str(resolved), pre_bytes=pre_bytes)
+            self._note_change_seq(rec, perms)
+        except Exception:
+            pass
+
+    def _note_change_seq(
+        self, rec: "Optional[dict]", perms: "KitToolPermissions",
+    ) -> None:
+        """Remember a journal seq as belonging to the CURRENT turn.
+
+        Keyed by session: this executor is a module-level singleton
+        shared by every parallel sub-agent, so a single flat list let a
+        turn-scoped undo revert a sibling's writes. The flat list is
+        still fed because the turn reset and the document-write capture
+        path use it.
+        """
+        if not rec:
+            return
+        seq = rec.get("seq")
+        if not isinstance(seq, int):
+            return
+        if not hasattr(self, "_turn_change_seqs"):
+            self._turn_change_seqs = []
+        if not hasattr(self, "_turn_seqs_by_session"):
+            self._turn_seqs_by_session = {}
+        # The turn boundary is marked by the client emptying the flat
+        # list. Detecting that here keeps the per-session cursor honest
+        # without a second reset point that could be forgotten.
+        if len(self._turn_change_seqs) < getattr(self, "_turn_seqs_seen", 0):
+            self._turn_seqs_by_session = {}
+        self._turn_change_seqs.append(seq)
+        self._turn_seqs_seen = len(self._turn_change_seqs)
+        sid = getattr(perms, "task_session_id", "") or ""
+        self._turn_seqs_by_session.setdefault(sid, []).append(seq)
+
+    def _turn_seqs_for(self, session_id: str) -> list[int]:
+        """The journal seqs written this turn BY THIS SESSION.
+
+        Falls back to the shared flat list only when the per-session
+        cursor holds nothing for it, so a turn that only produced
+        document writes (whose capture path feeds the flat list) still
+        has a turn to undo."""
+        per = getattr(self, "_turn_seqs_by_session", None) or {}
+        seqs = list(per.get(session_id or "", []) or [])
+        if seqs:
+            return seqs
+        return list(getattr(self, "_turn_change_seqs", []) or [])
 
     def _stage_pending_change(
         self, tool: str, resolved: Path, old_text: "Optional[str]",
@@ -7429,13 +7517,55 @@ class _DocToolExecutor:
     _AUDITED_TOOLS = frozenset({
         "write_file", "edit_file", "multi_edit", "publish_report",
         "bash", "bash_background", "bash_kill",
-        "notebook_edit",
+        "notebook_edit", "apply_patch",
         # Document writes change user files like any other write, so they
         # belong in the audit trail /changes reads.
         "edit_sheet", "fill_pdf_form", "fill_docx_template", "create_docx",
         "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
         "remember_permission", "remember_permission_bundle",
+        # Observed only to close out a background job: a launch was
+        # logged "ok" and nothing was ever recorded when the command
+        # finished, so the log said a job started and never how it went.
+        "bash_status", "bash_output",
     })
+
+    # Argument keys a write tool may carry its target under. The alias
+    # list exists because the open-weights models this project targets
+    # generate ``file_path``/``filename``/``file``/``target``; reading
+    # only ``path`` here logged an empty target for every one of them,
+    # and the changes report then answered "No recorded changes" for a
+    # file that had been written and journalled.
+    _AUDIT_PATH_KEYS: tuple[str, ...] = (
+        "path", "file_path", "filename", "file", "target",
+        "output", "output_dir", "output_path", "out",
+    )
+
+    def _audit_path(
+        self, arguments: dict, permissions: Optional["KitToolPermissions"],
+    ) -> str:
+        """The path the executor actually wrote, absolute where possible.
+
+        Resolving against the workspace is what lets the changes report
+        line the record up with the undo journal, which stores resolved
+        paths — that match is how "can this be undone" is answered from
+        the record instead of from the tool's name.
+        """
+        raw = ""
+        for key in self._AUDIT_PATH_KEYS:
+            val = arguments.get(key)
+            if isinstance(val, str) and val.strip():
+                raw = val.strip()
+                break
+        if not raw:
+            return ""
+        try:
+            p = Path(raw).expanduser()
+            ws = getattr(permissions, "workspace", None)
+            if not p.is_absolute() and ws is not None:
+                p = Path(ws) / p
+            return str(p.resolve())
+        except Exception:
+            return raw
 
     def _audit_call(
         self,
@@ -7448,6 +7578,13 @@ class _DocToolExecutor:
         if name not in self._AUDITED_TOOLS:
             return
         from . import audit_log as _al
+        payload: dict = {}
+        if isinstance(result, str):
+            try:
+                _obj = json.loads(result)
+                payload = _obj if isinstance(_obj, dict) else {}
+            except Exception:
+                payload = {}
         # Best-effort decision parsing, and the reason with it. The gate
         # already wrote a sentence saying which rule refused and what to do
         # instead; it went to the model and was dropped here, so the
@@ -7458,7 +7595,7 @@ class _DocToolExecutor:
             if result.startswith('{"error"'):
                 decision = "denied"
                 try:
-                    reason = str((json.loads(result) or {}).get("error", ""))
+                    reason = str(payload.get("error", "")) or result[:300]
                 except Exception:
                     reason = result[:300]
             elif '"status": "denied"' in result[:200]:
@@ -7470,17 +7607,83 @@ class _DocToolExecutor:
             mode = getattr(permissions, "mode", "") or ""
             session_id = getattr(permissions, "task_session_id", "") or ""
         cwd = str(arguments.get("cwd", "") or "")
+        extra: dict[str, Any] = {"cwd": cwd} if cwd else {}
+
+        # A command that RAN and failed was logged "ok": the decision
+        # described the gate's verdict on the attempt, never the outcome.
+        exit_code = payload.get("exit_code")
+        if decision == "ok" and isinstance(exit_code, int):
+            extra["exit_code"] = exit_code
+            if exit_code != 0:
+                decision = "error"
+                reason = reason or f"exited with code {exit_code}"
+
+        if name in ("bash_status", "bash_output"):
+            self._audit_job_completion(
+                name, arguments, payload, mode, session_id)
+            return
+
+        # apply_patch names its targets in the RESULT, not the arguments:
+        # one record per file, so the changes report can show a patch the
+        # same way it shows any other write.
+        _touched = payload.get("files_touched")
+        if name == "apply_patch" and decision == "ok" and isinstance(_touched, list):
+            for _rel in _touched:
+                _al.append(_al.make_record(
+                    tool=name, decision=decision, mode=mode,
+                    path=self._audit_path({"path": str(_rel)}, permissions),
+                    session_id=session_id, reason=reason,
+                    extra=extra or None,
+                ))
+            if _touched:
+                return
+
         record = _al.make_record(
             tool=name,
             decision=decision,
             mode=mode,
-            path=str(arguments.get("path", "")),
+            path=self._audit_path(arguments, permissions),
             command=str(arguments.get("command", "")),
             session_id=session_id,
             reason=reason,
-            extra={"cwd": cwd} if cwd else None,
+            extra=extra or None,
         )
         _al.append(record)
+
+    def _audit_job_completion(
+        self, name: str, arguments: dict, payload: dict,
+        mode: str, session_id: str,
+    ) -> None:
+        """Close out a background job in the audit log, once.
+
+        ``bash_background`` is logged at LAUNCH, with decision "ok" and
+        nothing about how the command ended. Polling is where the exit
+        code becomes known, so the completion record is written the first
+        time a poll reports the job finished — polls of a still-running
+        job write nothing, so watching a job does not flood the log.
+        """
+        from . import audit_log as _al
+        job_id = str(payload.get("job_id") or arguments.get("job_id") or "")
+        if not job_id or payload.get("running") is not False:
+            return
+        exit_code = payload.get("exit_code")
+        if not isinstance(exit_code, int):
+            return
+        if not hasattr(self, "_audited_job_completions"):
+            self._audited_job_completions: set = set()
+        if job_id in self._audited_job_completions:
+            return
+        self._audited_job_completions.add(job_id)
+        _al.append(_al.make_record(
+            tool="bash_background",
+            decision="ok" if exit_code == 0 else "error",
+            mode=mode,
+            command=str(payload.get("command", "") or f"job {job_id}"),
+            session_id=session_id,
+            reason="" if exit_code == 0 else f"exited with code {exit_code}",
+            extra={"job_id": job_id, "exit_code": exit_code,
+                   "event": "completed", "observed_by": name},
+        ))
 
     def _dispatch(
         self,
@@ -11877,14 +12080,19 @@ class _DocToolExecutor:
                     "/approve all in the dashboard)."
                 ),
             }, ensure_ascii=False)
-        pre_images: dict[str, "Optional[str]"] = {}
+        # Pre-images as RAW BYTES. Decoding them here with
+        # errors="replace" fed the journal a lossy copy, and since the
+        # post-image was decoded the same lossy way the revert guard
+        # matched and happily wrote the damage back: a latin-1 file came
+        # out of an "undo" with U+FFFD where its accented byte had been,
+        # reported as reverted.
+        pre_images: dict[str, "Optional[bytes]"] = {}
         if not check_only:
             try:
                 for _rel in _pa._files_in_diff(diff):
                     _fp = Path(perms.workspace) / _rel
                     try:
-                        pre_images[_rel] = _fp.read_bytes().decode(
-                            "utf-8", errors="replace")
+                        pre_images[_rel] = _fp.read_bytes()
                     except OSError:
                         pre_images[_rel] = None  # file did not exist yet
             except Exception:
@@ -11895,15 +12103,35 @@ class _DocToolExecutor:
             check_only=check_only,
         )
         if not check_only and result.get("status") == "ok":
-            for _rel in result.get("files_touched", []) or []:
+            # Every path the diff named, not only the ones still there:
+            # a delete or a rename leaves the old path gone, and that is
+            # exactly the case where the pre-image in hand is the last
+            # copy of the file.
+            _paths = list(result.get("files_touched", []) or [])
+            for _rel in pre_images:
+                if _rel not in _paths:
+                    _paths.append(_rel)
+            for _rel in _paths:
                 _fp = Path(perms.workspace) / _rel
+                _pre = pre_images.get(_rel)
                 try:
-                    _new_text = _fp.read_bytes().decode(
-                        "utf-8", errors="replace")
+                    _post: "Optional[bytes]" = _fp.read_bytes()
                 except OSError:
-                    continue  # diff deleted the file — no post state to hash
-                self._capture_change(
-                    "apply_patch", _fp, pre_images.get(_rel), _new_text, perms)
+                    _post = None
+                if _post is None:
+                    if _pre is not None:
+                        self._capture_raw_change(
+                            "apply_patch", _fp, _pre, perms, deleted=True)
+                    continue
+                if _pre is not None and _pre == _post:
+                    continue        # named by the diff but not changed
+                _texts = _decode_exact(_pre), _decode_exact(_post)
+                if _texts[1] is None or (_pre is not None and _texts[0] is None):
+                    # Not exactly re-encodable — only bytes can restore it.
+                    self._capture_raw_change("apply_patch", _fp, _pre, perms)
+                else:
+                    self._capture_change(
+                        "apply_patch", _fp, _texts[0], _texts[1], perms)
         return json.dumps(result, ensure_ascii=False)
 
     def _execute_undo_changes(
@@ -11924,17 +12152,33 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 f"invalid scope {scope!r}: must be last | turn | session"
             )})
-        turn_seqs = list(getattr(self, "_turn_change_seqs", []) or [])
+        sid = getattr(perms, "task_session_id", "") or ""
+        turn_seqs = self._turn_seqs_for(sid)
         if scope == "turn" and not turn_seqs:
             return json.dumps({
                 "reverted": [], "conflicts": [], "skipped": [],
                 "note": "no file changes recorded this turn",
             })
         result = _cj.revert(
-            getattr(perms, "task_session_id", "") or "",
-            scope=scope, turn_seqs=turn_seqs,
+            sid, scope=scope, turn_seqs=turn_seqs,
             workspace=perms.workspace,
         )
+        # An undo is a change to the user's files like any other, so it
+        # belongs in the audit trail /changes reads and in the turn
+        # cursor — otherwise the one operation that overwrites a file
+        # without being asked twice is the one operation with no record.
+        try:
+            from . import audit_log as _al
+            for _p in result.get("reverted", []) or []:
+                _al.append(_al.make_record(
+                    tool="undo_changes", decision="ok",
+                    mode=getattr(perms, "mode", "") or "",
+                    path=str(_p), session_id=sid,
+                    extra={"scope": scope}))
+        except Exception:
+            pass
+        for _seq in result.get("undo_seqs", []) or []:
+            self._note_change_seq({"seq": _seq}, perms)
         return json.dumps(result, ensure_ascii=False)
 
     def _execute_code_nav(

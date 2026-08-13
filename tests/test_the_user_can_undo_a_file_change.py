@@ -1,136 +1,246 @@
-"""The undo the framework records is one only the model can reach.
+"""The one command that restores content has to be reachable by typing it.
 
-change_journal.revert is a careful piece of work: it refuses when the
-file's current hash no longer matches what the agent left, refuses an
-oversize pre-image, verifies the stored pre-image's own hash before
-restoring, preserves the target's permission bits, and unwinds chained
-edits newest-first. It has exactly one caller in the whole tree — the
-model's own `undo_changes` tool.
+`/undo-file` is advertised in the palette as the command that "restores
+content, unlike /undo which only drops context". It was not in the set of
+tokens the send path recognises as built-in commands, so typing it fell
+through to the command-template/skill lookup, matched nothing, and the
+literal string went to the model as a chat message. Picking it from the
+palette only pastes the same text into the box. Its handler was live code
+reachable only by the MODEL, through the action dispatcher.
 
-What the user can reach: `/undo`, which drops messages from context and
-touches no file; and a hidden "Undo Edit" button whose handler shells out
-to `git checkout` and, for a workspace that is not a git repository,
-prints "the original content was not saved before the edit" — while the
-correct pre-image sits in ~/.delfin/undo/<sid>/.
-
-So after the agent overwrites an uncommitted file in a calc folder, which
-is precisely the case the journal was built for, the only remaining move
-is to ask the model that just made the mistake to please call its own
-undo tool. list_changes, which would let the user see what an undo would
-do first, has zero production callers.
+The previous version of this file grepped the dashboard source for the
+string `"/undo-file"` and for `.revert(` — both were there the whole time
+the command did nothing. These tests drive the routing predicate the send
+path actually applies, and the renderers the handler actually calls, with
+output from the real journal.
 """
 
 from __future__ import annotations
 
-import pathlib
+from pathlib import Path
 
 import pytest
 
+from delfin.agent import change_journal as cj
+from delfin.dashboard import tab_agent
 
-_TAB = (pathlib.Path(__file__).resolve().parents[1] / "delfin"
-        / "dashboard" / "tab_agent.py")
+
+@pytest.fixture
+def home(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    (tmp_path / "home").mkdir()
+    return tmp_path / "home"
 
 
-def _source() -> str:
-    return _TAB.read_text(encoding="utf-8")
+@pytest.fixture
+def ws(tmp_path):
+    d = tmp_path / "ws"
+    d.mkdir()
+    return d
 
 
 # ---------------------------------------------------------------------------
-# The commands exist and are discoverable
+# Routing: typing the command reaches the dispatcher
 # ---------------------------------------------------------------------------
 
-def test_the_command_is_registered_in_the_palette():
-    src = _source()
-    assert '"/undo-file"' in src, (
-        "the journal-backed undo is still unreachable from the UI")
+@pytest.mark.parametrize("typed", [
+    "/undo-file",
+    "/undo-file list",
+    "/undo-file last",
+    "/UNDO-FILE session",
+])
+def test_typing_the_command_reaches_the_dispatcher(typed):
+    assert tab_agent.slash_command_routes_to_builtin(typed), (
+        f"{typed!r} is sent to the model as chat instead of being executed")
 
 
-def test_the_palette_entry_distinguishes_it_from_the_context_undo():
-    """Two commands called undo-something must not read the same."""
-    src = _source()
-    i = src.index('"/undo-file"')
-    entry = src[i:i + 260]
-    assert "file" in entry.lower()
-    j = src.index('("Session", "/undo"')
-    assert "context" in src[j:j + 200].lower()
+def test_the_context_undo_still_routes_and_is_a_different_command():
+    assert tab_agent.slash_command_routes_to_builtin("/undo")
+    assert "/undo" in tab_agent._BUILTIN_SLASH_PREFIXES
+    assert "/undo-file" in tab_agent._BUILTIN_SLASH_PREFIXES
 
 
-def test_the_handler_calls_the_journal():
-    src = _source()
-    assert "change_journal" in src, "the dashboard still never imports it"
-    i = src.index('if cmd.startswith("/undo-file")')
-    body = src[i:i + 3000]
-    assert ".revert(" in body
-    assert ".list_changes(" in body
+def test_a_file_path_is_not_a_slash_command():
+    """The prefix set exists to keep /home/... out of the dispatcher."""
+    assert not tab_agent.slash_command_routes_to_builtin("/home/user/x.txt")
+    assert not tab_agent.slash_command_routes_to_builtin("/etc/passwd")
 
 
-def test_the_preview_is_reachable_without_reverting():
-    """A user must be able to see what an undo would do first."""
-    src = _source()
-    i = src.index('if cmd.startswith("/undo-file")')
-    body = src[i:i + 3000]
-    j = body.index(".list_changes(")
-    k = body.index(".revert(")
-    assert j < k, "the listing branch must come before the acting branch"
+def test_an_unknown_token_still_goes_to_the_template_or_skill_route():
+    assert not tab_agent.slash_command_routes_to_builtin("/my-custom-command")
 
 
-def test_the_scope_is_passed_through():
-    src = _source()
-    i = src.index('if cmd.startswith("/undo-file")')
-    body = src[i:i + 3000]
-    for scope in ("last", "turn", "session"):
-        assert scope in body, scope
+def test_every_command_the_dispatcher_handles_can_be_typed():
+    """The general form of the bug: a handler nobody can reach.
+
+    Any ``cmd ==``/``cmd.startswith(`` branch in the slash dispatcher is
+    a command the user is meant to be able to run. If its token is not
+    in the prefix set, typing it produces a chat message instead.
+    """
+    import re
+
+    src = (Path(tab_agent.__file__)).read_text(encoding="utf-8")
+    body = src[src.index("def _handle_slash_command"):]
+    handled = set()
+    for m in re.finditer(
+            r'cmd(?:\.strip\(\))?\s*(?:==|\.startswith\(|in \()\s*\(?'
+            r'["\'](/[^"\']+)["\']', body):
+        handled.add(m.group(1).split()[0])
+    assert "/undo-file" in handled, "the handler itself disappeared"
+    unreachable = sorted(
+        t for t in handled
+        if not tab_agent.slash_command_routes_to_builtin(t + " x"))
+    assert not unreachable, (
+        f"handled but not typeable — these reach the model as chat: "
+        f"{unreachable}")
 
 
-def test_the_result_is_rendered_not_swallowed():
-    """revert returns reverted / conflicts / skipped; a conflict is the
-    whole point of the safety contract and has to be shown."""
-    src = _source()
-    i = src.index('if cmd.startswith("/undo-file")')
-    body = src[i:i + 3000]
-    for key in ("reverted", "conflicts", "skipped"):
-        assert key in body, key
+def test_every_advertised_palette_command_is_typeable():
+    """What the palette offers must be what the box accepts.
+
+    The delegation commands are the deliberate exception: they are
+    expanded into a prompt by the template/skill route rather than
+    executed by the dispatcher.
+    """
+    expansion_route = {"/explore", "/review", "/delegate"}
+    broken = []
+    for _cat, cmd, _desc, _args in tab_agent._SLASH_COMMANDS:
+        token = cmd.split()[0]
+        if token in expansion_route:
+            continue
+        if not tab_agent.slash_command_routes_to_builtin(cmd):
+            broken.append(cmd)
+    assert not broken, f"palette offers commands that are not executed: {broken}"
 
 
-def test_it_refuses_without_a_session():
-    src = _source()
-    i = src.index('if cmd.startswith("/undo-file")')
-    body = src[i:i + 3000]
-    assert "session" in body.lower()
+# ---------------------------------------------------------------------------
+# What the handler renders — driven with real journal output
+# ---------------------------------------------------------------------------
+
+def test_a_restore_is_reported_with_the_file_it_restored(home, ws):
+    p = ws / "a.txt"
+    p.write_text("agent\n", encoding="utf-8")
+    cj.record_change("s-ok", tool="write_file", path=p,
+                     old_text="user\n", new_text="agent\n")
+
+    out = tab_agent.format_undo_result(
+        "last", cj.revert("s-ok", scope="last", workspace=ws))
+    assert "Restored:" in out
+    assert str(p) in out
+    assert p.read_text(encoding="utf-8") == "user\n"
+
+
+def test_a_conflict_says_why_the_file_was_not_touched(home, ws):
+    p = ws / "b.txt"
+    p.write_text("agent\n", encoding="utf-8")
+    cj.record_change("s-conf", tool="write_file", path=p,
+                     old_text="user\n", new_text="agent\n")
+    p.write_text("the user edited it afterwards\n", encoding="utf-8")
+
+    out = tab_agent.format_undo_result(
+        "last", cj.revert("s-conf", scope="last", workspace=ws))
+    assert "Conflicts" in out
+    assert "content changed since the agent's edit" in out, (
+        "the reason was dropped — a bare path cannot be acted on")
+
+
+def test_a_skip_says_why_it_was_skipped(home, ws):
+    big = "x" * (cj.MAX_PRE_IMAGE_BYTES + 10)
+    p = ws / "big.txt"
+    p.write_text("small\n", encoding="utf-8")
+    cj.record_change("s-skip", tool="write_file", path=p,
+                     old_text=big, new_text="small\n")
+
+    out = tab_agent.format_undo_result(
+        "last", cj.revert("s-skip", scope="last", workspace=ws))
+    assert "Skipped:" in out
+    assert "truncated" in out
+    assert str(p) in out
+
+
+def test_the_two_refusals_do_not_read_the_same(home, ws):
+    """A refusal to corrupt the file and a refusal to overwrite the
+    user's later edit are different situations with different answers."""
+    a = ws / "trunc.txt"
+    a.write_text("small\n", encoding="utf-8")
+    cj.record_change("s-two", tool="write_file", path=a,
+                     old_text="x" * (cj.MAX_PRE_IMAGE_BYTES + 10),
+                     new_text="small\n")
+    b = ws / "moved.txt"
+    b.write_text("agent\n", encoding="utf-8")
+    cj.record_change("s-two", tool="write_file", path=b,
+                     old_text="user\n", new_text="agent\n")
+    b.write_text("user came back\n", encoding="utf-8")
+
+    out = tab_agent.format_undo_result(
+        "session", cj.revert("s-two", scope="session", workspace=ws))
+    trunc_line = next(ln for ln in out.splitlines() if "trunc.txt" in ln)
+    moved_line = next(ln for ln in out.splitlines() if "moved.txt" in ln)
+    assert trunc_line != moved_line
+    assert "truncated" in trunc_line
+    assert "changed since" in moved_line
+
+
+def test_nothing_to_undo_is_still_said(home, ws):
+    out = tab_agent.format_undo_result(
+        "last", cj.revert("s-empty", scope="last", workspace=ws))
+    assert "Nothing to undo." in out
+
+
+# ---------------------------------------------------------------------------
+# The listing the user reads before acting
+# ---------------------------------------------------------------------------
+
+def test_the_listing_marks_what_cannot_be_restored(home, ws, monkeypatch):
+    monkeypatch.setattr(cj, "MAX_ENTRIES_PER_SESSION", 2)
+    p = ws / "c.txt"
+    for i in range(4):
+        p.write_text(f"v{i + 1}", encoding="utf-8")
+        cj.record_change("s-list", tool="edit_file", path=p,
+                         old_text=f"v{i}", new_text=f"v{i + 1}")
+
+    out = tab_agent.format_undo_listing(cj.list_changes("s-list"))
+    assert "dropped at the session cap" in out
+    assert out.count(str(p)) == 4       # every change is still listed
+
+
+def test_the_listing_shows_an_undo_as_an_undo(home, ws):
+    p = ws / "d.txt"
+    p.write_text("agent\n", encoding="utf-8")
+    cj.record_change("s-undo", tool="write_file", path=p,
+                     old_text="user\n", new_text="agent\n")
+    cj.revert("s-undo", scope="last", workspace=ws)
+
+    out = tab_agent.format_undo_listing(cj.list_changes("s-undo"))
+    assert "(undo)" in out
+    assert "already undone" in out
 
 
 # ---------------------------------------------------------------------------
 # The journal side still behaves
 # ---------------------------------------------------------------------------
 
-def test_the_journal_functions_are_what_the_handler_expects(tmp_path):
-    from delfin.agent import change_journal as cj
-
-    sid = "s-undo-test"
-    target = tmp_path / "a.txt"
-    target.write_text("original\n", encoding="utf-8")
-    cj.record_change(sid, tool="write_file", path=str(target),
-                     old_text="original\n", new_text="changed\n")
+def test_the_journal_functions_are_what_the_handler_expects(home, ws):
+    target = ws / "a.txt"
     target.write_text("changed\n", encoding="utf-8")
+    cj.record_change("s-undo-test", tool="write_file", path=str(target),
+                     old_text="original\n", new_text="changed\n")
 
-    listed = cj.list_changes(sid)
+    listed = cj.list_changes("s-undo-test")
     assert listed and listed[-1].get("path", "").endswith("a.txt")
 
-    out = cj.revert(sid, scope="last", workspace=tmp_path)
+    out = cj.revert("s-undo-test", scope="last", workspace=ws)
     assert set(out) >= {"reverted", "conflicts", "skipped"}
     assert target.read_text(encoding="utf-8") == "original\n"
 
 
-def test_a_file_changed_since_the_edit_is_a_conflict_not_an_overwrite(tmp_path):
-    from delfin.agent import change_journal as cj
-
-    sid = "s-undo-conflict"
-    target = tmp_path / "b.txt"
-    target.write_text("original\n", encoding="utf-8")
-    cj.record_change(sid, tool="write_file", path=str(target),
+def test_a_file_changed_since_the_edit_is_a_conflict_not_an_overwrite(home, ws):
+    target = ws / "b.txt"
+    target.write_text("agent wrote this\n", encoding="utf-8")
+    cj.record_change("s-undo-conflict", tool="write_file", path=str(target),
                      old_text="original\n", new_text="agent wrote this\n")
     target.write_text("the user then edited it\n", encoding="utf-8")
 
-    out = cj.revert(sid, scope="last", workspace=tmp_path)
+    out = cj.revert("s-undo-conflict", scope="last", workspace=ws)
     assert out["conflicts"], out
     assert target.read_text(encoding="utf-8") == "the user then edited it\n"
