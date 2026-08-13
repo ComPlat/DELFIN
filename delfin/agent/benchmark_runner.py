@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import contextlib
+import os
 import re
 import time
 from typing import Any, Callable, Iterable, Optional
@@ -466,6 +468,97 @@ def run_task(
     return aggregate_replicates(replicates)
 
 
+# ---------------------------------------------------------------------------
+# One run at a time in one checkout
+# ---------------------------------------------------------------------------
+#
+# Demonstrated 2026-08-12, not argued: a full test-suite run failed two
+# office fixture tests while a benchmark was running, and `git status`
+# caught it mid-attempt -- `D tests/fixtures/office_workspace/buchungen.csv`,
+# deleted by the agent under test, not yet restored by the fixture guard.
+# Neither side was broken. The MEASUREMENT was, and it reported a product
+# defect that did not exist.
+#
+# The same happened again on 2026-08-13 in the other direction: a suite
+# and a live benchmark in one checkout, and the benchmark's own
+# "this run changed N files" report blamed itself for the suite's writes.
+#
+# The lock does not stop anybody. It tells them, which is the whole
+# difference between a run that is wrong and a run that says why.
+_RUN_LOCK_REL = Path("tests") / "fixtures" / ".benchmark-run.lock"
+
+
+class BenchmarkRunInProgress(RuntimeError):
+    """Another run holds the fixture workspaces."""
+
+
+@contextlib.contextmanager
+def fixture_run_lock(root: Path | str | None = None, *, owner: str = ""):
+    """Hold the fixture workspaces for the length of one run.
+
+    An exclusive ``flock`` on a sidecar beside the fixtures, so a second
+    benchmark -- or a test suite that takes the same lock -- is told what
+    is happening instead of silently measuring a half-written state. The
+    holder's pid and what it is doing are written into the file, because
+    "resource busy" is not something anybody can act on.
+
+    A filesystem without ``flock`` yields rather than refusing: this is a
+    measurement aid, and refusing to measure at all would be worse than
+    the interference it prevents.
+    """
+    base = Path(root) if root is not None else Path(os.getcwd())
+    path = base / _RUN_LOCK_REL
+    handle = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+")
+        import fcntl
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            # "Somebody holds it" and "this filesystem has no flock" are
+            # different answers and only one of them is a refusal. NFS
+            # without lockd, some container overlays: conflating them
+            # turns an unsupported filesystem into a permanent refusal to
+            # measure at all, which is worse than the interference.
+            import errno as _errno
+            if exc.errno not in (_errno.EACCES, _errno.EAGAIN):
+                raise
+            handle.seek(0)
+            held = (handle.read() or "").strip() or "another run"
+            handle.close()
+            raise BenchmarkRunInProgress(
+                f"the fixture workspaces are held by {held}. Two runs in "
+                f"one checkout measure each other's writes -- wait for it, "
+                f"or use a separate checkout.")
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid {os.getpid()}: {owner or 'a benchmark run'}")
+        handle.flush()
+    except BenchmarkRunInProgress:
+        raise
+    except Exception:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        yield                       # no flock here: measure rather than refuse
+        return
+    try:
+        yield
+    finally:
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
 def run_suite(
     tasks: Iterable[Task],
     *,
@@ -491,6 +584,35 @@ def run_suite(
 
     import os as _os
     _root = Path(_os.getcwd())
+    # Held for the whole suite, before the fingerprint is taken: the
+    # baseline this run is compared against has to be a state nobody else
+    # is writing into. Raises BenchmarkRunInProgress and names the holder
+    # if somebody is.
+    with fixture_run_lock(_root, owner=f"benchmark run, model {model}"):
+        return _run_suite_locked(
+            tasks, model=model, backend=backend, provider=provider,
+            profile_name=profile_name, engine_factory=engine_factory,
+            max_tokens=max_tokens, repeats=repeats, progress=progress,
+            on_replicate=on_replicate, run_once=run_once, root=_root)
+
+
+def _run_suite_locked(
+    tasks: Iterable[Task],
+    *,
+    model: str,
+    backend: str = "api",
+    provider: str = "",
+    profile_name: str = "",
+    engine_factory: EngineFactory | None = None,
+    max_tokens: int = 1024,
+    repeats: int = 1,
+    progress: Callable[[Task, BenchmarkResult], None] | None = None,
+    on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
+    run_once: Callable[..., dict] | None = None,
+    root: Path | None = None,
+) -> list[BenchmarkResult]:
+    """The suite body, under the fixture lock."""
+    _root = Path(root) if root is not None else Path(os.getcwd())
     try:
         _before = checkout_fingerprint(_root)
     except Exception:
