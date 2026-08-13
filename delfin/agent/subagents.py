@@ -3034,15 +3034,99 @@ def _run_stage_calls(jobs: list[dict], parent_client, parent_perms) -> list[dict
                 "error": f"orchestration call raised: {exc}",
             }
 
+    return _collect_stage(jobs, _one)
+
+
+def _collect_stage(jobs: list[dict], run_one) -> list[dict]:
+    """Run one stage's delegates concurrently under ONE deadline.
+
+    Named rather than inlined in the closure above so the policy has one
+    home and a test can reach it: what matters here is a property of the
+    stage, not of whichever caller happens to build the jobs.
+    """
     if len(jobs) == 1:
-        return [_one(jobs[0])]
+        return [run_one(jobs[0])]
     import concurrent.futures as _cf
-    with _cf.ThreadPoolExecutor(
+    # ONE deadline for the whole stage, in completion order.
+    #
+    # The tool-call fan-out learned this already: waiting on the futures in
+    # submission order bought nothing (the pool runs them concurrently) and
+    # a stage barrier with no deadline at all is worse -- one stalled
+    # delegate holds every sibling's finished work, and the stage, and the
+    # turn, for as long as it stalls. The child's own wall-clock guard
+    # fires per streamed event, so a fully SILENT stream never trips it.
+    #
+    # A straggler is reported as one rather than dropped: its slot in the
+    # returned list keeps the job it belonged to, so a caller can still
+    # tell which of six calls did not come back.
+    deadline = _orchestration_stage_timeout()
+    results: list[dict] = [None] * len(jobs)          # type: ignore[list-item]
+    # NOT a `with` block. Leaving one calls shutdown(wait=True), which
+    # waits for every worker -- so the deadline would collect the results
+    # early and the stage would sit there anyway until the straggler
+    # returned. Measured at 30s against a 0.6s deadline before this was
+    # written the other way; the timing assertion in the test is the only
+    # thing that catches it, because every value in the result is already
+    # correct by then.
+    pool = _cf.ThreadPoolExecutor(
         max_workers=min(len(jobs), _ORCH_MAX_WORKERS),
         thread_name_prefix="orchestration",
-    ) as pool:
-        futures = [pool.submit(_one, j) for j in jobs]
-        return [f.result() for f in futures]
+    )
+    try:
+        futures = {pool.submit(run_one, job): index
+                   for index, job in enumerate(jobs)}
+        try:
+            for fut in _cf.as_completed(list(futures), timeout=deadline):
+                index = futures[fut]
+                try:
+                    results[index] = fut.result()
+                except Exception as exc:
+                    results[index] = {
+                        "subagent_type": str(
+                            (jobs[index] or {}).get("subagent_type") or ""),
+                        "description": str(
+                            (jobs[index] or {}).get("description") or ""),
+                        "result": "",
+                        "error": f"subagent failed: "
+                                 f"{str(exc) or type(exc).__name__}",
+                    }
+        except Exception:
+            pass          # the deadline; whatever landed is kept
+    finally:
+        # Queued work that never started is dropped; a delegate already
+        # running keeps running and is reported below as unfinished --
+        # the same contract the tool-call fan-out states for its own
+        # stragglers.
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:                      # pre-3.9 signature
+            pool.shutdown(wait=False)
+    for index, entry in enumerate(results):
+        if entry is not None:
+            continue
+        job = jobs[index] or {}
+        results[index] = {
+            "subagent_type": str(job.get("subagent_type") or ""),
+            "description": str(job.get("description") or ""),
+            "result": "",
+            "error": (f"did not finish within the stage deadline of "
+                      f"{deadline:.0f}s and was left running; nothing it "
+                      f"produced is in this result."),
+        }
+    return results
+
+
+
+# How long a whole orchestration stage may wait for its delegates. Same
+# shape as the tool-call fan-out's bound: a bit past the child's own
+# wall-clock budget, because that guard fires per streamed event and a
+# fully silent stream never trips it.
+def _orchestration_stage_timeout() -> float:
+    try:
+        wall = float(_subagent_limits().get("max_wall_s", 300) or 300)
+    except Exception:
+        wall = 300.0
+    return wall + 120.0
 
 
 def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
