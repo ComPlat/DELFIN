@@ -1875,6 +1875,9 @@ def run_orca_with_intelligent_recovery(
         # Get recovery strategy
         attempt = tracker.get_attempt(job_name, error_type) + 1
         strategy = RecoveryStrategy(error_type, attempt, config)
+        # Let the strategy read what ORCA actually reported. The memory fix
+        # uses it to retry with the MaxCore ORCA named rather than a guess.
+        strategy.output_file = Path(output_log)
 
         # Get modifications to check for backoff delay
         mods = strategy.get_modifications()
