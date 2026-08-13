@@ -487,7 +487,7 @@ def test_the_optimised_structure_lands_even_if_the_pushes_do_not(editor):
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
     apply_step = handler.split("def _apply()")[1]
-    assert "coords_widget.value = (" in apply_step
+    assert "coords_widget.value = xyz_document(" in apply_step
     assert "if played[0]:" in apply_step, (
         "the re-render is skipped only when the picture is already right"
     )
@@ -717,7 +717,8 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     assert "if played[0]:" in apply_body
     assert "state['manip_inflight'] = True" in apply_body
     # the flag has to be set before the write that would re-render
-    assert apply_body.index("if played[0]:") < apply_body.index("coords_widget.value = (")
+    assert (apply_body.index("if played[0]:")
+            < apply_body.index("coords_widget.value = xyz_document("))
 
 
 def test_the_playback_finds_its_field_in_fullscreen_but_only_its_own(player_js):
@@ -1398,10 +1399,15 @@ def test_controls_that_cannot_work_under_gfn_are_taken_away(editor, monkeypatch)
     editor["submit_ff_dd"].value = "gfnff"
     assert editor["submit_strength_slider"].layout.display == "none"
     assert editor["submit_relax_btn"].layout.display in (None, "")
-    assert editor["submit_settle_btn"].layout.display in (None, "")
+    # Settle went with the strength slider.  On the server it had become the
+    # ordinary optimisation run on release, which is what Auto does, and two
+    # switches for one behaviour is one too many -- the spare one was the one
+    # still relaxing structures with everything visible switched off.
+    assert editor["submit_settle_btn"].layout.display == "none"
 
     editor["submit_ff_dd"].value = "uff"
     assert editor["submit_strength_slider"].layout.display == ""
+    assert editor["submit_settle_btn"].layout.display in (None, "")
 
 
 def test_optimise_and_optimise_all_are_two_switches(editor):
@@ -2251,25 +2257,35 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
         "it is the ordinary optimisation, run on the frame that is on screen"
     )
     assert "on_frames=_push" in settle
-    assert "coords_widget.value = (" in settle, "the result has to land"
+    assert "coords_widget.value = xyz_document(" in settle, "the result has to land"
 
-    release = EDITOR_SOURCE.split("def _after_release")[1].split("\n    def ")[0]
-    assert "_arm_gfn_settle()" in release, "a release is what triggers it"
+    # Not a release any more -- under a server method Settle is gone, and
+    # going to a minimum when an atom is let go is Auto's, with one switch on
+    # screen saying so.  What still reaches this machinery is a value the user
+    # has just set or held: the structure has to arrange itself around it, and
+    # that is asked for by the hand rather than by a switch.
+    takeup = EDITOR_SOURCE.split("def _arm_gfn_takeup")[1].split("\n    def ")[0]
+    assert "_arm_gfn_settle(forced=True)" in takeup
 
+    # And the browser is told, before anything returns, that it is not the one
+    # settling.  Leaving early instead -- on the grounds that a server method
+    # has no browser field to settle with -- left the page settling on release
+    # with a field installed under whatever method had been chosen before, so
+    # a structure went on relaxing with every switch on screen switched off.
     toggle = source.split("def on_submit_settle_toggle")[1].split("\n    def ")[0]
-    # Settle belongs to whichever engine computes on the server: it re-runs
-    # the follow machinery, and MOPAC has one too now.
-    assert "if _server_method():" in toggle
-    assert toggle.index("return") < toggle.index("_ensure_manip_bootstrap()"), (
-        "the browser must not be told to settle with a field it does not have"
+    assert (toggle.index("setSettleOnRelease")
+            < toggle.index("if _server_method():")), (
+        "the browser hears about it before the server branch bows out"
     )
+    assert "settling = active and not _server_method()" in toggle
 
 
 @_needs_xtb
 
 
-def test_letting_go_settles_with_the_method_that_is_chosen(editor):
-    """Driven the way the page drives it: a release with Settle on."""
+def test_letting_go_goes_to_a_minimum_with_the_method_that_is_chosen(editor):
+    """Driven the way the page drives it: a release with Auto and Dynamik Opt
+    on, which is the one thing on a server method that acts on a release."""
     import time as _time
 
     refs = editor
@@ -2283,15 +2299,20 @@ def test_letting_go_settles_with_the_method_that_is_chosen(editor):
     refs["coords_widget"].value = strained
     state["current_xyz_for_copy"] = {"content": strained}
     refs["submit_ff_dd"].value = "gfnff"
-    refs["submit_settle_btn"].value = True
+    # Auto and Dynamik Opt, not Settle: under a server method Settle is gone,
+    # because what it ran there was the whole minimisation rather than a
+    # tidy-up, and that is what these two already say they do.
+    refs["submit_relax_btn"].value = True
+    refs["submit_auto_btn"].value = True
 
     refs["submit_cmd_sync"].value = "gfnfree:1:"
 
     deadline = _time.time() + 60
-    while _time.time() < deadline and "Settled with" not in refs["coords_widget"].value:
+    while (_time.time() < deadline
+           and "Optimised in DELFIN viewer" not in refs["coords_widget"].value):
         _time.sleep(0.05)
 
-    assert "Settled with GFN-FF" in refs["coords_widget"].value, (
+    assert "Optimised in DELFIN viewer" in refs["coords_widget"].value, (
         refs["mol_status"].value
     )
     rows = [line.split() for line in gfn.atom_lines(refs["coords_widget"].value)]
@@ -2842,8 +2863,8 @@ def test_dragging_moves_along_the_surface_and_optimise_goes_down_it(editor):
         "switching it on arms the follow; it does not optimise"
     )
 
-    changed = source.split("def on_submit_ff_changed")[1].split("\n    def ")[0]
-    assert "submit_settle_btn.value = False" in changed
+    controls = source.split("def _refresh_method_controls")[1].split("\n    def ")[0]
+    assert "submit_settle_btn.value = False" in controls
 
 
 def test_choosing_gfn_leaves_the_structure_where_the_hand_puts_it(editor):
@@ -2852,8 +2873,10 @@ def test_choosing_gfn_leaves_the_structure_where_the_hand_puts_it(editor):
     assert editor["submit_settle_btn"].value is False, (
         "tidying on every release is a thing to ask for, not the default"
     )
-    assert editor["submit_settle_btn"].layout.display in (None, ""), (
-        "and it has to stay reachable, or it cannot be asked for"
+    assert editor["submit_settle_btn"].layout.display == "none", (
+        "and it goes with it: on the server Auto is the switch for what "
+        "happens on release, and Settle sitting beside it did the same thing "
+        "under a name that did not say so"
     )
 
 
@@ -3555,3 +3578,423 @@ def test_an_empty_comment_line_does_not_cost_an_atom():
     for shape, xyz in shapes.items():
         assert len(atom_lines(xyz)) == 3, shape
         assert atom_lines(xyz)[0].split()[0] == 'O', shape
+
+
+# ---------------------------------------------------------------------------
+# one layout, and a header that is true about the coordinates under it
+# ---------------------------------------------------------------------------
+
+
+def test_every_coordinate_the_editor_writes_is_in_one_layout():
+    """Which layout a box was in used to say where it had been written from.
+
+    Fourteen decimals meant xtb, eight the frame a stopped run was showing,
+    and six the browser -- whose model is serialised in JavaScript.  Two
+    geometries that differed only in that were two different histories, and
+    counting decimals is not how a user should have to find that out.
+    """
+    from delfin.dashboard import structure_editor as se
+
+    line = se.xyz_line("C", 4.64514437834514, 1.05045715164728,
+                       -0.41772688977231)
+    assert line == (
+        "C            4.64514437834514        1.05045715164728"
+        "       -0.41772688977231"
+    )
+    assert len(line) == 77
+    # Two letters and a wider number keep the same columns.
+    assert len(se.xyz_line("Mn", -12.5, 0.0, 123.25)) == 77
+    # The count comes from the lines, not from a header that may disagree.
+    doc = se.xyz_document(["O 0 0 0", "H 0.96 0 0"], "a note")
+    assert doc.splitlines()[0] == "2"
+    assert doc.splitlines()[1] == "a note"
+    assert doc.splitlines()[2].startswith("O    ")
+
+
+def test_a_line_it_cannot_read_is_left_alone_rather_than_dropped():
+    """The box is the user's: a column someone is relying on is not this
+    function's to throw away."""
+    from delfin.dashboard import structure_editor as se
+
+    kept = se.xyz_body(["O 0 0 0", "this is not an atom", "", "H 1 x 0"])
+    assert kept[0].startswith("O    ")
+    assert kept[1] == "this is not an atom"
+    assert kept[2] == "H 1 x 0"
+    assert len(kept) == 3, "blank lines go, unreadable ones stay"
+
+
+def test_the_browser_serialises_in_the_same_layout(player_js):
+    """Six decimals from the page and fourteen from xtb is the same box
+    changing shape according to which side last wrote it."""
+    from delfin.dashboard import tab_submit
+
+    js = tab_submit.submit_manip_bootstrap_js()
+    assert "toFixed(14)" in js
+    assert "toFixed(6)" not in js.split("function serializeXyz")[1][:800]
+    assert "function xyzColumn" in js
+
+
+def test_a_geometry_from_the_browser_does_not_wear_the_optimised_label():
+    """These coordinates are what the hand has just done to the structure.
+
+    Carrying the old comment over put "Optimised in DELFIN viewer" above a
+    geometry that had been dragged out of shape since -- so the word said
+    where the box was last written from rather than what was in it, and a
+    benzene with a hydrogen 2.66 A off its carbon read as the result of an
+    optimisation.
+    """
+    from delfin.dashboard import structure_editor as se
+
+    assert se._is_editor_comment("Optimised in DELFIN viewer")
+    assert se._is_editor_comment("Settled with GFN2-xTB")
+    assert se._is_editor_comment("stopped at the frame on screen")
+    assert se._is_editor_comment("DELFIN drag-end held=3,4")
+    # A name off a file or a note the user typed is theirs, and stays.
+    assert not se._is_editor_comment("cholesterol, from the CSD")
+    assert not se._is_editor_comment("Converted from SMILES (isomer: E)")
+
+    sync = EDITOR_SOURCE.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
+    assert "_is_editor_comment(kept)" in sync
+    assert "'Edited in DELFIN viewer'" in sync
+
+
+def test_a_run_that_produced_no_geometry_does_not_relabel_the_box():
+    """It hands the input straight back, and writing that under "Optimised"
+    labelled the geometry the user made as the answer to a question that was
+    never answered."""
+    apply_body = SUBMIT_SOURCE.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0].split("def _apply()")[1]
+    guard = apply_body.split("elif failures:")[1].split("else:")[0]
+    assert "coords_widget.value" not in guard
+    assert "pass" in guard
+    # And it does not say it optimised something either.
+    assert "f'{label} could not optimise it.' if not done else" in apply_body
+
+
+# ---------------------------------------------------------------------------
+# what the chosen method can do, and what becomes of the held values
+# ---------------------------------------------------------------------------
+
+
+def test_the_toolbar_shows_what_the_method_has_and_nothing_else(editor, monkeypatch):
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    dd = editor["submit_ff_dd"]
+
+    dd.value = "uff"
+    assert editor["submit_gfn_charge"].layout.display == "none"
+    assert editor["submit_gfn_mult"].layout.display == "none"
+    assert editor["submit_gfn_autospin"].layout.display == "none"
+    assert editor["submit_strength_slider"].layout.display == ""
+    assert editor["submit_settle_btn"].layout.display in (None, "")
+    # Auto is the other way round: going down to a minimum on release is
+    # refused outright for a browser method, so the switch has nothing to do.
+    # Its value is left as it stands -- nothing reads it here, and switching
+    # it off would cost the user their setting for stepping through UFF.
+    assert editor["submit_auto_btn"].layout.display == "none"
+
+    dd.value = "gfn2"
+    assert editor["submit_gfn_charge"].layout.display == ""
+    assert editor["submit_gfn_mult"].layout.display == ""
+    assert editor["submit_gfn_autospin"].layout.display == ""
+    assert editor["submit_strength_slider"].layout.display == "none"
+    assert editor["submit_settle_btn"].layout.display == "none"
+    assert editor["submit_auto_btn"].layout.display == ""
+
+    dd.value = "pm7"
+    assert editor["submit_gfn_charge"].layout.display == ""
+    # Scanning the multiplicity is xtb's; MOPAC is given the one on screen.
+    assert editor["submit_gfn_autospin"].layout.display == "none"
+    assert editor["submit_settle_btn"].layout.display == "none"
+    assert editor["submit_strength_slider"].layout.display == "none"
+    assert editor["submit_auto_btn"].layout.display == ""
+
+
+def test_a_multiplicity_of_zero_or_below_is_refused_by_the_box(editor):
+    """M = 2S+1, so the smallest there is is 1.
+
+    The box took 0 and -3 as readily as 2, and neither reached xtb as itself:
+    the conversion to unpaired electrons floors at zero, so both were quietly
+    run as a singlet -- the confident wrong answer arrived at from a number
+    the user could see was not what they typed.
+    """
+    box = editor["submit_gfn_mult"]
+    assert box.min == 1
+    box.value = 0
+    assert box.value == 1
+    box.value = -3
+    assert box.value == 1
+    box.value = 3
+    assert box.value == 3
+
+
+def test_held_values_survive_a_change_of_method_and_are_spoken_for(editor, monkeypatch):
+    """The list describes the molecule, not the program.
+
+    What each engine will do with it differs completely, and an engine that is
+    handed none of them has to say so: a held bond that stays in the list and
+    stops being held is the list describing a thing that is not happening.
+    """
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    held = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "fix"}]
+    state["constraints"] = list(held)
+
+    # What each of them will do with the one held value, said at the moment
+    # the method changes rather than left for the run to reveal.
+    expected = {
+        "gfn2": "will hold all 1",
+        "gfnff": "will hold all 1",
+        "pm7": "holds them its own way",
+        "uff": "pulls towards a held value rather than fixing it",
+    }
+    for method, phrase in expected.items():
+        editor["submit_ff_dd"].value = method
+        assert state["constraints"] == held, (
+            f"{method} must not eat the held values"
+        )
+        assert phrase in editor["mol_status"].value, method
+
+
+def test_mopac_holds_a_value_by_fixing_the_atoms_that_name_it(editor):
+    """MOPAC's Cartesian input carries an optimisation flag per coordinate,
+    and that is the only constraint it has.  Measured on a propane with PM7:
+    free, C1 and C3 relax from 3.000 A to 2.523 and each moves 0.302 A; with
+    their flags at zero each moves 0.0000 A and the distance stays 3.000."""
+    state = editor["editor_state"]
+    state["constraints"] = [
+        {"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "fix"}
+    ]
+    editor["submit_ff_dd"].value = "pm7"
+    said = editor["mol_status"].value
+    assert "holds them its own way" in said
+    # And says what that is not: it fixes the atoms, not the value between
+    # them, so those atoms also stop turning and moving.
+    assert "fixes atoms, not the value between them" in said
+
+
+def test_a_pull_is_refused_by_mopac_rather_than_frozen(editor):
+    """One flag, on or off, so there is nothing to negotiate with.  Freezing a
+    pull would hold as exact a value the user asked to have argued with."""
+    from delfin.dashboard import mopac_optimize as mopac
+
+    pull = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "pull"}]
+    fix = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "fix"}]
+
+    assert mopac.freeze_flags(pull)["frozen"] == set()
+    assert mopac.freeze_flags(pull)["pulls"] == 1
+    assert mopac.freeze_flags(pull)["held"] == 0
+    assert "not honoured" in mopac.freeze_note(mopac.freeze_flags(pull))
+
+    assert mopac.freeze_flags(fix)["frozen"] == {0, 1}
+    assert mopac.freeze_flags(fix)["held"] == 1
+
+    # An atom this structure does not have is dropped, not passed on.
+    assert mopac.freeze_flags(fix, atoms=1)["dropped"]
+    assert mopac.freeze_flags(fix, atoms=1)["frozen"] == set()
+
+    state = editor["editor_state"]
+    state["constraints"] = pull
+    editor["submit_ff_dd"].value = "pm7"
+    assert "not honoured" in editor["mol_status"].value
+
+
+def test_with_every_switch_off_letting_go_of_an_atom_runs_nothing(editor, monkeypatch):
+    """GFN2 chosen, Dynamik Opt off, Optimise off -- and it optimised anyway.
+
+    The gate on the release path read Settle's widget, and Settle defaulted to
+    on.  Under a server method that switch is not on the toolbar at all, so it
+    could be left on from an earlier method or restored with a structure and
+    never be seen again -- and what it then ran was not a tidy-up but the whole
+    minimisation, this path having stopped capping its cycles when it was made
+    to match Optimise.  A structure went down to a minimum with nothing on
+    screen claiming to be running.
+
+    Driven the way the page drives it: a release arrives as a command, and
+    nothing may be armed by it.
+    """
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+    editor["submit_relax_btn"].value = False
+    editor["submit_auto_btn"].value = False
+    # The toolbar has taken Settle away and switched it off with it.
+    assert editor["submit_settle_btn"].value is False
+    assert editor["submit_settle_btn"].layout.display == "none"
+
+    # Forced back on behind the toolbar's back -- the state the bug was
+    # reached from, and the gate must not care what it says under GFN.
+    editor["submit_settle_btn"].value = True
+    state["gfn_settle_forced"] = False
+    state.pop("gfn_settle_armed", None)
+    state.pop("gfn_minimise_armed", None)
+
+    # The page sends "verb:serial:payload"; the serial only makes the same
+    # command twice read as two changes.
+    editor["submit_cmd_sync"].value = "gfnfree:1:"
+
+    assert not state.get("gfn_settle_armed"), (
+        "a release with everything off must not arm a relaxation"
+    )
+    assert not state.get("gfn_minimise_armed"), (
+        "and must not arm a minimisation either -- that is Auto's"
+    )
+    assert state.get("optimize_run") is None
+
+    # And the gate says it in one line: on a server method only a hand -- a
+    # value set, a value held -- arms this at all.  It used to read Settle's
+    # widget, which under GFN is not on the toolbar to be turned off.
+    arm = EDITOR_SOURCE.split("def _arm_gfn_settle")[1].split("\n    def ")[0]
+    assert "if not state.get('gfn_settle_forced'):" in arm
+    assert "submit_settle_btn.value" not in arm
+
+
+def test_with_auto_and_dynamik_opt_on_a_release_does_go_to_a_minimum(editor, monkeypatch):
+    """The other half: switched on, it is asked for, and it happens."""
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+    editor["submit_relax_btn"].value = True
+    editor["submit_auto_btn"].value = True
+    state.pop("gfn_minimise_armed", None)
+
+    editor["submit_cmd_sync"].value = "gfnfree:2:"
+
+    assert state.get("gfn_minimise_armed") is True, (
+        "with both switches on, letting go is what starts the minimisation"
+    )
+
+
+def test_a_restored_structure_cannot_hand_back_a_switch_the_method_lacks(editor, monkeypatch):
+    """A memory made under one method is applied under another.
+
+    The restore writes the switches one by one, and the method box may already
+    hold the value it is being given -- so its handler never fires, and a
+    switch that method does not have would sit there on.
+    """
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    editor["submit_ff_dd"].value = "gfn2"
+    editor["submit_settle_btn"].value = True      # as a restore would leave it
+
+    apply_body = EDITOR_SOURCE.split("def _apply_controls")[1].split("\n    def ")[0]
+    assert "_refresh_method_controls()" in apply_body
+
+
+def test_retuning_a_held_value_reaches_the_engine_without_pressing_hold():
+    """Three ways to alter a held value, and one of them went nowhere.
+
+    Hold arms the take-up, and so does changing pull to fix; typing a new
+    number into the box did not.  Under the browser's field that never showed,
+    because its restraints ride along with the parameters that are handed over
+    again -- but under GFN nothing runs between drags, so the change is what
+    has to start it.  The list said one thing, the structure went on standing
+    at another, and pressing Hold again was what made it happen.
+    """
+    for name in ("on_submit_hold", "on_submit_hold_mode",
+                 "on_submit_constraint_retune"):
+        body = EDITOR_SOURCE.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "_arm_gfn_takeup(" in body, name
+        assert "_enable_live_forcefield()" in body, name
+
+
+def test_xtb_holds_a_value_with_one_force_constant_for_the_whole_set():
+    """pull and fix are two force constants, not two mechanisms.
+
+    xtb takes one ``force constant=`` for the whole ``$constrain`` block -- a
+    second is read and ignored -- so a set with anything exact in it is held
+    exact throughout, and the caller is told so rather than left to wonder why
+    a pull stopped negotiating.
+    """
+    pull = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "pull"}]
+    fix = [{"kind": "distance", "atoms": [0, 1], "value": 1.6, "mode": "fix"}]
+
+    assert gfn.constraint_input(pull)["force"] == gfn.PULL_FORCE_CONSTANT
+    assert gfn.constraint_input(fix)["force"] == gfn.FIX_FORCE_CONSTANT
+    assert not gfn.constraint_input(pull)["mixed"]
+    assert not gfn.constraint_input(fix)["mixed"]
+
+    both = gfn.constraint_input(pull + [
+        {"kind": "angle", "atoms": [0, 1, 2], "value": 109.5, "mode": "fix"}])
+    assert both["held"] == 2
+    assert both["force"] == gfn.FIX_FORCE_CONSTANT, (
+        "one constant for the block, and anything exact in it decides"
+    )
+    assert both["mixed"] is True
+    assert "held as firmly as the exact values" in gfn.held_note(both)
+
+    # Only internal coordinates.  xtb's own $fix atoms: is not asked for --
+    # three fixed carbons of a propane came back at 0.4623 A under GFN2.
+    assert set(gfn.CONSTRAINT_ATOMS) == {"distance", "angle", "dihedral"}
+    assert "$fix" not in gfn.constraint_input(fix)["text"]
+    assert gfn.constraint_input(
+        [{"kind": "atom", "atoms": [0], "value": 0.0, "mode": "fix"}]
+    )["held"] == 0
+
+
+def test_the_optimisation_owns_the_coordinate_box_while_it_runs(editor, monkeypatch):
+    """The browser's own field reports where it has got to twice a second and
+    once more when it is switched off.
+
+    Those arrived with no reason on them, took neither the edit path nor any
+    other, and wrote the coordinate box regardless -- so the picture's idea of
+    the geometry landed on top of the calculation's, and which of the two the
+    user was left with came down to which wrote last.  That is the shape the
+    "Optimised in DELFIN viewer" header was found over a structure no run had
+    produced.
+    """
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+    before = editor["coords_widget"].value
+
+    token = object()
+    state["optimize_run"] = token
+    editor["submit_manip_sync"].value = (
+        "3\nEdited in DELFIN viewer\n"
+        "O 9.000000 0.000000 0.000000\n"
+        "H 0.960000 0.000000 0.000000\n"
+        "H -0.240000 0.930000 0.000000\n"
+    )
+    assert editor["coords_widget"].value == before, (
+        "a report from the field must not land on a running optimisation"
+    )
+    assert state["optimize_run"] is token, "and must not stop it either"
+
+    # A hand still takes it back: an edit interrupts the run and lands.
+    editor["submit_manip_sync"].value = (
+        "3\nDELFIN drag-end\n"
+        "O 8.000000 0.000000 0.000000\n"
+        "H 0.960000 0.000000 0.000000\n"
+        "H -0.240000 0.930000 0.000000\n"
+    )
+    assert "8.00000000000000" in editor["coords_widget"].value
+    assert state["optimize_run"] is None, "the run is about a structure that is gone"
+
+
+def test_undoing_a_drag_in_the_browser_counts_as_an_edit():
+    """It went back with no reason on it, so it was neither an edit nor
+    anything else: the optimisation ran on over a geometry that had just been
+    taken back."""
+    from delfin.dashboard import tab_submit
+
+    js = tab_submit.submit_manip_bootstrap_js()
+    assert "pushXyzToPython(scopeKey, 'undo')" in js
+    # And the field's own reports say which they are, so they can be told apart.
+    assert "pushXyzToPython(scopeKey, 'field')" in js
+    assert "pushXyzToPython(scopeKey);" not in js, "every push carries a reason"
+
+    sync = EDITOR_SOURCE.split("def on_submit_manip_sync")[1].split("\n    def ")[0]
+    assert "note.startswith('DELFIN undo')" in sync
+    assert "_interrupt_gfn()" in sync

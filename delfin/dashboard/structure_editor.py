@@ -68,6 +68,80 @@ LABEL_PX_MAX = 48
 LABEL_SCALE_DEFAULT = LABEL_PX_DEFAULT / LABEL_PX_PER_SCALE
 
 
+#: One layout for every coordinate this editor writes: the element in five
+#: columns, then three fields of twenty-four with fourteen decimals.  It is
+#: xtb's own, which is what most of these coordinates already are, and the
+#: columns line up whether or not a number carries a minus sign.
+#:
+#: There were three layouts before, and which one the box ended up in said
+#: where the coordinates had come from rather than anything about the
+#: molecule: fourteen decimals from xtb, eight from the frame a stopped run
+#: was showing, and six from the browser, whose model is serialised with
+#: toFixed(6).  Two structures that differed only in that were two different
+#: histories, and reading which was which off the decimal count is not
+#: something a user should have to do.
+_XYZ_ELEMENT_COLUMNS = 5
+_XYZ_NUMBER_COLUMNS = 24
+_XYZ_DECIMALS = 14
+
+
+def xyz_line(symbol, x, y, z):
+    """One atom, in the layout every coordinate box in the editor uses."""
+    return (f'{str(symbol):<{_XYZ_ELEMENT_COLUMNS}}'
+            f'{float(x):>{_XYZ_NUMBER_COLUMNS}.{_XYZ_DECIMALS}f}'
+            f'{float(y):>{_XYZ_NUMBER_COLUMNS}.{_XYZ_DECIMALS}f}'
+            f'{float(z):>{_XYZ_NUMBER_COLUMNS}.{_XYZ_DECIMALS}f}')
+
+
+def xyz_body(lines):
+    """Coordinate lines re-laid-out, and left alone if they cannot be read.
+
+    A line this cannot parse is passed through untouched rather than dropped:
+    the box is the user's, and a comment or a fifth column someone is relying
+    on is not this function's to throw away.
+    """
+    out = []
+    for line in lines:
+        if not str(line).strip():
+            continue
+        parts = str(line).split()
+        if len(parts) < 4:
+            out.append(str(line))
+            continue
+        try:
+            out.append(xyz_line(parts[0], parts[1], parts[2], parts[3]))
+        except (TypeError, ValueError):
+            out.append(str(line))
+    return out
+
+
+def xyz_document(lines, comment):
+    """A whole .xyz: the count, the comment, and the atoms in one layout."""
+    body = xyz_body(lines)
+    return f'{len(body)}\n{comment}\n' + '\n'.join(body)
+
+
+#: Comments this editor writes about where a geometry came from, as opposed to
+#: a name off a file or a note the user typed.  Only these may be replaced when
+#: the coordinates underneath them are no longer the ones they were written
+#: for; everything else in that line belongs to the user.
+_EDITOR_COMMENTS = (
+    'optimised in delfin viewer',
+    'edited in delfin viewer',
+    'settled with ',
+    'stopped at the frame on screen',
+    'delfin drag-end',
+    'delfin drag-follow',
+    'from the delfin viewer',
+)
+
+
+def _is_editor_comment(line):
+    """Whether that comment line is this editor's own claim about a geometry."""
+    text = str(line or '').strip().lower()
+    return any(text.startswith(one) for one in _EDITOR_COMMENTS)
+
+
 def scale_for_px(px):
     """The scale factor that makes a digit *px* pixels tall."""
     try:
@@ -780,8 +854,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         style={'description_width': '12px'},
         layout=widgets.Layout(width='72px', display='none'),
     )
-    submit_gfn_mult = widgets.IntText(
-        value=1, description='M', step=1,
+    # A multiplicity is M = 2S+1, so the smallest one there is is 1.  The box
+    # took 0 and -3 as readily as 2, and neither reached xtb as itself: the
+    # conversion to unpaired electrons floors at zero, so both were quietly
+    # run as a singlet.  That is the confident wrong answer the charge box
+    # above is warned about, arrived at from a number the user could see was
+    # not what they typed.  The box refuses them now instead.
+    submit_gfn_mult = widgets.BoundedIntText(
+        value=1, min=1, max=20, description='M', step=1,
         style={'description_width': '14px'},
         layout=widgets.Layout(width='72px', display='none'),
     )
@@ -977,6 +1057,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='84px', height='30px'),
         disabled=True,
     )
+    #: On to begin with, and only ever the browser's.  Leaving the strain of a
+    #: drag in the structure is the surprising answer, not the useful one: a
+    #: hand-placed atom measured 176 kcal/mol above a settled one on a real
+    #: complex, and that is what would go to the queue.
+    #:
+    #: It was briefly off, because it was the one thing moving a structure
+    #: while everything the user had touched said off -- but that was the
+    #: server methods, where the switch is not on the toolbar to be found and
+    #: what it started was the whole minimisation rather than a tidy-up.  That
+    #: is fixed where it was broken: the toolbar takes it away under a server
+    #: method and switches it off with it, and the gate on the release path no
+    #: longer reads this widget at all.  So under the browser's field, where it
+    #: means what its name says and costs nothing, it can go back to on.
     submit_settle_btn = widgets.ToggleButton(
         value=True, description='Settle', icon='level-down',
         button_style='info',
@@ -1901,7 +1994,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         outcome = _mopac.optimize_with_mopac(
                             current, method, charge=charge, uhf=uhf,
                             max_steps=_GFN_FOLLOW_CYCLES, timeout=30.0,
-                            solvent=wet)
+                            constraints=constraints, solvent=wet)
                     else:
                         outcome = _gfn.relax_steps(
                             current, method=method, charge=charge, uhf=uhf,
@@ -2115,9 +2208,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # the answer to something the user just did, and it has to happen.
             state['gfn_settle_forced'] = True
         if not (_server_method()
-                and _server_binary(submit_ff_dd.value) is not None
-                and (submit_settle_btn.value
-                     or state.get('gfn_settle_forced'))):
+                and _server_binary(submit_ff_dd.value) is not None):
+            return
+        # Only a hand may arm this: a value set, a value held.  The gate above
+        # has already turned away everything but a server method, and on a
+        # server method Settle is not on the toolbar -- so reading its widget
+        # here, as this did, meant a switch the user could not see, left on
+        # from an earlier method or restored along with a structure, ran a
+        # full uncapped xtb optimisation on every release with Dynamik Opt and
+        # Optimise both off.  What ran was the whole minimisation rather than a
+        # tidy-up: this path stopped capping its cycles when it was made to
+        # match Optimise.  Going to a minimum on release is Auto's, and Auto
+        # is a switch that is on the toolbar saying so.
+        if not state.get('gfn_settle_forced'):
             return
         if not forced and state.get('optimize_interrupted') is not None:
             # An optimisation was interrupted by this very drag and is coming
@@ -2226,12 +2329,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         def _work():
             began = time.perf_counter()
             if _mopac.is_mopac_method(method):
-                # No held internals and no topology to carry, but the solvent
-                # is carried: a settle in water after a drag in water is the
-                # same question the drag was asking.
+                # No topology to carry, but the held values and the solvent
+                # both are: a settle in water after a drag in water is the
+                # same question the drag was asking, and a value held while
+                # the drag ran is still held when the hand lets go.
                 outcome = _mopac.optimize_with_mopac(
                     xyz, method, charge=charge, uhf=uhf,
                     max_steps=None, timeout=None, on_frames=_push,
+                    constraints=constraints,
                     should_stop=_settle_stopped, solvent=wet)
             elif scanning:
                 # Auto M with nothing scanned yet.  Optimise would scan and
@@ -2292,9 +2397,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # and Submit read, and it has to be true whether or not a
                     # frame happened to land.
                     state['manip_inflight'] = True
-                    coords_widget.value = (
-                        f'{len(lines)}\nSettled with {label}\n'
-                        + '\n'.join(lines))
+                    coords_widget.value = xyz_document(
+                        lines, f'Settled with {label}')
                 # Not converged and the switch is still down: keep going.  That
                 # is what makes this a relaxation rather than a single push.
                 # It ends three ways -- converged, standing still, or out of
@@ -2886,15 +2990,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                  else _gfn_topology_dir(xyz))
                     if pm:
                         # MOPAC takes the spin state as a word and knows
-                        # nothing of xtb's held internals or its topology
-                        # files -- so it is given what it does take, and the
-                        # rest is not quietly passed along as though it had
-                        # been honoured.  The solvent it does take: its COSMO
-                        # is handed the dielectric constant of the same
-                        # liquid the GFN side is given by name.
+                        # MOPAC takes the spin state as a word and knows
+                        # nothing of xtb's topology files, so those are not
+                        # quietly passed along as though they had been
+                        # honoured.  The held values it does take, in its own
+                        # terms: its Cartesian input carries an optimisation
+                        # flag per coordinate, and an atom a held value names
+                        # is handed over with those at zero -- measured on a
+                        # propane, a frozen carbon moves 0.0000 A where a free
+                        # one moves 0.302.  That fixes the atoms rather than
+                        # the value between them, and a pull cannot be said at
+                        # all, so the run says which of the two it did.  The
+                        # solvent it takes as well: its COSMO is handed the
+                        # dielectric constant of the same liquid the GFN side
+                        # is given by name.
                         outcome = _mopac.optimize_with_mopac(
                             xyz, method, charge=charge, uhf=uhf,
                             should_stop=_stopped, timeout=None, solvent=wet,
+                            constraints=held,
                             on_frames=_push_frames if position == 0 else None)
                     elif gfn and autospin:
                         outcome = _gfn.optimize_autospin(
@@ -2955,8 +3068,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             frame = walked[shown - 1]
                             if len(symbols) * 3 == len(frame):
                                 rows = [
-                                    f'{symbols[i]} {frame[3*i]:.8f} '
-                                    f'{frame[3*i+1]:.8f} {frame[3*i+2]:.8f}'
+                                    xyz_line(symbols[i], frame[3*i],
+                                             frame[3*i+1], frame[3*i+2])
                                     for i in range(len(symbols))
                                 ]
                                 kept = (f'{len(rows)}\nstopped at the frame on '
@@ -3034,6 +3147,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # blocks: the status line said "Optimised 2 of 2 frames"
                     # over a coordinates box that had not changed a character.
                     _offer_isomers(results, show=not played[0])
+                elif failures:
+                    # Nothing came back.  A run that produced no geometry hands
+                    # the input straight back, and writing that to the box
+                    # under "Optimised in DELFIN viewer" labelled the geometry
+                    # the user had made as the answer to a question that was
+                    # never answered -- an unoptimised structure wearing the
+                    # word for an optimised one, with only the failure line
+                    # underneath to say otherwise.  The box is left alone.
+                    pass
                 else:
                     lines = [
                         line for line in results[0][0].splitlines()[2:] if line.strip()
@@ -3046,14 +3168,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # the optimisation was ever seen.  The box is updated
                         # for Copy and Submit; the picture is already right.
                         state['manip_inflight'] = True
-                    coords_widget.value = (
-                        f"{len(lines)}\nOptimised in DELFIN viewer\n"
-                        + '\n'.join(lines)
-                    )
+                    coords_widget.value = xyz_document(
+                        lines, 'Optimised in DELFIN viewer')
                 done = count - len(failures)
                 # "1 of 1 frame(s)" is a count of a thing there is one of, and
                 # it cost the line the width that pushed it onto a second row.
-                said = (f'Optimised with {label}.' if count == 1 else
+                said = (f'{label} could not optimise it.' if not done else
+                        f'Optimised with {label}.' if count == 1 else
                         f'Optimised {done} of {count} frame(s) with {label}.')
                 # The energy, the way the force field shows one.  xtb reports
                 # it in hartree; kcal/mol is what the rest of the tab speaks,
@@ -3077,8 +3198,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # ignored would make the result an answer to a question nobody
                 # asked.
                 said += _solvents.note(_solv_model(), submit_gfn_solvent.value)
-                said += _gfn.held_note(state.get('gfn_held') or {
-                    'held': 0, 'dropped': [], 'mixed': False, 'force': None})
+                # In the terms of whichever engine ran.  xtb restrains the
+                # value with one force constant for the whole set; MOPAC fixes
+                # the atoms that name it and cannot express a pull at all.
+                # Read out with the wrong one, a MOPAC result would claim a
+                # force constant that no MOPAC run has.
+                kept = state.get('gfn_held')
+                if pm:
+                    said += _mopac.freeze_note(kept or {
+                        'held': 0, 'pulls': 0, 'dropped': [], 'frozen': set()})
+                else:
+                    said += _gfn.held_note(kept or {
+                        'held': 0, 'dropped': [], 'mixed': False,
+                        'force': None})
                 aside = int(state.pop('held_set_aside', 0) or 0)
                 if aside:
                     # Said out loud rather than done quietly: a value held on
@@ -3479,6 +3611,65 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         mode = entry.get('mode', 'pull')
         return f"{'-'.join(symbols)} = {entry['value']:.3g} {unit} ({mode})"
 
+    def _carry_constraints_to(method):
+        """Hand the held values over to the engine that has just been chosen.
+
+        The list itself survives a change of method -- it describes the
+        molecule, not the program -- but what an engine will do with it differs,
+        and the three here differ completely:
+
+        xtb holds internal coordinates, one force constant for the whole set.
+        The browser's field holds the pulls and cannot fix anything, so a fix
+        is met by pulling very hard rather than by the atom not moving.
+        MOPAC is handed none of them: it takes no constraint block from this
+        editor, so a value held on screen while PM7 runs is a value the run
+        never hears about.
+
+        That last one is why this says something instead of only re-installing
+        the parameters.  A held bond that stays in the list and stops being
+        held is the list describing a thing that is not happening, and the run
+        that follows answers a question the user did not ask.
+        """
+        held = list(state.get('constraints') or [])
+        # The browser's field carries its restraints in the parameters it was
+        # given, so a new method means handing them over again.  A server
+        # method reads the list when it runs and needs nothing installed.
+        if not _server_method(method) and submit_relax_btn.value:
+            _enable_live_forcefield()
+        if not held:
+            return ''
+        if _mopac.is_mopac_method(method):
+            reading = _mopac.freeze_flags(
+                held, atoms=len(_gfn.atom_lines(_current_xyz() or '')) or None)
+            return (f'{_server_label(method)} holds them its own way.'
+                    + _mopac.freeze_note(reading))
+        if _gfn.is_gfn_method(method):
+            # Said from the same function the run uses, so what is promised
+            # here is what will actually be written into xtb.inp.
+            reading = _gfn.constraint_input(
+                held, atoms=len(_gfn.atom_lines(_current_xyz() or '')) or None)
+            if reading['dropped']:
+                return (
+                    f'{_server_label(method)} will hold '
+                    f'{reading["held"]} of the {len(held)} value(s); '
+                    f'{len(reading["dropped"])} name atoms this structure does '
+                    'not have, or are not a distance, an angle or a dihedral.')
+            if reading['mixed']:
+                return (
+                    f'{_server_label(method)} will hold all {len(held)} '
+                    'value(s). xtb takes one force constant for the whole set, '
+                    'so the pulls are held as firmly as the exact values.')
+            return (f'{_server_label(method)} will hold all {len(held)} '
+                    'held value(s).')
+        fixed = sum(1 for entry in held if entry.get('mode') == 'fix')
+        if fixed:
+            return (
+                f'{str(method).upper()} runs in the browser, which pulls '
+                f'towards a held value rather than fixing it: the {fixed} '
+                'exact one(s) are held very firmly, not held still. Optimise '
+                'under a GFN method to have them met exactly.')
+        return ''
+
     def _selected_constraint():
         """The held entry the list is pointing at, or (None, None)."""
         key = submit_constraint_dd.value or ''
@@ -3542,6 +3733,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['constraints'] = held
         _refresh_constraints()
         _enable_live_forcefield()
+        # And under GFN, where nothing runs between drags, the change is what
+        # has to start it.  This was the one of the three ways of altering a
+        # held value that did not: Hold arms it, changing pull to fix arms it,
+        # and typing a new number into the box did not -- so the list said one
+        # thing, the structure went on standing at another, and pressing Hold
+        # again was what made it happen.  The browser's field needs no such
+        # push, which is why it only showed under a server method.
+        _arm_gfn_takeup(f'Holding {_describe_constraint(held[position])}')
         _set_mol_status(f'Holding {_describe_constraint(held[position])}.')
 
     def _refresh_constraints():
@@ -4464,23 +4663,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         active = bool(submit_settle_btn.value)
         submit_settle_btn.button_style = 'info' if active else ''
-        if _server_method():
-            # On the server this is the server's job, not the browser's: a release
-            # runs one short optimisation with the method on screen.  Telling
-            # the browser to settle would be telling it to use a field that is
-            # deliberately not installed.
-            label = _server_label(submit_ff_dd.value)
-            _set_mol_status(
-                f'Letting go of an atom now lets {label} tidy the structure '
-                'around it.' if active else
-                'Atoms will stay exactly where you put them.')
-            return
+        # Told to the browser either way, and told first.  Under a server
+        # method this switch is gone and its answer is always no; returning
+        # here before saying so left the page settling on release with a field
+        # installed under some earlier method -- a structure relaxing when the
+        # user had switched everything they could see to off.
         _ensure_manip_bootstrap()
+        settling = active and not _server_method()
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setSettleOnRelease('
-            f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
+            f'{json.dumps(submit_scope_id)},{"true" if settling else "false"});'
         )
+        if _server_method():
+            return
+        _set_mol_status(
+            'Letting go of an atom now lets the structure relax around it.'
+            if active else
+            'Atoms will stay exactly where you put them.')
 
     def on_submit_sens_changed(change):
         if change.get('name') != 'value':
@@ -4791,20 +4991,77 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def on_submit_ff_changed(change):
-        if change.get('name') != 'value':
-            return
-        gfn = _server_method()
-        submit_gfn_charge.layout.display = '' if gfn else 'none'
-        submit_gfn_mult.layout.display = '' if gfn else 'none'
-        submit_gfn_autospin.layout.display = (
-            '' if _gfn.is_gfn_method(submit_ff_dd.value) else 'none')
+    def _refresh_method_controls():
+        """Show what the chosen method can do, and nothing else.
+
+        Every control here belongs to one engine or the other, and a control
+        that cannot act under the method on screen is worse than absent: it
+        invites the press, does nothing, and says nothing about why.  Three
+        engines share this toolbar -- the browser's own field, xtb and MOPAC --
+        and what each of them has is different.
+
+        Settle goes under both server methods, and that is a removal rather
+        than a tidy-up.  It was a short relaxation on release, which is a thing
+        the browser's field can do cheaply; on the server it became the
+        ordinary optimisation run without a cycle cap, which is what Auto
+        already does when an atom is let go.  Two switches for one behaviour is
+        one too many, and the spare one was the one still doing it with Dynamik
+        Opt and Optimise both switched off -- a structure relaxing on release
+        with nothing on screen admitting to running it.
+        """
+        chosen = submit_ff_dd.value
+        server = _server_method()
+        xtb = _gfn.is_gfn_method(chosen)
+        # Charge and spin: the server engines are told both, the browser's
+        # field has no notion of either.
+        submit_gfn_charge.layout.display = '' if server else 'none'
+        submit_gfn_mult.layout.display = '' if server else 'none'
+        # Scanning the multiplicity is xtb's; MOPAC is given the one on screen.
+        submit_gfn_autospin.layout.display = '' if xtb else 'none'
+        if not xtb and submit_gfn_autospin.value:
+            submit_gfn_autospin.value = False
+        # Strength is how many steps the browser's field takes per animation
+        # frame, and that field does not run under a server method.
+        submit_strength_slider.layout.display = 'none' if server else ''
+        # Settle: the browser's alone, for the reason in the docstring.
+        submit_settle_btn.layout.display = 'none' if server else ''
+        if server and submit_settle_btn.value:
+            submit_settle_btn.value = False
+        # Auto is the other way round -- a server method's, and dead under a
+        # browser one.  What it is for is going down to a minimum when an atom
+        # is let go, and that is refused outright for a browser method: the
+        # field is already running there, and Settle is the switch for what a
+        # release does.  It kept one working half under UFF, resuming an
+        # Optimise run a drag had interrupted, and that goes with it: the run
+        # stands down and the switch comes back up, which is what the two
+        # visible switches already say is happening.
+        #
+        # Hidden, and its value left alone -- unlike Settle, which is switched
+        # off as well.  Nothing reads this under a browser method, so an Auto
+        # left on there does nothing at all; switching it off would mean that
+        # picking UFF for a moment and going back to GFN2 quietly cost the
+        # user the switch they had set.  Settle is the opposite case: under a
+        # browser method its value is what the page settles by, so it has to
+        # be off in fact and not merely out of sight.
+        submit_auto_btn.layout.display = '' if server else 'none'
         # A method without solvation gets no solvent box: a control that can
         # only produce a refusal is worse than no control.  Which models and
         # which solvents a method does have is the solvents module's answer,
         # and it differs for every one of them -- so both boxes are rebuilt
         # here rather than merely shown or hidden.
         _refresh_solvation_controls()
+
+    def on_submit_ff_changed(change):
+        if change.get('name') != 'value':
+            return
+        gfn = _server_method()
+        # Which controls the new method has at all, before anything is said
+        # about what it will do with them.
+        _refresh_method_controls()
+        # What the new engine will do with the values that are being held.
+        # Said as a second line under whatever else the change has to report,
+        # rather than in place of it: both are about the same choice.
+        carried = _carry_constraints_to(submit_ff_dd.value)
         # Relax means the browser's own field running once per frame, and there
         # is no GFN engine in the browser to run.  Under GFN it means the other
         # half of the same idea: while an atom is being dragged, the rest of
@@ -4814,12 +5071,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # A follow armed under the old method must not outlive the choice that
         # armed it: the toggle handler reads the method that is chosen *now*.
         _end_gfn_follow()
-        if gfn and submit_settle_btn.value:
-            # Under GFN, letting go leaves the structure where the hand left
-            # it.  Tidying on every release is a thing to ask for, not the
-            # default -- an atom pulled off the place it was just put is the
-            # opposite of placing it.
-            submit_settle_btn.value = False
         submit_relax_btn.disabled = False
         # The page reads this switch itself, and only follows when the class is
         # on it: asking the kernel whether to follow would cost a round trip
@@ -4828,14 +5079,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_relax_btn.add_class('submit-gfn-follow')
         else:
             submit_relax_btn.remove_class('submit-gfn-follow')
-        # Out of the way entirely, not merely greyed: a control that cannot do
-        # anything under the chosen method is clutter that invites the question
-        # of why it is dead.  Strength is how many steps the browser's field
-        # takes per animation frame, and that field does not run here.  Settle
-        # does have a meaning under GFN -- letting go and having the structure
-        # tidied rather than left at the cursor -- so it stays, and the chosen
-        # method is what tidies it.
-        submit_strength_slider.layout.display = 'none' if gfn else ''
         # Dynamik Opt without an xtb behind it cannot do anything at all, so
         # it goes rather than sitting there being pressed to no effect.
         usable = not gfn or _gfn.find_binary(submit_ff_dd.value) is not None
@@ -4875,34 +5118,41 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f'{json.dumps(submit_scope_id)});'
             )
         _refresh_xtb_offer()
+        said = ''
         if gfn:
             label = _server_label(submit_ff_dd.value)
             source = _fill_charge_from_smiles()
-            if _gfn.find_binary(submit_ff_dd.value) is None:
-                _set_mol_status(
-                    f'{label} needs a program that was not found. The button '
+            if _server_binary(submit_ff_dd.value) is None:
+                # Which program is missing depends on the method, and so does
+                # whether there is an installer for it: MOPAC is not fetched
+                # by the xtb button, and saying "needs xtb" under PM7 sent
+                # people looking for the wrong thing.
+                needs = ('MOPAC' if _mopac.is_mopac_method(submit_ff_dd.value)
+                         else 'g-xTB' if submit_ff_dd.value == 'gxtb' else 'xtb')
+                offered = (_missing_tool() is not None
+                           and _gfn.install_script() is not None)
+                said = (
+                    f'{label} needs {needs}, which was not found. The button '
                     'fetches it with DELFIN\'s own installer, and says what '
                     'it will run before it runs it.'
-                    if _gfn.install_script() is not None else
-                    f'{label} needs xtb on the PATH; it was not found. '
+                    if offered else
+                    f'{label} needs {needs} on the PATH; it was not found. '
                     'Optimise will say so rather than doing nothing.')
             elif source:
-                _set_mol_status(
+                said = (
                     f'Optimise now uses {label}. Charge {submit_gfn_charge.value} '
                     f'read from the SMILES; the multiplicity is yours to set. '
-                    'Switch Relax on to have the molecule follow an atom you '
-                    'drag.')
+                    'Switch Dynamik Opt on to have the molecule follow an atom '
+                    'you drag.')
             else:
-                _set_mol_status(
+                said = (
                     f'Optimise now uses {label}. Set the charge (q) and the '
                     'multiplicity (M): xtb needs both, and a wrong spin on a '
                     'metal gives a confident wrong answer rather than an error. '
-                    'Switch Relax on to have the molecule follow an atom you '
-                    'drag.')
-        # Re-assign parameters under the newly chosen method, but only if the
-        # live relaxation is actually switched on.
-        if submit_relax_btn.value:
-            _enable_live_forcefield()
+                    'Switch Dynamik Opt on to have the molecule follow an atom '
+                    'you drag.')
+        if said or carried:
+            _set_mol_status(said, carried)
 
     def on_submit_manip_clear(_button=None):
         _ensure_manip_bootstrap()
@@ -4938,15 +5188,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 coord_lines = new_lines
         else:
             coord_lines = new_lines
-        coord_body = '\n'.join(line for line in coord_lines if line.strip())
+        coord_body = '\n'.join(xyz_body(coord_lines))
         # Preserve the user's original header (atom count + comment line) if
         # present in the current coords_widget value.
+        #
+        # The user's -- a name off a file, a note they typed -- and not one of
+        # this editor's own.  These coordinates come from the browser's model:
+        # they are what the hand has just done to the structure, and carrying
+        # the old comment over put "Optimised in DELFIN viewer" above a
+        # geometry that had been dragged out of shape since.  The word then
+        # says where the box was last written from rather than what is in it,
+        # and a benzene with a hydrogen 2.66 A off its carbon reads as the
+        # result of an optimisation.  A comment this editor wrote is replaced;
+        # anything else is left exactly as it is.
         old_lines = coords_widget.value.splitlines()
         header = ''
         if len(old_lines) >= 2:
             try:
                 int(old_lines[0].strip())
-                header = f'{old_lines[0]}\n{old_lines[1]}\n'
+                kept = old_lines[1]
+                if _is_editor_comment(kept):
+                    kept = 'Edited in DELFIN viewer'
+                header = f'{old_lines[0]}\n{kept}\n'
             except ValueError:
                 pass
         # A drag has just finished. If a polyhedron is being held, work out
@@ -4977,6 +5240,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['poly_assignment'] = None
             state['poly_recheck'] = True
 
+        # Undoing a drag in the browser is a change the user made, the same as
+        # making it was.  It arrived without a reason on it, so it took neither
+        # of the two paths below: the optimisation went on running over a
+        # geometry that had just been taken back, and whichever of the two
+        # wrote the coordinate box last is what the user was left with.
+        if note.startswith('DELFIN undo'):
+            drag_ended = True
+
         if drag_ended:
             # Set, Hold, a bond edit and a drag all arrive here.  Any of them
             # during an optimisation makes what xtb is doing about a structure
@@ -4985,6 +5256,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # starts from.
             _interrupt_gfn()
             _arm_gfn_restart()
+        elif state.get('optimize_run') is not None:
+            # Not an edit, and something is optimising.  The browser's own
+            # field reports where it has got to twice a second and once more
+            # when it is switched off; those are the field talking about a
+            # structure the optimiser now owns, and writing them puts the
+            # picture's idea of the geometry over the calculation's.  That is
+            # the shape the "Optimised in DELFIN viewer" header was found in:
+            # a box holding something no run had produced.  The optimisation
+            # owns the box until it is done or a hand takes it back.
+            return
 
         payload = header + coord_body
         # The guard is cleared by update_view, which traitlets only
@@ -5012,6 +5293,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     # run it is meant to show.
     _install_gfn_frame_watcher()
     submit_ff_dd.observe(on_submit_ff_changed, names='value')
+    # And once for the method the box already shows: a host that opens the
+    # editor on a saved choice never fires the handler, so the toolbar would
+    # stand there offering the previous method's controls.
+    _refresh_method_controls()
     submit_xtb_install_btn.on_click(on_submit_xtb_install)
     submit_xtb_confirm_btn.on_click(on_submit_xtb_confirm)
     submit_xtb_cancel_btn.on_click(on_submit_xtb_cancel)
@@ -5468,6 +5753,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             except Exception:
                 # A list that no longer offers what it offered then.
                 pass
+        # And then whatever the method on screen does not have, taken away
+        # again.  A restore writes the switches one by one, and a memory made
+        # under one method can hand a switch to another that has no such
+        # thing: the method box may already hold the value it is being given,
+        # so its handler never fires and nothing else would notice.
+        _refresh_method_controls()
 
     def _controls_a_new_structure_resets():
         """What an unseen structure starts over with.

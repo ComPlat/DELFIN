@@ -235,7 +235,10 @@ def test_optimize_toggle_runs_the_field_continuously():
 
     stop = _body('stopAutoOptimize')
     assert 'cancelAnimationFrame' in stop
-    assert 'pushXyzToPython(scopeKey)' in stop
+    # Named like the heartbeat, and for the same reason: this is the last word
+    # of the field that has just been switched off, not an edit -- and a push
+    # that cannot say which it is cannot be kept off a running optimisation.
+    assert "pushXyzToPython(scopeKey, 'field')" in stop
 
     # Starting is undoable, and a re-render must not leave a loop spinning on
     # a viewer that no longer exists.
@@ -574,7 +577,9 @@ def test_settling_on_release_can_be_switched_off():
     source = _EDITOR_PY
     assert 'submit_settle_btn' in source
     assert 'setSettleOnRelease' in source
-    # On by default: it is what keeps a submitted geometry sane.
+    # On by default: it is what keeps a submitted geometry sane.  Only under
+    # the browser's field, though -- the toolbar takes it away under a server
+    # method, where what it ran was the whole minimisation and not a tidy-up.
     settle = source.split('submit_settle_btn = widgets.ToggleButton')[1].split(')\n')[0]
     assert 'value=True' in settle
     # And the choice survives a re-assignment of the parameters.
@@ -766,9 +771,13 @@ def test_the_polyhedron_reconsiders_once_per_drag_not_twice_a_second():
     push = _body('pushXyzToPython')
     assert "var note = reason ? ('DELFIN ' + reason) : null;" in push
     assert "serializeXyz(viewer, note)" in push
-    # The heartbeat inside the relaxation loop carries no reason.
+    # The heartbeat inside the relaxation loop is the field saying where it
+    # has got to, and it is named that.  It carried no reason at all once,
+    # which made it indistinguishable on the kernel side from anything else
+    # that was not a drag -- so it could not be told apart from an edit, and
+    # it wrote the coordinate box over a running optimisation.
     tick = _body('autoOptimizeTick')
-    assert 'pushXyzToPython(scopeKey);' in tick
+    assert "pushXyzToPython(scopeKey, 'field')" in tick
     assert "drag-end" not in tick
     # A drag that ends does, whether it settles or not.
     assert "pushXyzToPython(scopeKey, 'drag-end')" in _body('ffEndDrag')

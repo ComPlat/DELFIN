@@ -201,6 +201,80 @@ def _final_geometry(folder: Path, symbols: list) -> Optional[str]:
     return f'{len(rows)}\noptimised with MOPAC\n' + '\n'.join(rows) + '\n'
 
 
+#: How many atoms each kind of held value names -- the editor's own list, so
+#: the two engines are asked about the same things.
+CONSTRAINT_ATOMS = {'distance': 2, 'angle': 3, 'dihedral': 4}
+
+
+def freeze_flags(constraints: Any = (), atoms: Optional[int] = None) -> Dict[str, Any]:
+    """Which atoms MOPAC is told not to move, and what that does not do.
+
+    MOPAC's Cartesian input carries an optimisation flag per coordinate: 1 is
+    optimise, 0 is leave it exactly where it is.  Measured on a propane with
+    PM7, C1 and C3 started 3.000 A apart: free, they relax to 2.523 and each
+    carbon moves 0.302 A; with their flags at 0 each moves 0.0000 A and the
+    distance stays 3.000.  So the flag is a real constraint and not a hint.
+
+    It is not xtb's constraint, and the difference matters twice.
+
+    It fixes the atoms rather than the value between them, which is *more*
+    than was asked: a held C-C also stops those two carbons turning and
+    translating, and the rest of the molecule then relaxes around a frame that
+    is more rigid than the one the user described.
+
+    And it holds the value where it stands rather than moving to a target.
+    xtb is handed the number and pulls the geometry to it; MOPAC is handed a
+    geometry and told not to move parts of it.  In the editor's own order --
+    Set puts the selection at the number, Hold then holds it -- those come to
+    the same thing, because by the time it is held the geometry is already at
+    the value.  Typing a new number and expecting a PM run to travel to it is
+    the case where they part, and the caller is told so rather than left to
+    compare a held 1.60 against a geometry that stayed at 1.55.
+
+    A 'pull' cannot be expressed at all: there is one flag and it is on or
+    off, so there is no negotiating with the chemistry.  Those are reported as
+    not honoured rather than quietly frozen, which would hold as a fix
+    something the user asked to have argued with.
+    """
+    frozen: set = set()
+    held, pulls, dropped = 0, 0, []
+    for entry in (constraints or ()):
+        kind = str((entry or {}).get('kind') or '').strip().lower()
+        wanted = CONSTRAINT_ATOMS.get(kind)
+        indices = [int(i) for i in ((entry or {}).get('atoms') or ())]
+        if wanted is None or len(indices) != wanted:
+            dropped.append(entry)
+            continue
+        if any(i < 0 or (atoms is not None and i >= atoms) for i in indices):
+            dropped.append(entry)
+            continue
+        if str((entry or {}).get('mode') or 'pull').lower() != 'fix':
+            pulls += 1
+            continue
+        frozen.update(indices)
+        held += 1
+    return {'frozen': frozen, 'held': held, 'pulls': pulls, 'dropped': dropped}
+
+
+def freeze_note(held: Dict[str, Any]) -> str:
+    """What was held, said out loud, in MOPAC's own terms."""
+    said = []
+    if held['held']:
+        said.append(
+            f"{held['held']} held value(s) kept by fixing the "
+            f"{len(held['frozen'])} atom(s) they name, where they stand -- "
+            'MOPAC fixes atoms, not the value between them, so those atoms '
+            'also stop turning and moving')
+    if held['pulls']:
+        said.append(f"{held['pulls']} pull(s) not honoured -- MOPAC's flag is "
+                    'on or off, so it has no value to negotiate with; hold '
+                    'them as fix, or optimise under a GFN method')
+    if held['dropped']:
+        said.append(f"{len(held['dropped'])} held value(s) dropped -- they "
+                    'name atoms this structure does not have')
+    return (' ' + '; '.join(said) + '.') if said else ''
+
+
 def optimize_with_mopac(
     xyz_text: str,
     method: str = 'pm6d3h4',
@@ -213,6 +287,7 @@ def optimize_with_mopac(
     should_stop: Optional[Callable[[], bool]] = None,
     on_frames: Optional[Callable[[list], None]] = None,
     solvent: Optional[str] = None,
+    constraints: Any = (),
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with MOPAC and say what happened.
 
@@ -294,8 +369,13 @@ def optimize_with_mopac(
     started = time.perf_counter()
     folder = Path(tempfile.mkdtemp(prefix='delfin-mopac-'))
     try:
-        body = '\n'.join(f'{s} {x:.6f} 1 {y:.6f} 1 {z:.6f} 1'
-                         for s, x, y, z in rows)
+        # An atom a held value names is handed to MOPAC with its flags at
+        # zero, which is the only constraint its Cartesian input has.
+        holding = freeze_flags(constraints, atoms=len(rows))
+        body = '\n'.join(
+            '{0} {1:.6f} {4} {2:.6f} {4} {3:.6f} {4}'.format(
+                s, x, y, z, 0 if i in holding['frozen'] else 1)
+            for i, (s, x, y, z) in enumerate(rows))
         (folder / 'in.mop').write_text(
             ' '.join(words) + '\nfrom the DELFIN viewer\n\n' + body + '\n',
             encoding='utf-8')
@@ -366,13 +446,14 @@ def optimize_with_mopac(
             relaxed = frame_as_xyz(frames[-1], symbols,
                                    f'stopped after {len(frames)} cycles')
             return {
-                'ok': True, 'xyz': relaxed, 'energy': heat,
+                'ok': True, 'xyz': relaxed, 'energy': heat, 'held': holding,
                 'energy_unit': 'kcal/mol (heat of formation)',
                 'method': key, 'label': spec['label'], 'seconds': seconds,
                 'engine': 'mopac', 'version': version, 'frames': frames,
                 'hamiltonian': spec['reports'], 'converged': False,
                 'status': (f'{spec["label"]} stopped after {len(frames)} '
-                           'cycles; the geometry it reached is shown.'),
+                           'cycles; the geometry it reached is shown.'
+                           + freeze_note(holding)),
             }
 
         if relaxed is None:
@@ -396,7 +477,7 @@ def optimize_with_mopac(
                                'left as it was.')}
 
         return {
-            'ok': True, 'xyz': relaxed, 'energy': heat,
+            'ok': True, 'xyz': relaxed, 'energy': heat, 'held': holding,
             'energy_unit': 'kcal/mol (heat of formation)',
             'method': key, 'label': spec['label'], 'seconds': seconds,
             'engine': 'mopac', 'version': version, 'frames': frames,
@@ -409,7 +490,8 @@ def optimize_with_mopac(
                        + (f'; heat of formation {heat:.2f} kcal/mol'
                           if heat is not None else '')
                        + (f'. (MOPAC {version})' if version else '.')
-                       + _solvents.note('cosmo', wet)),
+                       + _solvents.note('cosmo', wet)
+                       + freeze_note(holding)),
         }
     finally:
         shutil.rmtree(folder, ignore_errors=True)

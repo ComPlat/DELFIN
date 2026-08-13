@@ -115,15 +115,20 @@ def test_the_viewer_offers_them_and_runs_the_right_engine():
     # One question for "is this computed on the server", two engines behind it.
     assert 'def _server_method(' in source
     assert 'def _server_label(' in source
-    # And MOPAC is given only what it takes -- not xtb's held internals or
-    # topology files passed along as though honoured -- but it *is* given the
-    # solvent, because its COSMO takes one.  Setting Water and choosing PM7
-    # used to produce a gas-phase answer without saying so.
+    # And MOPAC is given what it takes, in its own terms, and nothing that
+    # would only look honoured.  The solvent it takes, because its COSMO does:
+    # setting Water and choosing PM7 used to produce a gas-phase answer
+    # without saying so.  The held values it takes too -- its Cartesian input
+    # carries an optimisation flag per coordinate, and measured on a propane
+    # with PM7 a carbon whose flags are zero moves 0.0000 A where a free one
+    # moves 0.302, so the flag is a real constraint and not a hint.  The
+    # topology files it does not: those are GFN-FF's perceived bonding and
+    # MOPAC has no such thing to be handed.
     run = source.split('if pm:')[1].split('elif gfn and autospin:')[0]
     assert 'optimize_with_mopac' in run
     assert 'solvent=wet' in run, 'the chosen solvent has to reach MOPAC'
-    for xtb_only in ('constraints=', 'topology='):
-        assert xtb_only not in run, xtb_only
+    assert 'constraints=held' in run, 'a value held on screen has to reach it'
+    assert 'topology=' not in run, 'MOPAC has no topology to be handed'
 
 
 def test_a_missing_mopac_can_be_installed_like_the_rest():
@@ -242,12 +247,14 @@ def test_the_continuous_relaxation_reaches_both_engines():
     assert 'if _mopac.is_mopac_method(method):' in follow
     assert 'optimize_with_mopac(' in follow
     assert '_gfn.relax_steps(' in follow
-    # And MOPAC is given only what it takes, as everywhere else -- with the
-    # solvent among the things it takes, so a drag in water stays in water.
+    # And MOPAC is given what it takes, as everywhere else: the solvent, so a
+    # drag in water stays in water, and the held values, so a value held while
+    # the hand is moving is held by the run that follows it.  Not the topology
+    # files, which are GFN-FF's perceived bonding and mean nothing here.
     mine = follow.split('if _mopac.is_mopac_method(method):')[1].split('else:')[0]
     assert 'solvent=wet' in mine
-    for xtb_only in ('constraints=', 'topology='):
-        assert xtb_only not in mine, xtb_only
+    assert 'constraints=constraints' in mine
+    assert 'topology=' not in mine
 
     # The switch, the live check and the settle all ask "is this on the
     # server", not "is this xtb".

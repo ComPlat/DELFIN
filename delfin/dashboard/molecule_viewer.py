@@ -1467,6 +1467,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return null;
     }
 
+    // The element in five columns, then three of twenty-four with fourteen
+    // decimals -- the layout the kernel writes, so a coordinate box does not
+    // change shape according to which side last wrote it.  Six decimals here
+    // and fourteen from xtb meant the decimal count was the only way to tell
+    // a geometry that had been dragged from one that had been optimised, and
+    // reading that off is not the user's job.
+    function xyzColumn(value) {
+        var text = (typeof value === 'number' && isFinite(value))
+            ? value.toFixed(14) : '0.00000000000000';
+        while (text.length < 24) text = ' ' + text;
+        return text;
+    }
     function serializeXyz(viewer, header) {
         var atoms = getAtoms(viewer);
         if (!atoms.length) return '';
@@ -1474,11 +1486,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         for (var i = 0; i < atoms.length; i++) {
             var a = atoms[i];
             var el = a.elem || a.atom || 'X';
-            lines.push(el + ' ' +
-                a.x.toFixed(6) + ' ' +
-                a.y.toFixed(6) + ' ' +
-                a.z.toFixed(6)
-            );
+            while (el.length < 5) el = el + ' ';
+            lines.push(el + xyzColumn(a.x) + xyzColumn(a.y) + xyzColumn(a.z));
         }
         return lines.join('\n');
     }
@@ -3438,7 +3447,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 // each push is a widget round trip.
                 if (now - (state.autoPushed || 0) > 500) {
                     state.autoPushed = now;
-                    pushXyzToPython(scopeKey);
+                    // Named, so the kernel can tell it from an edit.  This is
+                    // the field reporting where it has got to, not the user
+                    // doing anything, and a running optimisation owns the
+                    // coordinate box against it.
+                    pushXyzToPython(scopeKey, 'field');
                 }
             }
             // The next frame is asked for once this one has been answered, so
@@ -3470,7 +3483,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             state.autoRaf = null;
         }
         // The last frames since the throttled push have to reach Python too.
-        pushXyzToPython(scopeKey);
+        pushXyzToPython(scopeKey, 'field');
         updateStatus(scopeKey);
         return true;
     }
@@ -4352,7 +4365,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var snap = state.undo.pop();
         restoreFromSnapshot(scopeKey, snap);
         redrawHighlights(scopeKey);
-        pushXyzToPython(scopeKey);
+        // A structure the user has just changed back, so it counts as an edit
+        // and not as the field talking: whatever is optimising is optimising
+        // a geometry that has stopped existing.
+        pushXyzToPython(scopeKey, 'undo');
     }
 
     // Window-level mousedown intercept: the apply_molecule_view_style patch
