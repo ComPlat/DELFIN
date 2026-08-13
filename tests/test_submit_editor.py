@@ -10,6 +10,7 @@ import re
 import pytest
 
 from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+from editor_source import FULLSCREEN_CSS
 from editor_source import EDITOR_SOURCE as _EDITOR_PY
 from editor_source import SUBMIT_SOURCE
 from editor_source import SUBMIT_SOURCE as _TAB_AND_EDITOR
@@ -300,7 +301,10 @@ def test_optimise_starts_a_second_row_in_fullscreen():
 
     made = source.split('submit_fs_row_break = widgets.Box')[1].split(')\n')[0]
     assert "display='none'" in made, 'it must be inert outside the overlay'
-    rule = source.split('.submit-fs-overlay .submit-fs-row-break {')[1]
+    # The rule is in the shared sheet: the break has to work in the ORCA
+    # Builder's overlay too, which holds the same toolbar.
+    rule = FULLSCREEN_CSS.split(
+        '.delfin-structure-fs-overlay .submit-fs-row-break {')[1]
     rule = rule.split('}')[0]
     assert 'display: block' in rule
     assert 'flex: 1 0 100%' in rule
@@ -793,9 +797,14 @@ def test_force_field_notes_sit_under_the_structure_they_describe():
     source = _TAB_AND_EDITOR
     assert 'submit_ff_notes' in source
     assert "submit_ff_notes.add_class('submit-ff-notes')" in source
-    # Below the copy row, in the panel the viewer lives in.
-    children = source.split('mol_output, isomer_nav_row, xyz_copy_row')[1][:120]
-    assert 'submit_ff_notes' in children
+    # Below the copy row, in the panel the viewer lives in. Read off the box
+    # itself rather than the first line that happens to name those three: the
+    # order in the overlay is the order of these children, so this is the
+    # thing worth pinning.
+    children = source.split('submit_right = widgets.VBox([')[1].split('])')[0]
+    order = ['mol_output', 'isomer_nav_row', 'xyz_copy_row', 'submit_ff_notes']
+    positions = [children.index(name) for name in order]
+    assert positions == sorted(positions), children
 
     enable = source.split('def _enable_live_forcefield')[1].split('\n    def ')[0]
     assert "_set_ff_notes(payload.get('warnings') or [])" in enable
@@ -1842,12 +1851,15 @@ def test_no_gutter_is_kept_for_an_output_number_that_will_never_come():
     """
     from delfin.dashboard import tab_submit
 
-    source = _TAB_AND_EDITOR
-    for scope in ('.submit-mol-output', '.submit-fs-overlay'):
+    # The ordinary view is this tab's own; the overlay is everyone's, so the
+    # gutter is taken away for the Builder and the browser tabs in the same
+    # breath -- they show a structure in an Output widget as well.
+    for scope, source in (('.submit-mol-output', _TAB_AND_EDITOR),
+                          ('.delfin-structure-fs-overlay', FULLSCREEN_CSS)):
         assert f'{scope} .jp-OutputPrompt' in source, scope
         assert f'{scope} .jp-OutputArea-prompt' in source, scope
     # And the child it sat in keeps no padding where it was.
-    assert '.submit-fs-overlay .jp-OutputArea-child' in source
+    assert '.delfin-structure-fs-overlay .jp-OutputArea-child' in FULLSCREEN_CSS
 
 
 def test_the_camera_turns_about_the_system_not_about_where_it_was_loaded():

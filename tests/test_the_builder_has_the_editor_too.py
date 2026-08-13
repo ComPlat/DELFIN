@@ -464,9 +464,9 @@ def test_the_fullscreen_button_stands_where_the_submit_tab_has_it(builder):
     the editor itself writes back, left no way at all to enlarge the viewer
     while the same molecule in named blocks could be enlarged fine.
 
-    It is the editor's own button now, made over to this tab's fullscreen: the
-    Submit tab's overlay is built from members carrying submit-fs-* classes,
-    which the Builder's are not.
+    It is the editor's own button, and there is nothing to make over: both
+    tabs' overlays are the same one, so the editor carries the button that
+    opens it and this tab only says which module is being opened.
     """
     refs, _sent = builder
     button = refs['submit_fullscreen_btn']
@@ -475,8 +475,9 @@ def test_the_fullscreen_button_stands_where_the_submit_tab_has_it(builder):
     assert toolbar.index(button) == 0
     assert toolbar.index(button) < toolbar.index(refs['submit_select_btn'])
     assert 'delfin-structure-fullscreen-btn' in button._dom_classes
-    assert 'submit-fullscreen-btn' not in button._dom_classes, (
-        'both machineries would answer the same click')
+    assert 'orca-structure-fullscreen-btn' in button._dom_classes
+    assert not any(c == 'submit-fullscreen-btn' for c in button._dom_classes), (
+        'a second machinery would answer the same click')
 
     refs['orca_coords'].value = f'3\nwater\n{WATER}\n'
     assert refs['submit_manip_toolbar'].layout.display == 'flex'
@@ -845,8 +846,8 @@ def test_the_force_field_notes_stay_in_the_small_view(builder):
     refs, _sent = builder
     classes = refs['submit_ff_notes']._dom_classes
 
-    assert 'delfin-structure-fs-member' not in classes
-    assert not any(c.startswith('submit-fs-member') for c in classes)
+    assert 'delfin-structure-fs-member' not in classes, (
+        'there is one fullscreen, and this is how something stays out of it')
 
 
 def test_drawing_on_and_asking_again_gives_the_new_structure(builder):

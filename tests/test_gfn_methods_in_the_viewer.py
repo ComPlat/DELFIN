@@ -16,7 +16,9 @@ import pytest
 
 from delfin.dashboard import gfn_optimize as gfn
 from delfin.dashboard.context import DashboardContext
-from editor_source import SUBMIT_SOURCE
+from editor_source import (
+    EDITOR_SOURCE, FULLSCREEN_CSS, FULLSCREEN_JS, SUBMIT_SOURCE,
+)
 
 _WATER = "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
 _needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
@@ -547,10 +549,10 @@ def test_fullscreen_has_a_status_line_of_its_own():
     version where nothing is moved that the small view needs.
     """
     from delfin.dashboard import tab_submit
-    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     source = SUBMIT_SOURCE
-    assert "mol_status_fs.add_class('submit-fs-member-status')" in source
+    assert "mol_status_fs.add_class('delfin-structure-fs-member')" in source
+    assert "mol_status_fs.add_class('delfin-structure-fs-status')" in source
     setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
     assert "mol_status.value = rendered_html" in setter
     assert "mol_status_fs.value = '' if prompt else rendered_html" in setter, (
@@ -558,8 +560,20 @@ def test_fullscreen_has_a_status_line_of_its_own():
     )
     assert "mol_status_fs.value = ''" in setter, "and agree when empty too"
 
-    enter = submit_manip_bootstrap_js().split("function enterFullscreen")[1][:1100]
-    assert "'.submit-fs-member-status'" in enter
+    # It is the editor that marks it, so the copy exists wherever the editor
+    # is built -- the ORCA Builder holds one too, rather than lending out the
+    # line its own small view needs.
+    assert "mol_status_fs.add_class" in EDITOR_SOURCE
+    from delfin.dashboard import tab_orca_builder
+    builder = open(tab_orca_builder.__file__, encoding='utf-8').read()
+    assert 'orca_editor.mol_status_fs' in builder, (
+        'the Builder has to place the copy, or its overlay has no status line')
+    assert "orca_editor.mol_status.add_class('delfin-structure-fs-member')" \
+        not in builder, 'the line the small view keeps must not travel'
+
+    # And the overlay shows it, wherever it came from.
+    assert '.delfin-structure-fs-overlay .delfin-structure-fs-status {' \
+        in FULLSCREEN_CSS
 
 
 def test_relax_means_the_molecule_follows_the_drag_under_gfn(editor):
@@ -649,19 +663,39 @@ def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
 
 
 def test_leaving_fullscreen_puts_every_member_back():
-    """The status line is needed in both views, not only the big one.
+    """In every tab, not only the one that was burned by it.
 
     Fullscreen moves the widgets into an overlay and the overlay is removed on
-    exit -- so a member that could not be put back where it came from would be
-    carried out of the page with it and be missing from the small view.
+    exit -- so a member whose recorded parent was replaced in the meantime has
+    nowhere to go back to and is carried out of the page with it.
+
+    The Submit tab grew a rescue for this; the other three had a fullscreen of
+    their own and did not. Driven in chromium with the box under the members
+    replaced while the overlay was open, before and after the two were made
+    one::
+
+        tab                       before   after
+        Submit                    back     back
+        ORCA Builder              lost     back
+        Calculations browser      lost     back
+        Remote archive            lost     back
+
+    "lost" is every member of the molecule panel at once -- toolbar, status
+    line and viewer -- gone from the tab with nothing to say they existed.
     """
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
-    editor_js = submit_manip_bootstrap_js()
-    exit_body = editor_js.split("function exitFullscreen")[1][:2600]
-    assert "insertBefore" in exit_body and "appendChild" in exit_body
-    assert "isConnected" in exit_body, "an orphaned member is a lost control"
-    assert "root.appendChild(el)" in exit_body
+    exit_body = FULLSCREEN_JS.split('function exitFullscreen')[1].split(
+        '\n    function ')[0]
+    assert 'insertBefore' in exit_body and 'appendChild' in exit_body
+    assert 'isConnected' in exit_body, 'an orphaned member is a lost control'
+    assert 'home.appendChild(member)' in exit_body
+
+    # One rescue for every tab: there is one exitFullscreen in the dashboard.
+    assert FULLSCREEN_JS.count('function exitFullscreen') == 1
+    assert 'exitFullscreen' not in submit_manip_bootstrap_js(), (
+        'the editor carried a second fullscreen of its own, and a fix to one '
+        'was never a fix to the other')
 
 
 def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
@@ -786,7 +820,94 @@ def test_the_page_says_what_the_playback_is_doing(editor):
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfnplay'" in handler
     assert "state['gfn_play_note'] = str(payload)" in handler
-    assert "Trajectory: {payload}" in handler
+    assert "_gfn_status_lines()" in handler, (
+        "and it says it in the shape the follow step says its half in")
+
+
+@pytest.fixture
+def bare_editor(tmp_path):
+    """One structure editor, over a coordinate box of its own.
+
+    Built here rather than reached through a tab: what the status line does is
+    the part's, and the tab hands out only the widgets it places.
+    """
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir()
+    ctx = DashboardContext(
+        calc_dir=tmp_path / "calc",
+        archive_dir=tmp_path / "archive",
+        office_dir=tmp_path / "office",
+    )
+    ctx.run_js = lambda _script: None
+    state = {}
+    part = structure_editor.build(
+        ctx,
+        state=state,
+        coords_widget=widgets.Textarea(value=_WATER),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None,
+    )
+    return part, state
+
+
+def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
+    """A drag is reported from both ends, and they used to fight over the line.
+
+    The kernel counts the follow steps it has run; the page counts the frames
+    it has drawn. Each wrote the status line for itself and wiped the other:
+    one row with a spinner, then two rows without, then one again, several
+    times a second for as long as the drag lasted. The status line stands
+    above the viewer in the column, so the structure the user was aiming at
+    stepped up and down with it.
+
+    Measured in chromium at 1440x900 against the tab's own stylesheet, one
+    drag, the two ends reporting in turn::
+
+                          before                     after
+        follow step 14    18 px  1 row,  spinner     36 px  2 rows, spinner
+        page drew 14      35 px  2 rows, no spinner  36 px  2 rows, spinner
+        follow step 15    18 px  1 row,  spinner     36 px  2 rows, spinner
+        page drew 15      35 px  2 rows, no spinner  36 px  2 rows, spinner
+
+        movement per report:  17 px            ->    0 px
+
+    The first row of a fresh drag says the page has drawn nothing yet, rather
+    than being left out until the first frame lands -- leaving it out is the
+    same step, once, at the start of every drag.
+    """
+    part, state = bare_editor
+    part.submit_ff_dd.value = "gxtb"
+    # The switch is detached from its own observer: that one refuses to stay
+    # on where xtb is not installed, which is a different question.
+    part.submit_relax_btn.unobserve_all()
+    part.submit_relax_btn.value = True
+    assert part._begin_gfn_follow(), "the follow did not start"
+    assert state["gfn_play_note"] == "no frames yet", (
+        "a fresh drag must not show the last drag's count, nor no row at all")
+
+    said = "g-xTB is following the drag: 15 step(s), 973 ms each."
+    state["gfn_last_status"] = said
+    part._set_mol_status(*part._gfn_status_lines(said), spinner=True)
+    from_kernel = part.mol_status.value
+
+    part.submit_cmd_sync.value = "gfnplay:7:received 15 frames"
+    from_page = part.mol_status.value
+
+    assert from_page != from_kernel, "the page's report never arrived"
+    for name, html_value in (("kernel", from_kernel), ("page", from_page)):
+        assert html_value.count("<br>") == 1, f"{name}: not two rows"
+        assert "delfin-busy" in html_value, f"{name}: no spinner"
+    # Both rows are there in both, so only the numbers move.
+    for html_value in (from_kernel, from_page):
+        assert "is following the drag" in html_value
+        assert "Trajectory:" in html_value
 
 
 def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
@@ -795,8 +916,9 @@ def test_the_fullscreen_copy_is_not_seen_next_to_the_original(editor):
 
     source = SUBMIT_SOURCE
     assert "mol_status_fs.layout.display = 'none'" in source
-    assert ".submit-fs-overlay .submit-fs-member-status {" in source
-    assert "display: block !important;" in source
+    rule = FULLSCREEN_CSS.split(
+        '.delfin-structure-fs-overlay .delfin-structure-fs-status {')[1]
+    assert 'display: block !important;' in rule.split('}')[0]
 
 
 def test_fullscreen_is_not_told_to_enter_coordinates(editor):

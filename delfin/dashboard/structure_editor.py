@@ -550,7 +550,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         value='',
         layout=widgets.Layout(width='100%', margin='0 0 6px 0'),
     )
-    mol_status_fs.add_class('submit-fs-member-status')
+    mol_status_fs.add_class('delfin-structure-fs-member')
+    mol_status_fs.add_class('delfin-structure-fs-status')
     # It lives in the ordinary layout so fullscreen can pick it up from there,
     # but it must not be seen next to the line it is a copy of -- the message
     # would simply be printed twice.  Hidden here, shown in the overlay.
@@ -569,7 +570,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='40px', height='30px'),
         disabled=True,
     )
-    submit_fullscreen_btn.add_class('submit-fullscreen-btn')
+    # The one fullscreen there is.  The editor used to carry a button for a
+    # machinery of its own and the Builder had to take that class off again and
+    # put the shared one on, which is two overlays' worth of code answering one
+    # click.  The button is the shared one wherever the editor is built.
+    submit_fullscreen_btn.add_class('delfin-structure-fullscreen-btn')
 
     submit_select_btn = widgets.ToggleButton(
         value=False, description='Select', icon='crosshairs',
@@ -1080,6 +1085,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             margin='0 0 6px 0', overflow='visible',
         ),
     )
+    # The toolbar goes into the overlay with the structure it acts on, wherever
+    # this editor is built. Each host used to say so for itself, which is the
+    # same fact written down twice and a third host free to forget it.
+    submit_manip_toolbar.add_class('delfin-structure-fs-member')
+    submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
 
     def _set_mol_status(*lines, spinner=False):
         # Both copies always say the same thing; which one is on screen is the
@@ -1764,6 +1774,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_follow'] = True
         state['gfn_follow_steps'] = 0
         state['gfn_follow_frames'] = []
+        # The page has drawn nothing of THIS drag yet, and says so.  Leaving
+        # the row out until the first frame arrives would grow the line by a
+        # row at that moment and step the picture down with it; leaving the
+        # last drag's count standing would put a number there that is not
+        # about what the user is doing.
+        state['gfn_play_note'] = 'no frames yet'
         run = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run
         state['gfn_follow_run'] = run
@@ -1771,6 +1787,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     def _end_gfn_follow():
         state['gfn_follow'] = False
+
+    def _gfn_status_lines(said=None):
+        """What a drag is doing, from both ends, in a shape that does not move.
+
+        Both ends report on the same line: the kernel counts the follow steps
+        it has run and how long each took, the page counts the frames it has
+        drawn.  They used to write it in turn, each wiping the other -- one row
+        with a spinner, then two rows without, then one again, for as long as
+        the drag lasted.  The status line stands above the viewer in the
+        column, so that swap moved the picture: measured at 1440x900 against
+        the tab's own stylesheet, 18 px against 35 px, the structure stepping
+        17 px up and down while the user was trying to aim an atom with it.
+
+        One message with a row for each end.  Whichever end has something new
+        to say fills in its own row and leaves the other's standing, so the
+        text changes and the height does not.
+        """
+        note = state.get('gfn_play_note')
+        return (
+            said if said is not None else (state.get('gfn_last_status') or ''),
+            f'Trajectory: {note}.' if note else '',
+        )
+
+    def _gfn_is_working():
+        """Whether there is a calculation behind what the line is reporting."""
+        return bool(state.get('gfn_follow')
+                    or state.get('optimize_run') is not None)
 
     def _gfn_follow_step(xyz, holding=()):
         """Relax around the atom the hand is holding, and send that back.
@@ -1853,7 +1896,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
                             'each.')
                     state['gfn_last_status'] = said
-                    schedule_ui_update(_set_mol_status, said, spinner=True)
+                    schedule_ui_update(_set_mol_status,
+                                       *_gfn_status_lines(said), spinner=True)
                     # The atoms under the cursor go back where they were sent.
                     # xtb pulls them most of the way home in five cycles, and
                     # this answer outlives the drag -- applied after the
@@ -3755,9 +3799,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state['gfn_shown_frame'] = int(str(payload).rsplit(' ', 1)[1])
                 except ValueError:
                     pass
-            _set_mol_status(*[line for line in (
-                state.get('gfn_last_status') or '', f'Trajectory: {payload}.'
-            ) if line])
+            # The same two rows the follow step writes, and the spinner with
+            # them while there is a calculation behind it -- this line and that
+            # one are the same message, not two taking turns.
+            _set_mol_status(*_gfn_status_lines(), spinner=_gfn_is_working())
             return
 
         if verb == 'grabbed':

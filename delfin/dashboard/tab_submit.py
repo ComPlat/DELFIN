@@ -29,7 +29,9 @@ from . import structure_editor as _structure_editor
 from . import ketcher as _ketcher
 from . import separate_systems as _separate
 from .molecule_viewer import (
-    apply_molecule_view_style, submit_manip_bootstrap_js, submit_manip_version,
+    apply_molecule_view_style, structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css, structure_viewer_fullscreen_kind_js,
+    submit_manip_bootstrap_js, submit_manip_version,
 )
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
@@ -2351,10 +2353,20 @@ def create_tab(ctx):
         [xyz_copy_btn, xyz_copy_status],
         layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
     )
-    xyz_copy_row.add_class('submit-fs-member-copyrow')
-    submit_manip_toolbar.add_class('submit-fs-member-toolbar')
-    mol_output.add_class('submit-fs-member-viewer')
-    isomer_nav_row.add_class('submit-fs-member-isomer')
+    # What travels into the overlay, and what it is once it is there. These are
+    # the same names the ORCA Builder, the Calculations browser and the Archive
+    # use: there is one fullscreen, and a fix to it is a fix in all of them.
+    # The order in the overlay is the order here, which is the order of
+    # submit_right's children -- toolbar, status, viewer, isomer nav, copy row.
+    # The toolbar and the status copy are marked by the editor itself, being
+    # the editor's wherever it is built; these are this tab's own.
+    for _member in (mol_output, isomer_nav_row, xyz_copy_row):
+        _member.add_class('delfin-structure-fs-member')
+    # A strip that keeps its own height and takes the full width, which is what
+    # the shared sheet calls a toolbar; the Builder's block stepper is one too.
+    isomer_nav_row.add_class('delfin-structure-fs-toolbar')
+    xyz_copy_row.add_class('delfin-structure-fs-toolbar')
+    mol_output.add_class('delfin-structure-fs-viewer')
 
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'), mol_status,
@@ -2414,6 +2426,14 @@ def create_tab(ctx):
         box_sizing='border-box', overflow_x='hidden',
     ))
     submit_right.add_class(submit_scope_id)
+    # The box the shared fullscreen gathers its members from, and the word it
+    # looks this tab up by. It is the whole right-hand column rather than a new
+    # wrapper around the preview: a wrapper would be another flex level between
+    # submit_right and its children, and every gap and width below it would be
+    # laid out differently for no gain -- only the marked members travel, and
+    # they are direct children either way.
+    submit_right.add_class('delfin-structure-fs-module')
+    submit_right.add_class('submit-structure-fs-module')
 
     tab_widget = widgets.HBox(
         [submit_left, submit_right],
@@ -2468,65 +2488,15 @@ def create_tab(ctx):
             max-width: 100% !important;
             max-height: 100% !important;
         }
-        .submit-fs-overlay {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            right: 0 !important;
-            bottom: 0 !important;
-            z-index: 9999 !important;
-            background: #ffffff !important;
-            padding: 8px !important;
-            margin: 0 !important;
-            overflow: hidden !important;
-            box-sizing: border-box !important;
-            display: flex !important;
-            flex-direction: column !important;
-            gap: 6px;
-        }
-        .submit-fs-overlay .submit-fs-member-status {
-            display: block !important;
-        }
-        /* Everything from Optimise onward starts a second row. Flexbox cannot
-           be told to break, so the break is an element that takes a whole
-           line and no height. Hidden outside the overlay: the ordinary
-           toolbar is narrow enough to wrap where it needs to on its own, and
-           a forced break there would waste a row. */
-        .submit-fs-overlay .submit-fs-row-break {
-            display: block !important;
-            flex: 1 0 100% !important;
-            width: 100% !important;
-            height: 0 !important;
-            min-height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            border: 0 !important;
-        }
-        .submit-fs-overlay .submit-fs-member-viewer {
-            flex: 1 1 auto !important;
-            height: auto !important;
-            min-height: 0 !important;
-            width: 100% !important;
-        }
-        .submit-fs-overlay .submit-fs-member-viewer .output_area,
-        .submit-fs-overlay .submit-fs-member-viewer .output_subarea,
-        .submit-fs-overlay .submit-fs-member-viewer .jp-OutputArea,
-        .submit-fs-overlay .submit-fs-member-viewer .jp-OutputArea-output,
-        .submit-fs-overlay .submit-fs-member-viewer .jp-OutputArea-child {
-            height: 100% !important;
-            width: 100% !important;
-        }
         /* The gutter a notebook keeps for "Out[7]:". There is no Out[7] here
            and never will be, but the column is reserved all the same -- and in
            fullscreen it is a white band down the left of the picture, inside
            the blue frame. It is taken away in the ordinary view as well: the
-           viewer should start where its frame starts. */
+           viewer should start where its frame starts. The overlay's half of
+           this lives in the shared sheet below. */
         .submit-mol-output .jp-OutputPrompt,
         .submit-mol-output .jp-OutputArea-prompt,
-        .submit-mol-output .prompt,
-        .submit-fs-overlay .jp-OutputPrompt,
-        .submit-fs-overlay .jp-OutputArea-prompt,
-        .submit-fs-overlay .prompt {
+        .submit-mol-output .prompt {
             display: none !important;
             width: 0 !important;
             min-width: 0 !important;
@@ -2534,21 +2504,17 @@ def create_tab(ctx):
             padding: 0 !important;
             margin: 0 !important;
         }
-        .submit-mol-output .jp-OutputArea-child,
-        .submit-fs-overlay .jp-OutputArea-child {
+        .submit-mol-output .jp-OutputArea-child {
             padding-left: 0 !important;
             margin-left: 0 !important;
         }
-        .submit-fs-overlay .submit-fs-member-viewer [id^="3dmolviewer_"] {
-            width: 100% !important;
-            height: 100% !important;
-            max-width: none !important;
-            max-height: none !important;
-        }
-        .submit-fs-overlay .submit-fs-member-viewer [id^="3dmolviewer_"] canvas {
-            width: 100% !important;
-            height: 100% !important;
-        }
+        """
+        # This tab's overlay used to be described here, in rules of its own,
+        # beside a second implementation that did the moving. Both are the
+        # shared ones now -- the same sheet and the same script the ORCA
+        # Builder, the Calculations browser and the Archive are laid out by.
+        + structure_viewer_fullscreen_css()
+        + """
         </style>
         """
     )
@@ -2558,6 +2524,14 @@ def create_tab(ctx):
     mol_output.add_class('submit-split-pane')
     mol_output.add_class('submit-mol-output')
     _replace_mol_output_text('Please enter XYZ coordinates or SMILES.')
+    # The one fullscreen, and this tab saying which viewer is its own. Sent the
+    # way the other three tabs send it, so whichever the user opens first
+    # installs it and the rest find it already there.
+    ctx.add_init_js(
+        structure_viewer_fullscreen_bootstrap_js()
+        + '\n'
+        + structure_viewer_fullscreen_kind_js(
+            'submit', 'submit-scope-', ['_submitMolViewerByScope']))
     tab_widget = widgets.VBox([submit_css, tab_widget], layout=widgets.Layout(width='100%'))
 
     return tab_widget, {

@@ -67,6 +67,7 @@ from .molecule_viewer import (
     render_fukui_panel,
     structure_viewer_fullscreen_bootstrap_js,
     structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
     viewer_disabled_html,
 )
 
@@ -5047,7 +5048,12 @@ def create_tab(ctx):
     _update_buttons()
     _update_transfer_jobs_visibility()
 
-    init_js = structure_viewer_fullscreen_bootstrap_js() + "\n" + f"""
+    init_js = (
+        structure_viewer_fullscreen_bootstrap_js() + "\n"
+        + structure_viewer_fullscreen_kind_js(
+            'remote', 'remote-archive-scope-',
+            ['_remoteMolViewerByScope', '_remoteTrajViewerByScope'])
+        + "\n") + f"""
     (function() {{
         function resizeRemoteArchiveViewer(scopeRoot) {{
             if (!scopeRoot || scopeRoot.offsetParent === null) return;

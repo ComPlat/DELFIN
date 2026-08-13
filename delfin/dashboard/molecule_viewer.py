@@ -4505,154 +4505,6 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         on(window, 'blur', function() { propagateShift(false); }, true);
     }
 
-    // Fullscreen: on toggle, move viewer + toolbar + isomer nav + copy row into
-    // a floating overlay; on exit, put them back where they were. No layout
-    // changes to the default DOM, so canvas alignment stays intact.
-    if (!window.__delfinSubmitFullscreenBound) {
-        window.__delfinSubmitFullscreenBound = true;
-        window._submitFsByScope = window._submitFsByScope || {};
-
-        function findScope(el) {
-            while (el && el.classList) {
-                for (var i = 0; i < el.classList.length; i++) {
-                    if (el.classList[i].indexOf('submit-scope-') === 0) {
-                        return el.classList[i];
-                    }
-                }
-                el = el.parentElement;
-            }
-            return null;
-        }
-        function resizeScopeViewer(scopeKey) {
-            try {
-                var viewer = (window._submitMolViewerByScope || {})[scopeKey];
-                if (!viewer) return;
-                [60, 250].forEach(function(delay) {
-                    setTimeout(function() {
-                        try {
-                            if (typeof viewer.resize === 'function') viewer.resize();
-                            if (typeof viewer.render === 'function') viewer.render();
-                        } catch (e) {}
-                    }, delay);
-                });
-            } catch (e) {}
-        }
-        function setFsIcon(btn, active) {
-            if (!btn) return;
-            var icon = btn.querySelector('i.fa');
-            if (!icon) return;
-            icon.classList.remove('fa-expand');
-            icon.classList.remove('fa-compress');
-            icon.classList.add(active ? 'fa-compress' : 'fa-expand');
-            btn.setAttribute('title', active ? 'Exit fullscreen (Esc)' : 'Toggle fullscreen (Esc to exit)');
-        }
-        function eachScopeRoot(scopeKey, look) {
-            /* Every element carrying the scope, not the first: the drawing
-               frame carries it too and sits in the other column, holding none
-               of the members. */
-            var roots = document.querySelectorAll('.' + scopeKey);
-            for (var i = 0; i < roots.length; i++) {
-                var found = look(roots[i]);
-                if (found) return found;
-            }
-            return null;
-        }
-        function enterFullscreen(scopeKey) {
-            var selectors = [
-                '.submit-fs-member-toolbar',
-                /* Its own status line, not the one the ordinary view uses.
-                   Moving that one into the overlay and back is a DOM move
-                   ipywidgets knows nothing about, and after one round trip it
-                   was gone from the small view.  This one exists to be moved:
-                   both carry the same text, so whichever is on screen says
-                   the same thing. */
-                '.submit-fs-member-status',
-                '.submit-fs-member-viewer',
-                '.submit-fs-member-isomer',
-                '.submit-fs-member-copyrow'
-            ];
-            var members = [];
-            for (var i = 0; i < selectors.length; i++) {
-                var el = eachScopeRoot(scopeKey, (function(selector) {
-                    return function(node) { return node.querySelector(selector); };
-                })(selectors[i]));
-                if (el) members.push(el);
-            }
-            if (!members.length) return;
-            var overlay = document.createElement('div');
-            overlay.className = 'submit-fs-overlay ' + scopeKey;
-            var restore = members.map(function(el) {
-                return { el: el, parent: el.parentNode, next: el.nextSibling };
-            });
-            members.forEach(function(el) { overlay.appendChild(el); });
-            document.body.appendChild(overlay);
-            window._submitFsByScope[scopeKey] = { overlay: overlay, restore: restore };
-            var btn = overlay.querySelector('.submit-fullscreen-btn');
-            setFsIcon(btn, true);
-            resizeScopeViewer(scopeKey);
-        }
-        function exitFullscreen(scopeKey) {
-            var entry = window._submitFsByScope[scopeKey];
-            if (!entry) return;
-            // Restore in reverse so each element's recorded nextSibling is
-            // already back in the original parent before we insertBefore.
-            for (var i = entry.restore.length - 1; i >= 0; i--) {
-                var r = entry.restore[i];
-                try {
-                    if (r.next && r.next.parentNode === r.parent) {
-                        r.parent.insertBefore(r.el, r.next);
-                    } else {
-                        r.parent.appendChild(r.el);
-                    }
-                } catch (e) {}
-            }
-            try { entry.overlay.parentNode.removeChild(entry.overlay); } catch (e) {}
-            delete window._submitFsByScope[scopeKey];
-            var root = eachScopeRoot(scopeKey, function(node) {
-                return node.querySelector('.submit-fs-member-viewer')
-                    || node.querySelector('.submit-fs-member-toolbar')
-                    ? node : null;
-            }) || document.querySelector('.' + scopeKey);
-            /* A member whose recorded parent was itself replaced while
-               fullscreen was open has nowhere to go back to, and would be
-               carried out of the page with the overlay -- the toolbar, the
-               viewer or the status line simply gone from the small view.
-               Anything left unconnected is put back into the scope. */
-            if (root) {
-                for (var j = 0; j < entry.restore.length; j++) {
-                    var el = entry.restore[j].el;
-                    if (el && !el.isConnected) {
-                        try { root.appendChild(el); } catch (e) {}
-                    }
-                }
-            }
-            var btn = eachScopeRoot(scopeKey, function(node) {
-                return node.querySelector('.submit-fullscreen-btn');
-            });
-            setFsIcon(btn, false);
-            resizeScopeViewer(scopeKey);
-        }
-        on(document, 'click', function(e) {
-            var t = e.target;
-            if (!t || !t.closest) return;
-            var btn = t.closest('.submit-fullscreen-btn');
-            if (!btn) return;
-            var scopeKey = findScope(btn);
-            if (!scopeKey) return;
-            if (window._submitFsByScope[scopeKey]) {
-                exitFullscreen(scopeKey);
-            } else {
-                enterFullscreen(scopeKey);
-            }
-        }, true);
-        on(document, 'keydown', function(e) {
-            if (e.key !== 'Escape') return;
-            var keys = Object.keys(window._submitFsByScope || {});
-            if (!keys.length) return;
-            exitFullscreen(keys[0]);
-        }, true);
-    }
-
     // Hand the browser the force-field parameters Python assigned for the
     // current geometry, or null to switch live relaxation off again. Called
     // once when the mode is entered, never during a drag.
@@ -4850,9 +4702,27 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
    out -- which is why it only ever looked like a fullscreen problem. */
 .delfin-structure-fs-viewer .jp-OutputPrompt,
 .delfin-structure-fs-viewer .jp-OutputArea-prompt,
+.delfin-structure-fs-viewer .prompt,
 .delfin-structure-fs-overlay .jp-OutputPrompt,
-.delfin-structure-fs-overlay .jp-OutputArea-prompt {
+.delfin-structure-fs-overlay .jp-OutputArea-prompt,
+.delfin-structure-fs-overlay .prompt {
     display: none !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    flex: 0 0 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+.delfin-structure-fs-overlay .jp-OutputArea-child {
+    padding-left: 0 !important;
+    margin-left: 0 !important;
+}
+/* A status line that exists to be moved.  The tab it belongs to keeps a second
+   one that never leaves, because relocating the ordinary view's line by hand
+   is a move ipywidgets knows nothing about and it did not come back.  Both
+   carry the same text; this one is hidden until it is in an overlay. */
+.delfin-structure-fs-overlay .delfin-structure-fs-status {
+    display: block !important;
 }
 body.delfin-structure-fs-open {
     overflow: hidden !important;
@@ -5037,6 +4907,12 @@ STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS = r"""
     if (window.__delfinStructureViewerFullscreenBound) return;
     window.__delfinStructureViewerFullscreenBound = true;
     window._delfinStructureFullscreen = window._delfinStructureFullscreen || null;
+    /* What each tab's molecule module is: the prefix its own scope class
+       carries, and where its viewer is to be looked for.  The tabs write this
+       themselves rather than being listed here, so a builder that does not
+       exist yet joins by declaring itself and this file does not grow a
+       branch per tab.  Created on both sides, so neither has to run first. */
+    window.__delfinFsKinds = window.__delfinFsKinds || {};
 
     function classWithPrefix(el, prefix) {
         while (el && el.classList) {
@@ -5050,30 +4926,32 @@ STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS = r"""
     }
 
     function moduleType(module) {
-        if (module.classList.contains('orca-structure-fs-module')) return 'orca';
-        if (module.classList.contains('calc-structure-fs-module')) return 'calc';
-        if (module.classList.contains('remote-structure-fs-module')) return 'remote';
+        var kinds = window.__delfinFsKinds || {};
+        for (var name in kinds) {
+            if (module.classList.contains(name + '-structure-fs-module')) return name;
+        }
         return '';
     }
 
     function scopeFor(module, type) {
-        if (type === 'orca') return classWithPrefix(module, 'orca-scope-');
-        if (type === 'calc') return classWithPrefix(module, 'calc-scope-');
-        if (type === 'remote') return classWithPrefix(module, 'remote-archive-scope-');
-        return null;
+        var spec = (window.__delfinFsKinds || {})[type];
+        if (!spec || !spec.scopePrefix) return null;
+        return classWithPrefix(module, spec.scopePrefix);
     }
 
     function viewerFor(type, scopeKey) {
-        if (type === 'orca') return window._orcaBuildViewer || null;
-        if (type === 'calc') {
-            return ((window._calcMolViewerByScope || {})[scopeKey]
-                || (window._calcTrajViewerByScope || {})[scopeKey]
-                || null);
-        }
-        if (type === 'remote') {
-            return ((window._remoteMolViewerByScope || {})[scopeKey]
-                || (window._remoteTrajViewerByScope || {})[scopeKey]
-                || null);
+        var spec = (window.__delfinFsKinds || {})[type];
+        var names = (spec && spec.viewers) || [];
+        for (var i = 0; i < names.length; i++) {
+            var registry = window[names[i]];
+            if (!registry) continue;
+            /* Either a set of viewers kept by scope -- which is how a tab that
+               can show several at once registers them -- or, where a tab has
+               only ever had the one, the viewer itself under a name of its
+               own. Both shapes are read here so that neither has to change. */
+            var found = (scopeKey && registry[scopeKey]) || null;
+            if (!found && typeof registry.render === 'function') found = registry;
+            if (found) return found;
         }
         return null;
     }
@@ -5150,6 +5028,25 @@ STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS = r"""
         try {
             if (entry.overlay.parentNode) entry.overlay.parentNode.removeChild(entry.overlay);
         } catch (_e2) {}
+        /* A member whose recorded parent was itself replaced while the overlay
+           was open has nowhere to go back to, and is carried out of the page
+           with the overlay -- the toolbar, the viewer or the status line simply
+           gone from the small view, with nothing left to say they existed.
+           Driven in chromium with the box under them replaced: all five members
+           of the Builder's molecule panel left the document and the tab was
+           left with an empty column.  Anything still unconnected after the
+           restore goes back into the module, or into the scope if the module
+           was what went. */
+        var home = (entry.module && entry.module.isConnected) ? entry.module
+            : (entry.scopeKey ? document.querySelector('.' + entry.scopeKey) : null);
+        if (home) {
+            for (var k = 0; k < entry.restore.length; k++) {
+                var member = entry.restore[k].el;
+                if (member && !member.isConnected) {
+                    try { home.appendChild(member); } catch (_e3) {}
+                }
+            }
+        }
         setButtonState(entry.btn, false);
         if (!entry.bodyHadOpenClass) {
             document.body.classList.remove('delfin-structure-fs-open');
@@ -5239,8 +5136,29 @@ def structure_viewer_fullscreen_css():
 
 
 def structure_viewer_fullscreen_bootstrap_js():
-    """Return one-time JS for ORCA/calc/remote fullscreen viewer buttons."""
+    """Return the one-time JS behind every molecule viewer's fullscreen."""
     return STRUCTURE_VIEWER_FULLSCREEN_BOOTSTRAP_JS
+
+
+def structure_viewer_fullscreen_kind_js(kind, scope_prefix, viewers):
+    """Declare one tab's molecule module to the shared fullscreen.
+
+    *kind* is the word in the module's own ``<kind>-structure-fs-module``
+    class, *scope_prefix* the start of the class its scope is named with, and
+    *viewers* the names on ``window`` its viewer may be found under -- either a
+    set kept by scope or, for a tab that has only ever had one, the viewer
+    itself.  The first that answers is used, so a tab with a structure viewer
+    and a trajectory viewer names both, most specific first.
+
+    This is what a new builder writes instead of a branch in the shared script:
+    the overlay machinery knows nothing about any particular tab, and the tab
+    that knows says so once.
+    """
+    return (
+        '(window.__delfinFsKinds = window.__delfinFsKinds || {})[%s] = '
+        '{scopePrefix: %s, viewers: %s};'
+        % (json.dumps(kind), json.dumps(scope_prefix), json.dumps(list(viewers)))
+    )
 
 
 def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
