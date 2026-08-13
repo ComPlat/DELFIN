@@ -470,7 +470,7 @@ class Editor:
 def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
           update_view, get_smiles_charge, set_buttons_disabled=None,
           offer_structures=None, read_input=None, write_input=None,
-          list_structures=None):
+          list_structures=None, show_output=None):
     """Make one structure editor over the coordinates a tab keeps.
 
     *state* is the tab's own dictionary -- the editor keeps its history, its
@@ -502,6 +502,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # at all -- so a conversion has to be told where to look.
         def read_input():
             return coords_widget.value
+    if show_output is None:
+        # Where a picture or a line of text goes when the editor has something
+        # to show instead of a structure -- the loader that runs while MANTA
+        # builds, "please enter coordinates", a refusal. The editor's own
+        # output widget by default; a tab that renders the viewer itself hands
+        # over its own, or the animation runs where nobody can see it.
+        def show_output(items):
+            mol_output.outputs = tuple(items)
     if list_structures is None:
         # What "all" means. The Submit tab holds a set of isomers; the ORCA
         # Builder holds named blocks, and each of those is a frame too.
@@ -4986,7 +4994,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         },)
 
     def _clear_mol_output():
-        mol_output.outputs = ()
+        show_output(())
 
     def _replace_mol_output_text(*lines):
         _set_mol_status(*lines)
@@ -5041,11 +5049,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             "<span class='delfin-busy' style='vertical-align:middle;'></span>"
             f"<span>{safe_msg}</span></div></div>"
         )
-        mol_output.outputs = ({
+        show_output(({
             'output_type': 'display_data',
             'data': {'text/html': payload},
             'metadata': {},
-        },)
+        },))
         _set_manip_toolbar_enabled(False)
 
     def _apply_smiles_conversion_result(task_id, *, quick, cleaned_data, result):

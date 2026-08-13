@@ -333,6 +333,9 @@ def create_tab(ctx):
         offer_structures=lambda *a, **k: _take_structures(*a, **k),
         # A SMILES is typed into the tab's own box, not the editor's.
         read_input=lambda: orca_coords.value,
+        # A loader or a line of text goes where this tab's structures go, not
+        # into the editor's own output widget -- which this tab never places.
+        show_output=lambda items: _show_in_viewer(*items),
         # Every named block is a frame, so "all" reaches all of them.
         list_structures=lambda: [
             (xyz, len([r for r in strip_xyz_header(xyz).split('\n') if r.strip()]),
