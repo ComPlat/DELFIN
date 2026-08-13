@@ -1041,7 +1041,11 @@ def _ensure_process_group_terminated(process: subprocess.Popen, grace_timeout: f
         logger.debug(f"Orphan cleanup via psutil failed: {e}, using fallback")
         try:
             os.killpg(pgid, signal.SIGTERM)
-            import time
+            # `time` is imported at module level. Importing it again here made
+            # it a local name for the whole function, so the psutil-less branch
+            # above raised UnboundLocalError on its own time.sleep and never
+            # reached its SIGKILL — the orphaned MPI workers it exists to
+            # remove kept running and holding cores.
             time.sleep(grace_timeout)
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, OSError):
