@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_names
@@ -32,6 +32,12 @@ from delfin.workflows.engine.classic import (
     determine_effective_slots,
     normalize_parallel_token,
 )
+
+# scheduler.py imports from this module, so GlobalOrcaScheduler cannot be
+# imported at runtime without a cycle — hence the quoted annotations. This
+# makes the name resolvable for type checkers and linters without creating one.
+if TYPE_CHECKING:
+    from delfin.workflows.engine.scheduler import GlobalOrcaScheduler
 
 logger = get_logger(__name__)
 
@@ -1861,7 +1867,6 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     """
     from delfin.copy_helpers import prepare_occ_folder_only_setup
     from delfin.thread_safe_helpers import prepare_occ_folder_2_only_setup
-    from delfin.occupier import run_OCCUPIER
     import os
 
     jobs: List[WorkflowJob] = []

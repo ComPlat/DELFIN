@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from delfin.common.logging import get_logger, add_file_handler
 from delfin.common.paths import resolve_path

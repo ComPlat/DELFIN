@@ -8557,12 +8557,14 @@ class _DocToolExecutor:
             if result["differing_count"] > 50:
                 lines.append(
                     f"  … {result['differing_count'] - 50} more differing key(s)")
-        for label, field in (("only in the left table", "only_left"),
-                             ("only in the right table", "only_right")):
-            if result[field]:
-                shown = ", ".join(result[field][:30])
-                more = (f" … +{result[field + '_count'] - 30}"
-                        if result[field + "_count"] > 30 else "")
+        # `key`, not `field`: the module imports dataclasses.field, and a loop
+        # variable of that name shadows it for the rest of this function.
+        for label, key in (("only in the left table", "only_left"),
+                           ("only in the right table", "only_right")):
+            if result[key]:
+                shown = ", ".join(result[key][:30])
+                more = (f" … +{result[key + '_count'] - 30}"
+                        if result[key + "_count"] > 30 else "")
                 lines.append(f"\n{label}: {shown}{more}")
         if result["not_comparable"]:
             lines.append("\nnot comparable:")

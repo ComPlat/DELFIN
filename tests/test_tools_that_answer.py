@@ -559,7 +559,6 @@ def test_packages_land_in_the_interpreter_that_will_import_them():
     time -- and the Settings tab's own help text said it used the active
     environment.
     """
-    import pathlib
     import subprocess
     import sys
 

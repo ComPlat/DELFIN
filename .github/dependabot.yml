@@ -28,6 +28,13 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Every dependency in pyproject.toml carries a deliberate upper bound, and
+    # the default strategy for a project without a lockfile is to widen those
+    # ranges — which is how the very first run came to propose lifting numpy
+    # from <2 to <3. Raising the minimum when a release actually requires it is
+    # useful; pushing the ceilings out is a decision for a person who has run
+    # the suite against real calculations.
+    versioning-strategy: increase-if-necessary
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"

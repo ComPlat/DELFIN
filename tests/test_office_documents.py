@@ -703,31 +703,6 @@ def test_a_denied_read_also_blocks_read_document(tmp_path, ws):
     perms.confirm_callback = lambda *a: True
     second = json.loads(ex.execute(
         "read_document", {"path": str(outside)}, perms))
-    assert "error" in second
-
-
-def test_a_denied_read_also_blocks_read_document(tmp_path, ws):
-    """The refusal ledger covers every reading tool, this one included."""
-    outside = tmp_path / "other" / "geheim.xlsx"
-    outside.parent.mkdir(parents=True)
-    wb = openpyxl.Workbook()
-    wb.active["A1"] = "vertraulich"
-    wb.save(outside)
-    wb.close()
-
-    perms = _perms(ws)
-    perms.mode = "default"
-    perms.confirm_callback = lambda *a: False       # the user declines
-    ex = _DocToolExecutor()
-
-    first = json.loads(ex.execute(
-        "read_document", {"path": str(outside)}, perms))
-    assert "declined" in first["error"]
-
-    # Second attempt: refused from the ledger, without asking again.
-    perms.confirm_callback = lambda *a: True
-    second = json.loads(ex.execute(
-        "read_document", {"path": str(outside)}, perms))
     assert "already declined" in second["error"]
 
 
