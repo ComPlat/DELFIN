@@ -1523,6 +1523,12 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "list_files", "list_directory", "list_directory_with_sizes",
     "directory_tree", "get_file_info", "list_allowed_directories",
     "find_definition", "find_references", "notebook_read", "view_image",
+    # --- reading this session / this machine (the native reads, in case a
+    #     backend offers them under the same names) ---
+    "read_document", "compare_tables", "sum_column", "check_environment",
+    "list_changes_made", "history_search", "history_get", "task_list",
+    "task_get", "bash_status", "bash_output", "subagent_result",
+    "cron_list",
     # --- DELFIN tools server: discovery, description, dry validation ---
     "get_manifest", "get_guide", "resolve_spec", "scientific_lint",
     "list_capabilities", "describe_capability", "catalog",

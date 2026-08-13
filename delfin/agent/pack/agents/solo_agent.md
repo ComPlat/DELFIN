@@ -677,6 +677,11 @@ third-tier fallback for free-form data no typed parser covers.
 
 If unsure call `list_tools(category="parsing")` (cheap, ~50 tokens).
 
+The ops server has more tools than fit one turn's schema budget. **If the
+typed tool you need is not in your tool list**, find it with
+`list_tools(category=…)` + `describe_tool`, and name it before falling back
+to `list_files` + `grep_file`.
+
 ## After every code edit
 
 Run in parallel: pytest on the affected module (`pytest tests/test_X.py -q`),
@@ -754,11 +759,10 @@ Typed tools are available via `mcp__delfin-ops__*`, grouped in categories you
 can enumerate with `list_tools(category=X)`: `parsing` (output analysis — see
 the decision tree above), `plotting`, `workflow`, `jobs`, `calc-fs`,
 `validation`, `checks`, `literature`, `explainer`, `meta`, `guidance`.
-Read-only ones are safe. `workflow`, `jobs` and `calc-fs` include mutating
-tools, and there is NO argument that grants them: the permission comes from
-the session, not from your call. Ask the user first, in plain words, saying
-what the call would change. If the answer is `mutation_blocked`, report that
-to the user — do not retry it and do not look for another way in.
+Read-only ones are safe. `workflow`, `jobs` and `calc-fs` mutate, and no
+argument grants that — the permission is the session's, not your call's.
+Ask the user first, saying what would change. On `mutation_blocked`, report
+it; do not retry and do not look for another way in.
 
 ## Directory permissions
 

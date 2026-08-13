@@ -365,8 +365,6 @@ def _scan_calc_dir(
     def _recurse(d: Path, prefix: str, depth: int, max_depth: int) -> None:
         """Recursively scan for calc dirs up to *max_depth* levels."""
         if depth > max_depth:
-            if truncated is not None:
-                truncated.append(f"{prefix.rstrip('/')}" or str(d))
             return
         try:
             children = sorted(d.iterdir())
@@ -385,6 +383,12 @@ def _scan_calc_dir(
                     depth=depth + 1,
                     max_depth=max_depth,
                 )
+            elif truncated is not None and _has_subdirs(child):
+                # The scan stops here and there is still tree below it. A
+                # calculation deeper than the limit is outside every count
+                # otherwise, silently, and calc/ has a limit of one level
+                # against the archives' three.
+                truncated.append(f"{prefix}{child.name}")
 
     _recurse(calc_dir, "", 0, scan_depth_for(source))
 
@@ -394,6 +398,14 @@ def _scan_calc_dir(
 def scan_depth_for(source: str) -> int:
     """How many levels below a root are scanned. calc/ is flat, archives nest."""
     return 3 if source in ("archive", "remote_archive") else 1
+
+
+def _has_subdirs(d: Path) -> bool:
+    try:
+        return any(c.is_dir() and not c.name.startswith(".")
+                   for c in d.iterdir())
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
