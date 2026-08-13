@@ -331,20 +331,35 @@ def test_all_three_views_belong_to_the_editor(compared):
         assert '_submitMolViewerByScope' in drawn[-1]
 
 
-def test_a_single_structure_can_be_edited_and_the_overlay_cannot(compared):
-    """Stepping to the aligned reference or the reordered target gives the
-    editor one structure, which it works on like any other. The overlay is two
-    at once and there is nothing single to edit."""
-    refs, _sent, drawn = compared
-    assert refs['submit_manip_toolbar'].layout.display == 'none'
-    assert 'Overlay' in refs['mol_status'].value
+def test_none_of_the_check_views_can_be_edited(compared):
+    """All three are comparisons, and none of them is a block.
 
-    refs['orca_mol_next_btn'].click()          # aligned reference
-    assert refs['submit_manip_toolbar'].layout.display == 'flex'
-    assert refs['editor_coords'].value.split('\n')[0] == '3'
+    The overlay is two structures at once; the aligned reference is the
+    reference turned to lie over the target; the reordered target is a proposal
+    that has not been applied. Editing any of them wrote into the target block
+    -- drag a hydrogen in the aligned reference and the target came back
+    holding the reference's geometry, at coordinates ten Angstrom from where it
+    had been. They are shown and numbered; the toolbar waits.
+    """
+    refs, _sent, _drawn = compared
+    said = []
+    for step, word in enumerate(('Overlay', 'turned to lie over',
+                                 'would be renumbered')):
+        if step:
+            refs['orca_mol_next_btn'].click()
+        assert refs['submit_manip_toolbar'].layout.display == 'none', step
+        assert word in refs['mol_status'].value, step
+        assert 'not a block' in refs['mol_status'].value, step
+        said.append(word)
+    assert len(said) == 3
 
-    refs['orca_mol_next_btn'].click()          # reordered target
-    assert refs['submit_manip_toolbar'].layout.display == 'flex'
+    # And a write that arrives anyway -- a drag still in flight when the check
+    # began -- does not reach the block.
+    kept = refs['orca_coords'].value
+    refs['editor_state']['manip_inflight'] = True
+    refs['editor_coords'].value = ('3\nEdited\nO 0.5 0 0\n'
+                                   'H 0.757 0.586 0\nH -0.757 0.586 0\n')
+    assert refs['orca_coords'].value == kept
 
 
 def test_the_comparison_stays_up_after_the_fix(compared):
@@ -1198,3 +1213,60 @@ def test_how_the_editor_feels_is_not_per_structure():
     for name in ('submit_strength_slider', 'submit_sens_slider',
                  'submit_labels_btn', 'submit_label_size'):
         assert name not in controls, name
+
+
+def test_a_wrong_number_is_never_written_quietly(builder):
+    """The defects a review wave found that produce answers looking right.
+
+    Driven here rather than read out of the source: the tests that were meant
+    to cover the last three fixes would all have passed with the fix deleted,
+    because they asserted on text.
+    """
+    refs, _sent = builder
+    state = refs['editor_state']
+    water = "O 0.000 0.000 0.000\nH 0.960 0.000 0.000\nH -0.240 0.930 0.000"
+    moved = "O 0.500 0.000 0.000\nH 0.960 0.000 0.000\nH -0.240 0.930 0.000"
+
+    # (a) "all" hands every optimised geometry back, whatever the picture does.
+    refs['orca_coords'].value = ('a.xyz;\n3\n\n' + water + '\n*\n\n'
+                                 'b.xyz;\n3\n\n' + water + '\n*')
+    before = [xyz.split('\n')[2] for _n, xyz in state['xyz_blocks']]
+    refs['editor_offer_isomers']([(moved, 3, 'a'), (moved, 3, 'b')], False)
+    after = [xyz.split('\n')[2] for _n, xyz in state['xyz_blocks']]
+    assert before != after, 'the results were handed to nobody'
+
+    # (b) a held value naming atoms this structure does not have stays out of
+    #     the input, and the input says so.
+    refs['orca_coords'].value = '2\nCO\nC 0.0 0.0 0.0\nO 0.0 0.0 1.128\n'
+    state['constraints'] = [{'kind': 'distance', 'atoms': [0, 2],
+                             'value': 1.5, 'mode': 'fix'}]
+    refs['update_orca_preview']()
+    text = refs['orca_preview'].value
+    assert '{ B 0 2' not in text
+    assert 'does not have' in text
+
+
+def test_the_topology_belongs_to_one_molecule():
+    """Kept under the atom count alone, a benzene and a cyclobutane were the
+    same molecule to GFN-FF: the second came back with a hydrogen 5.9 A from
+    its carbon, at an energy that reads perfectly ordinary. Driven with xtb
+    after the fix: benzene 1.381 A and C-H 2.392, cyclobutane 1.552 A and
+    C-H 1.099."""
+    source = open(structure_editor.__file__, encoding='utf-8').read()
+    keeper = source.split('def _gfn_topology_dir(')[1].split('\n    def ')[0]
+
+    assert 'who = _structure_fingerprint(xyz)' in keeper
+    assert "kept.get('who') == who" in keeper
+    assert "kept.get('atoms') == atoms" not in keeper
+
+
+def test_a_held_value_is_set_aside_for_all_and_said_out_loud():
+    """It names atoms of the structure it was set on, and "all" walks a set of
+    different molecules. Held at 1.700 A on a cyclobutane, benzene's aromatic
+    C-C went to xtb as "distance: 1, 2, 1.700000" at force constant 20."""
+    source = open(structure_editor.__file__, encoding='utf-8').read()
+    body = source.split('def on_submit_optimize(')[1].split('\n    def ')[0]
+
+    assert 'if every_frame and held:' in body
+    assert "state['held_set_aside'] = len(held)" in body
+    assert 'were not applied' in source

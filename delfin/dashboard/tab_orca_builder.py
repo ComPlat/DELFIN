@@ -1125,6 +1125,12 @@ def create_tab(ctx):
         """
         if state.get('editor_quiet'):
             return
+        if state.get('numbering_check_active'):
+            # A comparison is on screen -- an overlay, the reference turned to
+            # lie over the target, or a proposed renumbering. None of them is a
+            # block, and a write that arrives while one is shown (a drag still
+            # in flight when the check began) would land in the target.
+            return
         text = orca_editor_coords.value
         atoms = strip_xyz_header(text)
         if not atoms.strip():
@@ -1352,17 +1358,24 @@ def create_tab(ctx):
                         step,
                         reset_view=reset_view,
                     )))
-                    # Two of the three check views are a single structure, and
-                    # the editor can work on those like any other. The overlay
-                    # is both at once, which is nothing to edit -- the numbers
-                    # still come up on it, from its own model.
-                    _hand_to_editor(
-                        overlay_result['aligned_reference_xyz'] if step == 1
-                        else reordered_target_xyz if step == 2 else '')
-                    if step == 0:
-                        orca_editor._set_mol_status(
-                            'Overlay: reference in red, target in blue. '
-                            'Step to a single structure to edit it.')
+                    # All three are comparison pictures, and none of them is
+                    # a block. The overlay is two structures at once; the
+                    # aligned reference is the reference turned to lie over the
+                    # target, and the reordered target is a proposal that has
+                    # not been applied. Editing any of them wrote into the
+                    # target block: drag a hydrogen in the aligned reference
+                    # and the target came back holding the reference's
+                    # geometry. So they are shown and numbered, and the toolbar
+                    # waits until there is a structure to edit again.
+                    _hand_to_editor('')
+                    orca_editor._set_mol_status(*{
+                        0: ('Overlay: reference in red, target in blue.',),
+                        1: ('The reference, turned to lie over the target.',),
+                        2: ('The target as it would be renumbered. Apply '
+                            'Numbering Fix writes it into the block.',),
+                    }.get(step, ()) + (
+                        'A comparison, not a block -- editing waits until you '
+                        'are back on the structure itself.',))
                 else:
                     _show_in_viewer(_as_html(
                         _viewer_html(full_xyz, _labels_js(), reset_view=reset_view)))
