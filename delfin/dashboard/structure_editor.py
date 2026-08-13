@@ -538,37 +538,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                          ('batch_preview_busy', False)):
         state.setdefault(_key, _value)
 
-    #: The status line's own height, in rows of its 13 px monospace at line
-    #: height 1.35 -- 17.6 px each, so two rows and the 6 px under them.
-    #:
-    #: Fixed rather than grown to fit, because this line stands above the
-    #: viewer and everything below it moves when it changes.  A run reports
-    #: several times a second and the reports are not the same length: one row
-    #: while the structure follows the hand, two when the optimisation says
-    #: what it reached.  Measured at 1440x900 in the panel's own width, that is
-    #: the picture stepping 17 px under the cursor the user is aiming with.
-    #: A message longer than the box scrolls inside it; nothing is cut, and
-    #: nothing below it moves.
-    _STATUS_ROWS_PX = 41
-
+    # The status line lies ON the picture, along its bottom edge, rather than
+    # in a row above it.
+    #
+    # Above it, every message of a different length moved the structure: a run
+    # reports several times a second and the reports are not the same size --
+    # one row while it follows the hand, two when it says what it reached --
+    # so the atom the user was aiming stepped up and down under the cursor.
+    # Giving that row a fixed height stopped the movement and spent the height
+    # of two rows, empty most of the time, to do it.
+    #
+    # Anchored to the bottom of the viewer, it costs no layout at all: it grows
+    # upwards into the picture when there is more to say and shrinks again,
+    # and nothing outside it can move. The tab puts it and the viewer in a box
+    # carrying `delfin-structure-viewer-stack`; the rules are in the shared
+    # sheet, with the rest of what a molecule panel looks like.
     def _status_layout():
-        # overflow, not overflow_y: this ipywidgets Layout has no per-axis
-        # trait and drops the ones it does not know without failing, so a box
-        # written that way would simply not scroll.
-        return widgets.Layout(
-            width='100%', margin='0 0 6px 0',
-            height=f'{_STATUS_ROWS_PX}px', min_height=f'{_STATUS_ROWS_PX}px',
-            overflow='auto',
-        )
+        return widgets.Layout(width='auto', margin='0')
 
     mol_status = widgets.HTML(value='', layout=_status_layout())
-    # A second one, for the overlay.  Not the same widget moved: fullscreen
-    # relocates its members by hand and ipywidgets knows nothing about it, so
-    # the line borrowed for the big view came back somewhere else and was lost
-    # from the small one.  Two widgets, one text, nothing moved.
+    mol_status.add_class('delfin-structure-status-over')
+    # A second one, kept and written but no longer a member of anything.  It
+    # existed because fullscreen relocated the status line by hand and
+    # ipywidgets knows nothing about such a move, so the line borrowed for the
+    # big view did not come back to the small one.  The line lives inside the
+    # stack with the picture now, and the stack is what fullscreen takes -- it
+    # goes and comes back with the thing it is about, so there is nothing left
+    # for a stand-in to do.  A tab that places it still gets the same text.
     mol_status_fs = widgets.HTML(value='', layout=_status_layout())
-    mol_status_fs.add_class('delfin-structure-fs-member')
-    mol_status_fs.add_class('delfin-structure-fs-status')
+    mol_status_fs.add_class('delfin-structure-status-over')
     # It lives in the ordinary layout so fullscreen can pick it up from there,
     # but it must not be seen next to the line it is a copy of -- the message
     # would simply be printed twice.  Hidden here, shown in the overlay.

@@ -2358,9 +2358,25 @@ def create_tab(ctx):
     # use: there is one fullscreen, and a fix to it is a fix in all of them.
     # The order in the overlay is the order here, which is the order of
     # submit_right's children -- toolbar, status, viewer, isomer nav, copy row.
+    # The picture, with the status line lying along its bottom edge rather than
+    # standing in a row above it. Above it, every message of a different length
+    # moved the structure the user was aiming at; here it costs no layout and
+    # cannot move anything. Both copies live in the stack -- the ordinary one
+    # shows in this view, the other is taken by fullscreen and shows there.
+    mol_viewer_stack = widgets.Box(
+        [mol_output, mol_status],
+        layout=widgets.Layout(width='100%', min_width='0'),
+    )
+    mol_viewer_stack.add_class('delfin-structure-viewer-stack')
+    # The stack is what fullscreen takes, so the line goes with the picture it
+    # is about and comes back with it. That is what the second copy existed
+    # for -- a line moved by hand did not come back -- and nothing is moved by
+    # hand any more.
+    mol_viewer_stack.add_class('delfin-structure-fs-viewer')
+
     # The toolbar and the status copy are marked by the editor itself, being
     # the editor's wherever it is built; these are this tab's own.
-    for _member in (mol_output, isomer_nav_row, xyz_copy_row):
+    for _member in (mol_viewer_stack, isomer_nav_row, xyz_copy_row):
         _member.add_class('delfin-structure-fs-member')
     # A strip that keeps its own height and takes the full width, which is what
     # the shared sheet calls a toolbar; the Builder's block stepper is one too.
@@ -2369,8 +2385,8 @@ def create_tab(ctx):
     mol_output.add_class('delfin-structure-fs-viewer')
 
     submit_right = widgets.VBox([
-        widgets.HTML('<b>Molecule Preview:</b>'), mol_status,
-        submit_manip_toolbar, mol_status_fs, mol_output, isomer_nav_row, xyz_copy_row,
+        widgets.HTML('<b>Molecule Preview:</b>'),
+        submit_manip_toolbar, mol_viewer_stack, isomer_nav_row, xyz_copy_row,
         submit_ff_notes,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
