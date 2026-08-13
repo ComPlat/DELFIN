@@ -251,13 +251,27 @@ class TaskStore:
                                 "no reason is a pending one nobody can act "
                                 "on."
                             )
-                    if new_status == "in_progress":
-                        # One task at a time, per session: the ticker and
-                        # the per-turn reminder both claim to show what
-                        # the agent is ON, and a second parallel
-                        # in_progress makes that claim false -- and the
-                        # completion window ambiguous.
-                        sid = str(t.get("session_id", "") or "")
+                    # One task at a time, per session: the ticker and the
+                    # per-turn reminder both claim to show what the agent
+                    # is ON, and a second parallel in_progress makes that
+                    # claim false -- and the completion window ambiguous.
+                    #
+                    # The guard used to fire on the status transition
+                    # alone, so ADOPTION walked past it: task_adopt writes
+                    # session_id and nothing else, and a task that was
+                    # already in_progress under its old owner arrived in a
+                    # session that had one of its own. Same invariant, so
+                    # the same check -- against whichever session the task
+                    # is about to belong to.
+                    _adopting = ("session_id" in fields
+                                 and str(fields["session_id"] or "")
+                                 != str(t.get("session_id", "") or ""))
+                    _will_run = (new_status == "in_progress"
+                                 or (_adopting and not new_status
+                                     and t.get("status") == "in_progress"))
+                    if _will_run:
+                        sid = str(fields.get("session_id",
+                                             t.get("session_id", "")) or "")
                         other = next(
                             (o for o in data["tasks"]
                              if int(o.get("id", 0)) != int(task_id)

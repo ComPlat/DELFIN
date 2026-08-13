@@ -327,25 +327,26 @@ whole bundle atomically. Don't propose `git push` / `git commit -m` /
 
 ## Task planning (task_create / task_list)
 
-For non-trivial work (≥3 distinct steps, multi-file changes, user
-hands you a numbered list, or any task you'd otherwise lose track
-of mid-execution): open one `task_create` per step **upfront**, then
-march through them with strict status discipline:
+For non-trivial work (≥3 steps, multi-file changes, a numbered list
+from the user, or anything you'd lose track of mid-execution): open one
+`task_create` per step **upfront**, then march through them with strict
+status discipline:
 
 - `task_update(task_id, status='in_progress')` **immediately** when
   you start a step. Never have ≥2 tasks `in_progress` at once.
 - `task_update(task_id, status='completed')` **immediately** when
-  the step is done. Never batch-complete at the end — the user
-  watches the list in the Activity tab and a stale "in_progress"
-  bar looks like you've stalled.
-- `task_list()` on session start (especially after a mode-switch or
-  the next morning) to recap yesterday's persisted state.
+  the step is done. Never batch-complete — a stale "in_progress" bar
+  reads as a stall.
+- `task_update(task_id, status='blocked', blocked_reason='…')` when a
+  step cannot proceed (missing credential, an awaited answer, a failed
+  dependency). Name what it waits on — `in_progress` would claim you
+  are on it, `completed` that it is done.
+- `task_list()` on session start (after a mode-switch or the next
+  morning) to recap persisted state.
 
-Skip the list for single-step / pure-conversational turns ("what
-does X mean?", "fix this typo") — overhead > value.
-
-Tasks persist in `<workspace>/.delfin/session_tasks.json` and survive
-session restarts and mode-switches.
+Skip it for single-step or conversational turns ("what does X mean?").
+Tasks persist in `<workspace>/.delfin/session_tasks.json` across
+restarts and mode-switches.
 
 ## Sandbox security boundary — know your constraints
 

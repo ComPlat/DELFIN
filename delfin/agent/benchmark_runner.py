@@ -262,6 +262,106 @@ def changed_outside_workspaces(
     return sorted(changed)
 
 
+def paths_this_run_wrote(root: Path | str, *,
+                         since_ts: str) -> Optional[set[str]]:
+    """Paths under ``root`` that this run's own tool trace recorded, or
+    ``None`` when there was no way to look.
+
+    Same source as :func:`_denials_during` -- the audit log -- and the
+    same distinction: an empty window means nobody looked, and reporting
+    an empty SET there would relabel every changed file as somebody
+    else's writing. Returned relative to ``root``, because that is how
+    the fingerprint is keyed; comparing absolute against relative would
+    match nothing and quietly attribute the whole diff elsewhere.
+    """
+    try:
+        from delfin.agent import audit_log as _audit
+        base = Path(root).resolve()
+        report = _audit.build_changes_report(
+            since_ts=since_ts or None, workspace=str(base))
+        window = report.get("window") or {}
+        written = report.get("files_written") or []
+        if not window.get("records") and not written:
+            return None
+        out: set[str] = set()
+        for entry in written:
+            raw = str((entry or {}).get("path", "") or "")
+            if not raw:
+                continue
+            try:
+                out.add(str(Path(raw).resolve().relative_to(base)))
+            except (ValueError, OSError):
+                continue        # written outside the checkout
+        return out
+    except Exception:
+        return None
+
+
+def attributed_changes(
+    changed: list[str],
+    written: Optional[set[str]],
+) -> tuple[Optional[list[str]], Optional[list[str]]]:
+    """Split a fingerprint diff into (this run wrote it, nobody here did).
+
+    ``(None, None)`` when ``written`` is ``None``: with no trace to check
+    against, neither column can be filled in honestly.
+    """
+    if written is None:
+        return None, None
+    mine = [p for p in changed if p in written]
+    other = [p for p in changed if p not in written]
+    return mine, other
+
+
+_CHANGE_LIST_CAP = 20
+
+
+def _capped(paths: list[str]) -> list[str]:
+    lines = [f"     {p}" for p in paths[:_CHANGE_LIST_CAP]]
+    if len(paths) > _CHANGE_LIST_CAP:
+        lines.append(f"     … and {len(paths) - _CHANGE_LIST_CAP} more")
+    return lines
+
+
+def format_checkout_change_report(changed: list[str],
+                                  written: Optional[set[str]]) -> str:
+    """What the run may say about a checkout that is not as it was found.
+
+    The diff is a fact about the TREE. Turning it into a sentence about
+    the RUN was the defect: a suite writing into the same checkout put
+    569 files into a warning that named this run as their cause. The two
+    groups are printed apart, and the group the run cannot vouch for says
+    so instead of being counted as its own.
+    """
+    if not changed:
+        return ""
+    mine, other = attributed_changes(changed, written)
+    if mine is None:
+        return "\n".join([
+            f"\n⚠️  {len(changed)} file(s) OUTSIDE the fixture workspaces "
+            f"changed while this run was going — the checkout is not as it "
+            f"was found. This run's own write trace could not be read, so "
+            f"which of them it caused is unknown:",
+            *_capped(changed),
+            "     review with `git status` before trusting the next run.",
+        ])
+    lines: list[str] = []
+    if mine:
+        lines.append(f"\n⚠️  {len(mine)} file(s) this run wrote OUTSIDE the "
+                     f"fixture workspaces — the checkout is not as it was "
+                     f"found:")
+        lines.extend(_capped(mine))
+    if other:
+        lines.append(f"\nℹ️  {len(other)} file(s) changed during this run "
+                     f"that nothing in this run's trace wrote. Another "
+                     f"process writing into the same checkout is "
+                     f"indistinguishable from this run in a size/mtime "
+                     f"diff, so these are not counted against it:")
+        lines.extend(_capped(other))
+    lines.append("     review with `git status` before trusting the next run.")
+    return "\n".join(lines)
+
+
 _fixture_notice_shown = False
 
 
@@ -625,6 +725,7 @@ def _run_suite_locked(
 ) -> list[BenchmarkResult]:
     """The suite body, under the fixture lock."""
     _root = Path(root) if root is not None else Path(os.getcwd())
+    _started_ts = _iso(time.time())
     try:
         _before = checkout_fingerprint(_root)
     except Exception:
@@ -660,13 +761,10 @@ def _run_suite_locked(
     except Exception:
         _changed = []
     if _changed:
-        print(f"\n⚠️  this run changed {len(_changed)} file(s) OUTSIDE the "
-              f"fixture workspaces — the checkout is not as it was found:")
-        for rel in _changed[:20]:
-            print(f"     {rel}")
-        if len(_changed) > 20:
-            print(f"     … and {len(_changed) - 20} more")
-        print("     review with `git status` before trusting the next run.")
+        _written = paths_this_run_wrote(_root, since_ts=_started_ts)
+        _report = format_checkout_change_report(_changed, _written)
+        if _report:
+            print(_report)
     return out
 
 

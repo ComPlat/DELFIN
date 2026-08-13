@@ -965,6 +965,51 @@ class AgentEngine:
             # Keep whatever window is already set (100k default).
             pass
 
+    def _compaction_status_line(self) -> str:
+        """What the last compaction actually did, including when it did
+        nothing and why.
+
+        ``last_compaction_info`` is written in five shapes and three of
+        them carry a ``note`` that says the run is in trouble: the
+        summariser produced nothing and a deterministic digest went in
+        instead; nothing could be summarised at all and the context is
+        still over budget; the system prompt alone exceeds the window, so
+        no amount of trimming can reach it.
+
+        All three were rendered as ``compacted 0 msgs, saved ~0 tokens``
+        — the same sentence a harmless compaction writes, and shorter
+        than the one a real one writes. The worse the situation, the
+        quieter the line. The two shapes that count something other than
+        messages (a sliding-window trim, a tool-result edit) printed
+        ``compacted ? msgs`` for work they had genuinely done.
+        """
+        last = getattr(self, "last_compaction_info", None) or None
+        if not last:
+            return "- Last compaction: (none this session)"
+        kind = str(last.get("kind", "") or "compaction")
+        parts: list[str] = []
+        if last.get("messages_compacted"):
+            parts.append(f"{last['messages_compacted']} msg(s) compacted")
+        if last.get("messages_trimmed"):
+            parts.append(f"{last['messages_trimmed']} msg(s) trimmed")
+        if last.get("tool_results_cleared"):
+            parts.append(
+                f"{last['tool_results_cleared']} tool result(s) cleared")
+        if last.get("tokens_saved"):
+            parts.append(f"~{last['tokens_saved']} tokens saved")
+        if last.get("pinned_kept"):
+            parts.append(f"{last['pinned_kept']} pinned kept")
+        body = ", ".join(parts) if parts else "nothing was compacted"
+        line = f"- Last compaction ({kind}): {body}"
+        note = str(last.get("note", "") or "").strip()
+        if note:
+            # The note is the whole reason the record was written. It is
+            # what the agent has to act on — usually by making the PROMPT
+            # smaller or delegating, neither of which it would think to do
+            # from a zero.
+            line += f"\n  ⚠️ {note}"
+        return line
+
     def _build_context_status_block(self) -> str:
         """Compact self-monitoring block injected into the solo prompt.
 
@@ -982,14 +1027,7 @@ class AgentEngine:
         if window <= 0:
             return ""
         pct = tokens / window * 100.0
-        last = getattr(self, "last_compaction_info", None) or None
-        if last:
-            last_line = (
-                f"- Last compaction: compacted {last.get('messages_compacted', '?')} "
-                f"msgs, saved ~{last.get('tokens_saved', 0)} tokens"
-            )
-        else:
-            last_line = "- Last compaction: (none this session)"
+        last_line = self._compaction_status_line()
         warn = " — WARNING: nearing auto-compaction" if pct >= 80.0 else ""
         # Prompt-cache health: a collapsing hit rate is the earliest signal
         # that something destabilised the cached prefix (and doubled prefill
@@ -1693,6 +1731,49 @@ class AgentEngine:
             self._steering_refreshes += 1
         return out
 
+    #: How many recent user messages the module triggers may look at, and
+    #: how much of them. The matcher is substring-only, so this costs a
+    #: lowercase join and nothing else; the bound is there because the
+    #: transcript is unbounded and a pasted logfile would otherwise decide
+    #: which modules load.
+    _TRIGGER_HISTORY_MSGS = 6
+    _TRIGGER_HISTORY_CHARS = 4000
+
+    def _recent_user_text(self) -> str:
+        """The last few things the USER said, for the module triggers.
+
+        ``build_system_prompt`` has taken ``conversation_text`` through
+        four layers since the triggers were fixed, and no caller ever
+        passed it — so the mechanism existed end to end and one hop in
+        the middle dropped it. The triggers saw a single line, which is
+        the case the sticky union was added to paper over.
+
+        User turns only. Matching the ASSISTANT's own words would let the
+        agent's phrasing decide which modules load next turn, and the
+        modules shape that phrasing — a loop with nothing outside it.
+        """
+        out: list[str] = []
+        budget = self._TRIGGER_HISTORY_CHARS
+        for msg in reversed(self.messages[-(self._TRIGGER_HISTORY_MSGS * 2):]):
+            try:
+                if (msg or {}).get("role") != "user":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, list):      # image + text blocks
+                    content = " ".join(
+                        str(b.get("text", "")) for b in content
+                        if isinstance(b, dict) and b.get("type") == "text")
+                text = str(content or "")[:budget]
+            except Exception:
+                continue
+            if not text:
+                continue
+            out.append(text)
+            budget -= len(text)
+            if budget <= 0:
+                break
+        return "\n".join(reversed(out))
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -1757,6 +1838,7 @@ class AgentEngine:
             prior_outputs=self.role_outputs if self.role_outputs else None,
             memory_context=memory_context,
             task_text=task_text,
+            conversation_text=self._recent_user_text(),
             session_key=f"engine-session-{self._prompt_session_serial}",
             live_state=live_state,
             model=getattr(self, "model", "") or "",
@@ -5317,6 +5399,7 @@ class AgentEngine:
 
         restored: list[str] = []
         missing: list[str] = []
+        drifted: list[str] = []
 
         if data.get("mode"):
             restored.append("mode")
@@ -5324,6 +5407,23 @@ class AgentEngine:
                 self._load_mode(data["mode"])
         else:
             missing.append("mode")
+
+        # ``route`` was exported and read by nobody: the mode reload above
+        # re-derives it, so the saved value looked carried and was not.
+        # It is the only record of the route the session ACTUALLY ran, and
+        # a pack edited between two sessions resumes on a different one
+        # with nothing said. The current pack still decides what runs —
+        # reinstating a route the pack no longer defines would resume into
+        # roles that are not there — but the difference is named.
+        saved_route = list(data.get("route") or ())
+        if saved_route and saved_route != list(getattr(self, "route", ()) or ()):
+            drifted.append(
+                f"route (session ran {'→'.join(str(r) for r in saved_route)}; "
+                f"this pack yields "
+                f"{'→'.join(str(r) for r in (self.route or ())) or 'nothing'})"
+            )
+        elif saved_route:
+            restored.append("route")
 
         if "engine_messages" in data:
             self.messages = list(data.get("engine_messages") or [])
@@ -5353,7 +5453,7 @@ class AgentEngine:
             schema_version=version,
             restored=tuple(restored + s_restored + list(ev.restored)),
             missing=tuple(missing + s_missing + list(ev.missing)),
-            failed=tuple(s_failed + list(ev.failed)),
+            failed=tuple(drifted + s_failed + list(ev.failed)),
             migrations=migrations,
         )
 
