@@ -4581,10 +4581,20 @@ def _text_probe(text: str) -> str:
     extraction intact — and a word carrying an umlaut proves the encoding
     survived as well.
     """
-    words = _PROBE_RE.findall(str(text or ""))
-    if not words:
-        return ""
-    return max(words, key=len)[:24]
+    raw = str(text or "")
+    words = _PROBE_RE.findall(raw)
+    if words:
+        return max(words, key=len)[:24]
+    # No word of four letters. That is not an exotic document -- it is a
+    # Kostenaufstellung, a Terminliste, a table of dates and amounts, and
+    # it was the case where the check quietly passed on nothing: with no
+    # probe the caller defaulted to "found" and verified reported only
+    # that the file opened. A figure is exactly what has to survive the
+    # write in such a document, so the longest non-blank token stands in.
+    tokens = [t for t in raw.split() if len(t) >= 2]
+    if tokens:
+        return max(tokens, key=len)[:24]
+    return ""
 
 
 def _squash(text: str) -> str:
@@ -4741,9 +4751,14 @@ def create_pdf(path: Any, blocks: list[dict]) -> dict:
     found = True
     if probe and pages:
         found = _squash(probe) in _squash(extracted)
-    verified = pages > 0 and found
+    verified = pages > 0 and found and bool(probe)
     if not pages:
         notes.append("the written file did not open as a PDF")
+    elif not probe:
+        # Nothing to search for is not the same as searched and found.
+        notes.append(
+            "the file opened as a PDF, but it carries no text this could "
+            "search for, so nothing about its CONTENT was checked")
     elif not found:
         notes.append(
             f"the word {probe!r} was written but was not found when the text "
@@ -4992,6 +5007,12 @@ def fill_docx_template(
         out.parent.mkdir(parents=True, exist_ok=True)
         doc.save(str(out))
     except Exception as exc:
+        # A part-written .docx is still a file, and the next read opens it
+        # as a document. create_pdf beside this one already unlinks.
+        try:
+            out.unlink()
+        except OSError:
+            pass
         raise OfficeError(f"could not save the document: {exc}") from exc
 
     # Verify with a DIFFERENT reader than the one that filled.
@@ -5060,6 +5081,7 @@ def create_docx(
     docx = _require("word")
     doc = docx.Document()
     counts = {"headings": 0, "paragraphs": 0, "tables": 0}
+    probe = ""
     for index, block in enumerate(blocks, start=1):
         if not isinstance(block, dict):
             raise OfficeError(f"block {index} is not an object: {block!r}")
@@ -5067,6 +5089,7 @@ def create_docx(
             level = max(0, min(int(block.get("level", 1) or 1), 9))
             doc.add_heading(str(block["heading"]), level=level)
             counts["headings"] += 1
+            probe = probe or _text_probe(str(block["heading"]))
         elif "paragraph" in block:
             para = doc.add_paragraph()
             runs = _runs(block["paragraph"])
@@ -5081,6 +5104,8 @@ def create_docx(
                         block.get("color", block.get("colour")))
             _apply_runs(para, runs)
             counts["paragraphs"] += 1
+            probe = probe or _text_probe(
+                "".join(str(r.get("text", "")) for r in runs))
         elif "table" in block:
             rows = block["table"]
             if not isinstance(rows, list) or not rows or not all(
@@ -5109,6 +5134,7 @@ def create_docx(
                         for run in cell_runs:
                             run["bold"] = True
                     _apply_runs(target, cell_runs)
+                    probe = probe or _text_probe(_fmt(value))
             counts["tables"] += 1
         elif block.get("page_break"):
             doc.add_page_break()
@@ -5121,8 +5147,44 @@ def create_docx(
         p.parent.mkdir(parents=True, exist_ok=True)
         doc.save(str(p))
     except Exception as exc:
+        # Every sibling writer unlinks here. This one left a part-written
+        # .docx behind, which the next read opens as a document.
+        try:
+            p.unlink()
+        except OSError:
+            pass
         raise OfficeError(f"could not save the document: {exc}") from exc
-    return {"path": str(p), "blocks": len(blocks), **counts}
+
+    # Read the result back with the reader, not with the object still in
+    # memory. This was the one writer in the module with no check at all:
+    # it reported blocks written and never asked whether the file holds
+    # them. The probe is a word or figure taken from what went in, so a
+    # save that produced an unreadable or empty document is caught rather
+    # than reported as done.
+    notes: list[str] = []
+    verified = False
+    try:
+        back = read_docx(p)
+        text = _squash(back.get("text", ""))
+        if not probe:
+            notes.append(
+                "the document was written, but it carries no text this "
+                "could search for, so nothing about its CONTENT was checked")
+        elif _squash(probe) in text:
+            verified = True
+        else:
+            notes.append(
+                f"the word {probe!r} was written but was not found when the "
+                "document was read back — check it before handing it over")
+    except Exception as exc:
+        notes.append(f"the written file could not be read back: {exc}")
+    return {
+        "path": str(p),
+        "blocks": len(blocks),
+        "verified": verified,
+        "notes": notes,
+        **counts,
+    }
 
 
 # Colours a caller may name. Deliberately a short list plus hex: an
@@ -5220,6 +5282,55 @@ def _runs_markup(runs: list[dict]) -> str:
     return "".join(out)
 
 
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _docx_unreached_text(path: Path) -> list[str]:
+    """Passages a .docx carries that python-docx's model does not reach.
+
+    ``doc.paragraphs`` yields the paragraphs that are direct children of
+    the body. A text box (``w:txbxContent``) and a content control
+    (``w:sdtContent``) hold their paragraphs one level in, so neither
+    appears there — and a Word letterhead puts the address block in a
+    text box as a matter of course. Read from the zip, deliberately
+    independent of the object model, for the same reason the template
+    filler verifies from the zip: a reader that shares the writer's view
+    can only confirm it.
+
+    Never raises: this is an aid to a read, not a reason to refuse one.
+    """
+    out: list[str] = []
+    try:
+        import xml.etree.ElementTree as ET
+        import zipfile
+        with zipfile.ZipFile(path) as bundle:
+            for name in bundle.namelist():
+                if not (name in _DOCX_TEXT_PARTS
+                        or name.startswith("word/header")
+                        or name.startswith("word/footer")):
+                    continue
+                try:
+                    root = ET.fromstring(bundle.read(name))
+                except Exception:
+                    continue
+                for tag in ("txbxContent", "sdtContent"):
+                    for node in root.iter(f"{_W_NS}{tag}"):
+                        text = "".join(
+                            t.text or "" for t in node.iter(f"{_W_NS}t"))
+                        text = text.strip()
+                        if text:
+                            out.append(text)
+    except Exception:
+        return out
+    return out
+
+
+def _docx_part_text(part: Any) -> str:
+    """Every paragraph of one document part, tables included."""
+    return "\n".join(
+        para.text for para in _iter_paragraphs(part) if para.text.strip())
+
+
 def read_docx(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
     """Extract paragraphs and tables from a .docx file."""
     p = _resolve(path)
@@ -5244,16 +5355,57 @@ def read_docx(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
     body = "\n".join(parts)
     if tables:
         body += "\n\n" + "\n\n".join(tables)
+
+    # Headers and footers. This read walked doc.paragraphs and stopped
+    # there, so a .docx whose Rechnungsnummer sits in the Kopfzeile --
+    # which is where letterhead puts it -- came back as a document that
+    # does not contain its own number. Labelled, because a figure lifted
+    # out of a running header is not a body figure and an answer citing
+    # it should be able to say so.
+    # Both extra readers are an AID to the read, never a reason to refuse
+    # one: the body came back fine, and a document that gives up its text
+    # is worth more than one that raised over its letterhead.
+    extras: list[str] = []
+    try:
+        body_doc = doc
+        for part in _document_parts(doc):
+            if part is body_doc:
+                continue
+            text = _docx_part_text(part)
+            if text.strip() and text.strip() not in body:
+                extras.append(text.strip())
+    except Exception:
+        extras = []
+    if extras:
+        body += "\n\n--- header / footer ---\n" + "\n".join(extras)
+
+    # Text boxes and content controls, read from the zip because the
+    # object model cannot reach them at all. Only what is MISSING from
+    # the extraction above is added, so nothing is counted twice.
+    try:
+        unreached = [t for t in _docx_unreached_text(p) if t not in body]
+    except Exception:
+        unreached = []
+    if unreached:
+        body += "\n\n--- text box / content control ---\n" + "\n".join(
+            unreached)
+
     notes: list[str] = []
     if len(body) > max_chars:
         body = body[:max_chars]
         notes.append(f"output truncated at {max_chars} characters")
     if not body.strip():
         notes.append("the document holds no extractable text")
+    if extras or unreached:
+        notes.append(
+            f"{len(extras) + len(unreached)} passage(s) came from a header, "
+            f"footer, text box or content control and are labelled as such "
+            f"in the text — the paragraph count below counts the body only")
     return {
         "path": str(p),
         "kind": "word",
         "paragraphs": len(parts),
+        "paragraphs_source": "body",
         "tables": len(doc.tables),
         "text": body,
         "notes": notes,
@@ -5521,9 +5673,17 @@ def draft_email(
         "attachments": attached,
         "attachments_skipped": skipped,
         "bytes": p.stat().st_size,
+        # The skipped list was collected and the sentence never carried
+        # it, so a draft missing the very document it is about read as a
+        # complete one. The count goes where the reader is already looking.
         "note": (
-            "Draft written. It is NOT sent: open it in your mail client, "
-            "check it, and send it yourself."
+            "Draft written"
+            + (f", WITHOUT {len(skipped)} attachment(s) that could not be "
+               f"read ({', '.join(skipped[:3])}"
+               + (", …" if len(skipped) > 3 else "") + ")"
+               if skipped else "")
+            + ". It is NOT sent: open it in your mail client, check it, "
+              "and send it yourself."
         ),
     }
 
