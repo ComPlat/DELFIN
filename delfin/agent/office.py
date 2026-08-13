@@ -3897,7 +3897,16 @@ def pdf_form_fields(path: Any) -> dict:
             entry["page"] = found["page"]
         states = spec.get("/_States_")
         if states:
-            entry["states"] = [str(s) for s in states]
+            # A choice field's options may be [export, display] pairs, and
+            # str() over the pair produced "['One', 'One']" -- unreadable
+            # for the model that has to pick one of them.
+            if str(spec.get("/FT", "")) == "/Ch":
+                entry["states"] = [
+                    d if d == e else f"{d} ({e})"
+                    for e, d in _choice_options(spec.get("/Opt") or states)
+                ]
+            else:
+                entry["states"] = [str(s) for s in states]
         fields.append(entry)
 
     notes: list[str] = []
@@ -3986,6 +3995,16 @@ def fill_pdf_form(
         raise OfficeError(
             "output must differ from the source — filling a form in place "
             "destroys the blank original")
+    # ... and an output that already exists is somebody's document too.
+    # Every sibling refuses this -- create_pdf, merge_pdfs, split_pdf,
+    # fill_series, draft_email -- and this path did not, so a second fill
+    # onto one name returned verified: True over the first one's grave.
+    # This handler even reads the pre-image for the undo journal, so it
+    # knew the file was there and said nothing.
+    if out.exists():
+        raise OfficeError(
+            f"{out.name} already exists — nothing was filled. Write to a "
+            "new name, or delete that file first if it is meant to go.")
 
     pypdf = _require("pdf")
     reader = _pdf_reader(src)
@@ -4022,10 +4041,37 @@ def fill_pdf_form(
     for key, value in values.items():
         spec = declared[str(key)]
         states = [str(s) for s in (spec.get("/_States_") or [])]
-        if states:
+        field_type = str(spec.get("/FT", "") or "")
+        # The field's TYPE decides, not the presence of a state list.
+        # pypdf fills /_States_ for a choice field from its /Opt, so a
+        # dropdown was going through the check-box mapper -- and that
+        # mapper resolves any truthy word to the FIRST non-/Off state,
+        # which is the first option in document order. On a Ja/Nein field
+        # declared as ["Nein", "Ja"], "ja" was written as "Nein": the
+        # opposite answer, reported verified because the read-back
+        # compares against what was just written, under a note calling it
+        # a check box. Einverständnis, Widerspruch, Datenweitergabe --
+        # every German consent field has this shape.
+        if states and field_type == "/Ch":
+            wanted = _render_for_locale(value)
+            options = _choice_options(spec.get("/Opt")
+                                      or spec.get("/_States_"))
+            match = _choice_option(wanted, options)
+            if match is None:
+                shown = ", ".join(
+                    d if d == e else f"{d} ({e})" for e, d in options)
+                raise OfficeError(
+                    f"{key}: {wanted!r} is not one of the options this "
+                    f"field allows ({shown}). A choice field takes one of "
+                    f"its own options -- guessing at one would answer a "
+                    f"question nobody asked.")
+            if match != value:
+                mapped.append(f"{key}={value!r} -> {match} (choice)")
+            resolved_values[str(key)] = match
+        elif states:
             resolved = _checkbox_state(value, states)
             if resolved != value:
-                mapped.append(f"{key}={value!r} -> {resolved}")
+                mapped.append(f"{key}={value!r} -> {resolved} (check box)")
             resolved_values[str(key)] = resolved
         else:
             resolved_values[str(key)] = _render_for_locale(value)
@@ -4064,7 +4110,11 @@ def fill_pdf_form(
 
     notes: list[str] = []
     if mapped:
-        notes.append("check-box values mapped to the field's own state: "
+        # Names the KIND of field beside each mapping. The old wording
+        # called everything a check box, so the one time it mattered --
+        # a Ja/Nein choice written as its opposite -- the note read like
+        # routine housekeeping.
+        notes.append("values mapped onto what the field itself declares: "
                      + "; ".join(mapped))
     if _has_xfa(reader):
         notes.append(
@@ -4089,6 +4139,53 @@ def fill_pdf_form(
         "verified": not missing,
         "notes": notes,
     }
+
+
+def _choice_options(raw: Any) -> list[tuple[str, str]]:
+    """A choice field's options as (export value, shown label) pairs.
+
+    ``/Opt`` holds either a plain string per option, or a two-element
+    array ``[export, display]`` -- the export value is what goes into
+    ``/V``, the display value is what the person filling the form reads,
+    and they are routinely different (``["J", "Ja"]``). Flattening each
+    entry with ``str()`` turned a pair into the text ``"['One', 'One']"``,
+    which no comparison and no message could then make sense of.
+    """
+    out: list[tuple[str, str]] = []
+    for entry in (raw or []):
+        if isinstance(entry, (list, tuple)):
+            items = [str(x) for x in entry]
+            if not items:
+                continue
+            export = items[0]
+            display = items[1] if len(items) > 1 else items[0]
+        else:
+            export = display = str(entry)
+        out.append((export, display))
+    return out
+
+
+def _choice_option(value: Any, options: list[tuple[str, str]]) -> Optional[str]:
+    """The EXPORT value a choice field would accept for *value*, or None.
+
+    Either spelling is accepted -- what the document stores or what it
+    shows -- because a person answering a form reads the label. Exact
+    first, then case- and space-insensitive, because "ja" for an option
+    spelled "Ja" is the same answer. Nothing looser: a choice field's
+    whole point is that the document decided what the answers are, so a
+    near-miss comes back as a question rather than as a guess written
+    into a form somebody signs.
+    """
+    wanted = str(value if value is not None else "")
+    for export, display in options:
+        if wanted in (export, display):
+            return export
+    folded = " ".join(wanted.split()).casefold()
+    for export, display in options:
+        for spelling in (export, display):
+            if " ".join(spelling.split()).casefold() == folded:
+                return export
+    return None
 
 
 def _checkbox_state(value: Any, states: list[str]) -> str:
@@ -4800,6 +4897,43 @@ def docx_placeholders(path: Any) -> dict:
     }
 
 
+_DOCX_TEXT_PARTS = ("word/document.xml", "word/footnotes.xml",
+                    "word/endnotes.xml", "word/comments.xml")
+
+
+def _placeholders_left_in_file(path: Path) -> set[str]:
+    """Every ``{{name}}`` still present in a .docx, read from the zip.
+
+    Deliberately independent of python-docx's object model: this is the
+    check on the writer, and a check that shares the writer's view of the
+    document can only confirm it. Headers and footers are included by
+    pattern because their part names are numbered, and a letterhead is
+    exactly where a template puts the placeholders somebody notices last.
+
+    Never raises -- a file this cannot open is reported as nothing left,
+    and the reader-based check beside it still applies.
+    """
+    found: set[str] = set()
+    try:
+        import zipfile
+        with zipfile.ZipFile(path) as bundle:
+            for name in bundle.namelist():
+                if not name.endswith(".xml"):
+                    continue
+                if not (name in _DOCX_TEXT_PARTS
+                        or name.startswith("word/header")
+                        or name.startswith("word/footer")):
+                    continue
+                try:
+                    body = bundle.read(name).decode("utf-8", "replace")
+                except Exception:
+                    continue
+                for match in _PLACEHOLDER_RE.finditer(body):
+                    found.add(match.group(1).strip())
+    except Exception:
+        return found
+    return found
+
 def fill_docx_template(
     path: Any, values: dict, *, output: Any, strict: bool = True
 ) -> dict:
@@ -4824,6 +4958,12 @@ def fill_docx_template(
         raise OfficeError(
             "output must differ from the template — filling it in place "
             "destroys the blank original")
+    # Same rule as every sibling writer, and as the PDF form filler
+    # above: a document that is already there is not scratch space.
+    if out.exists():
+        raise OfficeError(
+            f"{out.name} already exists — nothing was written. Write to a "
+            "new name, or delete that file first if it is meant to go.")
 
     known = {
         entry["name"] for entry in docx_placeholders(src)["placeholders"]
@@ -4854,11 +4994,24 @@ def fill_docx_template(
     except Exception as exc:
         raise OfficeError(f"could not save the document: {exc}") from exc
 
-    # Verify against the written file rather than reporting the intent.
+    # Verify with a DIFFERENT reader than the one that filled.
+    #
+    # ``_fill_paragraph`` is driven by ``_iter_paragraphs``, and
+    # ``docx_placeholders`` walks the same way -- so a placeholder the
+    # writer cannot reach is one the check cannot see either, and the
+    # read-back was a tautology that could never catch the writer's blind
+    # spot. Proven on a template whose address window is a text box, which
+    # is how Word letterhead is built: filled: 1, unfilled: [], complete:
+    # True, and "{{name}}" still in the output. Every Bescheid of that
+    # Serienbrief prints the placeholder, and fill_series stamps each row
+    # ok because it reads that same flag.
+    #
+    # The output's own XML cannot be fooled that way: what survives there
+    # survived, whatever traversal did or did not reach it.
     remaining = {
         entry["name"]
         for entry in docx_placeholders(out)["placeholders"]
-    }
+    } | _placeholders_left_in_file(out)
     notes: list[str] = []
     if unknown:
         notes.append(
