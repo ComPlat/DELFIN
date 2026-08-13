@@ -973,6 +973,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='92px', height='30px'),
         disabled=True,
     )
+    #: What letting go of an atom leads to, while the molecule is following
+    #: the hand.  It used to depend on something else entirely: a drag that
+    #: interrupted a running Optimise brought that run back and the structure
+    #: went down to a minimum, while the same drag with no run behind it left
+    #: the structure where the hand put it.  One gesture, two outcomes, decided
+    #: by a switch on the other side of the toolbar -- which reads as it
+    #: working only sometimes.  It is asked for here instead.
+    submit_auto_btn = widgets.ToggleButton(
+        value=True, description='Auto', icon='angle-double-down',
+        button_style='info',
+        tooltip=(
+            'While Dynamik Opt is on: when you let go of an atom, carry on '
+            'down to a minimum. Switch off to have it stop where your drag '
+            'left it, so you can move something else first -- then press '
+            'Optimize when the structure is what you meant.'
+        ),
+        layout=widgets.Layout(width='78px', height='30px'),
+        disabled=True,
+    )
     submit_swap_btn = widgets.Button(
         description='Swap', button_style='', icon='exchange',
         tooltip=(
@@ -1070,7 +1089,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_strength_slider, submit_sens_slider,
             submit_fs_row_break,
             submit_optimize_btn, submit_optimize_all_btn,
-            submit_relax_btn, submit_settle_btn,
+            submit_relax_btn, submit_auto_btn, submit_settle_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -1166,6 +1185,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_labels_btn.disabled = not enabled
         submit_sens_slider.disabled = not enabled
         submit_settle_btn.disabled = not enabled
+        submit_auto_btn.disabled = not enabled
         submit_bond_btn.disabled = not enabled
         submit_unbond_btn.disabled = not enabled
         submit_hyb_auto_btn.disabled = not enabled
@@ -2505,9 +2525,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_gfn_frame.value = json.dumps({'run': blank, 'frames': []})
         return True
 
+    def _stand_down_after_interrupt():
+        """The run the change interrupted is not coming back by itself.
+
+        The switch goes back up with it. Left lit over a structure nobody is
+        minimising, it says a calculation is running that is not.
+        """
+        state.pop('optimize_interrupted', None)
+        for button in (submit_optimize_btn, submit_optimize_all_btn):
+            if button.value:
+                button.value = False
+        _set_mol_status(
+            'Stopped where your change left it. Move what else you want to, '
+            'then press Optimize to go down to a minimum.')
+
     def _arm_gfn_restart():
         """Start the optimisation again, once the changing has stopped."""
         if state.get('optimize_interrupted') is None:
+            return
+        if not submit_auto_btn.value:
+            # Auto is off, so nothing carries on by itself. The guard is here
+            # rather than at the release, because a drag that moved something
+            # sends its coordinates first and asks for the restart from there
+            # -- gating only the release would have let that path through and
+            # the switch would have worked for some drags and not others.
+            _stand_down_after_interrupt()
             return
         state['gfn_restart_at'] = time.monotonic() + _GFN_RESTART_DELAY
         if state.get('gfn_restart_armed'):
@@ -2524,6 +2566,75 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             schedule_ui_update(_restart_gfn)
 
         threading.Thread(target=_wait, daemon=True).start()
+
+    def _arm_gfn_minimise():
+        """Go down to a minimum once the changing has stopped.
+
+        The other half of Auto: a drag with no optimisation behind it has
+        nothing to resume, so one is started.  Same wait as a restart, and the
+        wait is pushed out again by every release -- moving three atoms one
+        after another is one minimisation at the end of it, not three.
+        """
+        if not (_server_method()
+                and _server_binary(submit_ff_dd.value) is not None):
+            return
+        state['gfn_minimise_at'] = time.monotonic() + _GFN_RESTART_DELAY
+        if state.get('gfn_minimise_armed'):
+            return
+        state['gfn_minimise_armed'] = True
+
+        def _wait():
+            while True:
+                left = state.get('gfn_minimise_at', 0.0) - time.monotonic()
+                if left <= 0:
+                    break
+                time.sleep(min(left, 0.05))
+            state['gfn_minimise_armed'] = False
+            schedule_ui_update(_minimise_now)
+
+        threading.Thread(target=_wait, daemon=True).start()
+
+    def _minimise_now():
+        if not submit_auto_btn.value:
+            return                      # switched off while it was waiting
+        if state.get('optimize_run') is not None:
+            return                      # one is already running
+        if submit_optimize_btn.value or submit_optimize_all_btn.value:
+            return                      # a switch is already down
+        # The switch, not the handler: it has to be seen to be on for as long
+        # as it runs, and it is what the user presses to stop it again.
+        submit_optimize_btn.value = True
+
+    def _after_release():
+        """What letting go of an atom leads to, and the switch that decides.
+
+        Auto on: down to a minimum, whether or not an optimisation was running
+        when the atom was picked up.  That used to be the difference between
+        the same gesture finishing the structure and leaving it strained --
+        a drag during a run interrupted it and the run came back, a drag with
+        no run behind it got Settle's short tidy and nothing else.
+
+        Auto off: it stops where the hand left it.  Move something else, and
+        press Optimize when the structure is what you meant; that goes down to
+        a minimum the way it always has.
+
+        Only while the molecule is following the hand.  Dragging with Dynamik
+        Opt off is placing an atom where you want it, and starting a
+        minimisation on top of that would take it off the place you just put
+        it -- which is what Settle is for, in the small.
+        """
+        auto = bool(submit_auto_btn.value)
+        if state.get('optimize_interrupted') is not None:
+            # Comes back, or stands down; either way _arm_gfn_restart decides.
+            _arm_gfn_restart()
+            if auto:
+                return                  # a minimisation is more than a settle
+            _arm_gfn_settle()
+            return
+        if auto and submit_relax_btn.value:
+            _arm_gfn_minimise()
+            return
+        _arm_gfn_settle()
 
     def _restart_gfn():
         if state.pop('optimize_interrupted', None) is None:
@@ -3828,16 +3939,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         if verb == 'gfnfree':
             _end_gfn_follow()
-            # Let go of.  If nothing else has already asked for the restart --
-            # a drag that moved something sends its coordinates first -- this
-            # is what keeps the switch from being left on with nothing running.
-            _arm_gfn_restart()
-            # Letting go leaves the structure where the hand left it.  Dragging
-            # moves along the potential surface; going down it is what Optimise
-            # is for, and doing that unasked took the choice away -- the atom
-            # you had just placed was pulled off the place you placed it.
-            # Settle is the way to ask for it on every release.
-            _arm_gfn_settle()
+            # Let go of.  Whether that goes down to a minimum, or leaves the
+            # structure where the hand put it, is the Auto switch -- and it is
+            # asked in one place so the answer cannot depend on whether a run
+            # happened to be going when the atom was picked up.
+            _after_release()
             return
 
         if verb == 'undo':
@@ -4199,6 +4305,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'calculation holds together is Bond and Unbond\'s business.'
             if active else
             'The lines keep the bonds the structure was drawn with.')
+
+    def on_submit_auto_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_auto_btn.value)
+        submit_auto_btn.button_style = 'info' if active else ''
+        if not _server_method():
+            # Nothing on the server to run: the browser's own field has no
+            # minimisation to carry on with, so saying it would carry one on
+            # would be a promise about a thing that is not there.
+            return
+        label = _server_label(submit_ff_dd.value)
+        _set_mol_status(
+            f'Letting go of an atom now runs {label} down to a minimum.'
+            if active else
+            'Letting go leaves the structure where you put it. Press '
+            'Optimize when you want it taken down to a minimum.')
 
     def on_submit_settle_toggle(change):
         if change.get('name') != 'value':
@@ -4764,6 +4887,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
+    submit_auto_btn.observe(on_submit_auto_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
