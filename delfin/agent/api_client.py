@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars as _contextvars
 import difflib
 import fnmatch
 import importlib
@@ -2176,6 +2178,54 @@ def _split_shell_segments(cmd: str) -> list[str]:
         i += 1
     segs.append("".join(buf))
     return [s.strip() for s in segs if s.strip()]
+
+
+
+# One tool call, one policy. ``perms.mode`` is a plain attribute that the
+# dashboard writes from its own thread while a turn is in flight, and the
+# gate read it more than once per call: _run_permission_gate snapshots it
+# and then reads it again for the network check, and apply_patch and
+# undo_changes read it a third time inside the executor, AFTER the gate
+# has already decided. A flip landing between two of those reads decides
+# one call by two different rulebooks -- gated under acceptEdits and
+# executed under plan, or the reverse, which is the direction that lets a
+# write through.
+#
+# The pin is a ContextVar, so it belongs to the thread actually running
+# the call; the writer's thread never sees it and keeps updating the
+# attribute for the NEXT call. A write from inside the call -- the agent
+# calling exit_plan_mode on itself -- updates the pin too, because that
+# one is this call's own decision.
+_MODE_PIN: "_contextvars.ContextVar[Optional[list]]" = (
+    _contextvars.ContextVar("delfin_perm_mode_pin", default=None))
+
+
+@contextlib.contextmanager
+def _pin_permission_mode(perms: Optional["KitToolPermissions"]):
+    """Freeze the permission mode for the duration of one tool call."""
+    if perms is None:
+        yield
+        return
+    token = _MODE_PIN.set([str(getattr(perms, "mode", "") or "")])
+    try:
+        yield
+    finally:
+        _MODE_PIN.reset(token)
+
+
+def effective_mode(perms: Optional["KitToolPermissions"]) -> str:
+    """The mode THIS call is being decided by."""
+    pin = _MODE_PIN.get()
+    if pin is not None:
+        return pin[0]
+    return str(getattr(perms, "mode", "") or "")
+
+
+def repin_permission_mode(mode: str) -> None:
+    """Adopt a mode change made from inside the running call."""
+    pin = _MODE_PIN.get()
+    if pin is not None:
+        pin[0] = str(mode or "")
 
 
 @dataclass
@@ -7328,7 +7378,23 @@ class _DocToolExecutor:
         ``permissions`` activates the coding-agent tools (write_file, edit_file,
         bash) and gates them through workspace sandbox + denylist + optional
         confirm callback. When None, those tools are unavailable.
+
+        The permission MODE is pinned for the length of this call -- see
+        ``_pin_permission_mode``. One call, one rulebook: the dashboard
+        writes that attribute from its own thread, and the gate used to
+        read it two or three times per call, so a flip landing between
+        two reads decided one call by two different policies.
         """
+        with _pin_permission_mode(permissions):
+            return self._execute_pinned(name, arguments, permissions)
+
+    def _execute_pinned(
+        self,
+        name: str,
+        arguments: dict,
+        permissions: Optional["KitToolPermissions"] = None,
+    ) -> str:
+        """The body of :meth:`execute`, under one pinned policy."""
         # Plan mode, deny-by-default. One check at the single entry point,
         # before hooks, before dispatch, covering namespaced MCP calls too
         # -- rather than a per-family refusal each new tool has to be
@@ -7738,7 +7804,7 @@ class _DocToolExecutor:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured."
                 )})
-            if permissions.mode == "plan":
+            if effective_mode(permissions) == "plan":
                 return json.dumps({"error": (
                     f"plan mode (read-only) — '{name}' rejected. Describe "
                     "the intended change and call exit_plan_mode."
@@ -10004,7 +10070,8 @@ class _DocToolExecutor:
         # hatch; writing has no such list, so refusing would leave every
         # unattended run unable to produce anything. A head-less caller
         # picks its own mode, and the sandbox still bounds where it writes.
-        if perms.mode == "default" and perms.confirm_callback is not None:
+        if (effective_mode(perms) == "default"
+                and perms.confirm_callback is not None):
             preview = (self._build_change_preview(name, args, resolved)
                        or f"{name} -> {rel_str}")
             try:
@@ -10029,7 +10096,7 @@ class _DocToolExecutor:
         self, name: str, args: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None."""
-        mode = perms.mode
+        mode = effective_mode(perms)
 
         if mode == "plan":
             return (
@@ -10043,7 +10110,7 @@ class _DocToolExecutor:
 
         if (name in _NETWORK_TOOLS
                 and getattr(perms, "scope_locked", False)
-                and perms.mode != "bypassPermissions"):
+                and mode != "bypassPermissions"):
             # A locked session works on someone's real records. Sending them
             # somewhere is not a smaller act than writing them somewhere, and
             # nothing else in the stack sees it: the egress scanner reads
@@ -12013,7 +12080,7 @@ class _DocToolExecutor:
             return json.dumps({"error": "diff must be a non-empty string"})
         check_only = bool(arguments.get("check_only", False))
         # Plan-mode contract: still read-only.
-        if perms.mode == "plan" and not check_only:
+        if effective_mode(perms) == "plan" and not check_only:
             return json.dumps({"error": (
                 "plan mode (read-only) — apply_patch with "
                 "check_only=true is allowed; use exit_plan_mode to "
@@ -12142,7 +12209,7 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "undo_changes needs a workspace via permissions"
             )})
-        if perms.mode == "plan":
+        if effective_mode(perms) == "plan":
             return json.dumps({"error": (
                 "plan mode (read-only) — undo_changes mutates files; "
                 "use exit_plan_mode first."
@@ -12862,6 +12929,9 @@ class _DocToolExecutor:
             new_mode = requested_mode
         if approved:
             perms.mode = new_mode
+            # The agent changed it itself, so this call is
+            # decided by the new mode from here on.
+            repin_permission_mode(new_mode)
             perms.last_approved_plan = plan
             # Bridge the approved plan into durable state: persist it to the
             # plans store on EVERY approval path (previously dashboard-only —
@@ -13937,7 +14007,38 @@ class OpenAIClient(_BaseClient):
         import threading as _threading
         self._steer_lock = _threading.Lock()
         self._steer_msgs: list[str] = []
+        # Facts about the RUN itself, not things the user said —
+        # see push_run_note. Shares the steer lock; both are tiny.
+        self._run_notes: list[str] = []
         self._attach_subagent_runner(permissions)
+
+    def push_run_note(self, text: str) -> None:
+        """Queue a fact ABOUT THE RUN for mid-turn delivery (thread-safe).
+
+        Steering is what the user said; this is what changed underneath
+        them. The permission mode is the case it was built for: the
+        dashboard flips it from another thread while a turn is in flight,
+        the tool gate picks the new value up on its very next check, and
+        the model goes on working to the rules it was told at the top of
+        the turn -- planning when it may now write, or writing into
+        refusals it was never given a reason for.
+
+        Delivered on the same rail as steering and background-job
+        completions, so it lands between tool rounds and again if the
+        turn ends without one.
+        """
+        t = (text or "").strip()
+        if t:
+            with self._steer_lock:
+                self._run_notes.append(t)
+
+    def _drain_run_notes(self) -> list[str]:
+        with self._steer_lock:
+            if not getattr(self, "_run_notes", None):
+                return []
+            out = self._run_notes[:]
+            self._run_notes.clear()
+            return out
 
     def push_steer(self, text: str) -> None:
         """Queue a user message for MID-LOOP injection (thread-safe). Picked up
@@ -14146,9 +14247,35 @@ class OpenAIClient(_BaseClient):
                 pass
 
     def switch_model(self, model: str) -> None:
-        """Switch model (no process to kill, just update the name)."""
-        if model and model != self.model:
-            self.model = model
+        """Switch model, and let the run notice.
+
+        Two things used to depend on every caller remembering them, and a
+        sentence in a docstring is not a mechanism:
+
+        * the compaction budget is sized to the ACTIVE model's real
+          context window, so a switch that does not re-size it leaves the
+          turn budgeting for the model it is no longer talking to;
+        * nobody told the model. A turn in flight goes on under a
+          different one mid-answer -- the user reads one answer written
+          by two -- and the agent never learns that its own capabilities
+          just changed.
+
+        Both are done here now, by the change itself. ``on_model_switched``
+        is a probe the engine installs, the same shape as ``should_stop``
+        and ``turn_cost_cap``; a client whose owner installs none behaves
+        exactly as it did before.
+        """
+        if not model or model == self.model:
+            return
+        previous = self.model
+        self.model = model
+        probe = getattr(self, "on_model_switched", None)
+        if probe is None:
+            return
+        try:
+            probe(previous, model)
+        except Exception:
+            pass
 
     def kill(self) -> None:
         """No-op — API client has no persistent process."""
@@ -14656,9 +14783,24 @@ class OpenAIClient(_BaseClient):
             # command Stop turned the spinner off and the work carried on.
             # Ending here leaves the rounds already completed intact.
             if self._stop_was_requested():
-                yield StreamEvent(type="text_delta", text=(
+                # Whatever the user typed at THIS turn and never got
+                # delivered. Left in the queue it would be injected into
+                # some later, unrelated turn, out of order with whatever
+                # they typed after pressing Stop -- and dropped silently
+                # it would be a message the person wrote and nobody ever
+                # saw. Neither: it is taken out of the queue and handed
+                # back to them in the same breath as the stop.
+                _undelivered = self._drain_steer() + self._drain_run_notes()
+                _lost = ""
+                if _undelivered:
+                    _lost = (" Not delivered, because the turn stopped "
+                             "first: " + "; ".join(
+                                 f"“{u}”" for u in _undelivered[:3])
+                             + (" …" if len(_undelivered) > 3 else "")
+                             + " — send it again if it still applies.")
+                yield StreamEvent(type="notice", text=(
                     "\n⏹️ Stopped. The rounds completed so far are kept; "
-                    "send a message to continue from here.\n"))
+                    "send a message to continue from here." + _lost + "\n"))
                 yield StreamEvent(
                     type="message_delta",
                     input_tokens=_total_in, output_tokens=_total_out,
@@ -14672,7 +14814,7 @@ class OpenAIClient(_BaseClient):
             if _cap > 0:
                 _spent = self._estimate_cost(_total_in, _total_out)
                 if _spent >= _cap:
-                    yield StreamEvent(type="text_delta", text=(
+                    yield StreamEvent(type="notice", text=(
                         f"\n🛑 This turn reached its cost ceiling "
                         f"(${_spent:.2f} of ${_cap:.2f}) and was stopped. "
                         "The work done so far is kept — raise "
@@ -14693,7 +14835,7 @@ class OpenAIClient(_BaseClient):
             # tokens crossed the (very high) per-turn ceiling. Text emitted so
             # far was already streamed to the caller, so nothing is lost.
             if _total_out > _max_turn_out:
-                yield StreamEvent(type="text_delta", text=(
+                yield StreamEvent(type="notice", text=(
                     "\n⚠️ This turn generated an unusually large amount of "
                     "output and was stopped as a safety backstop. Send "
                     "'continue' to resume if this was intended.\n"))
@@ -14831,7 +14973,7 @@ class OpenAIClient(_BaseClient):
                         _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
                         _note = (" — connection lost mid-answer, the reply "
                                  "restarts below" if _had_partial else "")
-                        yield StreamEvent(type="text_delta", text=(
+                        yield StreamEvent(type="notice", text=(
                             f"\n⏳ Transient API error "
                             f"({type(_stream_exc).__name__}); retrying "
                             f"{_stream_attempt}/{_STREAM_RETRY_MAX} in "
@@ -14845,7 +14987,7 @@ class OpenAIClient(_BaseClient):
                     # before the next turn. Whatever text/tool results already
                     # streamed this turn are preserved.
                     if _is_context_length_error(_stream_exc):
-                        yield StreamEvent(type="text_delta", text=(
+                        yield StreamEvent(type="notice", text=(
                             "\n⚠️ The request exceeded the model's context "
                             "window. Ending this turn; the conversation will be "
                             "compacted before the next one.\n"))
@@ -14935,7 +15077,7 @@ class OpenAIClient(_BaseClient):
                     # its leaked tool calls were repaired and are now running.
                     _names = ", ".join(c["name"] for c in _recovered)
                     yield StreamEvent(
-                        type="text_delta",
+                        type="notice",
                         text=(f"\n\n🔧 [repaired the model's tool-call format — "
                               f"executing {len(_recovered)} tool call(s) "
                               f"({_names}) now]\n"),
@@ -15459,7 +15601,7 @@ class OpenAIClient(_BaseClient):
                 for _steer in self._drain_steer():
                     api_messages.append({"role": "user", "content": _steer})
                     yield StreamEvent(
-                        type="text_delta", text="\n\n💬 [you, mid-run]: " + _steer + "\n")
+                        type="notice", text="\n\n💬 [you, mid-run]: " + _steer + "\n")
 
                 # A background job that finished DURING this turn. The only
                 # delivery path was the system prompt, which is built once
@@ -15472,7 +15614,16 @@ class OpenAIClient(_BaseClient):
                 for _job_note in self._drain_background_events():
                     api_messages.append({"role": "user", "content": _job_note})
                     yield StreamEvent(
-                        type="text_delta", text="\n\n" + _job_note + "\n")
+                        type="notice", text="\n\n" + _job_note + "\n")
+
+                # Something about the run changed while it was running --
+                # the permission mode above all. The model is working to
+                # the rules it was told at the top of the turn, and the
+                # gate is already enforcing the new ones.
+                for _run_note in self._drain_run_notes():
+                    api_messages.append({"role": "user", "content": _run_note})
+                    yield StreamEvent(
+                        type="notice", text="\n\n" + _run_note + "\n")
 
                 # Steering blocks that changed since the turn started (open
                 # tasks, budget wind-down, a late answer). Injected here and
@@ -15537,7 +15688,7 @@ class OpenAIClient(_BaseClient):
                     _last_error_signature = signature
                     if _consecutive_failure_count >= _CONSECUTIVE_FAIL_LIMIT:
                         yield StreamEvent(
-                            type="text_delta",
+                            type="notice",
                             text=(
                                 f"\n\n⚠ Aborting tool loop: {_consecutive_failure_count}"
                                 f" rounds in a row produced identical errors. "
@@ -15591,7 +15742,7 @@ class OpenAIClient(_BaseClient):
                         "your answer now."
                     )})
                 elif _identical_round_count >= 5:
-                    yield StreamEvent(type="text_delta", text=(
+                    yield StreamEvent(type="notice", text=(
                         "\n\n⚠ Aborting tool loop: the identical tool "
                         "call(s) were repeated 5 rounds in a row without "
                         "new information. Send 'continue' to resume.\n"))
@@ -15647,7 +15798,7 @@ class OpenAIClient(_BaseClient):
                     # Visible one-liner: silence here used to make an
                     # UNVERIFIED turn look verified-clean (slow-suite
                     # workspaces switched verification off after turn 1).
-                    yield StreamEvent(type="text_delta", text=(
+                    yield StreamEvent(type="notice", text=(
                         "\n\n⚠️ Auto-verify skipped: "
                         f"{_av_status.get('reason', 'no verification ran')}"
                         " — this turn's edits are NOT machine-verified.\n"))
@@ -15655,7 +15806,7 @@ class OpenAIClient(_BaseClient):
                     _record_security_event(
                         "auto_verify", "verify", _problems[:80], blocked=False)
                     yield StreamEvent(
-                        type="text_delta",
+                        type="notice",
                         text=("\n\n🔁 Auto-verify: the code just edited has a "
                               "problem — fixing before finishing.\n"))
                     api_messages.append({
@@ -15674,7 +15825,7 @@ class OpenAIClient(_BaseClient):
                 # finished silently, letting an unverified result read as
                 # success.
                 _verify_gave_up_notified = True
-                yield StreamEvent(type="text_delta", text=(
+                yield StreamEvent(type="notice", text=(
                     "\n\n⚠️ Auto-verify gave up after "
                     f"{_verify_attempts} fix rounds — the last check was "
                     "still RED and the final state was NOT re-verified:\n"
@@ -15704,7 +15855,7 @@ class OpenAIClient(_BaseClient):
                 for _s in _steer_end:
                     api_messages.append({"role": "user", "content": _s})
                     yield StreamEvent(
-                        type="text_delta", text="\n\n💬 [you, mid-run]: " + _s + "\n")
+                        type="notice", text="\n\n💬 [you, mid-run]: " + _s + "\n")
                 continue
 
             # Background work that finished while the model was writing its
@@ -15716,7 +15867,8 @@ class OpenAIClient(_BaseClient):
             # The event was drained by no one and destroyed by the next
             # drain that did run, if any ever did.
             if _end_event_conts < _END_EVENT_CONT_CAP:
-                _end_notes = self._drain_background_events()
+                _end_notes = (self._drain_background_events()
+                              + self._drain_run_notes())
                 _end_blocks = self._drain_turn_steering()
                 if _end_notes or _end_blocks:
                     _end_event_conts += 1
@@ -15727,7 +15879,7 @@ class OpenAIClient(_BaseClient):
                     for _n in _end_notes:
                         api_messages.append({"role": "user", "content": _n})
                         yield StreamEvent(
-                            type="text_delta", text="\n\n" + _n + "\n")
+                            type="notice", text="\n\n" + _n + "\n")
                     for _b in _end_blocks:
                         api_messages.append({"role": "user", "content": _b})
                     api_messages.append({"role": "user", "content": (
@@ -15760,7 +15912,7 @@ class OpenAIClient(_BaseClient):
                     "guessing — a wrong autonomous action is worse than a quick "
                     "question.")})
                 yield StreamEvent(
-                    type="text_delta", text="\n\n↻ auto-continue → next task\n")
+                    type="notice", text="\n\n↻ auto-continue → next task\n")
                 continue
 
             # No tool calls — emit final message_delta and break. When the
@@ -15768,7 +15920,7 @@ class OpenAIClient(_BaseClient):
             # surface it explicitly: otherwise a response (possibly a
             # half-emitted tool call) just vanishes and the turn looks "done".
             if finish_reason == "length":
-                yield StreamEvent(type="text_delta", text=(
+                yield StreamEvent(type="notice", text=(
                     "\n⚠️ Response truncated at the max-tokens limit — the "
                     "output above may be incomplete (a tool call may have been "
                     "cut). Send 'continue' to resume.\n"))
@@ -15781,7 +15933,7 @@ class OpenAIClient(_BaseClient):
             _end_state = self._open_task_state()
             _end_notice = _open_tasks_notice(_end_state)
             if _end_notice:
-                yield StreamEvent(type="text_delta",
+                yield StreamEvent(type="notice",
                                   text="\n\n" + _end_notice + "\n")
             _stop = finish_reason or "end_turn"
             if _stop in ("end_turn", "stop", ""):
@@ -15807,7 +15959,7 @@ class OpenAIClient(_BaseClient):
             # any message; the next turn picks up the conversation.
             _cap_notice = _open_tasks_notice(self._open_task_state())
             yield StreamEvent(
-                type="text_delta",
+                type="notice",
                 text=(
                     f"\n\n⚠ Tool-round budget reached "
                     f"({_MAX_TOOL_ROUNDS} rounds this turn). "
@@ -15987,12 +16139,12 @@ class CodexCLIClient(_BaseClient):
 
             elif dtype == "error":
                 err_msg = data.get("message", "Unknown Codex error")
-                yield StreamEvent(type="text_delta", text=f"\n[Codex error: {err_msg}]")
+                yield StreamEvent(type="notice", text=f"\n[Codex error: {err_msg}]")
 
             elif dtype == "turn.failed":
                 err = data.get("error", {})
                 err_msg = err.get("message", "Turn failed")
-                yield StreamEvent(type="text_delta", text=f"\n[Codex error: {err_msg}]")
+                yield StreamEvent(type="notice", text=f"\n[Codex error: {err_msg}]")
                 yield StreamEvent(
                     type="message_delta",
                     stop_reason="error",
@@ -16008,7 +16160,7 @@ class CodexCLIClient(_BaseClient):
                 pass
             if stderr_text:
                 yield StreamEvent(
-                    type="text_delta",
+                    type="notice",
                     text=f"\n[Codex CLI error (exit {rc})]: {stderr_text[:500]}",
                 )
                 yield StreamEvent(type="message_delta", stop_reason="error")

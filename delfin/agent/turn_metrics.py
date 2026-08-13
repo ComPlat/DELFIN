@@ -372,14 +372,15 @@ def aggregate_turn_stats(
     is public so a consumer can count the two kinds apart.
     """
     empty = {"turns": 0, "avg_ttft_ms": 0, "p90_ttft_ms": 0,
-             "stalls": 0, "crashes": 0, "stopped_count": 0}
+             "stalls": 0, "crashes": 0, "stopped_count": 0,
+             "never_started": 0, "ttft_sample": 0}
     try:
         base = Path(dir_path) if dir_path else _DIR
         cutoff: float | None = None
         if window_days and float(window_days) > 0:
             cutoff = ((now if now is not None else time.time())
                       - float(window_days) * 86400.0)
-        turns = stalls = crashes = stopped = 0
+        turns = stalls = crashes = stopped = never_started = 0
         ttfts: list[int] = []
         for fp in sorted(base.glob("*.jsonl")):
             try:
@@ -406,6 +407,8 @@ def aggregate_turn_stats(
                         ttfts.append(int(ttft))
                     except (TypeError, ValueError):
                         pass
+                if is_never_started(e):
+                    never_started += 1
                 if is_stall(e):
                     stalls += 1
                 if is_crashed(e):
@@ -421,6 +424,17 @@ def aggregate_turn_stats(
             "stalls": stalls,
             "crashes": crashes,
             "stopped_count": stopped,
+            # A turn that waited out a silent backend. Counted apart from
+            # a crash, which HAS an error, and apart from a stall, which
+            # produced something late. It was only reachable through the
+            # public predicate before, so the report could not say it --
+            # and what the log cannot express, the report cannot say.
+            "never_started": never_started,
+            # How many turns the two ttft figures above are actually an
+            # average OF. A mean over three samples out of ninety turns
+            # reads exactly like a mean over ninety, and the difference
+            # is whether the number means anything.
+            "ttft_sample": len(ttfts),
         }
     except Exception:
         return empty

@@ -132,8 +132,11 @@ def _run(client, streams):
 
 
 def _text(events) -> str:
+    """What reached the user, model answer and harness notice alike. The
+    open-tasks sentence is the framework speaking, so it rides the notice
+    type and is deliberately not part of the assistant's message."""
     return "".join(getattr(e, "text", "") or "" for e in events
-                   if getattr(e, "type", "") == "text_delta")
+                   if getattr(e, "type", "") in ("text_delta", "notice"))
 
 
 def _stop(events) -> str:

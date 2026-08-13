@@ -91,9 +91,13 @@ def client(monkeypatch, tmp_path):
 
 
 def _drive(client):
+    """Everything the USER sees. The harness's own sentences -- a retry
+    banner, a stop, a cost ceiling -- carry their own event type so they
+    stay out of the model's answer, but they are still shown, so a test
+    about what the user is told has to collect both."""
     return [ev.text for ev in client.stream_message(
         "sys", [{"role": "user", "content": "go"}], max_tokens=100)
-        if ev.type == "text_delta" and ev.text]
+        if ev.type in ("text_delta", "notice") and ev.text]
 
 
 def test_transient_error_is_retried_then_succeeds(client):
@@ -193,3 +197,34 @@ def test_real_client_errors_are_still_not_retried():
         "Error code: 404 - no such model",
     ):
         assert not _is_transient_api_error(_err(body)), body
+
+
+def test_the_retry_banner_is_not_the_model_speaking(client):
+    """The live incident, at its source. Two office tasks were scored as a
+    model that answered badly, at quality 35, and the entire recorded
+    answer was three of these banners -- because the harness's own
+    sentence arrived on the same event type as the model's words.
+
+    Asserted on the event stream rather than on the module's source: what
+    matters is which type the banner actually carries when a request
+    fails, not which literal appears near which literal.
+    """
+    calls = {"n": 0}
+
+    def _create(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise APITimeoutError("upstream timed out")
+        return _final_text("done")
+
+    client.client.chat.completions.create = _create
+    events = list(client.stream_message(
+        "sys", [{"role": "user", "content": "go"}], max_tokens=100))
+
+    banners = [e for e in events if "retrying" in (e.text or "").lower()]
+    assert banners, "the retry was not surfaced at all"
+    assert all(e.type == "notice" for e in banners), \
+        [e.type for e in banners]
+    # ... and the model's own word still comes through as the answer.
+    answer = "".join(e.text for e in events if e.type == "text_delta")
+    assert answer.strip() == "done"

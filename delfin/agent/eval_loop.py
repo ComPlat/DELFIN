@@ -215,10 +215,25 @@ def _turn_health_lines(window_days: int = _HEALTH_WINDOW_DAYS) -> list[str]:
     if not s.get("turns"):
         lines.append("- no turns recorded in window")
         return lines
+    # Crashes and never-started turns were counted and not printed, which
+    # is the same defect as not counting them: a run of turns that died,
+    # or that waited out a silent endpoint, left this section reading
+    # exactly like a healthy week. They are the three kinds of bad turn
+    # and they are told apart on purpose -- a crash HAS an error, a
+    # never-started turn produced no token at all, a stall produced one
+    # late -- so naming them separately is what makes the section
+    # actionable rather than atmospheric.
     lines.append(f"- turns: {s['turns']}, stalls: {s.get('stalls', 0)}, "
+                 f"crashes: {s.get('crashes', 0)}, "
+                 f"never started: {s.get('never_started', 0)}, "
                  f"stopped: {s.get('stopped_count', 0)}")
+    # The sample size sits next to the average it belongs to. A mean over
+    # three turns out of ninety reads exactly like a mean over ninety.
+    sample = s.get("ttft_sample")
+    of = (f" over {sample} of {s['turns']} turns" if sample is not None
+          else "")
     lines.append(f"- ttft: avg {s.get('avg_ttft_ms', 0) / 1000:.1f}s, "
-                 f"p90 {s.get('p90_ttft_ms', 0) / 1000:.1f}s")
+                 f"p90 {s.get('p90_ttft_ms', 0) / 1000:.1f}s{of}")
     return lines
 
 

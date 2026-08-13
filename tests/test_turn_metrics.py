@@ -108,8 +108,17 @@ def test_aggregate_empty_and_missing_dir_never_raise(home):
     # "crashes" joined the roll-up when turns that RAISED stopped being
     # counted as backend stalls: without its own counter, a run of
     # crashing turns would have made this report quieter than before.
+    #
+    # "never_started" and "ttft_sample" joined it for the same reason,
+    # one layer along. A turn that waited out a silent backend was only
+    # reachable through the public predicate, so the roll-up -- which is
+    # what a person actually reads -- could not say it had happened. And
+    # a mean over three ttft samples out of ninety turns reads exactly
+    # like a mean over ninety; the sample size is the difference between
+    # a number and a number that means something.
     zeros = {"turns": 0, "avg_ttft_ms": 0, "p90_ttft_ms": 0,
-             "stalls": 0, "crashes": 0, "stopped_count": 0}
+             "stalls": 0, "crashes": 0, "stopped_count": 0,
+             "never_started": 0, "ttft_sample": 0}
     assert tm.aggregate_turn_stats() == zeros           # dir doesn't exist yet
     tm.record("s", model="m", total_ms=1)
     tm.metrics_path("s").write_text("", encoding="utf-8")

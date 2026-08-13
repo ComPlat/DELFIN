@@ -344,6 +344,17 @@ _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
 }
 
 
+
+def _granted_dir_note(resolved) -> str:
+    """What a turn in flight needs to hear about a new writable root."""
+    return (
+        f"[permissions] The user just granted access to {resolved} "
+        f"mid-turn. It is writable from your next tool call. If you "
+        f"stopped short of something because that path was outside the "
+        f"workspace, it is inside now — but do not go back and redo work "
+        f"that already succeeded."
+    )
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -403,6 +414,16 @@ class AgentEngine:
             effort=self.effort,
             kit_confirm_callback=kit_confirm_callback,
         )
+        # A model switch has consequences the caller used to have to
+        # remember: re-size the compaction budget to the new model's real
+        # context window, and tell a turn already in flight that it is
+        # now talking to something else. Installed at construction rather
+        # than per turn, because the dashboard switches between turns as
+        # well -- same probe shape as should_stop and turn_cost_cap.
+        try:
+            self.client.on_model_switched = self._on_model_switched
+        except Exception:
+            pass
         self.backend = backend
         self.provider = provider
         AgentEngine._active_provider = provider  # class-level for static methods
@@ -670,6 +691,48 @@ class AgentEngine:
         perms.confirm_callback = callback
         return True
 
+    def _on_model_switched(self, previous: str, current: str) -> None:
+        """Everything a model change implies, done by the change itself.
+
+        The context window was the caller's job before -- "call after
+        every ``client.switch_model(...)``", written in a docstring and
+        enforced by nothing, so a third caller that forgot it left the
+        compaction budget sized for the model the agent had stopped
+        talking to. And nobody told the model: a turn in flight carries
+        on under a different one, the user reads one answer written by
+        two, and the agent never learns its own capabilities changed.
+        """
+        try:
+            self._refresh_context_window()
+        except Exception:
+            pass
+        self._tell_the_running_turn(
+            f"[model] This session switched from '{previous}' to "
+            f"'{current}' just now. Your capabilities and context window "
+            f"may differ from the ones you started this turn with. Carry "
+            f"on from where you are -- do not restart the work -- and say "
+            f"in your answer that the model changed partway.")
+
+    def _tell_the_running_turn(self, note: str) -> None:
+        """Put a fact about the run in front of a turn already in flight.
+
+        The permission mode, a newly granted directory, a command the user
+        just allowed for good -- all of them change what the agent may do,
+        all of them are written from the dashboard thread, and all of them
+        took effect at the gate without the model ever hearing about it.
+        The gap is not academic: an agent that was refused a write two
+        rounds ago has already told the user it cannot do the thing, and
+        will not try again on its own.
+
+        Best-effort by design. A client without the rail behaves exactly
+        as it did before, and a permission change must never fail because
+        a notice could not be delivered.
+        """
+        try:
+            self.client.push_run_note(note)
+        except Exception:
+            pass
+
     def set_kit_permission_mode(self, mode: str) -> bool:
         """Switch the KIT permission mode at runtime.
 
@@ -682,7 +745,25 @@ class AgentEngine:
             return False
         if mode not in {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}:
             return False
+        previous = str(getattr(perms, "mode", "") or "")
         perms.mode = mode
+        # A turn already in flight is working to the rules it was told at
+        # the top of it, while the gate is already enforcing these. That
+        # gap is the whole problem: switched to plan, the model keeps
+        # writing and every write comes back refused for reasons it was
+        # never given; switched to acceptEdits, it keeps proposing and
+        # asking, and the user watches it ask permission it now has.
+        # Delivered on the same rail as steering and finished jobs, so it
+        # lands between tool rounds and again if the turn ends without
+        # one.
+        if previous and previous != mode:
+            self._tell_the_running_turn(
+                    f"[permissions] The user switched this session from "
+                    f"'{previous}' to '{mode}' just now, mid-turn. That is "
+                    f"already in force for every tool call from here on. "
+                    f"Work to the new rules from your next step -- do not "
+                    f"redo what is done, and say in your answer that the "
+                    f"rules changed partway.")
         return True
 
     def add_kit_workspace_dir(self, path, *,
@@ -711,7 +792,9 @@ class AgentEngine:
                     resolved, scope=scope, repo_dir=self.repo_dir
                 )
             except Exception as exc:
+                self._tell_the_running_turn(_granted_dir_note(resolved))
                 return True, f"added (in-memory only — persist failed: {exc}): {resolved}"
+        self._tell_the_running_turn(_granted_dir_note(resolved))
         return True, f"added: {resolved}"
 
     def list_kit_workspace_dirs(self) -> list[str]:
@@ -759,7 +842,16 @@ class AgentEngine:
                 perms.bash_auto_allow_patterns = (
                     perms.bash_auto_allow_patterns + (pattern,)
                 )
+            self._tell_the_running_turn(
+                f"[permissions] The user just allowed {pattern!r} for good, "
+                f"mid-turn. It no longer needs a confirmation. If you gave "
+                f"up on something because that command was refused, it is "
+                f"available now.")
         else:
+            self._tell_the_running_turn(
+                f"[permissions] The user just denied {pattern!r} for good, "
+                f"mid-turn. Do not attempt it again; find another route or "
+                f"say what you cannot do without it.")
             if pattern not in perms.bash_deny_patterns:
                 perms.bash_deny_patterns = (
                     perms.bash_deny_patterns + (pattern,)
@@ -2027,7 +2119,12 @@ class AgentEngine:
                     # The budget is the reason this cannot become a way to
                     # keep streaming through a stop: a client that ignores
                     # the flag gets a handful of events, not a free run.
-                    if (event.type == "text_delta" and event.text
+                    # A notice counts here as well: the sentence that says
+                    # WHY the turn ended is emitted as one, and dropping
+                    # it at the stop boundary would end the turn without a
+                    # word -- which is the failure this whole drain exists
+                    # to prevent.
+                    if (event.type in ("text_delta", "notice") and event.text
                             and _stop_drain > 0):
                         _stop_drain -= 1
                         if on_token:
@@ -2045,7 +2142,38 @@ class AgentEngine:
                     if on_token:
                         on_token(event.text)
 
+                elif event.type == "notice" and event.text:
+                    # The harness talking about itself: a retry banner, a
+                    # stop, a cost ceiling. Shown to the user and to
+                    # nothing else -- it is not the model's answer, and
+                    # every place that treated it as one drew a wrong
+                    # conclusion from it. A run whose entire recorded
+                    # output was three retry banners was scored as a
+                    # model that answered badly, at a quality number, and
+                    # written into the file baselines compare against;
+                    # the same text stamped time-to-first-token, so the
+                    # sickest turn produced the healthiest-looking
+                    # record. Not appended to `chunks`, and _turn_ttft is
+                    # deliberately left alone.
+                    if on_token:
+                        try:
+                            on_token(event.text)
+                        except Exception:
+                            pass
+
                 elif event.type == "thinking_delta" and event.text:
+                    # A reasoning token IS the backend starting to produce.
+                    # Left unstamped, a turn that thought for two minutes
+                    # and then answered recorded ttft_ms=None, which is the
+                    # same record a backend that never said anything
+                    # writes -- and on an endpoint that reports no usage
+                    # the output-token corroboration is absent too, so a
+                    # thinking-only turn could be counted as never
+                    # started. Widens what ttft measures from "first
+                    # visible word" to "first token of any kind", which is
+                    # the question the health report actually asks.
+                    if _turn_ttft is None:
+                        _turn_ttft = _time.monotonic()
                     _thinking_chars += len(event.text)
                     if on_thinking:
                         on_thinking(event.text)
