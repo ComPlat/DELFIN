@@ -29,7 +29,30 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-_METALS = set("Sc Ti V Cr Mn Fe Co Ni Cu Zn Y Zr Nb Mo Tc Ru Rh Pd Ag Cd Hf Ta W Re Os Ir Pt Au Hg La Ce Lu Sn Pb Ge Sb Bi".split())
+# ===== DIE METALLLISTE WAR EINE GEKUERZTE HANDKOPIE (2026-08-14) =====
+# Kanonisch ist smiles_converter._METALS mit 68 Elementen.  Hier standen 37, und die
+# 33 fehlenden sind keine Exoten, sondern ganze Bloecke:
+#     s-Block      Li Na K Rb Cs Be Mg Ca Sr Ba          (vollstaendig)
+#     Lanthanoide  Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb   (12 von 15; nur La/Ce/Lu waren da)
+#     Actinoide    Ac Th Pa U Np Pu                      (VOLLSTAENDIG gefehlt)
+#     p-Block      Al Ga In Tl Po
+#
+# WAS DAS ANRICHTET: _is_metal("U") gab False.  Damit galt eine U-O-Koordinations-
+# bindung als gewoehnliche Schwer-Schwer-Bindung, bekam ueber _COV.get(s, 0.9) einen
+# erfundenen Radius und wurde vom Dekollaps-Korrektor "repariert" -- das sind die 32
+# erfundenen Bindungen, davon 22 Uranyl.  Ein Metall, das nicht als Metall erkannt
+# wird, wird auch nicht eingefroren (frozen-Menge weiter unten haengt an _is_metal).
+#
+# ⚠ NICHT importiert, weil smiles_converter seinerseits manta-Module zieht (Zirkel).
+# Die Liste wird deshalb hier gefuehrt UND von harness/polyhedra_audit.py gegen die
+# kanonische geprueft, damit die Kopie nicht wieder unbemerkt auseinanderlaeuft.
+_METALS_HIST = set("Sc Ti V Cr Mn Fe Co Ni Cu Zn Y Zr Nb Mo Tc Ru Rh Pd Ag Cd "
+                   "Hf Ta W Re Os Ir Pt Au Hg La Ce Lu Sn Pb Ge Sb Bi".split())
+_METALS_ADDED = set("Li Na K Rb Cs Be Mg Ca Sr Ba "
+                    "Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb "
+                    "Ac Th Pa U Np Pu Al Ga In Tl Po".split())
+_METALS = _METALS_HIST | (
+    _METALS_ADDED if os.environ.get("DELFIN_FFFREE_DECOLLAPSE_METALS", "0") == "1" else set())
 _COV = {'C':0.76,'N':0.71,'O':0.66,'H':0.31,'S':1.05,'Cl':1.02,'P':1.07,'F':0.57,
         'Br':1.20,'I':1.39,'B':0.84,'Si':1.11,'Se':1.20,'As':1.19,'Te':1.38}
 _MD_TOL = 0.05          # M-D invariant tolerance (Å)
@@ -140,6 +163,25 @@ def _is_metal(s: str) -> bool:
     return s in _METALS
 
 
+def _norm_iso(sym: str) -> str:
+    """D/T auf H abbilden -- NUR fuer die Geometrie-Logik (2026-08-14).
+
+    Deuterium wurde nirgends als Wasserstoff erkannt: `_COV` kennt kein 'D', also gab
+    `_COV.get('D', 0.9)` einen Radius von 0.9 statt 0.31 -- fast das Dreifache --, und
+    saemtliche Abfragen `syms[i] == 'H'` (H-Elternzuordnung, vdW-Zaehlung, Winkeltor,
+    Kollapszaehlung) verfehlten es.  Ein D-Atom galt damit als SCHWERATOM mit einem
+    erfundenen Radius: es zog Phantombindungen an und loeste Kollapsbefunde aus, die
+    keine sind.  Betroffen: 219 von 307370 Kristallen.
+
+    ⚠ Die AUSGABE bleibt unberuehrt: der Zusammenbau unten schreibt `p[0]`, also das
+    ORIGINALSYMBOL aus der Eingabezeile.  Aus einem D wird hier kein H, es wird nur
+    endlich wie eines GERECHNET.
+    """
+    if sym in ("D", "T") and os.environ.get("DELFIN_FFFREE_DECOLLAPSE_ISOTOPES", "0") == "1":
+        return "H"
+    return sym
+
+
 def _parse(xyz: str):
     lines = xyz.splitlines()
     syms: List[str] = []
@@ -153,7 +195,7 @@ def _parse(xyz: str):
             except ValueError:
                 keep.append(ln)
                 continue
-            syms.append(p[0]); pts.append(xyz_v)
+            syms.append(_norm_iso(p[0])); pts.append(xyz_v)
         else:
             keep.append(ln)
     return syms, np.array(pts, dtype=float), lines
