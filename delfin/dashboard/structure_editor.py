@@ -1038,10 +1038,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: single jerk the playback was built to replace.  Twelve draws that same
     #: path in 1.9 s and a long one in proportion, and the slider is there for
     #: both ends.
-    submit_play_speed = widgets.IntSlider(
-        value=12, min=2, max=60, step=1,
+    submit_play_speed = widgets.FloatSlider(
+        value=12, min=0.5, max=60, step=0.5,
         description='Play', continuous_update=False,
-        readout=True, readout_format='d',
+        readout=True, readout_format='.1f',
         tooltip=('How many frames of the optimisation are drawn a second. '
                  'Slow lets the calculation run ahead of the picture: what '
                  'you see is where you are, and grabbing an atom there keeps '
@@ -1921,12 +1921,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    read(now);\n'
             '    if(play.queue.length){\n'
             '      if(!play.started) play.started=now;\n'
-            '      var t=(now-play.started)/stepMs();\n'
+            '      var ms=stepMs();\n'
+            '      var t=(now-play.started)/ms;\n'
             '      if(t>=1){\n'
-            '        var next=play.queue.shift();\n'
-            '        show(play.last,next,1);\n'
-            '        play.last=next; play.started=now;\n'
-            '        play.shown=(play.shown||0)+1;\n'
+            '        /* However many steps are due, and the clock moves on by\n'
+            '           exactly those -- not back to now.  This loop runs on\n'
+            '           the animation frame, so one step per frame with the\n'
+            '           clock reset each time snapped the rate to whole\n'
+            '           divisors of the screen: 62.7 a second, then 31.3, and\n'
+            '           nothing in between.  Every setting from 32 to 59 drew\n'
+            '           31.3 -- measured -- so most of the slider did nothing.\n'
+            '           Carrying the remainder makes the average the rate that\n'
+            '           was actually asked for. */\n'
+            '        var due=Math.floor(t);\n'
+            '        var prev=play.last;\n'
+            '        var left=due;\n'
+            '        while(left-->0&&play.queue.length){\n'
+            '          play.last=play.queue.shift();\n'
+            '          play.shown=(play.shown||0)+1;\n'
+            '        }\n'
+            '        show(prev,play.last,1);\n'
+            '        play.started+=due*ms;\n'
             '      } else if(play.last){\n'
             '        show(play.last,play.queue[0],t);\n'
             '      } else {\n'
@@ -4910,7 +4925,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Frames a second on the slider, milliseconds a frame on the page: the
         user thinks in speed and the player counts in delay.
         """
-        pace = max(1, int(round(1000.0 / max(1, int(submit_play_speed.value)))))
+        pace = max(1, int(round(1000.0 / max(0.1, float(submit_play_speed.value)))))
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinGfnPlay&&window.__delfinGfnPlay['
@@ -4924,7 +4939,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _push_play_speed()
         _set_mol_status(
-            f'The optimisation is drawn at {int(submit_play_speed.value)} '
+            f'The optimisation is drawn at {float(submit_play_speed.value):g} '
             'frame(s) a second. Slower lets the calculation run ahead of the '
             'picture -- take hold of an atom and the frame you are looking at '
             'is the one that is kept.')
