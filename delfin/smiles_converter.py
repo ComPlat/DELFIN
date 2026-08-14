@@ -19307,6 +19307,36 @@ _GEOM_IDEAL_ANGLES: Dict[str, List[float]] = {
     'DD': [62.2, 73.7, 117.4, 143.6, 180.0],
 }
 
+# ===== DIE SOLLWINKEL GEGEN DIE REALITAET, NICHT GEGEN DEN BAUER (2026-08-14) =====
+# GRUNDSATZ (User, 14.08.): "realistischere Geometrien muessen IMMER gewinnen."  Genau das
+# war verletzt, und zwar in BEIDE Richtungen -- nachgerechnet mit harness/polyhedra_audit.py:
+#
+#   SP (Quadratpyramide).  Hier stand [90, 180].  Der Bauer setzte 82.0/88.9/163.9, die
+#   Realitaet ist 100-105 apikal-basal (VO(acac)2, [CuCl5]3-, [Ni(CN)5]3-).  Mit [90, 180]
+#   bekommt der KORRIGIERTE Bauer 25.0 Grad maximale Abweichung und der FALSCHE nur 16.1 --
+#   das Auge haette die richtige Geometrie bestraft und die falsche belohnt.  Mit den Werten
+#   unten dreht es sich um: 8.9 -> 0.3.  Ein Auge, das den alten Baufehler als Ideal fuehrt,
+#   macht jede Reparatur unlandbar.
+#
+#   SAP (Quadrat-Antiprisma).  Hier stehen 52.4 und 180.0 Grad.  Ein Antiprisma hat KEIN
+#   antipodales Paar -- 180 Grad kann darin nicht vorkommen, 52.4 auch nicht.  Da gegen den
+#   NAECHSTLIEGENDEN Sollwert gemessen wird, machen ueberzaehlige Eintraege das Auge
+#   NACHSICHTIG: eine kollabierte Struktur mit einem 180-Grad-Paar bekaeme Abweichung 0.
+#   Gerechnet fuer das gleichkantige Antiprisma: 74.9 (x16), 118.5 (x4), 141.6 (x8).
+#
+# ⚠ NICHT angefasst, weil noch nicht entschieden:
+#   TPR  -- der Prismenwinkel haengt am Hoehe-Breite-Verhaeltnis, es gibt kein "ideales"
+#           Prisma.  Bauer 70.0/90.4/131.6 gegen Auge 76/82/140 (§2.8b).  ⚠ TPR6 ist der
+#           EINZIGE gelandete Champion-Teil -- hier wird nichts ohne Entscheidung geaendert.
+#   DD   -- fuehrt ebenfalls 180.0; ob ein D2d-Dodekaeder eines hat, ist NICHT nachgerechnet.
+#           Ungeprueft bleibt ungeaendert.
+_GEOM_IDEAL_ANGLES_REAL: Dict[str, List[float]] = {
+    'SP':  [87.0, 102.5, 155.0],      # C4v-Quadratpyramide, Kristallwerte
+    'SAP': [74.9, 118.5, 141.6],      # gleichkantiges Antiprisma, gerechnet
+}
+if os.environ.get("DELFIN_FFFREE_GEOM_IDEALS_REAL", "0") == "1":
+    _GEOM_IDEAL_ANGLES.update(_GEOM_IDEAL_ANGLES_REAL)
+
 
 def _ideal_polyhedron_angle_dev_per_metal(
     mol, conf_id: int, only_geom: Optional[str] = None,
