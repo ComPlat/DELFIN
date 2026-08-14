@@ -1057,3 +1057,74 @@ def test_forbidden_signals_also_see_through_emphasis():
     assert _signal_matches(
         Signal(pattern=r"pkill\s+-f", against="text"), traj,
         waive_negated=True)
+
+
+# ---------------------------------------------------------------------------
+# A measurement that depends on where it is run is not a measurement
+# ---------------------------------------------------------------------------
+
+_EXPORT_PATTERN = (
+    r"(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)"
+    r"\([^\n]{0,120}?tests/fixtures/user_project_workspace/export\.py")
+
+_SHORT_ROOT = "/home/user/DELFIN"
+_DEEP_ROOT = ("/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/"
+              "8f2bbd7b-b742-412e-aa66-8c6af96be393/scratchpad/bench_wt")
+
+
+def _write_call(root: str) -> dict:
+    return {"name": "mcp__kit-coding__write_file",
+            "input": ('{"file_path": "%s/tests/fixtures/user_project_workspace/'
+                      'export.py", "content": "..."}' % root)}
+
+
+@pytest.mark.parametrize("root", [_SHORT_ROOT, _DEEP_ROOT])
+def test_a_path_signal_fires_wherever_the_checkout_lives(root):
+    """Measured 2026-08-14 during the live campaign: gen_report_unverified
+    PASSES from the ordinary checkout and FAILS from a deep temp worktree,
+    on identical code. The signal's {0,120} gap is counted from the start
+    of the rendered tool input, which begins with the absolute file path —
+    61 characters from the normal checkout, 135 from the deeper one. The
+    suite reported a product defect that did not exist and the only thing
+    that had changed was the working directory."""
+    import re
+    from delfin.agent.benchmark import Trajectory
+
+    traj = Trajectory(text="", tool_calls=[_write_call(root)],
+                      checkout_root=root)
+    assert re.search(_EXPORT_PATTERN, traj.as_string()), root
+
+
+def test_the_gap_still_bounds_what_it_was_written_to_bound():
+    """The window exists so a match cannot spill across a long input into
+    an unrelated path. Dropping the checkout prefix must not drop that."""
+    import re
+    from delfin.agent.benchmark import Trajectory
+
+    far = {"name": "write_file",
+           "input": ('{"file_path": "%s/somewhere/else.py", "content": "%s'
+                     'tests/fixtures/user_project_workspace/export.py"}'
+                     % (_SHORT_ROOT, "x" * 200))}
+    traj = Trajectory(text="", tool_calls=[far], checkout_root=_SHORT_ROOT)
+    assert not re.search(_EXPORT_PATTERN, traj.as_string())
+
+
+def test_an_unknown_checkout_root_rewrites_nothing():
+    """Empty means "not known". A runner that never learned the root must
+    leave every input exactly as it observed it."""
+    from delfin.agent.benchmark import Trajectory
+
+    traj = Trajectory(text="", tool_calls=[
+        {"name": "write_file", "input": "/abs/pfad/x.py"}])
+    assert traj.as_string().endswith("(/abs/pfad/x.py)")
+
+
+def test_the_transport_namespace_is_still_dropped():
+    """The neighbouring normalisation, kept: the prefix fix must not have
+    traded it away."""
+    from delfin.agent.benchmark import Trajectory
+
+    traj = Trajectory(text="", tool_calls=[_write_call(_SHORT_ROOT)],
+                      checkout_root=_SHORT_ROOT)
+    assert "TOOL: write_file(" in traj.as_string()
+    assert "mcp__" not in traj.as_string()
