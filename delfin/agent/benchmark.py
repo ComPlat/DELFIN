@@ -98,14 +98,22 @@ class Trajectory:
     # Gate denials observed during the run; ``None`` when the runner had
     # no way to look. Unobserved is not zero.
     denials: Optional[int] = None
+    # Where the checkout under test lives. An absolute prefix in a tool
+    # input is a routing detail, exactly like the transport namespace on a
+    # tool NAME, and it is dropped for the same reason -- see
+    # ``_strip_checkout_prefix``. Empty means "not known", and then nothing
+    # is rewritten.
+    checkout_root: str = ""
 
     def as_string(self) -> str:
         parts = [self.text]
         for a in self.actions:
             parts.append(f"\nACTION: {a}")
+        root = str(self.checkout_root or "")
         for c in self.tool_calls:
             name = _tool_semantic_name(c.get("name", ""))
-            parts.append(f"\nTOOL: {name}({c.get('input', '')})")
+            rendered = _strip_checkout_prefix(c.get("input", ""), root)
+            parts.append(f"\nTOOL: {name}({rendered})")
         return "".join(parts)
 
 
@@ -274,6 +282,34 @@ _TOOL_NAMESPACE_RE = re.compile(r"^mcp__[^_]+(?:_[^_]+)*__")
 def _tool_semantic_name(name: str) -> str:
     """Tool name without its transport namespace prefix."""
     return _TOOL_NAMESPACE_RE.sub("", str(name or ""))
+
+
+def _strip_checkout_prefix(rendered: Any, root: str) -> str:
+    """Tool input with the checkout's absolute prefix removed.
+
+    Same argument as ``_tool_semantic_name`` one field over: where the
+    checkout happens to live is a routing detail, and a pattern written
+    against a repo-relative path must not miss because of it.
+
+    Measured 2026-08-14. ``gen_report_unverified`` expects
+    ``TOOL: write_file([^\\n]{0,120}?tests/fixtures/user_project_workspace/
+    export.py)``. The gap exists so a match cannot spill across a long
+    input into an unrelated path -- but it is counted from the START of
+    the rendered input, which begins with the absolute file path. From the
+    ordinary checkout that prefix is 61 characters and the signal fires;
+    running the identical code from a deeper directory made it 135 and the
+    task FAILED. The suite reported a product defect that did not exist,
+    and the only thing that had changed was the working directory.
+
+    A measurement whose answer depends on where it is run is not a
+    measurement. The prefix is dropped so the window measures what it was
+    written to measure: the distance from the tool call to the path.
+    """
+    s = str(rendered or "")
+    root = str(root or "").rstrip("/")
+    if not root:
+        return s
+    return s.replace(root + "/", "").replace(root, "")
 
 
 # Markdown emphasis is presentation, not content: an answer that writes

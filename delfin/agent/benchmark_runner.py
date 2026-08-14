@@ -79,8 +79,14 @@ def extract_actions(text: str) -> list[str]:
     return out
 
 
-def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0) -> Trajectory:
-    """Convert ``_run_once``'s return dict into a Trajectory."""
+def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
+                       checkout_root: str = "") -> Trajectory:
+    """Convert ``_run_once``'s return dict into a Trajectory.
+
+    ``checkout_root`` is where the repository under test lives. It is
+    carried so the scorer can drop that prefix from tool inputs -- see
+    ``benchmark._strip_checkout_prefix``. Optional, and an omitted root
+    changes nothing, so older callers keep working."""
     text = str(raw.get("text") or "")
     return Trajectory(
         text=text,
@@ -91,6 +97,7 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0) 
         input_tokens=int(raw.get("input_tokens") or 0),
         output_tokens=int(raw.get("output_tokens") or 0),
         error=str(raw.get("error") or ""),
+        checkout_root=str(checkout_root or ""),
     )
 
 
@@ -536,6 +543,7 @@ def _run_task_once(
     cost_after = float(getattr(engine, "cost_usd", 0.0) or 0.0)
     traj = trajectory_from_run(
         raw, duration_s=t1 - t0, cost_usd=_cost_delta(cost_before, cost_after),
+        checkout_root=str(Path(os.getcwd()).resolve()),
     )
     traj.denials = _denials_during(engine, since_ts=_iso(t0))
     return score_outcome(
