@@ -104,6 +104,16 @@ jobs:
       || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     timeout-minutes: 240
     continue-on-error: true
+    # One slow run per branch, newest wins. The workflow-level group is
+    # keyed per COMMIT on main and never cancels — deliberate, so every
+    # commit gets its own verdict from the fast gate. Applied to a job of
+    # this length it stacks: main takes a push every few minutes, and
+    # within an hour of switching this on there were five 90-minute runs
+    # in flight at once. For an informational report only the newest
+    # answer is worth anything, so this one cancels its predecessor.
+    concurrency:
+      group: slow-tests-${{ github.ref }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
