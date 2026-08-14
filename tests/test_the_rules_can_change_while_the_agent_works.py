@@ -486,3 +486,114 @@ def test_a_stop_with_an_empty_queue_says_only_that(tmp_path, monkeypatch):
     notice = _stop_notice(client)
     assert "Stopped" in notice
     assert "Not delivered" not in notice
+
+
+# ---------------------------------------------------------------------------
+# A switch moves the request; the bounds have to move with it
+# ---------------------------------------------------------------------------
+
+def _two_round_turn(monkeypatch, *, switch_to=""):
+    """Drive a real two-round tool loop and record, per round, which model
+    the request went to and what tool-output budget that round ran under.
+
+    The switch is made from INSIDE the first in-flight request, which is
+    exactly where the dashboard thread makes it.
+    """
+    import types
+    import delfin.agent.api_client as A
+    from delfin.agent import model_capabilities as mc
+
+    wide = mc.ModelCapabilities(model="wide", provider="ollama",
+                                context_window=262_144, supports_tools=True)
+    narrow = mc.ModelCapabilities(model="narrow", provider="ollama",
+                                  context_window=8_192, supports_tools=True)
+    monkeypatch.setattr(
+        mc, "resolve",
+        lambda provider, model, *a, **k: wide if model == "wide" else narrow)
+
+    client = A.create_client(backend="api", provider="ollama",
+                             model="wide", cwd="/tmp")
+
+    budgets: list[int] = []
+    real_elide = A._elide_old_tool_results
+    monkeypatch.setattr(A, "_elide_old_tool_results",
+                        lambda msgs, **kw: (budgets.append(kw.get("char_budget"))
+                                            or real_elide(msgs, **kw)))
+
+    models: list[str] = []
+    rounds = {"n": 0}
+
+    def _chunk(**delta):
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(
+            delta=types.SimpleNamespace(content=None, tool_calls=None,
+                                        reasoning_content=None, **delta),
+            finish_reason=None)], usage=None)
+
+    def create(**kwargs):
+        models.append(kwargs["model"])
+        rounds["n"] += 1
+        if rounds["n"] == 1:
+            if switch_to:
+                client.switch_model(switch_to)
+
+            def first():
+                call = types.SimpleNamespace(
+                    index=0, id="c1",
+                    function=types.SimpleNamespace(name="nope", arguments="{}"))
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None,
+                                                tool_calls=[call],
+                                                reasoning_content=None),
+                    finish_reason=None)], usage=None)
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=None,
+                                                reasoning_content=None),
+                    finish_reason="tool_calls")], usage=None)
+            return first()
+
+        def last():
+            yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                delta=types.SimpleNamespace(content="fertig", tool_calls=None,
+                                            reasoning_content=None),
+                finish_reason="stop")], usage=None)
+        return last()
+
+    client.client = types.SimpleNamespace(chat=types.SimpleNamespace(
+        completions=types.SimpleNamespace(create=create)))
+
+    for _ev in client.stream_message(
+            "sys", [{"role": "user", "content": "los"}], max_tokens=64):
+        pass
+    return models, budgets
+
+
+def test_a_mid_turn_switch_really_does_reach_the_next_request(monkeypatch):
+    """The premise of the test below, asserted rather than assumed: the
+    request body reads ``self.model`` live, so round two goes to the model
+    the switch named."""
+    models, _ = _two_round_turn(monkeypatch, switch_to="narrow")
+    assert models == ["wide", "narrow"]
+
+
+def test_the_tool_budget_follows_the_model_the_round_is_sent_to(monkeypatch):
+    """Measured before the fix: caps were resolved ONCE, before the first
+    round, under a comment asserting "caps don't change mid-turn". They do
+    -- switch_model is deliberately allowed to land mid-turn and tells the
+    running turn so. Round two then went to an 8k-context model carrying a
+    471 859-char tool-output budget sized for a 262k one: about eight times
+    the entire window of the model now receiving it."""
+    models, budgets = _two_round_turn(monkeypatch, switch_to="narrow")
+    assert models == ["wide", "narrow"]
+    assert len(budgets) == 2, budgets
+    assert budgets[0] == int(262_144 * 0.45 * 4)
+    assert budgets[1] == 60_000, (
+        f"round two ran on {models[1]} with a budget of {budgets[1]} chars")
+
+
+def test_without_a_switch_the_bounds_do_not_move(monkeypatch):
+    """The other half. Re-deriving must be driven by the model CHANGING,
+    not run every round on principle -- a turn that never switches has to
+    keep exactly the budget it started with."""
+    models, budgets = _two_round_turn(monkeypatch)
+    assert models == ["wide", "wide"]
+    assert budgets == [int(262_144 * 0.45 * 4)] * 2
