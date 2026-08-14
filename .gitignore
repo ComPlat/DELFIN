@@ -119,13 +119,21 @@ scripts/ccdc_exploit/
 /01_xtb_opt/
 /02_xtb_thermo/
 
-# Isomer-benchmark reference numbers. Generated on first run of
-# tests/test_isomer_benchmark.py (chemistry, opt-in, not in the default CI
-# run) and never committed, so it appears untracked in every working tree
-# and is the kind of artifact a bulk stage sweeps in. The test skips
-# without it, so nothing breaks; a deliberate re-baseline still works with
-# UPDATE_BENCHMARK_BASELINE=1 and can be force-added when someone vouches
-# for the state it captures.
+# Isomer-benchmark reference numbers, still ignored, and the reason is not
+# the one that used to be written here.
+#
+# Committing them was tried on 2026-08-14, precisely because a reference
+# that exists only on one developer's disk is not a reference and left the
+# benchmark guarding nothing in CI. It could not be done: producing the
+# file means running the twelve-system pool, and that had not finished
+# after TWO HOURS on a fast multi-core box. A two-core runner would be well
+# past the slow job's own 240-minute cap, so the file cannot be generated
+# here and the test could not run against it there either.
+#
+# So this stays ignored until the pool is cut to a size a run can hold.
+# Until then the benchmark is a tool somebody invokes deliberately
+# (UPDATE_BENCHMARK_BASELINE=1), not a regression guard, and the test skips
+# in half a second instead of pretending otherwise.
 /tests/fixtures/benchmark_baseline.json
 
 # Coverage. The nightly CI job writes these, and so does anyone reproducing
