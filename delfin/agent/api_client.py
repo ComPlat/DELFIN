@@ -14824,7 +14824,18 @@ class OpenAIClient(_BaseClient):
                 # it would be a message the person wrote and nobody ever
                 # saw. Neither: it is taken out of the queue and handed
                 # back to them in the same breath as the stop.
-                _undelivered = self._drain_steer() + self._drain_run_notes()
+                #
+                # Run notes were drained by this same line and quoted in
+                # this same sentence, and they are not the same thing. A
+                # run note is not something the user typed -- it is a fact
+                # about the session, and it is still TRUE after the stop.
+                # So the sentence told them to re-send a bracket-tagged
+                # line they had never written, and draining it destroyed
+                # the only notice the model was ever going to get that its
+                # permissions had changed. It stays queued instead: the
+                # next turn drains it on its first round, or on its way
+                # out if that turn calls no tool.
+                _undelivered = self._drain_steer()
                 _lost = ""
                 if _undelivered:
                     _lost = (" Not delivered, because the turn stopped "
@@ -14832,9 +14843,19 @@ class OpenAIClient(_BaseClient):
                                  f"“{u}”" for u in _undelivered[:3])
                              + (" …" if len(_undelivered) > 3 else "")
                              + " — send it again if it still applies.")
+                with self._steer_lock:
+                    _pending = len(getattr(self, "_run_notes", None) or ())
+                _changed = ""
+                if _pending:
+                    _changed = (
+                        f" {_pending} change"
+                        f"{'' if _pending == 1 else 's'} to this session "
+                        "landed while the turn was running; the agent is "
+                        "told with your next message.")
                 yield StreamEvent(type="notice", text=(
                     "\n⏹️ Stopped. The rounds completed so far are kept; "
-                    "send a message to continue from here." + _lost + "\n"))
+                    "send a message to continue from here."
+                    + _lost + _changed + "\n"))
                 yield StreamEvent(
                     type="message_delta",
                     input_tokens=_total_in, output_tokens=_total_out,
