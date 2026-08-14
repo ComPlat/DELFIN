@@ -1,0 +1,39 @@
+name: Dependency review
+
+# Runs on a pull request that changes the dependencies and says what it would
+# pull in: known advisories, and licences that do not fit.
+#
+# This is the half that Dependabot's security updates do not cover. Those react
+# to an advisory published against something already installed; this one
+# catches a dependency being added that carries one today, before it is merged
+# rather than after.
+#
+# It fails the pull request on a high-severity advisory. That is a narrower
+# gate than it sounds: a moderate finding is reported and merges anyway, so the
+# check only stands in the way of knowingly adding something seriously broken.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Review the dependency change
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+          # DELFIN is LGPL-3.0-or-later and is installed by academic groups who
+          # have to know what they are running. A copyleft licence stricter
+          # than the project's own would quietly change what users may do with
+          # it, so those are flagged for a person rather than accepted.
+          deny-licenses: AGPL-3.0, AGPL-3.0-only, AGPL-3.0-or-later, SSPL-1.0
