@@ -168,17 +168,115 @@ def _run(smi: str):
     return res
 
 
+# One build, shared by every test that only reads it.
+#
+# Four tests below ask four different questions of the same structures, and
+# each of them used to build those structures again from scratch. For the
+# Fe/Sc entry that is four times twelve minutes to answer four questions
+# about one answer. Determinism is the one property that genuinely needs a
+# second build, and it still takes one — so an entry now costs two builds
+# instead of five, and the nightly run shrinks with the gate.
+_BUILD_CACHE: dict = {}
+
+
+def _built(smi: str):
+    if smi not in _BUILD_CACHE:
+        _BUILD_CACHE[smi] = _run(smi)
+    return _BUILD_CACHE[smi]
+
+
+# ---------------------------------------------------------------------------
+# What runs on every push, and what waits for the nightly run
+# ---------------------------------------------------------------------------
+# Seconds for ONE build, measured 2026-08-14. The spread is the whole point:
+# a single entry costs more than eleven minutes while three others cost about
+# a second each.
+#
+#   702.1  Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal
+#   184.9  Ir(ppy)2(acac) CN=6
+#   157.9  Cd-histidine CN=7
+#    89.2  Cd MA2B2C2 octahedral (five OH isomers)
+#    44.2  Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)
+#    31.0  Fe2 (mu-Cl)2 bimetallic
+#    13.7  Co(en)2Cl2 bidentate
+#     7.6  Zr(H2O)8 CN=8 homoleptic
+#     4.3  Fe(H2O)7 CN=7 homoleptic
+#     1.2  Fe(CO)3(NHC)2 CN=5, all three variants
+#
+# This file was marked slow as a whole, so the one twelve-minute case exiled
+# eleven others with it and the SMILES contract was checked nowhere except a
+# nightly run. The mark belongs on the entry.
+#
+# The numbers are here rather than measured at collection time because a
+# selection that re-decides itself on every machine is not a contract: the
+# gate would quietly shrink on a loaded runner and nobody would be told.
+# Re-measure deliberately when the converter's cost changes.
+_BUILD_SECONDS = {
+    "Cd-histidine CN=7": 157.9,
+    "Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)": 44.2,
+    "Ir(ppy)2(acac) CN=6": 184.9,
+    "Fe(CO)3(NHC)2 CN=5 — neutral C": 1.2,
+    "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-3] variant": 1.2,
+    "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-5] variant": 1.3,
+    "Co(en)2Cl2 bidentate": 13.7,
+    "Fe2 (mu-Cl)2 bimetallic": 31.0,
+    "Fe(H2O)7 CN=7 homoleptic": 4.3,
+    "Zr(H2O)8 CN=8 homoleptic": 7.6,
+    "Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal": 702.1,
+    "Cd MA2B2C2 octahedral (five OH isomers)": 89.2,
+}
+
+# Per entry, for one build.
+_GATE_BUDGET_S = 10.0
+
+# Cheap enough for the gate, and held back anyway because they are red today.
+#
+# Both fail test_topology_invariants_for_every_output: the structure the
+# converter emits for a homoleptic aqua complex does not satisfy
+# _verify_topology_from_graph. They are two of the thirteen the nightly run
+# reports, they are in the converter rather than in this suite, and a merge
+# gate that is red on arrival teaches people to ignore it.
+#
+# Not marked xfail, which would be a claim about how they end. They are held
+# out until somebody fixes them; then deleting a line here is the whole
+# change, and the gate grows from about 8 s to about 31 s.
+_GATE_HELD_BACK = {
+    "Fe(H2O)7 CN=7 homoleptic",
+    "Zr(H2O)8 CN=8 homoleptic",
+}
+
+
+def _in_gate(entry) -> bool:
+    """Unmeasured entries wait for the nightly run.
+
+    A new SMILES is expensive until somebody has shown otherwise, which is
+    the safe direction: the cost of being wrong here is a slower merge gate
+    for everyone.
+    """
+    if entry["name"] in _GATE_HELD_BACK:
+        return False
+    return _BUILD_SECONDS.get(entry["name"], float("inf")) <= _GATE_BUDGET_S
+
+
+def _params(entries=None):
+    entries = USER_SMILES if entries is None else entries
+    return [
+        pytest.param(
+            e,
+            id=e["name"],
+            marks=[] if _in_gate(e) else [pytest.mark.slow],
+        )
+        for e in entries
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize(
-    "entry",
-    USER_SMILES,
-    ids=[e["name"] for e in USER_SMILES],
-)
+@pytest.mark.parametrize("entry", _params())
 def test_min_isomer_floor(entry):
     """The output must contain at least ``min_isomers`` distinct entries."""
-    res = _run(entry["smiles"])
+    res = _built(entry["smiles"])
     assert len(res) >= entry["min_isomers"], (
         f"{entry['name']!r}: only {len(res)} isomers returned, "
         f"expected >= {entry['min_isomers']}: {[l for _, l in res]}"
@@ -187,12 +285,11 @@ def test_min_isomer_floor(entry):
 
 @pytest.mark.parametrize(
     "entry",
-    [e for e in USER_SMILES if e.get("required_label_fragments")],
-    ids=[e["name"] for e in USER_SMILES if e.get("required_label_fragments")],
+    _params([e for e in USER_SMILES if e.get("required_label_fragments")]),
 )
 def test_required_labels_present(entry):
     """Each required label fragment must be a substring of at least one output label."""
-    res = _run(entry["smiles"])
+    res = _built(entry["smiles"])
     labels = [l for _, l in res]
     for needle in entry["required_label_fragments"]:
         assert any(needle in l for l in labels), (
@@ -203,12 +300,11 @@ def test_required_labels_present(entry):
 
 @pytest.mark.parametrize(
     "entry",
-    [e for e in USER_SMILES if e.get("forbidden_label_fragments")],
-    ids=[e["name"] for e in USER_SMILES if e.get("forbidden_label_fragments")],
+    _params([e for e in USER_SMILES if e.get("forbidden_label_fragments")]),
 )
 def test_forbidden_labels_absent(entry):
     """Forbidden label fragments must never appear in the output."""
-    res = _run(entry["smiles"])
+    res = _built(entry["smiles"])
     labels = [l for _, l in res]
     for needle in entry["forbidden_label_fragments"]:
         offenders = [l for l in labels if needle in l]
@@ -218,14 +314,10 @@ def test_forbidden_labels_absent(entry):
         )
 
 
-@pytest.mark.parametrize(
-    "entry",
-    USER_SMILES,
-    ids=[e["name"] for e in USER_SMILES],
-)
+@pytest.mark.parametrize("entry", _params())
 def test_determinism_across_runs(entry):
     """Two consecutive runs must return the same (sorted) label set and count."""
-    r1 = _run(entry["smiles"])
+    r1 = _built(entry["smiles"])
     r2 = _run(entry["smiles"])
     s1 = sorted(l for _, l in r1)
     s2 = sorted(l for _, l in r2)
@@ -237,11 +329,7 @@ def test_determinism_across_runs(entry):
     )
 
 
-@pytest.mark.parametrize(
-    "entry",
-    USER_SMILES,
-    ids=[e["name"] for e in USER_SMILES],
-)
+@pytest.mark.parametrize("entry", _params())
 def test_topology_invariants_for_every_output(entry):
     """Every output XYZ must pass the graph-based topology gate.
 
@@ -264,8 +352,77 @@ def test_topology_invariants_for_every_output(entry):
         pytest.skip(f"{entry['name']!r}: SMILES failed to parse for template")
     mol = Chem.AddHs(mol)
 
-    res = _run(smi)
+    res = _built(smi)
     for xyz, lbl in res:
         assert _verify_topology_from_graph(xyz, mol), (
             f"{entry['name']!r}: output isomer {lbl!r} fails graph gate"
         )
+
+
+# ---------------------------------------------------------------------------
+# The split itself
+# ---------------------------------------------------------------------------
+# The value of the arrangement above is not in any one line of it, so these
+# guard the shape: that something cheap actually reaches the merge gate, that
+# it stays cheap, and that the whole-file mark does not come back and quietly
+# take the SMILES contract out of every push again.
+
+def test_the_gate_actually_gets_some_of_this_suite():
+    """A split that promotes nothing is the state this replaces, and it looks
+    identical from the outside: green gate, contract unchecked."""
+    in_gate = [e["name"] for e in USER_SMILES if _in_gate(e)]
+
+    assert in_gate, (
+        "no entry runs on push, so the SMILES contract is once again checked "
+        "nowhere but the nightly run"
+    )
+
+
+def test_the_gate_set_stays_within_its_budget():
+    """Two builds per entry: one shared by the read-only tests, one more for
+    the determinism comparison. Measured at 8.3 s for the current set."""
+    total = 2 * sum(_BUILD_SECONDS[e["name"]] for e in USER_SMILES if _in_gate(e))
+
+    assert total <= 45.0, (
+        f"the gate portion of this file would cost about {total:.0f} s. The "
+        "fast suite is what people wait on before a merge; move an entry back "
+        "or raise this deliberately."
+    )
+
+
+def test_no_entry_reaches_the_gate_without_a_measured_cost():
+    """The budget above is only meaningful while every promoted entry has a
+    number behind it. Unmeasured means slow, and that is the safe direction."""
+    for e in USER_SMILES:
+        if _in_gate(e):
+            assert e["name"] in _BUILD_SECONDS, e["name"]
+
+
+def test_the_cost_table_still_describes_this_suite():
+    """A renamed entry silently loses its measurement and drops to the
+    nightly run, which is safe but invisible. Say it instead."""
+    names = {e["name"] for e in USER_SMILES}
+    stale = set(_BUILD_SECONDS) - names
+
+    assert not stale, f"_BUILD_SECONDS names no entry in USER_SMILES: {stale}"
+
+
+def test_the_whole_file_is_not_marked_slow_again():
+    """conftest marks by FILENAME. Putting this file back in that set would
+    undo the split without touching anything here — which is exactly how the
+    twelve ended up behind one mark in the first place."""
+    import tests.conftest as _cf
+
+    assert "test_user_smiles_suite.py" not in _cf._SLOW_TEST_FILES, (
+        "this file marks itself per entry; a whole-file mark exiles the cheap "
+        "ones along with the twelve-minute one"
+    )
+
+
+def test_the_expensive_entries_did_not_quietly_join_the_gate():
+    """The point of the split is that a twelve-minute build stays out of the
+    path people wait on."""
+    for e in USER_SMILES:
+        cost = _BUILD_SECONDS.get(e["name"], float("inf"))
+        if cost > _GATE_BUDGET_S:
+            assert not _in_gate(e), f"{e['name']} costs {cost} s"
