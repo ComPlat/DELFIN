@@ -2766,6 +2766,7 @@ class AgentEngine:
                     "[stopped] Stopped before any answer text. Nothing was "
                     "added to the history and your message is not in it "
                     "either — send it again to pick the question back up."
+                    + self._hand_back_undelivered_steer()
                 )
                 if on_token:
                     try:
@@ -4649,6 +4650,54 @@ class AgentEngine:
             return
         self._stop_requested = False
         self._stop_owner_turn = None
+
+    def _hand_back_undelivered_steer(self) -> str:
+        """Return what the user typed mid-run and never got delivered.
+
+        The client's tool loop has its own careful version of this in its
+        stop branch. TRACED live, 2026-08-14, and it never runs:
+
+            0.42s  turn starts
+            4.16s  _stop_was_requested() -> False      (round 1, top)
+           13.13s  TOOL DISPATCHED + stop requested
+           13.14s  turn returned
+
+        Ten milliseconds. The engine checks the stop flag BETWEEN STREAM
+        EVENTS and breaks out there, and the client's loop is a generator —
+        a consumer that stops iterating simply abandons it. Its stop
+        branch, its drains and its hand-back never execute. The engine
+        wins that race in the ordinary case, not an edge one, so the
+        client-side handling is unreachable whenever a stop lands during a
+        tool round.
+
+        Measured consequence, three runs out of three: the typed message
+        stayed in the client's queue. It would then be injected into some
+        later, unrelated turn — out of order with whatever the user typed
+        AFTER pressing Stop, which is exactly the harm the client's branch
+        was written to prevent.
+
+        Whoever ends the turn owns the hand-back. Run notes are left where
+        they are on purpose: they are facts about the session that are
+        still true, the client object outlives this turn, and the next
+        turn drains them at its first round.
+        """
+        try:
+            pending = self.client._drain_steer()
+        except Exception:
+            return ""
+        # Only a list of real strings is handed back. A client whose drain
+        # returns something else -- an older backend, a stub, a mock -- must
+        # not get its repr rendered into the user's answer; that is how a
+        # MagicMock ended up in the transcript once already.
+        if not isinstance(pending, (list, tuple)):
+            return ""
+        pending = [p for p in pending if isinstance(p, str) and p.strip()]
+        if not pending:
+            return ""
+        quoted = "; ".join(f"“{p}”" for p in pending[:3])
+        more = " …" if len(pending) > 3 else ""
+        return (" Not delivered, because the turn stopped first: "
+                + quoted + more + " — send it again if it still applies.")
 
     def steer(self, text: str) -> bool:
         """Inject a user message into the RUNNING tool loop (mid-loop steering).
