@@ -24,6 +24,7 @@ collapse rate from ~79%.
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Dict, List, Tuple
 
@@ -248,7 +249,56 @@ def _geometric_bonds(syms, P) -> List[Tuple[int, int]]:
             d = float(np.linalg.norm(P[i] - P[j]))
             if d < 1.30 * _ideal_bond(syms[i], syms[j]):
                 bonds.append((i, j))
-    return bonds
+    return _cut_geminal(syms, P, bonds)
+
+
+def _cut_geminal(syms, P, bonds):
+    """Geminale 1-3-Paare aus der Bindungsliste werfen -- ueber den WINKEL, nicht den Abstand.
+
+    DAS PROBLEM.  Oben entscheidet allein `d < 1.30 * Sigma_cov`.  Auf einer IDEALEN
+    Geometrie ist das harmlos: ein C-C-C-Paar faellt erst unter ~80 Grad unter die
+    Schwelle.  Dieses Modul arbeitet aber genau auf KOLLABIERTEN Frames -- und wenn die
+    Bindungen kurz sind, schrumpft der 1-3-Abstand mit.  Bei 1.2-A-Bindungen liegt ein
+    85-Grad-Paar schon bei 1.62 A und wird als Bindung gezaehlt.  Danach zaehlt
+    _count_collapsed diese PHANTOMBINDUNG als Kollaps, und der Korrektor "repariert"
+    etwas, das gar keine Bindung ist.
+
+    WARUM DER WINKEL UND NICHT DIE SCHWELLE.  Am 11.08. wurde der Skalar 1.30 gesweept:
+    KEIN Wert erreicht 0 Fehlbefunde bei 0 Verlusten, denn echte Bindungen reichen bis
+    1.290 * Sigma_cov -- es gibt keine Luecke.  Der Fehler ist STRUKTURELL, nicht
+    schwellenwertig.  Der Winkel dagegen UEBERLEBT DEN KOLLAPS: schrumpfen alle Bindungen
+    um denselben Faktor, bleibt A-X-B unveraendert.  Er ist damit die einzige Groesse
+    hier, die noch etwas aussagt, wenn die Laengen schon nichts mehr aussagen.
+
+    DIE TRENNUNG.  Ein ECHTER Dreiring (Cyclopropan) hat am Apex ~60 Grad und seine A-B
+    Bindung MUSS bleiben.  Ein geminales Paar hat >= 85 Grad.  Gemessen liegt zwischen
+    82.0 und 84.4 Grad NICHTS -- die Trennung ist leer, der Schnitt also nicht kalibriert,
+    sondern abgelesen.  Wirkung: `smiles_topology` 6/509 -> 0.
+
+    Vorgabe AUS -> byte-identisch.  Schwelle ueber DELFIN_FFFREE_GEMINAL_CUT_DEG sweepbar.
+    """
+    if os.environ.get("DELFIN_FFFREE_GEMINAL_CUT", "0") != "1":
+        return bonds
+    cut = float(os.environ.get("DELFIN_FFFREE_GEMINAL_CUT_DEG", "85"))
+    adj: Dict[int, set] = {}
+    for i, j in bonds:
+        adj.setdefault(i, set()).add(j)
+        adj.setdefault(j, set()).add(i)
+    drop = set()
+    for i, j in bonds:
+        # Gemeinsame Nachbarn = Dreiecke im Kandidatengraphen.  NUR dort kann ein
+        # 1-3-Paar ueberhaupt als Bindung erscheinen; 1-4 und weiter teilen keinen.
+        for k in adj.get(i, ()) & adj.get(j, ()):
+            va, vb = P[i] - P[k], P[j] - P[k]
+            na = float(np.linalg.norm(va)); nb = float(np.linalg.norm(vb))
+            if na < 1e-9 or nb < 1e-9:
+                continue
+            c = float(np.dot(va, vb)) / (na * nb)
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, c))))
+            if ang >= cut:
+                drop.add((i, j))
+                break
+    return [b for b in bonds if b not in drop]
 
 
 def _aromatic_ring_bonds(syms, P, bonds) -> set:
