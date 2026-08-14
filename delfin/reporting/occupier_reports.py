@@ -13,7 +13,12 @@ from ..utils import (
     search_transition_metals,
 )
 from ..parser import extract_last_uhf_deviation, extract_last_J3
-from ..occupier_auto import infer_parity_from_m, record_auto_preference
+from .. import smart_recalc
+from ..occupier_auto import (
+    BOLTZMANN_PARENT_THRESHOLD,
+    infer_parity_from_m,
+    record_auto_preference,
+)
 from ..occupier_sequences import infer_species_delta
 from ..config_manager import DelfinConfig
 
@@ -24,6 +29,132 @@ _DEFAULT_CONFIG = DelfinConfig()
 
 # This file will contain the OCCUPIER report generation functions
 # Functions will be moved here from report.py
+
+def _fob_output_name(index) -> str:
+    """FoB 1 writes output.out, the rest output<index>.out."""
+    return "output.out" if str(index) == "1" else f"output{index}.out"
+
+
+def _configuration_outcomes(sequence, fspe_values, folder=None):
+    """What became of each planned configuration, in the order they were planned.
+
+    A configuration that will not converge is a result, not a malfunction:
+    plenty of spin states do not exist for a given system, and finding that out
+    is what OCCUPIER is for. What the report must not do is pass over them in
+    silence — the comparison then names a preferred configuration out of
+    whatever survived, and nothing says how much of the tree that was.
+
+    Returns a list of (entry, state, detail), where state is one of
+    "compared", "not converged", "did not finish", "not reached" or "missing".
+    """
+    base = Path(folder) if folder else Path.cwd()
+    energies = list(fspe_values or [])
+    produced = set()
+    outcomes = []
+
+    for position, entry in enumerate(sequence or []):
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("index")
+        energy = energies[position] if position < len(energies) else None
+        if energy is not None:
+            produced.add(str(index))
+            outcomes.append((entry, "compared", ""))
+            continue
+
+        out_path = base / _fob_output_name(index)
+        if not out_path.exists():
+            # Never started. Almost always because the configuration it had to
+            # start from did not produce the orbitals it needed.
+            sources = [
+                str(token).strip()
+                for token in str(entry.get("from", "") or "").replace(";", ",").split(",")
+                if str(token).strip() not in ("", "0")
+            ]
+            unmet = [s for s in sources if s not in produced]
+            if unmet:
+                outcomes.append((entry, "not reached", f"starts from FoB {', '.join(unmet)}"))
+            else:
+                outcomes.append((entry, "missing", "no output file"))
+            continue
+
+        if smart_recalc.optimization_gave_up(out_path):
+            outcomes.append((entry, "not converged", "optimisation ran out of cycles"))
+        elif not smart_recalc.has_ok_marker(out_path):
+            outcomes.append((entry, "did not finish", "ORCA stopped before the end"))
+        else:
+            outcomes.append((entry, "missing", "no energy in the output"))
+
+    return outcomes
+
+
+def _configuration_survey(outcomes) -> str:
+    """The block that tells the reader which part of the tree was actually run."""
+    if not outcomes:
+        return ""
+
+    compared = [o for o in outcomes if o[1] == "compared"]
+    if len(compared) == len(outcomes):
+        return ""  # nothing to explain
+
+    lines = [
+        "",
+        "-" * 64,
+        "CONFIGURATIONS PLANNED AND COMPARED",
+        "",
+        f"  {len(compared)} of {len(outcomes)} planned configurations entered the comparison.",
+        "  The preferred value below is the lowest of those, not of all of them.",
+        "",
+    ]
+    for entry, state, detail in outcomes:
+        label = f"m={entry.get('m')}"
+        if entry.get("BS"):
+            label += f" BS {entry['BS']}"
+        note = f" — {detail}" if detail else ""
+        lines.append(f"  ({entry.get('index')}) {label:<18} {state}{note}")
+    lines.append("")
+    lines.append(
+        "  A configuration that does not converge is itself a finding: not every"
+    )
+    lines.append(
+        "  spin state exists for a given system. It is listed so the comparison"
+    )
+    lines.append("  can be read for what it covered.")
+    lines.append("-" * 64)
+    return "\n".join(lines)
+
+
+def _thermally_populated(sequence, boltzmann_weights):
+    """The configurations present in the equilibrium, most populated first.
+
+    The weights were already being computed for the report and then discarded;
+    they decide here which configurations seed the next redox step. Where the
+    substance is a mixture rather than a single state, the oxidised or reduced
+    species can form out of either partner, and the daughter states reachable
+    from one are not those reachable from the other.
+    """
+    by_index = {
+        str(item.get("index")): item
+        for item in (sequence or [])
+        if isinstance(item, dict)
+    }
+    populated = []
+    for index, weight in sorted(
+        (boltzmann_weights or {}).items(), key=lambda kv: kv[1], reverse=True
+    ):
+        if weight < BOLTZMANN_PARENT_THRESHOLD:
+            continue
+        source = by_index.get(str(index))
+        if not source or source.get("m") is None:
+            continue
+        populated.append({
+            "index": int(index),
+            "m": source.get("m"),
+            "BS": source.get("BS", "") or "",
+            "weight": float(weight),
+        })
+    return populated
+
 
 def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, solvent, config, main_basisset, sequence):
     """Generate the OCCUPIER summary report using the revised selection logic.
@@ -335,19 +466,38 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
 
     # ----------------------- energy band ---------------------------------------
     valid_all = [(e["index"], f) for e, f in zip(sequence, fspe_values) if f is not None]
+    outcomes = _configuration_outcomes(sequence, fspe_values)
     if not valid_all:
-        # All ORCA runs failed — no energies to compare.
+        # Not one configuration produced a comparable energy. That is an
+        # outcome and gets written down as one: which states were tried, and
+        # what became of each. A system for which no configuration converges is
+        # telling you something, and the report is where it should say so
+        # rather than leaving an exception to carry the message.
         report_path = Path("OCCUPIER.txt")
         hours_e, remainder_e = divmod(duration, 3600)
         minutes_e, seconds_e = divmod(remainder_e, 60)
+        detail = "\n".join(
+            f"  ({entry.get('index')}) m={entry.get('m')}"
+            f"{' BS ' + str(entry['BS']) if entry.get('BS') else ''}"
+            f"  {state}{' — ' + note if note else ''}"
+            for entry, state, note in outcomes
+        ) or "  (no configurations were planned)"
         report_path.write_text(
             f"OCCUPIER REPORT\n{'=' * 60}\n\n"
-            f"All FoB calculations failed — no valid energies obtained.\n"
-            f"Check the individual output files for ORCA error details.\n\n"
+            f"No configuration produced a comparable energy, so no preferred\n"
+            f"electron configuration could be selected.\n\n"
+            f"Planned configurations and what became of them:\n{detail}\n\n"
+            f"A configuration that does not converge is a result in itself — not\n"
+            f"every spin state exists for a given system. Check the individual\n"
+            f"output files for the ORCA details.\n\n"
             f"Duration: {int(hours_e):02d}h {int(minutes_e):02d}m {seconds_e:05.2f}s\n",
             encoding="utf-8",
         )
-        logger.error("OCCUPIER: all FoB energies are None — no valid result to select")
+        logger.error(
+            "OCCUPIER: none of the %d planned configurations produced a comparable "
+            "energy; see OCCUPIER.txt for what was tried",
+            len(outcomes),
+        )
         return
     valid = [pair for pair in valid_all if within_dev_limit(pair[0])] or valid_all
     energies_by_idx = {i: f for i, f in valid_all}
@@ -612,6 +762,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
                 delta_value,
                 m_value=m_val,
                 bs_value=bs_val,
+                populated=_thermally_populated(sequence, boltzmann_weights),
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[occupier_auto] Failed to record preference: %s", exc)
@@ -728,6 +879,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             f"Charge: {charge}\n"
             f"-------------\n"
             f"{fspe_lines}\n"
+            f"{_configuration_survey(outcomes)}\n"
             f"{warning_block}"
             f"TOTAL RUN TIME: {duration_format}\n\n"
             f"{lowest_label} {lowest_str}\n\n"
@@ -1014,18 +1166,38 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
 
     # ----------------------- energy band ---------------------------------------
     valid_all = [(e["index"], f) for e, f in zip(sequence, fspe_values) if f is not None]
+    outcomes = _configuration_outcomes(sequence, fspe_values)
     if not valid_all:
+        # Not one configuration produced a comparable energy. That is an
+        # outcome and gets written down as one: which states were tried, and
+        # what became of each. A system for which no configuration converges is
+        # telling you something, and the report is where it should say so
+        # rather than leaving an exception to carry the message.
         report_path = Path("OCCUPIER.txt")
         hours_e, remainder_e = divmod(duration, 3600)
         minutes_e, seconds_e = divmod(remainder_e, 60)
+        detail = "\n".join(
+            f"  ({entry.get('index')}) m={entry.get('m')}"
+            f"{' BS ' + str(entry['BS']) if entry.get('BS') else ''}"
+            f"  {state}{' — ' + note if note else ''}"
+            for entry, state, note in outcomes
+        ) or "  (no configurations were planned)"
         report_path.write_text(
             f"OCCUPIER REPORT\n{'=' * 60}\n\n"
-            f"All FoB calculations failed — no valid energies obtained.\n"
-            f"Check the individual output files for ORCA error details.\n\n"
+            f"No configuration produced a comparable energy, so no preferred\n"
+            f"electron configuration could be selected.\n\n"
+            f"Planned configurations and what became of them:\n{detail}\n\n"
+            f"A configuration that does not converge is a result in itself — not\n"
+            f"every spin state exists for a given system. Check the individual\n"
+            f"output files for the ORCA details.\n\n"
             f"Duration: {int(hours_e):02d}h {int(minutes_e):02d}m {seconds_e:05.2f}s\n",
             encoding="utf-8",
         )
-        logger.error("OCCUPIER: all FoB energies are None — no valid result to select")
+        logger.error(
+            "OCCUPIER: none of the %d planned configurations produced a comparable "
+            "energy; see OCCUPIER.txt for what was tried",
+            len(outcomes),
+        )
         return
     valid = [pair for pair in valid_all if within_dev_limit(pair[0])] or valid_all
     energies_by_idx = {i: f for i, f in valid_all}
@@ -1177,6 +1349,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
                 delta_value,
                 m_value=m_val,
                 bs_value=bs_val,
+                populated=_thermally_populated(sequence, boltzmann_weights),
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[occupier_auto] Failed to record preference (safe): %s", exc)
@@ -1256,6 +1429,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
             f"Charge: {charge}\n"
             f"-------------\n"
             f"{fspe_lines}\n"
+            f"{_configuration_survey(outcomes)}\n"
             f"{warning_block}"
             f"TOTAL RUN TIME: {duration_format}\n\n"
             f"{lowest_label} {lowest_str}\n\n"

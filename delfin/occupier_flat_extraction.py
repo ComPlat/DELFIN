@@ -59,7 +59,28 @@ def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
         if src_xyz.exists():
             try:
                 shutil.copyfile(src_xyz, dest_xyz)
-                logger.warning("[%s] Fallback propagated %s to %s (no OCCUPIER summary)", folder_name, src_xyz, dest_xyz)
+                # The run continues, but what it continues from has to be
+                # stated. This is the geometry OCCUPIER was handed, not one it
+                # chose: no configuration was selected, so nothing here is
+                # optimised and no electron configuration has been established.
+                # Downstream steps reading <stage>.xyz cannot tell that from
+                # the file, and a warning in a log nobody re-reads is not where
+                # that belongs — so it is written next to the geometry.
+                marker = folder_path.parent / f"{dest_label}.xyz.not-from-occupier"
+                marker.write_text(
+                    "This geometry did not come from OCCUPIER.\n\n"
+                    f"{folder_name} produced no summary, so no electron configuration\n"
+                    "was selected. What was propagated is the input geometry OCCUPIER\n"
+                    "started from: not optimised, and with the spin state unresolved.\n"
+                    "Everything computed from here carries that assumption.\n\n"
+                    f"Source: {src_xyz}\n",
+                    encoding="utf-8",
+                )
+                logger.warning(
+                    "[%s] No OCCUPIER result — propagating the unoptimised input geometry "
+                    "%s to %s and marking it in %s",
+                    folder_name, src_xyz.name, dest_xyz.name, marker.name,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.error("[%s] Failed to propagate fallback geometry %s → %s: %s", folder_name, src_xyz, dest_xyz, exc)
         else:
@@ -97,8 +118,30 @@ def _should_skip_recalc(inp_path: Path, out_path: Path, recalc_enabled: bool) ->
         return False
 
 
+def _usable_for_comparison(path: Path) -> bool:
+    """Whether an FoB output may take part in the energy comparison at all.
+
+    A configuration that will not converge is a chemical result — plenty of
+    spin states simply do not exist for a given system, and OCCUPIER is there
+    to find that out. What must not happen is for such a run to be compared as
+    though it had. Reading the last FINAL SINGLE POINT ENERGY out of an
+    optimisation that stopped partway takes the energy of a geometry that is
+    not a stationary point, and the comparison then ranks it against fully
+    converged states without anything saying so. Gibbs energies are protected
+    by accident — the line only exists after a completed frequency run — but
+    the FSPE default is not, and it is the default.
+    """
+    return smart_recalc.has_ok_marker(path) and not smart_recalc.optimization_gave_up(path)
+
+
 def _parse_energy(path: Path, use_gibbs: bool) -> Optional[float]:
     if not path.exists():
+        return None
+    if not _usable_for_comparison(path):
+        logger.info(
+            "Not comparing %s: the run did not finish, or its optimisation did not converge",
+            path.name,
+        )
         return None
 
     try:
