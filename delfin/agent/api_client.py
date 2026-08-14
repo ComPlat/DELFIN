@@ -1383,6 +1383,24 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"\bnpm\s+publish\b",
     r"\bpip\s+install\b[^|;]*--target\s+/(?:usr|etc|bin|lib|var)",
     r"\bcrontab\s+-r\b",
+    # `rm -rf ~` is denied above; `find ~ -delete` was not, and it empties
+    # the same directory. Measured through the whole gate: under
+    # bypassPermissions every one of `find ~ -delete`, `find / -delete`,
+    # `find $HOME -delete` and `find ~ -type f -exec rm {} \;` came back
+    # ALLOWED, while the rm spelling of the same act was refused. The rule
+    # existed as a sentence and the mechanism permitted its opposite.
+    #
+    # Same repair as the `git clean` entry above: match what the command
+    # DOES, not one spelling of it. Two conditions, either order, any
+    # number of tokens between them — a destructive action, and a search
+    # root that is absolute or home-anchored. A relative root is left to
+    # the ordinary gate on purpose: `find . -name '*.pyc' -delete` inside a
+    # workspace is honest cleanup, and blanket-denying it would push the
+    # model towards spellings nobody has thought about.
+    r"\bfind\b"
+    r"(?=[^;|&]*\s(?:~|\$\{?HOME\}?|/))"
+    r"(?=[^;|&]*\s-(?:delete\b|(?:exec|execdir|ok|okdir)\s+"
+    r"(?:rm|rmdir|unlink|shred|truncate|dd)\b))",
 )
 
 # Bash patterns that are auto-approved in mode="default" without callback.
