@@ -244,3 +244,61 @@ def test_a_normal_turn_is_unaffected(eng):
     eng.client.stream_message = MagicMock(side_effect=fine)
     assert eng.stream_response("q") == "the answer"
     assert eng.cost_usd == pytest.approx(0.05)
+
+
+# ---------------------------------------------------------------------------
+# A stop that produced nothing must say that it produced nothing
+# ---------------------------------------------------------------------------
+
+def _stopped_before_any_text(engine):
+    """Stop during thinking: the model streams reasoning and no answer."""
+    def thinking_then_stop(*a, **kw):
+        engine.request_stop()
+        yield StreamEvent(type="thinking_delta", text="denke nach ...")
+        yield StreamEvent(type="message_delta", output_tokens=0, cost_usd=0.0)
+    engine.client.stream_message = MagicMock(side_effect=thinking_then_stop)
+
+
+def test_a_stop_before_any_text_says_the_question_was_taken_back_out(eng):
+    """Measured before the fix: the turn returned '', on_token was never
+    called, and the history came back EMPTY -- the user's question removed
+    without a word.
+
+    Removing it is right; two consecutive user messages break the API on
+    the next turn. Saying nothing is not: the stop notice the user does
+    get reads "the rounds completed so far are kept; send a message to
+    continue from here", which is true of a stop inside the tool loop and
+    false here. Nothing was kept and there is no question left to continue
+    from. The empty-turn branch next to this one already names what it
+    took out; this one now does too."""
+    seen: list[str] = []
+    _stopped_before_any_text(eng)
+
+    out = eng.stream_response("Berechne bitte die Bindungslängen",
+                              on_token=seen.append)
+
+    assert "send it again" in out
+    assert "not in it" in out
+    # ... and the user is told, not just the return value's caller.
+    assert any("send it again" in s for s in seen)
+    # The question really is out of the history -- the sentence is not a
+    # consolation for something that did not happen.
+    assert not any("Bindungsl" in str(m.get("content", ""))
+                   for m in eng.messages)
+
+
+def test_a_stop_after_real_text_keeps_the_answer_and_says_nothing_extra(eng):
+    """The other half. A stop that interrupted a turn which HAD already
+    answered keeps both sides of the exchange, and must not have the
+    "send it again" sentence bolted onto a real answer."""
+    def text_then_stop(*a, **kw):
+        yield StreamEvent(type="text_delta", text="Teilantwort")
+        eng.request_stop()
+        yield StreamEvent(type="message_delta", output_tokens=3, cost_usd=0.0)
+    eng.client.stream_message = MagicMock(side_effect=text_then_stop)
+
+    out = eng.stream_response("frage zwei")
+
+    assert out == "Teilantwort"
+    assert "send it again" not in out
+    assert [m["role"] for m in eng.messages] == ["user", "assistant"]
