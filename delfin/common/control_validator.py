@@ -1572,6 +1572,62 @@ def _states_include_t1(value: Any) -> bool:
     return any(str(item).upper() == "T1" for item in parsed)
 
 
+def _as_occupier_compare(value: Any) -> str:
+    """Which energy OCCUPIER ranks its candidate configurations by.
+
+    FSPE is the electronic energy ORCA prints as FINAL SINGLE POINT ENERGY. G
+    is the Gibbs free energy, which exists only once a frequency calculation
+    has run — so asking for G is also asking for a frequency calculation on
+    every candidate, and DELFIN adds it. That is the point of naming the key
+    after the decision instead of after the machinery: you say what should be
+    compared, not what should be executed to make the comparison possible.
+
+    The distinction is not cosmetic. Configurations within a few kJ/mol are
+    ordered differently by electronic energy than by free energy, and the
+    Boltzmann weights that decide which configurations seed the next redox
+    step are derived from whichever of the two this selects.
+    """
+    text = str(value or "").strip().lower()
+    if text in {"", "fspe", "spe", "electronic", "e"}:
+        return "FSPE"
+    if text in {"g", "gibbs", "free", "free_energy", "gibbs_free_energy"}:
+        return "G"
+    raise ValueError("must be FSPE or G")
+
+
+def resolve_occupier_compare(config) -> str:
+    """The energy OCCUPIER compares by, honouring the key that was set.
+
+    OCCUPIER_compare replaced frequency_calculation_OCCUPIER, which named the
+    machinery (run frequencies) rather than the decision it drove (compare
+    Gibbs free energies). The old key keeps working: CONTROL files are kept for
+    years and a run from 2024 has to reproduce. Where both are present and
+    disagree, the explicit new key wins and the run says so, because silently
+    picking one would leave a report claiming a comparison that did not happen.
+    """
+    explicit = str(config.get("OCCUPIER_compare", "") or "").strip()
+    legacy_raw = config.get("frequency_calculation_OCCUPIER")
+    legacy_set = str(legacy_raw or "").strip() != ""
+    legacy = "G" if str(legacy_raw or "no").strip().lower() in ("yes", "true", "1", "on") else "FSPE"
+
+    if not explicit:
+        return legacy
+
+    try:
+        resolved = _as_occupier_compare(explicit)
+    except ValueError:
+        return legacy
+
+    if legacy_set and legacy != resolved:
+        logger.warning(
+            "CONTROL sets OCCUPIER_compare=%s and frequency_calculation_OCCUPIER=%s, "
+            "which disagree. Using OCCUPIER_compare=%s; drop the older key to "
+            "settle it.",
+            resolved, legacy_raw, resolved,
+        )
+    return resolved
+
+
 def _as_occupier_method(value: Any) -> str:
     text = str(value or "auto").strip().lower()
     if text in {"manual", "manually"}:
@@ -1650,6 +1706,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("method", _as_method, required=True),
     FieldSpec("frequency_calculation", _as_yes_no, default="no"),
     FieldSpec("frequency_calculation_OCCUPIER", _as_yes_no, default="no"),
+    FieldSpec("OCCUPIER_compare", _as_occupier_compare, default="FSPE"),
     FieldSpec("xTB_method", _as_xtb_method, default="XTB2"),
     FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default="CPCM"),
     FieldSpec("solvent", _as_solvent, default=""),
@@ -1928,5 +1985,19 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
 
     if errors:
         raise ValueError("; ".join(errors))
+
+    # A CONTROL file written before OCCUPIER_compare existed carries only
+    # frequency_calculation_OCCUPIER. The field loop above has meanwhile filled
+    # OCCUPIER_compare with its default, which is indistinguishable from the
+    # user having asked for it — and FSPE against a legacy yes would silently
+    # move such a run from Gibbs free energies to electronic ones, changing
+    # which configuration it calls preferred. Derive it here instead, so the
+    # validated config says one thing and every reader of it agrees.
+    if not str(config.get("OCCUPIER_compare", "") or "").strip():
+        legacy = str(config.get("frequency_calculation_OCCUPIER", "") or "").strip()
+        if legacy:
+            validated["OCCUPIER_compare"] = (
+                "G" if legacy.lower() in ("yes", "true", "1", "on") else "FSPE"
+            )
 
     return validated

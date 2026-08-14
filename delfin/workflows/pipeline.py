@@ -23,6 +23,7 @@ from delfin.cli_calculations import calculate_redox_potentials, select_final_pot
 from delfin.energies import find_gibbs_energy
 from delfin.esd_module import execute_esd_jobs as execute_esd_module, parse_esd_config
 from delfin.esd_results import collect_esd_results, ESDSummary
+from delfin.common.control_validator import resolve_occupier_compare
 
 logger = get_logger(__name__)
 
@@ -266,7 +267,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             # Mark that we used combined execution
             config['_used_combined_occupier'] = True
 
-        if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
+        if resolve_occupier_compare(config) == "G":
             multiplicity_0, broken_sym_0, _, gbw_initial = read_occupier_file(
                 "initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config
             )
@@ -409,7 +410,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     # Check if we already ran post-processing in combined mode
     used_combined = config.get('_used_combined_occupier', False)
 
-    if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes" and not used_combined:
+    if resolve_occupier_compare(config) != "G" and not used_combined:
         # Only run separate post-processing if we didn't use combined execution
         logger.info("[pipeline] Running separate post-processing ORCA jobs")
 

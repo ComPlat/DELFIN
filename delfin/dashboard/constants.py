@@ -266,7 +266,11 @@ OCCUPIER_method=auto
 OWN_TREE_PURE_WINDOW=3
 OWN_progressive_from=no
 fob_equal_weights=yes
-frequency_calculation_OCCUPIER=no
+# Which energy OCCUPIER ranks the candidate configurations by.
+#   FSPE = electronic energy (FINAL SINGLE POINT ENERGY)
+#   G    = Gibbs free energy — needs a frequency run per candidate,
+#          which DELFIN then adds
+OCCUPIER_compare=FSPE
 occupier_selection=tolerance
 occupier_precision=3
 occupier_epsilon=5e-4
@@ -507,7 +511,11 @@ OCCUPIER_method=auto
 OWN_TREE_PURE_WINDOW=3
 OWN_progressive_from=no
 fob_equal_weights=yes
-frequency_calculation_OCCUPIER=no
+# Which energy OCCUPIER ranks the candidate configurations by.
+#   FSPE = electronic energy (FINAL SINGLE POINT ENERGY)
+#   G    = Gibbs free energy — needs a frequency run per candidate,
+#          which DELFIN then adds
+OCCUPIER_compare=FSPE
 occupier_selection=tolerance
 occupier_precision=3
 occupier_epsilon=5e-4

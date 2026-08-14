@@ -32,6 +32,7 @@ from delfin.utils import (
     resolve_path,
     set_main_basisset,
 )
+from delfin.common.control_validator import resolve_occupier_compare
 
 logger = get_logger(__name__)
 
@@ -363,7 +364,7 @@ def _create_occupier_fob_jobs(
         for deps in local_dependencies.values():
             deps.add(source_best)
 
-    freq_enabled = str(global_config.get("frequency_calculation_OCCUPIER", "no")).lower() == "yes"
+    freq_enabled = resolve_occupier_compare(global_config) == "G"
     pass_wf_enabled = str(global_config.get("pass_wavefunction", "no")).strip().lower() in (
         "yes",
         "true",
