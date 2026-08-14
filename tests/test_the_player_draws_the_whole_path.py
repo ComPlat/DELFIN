@@ -144,11 +144,11 @@ def test_every_frame_of_the_path_reaches_the_picture(browser):
     each defensible on its own, and between them the viewer showed a sample of
     the optimisation rather than the optimisation.
     """
-    # Seventeen milliseconds is sixty a second, the top of the control and the
-    # rate the screen itself draws at.  Asking for faster than the screen can
-    # only mean showing fewer frames, so the promise that every one is drawn
-    # holds up to there and is tested there.
-    out = _play(browser, _bursts(60, 20), settle_ms=6000, pace=17)
+    # Forty milliseconds is twenty-five a second, the top of the control.
+    # Asking for faster than the screen draws could only mean showing fewer
+    # frames, and the control does not reach there -- so the promise that
+    # every frame is drawn is tested at the fastest that can be asked for.
+    out = _play(browser, _bursts(60, 20), settle_ms=6000, pace=40)
     reached = _reached(out["frames"])
 
     missing = sorted(set(range(60)) - reached)
@@ -292,21 +292,25 @@ def test_every_setting_of_the_pace_makes_a_difference(browser):
     one = [({"run": 1, "from": 0, "frames": path, "final": 1}, 50)]
 
     rates = {}
-    for wanted in (20, 30, 40, 50):
+    for wanted in (5, 10, 17, 25):
         out = _play(browser, one, settle_ms=1500,
                     pace=max(1, round(1000 / wanted)))
         rates[wanted] = out["shown"] / 1.5
 
     # Each step up is a real step up, not a repeat of the one below it.
-    for lower, higher in ((20, 30), (30, 40), (40, 50)):
+    for lower, higher in ((5, 10), (10, 17), (17, 25)):
         assert rates[higher] > rates[lower] * 1.15, (
             f"{higher}/s drew {rates[higher]:.1f} against {lower}/s at "
             f"{rates[lower]:.1f} -- the setting did nothing")
 
 
-def test_the_pace_reaches_down_to_a_frame_every_two_seconds(browser):
+def test_the_pace_reaches_down_to_one_frame_every_ten_seconds(browser):
     """Slow is the useful end: the calculation runs on ahead while the picture
-    walks, and taking hold keeps the frame that is on screen."""
+    walks, and taking hold keeps the frame that is on screen.
+
+    Half a frame a second was the floor and it was not slow enough to watch a
+    coordination sphere rearrange a step at a time.
+    """
     path = [[float(i)] * 9 for i in range(60)]
     one = [({"run": 1, "from": 0, "frames": path, "final": 1}, 50)]
 
@@ -314,3 +318,8 @@ def test_the_pace_reaches_down_to_a_frame_every_two_seconds(browser):
     assert 2 <= out["shown"] <= 4, (
         f"half a frame a second over six seconds is three, not {out['shown']}")
     assert out["queue"] > 50, "and the rest is still waiting to be walked"
+
+    # And the floor: one every ten seconds, so six seconds moves nothing on.
+    crawl = _play(browser, one, settle_ms=6000, pace=10000)
+    assert crawl["shown"] == 0, crawl["shown"]
+    assert crawl["queue"] >= 59, "the path is all still ahead"

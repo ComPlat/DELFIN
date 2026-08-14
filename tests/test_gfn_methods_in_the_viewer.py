@@ -4281,8 +4281,8 @@ def test_the_speed_slider_reaches_the_page_in_the_unit_it_counts_in(tmp_path):
     assert ".pace=250;" in "".join(sent)
 
     sent.clear()
-    slider.value = 0.5                      # two seconds a frame
-    assert ".pace=2000;" in "".join(sent)
+    slider.value = 1                        # the floor: a second a frame
+    assert ".pace=1000;" in "".join(sent)
 
 
 def test_the_pace_is_offered_only_where_a_path_is_walked(editor, monkeypatch):
@@ -4408,11 +4408,15 @@ def test_the_path_is_played_at_a_pace_that_can_be_watched(editor):
     """
     slider = editor["submit_play_speed"]
     assert slider.value == 12
-    # Down to half a frame a second, which is two seconds a step: slow is the
-    # end that is actually useful, and one frame every half second was not
-    # slow.  Up to sixty, which is where the screen itself stops.
-    assert (slider.min, slider.max) == (0.5, 60)
-    assert slider.step == 0.5
+    assert slider.description == "Speed"
+    # One a second at the bottom -- already a second of looking at each
+    # geometry -- and sixty at the top, which is not a speed so much as
+    # "live": the frames only exist as fast as xtb makes them, so on a large
+    # structure the picture drains the queue and waits, and that is the
+    # calculation watched as it happens.  Whole steps: a tenth of a frame a
+    # second is a distinction nobody makes.
+    assert (slider.min, slider.max) == (1, 60)
+    assert slider.step == 1
     assert slider.value < slider.max, "the default cannot be the fastest there is"
 
 

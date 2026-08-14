@@ -1028,7 +1028,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: grounds that a picture trailing its calculation was a fault.  That is
     #: the behaviour a slow setting exists to ask for, so the setting wins and
     #: the backlog rule is gone.
-    #: Twelve a second, which is a path being walked rather than a jump.
+    #: Whole frames a second, from one up to live.
+    #:
+    #: The top is not a speed so much as "live", and what it means depends on
+    #: the system: the frames only exist as fast as xtb makes them.  On
+    #: something small the queue is full and sixty a second is a quick replay
+    #: of a path already finished; on a hundred and fifty atoms the picture
+    #: drains the queue and then waits for the next frame, which is the
+    #: calculation watched as it happens.  So the top is the useful end for a
+    #: large structure and the middle for a small one, and dialling down from
+    #: live is the way to read it.
+    #:
+    #: Whole steps, because a tenth of a frame a second is a distinction
+    #: nobody makes; one a second is already a second of looking at each
+    #: geometry.
     #:
     #: It was briefly at the top of the range, on the theory that a viewer
     #: taking longer to arrive was the complaint.  It was not -- that was a
@@ -1038,17 +1051,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: single jerk the playback was built to replace.  Twelve draws that same
     #: path in 1.9 s and a long one in proportion, and the slider is there for
     #: both ends.
-    submit_play_speed = widgets.FloatSlider(
-        value=12, min=0.5, max=60, step=0.5,
-        description='Play', continuous_update=False,
-        readout=True, readout_format='.1f',
+    submit_play_speed = widgets.IntSlider(
+        value=12, min=1, max=60, step=1,
+        description='Speed', continuous_update=False,
+        readout=True, readout_format='d',
         tooltip=('How many frames of the optimisation are drawn a second. '
                  'Slow lets the calculation run ahead of the picture: what '
                  'you see is where you are, and grabbing an atom there keeps '
-                 'that frame and drops what was computed past it. Fast keeps '
-                 'the picture level with the calculation.'),
-        style={'description_width': '38px'},
-        layout=widgets.Layout(width='168px', display='none'),
+                 'that frame and drops what was computed past it. At the top '
+                 'the picture keeps up with the calculation, so on a large '
+                 'structure that is the trajectory as it is computed; on a '
+                 'small one it is a fast replay of a path already finished.'),
+        style={'description_width': '48px'},
+        layout=widgets.Layout(width='178px', display='none'),
         disabled=True,
     )
     submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
@@ -4932,7 +4947,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Frames a second on the slider, milliseconds a frame on the page: the
         user thinks in speed and the player counts in delay.
         """
-        pace = max(1, int(round(1000.0 / max(0.1, float(submit_play_speed.value)))))
+        pace = max(1, int(round(1000.0 / max(1, int(submit_play_speed.value)))))
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinGfnPlay&&window.__delfinGfnPlay['
@@ -4946,7 +4961,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _push_play_speed()
         _set_mol_status(
-            f'The optimisation is drawn at {float(submit_play_speed.value):g} '
+            f'The optimisation is drawn at {int(submit_play_speed.value)} '
             'frame(s) a second. Slower lets the calculation run ahead of the '
             'picture -- take hold of an atom and the frame you are looking at '
             'is the one that is kept.')
