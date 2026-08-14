@@ -155,6 +155,13 @@ office = [
 dev = [
     "pytest>=6.0",
     "pytest-cov",
+    # A per-TEST deadline. The slow suite contains a call that waits on a
+    # thread with no timeout of its own, and without this the whole job
+    # sits behind it until the runner's limit — which is why the slow
+    # tests were never run to the end and their failures went unnamed.
+    # It was installed in one developer's environment and declared
+    # nowhere, so the same command measured different things per machine.
+    "pytest-timeout",
     "black",
     "flake8",
     "ruff",
