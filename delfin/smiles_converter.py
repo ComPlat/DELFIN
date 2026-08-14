@@ -38286,11 +38286,72 @@ def _geometric_inter_clash_relief(
         return xyz_delfin
 
 
+def _apply_template_bond_orders(ob_mol, mol_template) -> int:
+    """Bindungsordnungen aus dem RDKit-Template in die OB-Molekuel schreiben.
+
+    WARUM.  ``pybel.readstring("xyz", ...)`` uebergibt eine NACKTE Koordinatenliste.
+    OpenBabel muss daraus Bindungen UND Bindungsordnungen selbst erraten
+    (ConnectTheDots + PerceiveBondOrders), und UFF waehlt seine Atomtypen auf Basis
+    dieser Schaetzung.  Die Bindungsordnung ist aber KEINE geometrische Groesse -- sie
+    steht im SMILES, also im Template, und wird hier weggeworfen und danach geraten.
+    ⛔ ACHTUNG, 14.08.2026: DIESE BEGRUENDUNG IST NICHT BESTAETIGT.  Baustelle 2.9 schrieb
+    den unphysikalischen C-S-Abstand (gemessen 1.37 / 1.41 / 1.46 A gegen ein kuerzestes
+    reales C=S von 1.55) dieser fehlenden Bindungsordnung zu.  Nachgeprueft am selben Tag:
+    OB perzipiert C=S an einem isolierten Thioketon bei 1.61, 1.50, 1.433 UND 1.35 A
+    jedesmal KORREKT als Ordnung 2.  Die Ordnung geht also nicht verloren, jedenfalls
+    nicht ohne Metall in der Naehe.  Der DEFEKT ist real, die URSACHE ist offen.
+
+    Dieser Schalter bleibt deshalb AUS und ist KEINE Reparatur von 2.9, sondern eine
+    Hypothese, die noch scheitern kann.  Vor einer Messung erst den Fehler auf einem der
+    drei benannten Frames reproduzieren -- im Metallkomplex, nicht am Modellmolekuel.
+    Was hier trotzdem richtig ist: eine Groesse, die im Template STEHT, sollte man nicht
+    raten lassen.
+
+    ⚠ STRENGE ZUORDNUNG.  Uebertragen wird NUR, wenn Atomzahl UND Symbolfolge exakt
+    uebereinstimmen.  Die ausgegebene XYZ muss der Template-Reihenfolge nicht folgen
+    (dieselbe Sorge steht in _bond_decollapse woertlich), und eine Bindungsordnung auf
+    das falsche Atompaar zu schreiben waere schlimmer als sie zu raten.  Bei jeder
+    Abweichung: unveraendert lassen und OB perzipieren lassen wie bisher.
+
+    Rueckgabe: Zahl der gesetzten Bindungen (0 = nichts angefasst).
+    """
+    if mol_template is None or not RDKIT_AVAILABLE:
+        return 0
+    try:
+        n_t = mol_template.GetNumAtoms()
+        if ob_mol.NumAtoms() != n_t:
+            return 0
+        for i in range(n_t):
+            ob_a = ob_mol.GetAtom(i + 1)            # OB zaehlt ab 1
+            if pybel.ob.GetSymbol(ob_a.GetAtomicNum()) != \
+                    mol_template.GetAtomWithIdx(i).GetSymbol():
+                return 0                            # Reihenfolge weicht ab -> Finger weg
+        _ORDER = {Chem.BondType.SINGLE: 1, Chem.BondType.DOUBLE: 2,
+                  Chem.BondType.TRIPLE: 3, Chem.BondType.AROMATIC: 5}
+        n_set = 0
+        for b in mol_template.GetBonds():
+            o = _ORDER.get(b.GetBondType())
+            if not o:
+                continue
+            ob_b = ob_mol.GetBond(b.GetBeginAtomIdx() + 1, b.GetEndAtomIdx() + 1)
+            if ob_b is None:
+                continue                            # OB hat die Bindung nicht perzipiert
+            if o == 5:
+                ob_b.SetAromatic(True); ob_b.SetBondOrder(1)
+            else:
+                ob_b.SetBondOrder(o)
+            n_set += 1
+        return n_set
+    except Exception:
+        return 0
+
+
 def _optimize_xyz_openbabel(
     xyz_delfin: str,
     steps: int = 500,
     constraints: Optional[Dict] = None,
     return_energy: bool = False,
+    mol_template=None,
 ):
     """Optimize a DELFIN-format XYZ string using Open Babel's UFF force field.
 
@@ -38366,6 +38427,14 @@ def _optimize_xyz_openbabel(
 
         # Read into Open Babel
         ob_mol = pybel.readstring("xyz", std_xyz)
+
+        # BINDUNGSORDNUNGEN AUS DEM TEMPLATE STATT AUS DER GEOMETRIE (2026-08-14).
+        # Vorgabe AUS -> byte-identisch; s. _apply_template_bond_orders fuer das Warum
+        # (C-S bei 1.433 A, 249 Systeme, legacy).
+        if os.environ.get("DELFIN_FFFREE_OB_BOND_ORDERS", "0") == "1":
+            _n_bo = _apply_template_bond_orders(ob_mol.OBMol, mol_template)
+            if _n_bo:
+                logger.debug("OB bond orders taken from template: %d bonds", _n_bo)
 
         # Run UFF conjugate-gradient optimization.
         #
@@ -38940,7 +39009,8 @@ def _optimize_xyz_openbabel_safe(
                 logger.debug("Template constraint generation failed: %s", exc)
                 constraints = None
 
-    xyz_opt = _optimize_xyz_openbabel(xyz_delfin, steps=steps, constraints=constraints)
+    xyz_opt = _optimize_xyz_openbabel(xyz_delfin, steps=steps, constraints=constraints,
+                                      mol_template=mol_template)
     if not xyz_opt or xyz_opt == xyz_delfin:
         return xyz_delfin
 
