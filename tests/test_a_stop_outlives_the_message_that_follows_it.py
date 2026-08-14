@@ -302,3 +302,99 @@ def test_a_stop_after_real_text_keeps_the_answer_and_says_nothing_extra(eng):
     assert out == "Teilantwort"
     assert "send it again" not in out
     assert [m["role"] for m in eng.messages] == ["user", "assistant"]
+
+
+# ---------------------------------------------------------------------------
+# The engine wins the race, so the engine owes the hand-back
+# ---------------------------------------------------------------------------
+
+def test_a_stop_hands_back_the_typed_message_the_client_never_saw(eng):
+    """TRACED live, 2026-08-14, against kit.qwen3.5-397b-A17b:
+
+        0.42s  turn starts
+        4.16s  _stop_was_requested() -> False      (round 1, top)
+       13.13s  TOOL DISPATCHED + stop requested
+       13.14s  turn returned
+
+    Ten milliseconds. The engine checks the stop flag BETWEEN STREAM
+    EVENTS and breaks out there; the client's tool loop is a generator, and
+    a consumer that stops iterating simply abandons it. So the client's own
+    stop branch — the one that drains the queue and hands the typed message
+    back — never executes. Three runs out of three left the message sitting
+    in the queue, from where it would surface in a later, unrelated turn,
+    out of order with whatever the user typed after pressing Stop.
+
+    Whoever ends the turn owes the hand-back."""
+    queue = ["und bitte auch die kleinste Zahl"]
+    eng.client._drain_steer = lambda: [queue.pop(0)] if queue else []
+
+    def thinking_then_stop(*a, **kw):
+        eng.request_stop()
+        yield StreamEvent(type="thinking_delta", text="denke nach ...")
+        yield StreamEvent(type="message_delta", output_tokens=0, cost_usd=0.0)
+    eng.client.stream_message = MagicMock(side_effect=thinking_then_stop)
+
+    out = eng.stream_response("die ursprüngliche Frage")
+
+    assert "kleinste Zahl" in out
+    assert "send it again" in out
+    # ... and it is out of the queue, so no later turn replays it.
+    assert queue == []
+
+
+def test_a_run_note_is_left_where_it_is(eng):
+    """The other queue is NOT handed back: a run note is a fact about the
+    session that is still true, the client outlives the turn, and the next
+    turn drains it at its first round. Handing it to the user as their own
+    words is the defect that was fixed earlier today."""
+    eng.client._drain_steer = lambda: []
+    notes = ["[permissions] switched to acceptEdits"]
+    eng.client._drain_run_notes = lambda: list(notes)
+
+    def thinking_then_stop(*a, **kw):
+        eng.request_stop()
+        yield StreamEvent(type="thinking_delta", text="...")
+        yield StreamEvent(type="message_delta", output_tokens=0, cost_usd=0.0)
+    eng.client.stream_message = MagicMock(side_effect=thinking_then_stop)
+
+    out = eng.stream_response("frage")
+
+    assert "[permissions]" not in out
+    assert notes == ["[permissions] switched to acceptEdits"]
+
+
+def test_nothing_pending_adds_no_sentence(eng):
+    """The stop message must not grow a dangling clause when there is
+    nothing to hand back."""
+    eng.client._drain_steer = lambda: []
+
+    def thinking_then_stop(*a, **kw):
+        eng.request_stop()
+        yield StreamEvent(type="thinking_delta", text="...")
+        yield StreamEvent(type="message_delta", output_tokens=0, cost_usd=0.0)
+    eng.client.stream_message = MagicMock(side_effect=thinking_then_stop)
+
+    out = eng.stream_response("frage")
+    assert "Not delivered" not in out
+
+
+def test_a_drain_that_returns_something_odd_is_not_rendered(eng):
+    """A client whose drain does not return a list of strings — an older
+    backend, a stub, a test double — must not have its repr pasted into the
+    user's answer. That has happened once already: MagicMock text reached a
+    real transcript.
+
+    Asserted with a bare MagicMock, which is exactly the shape that slips
+    through a truthiness check: it is truthy, it slices, and it formats."""
+    eng.client._drain_steer = MagicMock(return_value=MagicMock())
+
+    def thinking_then_stop(*a, **kw):
+        eng.request_stop()
+        yield StreamEvent(type="thinking_delta", text="...")
+        yield StreamEvent(type="message_delta", output_tokens=0, cost_usd=0.0)
+    eng.client.stream_message = MagicMock(side_effect=thinking_then_stop)
+
+    out = eng.stream_response("frage")
+
+    assert "Mock" not in out
+    assert "Not delivered" not in out
