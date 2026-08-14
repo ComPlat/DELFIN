@@ -430,16 +430,54 @@ def test_a_message_typed_just_before_a_stop_is_handed_back(tmp_path,
     assert client._drain_steer() == []
 
 
-def test_a_run_note_pending_at_a_stop_is_handed_back_too(tmp_path,
-                                                          monkeypatch):
-    """A permission change the turn never got to hear about is the same
-    kind of undelivered fact."""
+def test_a_run_note_pending_at_a_stop_is_not_destroyed_by_it(tmp_path,
+                                                             monkeypatch):
+    """A run note was treated as the same kind of thing as a typed
+    message, and it is not.
+
+    Both queues were drained by one line and quoted in one sentence, so a
+    stop produced: Not delivered … “[permissions] The user switched this
+    session from 'plan' to 'acceptEdits' just now, mid-turn.” — send it
+    again if it still applies. The user is invited to re-send a line they
+    never wrote; and the note, which is a fact about the session and is
+    still true after the stop, is thrown away -- taking with it the only
+    notice the model was ever going to get that its permissions changed.
+
+    The note outlives the stop and is delivered by the next turn."""
     client = _real_client(tmp_path, monkeypatch)
     client.push_run_note("[permissions] switched to plan")
 
     notice = _stop_notice(client)
-    assert "[permissions] switched to plan" in notice
-    assert client._drain_run_notes() == []
+    assert client._drain_run_notes() == ["[permissions] switched to plan"]
+    # Not quoted at the user as something they wrote.
+    assert "[permissions] switched to plan" not in notice
+    assert "send it again" not in notice
+
+
+def test_a_stop_says_that_something_changed_underneath_it(tmp_path,
+                                                          monkeypatch):
+    """Keeping the note is not the same as keeping the user in the dark:
+    the turn they stopped was running under rules that changed, and that
+    is worth one clause."""
+    client = _real_client(tmp_path, monkeypatch)
+    client.push_run_note("[permissions] switched to plan")
+
+    notice = _stop_notice(client)
+    assert "1 change" in notice and "next message" in notice
+
+
+def test_the_two_queues_are_reported_apart(tmp_path, monkeypatch):
+    """Both pending at once: the typed message comes back to the user to
+    re-send, the run note does not."""
+    client = _real_client(tmp_path, monkeypatch)
+    client.push_steer("mach stattdessen X")
+    client.push_run_note("[permissions] switched to plan")
+
+    notice = _stop_notice(client)
+    assert "mach stattdessen X" in notice and "send it again" in notice
+    assert "[permissions] switched to plan" not in notice
+    assert client._drain_steer() == []
+    assert client._drain_run_notes() == ["[permissions] switched to plan"]
 
 
 def test_a_stop_with_an_empty_queue_says_only_that(tmp_path, monkeypatch):
