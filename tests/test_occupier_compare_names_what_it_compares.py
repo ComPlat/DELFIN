@@ -181,51 +181,54 @@ def test_the_old_key_still_turns_it_on():
 
 
 # --------------------------------------------------------------------------
-# the explanation lives in the validation, not in the template
+# an empty field is answered, a filled one is left alone
 # --------------------------------------------------------------------------
 
-def test_an_empty_field_is_explained_when_the_control_is_validated(caplog):
-    """The CONTROL template carries the key and nothing else. Kept as a comment
-    there it would be read once and then copied from file to file for years;
-    said at validation it reaches whoever is actually running something."""
-    import logging
-
-    with caplog.at_level(logging.INFO):
+def test_an_emptied_field_is_told_what_belongs_there():
+    """The template ships the key with a value, so an empty one is somebody
+    having cleared it. Quietly picking would decide which configuration a run
+    calls preferred without anyone having chosen."""
+    with pytest.raises(ValueError) as excinfo:
         validate_control_config(dict(_BASE, OCCUPIER_compare=""))
 
-    said = " ".join(r.getMessage() for r in caplog.records)
-    assert "OCCUPIER_compare is empty" in said
-    assert "FINAL SINGLE POINT ENERGY" in said
-    assert "Gibbs" in said
+    message = str(excinfo.value)
+    assert "set it to FSPE or G" in message
+    assert "FINAL SINGLE POINT ENERGY" in message
+    assert "Gibbs" in message
 
 
-def test_a_field_that_is_set_is_not_explained(caplog):
+@pytest.mark.parametrize("value", ["FSPE", "G", "gibbs"])
+def test_a_field_that_says_something_valid_is_left_alone(value, caplog):
     import logging
 
     with caplog.at_level(logging.INFO):
-        validate_control_config(dict(_BASE, OCCUPIER_compare="G"))
+        out = validate_control_config(dict(_BASE, OCCUPIER_compare=value))
+    validated = out[0] if isinstance(out, tuple) else out
 
-    assert "OCCUPIER_compare is empty" not in " ".join(
-        r.getMessage() for r in caplog.records
-    )
-
-
-def test_a_legacy_file_is_not_told_to_fill_in_a_field_it_predates(caplog):
-    import logging
-
-    with caplog.at_level(logging.INFO):
-        validate_control_config(dict(_BASE, frequency_calculation_OCCUPIER="yes"))
-
-    assert "OCCUPIER_compare is empty" not in " ".join(
-        r.getMessage() for r in caplog.records
-    )
+    assert validated["OCCUPIER_compare"] in ("FSPE", "G")
+    assert "OCCUPIER_compare" not in " ".join(r.getMessage() for r in caplog.records)
 
 
-def test_the_template_carries_the_key_without_a_comment_block():
-    """A template comment is copied into every derived CONTROL file and ages
-    there; the validator's message cannot."""
+@pytest.mark.parametrize("value", ["GG", "ja", "perhaps"])
+def test_a_field_that_says_something_impossible_is_reported(value):
+    with pytest.raises(ValueError, match="must be FSPE or G"):
+        validate_control_config(dict(_BASE, OCCUPIER_compare=value))
+
+
+def test_a_legacy_file_is_not_told_to_fill_in_a_field_it_predates():
+    """The key is absent, not empty. Those files carry the older one and are
+    read through it."""
+    out = validate_control_config(dict(_BASE, frequency_calculation_OCCUPIER="yes"))
+    validated = out[0] if isinstance(out, tuple) else out
+
+    assert validated["OCCUPIER_compare"] == "G"
+
+
+def test_the_template_ships_the_key_with_a_value():
+    """Like frequency_calculation_OCCUPIER=no before it: the default is visible
+    and changing it means typing G over FSPE, not knowing the key exists."""
     from delfin import define
 
-    text = define.__file__ and open(define.__file__, encoding="utf-8").read()
-    assert "OCCUPIER_compare=" in text
-    assert "electronic energy (FINAL SINGLE POINT ENERGY)" not in text
+    lines = [l for l in define.TEMPLATE.splitlines() if l.startswith("OCCUPIER_compare")]
+    assert lines == ["OCCUPIER_compare=FSPE"]
+    assert "electronic energy (FINAL SINGLE POINT ENERGY)" not in define.TEMPLATE

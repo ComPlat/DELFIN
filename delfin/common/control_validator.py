@@ -1983,34 +1983,37 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Invalid value for stability_reaction: {exc}")
 
-    if errors:
-        raise ValueError("; ".join(errors))
-
-    # A CONTROL file written before OCCUPIER_compare existed carries only
-    # frequency_calculation_OCCUPIER. The field loop above has meanwhile filled
-    # OCCUPIER_compare with its default, which is indistinguishable from the
-    # user having asked for it — and FSPE against a legacy yes would silently
-    # move such a run from Gibbs free energies to electronic ones, changing
-    # which configuration it calls preferred. Derive it here instead, so the
-    # validated config says one thing and every reader of it agrees.
-    if not str(config.get("OCCUPIER_compare", "") or "").strip():
+    # OCCUPIER_compare decides which energy the candidate configurations are
+    # ranked by, and the answer changes which one a run calls preferred. Two
+    # cases have to stay apart.
+    #
+    # Present but emptied: the field is in the template with a value, so an
+    # empty one is somebody having cleared it. Say what belongs there instead
+    # of quietly picking, the way OCCUPIER_method does.
+    #
+    # Absent altogether: a CONTROL file written before this key existed. Those
+    # carry frequency_calculation_OCCUPIER, and the field loop above has by now
+    # filled OCCUPIER_compare with its default — indistinguishable from a user
+    # asking for FSPE. Left at that, a legacy file saying yes would move from
+    # Gibbs free energies to electronic ones with nothing to show for it, so
+    # the value is derived from the old key instead.
+    if "OCCUPIER_compare" in config and not str(config.get("OCCUPIER_compare") or "").strip():
+        errors.append(
+            "OCCUPIER_compare is empty — set it to FSPE or G. FSPE is the "
+            "electronic energy (FINAL SINGLE POINT ENERGY); G is the Gibbs free "
+            "energy, which needs a frequency run per candidate and is added for "
+            "you. Configurations within a few kJ/mol can be ordered differently "
+            "by the two, and the choice also decides which of them seed the next "
+            "redox step."
+        )
+    elif "OCCUPIER_compare" not in config:
         legacy = str(config.get("frequency_calculation_OCCUPIER", "") or "").strip()
         if legacy:
             validated["OCCUPIER_compare"] = (
                 "G" if legacy.lower() in ("yes", "true", "1", "on") else "FSPE"
             )
-        else:
-            # Left blank. Say what the choice is here rather than carrying the
-            # explanation in the template, where it would be read once and then
-            # copied from file to file forever.
-            logger.info(
-                "OCCUPIER_compare is empty — comparing configurations by %s. "
-                "FSPE is the electronic energy (FINAL SINGLE POINT ENERGY); "
-                "G is the Gibbs free energy, which needs a frequency run per "
-                "candidate and is added for you. Configurations within a few "
-                "kJ/mol can be ordered differently by the two, and the choice "
-                "also decides which of them seed the next redox step.",
-                validated.get("OCCUPIER_compare", "FSPE"),
-            )
+
+    if errors:
+        raise ValueError("; ".join(errors))
 
     return validated
