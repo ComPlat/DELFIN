@@ -22,17 +22,29 @@ optimizer combines four elements:
        rotation around an axis for angle / clash cases).
 
     4. Phase C — Hard topology gate.  After every commit, ``_passes_topology``
-       verifies that all M-D distances stay within [0.85, 1.10] of ideal
-       and that no non-bonded heavy-pair has collapsed inside 0.85·Σr_cov.
+       verifies that all M-D distances stay within
+       [``_MD_GATE_LO``, ``_MD_GATE_HI``] of ideal and that no non-bonded
+       heavy-pair has collapsed inside 0.85·Σr_cov.
        Failed steps are rolled back atomically; if the total violation
        budget rises by > 5 %, the step is reverted and ``step_size`` halved.
+
+       The window narrowed from [0.85, 1.10] to [0.93, 1.07] and this text
+       said the old numbers for a year — worth naming, because the same
+       staleness was what let a bond sit in the band between the gate and
+       the repair trigger with nothing willing to act on it. The constants
+       are now the single place the number is written down.
 
 Doctrine
 --------
 - Universal (no SMILES/refcode/element-list shortcuts).  Donor classification
   is purely structural: bond connectivity to a metal atom.
 - Hard topology preservation.  A commit may only land if it preserves the
-  graph: no M-D break, no new spurious heavy-heavy bond.
+  graph: no M-D break, no new spurious heavy-heavy bond.  Read as "the result
+  must pass the gate" this is a ratchet, because the gate judges the whole
+  structure and the passes exist for structures that do not pass it yet. The
+  rule that holds the intent without the deadlock is in ``_commit_allowed``:
+  a structure inside the gate can still never be walked out of it, and one
+  already outside may take any step that strictly improves.
 - Mass-weighted moves keep heavy fragments still and light atoms mobile,
   matching the rigid-body intuition of UFF post-relaxation.
 - Standalone module.  Imports from delfin.smiles_converter for the master
@@ -538,6 +550,17 @@ def _md_pairs(mol, metals: Sequence[int]) -> List[Tuple[int, int, float]]:
     return out
 
 
+# The hard M-D window. Named because two places have to agree on it: the gate
+# that decides whether a structure is acceptable, and the bond stage that
+# decides whether a bond is worth correcting. While the second was looser than
+# the first (bond_tol defaults to 0.15, the gate allows 0.07) there was a band
+# where the optimizer answered "nothing to correct" and the gate answered
+# "broken" about the same bond, and no input in that band could ever be
+# brought back inside.
+_MD_GATE_LO = 0.93
+_MD_GATE_HI = 1.07
+
+
 def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
                      md_pairs: Sequence[Tuple[int, int, float]],
                      nb_pairs: Sequence[Tuple[int, int]]) -> bool:
@@ -550,7 +573,7 @@ def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
     # M-D distance window — tighter to prevent compression cascade.
     for (m, d, d_ideal) in md_pairs:
         d_cur = float(np.linalg.norm(coords[m] - coords[d]))
-        if d_cur < 0.93 * d_ideal or d_cur > 1.07 * d_ideal:
+        if d_cur < _MD_GATE_LO * d_ideal or d_cur > _MD_GATE_HI * d_ideal:
             return False
     # Non-bonded heavy-heavy collapse → new spurious bond.
     syms = [a.GetSymbol() for a in mol.GetAtoms()]
@@ -583,6 +606,50 @@ def _total_violation(coords: np.ndarray, mol, metals: Sequence[int],
         if d_cur < thr:
             s += (thr - d_cur) ** 2
     return float(s)
+
+
+def _commit_allowed(new: np.ndarray, old: np.ndarray, mol,
+                    metals: Sequence[int],
+                    md_pairs: Sequence[Tuple[int, int, float]],
+                    nb_pairs: Sequence[Tuple[int, int]],
+                    clash_factor: float = 0.85) -> bool:
+    """Whether a candidate move may be committed.
+
+    Every stage used to commit on ``_passes_topology(new)`` alone. That reads
+    as caution and behaves as a ratchet, because the gate judges the WHOLE
+    structure: while any one bond sits outside the window, no move anywhere
+    can be committed — and a structure with a bond outside the window is
+    exactly what these passes exist to fix.
+
+    Two shapes of that showed up as soon as the slow suite was read again.
+    A Pt-N stretched to 1.084 x ideal sits above the gate's 1.07 but below
+    the 1.30 that triggers the one-shot repair, so Phase A ignores it and
+    Phase B cannot commit the 0.017 A step that would begin to close it: the
+    optimizer returns the input untouched and reports converged. And in a
+    bimetallic bridge, four Pt-Cl at 1.087 x ideal vetoed the repair of a
+    different Pt-N that had flown 8 A away — one slightly long bridge
+    outvoting a catastrophic break.
+
+    So the rule is relative, not absolute:
+
+    - passes the gate -> commit, as before;
+    - was inside the gate and this would leave it -> refuse, as before;
+    - was already outside -> commit only a strict improvement.
+
+    The safety property people relied on is the second line and it is
+    unchanged: a structure that satisfies the gate can still never be walked
+    out of it. What changes is only the case where the input was already
+    broken, where the previous answer was to do nothing at all.
+    """
+    if _passes_topology(new, mol, metals, md_pairs, nb_pairs):
+        return True
+    if _passes_topology(old, mol, metals, md_pairs, nb_pairs):
+        return False
+    return (
+        _total_violation(new, mol, metals, md_pairs, nb_pairs, clash_factor)
+        < _total_violation(old, mol, metals, md_pairs, nb_pairs, clash_factor)
+        - 1e-12
+    )
 
 
 def _max_md_deviation(coords: np.ndarray,
@@ -650,7 +717,8 @@ def _repair_md_break_translation(
     target = coords[m] + direction * d_ideal
     translation = target - coords[d]
     new_coords = _fragment_translate(coords, frag, translation)
-    if _passes_topology(new_coords, mol, metals, md_pairs, nb_pairs):
+    if _commit_allowed(new_coords, coords, mol, metals, md_pairs, nb_pairs,
+                       clash_factor):
         return new_coords
     return None
 
@@ -696,7 +764,8 @@ def _repair_md_break_rotation(
             unit = new_dir / new_len
             target = coords[m] + unit * d_ideal
             tried = _fragment_translate(tried, frag, target - tried[d])
-            if not _passes_topology(tried, mol, metals, md_pairs, nb_pairs):
+            if not _commit_allowed(tried, coords, mol, metals, md_pairs,
+                                   nb_pairs, clash_factor):
                 continue
             score = _total_violation(tried, mol, metals, md_pairs, nb_pairs,
                                      clash_factor)
@@ -1209,7 +1278,8 @@ def _project_donors_to_polyhedron(
             if not frag:
                 continue
             tried = _fragment_translate(out, frag, shift)
-            if _passes_topology(tried, mol, metals, md_pairs, nb_pairs):
+            if _commit_allowed(tried, out, mol, metals, md_pairs, nb_pairs,
+                               clash_factor):
                 out = tried
                 n_done += 1
     if smart_mode and report is not None and skipped:
@@ -1226,6 +1296,7 @@ def _stage_bonds(coords: np.ndarray, mol,
                  metals: Sequence[int], nb_pairs: Sequence[Tuple[int, int]],
                  step_size: float, bond_tol: float,
                  h_nbrs: Optional[List[List[int]]] = None,
+                 clash_factor: float = 0.85,
                  ) -> Tuple[np.ndarray, bool, int]:
     """Mass-weighted bond-distance projection over all M-D pairs (and any
     further covalent bonds that are far from ideal).  Returns (coords, moved,
@@ -1242,7 +1313,14 @@ def _stage_bonds(coords: np.ndarray, mol,
     for (m, d, d_ideal) in md_pairs:
         d_cur = float(np.linalg.norm(out[m] - out[d]))
         err = d_cur - d_ideal
-        if abs(err) > bond_tol * d_ideal:
+        # Either the caller's comfort tolerance, or the hard gate — whichever
+        # is stricter. bond_tol defaults to 0.15 while the gate allows 0.07,
+        # so a bond could sit outside the window the module promises to hold
+        # and still be reported as having nothing worth correcting.
+        outside_gate = not (
+            _MD_GATE_LO * d_ideal <= d_cur <= _MD_GATE_HI * d_ideal
+        )
+        if abs(err) > bond_tol * d_ideal or outside_gate:
             ranked.append((abs(err), m, d, d_ideal, d_cur, err))
     ranked.sort(reverse=True)
     for (_, m, d, d_ideal, d_cur, err) in ranked:
@@ -1266,7 +1344,8 @@ def _stage_bonds(coords: np.ndarray, mol,
                 new[h_idx] = out[h_idx] + delta_m
             for h_idx in h_nbrs[d]:
                 new[h_idx] = out[h_idx] + delta_d
-        if _passes_topology(new, mol, metals, md_pairs, nb_pairs):
+        if _commit_allowed(new, out, mol, metals, md_pairs, nb_pairs,
+                           clash_factor):
             out = new
             moved = True
             repairs += 1
@@ -1277,7 +1356,8 @@ def _stage_angles(coords: np.ndarray, mol, nbrs: List[List[int]],
                   metals: Sequence[int],
                   md_pairs: Sequence[Tuple[int, int, float]],
                   nb_pairs: Sequence[Tuple[int, int]],
-                  step_size: float, angle_tol: float
+                  step_size: float, angle_tol: float,
+                  clash_factor: float = 0.85,
                   ) -> Tuple[np.ndarray, bool, int]:
     """Rotate non-metal donor X around (M→D) axis through D to bring M-D-X
     closer to a hybridization-dependent ideal.  Conservative: only acts on
@@ -1362,7 +1442,8 @@ def _stage_angles(coords: np.ndarray, mol, nbrs: List[List[int]],
                 continue
             angle_rad = -math.radians(dev) * step_size
             new = _fragment_rotate(out, subtree, out[d], axis, angle_rad)
-            if _passes_topology(new, mol, metals, md_pairs, nb_pairs):
+            if _commit_allowed(new, out, mol, metals, md_pairs, nb_pairs,
+                               clash_factor):
                 out = new
                 moved = True
                 repairs += 1
@@ -1434,7 +1515,8 @@ def _stage_clashes(coords: np.ndarray, mol, nbrs: List[List[int]],
                     ang_rad = math.radians(ang_deg) * step_size
                     new = _fragment_rotate(out, atoms_a, out[m_a],
                                            axis_dir, ang_rad)
-                    if not _passes_topology(new, mol, metals, md_pairs, nb_pairs):
+                    if not _commit_allowed(new, out, mol, metals, md_pairs,
+                                           nb_pairs, clash_factor):
                         continue
                     new_d = float(np.linalg.norm(new[i] - new[j]))
                     if new_d > d_cur + 1e-3:
@@ -1466,7 +1548,8 @@ def _stage_clashes(coords: np.ndarray, mol, nbrs: List[List[int]],
                 new[h_idx] = out[h_idx] + delta_i
             for h_idx in h_nbrs[j]:
                 new[h_idx] = out[h_idx] + delta_j
-        if _passes_topology(new, mol, metals, md_pairs, nb_pairs):
+        if _commit_allowed(new, out, mol, metals, md_pairs, nb_pairs,
+                           clash_factor):
             out = new
             moved = True
             repairs += 1
@@ -1486,7 +1569,8 @@ def _stage_clashes(coords: np.ndarray, mol, nbrs: List[List[int]],
         perp = perp / max(float(np.linalg.norm(perp)), 1e-12)
         shift = perp * (overlap * step_size * 0.5)
         new = _fragment_translate(out, frag_atoms, shift)
-        if _passes_topology(new, mol, metals, md_pairs, nb_pairs):
+        if _commit_allowed(new, out, mol, metals, md_pairs, nb_pairs,
+                           clash_factor):
             out = new
             moved = True
             repairs += 1
@@ -1709,7 +1793,8 @@ def post_optimize_geometry(
 
             new, m1, r1 = _stage_bonds(
                 coords, mol, md_pairs, metals, nb_pairs,
-                cur_step, bond_tol, h_nbrs=h_nbrs)
+                cur_step, bond_tol, h_nbrs=h_nbrs,
+                clash_factor=clash_factor)
             coords = new
             moved_any = moved_any or m1
             total_repairs += r1
@@ -1717,7 +1802,7 @@ def post_optimize_geometry(
             if enable_angles:
                 new, m2, r2 = _stage_angles(
                     coords, mol, nbrs, metals, md_pairs, nb_pairs,
-                    cur_step, angle_tol)
+                    cur_step, angle_tol, clash_factor=clash_factor)
                 coords = new
                 moved_any = moved_any or m2
                 total_repairs += r2
@@ -1772,6 +1857,28 @@ def post_optimize_geometry(
                 coords = coords_input
                 converged = False
                 report["fallback_md_drift"] = drift_max
+
+        # ---- Never worse than the input, on the broken path too ------------
+        # Both gates above are guarded by ``initial_topology_ok``, so an input
+        # that was already outside the window had no net under it at all. That
+        # was harmless while nothing could ever be committed there; now that
+        # moves land, it is not. A sweep is allowed to grow the violation
+        # budget by up to 5 % before it is rolled back, and over thirty sweeps
+        # that compounds.
+        #
+        # The doctrine this restores is the module's own, written a few lines
+        # up: the caller never gets a worse structure than the one they passed
+        # in. It just had never been made to hold where it mattered most.
+        if not initial_topology_ok and md_pairs:
+            _, coords_input, _ = _parse_xyz(xyz)
+            v_in = _total_violation(
+                coords_input, mol, metals, md_pairs, nb_pairs, clash_factor)
+            v_out = _total_violation(
+                coords, mol, metals, md_pairs, nb_pairs, clash_factor)
+            if v_out > v_in:
+                coords = coords_input
+                converged = False
+                report["fallback_worse_than_input"] = v_out - v_in
 
         report["iterations"] = last_iter
         report["repairs"] = total_repairs
