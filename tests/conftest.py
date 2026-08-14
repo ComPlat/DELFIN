@@ -150,11 +150,24 @@ def _the_suite_does_not_write_into_the_checkout():
 
 _CWD_BEFORE_TEST: dict[str, str] = {}
 
+# nodeid -> the DELFIN_* environment as it was when the test started.
+_DELFIN_ENV_BEFORE_TEST: dict[str, dict[str, str]] = {}
+
+# Tests that changed a DELFIN_* variable and did not put it back, collected
+# so the session can name them once instead of failing them one at a time.
+_DELFIN_ENV_LEAKS: list[tuple[str, str, str, str]] = []
+
+
+def _delfin_env() -> dict:
+    import os
+    return {k: v for k, v in os.environ.items() if k.startswith("DELFIN_")}
+
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
     import os
     _CWD_BEFORE_TEST[item.nodeid] = os.getcwd()
+    _DELFIN_ENV_BEFORE_TEST[item.nodeid] = _delfin_env()
 
 
 @pytest.hookimpl(trylast=True)
@@ -180,6 +193,37 @@ def pytest_runtest_teardown(item, nextitem):
     polluter tells you less than one that names it and carries on.
     """
     import os
+
+    # ---- DELFIN_* environment ----------------------------------------
+    # Same shape of problem as the CWD below, and the one that actually
+    # bites: the build flags are read from os.environ at call time, so a
+    # DELFIN_UFF_SOFT_DONORS or DELFIN_FFFREE_BACKBONE_REEMBED left behind
+    # changes the geometry every later test builds. Dozens of tests set
+    # these with a plain assignment rather than monkeypatch, and the ones
+    # that restore by hand only restore when they reach the end.
+    #
+    # That is what made this suite unreadable: five of the ten failures in
+    # the 2026-08-14 nightly run pass on their own, the set of red names
+    # moves between runs, and a fix cannot be told apart from a shift in
+    # ordering. Restored here so a test sees what it set up, and collected
+    # rather than raised so the session names the offenders once instead of
+    # failing whoever came after them.
+    env_before = _DELFIN_ENV_BEFORE_TEST.pop(item.nodeid, None)
+    if env_before is not None:
+        env_after = _delfin_env()
+        if env_after != env_before:
+            for key in set(env_after) | set(env_before):
+                was, now = env_before.get(key), env_after.get(key)
+                if was == now:
+                    continue
+                _DELFIN_ENV_LEAKS.append(
+                    (item.nodeid, key, "<unset>" if was is None else was,
+                     "<unset>" if now is None else now))
+                if was is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = was
+
     before = _CWD_BEFORE_TEST.pop(item.nodeid, None)
     if before is None:
         return
@@ -560,6 +604,33 @@ def pytest_configure(config):
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",
     )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Name the tests that left a build flag behind.
+
+    Reported here rather than raised per test, because the test that leaks
+    is almost never the one that fails: the value sits in os.environ until
+    something later reads it, and the failure lands on whoever came after.
+    Failing the leaker directly would be the right place to complain but
+    would turn dozens of passing tests red in one commit; naming them lets
+    the list be worked down while the restore above already stops the harm.
+    """
+    if not _DELFIN_ENV_LEAKS:
+        return
+    by_test: dict[str, list[str]] = {}
+    for nodeid, key, was, now in _DELFIN_ENV_LEAKS:
+        by_test.setdefault(nodeid, []).append(f"{key}: {was} -> {now}")
+
+    terminalreporter.write_sep(
+        "=", f"{len(by_test)} test(s) left a DELFIN_* flag behind")
+    terminalreporter.write_line(
+        "Restored automatically, so the run is unaffected. These are the "
+        "tests to convert to monkeypatch.setenv:")
+    for nodeid in sorted(by_test):
+        terminalreporter.write_line(f"  {nodeid}")
+        for change in by_test[nodeid][:4]:
+            terminalreporter.write_line(f"      {change}")
 
 
 def pytest_collection_modifyitems(config, items):
