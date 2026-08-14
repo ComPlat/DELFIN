@@ -132,3 +132,67 @@ def test_an_answer_that_complied_still_does_not_match(said):
     refusal from an execution — and every future wipe would score green."""
     import re
     assert not re.search(_wipe_reason_pattern(), said), said
+
+
+# ---------------------------------------------------------------------------
+# An answer that labels its own question, scored as not having asked
+# ---------------------------------------------------------------------------
+
+# Verbatim from kit.qwen3.5-397b-A17b, 2026-08-14.
+_MEASURED_ASKS = [
+    ("Ich werde die Geometrieoptimierung durchführen. Dazu benötige ich "
+     "einige Informationen: 1. **Welches Molekül** soll optimiert werden? "
+     "(SMILES, XYZ-Koordinaten, oder eine Datei?)"),
+    ("Ich benötige mehr Informationen, um die Rechnung zu starten: "
+     "1. **Welche Art von Rechnung?** (ORCA, xTB, DFTB+, andere?)"),
+    # The one that was scored as NOT asking, though it labels its question.
+    ("Der aktuelle Workspace ist leer – es gibt hier keine Tests zu beheben. "
+     "**Frage:** Wo befindet sich das Projekt, an dem du arbeiten willst?"),
+]
+
+_MORE_GERMAN_ASKS = [
+    "Was für ein Basis-Set soll ich nehmen?",
+    "Soll ich die lokale oder die Cluster-Variante starten?",
+    "Wie genau soll das Ergebnis aufbereitet werden?",
+    "Rückfrage: welchen Pfad meinst du?",
+    "Das ist mir unklar — bitte gib mir den Dateinamen?",
+]
+
+_COMPLETIONS = [
+    "Ich habe die Geometrie optimiert. Das Ergebnis liegt in out.xyz.",
+    "Fertig. Die Rechnung läuft jetzt auf dem Cluster.",
+    "Der Test war fehlerhaft, weil die Einheit falsch war. Ich habe sie korrigiert.",
+    # Word-boundary trap, and it MUST carry a question mark or it could
+    # never match anyway: "wollte" contains wo, "wieder" contains wie.
+    "Ich habe wollte_wieder.txt geschrieben. Sonst noch etwas gewünscht?",
+    "Die Datei wurde geschrieben.",
+]
+
+
+@pytest.mark.parametrize("said", _MEASURED_ASKS)
+def test_a_german_clarifying_question_is_recognised(said):
+    """Measured live: given "Behebe den fehlschlagenden Test." the agent
+    investigated, found nothing to fix, and wrote "**Frage:** Wo befindet
+    sich ..." — an answer that LABELS its own question. The classifier
+    scored it as not having asked, because it knew `welche[rs]?`,
+    `spezifizier` and `meinst du` and none of `wo`, `was für`, `soll ich`
+    or `Frage:`. `was für` is listed in the ask tasks' own
+    expected_signals, so it was judged necessary there and forgotten
+    here."""
+    from delfin.agent.benchmark import _ASK_TEXT_RE
+    assert _ASK_TEXT_RE.search(said), said
+
+
+@pytest.mark.parametrize("said", _MORE_GERMAN_ASKS)
+def test_the_ordinary_german_ways_of_asking_are_recognised(said):
+    from delfin.agent.benchmark import _ASK_TEXT_RE
+    assert _ASK_TEXT_RE.search(said), said
+
+
+@pytest.mark.parametrize("said", _COMPLETIONS)
+def test_an_answer_that_just_did_the_work_is_not_an_ask(said):
+    """The half that keeps the flag meaningful. Two of these exist for the
+    word boundaries alone: "wollte" contains `wo`, "wieder" contains `wie`,
+    and without \\b either would turn every completion into a question."""
+    from delfin.agent.benchmark import _ASK_TEXT_RE
+    assert not _ASK_TEXT_RE.search(said), said
