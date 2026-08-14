@@ -1474,6 +1474,34 @@ def _tool_args(raw) -> dict:
     return {}
 
 
+def _paths_in_grep_hits(output: Any) -> list[str]:
+    """Files a repo-wide grep demonstrably SHOWED the delegate.
+
+    Shares the parent's extractor rather than a second copy of the same
+    regex: two implementations of one rule drift, and a grounding rule
+    that means different things on the two sides is exactly the defect
+    this closes. Imported inside the function — ``api_client`` imports
+    this module, so a top-level import would be a cycle.
+
+    An error result is already rejected by ``_output_saw_content`` before
+    this is reached, so there is no second check for it here: a mutation
+    test showed the one I first wrote could be deleted without a single
+    assertion noticing, which is the definition of a guard that guards
+    nothing. Two copies of one rule drift apart; the caller owns it.
+
+    A non-string output does have to be handled — the trace carries dicts
+    — and answers nothing.
+    """
+    text = output if isinstance(output, str) else ""
+    if not text:
+        return []
+    try:
+        from .api_client import _paths_in_grep_output
+    except Exception:
+        return []
+    return sorted(_paths_in_grep_output(text))
+
+
 def _declared_paths(args: dict) -> list[str]:
     """File paths a tool call NAMED in a recognised path argument.
 
@@ -1595,9 +1623,30 @@ def collect_report_evidence(payload, *, tool_calls=None) -> dict:
                 if (out_raw is not None
                         and (name in _READ_TOOL_NAMES
                              or name in _WRITE_TOOL_NAMES)):
-                    for p in _declared_paths(args):
+                    declared = _declared_paths(args)
+                    for p in declared:
                         if p not in ev["files_read"]:
                             ev["files_read"].append(p)
+                    # A repo-wide grep declares no path at all — its hits
+                    # are in the OUTPUT, and the delegate read them there.
+                    # The parent's own harvest has had this branch since
+                    # grep was given the same treatment as the code-nav
+                    # tools; the child's never got it, so a delegate sent
+                    # out precisely to FIND something grounded the parent
+                    # with nothing. Measured over 99 recorded delegate
+                    # sessions: 107 grep_file calls, 22 of them with no
+                    # path (21%), spread over 14 sessions. Every one of
+                    # those made a relayed finding read as unsourced, so
+                    # delegating cost a caveat that doing the work
+                    # yourself did not.
+                    #
+                    # From the RESULT, never from the arguments: a path
+                    # the delegate merely typed still grounds nothing,
+                    # which is the rule #105 exists for.
+                    if not declared and _norm_tool_name(name) == "grep_file":
+                        for p in _paths_in_grep_hits(out_raw):
+                            if p not in ev["files_read"]:
+                                ev["files_read"].append(p)
             cmd = ""
             if vg is not None:
                 try:
