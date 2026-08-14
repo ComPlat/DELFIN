@@ -1346,7 +1346,8 @@ def test_the_playback_speeds_up_when_it_falls_behind(editor):
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "function stepMs()" in watcher
     assert "play.queue.length" in watcher
-    assert "stepMs()" in watcher.split("var t=(now-play.started)")[1][:20]
+    assert "var ms=stepMs();" in watcher
+    assert "var t=(now-play.started)/ms;" in watcher
 
 
 def test_stopping_keeps_the_frame_that_was_on_screen(editor):
@@ -4279,6 +4280,10 @@ def test_the_speed_slider_reaches_the_page_in_the_unit_it_counts_in(tmp_path):
     slider.value = 4                        # slow: a quarter of a second each
     assert ".pace=250;" in "".join(sent)
 
+    sent.clear()
+    slider.value = 0.5                      # two seconds a frame
+    assert ".pace=2000;" in "".join(sent)
+
 
 def test_the_pace_is_offered_only_where_a_path_is_walked(editor, monkeypatch):
     """The browser's own field draws its frames as it computes them; there is
@@ -4403,5 +4408,9 @@ def test_the_path_is_played_at_a_pace_that_can_be_watched(editor):
     """
     slider = editor["submit_play_speed"]
     assert slider.value == 12
-    assert (slider.min, slider.max) == (2, 60)
+    # Down to half a frame a second, which is two seconds a step: slow is the
+    # end that is actually useful, and one frame every half second was not
+    # slow.  Up to sixty, which is where the screen itself stops.
+    assert (slider.min, slider.max) == (0.5, 60)
+    assert slider.step == 0.5
     assert slider.value < slider.max, "the default cannot be the fastest there is"
