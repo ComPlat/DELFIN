@@ -1028,17 +1028,42 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: grounds that a picture trailing its calculation was a fault.  That is
     #: the behaviour a slow setting exists to ask for, so the setting wins and
     #: the backlog rule is gone.
+    #: Whole frames a second, from one up to live.
+    #:
+    #: The top is not a speed so much as "live", and what it means depends on
+    #: the system: the frames only exist as fast as xtb makes them.  On
+    #: something small the queue is full and sixty a second is a quick replay
+    #: of a path already finished; on a hundred and fifty atoms the picture
+    #: drains the queue and then waits for the next frame, which is the
+    #: calculation watched as it happens.  So the top is the useful end for a
+    #: large structure and the middle for a small one, and dialling down from
+    #: live is the way to read it.
+    #:
+    #: Whole steps, because a tenth of a frame a second is a distinction
+    #: nobody makes; one a second is already a second of looking at each
+    #: geometry.
+    #:
+    #: It was briefly at the top of the range, on the theory that a viewer
+    #: taking longer to arrive was the complaint.  It was not -- that was a
+    #: flag left raised over a write that changed nothing, and it is fixed
+    #: where it was.  At sixty a second a twenty-three-frame optimisation is
+    #: over in 0.4 s, which is not a trajectory anyone can watch; it is the
+    #: single jerk the playback was built to replace.  Twelve draws that same
+    #: path in 1.9 s and a long one in proportion, and the slider is there for
+    #: both ends.
     submit_play_speed = widgets.IntSlider(
-        value=18, min=2, max=60, step=1,
-        description='Play', continuous_update=False,
+        value=12, min=1, max=60, step=1,
+        description='Speed', continuous_update=False,
         readout=True, readout_format='d',
         tooltip=('How many frames of the optimisation are drawn a second. '
                  'Slow lets the calculation run ahead of the picture: what '
                  'you see is where you are, and grabbing an atom there keeps '
-                 'that frame and drops what was computed past it. Fast keeps '
-                 'the picture level with the calculation.'),
-        style={'description_width': '38px'},
-        layout=widgets.Layout(width='168px', display='none'),
+                 'that frame and drops what was computed past it. At the top '
+                 'the picture keeps up with the calculation, so on a large '
+                 'structure that is the trajectory as it is computed; on a '
+                 'small one it is a fast replay of a path already finished.'),
+        style={'description_width': '48px'},
+        layout=widgets.Layout(width='178px', display='none'),
         disabled=True,
     )
     submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
@@ -1636,6 +1661,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    }\n'
             '    var frames=(data&&data.frames)||[];\n'
             '    var run=(data&&data.run)||0;\n'
+
             '    /* Whether these frames belong to a molecule following a hand\n'
             '       rather than to a minimisation.  The two are told apart\n'
             '       because Optimise is not pressed during a follow, and the\n'
@@ -1658,8 +1684,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '        show(play.last,play.queue[play.queue.length-1],1);\n'
             '      }\n'
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
-            '      play.shown=0; play.toldStop=0;\n'
+            '      play.shown=0; play.toldStop=0; play.complete=0;\n'
             '    }\n'
+            '    /* The whole path is in hand: play it out whatever the switch\n'
+            '       does, because the switch going up is how a finished run\n'
+            '       announces itself -- the kernel turns it off the moment the\n'
+            '       last round lands, and the picture is still walking.  Set\n'
+            '       above the run check instead, it was cleared by the very\n'
+            '       write that carried it whenever a run was short enough to\n'
+            '       finish in one message. */\n'
+            '    if(data&&data.final) play.complete=1;\n'
             '    /* Where in the run these frames start.  A long run sends the\n'
             '       tail rather than the whole path -- every write is a message\n'
             '       and the whole path grows without end -- so counting from\n'
@@ -1881,11 +1915,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '        }\n'
             '      }\n'
             '    }\n'
-            '    if(play.queue.length&&!play.follow&&!switchIsOn()){\n'
+            '    if(play.queue.length&&!play.follow&&!play.complete\n'
+            '       &&!switchIsOn()){\n'
             '      /* Optimise going up abandons what it had computed but\n'
             '         nobody had seen.  A follow has no Optimise behind it --\n'
             '         checking that switch there threw away every frame the\n'
-            '         drag produced, which is what "it does nothing" was. */\n'
+            '         drag produced, which is what "it does nothing" was.\n'
+            '         And a run that finished is not a run that was stopped.\n'
+            '         The switch goes up by itself the moment the last round\n'
+            '         is in, so a path still being walked at a pace anyone can\n'
+            '         watch was thrown away exactly then: the picture showed\n'
+            '         the first few frames and stopped, and never arrived at\n'
+            '         the minimum it had just computed.  The kernel says which\n'
+            '         it is -- the last write of a finished run is marked, and\n'
+            '         a stop arrives as a halt, which clears the queue above. */\n'
             '      play.queue=[];\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
             '        say("stopped at frame "+(play.shown||0)); }\n'
@@ -1893,12 +1936,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    read(now);\n'
             '    if(play.queue.length){\n'
             '      if(!play.started) play.started=now;\n'
-            '      var t=(now-play.started)/stepMs();\n'
+            '      var ms=stepMs();\n'
+            '      var t=(now-play.started)/ms;\n'
             '      if(t>=1){\n'
-            '        var next=play.queue.shift();\n'
-            '        show(play.last,next,1);\n'
-            '        play.last=next; play.started=now;\n'
-            '        play.shown=(play.shown||0)+1;\n'
+            '        /* However many steps are due, and the clock moves on by\n'
+            '           exactly those -- not back to now.  This loop runs on\n'
+            '           the animation frame, so one step per frame with the\n'
+            '           clock reset each time snapped the rate to whole\n'
+            '           divisors of the screen: 62.7 a second, then 31.3, and\n'
+            '           nothing in between.  Every setting from 32 to 59 drew\n'
+            '           31.3 -- measured -- so most of the slider did nothing.\n'
+            '           Carrying the remainder makes the average the rate that\n'
+            '           was actually asked for. */\n'
+            '        var due=Math.floor(t);\n'
+            '        var prev=play.last;\n'
+            '        var left=due;\n'
+            '        while(left-->0&&play.queue.length){\n'
+            '          play.last=play.queue.shift();\n'
+            '          play.shown=(play.shown||0)+1;\n'
+            '        }\n'
+            '        show(prev,play.last,1);\n'
+            '        play.started+=due*ms;\n'
             '      } else if(play.last){\n'
             '        show(play.last,play.queue[0],t);\n'
             '      } else {\n'
@@ -2152,6 +2210,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     _GFN_SETTLE_ROUNDS = 12
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
+
+    def _write_coords(text, drawn=False):
+        """Put a geometry in the box, and say whether the picture has it.
+
+        *drawn* raises the flag the host's update_view consumes: the playback
+        has already drawn this geometry, so redrawing it would rebuild the
+        viewer and tear down what is still playing.
+
+        The flag is consumed by update_view, and traitlets only calls that when
+        the value actually changes.  Raised before a write that changes
+        nothing, it stays raised -- and the next genuine change is the one that
+        gets swallowed instead.  A structure already at its minimum written
+        back by a second press of Optimise is exactly that write, and from
+        there the picture stops following the box until something changes the
+        value twice over, which is what cutting the coordinates out and pasting
+        them back does.  So a write that changes nothing lowers the flag rather
+        than raising it.
+        """
+        if coords_widget.value == text:
+            state['manip_inflight'] = False
+            return False
+        state['manip_inflight'] = bool(drawn)
+        coords_widget.value = text
+        return True
 
     def _gfn_topology_dir(xyz):
         """Where GFN-FF's perceived bonding is kept while a structure is worked
@@ -2462,9 +2544,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # The playback has drawn this already; the box is what Copy
                     # and Submit read, and it has to be true whether or not a
                     # frame happened to land.
-                    state['manip_inflight'] = True
-                    coords_widget.value = xyz_document(
-                        lines, f'Settled with {label}')
+                    _write_coords(xyz_document(lines, f'Settled with {label}'),
+                                  drawn=True)
                 # Not converged and the switch is still down: keep going.  That
                 # is what makes this a relaxation rather than a single push.
                 # It ends three ways -- converged, standing still, or out of
@@ -2971,6 +3052,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_halt_sent'] = False
         run_id = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run_id
+        # Which frame the picture stood on belongs to the run it was reported
+        # for, and the page only reports it when a hand arrives or the switch
+        # goes up.  Kept across runs, a number left over from an earlier grab
+        # is a plausible index into this run's path -- so an edit that
+        # interrupts this one would cut it at a frame nobody ever saw, from a
+        # trajectory that no longer exists.
+        state.pop('gfn_shown_frame', None)
 
         def _push_frames(frames, final=False):
             """Hand the path over while xtb is still walking it.
@@ -3240,12 +3328,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                    for line in _gfn.atom_lines(single or '')]
                         frame = walked[shown - 1]
                         if symbols and len(symbols) * 3 == len(frame):
-                            state['manip_inflight'] = True
-                            coords_widget.value = xyz_document(
+                            _write_coords(xyz_document(
                                 [xyz_line(symbols[i], frame[3 * i],
                                           frame[3 * i + 1], frame[3 * i + 2])
                                  for i in range(len(symbols))],
-                                'stopped where you took hold')
+                                'stopped where you took hold'), drawn=True)
                     return
                 # A run is one xtb --opt, and xtb's optimiser has a cycle limit
                 # of its own: when it reaches it, it hands back the geometry it
@@ -3322,9 +3409,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # milliseconds after it started -- so only the end of
                         # the optimisation was ever seen.  The box is updated
                         # for Copy and Submit; the picture is already right.
-                        state['manip_inflight'] = True
-                    coords_widget.value = xyz_document(
-                        lines, 'Optimised in DELFIN viewer')
+                        pass
+                    _write_coords(
+                        xyz_document(lines, 'Optimised in DELFIN viewer'),
+                        drawn=played[0])
                 done = count - len(failures)
                 # "1 of 1 frame(s)" is a count of a thing there is one of, and
                 # it cost the line the width that pushed it onto a second row.

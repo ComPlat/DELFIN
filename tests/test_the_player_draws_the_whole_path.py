@@ -77,8 +77,13 @@ def browser():
         engine.close()
 
 
-def _play(browser, writes, settle_ms, pace=None):
-    """Write those payloads into the frame field and report what was drawn."""
+def _play(browser, writes, settle_ms, pace=None, switch_off_after=None):
+    """Write those payloads into the frame field and report what was drawn.
+
+    *switch_off_after* takes the Optimise switch up after that many writes,
+    which is what the kernel does the moment the last round lands -- while the
+    picture is still walking the path.
+    """
     script = _player_script()
     scope = script.split('var scope=')[1].split(';')[0].strip().strip('"')
     page = browser.new_page()
@@ -88,13 +93,18 @@ def _play(browser, writes, settle_ms, pace=None):
         if pace is not None:
             page.evaluate("([s, ms]) => {window.__delfinGfnPlay[s].pace = ms;}",
                           [scope, pace])
-        for payload, wait in writes:
+        for written, (payload, wait) in enumerate(writes, 1):
             page.evaluate(
                 """([sel, text]) => {
                     document.querySelector(sel).value = text;
                 }""",
                 [".submit-gfn-frame textarea", json.dumps(payload)])
             page.wait_for_timeout(wait)
+            if switch_off_after is not None and written == switch_off_after:
+                page.evaluate("""() => {
+                    document.querySelector('.submit-optimize-switch')
+                        .classList.remove('mod-active');
+                }""")
         page.wait_for_timeout(settle_ms)
         return {
             "frames": page.evaluate("window.__drawn"),
@@ -134,7 +144,11 @@ def test_every_frame_of_the_path_reaches_the_picture(browser):
     each defensible on its own, and between them the viewer showed a sample of
     the optimisation rather than the optimisation.
     """
-    out = _play(browser, _bursts(60, 20), settle_ms=6000, pace=8)
+    # Forty milliseconds is twenty-five a second, the top of the control.
+    # Asking for faster than the screen draws could only mean showing fewer
+    # frames, and the control does not reach there -- so the promise that
+    # every frame is drawn is tested at the fastest that can be asked for.
+    out = _play(browser, _bursts(60, 20), settle_ms=6000, pace=40)
     reached = _reached(out["frames"])
 
     missing = sorted(set(range(60)) - reached)
@@ -219,3 +233,93 @@ def test_a_hand_on_the_structure_cuts_the_run_where_the_picture_stands(browser):
             f"the kernel was told {payload!r}, the picture stood on {shown}")
     finally:
         page.close()
+
+
+def test_a_finished_run_plays_its_path_out_after_the_switch_goes_up(browser):
+    """The run being finished does not mean the picture is.
+
+    The kernel turns the Optimise switch off the moment the last round lands,
+    and the player abandoned whatever was still queued when it saw that go up.
+    While the queue was capped at twenty and a backlog was played at speed,
+    almost nothing was left by then.  Keeping the whole path and walking it at
+    a pace anyone can watch made that the ordinary case: measured here at
+    twelve frames a second, eight of sixty drawn and fifty-two thrown away the
+    instant the switch moved -- the picture showing the first jerk of an
+    optimisation and never arriving at the minimum it had just computed.
+
+    A finished run and a stopped one are different things.  The last write of
+    a finished run is marked; a stop arrives as a halt, which clears the queue
+    on purpose.
+    """
+    path = [[float(i)] * 9 for i in range(60)]
+    out = _play(browser,
+                [({"run": 1, "from": 0, "frames": path, "final": 1}, 600)],
+                settle_ms=7000, pace=83, switch_off_after=1)
+
+    assert out["queue"] == 0, "it has to finish walking"
+    assert _reached(out["frames"]) == set(range(60)), "the whole path"
+    assert out["frames"][-1][0] == 59.0, (
+        "the picture has to arrive at the geometry the run reached")
+
+
+def test_the_mark_survives_the_write_that_carries_it(browser):
+    """A run short enough to finish in one message carries the mark on the
+    same write that starts the run, and the run-change reset ran after it --
+    so the mark was cleared by the very write that brought it, and the path
+    was abandoned exactly as before.
+    """
+    script = _player_script()
+    body = script.split("if(run!==play.run){")[1]
+    reset_at = body.index("play.complete=0")
+    mark_at = body.index("data.final) play.complete=1")
+    assert reset_at < mark_at, (
+        "the mark has to be set after the run reset, not before it")
+
+
+def test_every_setting_of_the_pace_makes_a_difference(browser):
+    """Most of the slider did nothing.
+
+    The loop runs on the animation frame and took one step per frame, resetting
+    its clock to now each time -- so the remainder was thrown away and the rate
+    snapped to whole divisors of the screen.  Measured: 62.7 a second, then
+    31.3, and nothing in between.  Every setting from 32 to 59 drew 31.3, which
+    is most of the top half of the control.
+
+    The clock moves on by exactly the steps taken now, so the remainder carries
+    and the average is the rate that was asked for.
+    """
+    path = [[float(i)] * 9 for i in range(400)]
+    one = [({"run": 1, "from": 0, "frames": path, "final": 1}, 50)]
+
+    rates = {}
+    for wanted in (5, 10, 17, 25):
+        out = _play(browser, one, settle_ms=1500,
+                    pace=max(1, round(1000 / wanted)))
+        rates[wanted] = out["shown"] / 1.5
+
+    # Each step up is a real step up, not a repeat of the one below it.
+    for lower, higher in ((5, 10), (10, 17), (17, 25)):
+        assert rates[higher] > rates[lower] * 1.15, (
+            f"{higher}/s drew {rates[higher]:.1f} against {lower}/s at "
+            f"{rates[lower]:.1f} -- the setting did nothing")
+
+
+def test_the_pace_reaches_down_to_one_frame_every_ten_seconds(browser):
+    """Slow is the useful end: the calculation runs on ahead while the picture
+    walks, and taking hold keeps the frame that is on screen.
+
+    Half a frame a second was the floor and it was not slow enough to watch a
+    coordination sphere rearrange a step at a time.
+    """
+    path = [[float(i)] * 9 for i in range(60)]
+    one = [({"run": 1, "from": 0, "frames": path, "final": 1}, 50)]
+
+    out = _play(browser, one, settle_ms=6000, pace=2000)   # half a frame a second
+    assert 2 <= out["shown"] <= 4, (
+        f"half a frame a second over six seconds is three, not {out['shown']}")
+    assert out["queue"] > 50, "and the rest is still waiting to be walked"
+
+    # And the floor: one every ten seconds, so six seconds moves nothing on.
+    crawl = _play(browser, one, settle_ms=6000, pace=10000)
+    assert crawl["shown"] == 0, crawl["shown"]
+    assert crawl["queue"] >= 59, "the path is all still ahead"

@@ -1,0 +1,87 @@
+name: Slow tests
+
+# The heavy half of the suite: the MANTA build tests that construct whole
+# complexes, plus a handful that only pass in the full serial context
+# (tests/conftest.py marks both kinds `slow`). Around ninety minutes serial,
+# so it cannot sit in the merge gate — it reports, it does not gate.
+#
+# It lives in its own file because of what sharing one did to the other half.
+# As a job inside CI it cancelled its own predecessor on every push, which is
+# right for a ninety-minute informational run — without it, main takes a push
+# every few minutes and within an hour there were five in flight at once. But
+# a cancelled job makes the whole RUN read "cancelled", so CI on main showed
+# nothing but cancelled runs for six commits straight while `tests` and
+# `lint` were passing every single time. The one line anybody glances at to
+# see whether main is healthy had stopped being able to say so.
+#
+# Split apart, each half can tell the truth: CI is green when the gate
+# passes, and this workflow is free to be cancelled, or red, without anybody
+# misreading it.
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly, 03:17 UTC.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# Newest answer wins. For a report that takes ninety minutes, the verdict on
+# a commit five pushes back is not worth a runner.
+concurrency:
+  group: slow-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  slow-tests:
+    name: slow tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    # Deliberately NOT continue-on-error, which it carried while it lived in
+    # CI. That flag existed for one reason: to keep a failure here from
+    # colouring the gating run. Nothing gates on this workflow now, so the
+    # flag would only guarantee a green tick over a red result — and a suite
+    # that reports success whatever happens is the state this job was in for
+    # months, when it was schedule-only and nobody read it. Its silence read
+    # exactly like health, and thirteen failures sat behind it.
+    #
+    # Measured 2026-08-14 on origin/main: 13 failed, 488 passed, 11 skipped
+    # in 1:27:13. Those thirteen are pre-existing and all in the chemistry
+    # core. This workflow going red is that fact being visible, not a
+    # regression, and it turns green by fixing them rather than by muting it.
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history: test_pre_refactor_api_preserved.py compares the
+          # public API against a pre-refactor commit via `git show`.
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[agent,docs,dev]"
+
+      - name: Run slow (heavy + order-dependent) tests
+        # A deadline per TEST, not per job. Without it one call that joins a
+        # thread with timeout=None holds the whole job until the runner's
+        # limit, and pytest's failure list — which prints only at the end —
+        # never appears: the run dies with the names still unknown.
+        # `signal` and not `thread`: the thread method takes the process
+        # down with it, which loses every remaining test as well.
+        run: pytest -q -m "slow" --timeout=600 --timeout-method=signal -rf

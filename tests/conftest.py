@@ -516,7 +516,7 @@ def _ci_parity_no_secrets(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # CI tiering (2026-06-27). The fast gate (`pytest -m "not slow"`) is the merge
 # check and must stay ~minutes. Two kinds of test are auto-marked `slow` and
-# moved to the non-blocking slow-tests job:
+# moved to the non-blocking slow-tests workflow (.github/workflows/slow-tests.yml):
 #   (a) heavy MANTA build/integration tests (construct full complexes; the
 #       slowest single test is ~130s — together they push the suite >60 min),
 #   (b) ORDER-DEPENDENT tests that only pass in the full serial context (they
