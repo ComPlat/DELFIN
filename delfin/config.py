@@ -32,6 +32,21 @@ _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "ESD_T1_opt": "uks",
 }
 _PLACEHOLDER_MESSAGES: Dict[str, str] = {
+    # Say what goes in, not only that something has to. A message that names
+    # the accepted values answers the question on the spot; one that says
+    # "replace this" sends the reader looking for a manual.
+    "charge": (
+        "Placeholder [CHARGE] must be replaced with the total charge of the "
+        "system as a whole number — 0 for neutral, -1, 2, and so on. Redox "
+        "steps are added on top of it, so this is the charge before any "
+        "oxidation or reduction."
+    ),
+    "solvent": (
+        "Placeholder [SOLVENT] must be replaced with a solvent name, e.g. "
+        "water, acetonitrile, DMF, DMSO, THF, toluene, dichloromethane, "
+        "methanol. Any solvent ORCA knows for CPCM/SMD is accepted (253 of "
+        "them); a name that is not recognised is reported with suggestions."
+    ),
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
     "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
     "stability_constant_mode": "Placeholder [STABILITY_CONSTANT_MODE] must be set to one of: auto, reaction",
