@@ -3,7 +3,7 @@
 Step-by-step strategies for common task types. Follow these when working on
 the corresponding module — they encode validated approaches from prior sessions.
 
-## build_up_complex.py (1531 lines)
+## build_up_complex.py
 
 1. Grep for the target function name
 2. Read only the function body (offset+limit)
@@ -15,53 +15,53 @@ the corresponding module — they encode validated approaches from prior session
 intra-ligand topology. VdW radii for clash detection, NOT covalent. Procrustes
 init for bidentate+ ligands (>=2 donors → SVD alignment).
 
-## config.py (849 lines)
+## config.py
 
 1. Grep for the relevant key/function
-2. Check `_parse_control_file` (~line 368) for parsing flow
-3. Check `validate_control_text` (~line 516) for validation rules
+2. Check `_parse_control_file` for parsing flow
+3. Check `validate_control_text` for validation rules
 4. Run: `pytest tests/test_co2_control_overrides.py tests/test_functional_contracts.py -x -q`
 
 **Invariants:** Config dicts are mutable — changes propagate. OCCUPIER_parser
 is separate from main CONTROL parser.
 
-## cli.py (2155 lines)
+## cli.py
 
 1. Grep for the subcommand name — each is a `_run_*_subcommand` function
-2. Check `_load_full_cli_dependencies` (line 24) for lazy imports
+2. Check `_load_full_cli_dependencies` for lazy imports
 3. Run: `pytest tests/test_cli_*.py -x -q`
 
 **Invariants:** CLI uses lazy loading. Override logic:
 `_parse_occupier_overrides`, `_apply_occupier_overrides`. Downstream cascade:
 `_downstream_stages` invalidates dependent stages.
 
-## orca_recovery.py (1827 lines)
+## orca_recovery.py
 
-1. `OrcaErrorType` enum (line 33) — all known error types
-2. `OrcaErrorDetector` (line 67) — matches output patterns
-3. `RecoveryStrategy` (line 303) — maps errors to fixes
-4. `OrcaInputModifier` (line 756) — applies input changes
+1. `OrcaErrorType` enum — all known error types
+2. `OrcaErrorDetector` — matches output patterns
+3. `RecoveryStrategy` — maps errors to fixes
+4. `OrcaInputModifier` — applies input changes
 5. Run: `pytest tests/test_orca_workflow_contracts.py -x -q`
 
-**Invariants:** `RetryStateTracker` (line 1732) prevents infinite loops.
+**Invariants:** `RetryStateTracker` prevents infinite loops.
 Recovery must work for both local and SLURM. Never modify the original input.
 
-## smiles_converter.py (38344 lines) — LARGEST MODULE
+## smiles_converter.py — LARGEST MODULE
 
 1. ALWAYS Grep first — never Read the whole file
 2. Main classes: `_HybridHaptoFragment`, `_PrimaryOrganometalModule`
-3. Entry point: `_try_multiple_strategies` (~line 3770)
-4. Metal handling: `_manual_metal_embed` (~line 4353)
-5. Hapto groups: `_find_hapto_groups` (~line 5715)
+3. Entry point: `_try_multiple_strategies`
+4. Metal handling: `_manual_metal_embed`
+5. Hapto groups: `_find_hapto_groups`
 
 **Invariants:** Multiple fallback strategies (RDKit → OpenBabel → manual embed).
 Metal bonds → dative bonds via `_convert_metal_bonds_to_dative`. Hapto
 approximation is optional (`_hapto_approx_enabled` flag).
 
-## dashboard/tab_agent.py (17500 lines)
+## dashboard/tab_agent.py
 
 1. ALWAYS Grep first
-2. Entry point: `create_tab` (line 3295)
+2. Entry point: `create_tab`
 3. Grep for specific widget or callback names
 4. Run: `pytest tests/test_agent_*.py -x -q`
 
