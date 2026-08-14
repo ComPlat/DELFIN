@@ -1121,7 +1121,12 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
         return True
     P = np.asarray(P, dtype=float)
     if P.size == 0 or not np.all(np.isfinite(P)):
-        return False
+        # 14.08.2026: war ein NACKTES `return False`.  Sechs Verwerfungsgruende tragen einen
+        # Namen und erscheinen im Verwurfszensus, dieser nicht -- er fiel damit stillschweigend
+        # in die Restmenge und war von "kein Isomer enumeriert" nicht zu unterscheiden.
+        # Das ist der teuerste Grund von allen, den man NICHT sehen will: eine nicht-endliche
+        # Koordinate ist ein BAUFEHLER, kein Chemieurteil, und gehoert getrennt gezaehlt.
+        return _gate_no("NONFINITE_COORDS")
     syms = list(syms)
     bonds = _bd._geometric_bonds(syms, P)
     # X-H collapse calibration (#306/#281): X-ray C-H/N-H/O-H bonds are legitimately
@@ -1340,7 +1345,11 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                             for j in sel])
             try:
                 if PLY.cshm(obs, geom) > _shmax:
-                    return False
+                    # 14.08.2026: war ein NACKTES `return False` -- der EINZIGE Verwurf des
+                    # Selbstgates, der auf die Polyedergestalt zielt, und der einzige ohne
+                    # Namen.  Genau der fehlt in jeder Verwurfsrangliste, an der entschieden
+                    # wird, welcher Defekt als naechstes drankommt.
+                    return _gate_no("SHAPE_CSHM")
             except Exception:
                 pass
     return True
