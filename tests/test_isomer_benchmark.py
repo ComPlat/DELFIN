@@ -391,25 +391,52 @@ def _save_baseline(data: Dict[str, Dict[str, Any]]) -> None:
         json.dump(data, fh, indent=2, sort_keys=True)
 
 
+@pytest.mark.timeout(7200)
 def test_isomer_benchmark():
-    """Run the pool, compare against baseline, warn/fail on regressions."""
+    """Run the pool, compare against baseline, warn/fail on regressions.
+
+    Cost, measured 2026-08-14 on a fast multi-core box: the twelve-system
+    pool had NOT finished after 50 minutes. That is not a test running a
+    little long — it is four times any per-test budget, and on a two-core
+    runner it would sit near the job's own 240-minute cap. The timeout above
+    is for somebody running this deliberately; it is not a licence to put
+    the pool on a per-night path.
+
+    The order below matters and used to be the other way round. The baseline
+    fixture is generated, never committed, so in CI — a fresh clone every
+    time — it is always absent. The old order ran the whole pool first and
+    only then noticed there was nothing to compare against: it wrote the
+    snapshot and skipped. Under the nightly run's 600 s per-test limit it
+    never even got that far, so what the run actually reported was a
+    timeout failure, every night, for a comparison that was never going to
+    happen. Ten minutes spent to say nothing.
+
+    Checked first now. Without a baseline this skips immediately and says
+    how to make one. That is honest rather than useful: the benchmark
+    guards nothing in CI until a baseline is committed or the pool is cut
+    to something a night can hold. Both are cost decisions, and neither is
+    made here.
+    """
     if os.environ.get("SKIP_SLOW_TESTS") == "1":
         pytest.skip("SKIP_SLOW_TESTS set")
 
+    update = os.environ.get("UPDATE_BENCHMARK_BASELINE") == "1"
+    baseline = _load_baseline()
+
+    if baseline is None and not update:
+        pytest.skip(
+            f"No baseline at {BASELINE_PATH} and nothing to compare against. "
+            "Running the pool to write one takes over 50 minutes, so it is "
+            "not done as a side effect of a test run: "
+            "UPDATE_BENCHMARK_BASELINE=1 pytest tests/test_isomer_benchmark.py"
+        )
+
     current = _run_benchmark()
 
-    if os.environ.get("UPDATE_BENCHMARK_BASELINE") == "1":
+    if update:
         _save_baseline(current)
         print("\nUpdated baseline ->", BASELINE_PATH)
         return
-
-    baseline = _load_baseline()
-    if baseline is None:
-        _save_baseline(current)
-        pytest.skip(
-            f"No baseline -- wrote initial snapshot to {BASELINE_PATH}. "
-            "Re-run to compare future changes against it."
-        )
 
     regressions: List[str] = []
     warnings: List[str] = []
