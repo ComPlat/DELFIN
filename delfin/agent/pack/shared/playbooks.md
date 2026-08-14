@@ -15,11 +15,11 @@ the corresponding module — they encode validated approaches from prior session
 intra-ligand topology. VdW radii for clash detection, NOT covalent. Procrustes
 init for bidentate+ ligands (>=2 donors → SVD alignment).
 
-## config.py (834 lines)
+## config.py (849 lines)
 
 1. Grep for the relevant key/function
-2. Check `_parse_control_file` (~line 353) for parsing flow
-3. Check `validate_control_text` (~line 501) for validation rules
+2. Check `_parse_control_file` (~line 368) for parsing flow
+3. Check `validate_control_text` (~line 516) for validation rules
 4. Run: `pytest tests/test_co2_control_overrides.py tests/test_functional_contracts.py -x -q`
 
 **Invariants:** Config dicts are mutable — changes propagate. OCCUPIER_parser
