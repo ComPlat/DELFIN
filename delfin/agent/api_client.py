@@ -14359,10 +14359,14 @@ class OpenAIClient(_BaseClient):
             or _base.startswith("gpt-5")             # GPT-5 family
         )
 
-        # Resolve the active model's real capabilities once per turn. Drives
-        # the Ollama num_ctx override (so local models use their full window
-        # instead of the silent 2-4k default), the weak/strong tool surface,
-        # and the no-native-tools gate. Never raises — degrades to None.
+        # Resolve the active model's real capabilities for the first round.
+        # Drives the Ollama num_ctx override (so local models use their full
+        # window instead of the silent 2-4k default), the weak/strong tool
+        # surface, and the no-native-tools gate. Never raises — degrades to
+        # None. Re-resolved inside the round loop whenever ``self.model``
+        # changes under a running turn; this used to say "once per turn",
+        # which is what let every bound derived from it outlive the model
+        # it was measured on.
         try:
             from .model_capabilities import resolve as _resolve_caps
             _caps = _resolve_caps(self._provider, self.model, self._base_url,
