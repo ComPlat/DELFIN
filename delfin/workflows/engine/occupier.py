@@ -32,6 +32,7 @@ from delfin.workflows.engine.classic import (
     determine_effective_slots,
     normalize_parallel_token,
 )
+from delfin.common.control_validator import resolve_occupier_compare
 
 # scheduler.py imports from this module, so GlobalOrcaScheduler cannot be
 # imported at runtime without a cycle — hence the quoted annotations. This
@@ -195,9 +196,9 @@ def run_occupier_orca_jobs(
 ) -> bool:
     """Execute OCCUPIER post-processing ORCA jobs with optional parallelization."""
 
-    frequency_mode = str(context.config.get('frequency_calculation_OCCUPIER', 'no')).lower()
+    frequency_mode = "yes" if resolve_occupier_compare(context.config) == "G" else "no"
     if frequency_mode == 'yes':
-        logger.info("frequency_calculation_OCCUPIER=yes → skipping ORCA job scheduling")
+        logger.info("OCCUPIER_compare=G → skipping ORCA job scheduling")
         return True
 
     if jobs is None:
@@ -1842,7 +1843,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         len(reduction_steps),
     )
     config["_occ_initial_completion_job"] = stage_completion.get("initial")
-    freq_mode = str(config.get("frequency_calculation_OCCUPIER", "no")).strip().lower()
+    freq_mode = "yes" if resolve_occupier_compare(config) == "G" else "no"
     if freq_mode == "yes":
         config["_occ_initial_energy_job"] = stage_completion.get("initial")
     else:
@@ -2127,10 +2128,10 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
 
     # Check if frequency calculation is done within OCCUPIER
     # If yes, skip post-processing ORCA jobs (they're already done inside OCCUPIER)
-    frequency_mode = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower()
+    frequency_mode = "yes" if resolve_occupier_compare(config) == "G" else "no"
     if frequency_mode == 'yes':
         logger.info(
-            "[combined] frequency_calculation_OCCUPIER=yes → post-processing is done "
+            "[combined] OCCUPIER_compare=G → post-processing is done "
             "within OCCUPIER processes; returning OCCUPIER jobs only"
         )
         return occupier_process_jobs

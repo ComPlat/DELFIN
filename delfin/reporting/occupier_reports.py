@@ -21,6 +21,7 @@ from ..occupier_auto import (
 )
 from ..occupier_sequences import infer_species_delta
 from ..config_manager import DelfinConfig
+from delfin.common.control_validator import resolve_occupier_compare
 
 logger = get_logger(__name__)
 
@@ -320,9 +321,9 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     minutes, seconds = divmod(remainder, 60)
     duration_format = f"{int(hours):02d} hours {int(minutes):02d} minutes {seconds:05.2f} seconds"
 
-    freq_flag = "FREQ" if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes' else ""
+    freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
     parity = "is_even" if is_even else "is_odd"
-    use_gibbs = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
+    use_gibbs = resolve_occupier_compare(config) == "G"
     energy_label = "Final Gibbs free energy" if use_gibbs else "FINAL SINGLE POINT ENERGY"
     lowest_label = f"LOWEST {energy_label}:"
 
@@ -731,12 +732,12 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             boltzmann_weights = {i: w / total_w for i, w in raw_weights if math.isfinite(w)}
     if boltzmann_weights:
         if use_gibbs:
-            boltzmann_context = "Boltzmann weights derived from Gibbs free energies (frequency_calculation_OCCUPIER=yes)."
+            boltzmann_context = "Compared by Gibbs free energy (OCCUPIER_compare=G); Boltzmann weights follow from it."
         else:
             boltzmann_context = "Electronic Energy Boltzmann Approximation (uses FINAL SINGLE POINT ENERGY)."
             boltzmann_warning = (
                 "WARNING: Boltzmann weights use FINAL SINGLE POINT ENERGY (coarse approximation). "
-                "Set frequency_calculation_OCCUPIER=yes to compare Gibbs free energies."
+                "Set OCCUPIER_compare=G to compare Gibbs free energies instead."
             )
 
     if occ_method == "auto" and min_fspe_index is not None:
@@ -1039,9 +1040,9 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     minutes, seconds = divmod(remainder, 60)
     duration_format = f"{int(hours):02d} hours {int(minutes):02d} minutes {seconds:05.2f} seconds"
 
-    freq_flag = "FREQ" if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes' else ""
+    freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
     parity = "is_even" if is_even else "is_odd"
-    use_gibbs = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
+    use_gibbs = resolve_occupier_compare(config) == "G"
     energy_label = "Final Gibbs free energy" if use_gibbs else "FINAL SINGLE POINT ENERGY"
     lowest_label = f"LOWEST {energy_label}:"
 
@@ -1318,12 +1319,12 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
             boltzmann_weights = {i: w / total_w for i, w in raw_weights if math.isfinite(w)}
     if boltzmann_weights:
         if use_gibbs:
-            boltzmann_context = "Boltzmann weights derived from Gibbs free energies (frequency_calculation_OCCUPIER=yes)."
+            boltzmann_context = "Compared by Gibbs free energy (OCCUPIER_compare=G); Boltzmann weights follow from it."
         else:
             boltzmann_context = "Electronic Energy Boltzmann Approximation (uses FINAL SINGLE POINT ENERGY)."
             boltzmann_warning = (
                 "WARNING: Boltzmann weights use FINAL SINGLE POINT ENERGY (coarse approximation). "
-                "Set frequency_calculation_OCCUPIER=yes to compare Gibbs free energies."
+                "Set OCCUPIER_compare=G to compare Gibbs free energies instead."
             )
 
     if occ_method == "auto" and min_fspe_index is not None:
