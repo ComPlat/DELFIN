@@ -3037,6 +3037,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_halt_sent'] = False
         run_id = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run_id
+        # Which frame the picture stood on belongs to the run it was reported
+        # for, and the page only reports it when a hand arrives or the switch
+        # goes up.  Kept across runs, a number left over from an earlier grab
+        # is a plausible index into this run's path -- so an edit that
+        # interrupts this one would cut it at a frame nobody ever saw, from a
+        # trajectory that no longer exists.
+        state.pop('gfn_shown_frame', None)
 
         def _push_frames(frames, final=False):
             """Hand the path over while xtb is still walking it.
