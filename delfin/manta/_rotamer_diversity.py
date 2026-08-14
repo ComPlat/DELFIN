@@ -136,6 +136,10 @@ _METAL_ATOMIC_NUMBERS = frozenset(
 
 
 def _is_metal(atomic_num: int) -> bool:
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal_z(atomic_num)
     return int(atomic_num) in _METAL_ATOMIC_NUMBERS
 
 

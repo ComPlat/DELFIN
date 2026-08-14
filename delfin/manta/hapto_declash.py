@@ -95,6 +95,12 @@ _SYM_Z = {s: i for i, s in enumerate(_ELEMENTS) if s}
 
 
 def _is_metal(sym: str) -> bool:
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
+    # Diese Fassung fuehrt 79 Elemente, also Sb, Te und Am..Lr zusaetzlich -- die
+    # Metalloide sind im Bau aber bereits als DONOREN gefuehrt.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     return _SYM_Z.get(sym, 0) in _METAL_Z
 
 

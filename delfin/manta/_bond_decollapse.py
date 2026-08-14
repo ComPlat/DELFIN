@@ -161,6 +161,15 @@ def _ideal_bond(a: str, b: str, aromatic: bool = False) -> float:
 
 
 def _is_metal(s: str) -> bool:
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py, 68 Elemente.  Vorgabe AUS ->
+    # byte-identisch.  Diese Stelle hat die groesste Hebelwirkung im ganzen Baum: rund 25
+    # Augen-Praedikate zeigen OHNE eigenen Fallback hierher (eye.py:61 und die metric_*),
+    # und sie kennt per Vorgabe nur 37 Elemente -- im Standardlauf sind Na, K, Ca, Mg, U,
+    # Th und Al im AUGE also keine Metalle.  Der Import steht in der Funktion, weil ein
+    # Modulimport hier einen Zirkel baute; nach dem ersten Aufruf kostet er nichts.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(s)
     return s in _METALS
 
 

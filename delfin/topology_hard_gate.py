@@ -146,6 +146,12 @@ def _distance_sq(a: Tuple[str, float, float, float],
 
 
 def _is_metal(symbol: str) -> bool:
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
+    # Mit 80 Elementen die WEITESTE Fassung im Baum -- und sie wurde vom Pruefer seit
+    # jeher stumm uebersprungen, weil sie dort als delfin.manta.* eingetragen war.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(symbol)
     return symbol in _METAL_SYMBOLS
 
 

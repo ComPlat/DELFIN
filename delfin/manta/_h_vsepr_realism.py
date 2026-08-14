@@ -102,6 +102,15 @@ _Z_BY_SYMBOL: Dict[str, int] = {
 
 
 def _is_metal_sym(sym: str) -> bool:
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
+    # ⚠ DIESES PRAEDIKAT WIDERSPRICHT SICH SELBST: `_METAL_Z_RANGES` enthaelt
+    # range(57, 81), deckt also Ce (58) bis Lu (71) ab -- `_Z_BY_SYMBOL` springt aber von
+    # "La": 57 direkt auf "Hf": 72.  Der Nachschlag liefert None, und alle Lanthanoide
+    # ausser Lanthan sind hier keine Metalle, obwohl der eigene Zahlenbereich sie
+    # einschliesst.  Acht Schwestermodule tragen denselben Fehler.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     z = _Z_BY_SYMBOL.get(sym)
     return z is not None and z in _METAL_Z_RANGES
 

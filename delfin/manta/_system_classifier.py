@@ -119,6 +119,11 @@ def _is_metal(z: int) -> bool:
     that is not H/C/N/O/F/Ne/.../noble-gas/typical-non-metal and that
     can act as a coordination centre.
     """
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
+    # Diese Fassung fuehrt 79 Elemente, also Fr, Ra und Am..Lr zusaetzlich.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal_z(z)
     # alkali + alkaline-earth (Z=3,4,11,12,19,20,37,38,55,56,87,88)
     if z in {3, 4, 11, 12, 19, 20, 37, 38, 55, 56, 87, 88}:
         return True

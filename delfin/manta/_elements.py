@@ -113,3 +113,26 @@ def unified_enabled() -> bool:
     gemessen und nicht geglaubt.
     """
     return os.environ.get("DELFIN_FFFREE_METAL_UNIFIED", "0") == "1"
+
+
+# ===== Z-BASIERTE VARIANTE =====
+# Zwei Praedikate im Bauer nehmen die ORDNUNGSZAHL statt des Symbols
+# (`_system_classifier._is_metal`, `_rotamer_diversity._is_metal`).  Gleicher Name,
+# andere Signatur -- der Pruefer musste das eigens abfangen ("SAME NAME, DIFFERENT
+# SIGNATURE").  Damit die Vereinheitlichung auch sie erreicht, steht die Umrechnung
+# HIER und nicht in jedem Modul noch einmal.
+_Z_SYMBOLS = (
+    "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn "
+    "Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La "
+    "Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po "
+    "At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr").split()
+SYMBOL_BY_Z = {i + 1: s for i, s in enumerate(_Z_SYMBOLS)}
+METAL_Z = frozenset(z for z, s in SYMBOL_BY_Z.items() if s in METALS)
+
+
+def is_metal_z(z) -> bool:
+    """Die Metallfrage ueber die Ordnungszahl -- dieselbe Menge wie `is_metal`."""
+    try:
+        return int(z) in METAL_Z
+    except (TypeError, ValueError):
+        return False

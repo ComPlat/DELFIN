@@ -128,10 +128,23 @@ _METAL_ATOMIC_NUMBERS = frozenset(
 
 
 def _is_metal_z(z: int) -> bool:
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
+    # `_is_metal_sym` unten geht ueber diese Funktion, wird also mitgezogen.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal_z(z)
     return int(z) in _METAL_ATOMIC_NUMBERS
 
 
 def _is_metal_sym(sym: str) -> bool:
+    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
+    # ⚠ Hier reicht es NICHT, `_is_metal_z` umzustellen: der Engpass ist `_sym_to_z`.
+    # Kennt die Symboltabelle ein Element nicht (z.B. Po), gibt sie None und das
+    # Praedikat False -- unabhaengig davon, was die Z-Menge sagt.  Dieselbe Bauart wie
+    # der Selbstwiderspruch in der Familie um _h_vsepr_realism.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     z = _sym_to_z(sym)
     return _is_metal_z(z) if z is not None else False
 
