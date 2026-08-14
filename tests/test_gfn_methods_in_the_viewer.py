@@ -4414,3 +4414,40 @@ def test_the_path_is_played_at_a_pace_that_can_be_watched(editor):
     assert (slider.min, slider.max) == (0.5, 60)
     assert slider.step == 0.5
     assert slider.value < slider.max, "the default cannot be the fastest there is"
+
+
+def test_the_frame_a_hand_arrived_on_belongs_to_one_run(editor, monkeypatch):
+    """A number left over from an earlier grab is a plausible index into the
+    next run's path.
+
+    The page reports it only when a hand arrives or the switch goes up, so it
+    survives whole runs otherwise -- and an edit interrupting a later run would
+    cut that run at a frame nobody ever saw, taken from a trajectory that no
+    longer exists.  The index is only ever about the run it came from.
+    """
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+
+    state["gfn_shown_frame"] = 13          # from a grab during an earlier run
+    monkeypatch.setattr(
+        tab_submit._gfn, "optimize_with_gfn",
+        lambda xyz, method, **kw: {"ok": True, "xyz": xyz, "energy": -1.0,
+                                   "converged": True, "frames": [],
+                                   "status": "converged in 1.0 s"})
+    editor["submit_optimize_btn"].value = True
+    deadline = _time.time() + 20
+    while _time.time() < deadline and editor["submit_optimize_btn"].value:
+        _time.sleep(0.02)
+
+    assert state.get("gfn_shown_frame") is None, (
+        "a new run starts with no frame remembered from the last one")
+
+    start = SUBMIT_SOURCE.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "state.pop('gfn_shown_frame', None)" in start
