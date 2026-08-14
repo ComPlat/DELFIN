@@ -543,7 +543,11 @@ _SLOW_TEST_FILES = frozenset({
     "test_multi_sigma_path_v2.py", "test_platform.py",
     "test_ring_bounds_embed.py", "test_smiles_converter_regressions.py",
     "test_tool_contracts.py", "test_uff_soft_determinism.py",
-    "test_user_smiles_suite.py",
+    # test_user_smiles_suite.py is deliberately absent: it marks itself per
+    # ENTRY instead. Twelve SMILES sat behind one file-level mark, and the
+    # spread between them is 1.2 s to 702 s — so the whole SMILES contract
+    # waited for a nightly run because one case in it takes twelve minutes.
+    # The five cheap entries now run on every push; see _BUILD_SECONDS there.
     "test_welle5l_t3b_daqiwaz_pyridine_coverage.py",
     # (b) order-dependent (pass only in the full serial context)
     "test_no_regression_undefined_names.py", "test_post_optimizer.py",
