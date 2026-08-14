@@ -369,3 +369,65 @@ def test_bwrap_isolation_grants_extra_dirs(tmp_path):
                              mode="bwrap"),
         capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and (extra / "ok.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# The same act, a different spelling
+# ---------------------------------------------------------------------------
+
+_DESTRUCTIVE_FIND = [
+    "find ~ -delete",
+    "find $HOME -delete",
+    "find ${HOME} -delete",
+    "find / -delete",
+    "find /etc -delete",
+    "find ~/Documents -delete",
+    "find ~ -name '*.py' -delete",
+    r"find ~ -type f -exec rm {} \;",
+    r"find ~ -type f -execdir rm {} \;",
+    r"find / -type f -exec shred {} \;",
+    r"find ~ -ok rm {} \;",
+]
+
+_LEGITIMATE_FIND = [
+    "find . -name '*.pyc' -delete",          # workspace cleanup
+    "find ./build -delete",
+    "find . -type f -name '*.log' -delete",
+    "find ~ -name '*.py'",                   # a READ-ONLY search of home
+    "find / -name delfin -type d",
+    "find . -newer setup.py",
+]
+
+
+@pytest.mark.parametrize("cmd", _DESTRUCTIVE_FIND)
+def test_a_destructive_find_over_home_or_root_is_refused(cmd, tmp_path):
+    """`rm -rf ~` was denied and `find ~ -delete` was not, and they empty
+    the same directory.
+
+    Measured through the whole permission gate before this existed: under
+    bypassPermissions every form below came back ALLOWED, while the rm
+    spelling of the same act was refused by pattern. The rule existed as a
+    sentence and the mechanism permitted its opposite.
+
+    bypassPermissions is the mode asserted here on purpose — it is the one
+    with nothing else left to catch it."""
+    from delfin.agent import api_client as ac
+
+    perms = ac.KitToolPermissions(workspace=tmp_path, mode="bypassPermissions")
+    verdict = ac._DocToolExecutor()._run_permission_gate(
+        "bash", {"command": cmd}, perms)
+    assert verdict is not None and "deny-pattern" in verdict, cmd
+
+
+@pytest.mark.parametrize("cmd", _LEGITIMATE_FIND)
+def test_an_ordinary_find_is_left_alone(cmd, tmp_path):
+    """The other half, and the reason the rule is written against the
+    search ROOT rather than against `find -delete` as such: deleting build
+    artefacts under a relative path is honest cleanup, and blanket-denying
+    it would push the model towards spellings nobody has thought about."""
+    from delfin.agent import api_client as ac
+
+    perms = ac.KitToolPermissions(workspace=tmp_path, mode="bypassPermissions")
+    verdict = ac._DocToolExecutor()._run_permission_gate(
+        "bash", {"command": cmd}, perms)
+    assert not (verdict and "deny-pattern" in verdict), cmd
