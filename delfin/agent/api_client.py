@@ -14806,8 +14806,18 @@ class OpenAIClient(_BaseClient):
 
         # Scale the tool-output elision budget to the model's real context
         # window so a big-context model keeps its earlier file reads instead
-        # of re-paging them (bug 172455). Computed once — caps don't change
-        # mid-turn.
+        # of re-paging them (bug 172455).
+        #
+        # This said "computed once -- caps don't change mid-turn", which was
+        # an assumption written as a fact. ``switch_model`` is DELIBERATELY
+        # allowed to land mid-turn (it tells the running turn so, via
+        # on_model_switched), and the request below reads ``self.model``
+        # live -- so the very next round goes to the new model while every
+        # bound derived from the old one stays put. Measured: a turn that
+        # starts on a 262k-context model and is switched to an 8k one keeps
+        # a 471 859-char tool-output budget, about eight times the entire
+        # window of the model now receiving it. Re-derived per round below.
+        _caps_model = self.model
         _tool_budget = _tool_context_char_budget(_caps)
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
@@ -14862,6 +14872,29 @@ class OpenAIClient(_BaseClient):
                     cost_usd=self._estimate_cost(_total_in, _total_out),
                     cached_tokens=_total_cached, stop_reason="stopped")
                 return
+            # The model this round will actually be sent to. Everything
+            # derived from it was resolved before the first round; a switch
+            # since then leaves those bounds sized for a model that is no
+            # longer answering. Re-derived here rather than pinned, because
+            # the switch is meant to take effect -- pinning would make
+            # on_model_switched's promise to the model a lie.
+            #
+            # _MAX_TOOL_ROUNDS is deliberately NOT re-derived: it is the
+            # bound of the loop this line runs inside, already fixed when
+            # the range was built. A switch changes how much each round may
+            # carry, not how many rounds this turn was granted.
+            if self.model != _caps_model:
+                _caps_model = self.model
+                try:
+                    from .model_capabilities import resolve as _reresolve
+                    _caps = _reresolve(
+                        self._provider, self.model, self._base_url,
+                        api_key=getattr(self, "_api_key", ""))
+                except Exception:
+                    pass
+                _tool_budget = _tool_context_char_budget(_caps)
+                _tool_result_cap = _resolve_tool_result_cap(self.model, _caps)
+
             # The turn's spending ceiling, checked where the spending
             # happens. Evaluating it only on the terminal event meant one
             # check per turn after up to several hundred billed requests.
