@@ -437,7 +437,16 @@ def test_the_trail_is_sent_not_the_newest_frame_alone(editor):
     handler = source.split(
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
-    assert "walked[-8:]" in handler
+    # The same concern, kept, and the fixed eight gone with it.  Eight was a
+    # guess at how many frames fit between two reads, and xtb beats it easily
+    # -- a benzene runs 23 cycles in a fraction of a second -- so everything
+    # past the last eight was never sent and the viewer showed a sample of the
+    # path.  The window starts where the previous window started instead:
+    # every frame goes out twice, which is the same insurance, and it is still
+    # bounded at two reads' worth rather than growing with the path.
+    assert "walked[-8:]" not in handler
+    assert "walked[start:]" in handler
+    assert "state['gfn_push_start']" in handler
     assert "walked[-400:]" not in handler, 'a tail of what the page holds'
 
 
@@ -717,8 +726,13 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     assert "if played[0]:" in apply_body
     assert "state['manip_inflight'] = True" in apply_body
     # the flag has to be set before the write that would re-render
-    assert (apply_body.index("if played[0]:")
-            < apply_body.index("coords_widget.value = xyz_document("))
+    # Two writes live in _apply now -- one cuts a run a hand interrupted, the
+    # other ends a finished one -- and this is about the second.  Measured
+    # from where the interrupt block returns, so the anchor cannot drift onto
+    # the wrong one again.
+    finished = apply_body.split("'stopped where you took hold'")[-1]
+    assert (finished.index("if played[0]:")
+            < finished.index("coords_widget.value = xyz_document("))
 
 
 def test_the_playback_finds_its_field_in_fullscreen_but_only_its_own(player_js):
@@ -1355,13 +1369,28 @@ def test_stopping_keeps_the_frame_that_was_on_screen(editor):
     assert "stopped at the frame on" in handler
 
 
-def test_a_backlog_is_skipped_rather_than_played_out(editor):
-    """A queue allowed to grow puts the picture permanently behind the run."""
+def test_the_backlog_is_the_path_and_is_kept(editor):
+    """A queue allowed to grow puts the picture behind the run -- and being
+    behind is what the pace control asks for.
+
+    Twenty was the bound, and it was the second of two rules quietly sampling
+    the trajectory.  Driven in a browser against a sixty-frame path arriving
+    in bursts of twenty, it drew thirty-five and never showed the other
+    twenty-five: the oldest of every burst, dropped to keep the bound.  See
+    tests/test_the_player_draws_the_whole_path.py, which measures it rather
+    than reading it.
+
+    Where the picture has got to is where the user is: taking hold of an atom
+    keeps the frame on screen and drops what was computed past it, so the
+    frames in front of it are what is being chosen between.  A ceiling stays,
+    far above any real path, because a queue with no ceiling is a leak.
+    """
     from delfin.dashboard import tab_submit
 
     source = SUBMIT_SOURCE
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
-    assert "play.queue.slice(-20)" in watcher
+    assert "play.queue.slice(-20)" not in watcher
+    assert "play.queue.slice(-100000)" in watcher
 
 
 def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
@@ -1579,7 +1608,9 @@ def test_the_playback_lets_go_of_the_picture_while_an_atom_is_dragged(editor):
     assert "function grabbed()" in watcher
     assert "_submitManipStateByScope" in watcher, "it reads the drag off the page"
     assert 'drag.kind==="translate"' in watcher
-    assert 'send(held?"gfngrab":"gfnfree","")' in watcher
+    assert 'send(held?"gfngrab":"gfnfree",' in watcher
+    assert 'held?String(play.shown||0):""' in watcher, (
+        "and it says which frame the picture stood on")
     assert "if(play.held&&!followIsOn()){" in watcher, (
         "with nothing following, the drag has the picture to itself"
     )
@@ -2676,7 +2707,7 @@ def test_letting_go_does_not_walk_the_atom_back_through_the_drag(player_js):
     Driven in a real JS engine: three answers queued at x = 1, 2, 3, the hand
     lets go, and the only thing drawn is 3 -- where the hand left it.
     """
-    release = player_js.split("if(held){ play.queue=[]; play.last=null; }")[1]
+    release = player_js.split("play.queue=[]; play.last=null;\n      }")[1]
     release = release.split("send(held")[0]
     assert "show(play.last,play.queue[play.queue.length-1],1);" in release, (
         "it has to land on the newest before dropping the rest"
@@ -4098,3 +4129,220 @@ def test_the_quiet_count_starts_over_with_each_press(bare_editor):
     assert "state['optimize_still'] = still if carry_on else 0" in apply_body
     # Counted from the movement of this round, not from what xtb called it.
     assert "if moved_now <= _OPTIMISE_STILL else 0" in apply_body
+
+
+def test_the_viewer_is_sent_every_frame_of_the_path(editor, monkeypatch):
+    """The whole path, not a sample of it.
+
+    The frame field is one slot, not a queue: a write that lands before the
+    page has read the one before it replaces it.  The eight-frame tail was the
+    insurance against that -- it re-sent recent frames so a missed read still
+    caught them -- but eight is a *fixed* number and xtb makes frames far
+    faster than the page is asked to look.  A benzene runs 23 cycles in a
+    fraction of a second and a 149-atom chain 260, so everything between two
+    reads beyond the last eight was never sent at all.
+
+    The window starts where the previous window started now, so every frame
+    goes out in two consecutive writes -- the same insurance, and nothing
+    skipped however fast they arrive.
+    """
+    import json
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    editor["submit_ff_dd"].value = "gfn2"
+
+    total, atoms = 60, 3
+    path = [[float(i) + 0.001 * k for k in range(atoms * 3)]
+            for i in range(total)]
+
+    def fake(xyz, method, **kw):
+        on = kw.get("on_frames")
+        # Bursts of twenty: far more than the eight the tail used to carry,
+        # and exactly the shape a real run has between two reads.
+        for cut in (20, 40, 60):
+            if on:
+                on(path[:cut])
+        return {"ok": True, "xyz": xyz, "energy": -1.0, "converged": True,
+                "frames": path, "status": "converged in 1.0 s"}
+
+    monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", fake)
+
+    seen: list[str] = []
+    editor["submit_gfn_frame"].observe(
+        lambda c: seen.append(c["new"]), names="value")
+
+    editor["submit_optimize_btn"].value = True
+    deadline = _time.time() + 30
+    while _time.time() < deadline and editor["submit_optimize_btn"].value:
+        _time.sleep(0.02)
+
+    carried: dict[int, int] = {}
+    for text in seen:
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            continue
+        if not payload.get("frames"):
+            continue
+        first = int(payload.get("from") or 0)
+        for k in range(len(payload["frames"])):
+            carried[first + k] = carried.get(first + k, 0) + 1
+
+    missing = sorted(set(range(total)) - set(carried))
+    assert not missing, f"frames never sent to the viewer: {missing}"
+    # And each one carried twice, which is the insurance the tail used to give.
+    thin = sorted(i for i, n in carried.items() if n < 2)
+    assert not thin, f"frames sent only once, a missed read loses them: {thin}"
+
+
+def test_a_frame_is_not_sent_twice_over_when_nothing_is_new(editor, monkeypatch):
+    """A write that carries nothing new is a message for no reason, and the
+    field is read sixty times a second."""
+    import json
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    editor["submit_ff_dd"].value = "gfn2"
+    path = [[float(i)] * 9 for i in range(12)]
+
+    def fake(xyz, method, **kw):
+        on = kw.get("on_frames")
+        if on:
+            on(path)          # the same trajectory, three times over
+            on(path)
+            on(path)
+        return {"ok": True, "xyz": xyz, "energy": -1.0, "converged": True,
+                "frames": path, "status": "converged in 1.0 s"}
+
+    monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", fake)
+    seen: list[str] = []
+    editor["submit_gfn_frame"].observe(
+        lambda c: seen.append(c["new"]), names="value")
+
+    editor["submit_optimize_btn"].value = True
+    deadline = _time.time() + 30
+    while _time.time() < deadline and editor["submit_optimize_btn"].value:
+        _time.sleep(0.02)
+
+    with_frames = [t for t in seen
+                   if json.loads(t).get("frames")] if seen else []
+    assert len(with_frames) <= 2, (
+        f"nothing new arrived, yet {len(with_frames)} writes carried frames")
+
+
+def test_the_playback_pace_is_the_users_and_not_the_backlogs(player_js):
+    """The pacing sped the playback up whenever the queue grew.
+
+    That was right while a trailing picture counted as a fault.  It is the
+    behaviour a slow setting exists to ask for -- the whole path is in the page
+    now, so where the picture has got to is where the user is, and grabbing an
+    atom there keeps that frame and drops what was computed past it.  A rule
+    that quietly sped it back up would take that away, so the setting wins.
+    """
+    step = player_js.split("function stepMs()")[1].split("function ")[0]
+    assert "if(play.pace) return play.pace;" in step
+    # And it is asked first, before any of the backlog rules.
+    assert step.index("play.pace") < step.index("n>60")
+
+
+def test_the_speed_slider_reaches_the_page_in_the_unit_it_counts_in(tmp_path):
+    """Frames a second on the slider, milliseconds a frame on the page."""
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard.context import DashboardContext
+    from delfin.dashboard import tab_submit
+
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir()
+    sent: list[str] = []
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "archive",
+                           office_dir=tmp_path / "office")
+    ctx.run_js = sent.append
+    _widget, refs = tab_submit.create_tab(ctx)
+    refs["coords_widget"].value = _WATER
+
+    slider = refs["submit_play_speed"]
+    sent.clear()
+    slider.value = 25                       # 25 frames a second
+    said = "".join(sent)
+    assert ".pace=40;" in said, said[-400:]  # 1000/25
+
+    sent.clear()
+    slider.value = 4                        # slow: a quarter of a second each
+    assert ".pace=250;" in "".join(sent)
+
+
+def test_the_pace_is_offered_only_where_a_path_is_walked(editor, monkeypatch):
+    """The browser's own field draws its frames as it computes them; there is
+    no queue to pace.  A server engine walks a path worth watching."""
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    dd = editor["submit_ff_dd"]
+
+    dd.value = "uff"
+    assert editor["submit_play_speed"].layout.display == "none"
+    assert editor["submit_strength_slider"].layout.display == ""
+
+    dd.value = "gfn2"
+    assert editor["submit_play_speed"].layout.display == ""
+    assert editor["submit_strength_slider"].layout.display == "none"
+
+    dd.value = "pm7"
+    assert editor["submit_play_speed"].layout.display == ""
+
+
+def test_the_pace_control_is_on_the_toolbar(editor):
+    toolbar = editor["submit_manip_toolbar"]
+    assert editor["submit_play_speed"] in set(toolbar.children)
+
+
+def test_the_grab_says_which_frame_the_picture_stood_on():
+    """The message went out with no frame on it.
+
+    So the kernel knew a hand had arrived and not where the picture stood, and
+    the geometry the user had taken hold of lived only in the browser until
+    some later drag pushed it back.  Taking hold and letting go without moving
+    left the box and the picture apart -- the box holding what was there
+    before the run, the picture holding the frame that was grabbed.
+    """
+    watcher = EDITOR_SOURCE.split("def _install_gfn_frame_watcher")[1].split(
+        "\n    def ")[0]
+    assert 'held?String(play.shown||0):""' in watcher, (
+        "the grab has to name the frame it happened on")
+
+    cmd = EDITOR_SOURCE.split("def on_submit_cmd")[1].split("\n    def ")[0]
+    grab = cmd.split("if verb == 'gfngrab':")[1].split("if verb ==")[0]
+    assert "state['gfn_shown_frame'] = int(str(payload).strip())" in grab
+    # and it is read before the run is cut, or the cut has nothing to go on
+    assert grab.index("gfn_shown_frame") < grab.index("_interrupt_gfn()")
+
+
+def test_an_interrupted_run_leaves_the_frame_that_was_on_screen():
+    """Not where xtb had got to, which nobody saw.
+
+    The whole point of cutting at the grab is that the frames past the picture
+    were computed for a structure the hand is changing.  Writing none of them
+    left the coordinates behind the picture instead of level with it.
+    """
+    apply_body = SUBMIT_SOURCE.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0].split("def _apply()")[1]
+    cut = apply_body.split("if state.get('optimize_interrupted') is token:")[1]
+    cut = cut.split("return")[0]
+    assert "shown = state.get('gfn_shown_frame')" in cut
+    assert "walked = trail[0]" in cut
+    assert "'stopped where you took hold'" in cut
+    # The path is kept somewhere a cut-short run can still reach it: reading
+    # the loop's own name there is a crash in the one place written for a run
+    # that ended early.
+    whole = SUBMIT_SOURCE.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "trail = [None]" in whole
+    assert "trail[0] = outcome['frames']" in whole

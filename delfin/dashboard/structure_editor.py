@@ -1016,6 +1016,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='200px'),
         disabled=True,
     )
+    #: How fast the trajectory is played back, in frames a second.
+    #:
+    #: It is a real choice now that the whole path reaches the page rather than
+    #: a sample of it.  Slow is the useful end: the calculation runs on ahead
+    #: while the picture walks the path, and grabbing an atom takes the frame
+    #: on screen and throws the computed remainder away.  Fast keeps the
+    #: picture at the calculation, and then there is little to throw away.
+    #:
+    #: The old pacing sped the playback up whenever the queue grew, on the
+    #: grounds that a picture trailing its calculation was a fault.  That is
+    #: the behaviour a slow setting exists to ask for, so the setting wins and
+    #: the backlog rule is gone.
+    submit_play_speed = widgets.IntSlider(
+        value=18, min=2, max=60, step=1,
+        description='Play', continuous_update=False,
+        readout=True, readout_format='d',
+        tooltip=('How many frames of the optimisation are drawn a second. '
+                 'Slow lets the calculation run ahead of the picture: what '
+                 'you see is where you are, and grabbing an atom there keeps '
+                 'that frame and drops what was computed past it. Fast keeps '
+                 'the picture level with the calculation.'),
+        style={'description_width': '38px'},
+        layout=widgets.Layout(width='168px', display='none'),
+        disabled=True,
+    )
     submit_pick_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
     submit_pick_sync.add_class('submit-pick-sync')
     # Keyboard shortcuts for things Python owns. Unbond is not a picture edit:
@@ -1194,7 +1219,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
-            submit_strength_slider, submit_sens_slider,
+            submit_strength_slider, submit_sens_slider, submit_play_speed,
             submit_fs_row_break,
             submit_optimize_btn, submit_optimize_all_btn,
             submit_relax_btn, submit_auto_btn, submit_settle_btn,
@@ -1290,6 +1315,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_manip_clear_btn.disabled = not enabled
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
+        submit_play_speed.disabled = not enabled
         submit_labels_btn.disabled = not enabled
         submit_sens_slider.disabled = not enabled
         submit_settle_btn.disabled = not enabled
@@ -1530,12 +1556,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '  window.__delfinGfnPlay[scope]=play;\n'
             '  var STEP_MS=55;\n'
             '  function stepMs(){\n'
-            '    /* xtb computes faster than this plays: 75 frames arrive in\n'
-            '       0.4 s and would take 4 s to show, so the picture trails the\n'
-            '       calculation and keeps trailing it further.  A backlog is\n'
-            '       played faster -- the whole path is still shown, in the time\n'
-            '       the run actually takes. */\n'
+            '    /* The pace the user asked for, in milliseconds a frame.  It\n'
+            '       used to speed up whenever the queue grew -- 75 frames\n'
+            '       arriving in 0.4 s would otherwise take 4 s to show, and the\n'
+            '       picture trailed the calculation further and further.  But\n'
+            '       trailing is what a slow setting is for: the whole path is\n'
+            '       in the page now, so where the picture has got to is where\n'
+            '       the user is, and grabbing an atom there keeps that frame\n'
+            '       and drops what was computed past it.  A rule that quietly\n'
+            '       sped the playback back up would take that away. */\n'
             '    var n=play.queue.length;\n'
+            '    if(play.pace) return play.pace;\n'
             '    if(n>60) return 8;\n'
             '    if(n>25) return 20;\n'
             '    if(n>10) return 35;\n'
@@ -1670,14 +1701,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      play.seen=from+frames.length;\n'
             '      say("received "+play.seen+" frames");\n'
             '    }\n'
-            '    /* xtb produces frames faster than any frame rate can show\n'
-            '       them, so a queue that is allowed to grow puts the picture\n'
-            '       permanently behind the calculation.  Beyond a second of\n'
-            '       backlog the older ones are skipped: what is on screen is\n'
-            '       then always close to what xtb is doing, which is the point\n'
-            '       of watching at all. */\n'
-            '    if(play.queue.length>20){\n'
-            '      play.queue=play.queue.slice(-20);\n'
+            '    /* The whole path is kept, however far behind it puts the\n'
+            '       picture.  Twenty was the bound, on the grounds that xtb\n'
+            '       makes frames faster than any frame rate shows them and a\n'
+            '       queue that grows leaves the picture permanently behind the\n'
+            '       calculation.  Measured in a browser against a sixty-frame\n'
+            '       path arriving in bursts of twenty: thirty-five frames drawn\n'
+            '       and twenty-five never shown at all -- the oldest of each\n'
+            '       burst, thrown away to keep the bound.\n'
+            '       Being behind is what the pace control asks for.  Where the\n'
+            '       picture has got to is where the user is: taking hold of an\n'
+            '       atom keeps the frame on screen and drops what was computed\n'
+            '       past it, so the frames in front of it are the thing being\n'
+            '       chosen between, not a backlog to be cleared.  A ceiling is\n'
+            '       kept far above any real path, because a queue that grows\n'
+            '       without one is a leak rather than a feature. */\n'
+            '    if(play.queue.length>100000){\n'
+            '      play.queue=play.queue.slice(-100000);\n'
             '    }\n'
             '  }\n'
             '  function say(text){ send("gfnplay", text); }\n'
@@ -1775,7 +1815,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    var held=grabbed();\n'
             '    if(held!==!!play.held){\n'
             '      play.held=held?1:0;\n'
-            '      if(held){ play.queue=[]; play.last=null; }\n'
+            '      if(held){\n'
+            '        /* The frames in front of the picture were computed for a\n'
+            '           structure the hand is now changing, so they go.  Which\n'
+            '           frame the picture stands on goes with the message: the\n'
+            '           kernel keeps that one as the structure, and what xtb\n'
+            '           had run on past it is thrown away.  Sent without it,\n'
+            '           the kernel knew a hand had arrived and not where -- so\n'
+            '           the geometry on screen lived only in the browser until\n'
+            '           a drag happened to push it back. */\n'
+            '        play.queue=[]; play.last=null;\n'
+            '      }\n'
             '      else {\n'
             '        /* Let go of.  What is still queued describes the drag:\n'
             '           each of those frames carries the dragged atom where the\n'
@@ -1791,7 +1841,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '        play.queue=[]; play.last=null;\n'
             '        play.follow=0; play.pushed=0;\n'
             '      }\n'
-            '      send(held?"gfngrab":"gfnfree","");\n'
+            '      send(held?"gfngrab":"gfnfree",\n'
+            '           held?String(play.shown||0):"");\n'
             '    }\n'
             '    if(play.held&&!followIsOn()){\n'
             '      window.requestAnimationFrame(frame); return;\n'
@@ -2921,27 +2972,67 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         run_id = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run_id
 
-        def _push_frames(frames):
-            """Hand the path over while xtb is still walking it."""
+        def _push_frames(frames, final=False):
+            """Hand the path over while xtb is still walking it.
+
+            Every frame, exactly once, and each one carried twice.
+
+            The field is one slot, not a queue: a write that lands before the
+            page has read the one before it replaces it, and those frames are
+            gone.  That is what the eight-frame tail was for -- it re-sent
+            recent frames so a missed read still caught them -- but it was a
+            *fixed* eight, and xtb makes frames far faster than the page is
+            asked to look.  A benzene runs 23 cycles in a fraction of a second
+            and a 149-atom chain 260; everything between two reads beyond the
+            last eight was never sent at all, and what reached the viewer was
+            a sample of the path rather than the path.  Measured, not argued:
+            those two runs are in the round-loop measurements.
+
+            So the window starts where the *previous* window started rather
+            than where it ended.  Every frame is therefore sent in two
+            consecutive writes, which is the same insurance the tail gave, and
+            nothing is skipped however fast the frames arrive.  It stays
+            bounded -- a write carries at most two reads' worth -- and the
+            coordinates are rounded to four decimals, which is a thousandth of
+            a bond length and half the JSON.
+
+            *final* is the write at the end of the run, and it goes out even
+            when it carries nothing new.  Without it the last window is the one
+            window sent only once -- the run ends before another write can
+            repeat it -- so a single missed read at exactly that moment leaves
+            the picture short of the geometry the box holds.  That is the end
+            of the path, which is the part that has to land.
+            """
             played[0] = True
             walked = list(frames)
-            # What the page has not seen, not a long tail of what it has.
-            # The reader runs at 60 Hz and the writer at 20, so eight frames
-            # cover a 400 ms gap with room to spare. At 400 atoms a 400-frame
-            # trail is 9.6 MB of JSON per push, serialised in 169 ms on the
-            # kernel's thread -- for frames the browser already holds.
-            trail = walked[-8:]
-            begins = len(walked) - len(trail)
+            if state.get('gfn_push_run') != run_id:
+                state['gfn_push_run'] = run_id
+                state['gfn_push_start'] = 0
+                state['gfn_push_end'] = 0
+            if not final and len(walked) <= int(state.get('gfn_push_end') or 0):
+                return                      # nothing new since the last write
+            start = int(state.get('gfn_push_start') or 0)
+            state['gfn_push_start'] = int(state.get('gfn_push_end') or 0)
+            state['gfn_push_end'] = len(walked)
+            fresh = [[round(float(v), 4) for v in frame]
+                     for frame in walked[start:]]
 
-            def _write(t=trail, first=begins):
+            def _write(t=fresh, first=start, last=bool(final)):
                 # A run that has been replaced does not draw.  An interrupted
                 # one has frames in hand when it is told to stop, and writing
                 # them afterwards played the abandoned path over the structure
                 # the user had just made.
                 if state.get('gfn_run') != run_id:
                     return
-                submit_gfn_frame.value = json.dumps(
-                    {'run': run_id, 'from': first, 'frames': t})
+                payload = {'run': run_id, 'from': first, 'frames': t}
+                if last:
+                    # Named, so this write differs from the one before it even
+                    # when it carries the same frames: the field is a widget
+                    # value and traitlets says nothing when a value is written
+                    # again unchanged, so the repeat that is the whole point of
+                    # a final write would never leave the kernel.
+                    payload['final'] = 1
+                submit_gfn_frame.value = json.dumps(payload)
 
             schedule_ui_update(_write)
 
@@ -3001,6 +3092,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # the whole case the rounds exist for -- counted as a failure, as
             # it was at first, it stopped the rounds before they ever ran.
             results, failures, unfinished = [], [], []
+            # The path of the frame on screen, kept where _apply can reach it
+            # however the loop ended: a run stopped before its first outcome
+            # leaves that name unbound, and reading it there is a crash in the
+            # one place that exists to handle a run being cut short.
+            trail = [None]
             targets = frames or [(single, None, None)]
             for position, item in enumerate(targets):
                 xyz = item[0]
@@ -3105,11 +3201,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                         f'screen\n' + '\n'.join(rows) + '\n')
                     results.append((kept,) + tuple(item[1:]))
                     if gfn and outcome.get('frames') and position == 0:
+                        trail[0] = outcome['frames']
                         played[0] = True
                         # xtb writes every cycle to xtbopt.log, so the path
                         # costs nothing extra -- one run, and the viewer plays
                         # what the optimiser really walked through.
-                        _push_frames(outcome['frames'])
+                        _push_frames(outcome['frames'], final=True)
                     note = str(outcome.get('status') or '')
                     if 'before converging' in note:
                         # It came back with a geometry, but not a finished one.
@@ -3123,9 +3220,32 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             def _apply():
                 if state.get('optimize_interrupted') is token:
                     # The structure changed under this run.  What it reached is
-                    # a minimum of a geometry that no longer exists, so neither
-                    # the coordinates nor the switch are touched: the run that
-                    # replaces it is already on its way.
+                    # a minimum of a geometry that no longer exists, so the
+                    # switch is not touched: the run that replaces it is
+                    # already on its way.
+                    #
+                    # The coordinates are, and to the frame the picture stood
+                    # on when the hand arrived -- not to where xtb had got to,
+                    # which nobody saw.  Left alone, the box kept the geometry
+                    # from before the run while the browser showed the frame
+                    # the user had taken hold of, and the two only came back
+                    # together if a drag happened to push the browser's model
+                    # over.  Taking hold and letting go without moving left
+                    # them apart.
+                    shown = state.get('gfn_shown_frame')
+                    walked = trail[0]
+                    if (isinstance(shown, int) and walked
+                            and 0 < shown <= len(walked)):
+                        symbols = [line.split()[0]
+                                   for line in _gfn.atom_lines(single or '')]
+                        frame = walked[shown - 1]
+                        if symbols and len(symbols) * 3 == len(frame):
+                            state['manip_inflight'] = True
+                            coords_widget.value = xyz_document(
+                                [xyz_line(symbols[i], frame[3 * i],
+                                          frame[3 * i + 1], frame[3 * i + 2])
+                                 for i in range(len(symbols))],
+                                'stopped where you took hold')
                     return
                 # A run is one xtb --opt, and xtb's optimiser has a cycle limit
                 # of its own: when it reaches it, it hands back the geometry it
@@ -4300,6 +4420,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # run at the grab rather than at the release is the whole point: a
             # GFN2 run is thirteen seconds, and all of them would otherwise be
             # spent on a structure the user is in the middle of changing.
+            #
+            # Which frame the picture stood on comes with the message, and it
+            # is what the run is cut at: the geometries past it were computed
+            # for a structure the hand is changing, and nobody has seen them.
+            try:
+                state['gfn_shown_frame'] = int(str(payload).strip())
+            except (TypeError, ValueError):
+                pass
             if _interrupt_gfn():
                 _set_mol_status('Moved while it ran; the optimisation stops '
                                 'there and starts again from what you make.',
@@ -4725,6 +4853,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if active else
             'Atoms will stay exactly where you put them.')
 
+    def _push_play_speed():
+        """Tell the page how fast to walk the path.
+
+        Frames a second on the slider, milliseconds a frame on the page: the
+        user thinks in speed and the player counts in delay.
+        """
+        pace = max(1, int(round(1000.0 / max(1, int(submit_play_speed.value)))))
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinGfnPlay&&window.__delfinGfnPlay['
+            + json.dumps(submit_scope_id) + ']){'
+            'window.__delfinGfnPlay[' + json.dumps(submit_scope_id)
+            + f'].pace={pace};' + '}'
+        )
+
+    def on_submit_play_speed(change):
+        if change.get('name') != 'value':
+            return
+        _push_play_speed()
+        _set_mol_status(
+            f'The optimisation is drawn at {int(submit_play_speed.value)} '
+            'frame(s) a second. Slower lets the calculation run ahead of the '
+            'picture -- take hold of an atom and the frame you are looking at '
+            'is the one that is kept.')
+
     def on_submit_sens_changed(change):
         if change.get('name') != 'value':
             return
@@ -5066,6 +5219,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Strength is how many steps the browser's field takes per animation
         # frame, and that field does not run under a server method.
         submit_strength_slider.layout.display = 'none' if server else ''
+        # And the playback pace is the other way round: only a server engine
+        # walks a path worth pacing.  The browser's field draws its own frames
+        # as it computes them and there is nothing queued to play.
+        submit_play_speed.layout.display = '' if server else 'none'
+        if server:
+            _push_play_speed()
         # Settle: the browser's alone, for the reason in the docstring.
         submit_settle_btn.layout.display = 'none' if server else ''
         if server and submit_settle_btn.value:
@@ -5350,6 +5509,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_label_size.observe(on_submit_label_size, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
+    submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_auto_btn.observe(on_submit_auto_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
