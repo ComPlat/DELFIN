@@ -212,3 +212,75 @@ def test_a_fired_one_shot_does_not_come_back_from_the_file(cron):
     assert sch.tick(fire_callback=lambda _e: None) == 0
     assert json.loads(cron.read_text())["entries"] == []
     assert S.Scheduler(path=cron).list_entries() == []
+
+
+# ---------------------------------------------------------------------------
+# ... and stopping it from somewhere else has to stop it
+# ---------------------------------------------------------------------------
+
+def _live_and_cli(cron):
+    """A long-lived scheduler (the dashboard) and a second one standing in
+    for the CLI or the headless daemon, over one file."""
+    live = S.Scheduler(path=cron)
+    ent = live.schedule_interval(every_seconds=3600, prompt="nightly bench")
+    return live, ent, S.Scheduler(path=cron)
+
+
+def test_a_disable_from_another_process_reaches_the_running_scheduler(cron):
+    """The reload was "add what I have never seen" and nothing else, so a
+    schedule CREATED elsewhere arrived and every other edit did not.
+
+    Measured before this: the CLI wrote disabled=True, the running
+    scheduler still held False, and it went on firing — a scheduled agent
+    run that spends money unattended, which the user had switched off."""
+    live, ent, cli = _live_and_cli(cron)
+
+    theirs = [e for e in cli.list_entries() if e.id == ent.id][0]
+    theirs.disabled = True
+    theirs.disabled_reason = "switched off by the user"
+    cli._entries[theirs.id] = theirs
+    cli._save()
+
+    mine = [e for e in live.list_entries() if e.id == ent.id][0]
+    assert mine.disabled is True
+    assert "switched off" in mine.disabled_reason
+
+
+def test_a_delete_from_another_process_is_not_undone_by_the_next_save(cron):
+    """Worse than ignored: the entry stayed in memory and the merge-on-write
+    put it straight back on disk, so deleting it elsewhere was reverted by
+    whichever process happened to save next."""
+    live, ent, cli = _live_and_cli(cron)
+    assert cli.delete(ent.id) is True
+
+    assert [e.id for e in live.list_entries()] == []
+    live._save()
+    assert [e.id for e in S.Scheduler(path=cron).list_entries()] == []
+
+
+def test_an_unreadable_file_does_not_wipe_the_schedule(cron):
+    """The dangerous half of honouring deletions. A file that cannot be
+    parsed is not an empty schedule, and treating it as one would drop
+    every entry the user has on the first transient read error."""
+    live, ent, _cli = _live_and_cli(cron)
+    cron.write_text("{ this is not json", encoding="utf-8")
+
+    assert [e.id for e in live.list_entries()] == [ent.id]
+
+
+def test_a_local_disable_is_not_undone_by_an_older_file(cron):
+    """Adoption is one-way. The running scheduler disables an entry itself
+    when a one-shot goes stale or a callback keeps failing; a file that
+    still says enabled must not switch it back on."""
+    live, ent, _cli = _live_and_cli(cron)
+    live._entries[ent.id].disabled = True          # decided here, not saved
+
+    mine = [e for e in live.list_entries() if e.id == ent.id][0]
+    assert mine.disabled is True
+
+
+def test_an_entry_created_elsewhere_still_arrives(cron):
+    """The one case the old reload did cover, kept."""
+    live, _ent, cli = _live_and_cli(cron)
+    theirs = cli.schedule_interval(every_seconds=3600, prompt="from the CLI")
+    assert theirs.id in {e.id for e in live.list_entries()}
