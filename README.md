@@ -824,8 +824,7 @@ delfin/
 
   # ── Core Workflows ──
   occupier.py              # OCCUPIER workflow (sequence execution + summary)
-  occupier_auto.py         # auto OCCUPIER sequence management and tree navigation
-  deep_auto_tree.py        # adaptive BS evolution tree
+  occupier_auto.py         # auto OCCUPIER sequence rules and populated-state branching
   esd_module.py            # excited-state dynamics (ISC/IC/fluorescence/phosphorescence)
   esd_input_generator.py   # ORCA input builders for ESD states
   tadf_xtb.py              # TADF screening via xTB

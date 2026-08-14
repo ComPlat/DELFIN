@@ -432,7 +432,6 @@ DELFIN automatically selects relativistic settings when 4d/5d transition metals 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `OCCUPIER_method` | `auto` | OCCUPIER method: `auto` (adaptive tree) or `manually` |
-| `OCCUPIER_tree` | `own` | Tree type |
 | `OWN_TREE_PURE_WINDOW` | `3` | Pure spin state window |
 | `OWN_progressive_from` | `no` | Progressive tree expansion |
 | `fob_equal_weights` | `yes` | Equal weights for FoB calculations |
