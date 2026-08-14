@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   analyze:
-    name: analyze (python)
+    name: analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -36,6 +36,18 @@ jobs:
       actions: read
       contents: read
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # "actions" reads .github/workflows itself. The workflows here are
+        # currently clean — no third-party actions, no pull_request_target,
+        # github.event_name only in if: conditions, contents: read everywhere
+        # — and the point of scanning them is that the next workflow somebody
+        # adds is held to the same line. A workflow runs with a token against
+        # this repository, so an injected expression in a run: block reaches
+        # further than most of the Python does.
+        language: [python, actions]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -43,7 +55,7 @@ jobs:
       - name: Initialise CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: python
+          languages: ${{ matrix.language }}
           config-file: ./.github/codeql/codeql-config.yml
           # security-extended adds the queries that are worth a look but too
           # noisy to gate on. Nothing here gates, so the wider net costs only
@@ -53,4 +65,4 @@ jobs:
       - name: Analyse
         uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:python"
+          category: "/language:${{ matrix.language }}"
