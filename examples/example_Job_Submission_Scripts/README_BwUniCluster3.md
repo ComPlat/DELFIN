@@ -114,7 +114,6 @@ orca_parallel_strategy=auto     # MPI + OpenMP
 # Workflow
 method=OCCUPIER
 OCCUPIER_method=auto
-OCCUPIER_tree=deep
 calc_initial=yes
 oxidation_steps=1,2,3
 reduction_steps=1,2,3

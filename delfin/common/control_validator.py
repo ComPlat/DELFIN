@@ -1581,32 +1581,6 @@ def _as_occupier_method(value: Any) -> str:
     raise ValueError("must be auto or manually")
 
 
-def _as_occupier_tree(value: Any) -> str:
-    """Coerce user value into a known tree token (flat, deep2, deep3, deep, own)."""
-    # If empty/None, use default "deep"
-    if not value or str(value).strip() == "":
-        return "deep"
-
-    text = str(value).strip().lower()
-    if text in {"deep", "tree"}:
-        return "deep"
-    if text in {"flat", "flatt", "legacy"}:
-        return "flat"
-    if text == "deep2":
-        return "deep2"
-    if text == "deep3":
-        return "deep3"
-    if text in {"deep4", "dee4"}:
-        return "own"
-    if text in {"own", "custom"}:
-        return "own"
-    # Legacy aliases for backwards compatibility - map to "deep"
-    if text in {"deep5", "dee5", "deep6", "dee6"}:
-        return "deep"
-    # Default to "own" for invalid/unrecognized values (including multi-value syntax like "deep|flat|own")
-    return "own"
-
-
 def _as_ap_method(value: Any) -> int | None:
     """Coerce APMethod tokens into ORCA-compatible integers."""
     if value is None:
@@ -1699,7 +1673,6 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("calc_potential_method", _as_calc_potential_method, default=2),
     FieldSpec("deltaSCF_SOSCFHESSUP", _as_soscfhessup, default="LSR1"),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),
-    FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
     FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
@@ -1769,12 +1742,6 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     esd_states_have_t1 = _states_include_t1(config.get("states", ""))
 
     for spec in CONTROL_FIELD_SPECS:
-        # Skip OCCUPIER_tree validation if OCCUPIER_method is 'manually'
-        if spec.name == "OCCUPIER_tree" and occupier_method == "manually":
-            # Just set default without validation when manually mode
-            validated[spec.name] = "deep"
-            continue
-
         # Skip ESD mode selection when ESD is disabled.
         if spec.name == "ESD_modus" and not esd_modul_enabled:
             validated[spec.name] = spec.default

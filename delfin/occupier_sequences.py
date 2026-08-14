@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from delfin.common.logging import get_logger
-from delfin.common.control_validator import _as_occupier_tree
 
 from .occupier_auto import (
     resolve_auto_sequence_bundle,
@@ -175,16 +174,15 @@ def resolve_sequences_for_delta(config: Dict[str, Any], delta: int,
     parity_target = parity_hint or _infer_parity_hint(config, delta)
     method = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
     if method == "auto":
-        tree_mode = _as_occupier_tree(config.get("OCCUPIER_tree", "deep"))
-        custom_tree = None
-        if tree_mode == "own":
-            custom_tree = _get_custom_baseline_sequences(config)
-            if not custom_tree:
-                logger.warning("OCCUPIER_tree=own requested but no custom sequences found; falling back to manual sequences.")
-                return manual_bundle
+        # Sequences come from rules applied to the previous step's populated
+        # configurations. The pre-built trees this could once navigate instead
+        # are gone; they held the same decision enumerated ahead of time.
+        custom_tree = _get_custom_baseline_sequences(config)
+        if not custom_tree:
+            logger.warning("No OCCUPIER baseline sequences found; falling back to manual sequences.")
+            return manual_bundle
         auto_bundle = resolve_auto_sequence_bundle(
             delta,
-            tree_mode=tree_mode,
             parity_hint=parity_target or parity_hint,
             custom_dataset=custom_tree,
             config=config,

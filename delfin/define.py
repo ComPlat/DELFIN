@@ -205,7 +205,6 @@ enable_performance_metrics=yes
 OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto|manually
-OCCUPIER_tree=own
 OWN_TREE_PURE_WINDOW=3
 OWN_progressive_from=no
 fob_equal_weights=yes
