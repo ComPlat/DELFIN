@@ -217,3 +217,66 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           pip-audit --progress-spinner off || true
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    # Nightly and on demand, never on a push. Measuring coverage roughly
+    # doubles a suite that already takes ten minutes, and the merge gate is
+    # what people wait on. The question it answers — which parts of 344,000
+    # lines no test reaches — does not change between one commit and the next.
+    #
+    # It exists because of two things this repository found the hard way: a
+    # test that never ran because a later function took its name, and six of
+    # nine recovery strategies that no run in the archive ever reached. Both
+    # are invisible to a green suite and obvious in a coverage report.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[agent,docs,dev]"
+
+      - name: Measure coverage over the fast suite
+        run: |
+          pytest -q -m "not slow" \
+            --cov=delfin --cov-report=term --cov-report=xml \
+            > coverage.txt 2>&1 || true
+          {
+            echo "### Coverage"
+            echo
+            echo '```'
+            tail -1 coverage.txt
+            echo '```'
+            echo
+            echo "#### Least covered modules"
+            echo
+            echo '```'
+            grep -E '^delfin/' coverage.txt \
+              | awk '{gsub("%","",$4); if ($4 != "") print $4, $1}' \
+              | sort -n | head -25 \
+              | awk '{printf "%5s%%  %s\n", $1, $2}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.txt
+            coverage.xml
+          retention-days: 30
