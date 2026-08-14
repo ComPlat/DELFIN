@@ -966,7 +966,7 @@ def test_runner_sets_task_cap_budgets(monkeypatch):
         cost_usd = 0.0
     captured = {}
 
-    def _factory(model, backend, provider, mode):
+    def _factory(model, backend, provider, mode, task_class=""):
         e = _Eng(); captured["engine"] = e; return e
 
     def _run_once(engine, prompt, max_tokens=4096):

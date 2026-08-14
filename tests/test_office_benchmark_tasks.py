@@ -124,15 +124,18 @@ def test_office_tasks_start_inside_the_office_folder():
     luck — one run cited the full path, the next answered "the file is
     not in the working directory", and that scored as a failure of a
     rubric it never got to exercise."""
-    import inspect
+    import pathlib
 
-    from delfin.agent import benchmark_runner
+    from delfin.agent.benchmark_runner import workspace_for
 
-    source = inspect.getsource(benchmark_runner._build_engine) if hasattr(
-        benchmark_runner, "_build_engine") else inspect.getsource(
-        benchmark_runner)
-    assert 'if (mode or "") == "office":' in source
-    assert '"office_workspace"' in source
+    root = pathlib.Path(__file__).resolve().parents[1]
+    # Was a source-text assertion on the condition that implemented this,
+    # so moving the logic into a named function broke it while the
+    # behaviour was unchanged. It asks the function now.
+    assert workspace_for(root, mode="office") == (
+        root / "tests" / "fixtures" / "office_workspace")
+    assert workspace_for(root, task_class="office") == (
+        root / "tests" / "fixtures" / "office_workspace")
 
 
 def test_the_office_prompts_name_files_the_way_a_user_would():

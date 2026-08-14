@@ -99,8 +99,11 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0) 
 # ---------------------------------------------------------------------------
 
 
-EngineFactory = Callable[[str, str, str, str], Any]
-"""(model, backend, provider, mode) -> engine."""
+# (model, backend, provider, mode, task_class) -> engine. The task class
+# is what decides the write boundary; the mode cannot, because behaviour
+# and generic-project tasks both run as `solo`. Widened rather than
+# guessed at the call site.
+EngineFactory = Callable[..., Any]
 
 
 def _iso(epoch: float) -> str:
@@ -148,7 +151,39 @@ def _denials_during(engine: Any, *, since_ts: str) -> Optional[int]:
         return None
 
 
-def _default_engine_factory(model: str, backend: str, provider: str, mode: str) -> Any:
+def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Optional[Path]:
+    """The fixture workspace a task class writes into, or ``None``.
+
+    Only the classes that WRITE get one. Office already had this, keyed
+    on the mode; behaviour and generic-project tasks edit toy files just
+    as concretely and had the whole checkout as their workspace, because
+    the mode cannot tell them apart — both run as ``solo``. So the key is
+    the task CLASS, which is what actually decides where a task belongs.
+
+    Measured over the four packaged task files: office 11, behaviour 12,
+    generic_project 8. Those 31 are every task that writes; the other 48
+    read and are left alone deliberately — see the note in #111 on why
+    moving their root is a separate problem.
+
+    ``None`` when the class writes nothing or the directory is absent: a
+    missing fixture must not silently redirect a run somewhere else.
+    """
+    cls = (task_class or "").strip().lower()
+    rel: Optional[str] = None
+    if (mode or "") == "office" or cls == "office":
+        rel = "office_workspace"
+    elif cls.startswith("behavior"):
+        rel = "behavior_workspace"
+    elif cls == "generic_project":
+        rel = "user_project_workspace"
+    if rel is None:
+        return None
+    candidate = Path(root) / "tests" / "fixtures" / rel
+    return candidate if candidate.is_dir() else None
+
+
+def _default_engine_factory(model: str, backend: str, provider: str,
+                            mode: str, task_class: str = "") -> Any:
     """Build a real AgentEngine for the given config.
 
     AgentEngine creates its own client internally; we just hand it the
@@ -168,10 +203,9 @@ def _default_engine_factory(model: str, backend: str, provider: str, mode: str) 
     # intermittently measures file discovery instead of the behaviour
     # under test is worse than no benchmark.
     root = _Path(_os.getcwd()).resolve()
-    if (mode or "") == "office":
-        fixtures = root / "tests" / "fixtures" / "office_workspace"
-        if fixtures.is_dir():
-            root = fixtures
+    fixtures = workspace_for(root, mode=mode, task_class=task_class)
+    if fixtures is not None:
+        root = fixtures
 
     return AgentEngine(
         repo_dir=root,
@@ -471,7 +505,8 @@ def _run_task_once(
     """Single attempt — kept private so retry-aggregation logic lives
     in one place at the public ``run_task`` entry."""
     try:
-        engine = engine_factory(model, backend, provider, task.mode)
+        engine = engine_factory(model, backend, provider, task.mode,
+                                task.task_class)
     except Exception as exc:
         traj = Trajectory(error=f"engine init failed: {exc}")
         return score_outcome(
