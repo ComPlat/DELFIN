@@ -1,0 +1,55 @@
+name: CodeQL
+
+# Static analysis for the parts of DELFIN that are exposed to input it did not
+# write. For a package that only did arithmetic this would be decoration; here
+# the agent executes tools and writes files, the dashboard serves files over a
+# browser, ORCA and xTB are started through a shell with paths that came from
+# user input, and YAML and JSON are loaded. Those are the four areas
+# SECURITY.md names as in scope, and they are what CodeQL's Python queries look
+# for: path traversal, command injection, unsafe deserialisation, SSRF.
+#
+# Findings land in the Security tab rather than failing a build. That is
+# deliberate and it is also how the action behaves: a static analyser reporting
+# a possible flaw is the start of a conversation, not a reason to stop somebody
+# merging a change to a report template.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a query added upstream reaches this code without waiting for
+    # somebody to push.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Only what uploading results needs.
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # security-extended adds the queries that are worth a look but too
+          # noisy to gate on. Nothing here gates, so the wider net costs only
+          # analysis time.
+          queries: security-extended
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
