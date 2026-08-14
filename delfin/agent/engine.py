@@ -2742,11 +2742,36 @@ class AgentEngine:
                     max_tokens=max_tokens,
                 )
         elif self._stop_requested:
-            # Stop during thinking — no response generated.
-            # Pop the orphaned user message to prevent consecutive user
-            # messages that break the API on the next turn.
+            # Stop before any answer text — during thinking, or before the
+            # first token. The message appended at the top of this turn has
+            # nothing after it, and two consecutive user messages break the
+            # API on the next turn, so it comes back out. That much was
+            # already right.
+            #
+            # Saying so was missing, and the silence was worse than saying
+            # nothing: the stop notice tells the user "the rounds completed
+            # so far are kept; send a message to continue from here", which
+            # is true of a stop inside the tool loop and false here. Nothing
+            # was kept, and the question they asked is no longer in the
+            # history to continue FROM. Measured before this: the turn
+            # returned '', on_token was never called, and the history came
+            # back empty -- so the only sentence the user got was the one
+            # that was wrong.
+            #
+            # Same repair as the empty-turn branch below, which already
+            # names what it took out.
             if self.messages and self.messages[-1].get("role") == "user":
                 self.messages.pop()
+                full_response = (
+                    "[stopped] Stopped before any answer text. Nothing was "
+                    "added to the history and your message is not in it "
+                    "either — send it again to pick the question back up."
+                )
+                if on_token:
+                    try:
+                        on_token(full_response)
+                    except Exception:
+                        pass
         else:
             # No text, no stop, no exception. This branch did not exist,
             # and its absence destroyed the question: the user message
