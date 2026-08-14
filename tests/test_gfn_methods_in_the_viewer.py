@@ -496,7 +496,7 @@ def test_the_optimised_structure_lands_even_if_the_pushes_do_not(editor):
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
     apply_step = handler.split("def _apply()")[1]
-    assert "coords_widget.value = xyz_document(" in apply_step
+    assert "_write_coords(" in apply_step
     assert "if played[0]:" in apply_step, (
         "the re-render is skipped only when the picture is already right"
     )
@@ -724,7 +724,10 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     assert "played[0] = True" in handler
     apply_body = handler.split("def _apply")[1]
     assert "if played[0]:" in apply_body
-    assert "state['manip_inflight'] = True" in apply_body
+    # The flag rides with the write now, in the one function that puts a
+    # geometry in the box -- raised only when the value really changes, or it
+    # stays up and swallows the next redraw instead.
+    assert "drawn=played[0]" in apply_body
     # the flag has to be set before the write that would re-render
     # Two writes live in _apply now -- one cuts a run a hand interrupted, the
     # other ends a finished one -- and this is about the second.  Measured
@@ -732,7 +735,7 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     # the wrong one again.
     finished = apply_body.split("'stopped where you took hold'")[-1]
     assert (finished.index("if played[0]:")
-            < finished.index("coords_widget.value = xyz_document("))
+            < finished.index("_write_coords("))
 
 
 def test_the_playback_finds_its_field_in_fullscreen_but_only_its_own(player_js):
@@ -1343,7 +1346,8 @@ def test_the_playback_speeds_up_when_it_falls_behind(editor):
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "function stepMs()" in watcher
     assert "play.queue.length" in watcher
-    assert "stepMs()" in watcher.split("var t=(now-play.started)")[1][:20]
+    assert "var ms=stepMs();" in watcher
+    assert "var t=(now-play.started)/ms;" in watcher
 
 
 def test_stopping_keeps_the_frame_that_was_on_screen(editor):
@@ -2296,7 +2300,7 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
         "it is the ordinary optimisation, run on the frame that is on screen"
     )
     assert "on_frames=_push" in settle
-    assert "coords_widget.value = xyz_document(" in settle, "the result has to land"
+    assert "_write_coords(" in settle, "the result has to land"
 
     # Not a release any more -- under a server method Settle is gone, and
     # going to a minimum when an atom is let go is Auto's, with one switch on
@@ -4276,6 +4280,10 @@ def test_the_speed_slider_reaches_the_page_in_the_unit_it_counts_in(tmp_path):
     slider.value = 4                        # slow: a quarter of a second each
     assert ".pace=250;" in "".join(sent)
 
+    sent.clear()
+    slider.value = 1                        # the floor: a second a frame
+    assert ".pace=1000;" in "".join(sent)
+
 
 def test_the_pace_is_offered_only_where_a_path_is_walked(editor, monkeypatch):
     """The browser's own field draws its frames as it computes them; there is
@@ -4346,3 +4354,104 @@ def test_an_interrupted_run_leaves_the_frame_that_was_on_screen():
     )[1].split("\n    def ")[0]
     assert "trail = [None]" in whole
     assert "trail[0] = outcome['frames']" in whole
+
+
+def test_a_write_that_changes_nothing_lowers_the_render_flag(bare_editor):
+    """The picture stopped following the box, and cutting the coordinates out
+    and pasting them back was the cure.
+
+    manip_inflight tells the host that the playback has drawn this geometry
+    already, so it must not redraw.  The host clears it in update_view, and
+    traitlets only calls that when the value actually changes.  Raised before a
+    write that changes nothing -- a structure already at its minimum, written
+    back by a second press of Optimise, which is the ordinary case -- it stayed
+    raised, and the *next* genuine change was the one swallowed.  Cut and paste
+    is two real changes, which is why that cleared it.
+    """
+    part, state = bare_editor
+
+    same = part.coords_widget.value
+    state["manip_inflight"] = False
+    assert part._write_coords(same, drawn=True) is False, (
+        "nothing changed, so nothing was written")
+    assert state["manip_inflight"] is False, (
+        "a write that changes nothing must not leave the flag raised")
+
+    other = (same or "") + "\nH 9.0 9.0 9.0"
+    assert part._write_coords(other, drawn=True) is True
+    assert state["manip_inflight"] is True, "the playback has drawn this one"
+
+
+def test_every_geometry_the_editor_writes_goes_through_the_one_door():
+    """Three places wrote the box and raised the flag by hand, and each was
+    one no-op write away from stopping the picture for the rest of the
+    session."""
+    for call in ("_write_coords(xyz_document(lines, f'Settled with {label}')",
+                 "xyz_document(lines, 'Optimised in DELFIN viewer')",
+                 "'stopped where you took hold'), drawn=True)"):
+        assert call in EDITOR_SOURCE, call
+    # No geometry is written beside a hand-raised flag any more.
+    assert "state['manip_inflight'] = True\n                    coords_widget" \
+        not in EDITOR_SOURCE
+    assert EDITOR_SOURCE.count("_write_coords(") >= 4
+
+
+def test_the_path_is_played_at_a_pace_that_can_be_watched(editor):
+    """Twelve a second: a path being walked, not a jump.
+
+    It sat at the top of the range for a while, on the theory that a viewer
+    taking longer to arrive was the complaint.  It was not -- that was a flag
+    left raised over a write that changed nothing, fixed where it was.  At
+    sixty a second a twenty-three-frame optimisation is over in 0.4 s, which
+    is the single jerk the playback exists to replace; at twelve it is 1.9 s,
+    and a 260-frame one is 21.7 s.  Both ends of that are a setting away.
+    """
+    slider = editor["submit_play_speed"]
+    assert slider.value == 12
+    assert slider.description == "Speed"
+    # One a second at the bottom -- already a second of looking at each
+    # geometry -- and sixty at the top, which is not a speed so much as
+    # "live": the frames only exist as fast as xtb makes them, so on a large
+    # structure the picture drains the queue and waits, and that is the
+    # calculation watched as it happens.  Whole steps: a tenth of a frame a
+    # second is a distinction nobody makes.
+    assert (slider.min, slider.max) == (1, 60)
+    assert slider.step == 1
+    assert slider.value < slider.max, "the default cannot be the fastest there is"
+
+
+def test_the_frame_a_hand_arrived_on_belongs_to_one_run(editor, monkeypatch):
+    """A number left over from an earlier grab is a plausible index into the
+    next run's path.
+
+    The page reports it only when a hand arrives or the switch goes up, so it
+    survives whole runs otherwise -- and an edit interrupting a later run would
+    cut that run at a frame nobody ever saw, taken from a trajectory that no
+    longer exists.  The index is only ever about the run it came from.
+    """
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+
+    state["gfn_shown_frame"] = 13          # from a grab during an earlier run
+    monkeypatch.setattr(
+        tab_submit._gfn, "optimize_with_gfn",
+        lambda xyz, method, **kw: {"ok": True, "xyz": xyz, "energy": -1.0,
+                                   "converged": True, "frames": [],
+                                   "status": "converged in 1.0 s"})
+    editor["submit_optimize_btn"].value = True
+    deadline = _time.time() + 20
+    while _time.time() < deadline and editor["submit_optimize_btn"].value:
+        _time.sleep(0.02)
+
+    assert state.get("gfn_shown_frame") is None, (
+        "a new run starts with no frame remembered from the last one")
+
+    start = SUBMIT_SOURCE.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "state.pop('gfn_shown_frame', None)" in start
