@@ -77,8 +77,13 @@ def browser():
         engine.close()
 
 
-def _play(browser, writes, settle_ms, pace=None):
-    """Write those payloads into the frame field and report what was drawn."""
+def _play(browser, writes, settle_ms, pace=None, switch_off_after=None):
+    """Write those payloads into the frame field and report what was drawn.
+
+    *switch_off_after* takes the Optimise switch up after that many writes,
+    which is what the kernel does the moment the last round lands -- while the
+    picture is still walking the path.
+    """
     script = _player_script()
     scope = script.split('var scope=')[1].split(';')[0].strip().strip('"')
     page = browser.new_page()
@@ -88,13 +93,18 @@ def _play(browser, writes, settle_ms, pace=None):
         if pace is not None:
             page.evaluate("([s, ms]) => {window.__delfinGfnPlay[s].pace = ms;}",
                           [scope, pace])
-        for payload, wait in writes:
+        for written, (payload, wait) in enumerate(writes, 1):
             page.evaluate(
                 """([sel, text]) => {
                     document.querySelector(sel).value = text;
                 }""",
                 [".submit-gfn-frame textarea", json.dumps(payload)])
             page.wait_for_timeout(wait)
+            if switch_off_after is not None and written == switch_off_after:
+                page.evaluate("""() => {
+                    document.querySelector('.submit-optimize-switch')
+                        .classList.remove('mod-active');
+                }""")
         page.wait_for_timeout(settle_ms)
         return {
             "frames": page.evaluate("window.__drawn"),
@@ -219,3 +229,44 @@ def test_a_hand_on_the_structure_cuts_the_run_where_the_picture_stands(browser):
             f"the kernel was told {payload!r}, the picture stood on {shown}")
     finally:
         page.close()
+
+
+def test_a_finished_run_plays_its_path_out_after_the_switch_goes_up(browser):
+    """The run being finished does not mean the picture is.
+
+    The kernel turns the Optimise switch off the moment the last round lands,
+    and the player abandoned whatever was still queued when it saw that go up.
+    While the queue was capped at twenty and a backlog was played at speed,
+    almost nothing was left by then.  Keeping the whole path and walking it at
+    a pace anyone can watch made that the ordinary case: measured here at
+    twelve frames a second, eight of sixty drawn and fifty-two thrown away the
+    instant the switch moved -- the picture showing the first jerk of an
+    optimisation and never arriving at the minimum it had just computed.
+
+    A finished run and a stopped one are different things.  The last write of
+    a finished run is marked; a stop arrives as a halt, which clears the queue
+    on purpose.
+    """
+    path = [[float(i)] * 9 for i in range(60)]
+    out = _play(browser,
+                [({"run": 1, "from": 0, "frames": path, "final": 1}, 600)],
+                settle_ms=7000, pace=83, switch_off_after=1)
+
+    assert out["queue"] == 0, "it has to finish walking"
+    assert _reached(out["frames"]) == set(range(60)), "the whole path"
+    assert out["frames"][-1][0] == 59.0, (
+        "the picture has to arrive at the geometry the run reached")
+
+
+def test_the_mark_survives_the_write_that_carries_it(browser):
+    """A run short enough to finish in one message carries the mark on the
+    same write that starts the run, and the run-change reset ran after it --
+    so the mark was cleared by the very write that brought it, and the path
+    was abandoned exactly as before.
+    """
+    script = _player_script()
+    body = script.split("if(run!==play.run){")[1]
+    reset_at = body.index("play.complete=0")
+    mark_at = body.index("data.final) play.complete=1")
+    assert reset_at < mark_at, (
+        "the mark has to be set after the run reset, not before it")
