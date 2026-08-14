@@ -320,6 +320,42 @@ def _entry_owner_alive(entry: dict) -> bool:
     return _pid_alive(pid, (entry or {}).get("owner_start_ticks"))
 
 
+def _entry_owned_by_us(entry: dict) -> bool:
+    """Whether THIS process wrote the marker.
+
+    ``_entry_owner_alive`` asks a different question -- is the writer still
+    around -- and the pending drain used only that one. So a second DELFIN
+    session on the same machine, sharing ``~/.delfin/subagent_pending``,
+    passed the liveness check on somebody else's marker and claimed it.
+    Measured: a marker stamped with another live pid was drained here, its
+    report handed to a parent that never started the delegate, and the
+    marker unlinked -- so the exactly-once contract held perfectly and
+    delivered to the wrong session, while the right one waited for a
+    report that could no longer arrive.
+
+    A marker with NO owner recorded predates the field. Nobody could match
+    it, and leaving it to the TTL reaper would strand a report that used to
+    be delivered, so those stay claimable by any live session -- exactly
+    the old behaviour, kept on purpose.
+    """
+    try:
+        pid = int((entry or {}).get("owner_pid") or 0)
+    except (TypeError, ValueError):
+        return True
+    if not pid:
+        return True
+    if pid != os.getpid():
+        return False
+    # Same pid is not yet the same process: after a reboot or a pid wrap
+    # the number gets reissued. The start-time stamp is what tells the two
+    # apart, and it is already recorded.
+    theirs = (entry or {}).get("owner_start_ticks")
+    ours = _owner_stamp().get("owner_start_ticks")
+    if theirs and ours and theirs != ours:
+        return False
+    return True
+
+
 def _running_update(sa_id: str, entry: dict | None) -> None:
     """Maintain the live per-subagent status file (entry=None removes).
 
@@ -504,8 +540,14 @@ def _note_pending_report(sa_id: str, *, subagent_type: str = "",
     """Record that this process owes its parent agent a report for ``sa_id``.
 
     Best-effort: a delegation must never fail because bookkeeping could
-    not be written. The owner stamp is what keeps two concurrent sessions
-    on one machine from draining each other's reports.
+    not be written.
+
+    The owner stamp is what keeps two concurrent sessions on one machine
+    from draining each other's reports — and for a long time that sentence
+    was true of nothing. The drain matched on ``_entry_owner_alive``, which
+    asks whether the WRITER is still around, a question another live
+    session passes. It matches the stamp against this process now, in
+    ``_entry_owned_by_us``.
 
     Written atomically. ``write_text`` opens with ``"w"``, which truncates
     before it writes, so a marker existed as an empty file for as long as
@@ -625,7 +667,12 @@ def drain_finished_subagents(limit: int = _PENDING_DRAIN_LIMIT) -> list[dict]:
         except Exception:
             continue                    # unreadable this instant, not gone
         if not isinstance(rec, dict) or not _entry_owner_alive(rec):
-            continue                    # another session's leftover; reaped
+            continue                    # a dead session's leftover; reaped
+        if not _entry_owned_by_us(rec):
+            continue                    # a LIVE session's report, and theirs
+                                        # to deliver -- claiming it here is
+                                        # how the right parent stops getting
+                                        # one at all
         # Terminality is decided BEFORE the claim, and without
         # get_subagent_result -- that call acknowledges the report itself
         # (an explicit collection is a delivery), so asking it first would
