@@ -116,7 +116,7 @@ def test_run_task_happy_path_records_success():
         max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
     )
 
-    def fake_factory(model, backend, provider, mode):
+    def fake_factory(model, backend, provider, mode, task_class=""):
         return _FakeEngine(cost_usd=0.0)
 
     def fake_run_once(engine, prompt, *, max_tokens=4096):
@@ -152,7 +152,7 @@ def test_run_task_failure_when_required_signal_missing():
         max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
     )
 
-    def fake_factory(model, backend, provider, mode):
+    def fake_factory(model, backend, provider, mode, task_class=""):
         return _FakeEngine()
 
     def fake_run_once(engine, prompt, *, max_tokens=4096):
@@ -297,7 +297,7 @@ def test_run_task_repeats_runs_engine_N_times():
     factory_calls = []
     run_once_calls = []
 
-    def factory(model, backend, provider, mode):
+    def factory(model, backend, provider, mode, task_class=""):
         factory_calls.append(model)
         return _FakeEngine()
 
