@@ -75,13 +75,33 @@ def test_the_fanout_advice_names_the_pool_width():
     "delfin/smiles_converter.py",
     "delfin/dashboard/tab_agent.py",
 ])
-def test_a_playbook_line_count_matches_the_file(rel):
+def test_the_playbook_states_no_line_number_it_cannot_keep(rel):
+    """The playbook names files and symbols. It states no line numbers.
+
+    It used to carry a line COUNT per heading and a `(~line N)` per
+    symbol, about six files that live outside delfin/agent/ — build_up_
+    complex, config, cli, orca_recovery, smiles_converter, tab_agent.
+    Eleven claims about code this pack does not own and cannot control.
+    Anyone editing those files has no reason to know a prompt file cites
+    their line numbers, so the claims went stale as ordinary work
+    happened, twice: orca_recovery once, then config.py.
+
+    The guard caught both, which is what it is for — and it caught them
+    AFTER the fact, and the repair was manual each time. smiles_converter
+    alone is 38k lines and changes constantly, so the next break was a
+    matter of when.
+
+    A line number is worth only as much as its accuracy, and a wrong one
+    is worse than none: it sends the model into a neighbouring function
+    with confidence. A symbol name costs the model one grep and never
+    goes stale unless the symbol is actually renamed — which is a real
+    change worth failing over, and is what the test below checks.
+    """
     heading = rel.removeprefix("delfin/")
-    match = re.search(rf"^## {re.escape(heading)} \((\d+) lines\)",
-                      _PLAYBOOKS, re.MULTILINE)
-    assert match is not None, f"no playbook heading for {heading}"
-    actual = len((_ROOT / rel).read_text(encoding="utf-8").splitlines())
-    assert int(match.group(1)) == actual
+    assert re.search(rf"^## {re.escape(heading)}\b", _PLAYBOOKS,
+                     re.MULTILINE), f"no playbook heading for {heading}"
+    stale = re.findall(r"\(\d+ lines\)|\(~?line \d+\)", _PLAYBOOKS)
+    assert not stale, f"line numbers are back in the playbook: {stale}"
 
 
 @pytest.mark.parametrize("symbol,rel", [
@@ -98,17 +118,15 @@ def test_a_playbook_line_count_matches_the_file(rel):
     ("_find_hapto_groups", "delfin/smiles_converter.py"),
     ("create_tab", "delfin/dashboard/tab_agent.py"),
 ])
-def test_a_playbook_line_anchor_points_at_the_symbol(symbol, rel):
-    """The anchors were off by thousands too — a Read at the cited offset
-    lands in unrelated code, which is worse than no anchor."""
-    match = re.search(
-        rf"`{re.escape(symbol)}`(?: \w+)? \(~?line (\d+)\)", _PLAYBOOKS)
-    assert match is not None, f"no anchor cited for {symbol}"
-    cited = int(match.group(1))
-    lines = (_ROOT / rel).read_text(encoding="utf-8").splitlines()
-    real = next(i + 1 for i, ln in enumerate(lines)
-                if re.match(rf"^(?:def|class) {re.escape(symbol)}\b", ln))
-    assert abs(cited - real) <= 5, f"{symbol}: cited {cited}, really {real}"
+def test_a_symbol_the_playbook_names_exists_in_the_file_it_names(
+        symbol, rel):
+    """What survived when the line numbers went: the symbol has to be
+    there. A rename is a real change and deserves to fail here; a shift
+    of fifteen lines by somebody else's edit does not."""
+    assert f"`{symbol}`" in _PLAYBOOKS, f"playbook no longer names {symbol}"
+    src = (_ROOT / rel).read_text(encoding="utf-8")
+    assert re.search(rf"^(?:def|class) {re.escape(symbol)}\b", src,
+                     re.MULTILINE), f"{symbol} is not defined in {rel}"
 
 
 def test_calc_tail_is_documented_in_the_unit_the_handler_uses():
