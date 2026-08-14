@@ -1,25 +1,27 @@
 name: CI
 
-# Automated gate for every push to main and every pull request. The suite is
-# fully mocked (no live KIT/Ollama/Claude calls), so no secrets are required.
+# The gate for every push to main and every pull request. The suite is fully
+# mocked (no live KIT/Ollama calls), so no secrets are required.
 #
-# Two tiers (tests/conftest.py auto-marks the heavy + order-dependent tests
-# `slow`):
-#   - `tests` (fast gate, REQUIRED): everything EXCEPT the slow set. ~minutes.
-#     This is the merge gate that runs on every push/PR.
-#   - `slow-tests` (informational): the heavy MANTA build tests (construct full
-#     complexes; the full serial suite is >90 min) plus a few order-dependent
-#     tests that only pass in the full serial context. These DO NOT fit a
-#     per-commit gate (they time out and mark the whole run "cancelled"), so
-#     they run NIGHTLY on a schedule (and on manual dispatch) instead — keeping
-#     every push/PR green while still exercising the heavy suite daily. Promote
-#     back into the gate once test isolation/speed is improved.
+# Everything in this file either gates or is cheap enough to sit beside what
+# gates: `tests` (fast suite, required), `lint` (required), `audit`, and
+# `coverage` on the nightly schedule. What that buys is a run conclusion that
+# means something — CI green says the gate passed, and nothing else in here
+# can take that away.
+#
+# The heavy half of the suite is in slow-tests.yml, and lives there for that
+# reason. As a job in this file it cancelled its own predecessor on every
+# push — correct for a ninety-minute informational run — but a cancelled job
+# makes the whole run read "cancelled", and main showed nothing else for six
+# commits while both required checks passed every time. Two audiences, two
+# files: one answers "may this merge", the other "does the heavy suite still
+# hold", and neither now overwrites the other's answer.
 on:
   push:
     branches: [main]
   pull_request:
   schedule:
-    # Nightly heavy-suite run (03:17 UTC) — see slow-tests job.
+    # Nightly, for the coverage and audit reports below.
     - cron: "17 3 * * *"
   workflow_dispatch:
 
@@ -79,71 +81,6 @@ jobs:
 
       - name: Run fast test suite (excludes heavy + order-dependent tests)
         run: pytest -q -m "not slow"
-
-  slow-tests:
-    name: slow tests (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    # Runs on a push to main as well as nightly/manual. It stayed off the
-    # per-commit path because one test waits on a thread with no deadline
-    # of its own and wedged the job; the step below gives every test a
-    # deadline, so a hang is now a NAMED failure instead of a stuck run.
-    #
-    # Measured 2026-08-14 on origin/main: 13 failed, 488 passed, 11 skipped
-    # in 1:27:13. Those thirteen had been invisible for as long as this job
-    # was schedule-only — a suite nobody runs reports nothing, and its
-    # silence reads exactly like health.
-    #
-    # Still continue-on-error: the thirteen are pre-existing and all in the
-    # chemistry core, so making this block a merge today would stop work on
-    # everything else. It reports; it does not gate. That is a deliberate
-    # halfway house and it stops being one when the thirteen are down to
-    # zero.
-    if: >-
-      github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    timeout-minutes: 240
-    continue-on-error: true
-    # One slow run per branch, newest wins. The workflow-level group is
-    # keyed per COMMIT on main and never cancels — deliberate, so every
-    # commit gets its own verdict from the fast gate. Applied to a job of
-    # this length it stacks: main takes a push every few minutes, and
-    # within an hour of switching this on there were five 90-minute runs
-    # in flight at once. For an informational report only the newest
-    # answer is worth anything, so this one cancels its predecessor.
-    concurrency:
-      group: slow-tests-${{ github.ref }}
-      cancel-in-progress: true
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11"]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install package + test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[agent,docs,dev]"
-
-      - name: Run slow (heavy + order-dependent) tests
-        # A deadline per TEST, not per job. Without it one call that joins a
-        # thread with timeout=None holds the whole job until the runner's
-        # limit, and pytest's failure list — which prints only at the end —
-        # never appears: the run dies with the names still unknown.
-        # `signal` and not `thread`: the thread method takes the process
-        # down with it, which loses every remaining test as well.
-        run: pytest -q -m "slow" --timeout=600 --timeout-method=signal -rf
 
   lint:
     name: lint (ruff)
