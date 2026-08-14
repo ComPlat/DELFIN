@@ -414,12 +414,23 @@ def cmd_bench(args: argparse.Namespace) -> int:
     if not tasks:
         print("ERROR: no benchmark tasks found.", file=sys.stderr)
         return 1
-    if getattr(args, "task", ""):
-        wanted = {t.strip() for t in str(args.task).split(",") if t.strip()}
+    _asked = getattr(args, "task", None) or []
+    if isinstance(_asked, str):          # a caller that set the field itself
+        _asked = [_asked]
+    wanted = {t.strip() for chunk in _asked
+              for t in str(chunk).split(",") if t.strip()}
+    if wanted:
         tasks = [t for t in tasks if t.id in wanted]
         if not tasks:
-            print(f"ERROR: no task matched {args.task}", file=sys.stderr)
+            print(f"ERROR: no task matched {sorted(wanted)}", file=sys.stderr)
             return 1
+        # A name that matched nothing is a typo or a renamed task, and
+        # running the rest without saying so hands back a number for a
+        # different question than the one that was asked.
+        missing = sorted(wanted - {t.id for t in tasks})
+        if missing:
+            print(f"WARNING: {len(missing)} requested task(s) do not exist "
+                  f"and were skipped: {', '.join(missing)}", file=sys.stderr)
 
     model = (getattr(args, "model", "") or "").strip()
     if not model:
@@ -1175,8 +1186,14 @@ def build_parser() -> argparse.ArgumentParser:
     bench_run.add_argument("--backend", default="", choices=["", "api", "cli"])
     bench_run.add_argument("--provider", default="",
                            help="claude / openai / kit")
-    bench_run.add_argument("--task", default="",
-                           help="Comma-separated task IDs (default: all)")
+    # Repeatable AND comma-separated. It used to be a plain single-value
+    # option, so `--task a --task b` silently kept only the last one:
+    # asking for six tasks ran one, and the run announced "on 1 tasks"
+    # as if that had been the request.
+    bench_run.add_argument("--task", default=[], action="append",
+                           help=("Task IDs (default: all). Comma-separated, "
+                                 "and the flag may be repeated — both forms "
+                                 "accumulate"))
     bench_run.add_argument("--max-tokens", type=int, default=1024,
                            dest="max_tokens")
     bench_run.add_argument(
