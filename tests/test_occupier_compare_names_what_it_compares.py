@@ -178,3 +178,54 @@ def test_the_old_key_still_turns_it_on():
     config = DelfinConfig()
     config.frequency_calculation_OCCUPIER = "yes"
     assert config.is_frequency_calculation_enabled("OCCUPIER") is True
+
+
+# --------------------------------------------------------------------------
+# the explanation lives in the validation, not in the template
+# --------------------------------------------------------------------------
+
+def test_an_empty_field_is_explained_when_the_control_is_validated(caplog):
+    """The CONTROL template carries the key and nothing else. Kept as a comment
+    there it would be read once and then copied from file to file for years;
+    said at validation it reaches whoever is actually running something."""
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        validate_control_config(dict(_BASE, OCCUPIER_compare=""))
+
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "OCCUPIER_compare is empty" in said
+    assert "FINAL SINGLE POINT ENERGY" in said
+    assert "Gibbs" in said
+
+
+def test_a_field_that_is_set_is_not_explained(caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        validate_control_config(dict(_BASE, OCCUPIER_compare="G"))
+
+    assert "OCCUPIER_compare is empty" not in " ".join(
+        r.getMessage() for r in caplog.records
+    )
+
+
+def test_a_legacy_file_is_not_told_to_fill_in_a_field_it_predates(caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        validate_control_config(dict(_BASE, frequency_calculation_OCCUPIER="yes"))
+
+    assert "OCCUPIER_compare is empty" not in " ".join(
+        r.getMessage() for r in caplog.records
+    )
+
+
+def test_the_template_carries_the_key_without_a_comment_block():
+    """A template comment is copied into every derived CONTROL file and ages
+    there; the validator's message cannot."""
+    from delfin import define
+
+    text = define.__file__ and open(define.__file__, encoding="utf-8").read()
+    assert "OCCUPIER_compare=" in text
+    assert "electronic energy (FINAL SINGLE POINT ENERGY)" not in text

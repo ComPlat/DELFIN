@@ -1999,5 +1999,18 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             validated["OCCUPIER_compare"] = (
                 "G" if legacy.lower() in ("yes", "true", "1", "on") else "FSPE"
             )
+        else:
+            # Left blank. Say what the choice is here rather than carrying the
+            # explanation in the template, where it would be read once and then
+            # copied from file to file forever.
+            logger.info(
+                "OCCUPIER_compare is empty — comparing configurations by %s. "
+                "FSPE is the electronic energy (FINAL SINGLE POINT ENERGY); "
+                "G is the Gibbs free energy, which needs a frequency run per "
+                "candidate and is added for you. Configurations within a few "
+                "kJ/mol can be ordered differently by the two, and the choice "
+                "also decides which of them seed the next redox step.",
+                validated.get("OCCUPIER_compare", "FSPE"),
+            )
 
     return validated
