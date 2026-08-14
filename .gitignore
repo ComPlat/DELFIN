@@ -127,3 +127,27 @@ scripts/ccdc_exploit/
 # UPDATE_BENCHMARK_BASELINE=1 and can be force-added when someone vouches
 # for the state it captures.
 /tests/fixtures/benchmark_baseline.json
+
+# Coverage. The nightly CI job writes these, and so does anyone reproducing
+# it locally, straight into the repository root.
+.coverage
+.coverage.*
+coverage.xml
+/htmlcov/
+
+# ORCA scratch, dropped in the repository root when a test starts ORCA with
+# a default cwd. Root-anchored on purpose: the same suffixes are legitimate
+# under tests/fixtures/ as recorded output to parse, and those must stay
+# committable. A single .gbw is a megabyte, which is how this gets noticed.
+/*.gbw
+/*.densities
+/*.densitiesinfo
+/*.property.txt
+/*.bibtex
+/*.carthess
+/*.cpcm
+/*.cpcm_corr
+/*.engrad
+/*.hostnames
+/*.bas[0-9]*
+/*.tmp.[0-9]*
