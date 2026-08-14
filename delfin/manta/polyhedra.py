@@ -64,8 +64,31 @@ def _ref_polyhedra():
     # C4 in polya_isomer_count._spy_group (1->2->3->4) is a real geometric symmetry of
     # this vertex set -> chelate cis-edge enumeration & isomer dedup are consistent with
     # placement (the index space here IS the one assemble_from_config places into).
+    # SPY-5 APEX-KORREKTUR (DELFIN_FFFREE_SPY5_APEX, Vorgabe "0" -> byte-identisch).
+    #
+    # Der gebaute Basalvektor (1, 1, +0.2) hat eine Komponente ZUM Apex hin.  Nachgerechnet
+    # (harness/polyhedra_audit.py) ergibt das:
+    #       Apex-Basal  81.95 Grad      basal-cis  88.88      basal-trans  163.90
+    # Eine echte C4v-Quadratpyramide (VO(acac)2, [CuCl5]3-, [Ni(CN)5]3-) hat dagegen
+    #       Apex-Basal  100-105         basal-cis  86-88      basal-trans  150-155
+    # -- die Basalatome biegen sich VOM Apex WEG, der Winkel ist GROESSER als 90, nicht
+    # kleiner.  Der Bauer liegt also um 20.5 Grad daneben, und zwar auf JEDEM System, das
+    # als SPY-5 gesetzt wird.
+    #
+    # ⚠ NUR DAS VORZEICHEN ZU DREHEN REICHT NICHT.  z = -0.2 gibt Apex 98.05 (schon besser),
+    # laesst basal-trans aber bei 163.90 stehen.  Erst z = -0.3135 bringt ALLE DREI
+    # Winkelklassen gleichzeitig in den Kristallbereich: 102.50 / 87.32 / 155.00.
+    #
+    # WARUM DAS KEIN A/B GEFUNDEN HAT: die Tabelle ist in BEIDEN Armen dieselbe.  Ein
+    # falscher Sollwert ist eine KONSTANTE, kein Test -- er verschwindet in jeder Differenz.
+    # Deshalb prueft polyhedra_audit die Tabelle direkt gegen die Geometrie, statt zu hoffen,
+    # dass ein Vergleich zweier gleich falscher Arme ihn zeigt.
+    _spy5_z = 0.2
+    if os.environ.get("DELFIN_FFFREE_SPY5_APEX", "0") == "1":
+        _spy5_z = float(os.environ.get("DELFIN_FFFREE_SPY5_Z", "-0.3135"))
     R[("CN5", "SPY-5 square pyramid")] = _norm_rows(np.array(
-        [[0, 0, 1], [1, 1, 0.2], [-1, 1, 0.2], [-1, -1, 0.2], [1, -1, 0.2]], float))
+        [[0, 0, 1], [1, 1, _spy5_z], [-1, 1, _spy5_z],
+         [-1, -1, _spy5_z], [1, -1, _spy5_z]], float))
     R[("CN6", "OC-6 octahedron")] = np.array(
         [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], float)
     R[("CN6", "TPR-6 trigonal prism")] = _norm_rows(np.array(
