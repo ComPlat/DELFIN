@@ -40,7 +40,20 @@ def _estimate_tokens(text: str) -> int:
         # workspace-location statements into one, compressed the sandbox
         # internals, and removed tool-signature listings that duplicate the
         # tool schemas.
-        ("solo_agent.md", 10600),
+        # 10600 -> 10621, and the 21 are the MEASURED remainder of one rule,
+        # not a round number chosen for comfort. Live 2026-08-14: given
+        # "Behebe den fehlschlagenden Test" — an instruction that names no
+        # test — the agent picked one and EDITED it, fifteen tool calls, an
+        # outright forbidden-signal violation. With an empty workspace the
+        # same agent asks, in numbered form; with files present it guesses.
+        # The autonomy section covered "several valid approaches" and not
+        # "no target named, several candidates present", which is the case
+        # that has something plausible to do and therefore hides.
+        # Paid first: three passages in that same section were compressed,
+        # returning 49 of the rule's 82 tokens. 21 is what is left after
+        # the sentence was cut twice more, and it buys the narrowest form
+        # of the rule — ask before the WRITE, never before the reads.
+        ("solo_agent.md", 10621),
         # Written lean from the start: the shared addenda carry the general
         # contracts, so this prompt only states what is specific to working
         # on someone's real records. Raised as the mode's surface grew —
