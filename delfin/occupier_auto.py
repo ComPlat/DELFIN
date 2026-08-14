@@ -8,9 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
-from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
-from delfin.deep3_auto_tree import DEEP3_AUTO_SETTINGS
-from delfin.deep_auto_tree import DEEP_AUTO_SETTINGS
 
 logger = get_logger(__name__)
 
@@ -321,7 +318,14 @@ AUTO_SETTINGS_FLAT: Dict[int, Dict[str, Any]] = {
     },
 }
 
-AUTO_SETTINGS: Dict[int, Dict[str, Any]] = DEEP_AUTO_SETTINGS
+def _default_settings() -> Dict[int, Dict[str, Any]]:
+    """The dataset used when no tree is named.
+
+    Was a module-level binding to DEEP_AUTO_SETTINGS, which is what made
+    every DELFIN start pay for the 22,000-line import whether or not any
+    tree was ever consulted.
+    """
+    return _tree_dataset("deep") or AUTO_SETTINGS_FLAT
 
 
 def _resolve_root(base_dir: Optional[Path] = None) -> Path:
@@ -980,12 +984,42 @@ def generate_sequence_from_winner_rules(
 # Own mode now uses rule-based generation instead of pre-built trees
 
 
-_TREE_DATASETS = {
-    "flat": AUTO_SETTINGS_FLAT,
-    "deep2": DEEP2_AUTO_SETTINGS,
-    "deep3": DEEP3_AUTO_SETTINGS,
-    "deep": DEEP_AUTO_SETTINGS,
+#: The pre-built trees, loaded only if a run actually asks for one.
+#:
+#: Each is a decision table enumerated ahead of time: for every winning FoB at
+#: every delta, the sequence to run next. That is the same decision
+#: generate_sequence_from_winner_rules now derives from rules, so the trees are
+#: the multiplied-out form of a closed expression — and between them
+#: deep_auto_tree.py and deep3_auto_tree.py are 45,000 lines holding one entry
+#: each. Importing them at module level cost 7.6 seconds on every DELFIN start,
+#: for tables that OCCUPIER_tree=own never touches; across the whole run
+#: archive not one calculation selected a tree.
+_TREE_MODULES = {
+    "deep2": ("delfin.deep2_auto_tree", "DEEP2_AUTO_SETTINGS"),
+    "deep3": ("delfin.deep3_auto_tree", "DEEP3_AUTO_SETTINGS"),
+    "deep": ("delfin.deep_auto_tree", "DEEP_AUTO_SETTINGS"),
 }
+
+
+def _tree_dataset(mode: str) -> Optional[Dict[int, Dict[str, Any]]]:
+    """Return the pre-built tree for *mode*, importing it on first use."""
+    if mode == "flat":
+        return AUTO_SETTINGS_FLAT  # defined in this module, nothing to import
+    target = _TREE_MODULES.get(mode)
+    if target is None:
+        return None
+    module_name, attribute = target
+    try:
+        import importlib
+
+        return getattr(importlib.import_module(module_name), attribute)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "OCCUPIER_tree=%s requested but its dataset could not be loaded (%s); "
+            "falling back to the default sequences",
+            mode, exc,
+        )
+        return None
 
 
 def _resolve_own_mode_sequences(
@@ -1147,7 +1181,7 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
             delta, custom_dataset, root=root, config=config
         )
 
-    settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
+    settings_source = _tree_dataset(normalized_mode) or _default_settings()
     root_path = _resolve_root(root)
     state_cache = _load_state(root_path)
     bundle: Dict[str, List[Dict[str, Any]]] = {}
