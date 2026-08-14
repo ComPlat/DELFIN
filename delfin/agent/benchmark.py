@@ -593,11 +593,34 @@ def _behavior_verified(calls: list[dict]) -> bool:
     return False
 
 
+# Measured 2026-08-14 against kit.qwen3.5-397b-A17b. Given "Behebe den
+# fehlschlagenden Test." the agent investigated, found nothing to fix, and
+# wrote "**Frage:** Wo befindet sich ..." — an answer that LABELS its own
+# question — and this pattern scored it as not having asked. It knew
+# `welche[rs]?`, `spezifizier` and `meinst du`, and none of `wo`, `wie`,
+# `was für`, `soll ich` or the label `Frage:`. `was für` is listed in the
+# ask tasks' own expected_signals, so it was judged necessary there and
+# forgotten here.
+#
+# German only on the recognising side, as everywhere in this framework:
+# these match what a USER or the model writes, so they stay German while
+# the code around them stays English. Word boundaries on every new term —
+# a bare `wo` would fire inside "wollen", `wie` inside "wieder".
 _ASK_TEXT_RE = re.compile(
-    r"(?is)(which|what|welche[rs]?|which file|which molecule|specify|"
+    r"(?is)("
+    r"which|what|welche[rsnm]?|which file|which molecule|specify|"
     r"do you mean|which one|should i|please (?:confirm|clarify|specify)|"
     r"could you (?:clarify|specify)|need(?: to know| more)|"
-    r"can you (?:clarify|specify)).*\?"
+    r"can you (?:clarify|specify)"
+    # --- German, added after the live measurement above ---
+    r"|\bwas für\b|\bworum\b|\bwomit\b|\bworauf\b"
+    r"|\bwo\b|\bwie\b|\bwoher\b|\bwohin\b"
+    r"|\bsoll ich\b|\bsollen wir\b|\bmöchtest du\b|\bwillst du\b"
+    r"|\bfrage\s*:|\brückfrage\b"
+    r"|\b(?:benötige|brauche)\s+ich\b|\bich\s+(?:benötige|brauche)\b"
+    r"|\bbitte\s+(?:gib|nenne|sag|teile)\b"
+    r"|\bunklar\b|\bpräzisier|\bkonkretisier"
+    r").*\?"
 )
 
 
