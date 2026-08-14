@@ -3430,21 +3430,12 @@ def create_tab(ctx):
                 "exit_plan_mode before any file edits or bash run.",
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
                     "state-of-the-art methods. Web search enabled, read-only, no code changes.",
-        "quick": "Session Manager → Builder → Test — lightweight pipeline for bugfixes, "
-                 "docs updates, and isolated module changes. SM plans, Builder implements, "
-                 "Test Agent verifies with pytest.",
-        "reviewed": "Session Manager → Critic → Builder → Reviewer → Test — adds architectural "
-                    "review before and code review after implementation. Use for risky refactors, "
-                    "API changes, config semantics, or cross-module work.",
-        "tdd": "Session Manager → Test → Builder → Reviewer → Test — test-driven development: "
-               "Test Agent writes failing tests first, Builder implements until they pass, "
-               "Reviewer checks quality, Test Agent verifies. Best for well-defined features.",
-        "cluster": "Session Manager → Runtime → Critic → Builder → Reviewer → Test — "
-                   "includes HPC/SLURM runtime specialist. Use for submission scripts, "
-                   "job scheduling, scratch handling, error recovery, local vs. cluster differences.",
-        "full": "Chief → Session Manager → Runtime → Critic → Builder → Reviewer → Test — "
-                "maximum oversight with strategic lead (Chief). For releases, milestones, "
-                "broad architectural changes. Most expensive, highest confidence.",
+        # quick / reviewed / tdd / cluster / full were retired with the
+        # pipeline modes (see the dropdown below). Their descriptions
+        # outlived them here by months: a dictionary nothing looks up,
+        # describing routes the manifest no longer declares. Removed with
+        # the modes themselves rather than left as the third place that
+        # still says they exist.
     }
     mode_dropdown = widgets.Dropdown(
         # Two modes, user-facing labels with stable internal values:

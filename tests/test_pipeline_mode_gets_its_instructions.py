@@ -121,10 +121,37 @@ def test_the_coding_prompt_did_not_grow(loader):
     assert "get_guide" not in prompt
 
 
-def test_the_pipeline_coordinators_still_get_their_mode_text(loader):
-    """The multi-role routes always received theirs and must keep it."""
+_ROUTE_MARKER = "ROUTE-MARKER: builder first, then test."
+
+
+def test_a_coordinator_role_still_receives_the_mode_description(loader):
+    """The routing roles need the mode text to route at all, and that is
+    what ``_MODE_DESC_ROLES`` exists for.
+
+    This used to prove it with ``quick``: build the prompt from that
+    mode's own file and look for "Mode: quick". When quick was retired
+    the test went red for the MODE rather than for the mechanism -- it
+    was pinned to one caller of the thing it meant to guard, so it could
+    only die with that caller instead of outliving it. The description is
+    passed in directly now; the assertion is about who receives it."""
     prompt = loader.build_system_prompt(
-        role_id="session_manager", mode_id="quick",
-        mode_description=loader.load_mode("quick")["description"],
-        session_key="probe-quick")
-    assert "Mode: quick" in prompt
+        role_id="session_manager", mode_id="solo",
+        mode_description=_ROUTE_MARKER, session_key="probe-coordinator")
+    assert _ROUTE_MARKER in prompt
+
+
+@pytest.mark.parametrize("role", ["builder_agent", "office_agent"])
+def test_a_worker_role_does_not(role, loader):
+    """The other half, or the scoping above proves nothing: a worker gets
+    its instructions from its role prompt, and paying for the mode text on
+    top of that would be paying twice for the same sentence.
+
+    NOT ``solo_agent``. It returns from its own branch well before the
+    scoping check, so it is silent whether the check is there or not --
+    widen ``_MODE_DESC_ROLES`` to every role and a solo_agent version of
+    this test still passes. A negative assertion has to be made from
+    somewhere the code being tested can actually be reached."""
+    prompt = loader.build_system_prompt(
+        role_id=role, mode_id="solo",
+        mode_description=_ROUTE_MARKER, session_key=f"probe-{role}")
+    assert _ROUTE_MARKER not in prompt
