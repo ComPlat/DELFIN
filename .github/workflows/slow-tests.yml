@@ -17,16 +17,24 @@ name: Slow tests
 # Split apart, each half can tell the truth: CI is green when the gate
 # passes, and this workflow is free to be cancelled, or red, without anybody
 # misreading it.
+# Nightly and on demand, and deliberately NOT on push.
+#
+# It ran on push for one day and produced nothing but cancelled runs. That
+# was the concurrency rule working as designed — newest answer wins, since
+# the verdict on a commit five pushes back is not worth a runner — but with a
+# push every twenty minutes and a run that takes ninety, "newest" never
+# survives to finish. The row read "cancelled" on every commit, which is
+# indistinguishable from broken and is worse than no row at all.
+#
+# The 03:17 run has no competition and completes. Once a day is the honest
+# cadence for a report this size; anyone who wants it sooner can dispatch it.
 on:
-  push:
-    branches: [main]
   schedule:
-    # Nightly, 03:17 UTC.
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-# Newest answer wins. For a report that takes ninety minutes, the verdict on
-# a commit five pushes back is not worth a runner.
+# Still here for two dispatches in quick succession, or a dispatch during the
+# nightly run.
 concurrency:
   group: slow-tests-${{ github.ref }}
   cancel-in-progress: true
