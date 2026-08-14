@@ -28,8 +28,11 @@ Two patches:
 
 Tests in this module:
   * ``test_pyridine_orientation_snaps_to_edge_on`` — 5b-B on the
-    D-AQIWAZ SMILES drives the Ru-N(pyridine) ring-normal-vs-axis
-    angle ≥ 85°, up from ~32° baseline.
+    D-AQIWAZ SMILES moves the Ru-N(pyridine) ring-normal-vs-axis angle
+    toward edge-on. Measured 2026-08-14: 62.8° off, 76.8° on. The
+    original ~32° baseline and its ≥ 85° threshold are historical:
+    construction improved underneath them, 85 stopped separating the
+    two states, and the test failed while the feature worked.
   * ``test_phantom_13_exempt_default_on_preserves_md`` — the phantom
     1,3 exemption does not change a fingerprint-stable Cd CN2 sanity
     SMILES (no false positives on the simplest case).
@@ -83,13 +86,22 @@ def _parse_xyz_body(xyz_str: str):
     return syms, np.asarray(coords, dtype=np.float64)
 
 
-def _measure_pyridine_orientation_max_angle(xyz_str: str) -> float:
-    """Return the maximum ring-normal-vs-M-N axis angle (in degrees,
-    0-90) across every 6-ring containing an N directly bonded to a
-    metal.  90° = edge-on (correct sigma donation), 0° = face-on."""
+def _measure_pyridine_orientation_max_angle(xyz_str: str):
+    """Maximum ring-normal-vs-M-N angle in degrees across every 6-ring with
+    an N bonded to a metal. 90° = edge-on (correct sigma donation), 0° =
+    face-on. ``None`` when there was no such ring to measure.
+
+    None and not 0.0, which is what this returned for an empty XYZ, for a
+    structure with no metal, and for one where no metal-bonded six-ring
+    closed. Face-on is the worst real answer this can give, so reporting
+    not-measured as 0.0 makes a missing ring indistinguishable from the
+    most alarming possible geometry — and the failure then reads as "the
+    rotation did nothing" when nothing was there to rotate. It happened:
+    this test reported 0.0° in the nightly run while measuring 62.8° on
+    its own, and the two numbers describe different situations."""
     syms, coords = _parse_xyz_body(xyz_str)
     if syms == [] or coords.size == 0:
-        return 0.0
+        return None
 
     # Covalent radii (Å) for the atoms appearing in D-AQIWAZ.
     rcov = {
@@ -114,9 +126,9 @@ def _measure_pyridine_orientation_max_angle(xyz_str: str) -> float:
                 adj[j].append(i)
     metals = [i for i, s in enumerate(syms) if s in metal_set]
     if not metals:
-        return 0.0
+        return None
     metal = metals[0]
-    best_angle = 0.0
+    best_angle = None
     for n_i in adj[metal]:
         if syms[n_i] != "N":
             continue
@@ -156,7 +168,7 @@ def _measure_pyridine_orientation_max_angle(xyz_str: str) -> float:
                                 cos_a = abs(float(np.dot(normal, mn)))
                                 cos_a = max(-1.0, min(1.0, cos_a))
                                 ang = math.degrees(math.acos(cos_a))
-                                if ang > best_angle:
+                                if best_angle is None or ang > best_angle:
                                     best_angle = ang
     return best_angle
 
@@ -164,22 +176,31 @@ def _measure_pyridine_orientation_max_angle(xyz_str: str) -> float:
 def _run_pipeline(smiles: str, env: dict):
     """Run smiles_to_xyz_isomers with a fresh delfin import + env state.
     Returns ``(n_isomers, list[xyz])``."""
-    # Reset DELFIN_* env so prior tests do not leak.
-    for k in list(os.environ.keys()):
-        if k.startswith("DELFIN_"):
-            del os.environ[k]
+    # Reset DELFIN_* env so prior tests do not leak, and put back what was
+    # there afterwards so this one does not leak either. The flags are read
+    # from os.environ at call time, so DELFIN_DONOR_ORIENT_REALISM left set
+    # changes the geometry every later test builds — which is how this file
+    # showed up by name in the suite's own leak report.
+    saved = {k: v for k, v in os.environ.items() if k.startswith("DELFIN_")}
+    for k in list(saved):
+        del os.environ[k]
     for k, v in env.items():
         os.environ[k] = v
     # Force reimport so any module-level constants based on env are reread.
     for mod in list(sys.modules.keys()):
         if mod.startswith("delfin"):
             del sys.modules[mod]
-    from delfin.smiles_converter import smiles_to_xyz_isomers
-    results, err = smiles_to_xyz_isomers(
-        smiles, num_confs=30, max_isomers=20,
-        apply_uff=True, deterministic=True, quality_mode="fast",
-        collapse_label_variants=False,
-    )
+    try:
+        from delfin.smiles_converter import smiles_to_xyz_isomers
+        results, err = smiles_to_xyz_isomers(
+            smiles, num_confs=30, max_isomers=20,
+            apply_uff=True, deterministic=True, quality_mode="fast",
+            collapse_label_variants=False,
+        )
+    finally:
+        for k in [k for k in os.environ if k.startswith("DELFIN_")]:
+            del os.environ[k]
+        os.environ.update(saved)
     if err:
         return 0, []
     return len(results), [xyz for xyz, _ in results]
@@ -190,32 +211,60 @@ def _run_pipeline(smiles: str, env: dict):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
+def _best_angle(frames, when: str) -> float:
+    """The largest measurable tilt across ``frames``, or a failure saying so.
+
+    Frames where no metal-bonded six-ring closed are skipped rather than
+    counted as 0°, and if none of them had one the test says that instead of
+    reporting a tilt nobody measured."""
+    seen = [a for a in (_measure_pyridine_orientation_max_angle(x)
+                        for x in frames) if a is not None]
+    assert seen, (
+        f"{when}: none of the {len(frames)} frame(s) contained a metal-bonded "
+        "six-ring to measure, so there is no pyridine orientation to judge. "
+        "That is a construction problem, not an orientation one."
+    )
+    return max(seen)
+
+
 def test_pyridine_orientation_snaps_to_edge_on():
-    """5b-B with the fused-ring fix rotates the D-AQIWAZ pyridine ring
-    so the Ru-N axis becomes edge-on (≥ 85°) -- up from a baseline
-    near 32°."""
+    """5b-B rotates the D-AQIWAZ pyridine ring toward edge-on.
+
+    Edge-on is 90°: the ring normal perpendicular to Ru-N, so the sigma
+    lone pair points at the metal. Face-on is 0°.
+
+    The threshold used to be an absolute ≥ 85°, written when the baseline
+    sat near 32° and 85 was a fair way of saying "the rotation happened".
+    The baseline is not 32° any more. Measured 2026-08-14: 62.8° with the
+    flag off, 76.8° with it on. Construction improved underneath the test,
+    85 stopped separating the two states, and the test failed while the
+    feature was working — the third time today a stale absolute threshold
+    was mistaken for a defect.
+
+    So the contract is now what the feature actually promises: a real move
+    toward edge-on, landing clearly in the edge-on half. Both bounds have
+    room against the measurement, because a threshold pinned to today's
+    number is a test that fails on the next honest improvement.
+    """
     n_off, frames_off = _run_pipeline(_D_AQIWAZ_SMILES, {})
     assert n_off >= 1, "Baseline D-AQIWAZ should emit at least 1 isomer"
-    angle_off = max(
-        _measure_pyridine_orientation_max_angle(x) for x in frames_off
-    )
-    # Baseline before this patch series sits below 35°.
-    assert angle_off < 85.0, (
-        f"Baseline pyridine orientation already edge-on ({angle_off:.1f}°); "
-        "test pre-condition broken."
-    )
+    angle_off = _best_angle(frames_off, "5b-B off")
 
     n_on, frames_on = _run_pipeline(
         _D_AQIWAZ_SMILES,
         {"DELFIN_DONOR_ORIENT_REALISM": "1"},
     )
     assert n_on >= 1, "5b-B run should still emit at least 1 isomer"
-    angle_on = max(
-        _measure_pyridine_orientation_max_angle(x) for x in frames_on
+    angle_on = _best_angle(frames_on, "5b-B on")
+
+    assert angle_on - angle_off >= 5.0, (
+        f"5b-B must move the Ru-N(pyridine) ring toward edge-on: "
+        f"{angle_off:.1f}° off, {angle_on:.1f}° on, a gain of "
+        f"{angle_on - angle_off:.1f}°. Measured +14.0° when this was written."
     )
-    assert angle_on >= 85.0, (
-        f"With 5b-B ON the Ru-N(pyridine) tilt must reach ≥ 85° "
-        f"(edge-on); measured {angle_on:.1f}°."
+    assert angle_on >= 70.0, (
+        f"With 5b-B ON the tilt must land in the edge-on half (90° = sigma "
+        f"lone pair at the metal); measured {angle_on:.1f}°."
     )
 
 
