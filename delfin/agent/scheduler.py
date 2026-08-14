@@ -129,12 +129,19 @@ class Scheduler:
 
     # --- persistence ------------------------------------------------------
 
-    def _read_file(self) -> dict[str, ScheduleEntry]:
-        out: dict[str, ScheduleEntry] = {}
+    def _read_file_or_none(self) -> dict[str, ScheduleEntry] | None:
+        """Parsed entries, or None when the file could not be read at all.
+
+        The difference matters for exactly one caller: dropping entries the
+        file no longer lists. An unreadable or missing file is not an empty
+        schedule, and treating it as one would delete every entry the user
+        has on the first transient read error.
+        """
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return out
+            return None
+        out: dict[str, ScheduleEntry] = {}
         for raw in data.get("entries", []):
             try:
                 ent = ScheduleEntry(**raw)
@@ -142,6 +149,57 @@ class Scheduler:
             except (TypeError, ValueError):
                 continue
         return out
+
+    def _read_file(self) -> dict[str, ScheduleEntry]:
+        out = self._read_file_or_none()
+        return {} if out is None else out
+
+    def _absorb_external_changes(self) -> None:
+        """Take in what another process did to this schedule.
+
+        Callers hold ``self._lock``.
+
+        The reload was ``add what I have never seen`` and nothing else,
+        which covers a schedule somebody CREATED elsewhere and no other
+        edit. Measured on the shipped code with a live scheduler and a
+        second one standing in for the CLI:
+
+            disabled elsewhere -> True on disk, still False in the running
+                                  one, and it goes on firing
+            deleted elsewhere  -> gone from disk, still here, and written
+                                  straight BACK by the next _save()
+
+        So both of the things a user reaches for to stop a scheduled agent
+        run did not stop it -- and these runs spend money unattended.
+
+        Everything adopted here only ever STOPS work. A disable is taken
+        and never un-taken, so a local stale-disable is not undone by an
+        older file; a deletion is honoured and recorded in ``_removed``, or
+        the next merge-on-write would resurrect it. Nothing here can start
+        something the user did not ask for.
+
+        Locally-owned firing state -- last_fired_at, fire_count,
+        next_fire_at -- is never overwritten from the file, which is why
+        the record is not simply replaced wholesale: the process that fires
+        an entry is the one that knows when it last fired.
+        """
+        on_disk = self._read_file_or_none()
+        if on_disk is None:
+            return                      # unreadable: absorb nothing
+        for key, ent in on_disk.items():
+            if key in self._removed:
+                continue
+            mine = self._entries.get(key)
+            if mine is None:
+                self._entries[key] = ent
+            elif ent.disabled and not mine.disabled:
+                mine.disabled = True
+                mine.disabled_reason = (ent.disabled_reason
+                                        or mine.disabled_reason)
+        for key in [k for k in self._entries
+                    if k not in on_disk and k not in self._removed]:
+            self._entries.pop(key, None)
+            self._removed.add(key)
 
     def _load(self) -> None:
         self._entries.update(self._read_file())
@@ -261,9 +319,7 @@ class Scheduler:
         """Every entry in the schedule, including ones another process
         created since this instance was built."""
         with self._lock:
-            self._entries.update(
-                {k: v for k, v in self._read_file().items()
-                 if k not in self._entries and k not in self._removed})
+            self._absorb_external_changes()
             return list(self._entries.values())
 
     def delete(self, entry_id: str) -> bool:
@@ -316,9 +372,7 @@ class Scheduler:
             # Reload first: a long-lived in-process scheduler otherwise
             # never sees an entry the CLI, the daemon or a second front end
             # wrote after it was constructed.
-            self._entries.update(
-                {k: v for k, v in self._read_file().items()
-                 if k not in self._entries and k not in self._removed})
+            self._absorb_external_changes()
             for ent in list(self._entries.values()):
                 if ent.disabled or not ent.is_due(now):
                     continue
