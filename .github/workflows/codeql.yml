@@ -44,6 +44,7 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: python
+          config-file: ./.github/codeql/codeql-config.yml
           # security-extended adds the queries that are worth a look but too
           # noisy to gate on. Nothing here gates, so the wider net costs only
           # analysis time.
