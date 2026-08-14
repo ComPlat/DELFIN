@@ -192,7 +192,8 @@ def test_an_emptied_field_is_told_what_belongs_there():
         validate_control_config(dict(_BASE, OCCUPIER_compare=""))
 
     message = str(excinfo.value)
-    assert "set it to FSPE or G" in message
+    assert "OCCUPIER_compare is empty" in message
+    assert "FSPE" in message and "G " in message
     assert "FINAL SINGLE POINT ENERGY" in message
     assert "Gibbs" in message
 
@@ -232,3 +233,38 @@ def test_the_template_ships_the_key_with_a_value():
     lines = [l for l in define.TEMPLATE.splitlines() if l.startswith("OCCUPIER_compare")]
     assert lines == ["OCCUPIER_compare=FSPE"]
     assert "electronic energy (FINAL SINGLE POINT ENERGY)" not in define.TEMPLATE
+
+
+# --------------------------------------------------------------------------
+# how the messages arrive in VALIDATE CONTROL
+# --------------------------------------------------------------------------
+
+def test_no_validation_message_contains_the_separator_it_is_joined_with():
+    """Errors are joined with "; " for display, so a semicolon inside one
+    splits it across two bullet points that each read as half a sentence.
+    It happened to the OCCUPIER_compare message the day it was written."""
+    from delfin.config import _PLACEHOLDER_MESSAGES
+
+    for key, message in _PLACEHOLDER_MESSAGES.items():
+        assert "; " not in message, f"{key} would be split in the error list"
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_control_config(dict(_BASE, OCCUPIER_compare=""))
+    assert str(excinfo.value).count("; ") == 0
+
+
+def test_every_placeholder_message_says_what_goes_in():
+    """"Replace this" sends the reader looking for a manual. Each message
+    either lists the accepted values or gives examples of them."""
+    from delfin.config import _PLACEHOLDER_MESSAGES
+
+    for key, message in _PLACEHOLDER_MESSAGES.items():
+        assert ("one of:" in message or "e.g." in message), f"{key}: {message}"
+
+
+def test_the_messages_stay_one_line_like_their_neighbours():
+    from delfin.config import _PLACEHOLDER_MESSAGES
+
+    for key, message in _PLACEHOLDER_MESSAGES.items():
+        assert "\n" not in message, key
+        assert len(message) < 200, f"{key} is {len(message)} characters"
