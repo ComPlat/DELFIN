@@ -148,9 +148,16 @@ def _html_to_text(body: bytes) -> str:
     except Exception:
         return ""
     # Strip script + style first (their contents are not user-readable).
-    text = re.sub(r"<script[^>]*>.*?</script>", " ", text,
+    #
+    # The end tag is matched as </script\s*> because HTML permits whitespace
+    # before the ">", and a page closing with "</script >" would otherwise
+    # slip past: the block would stay, the generic tag rule below would remove
+    # only the two tags around it, and the script body would arrive in the
+    # answer as prose. An unclosed <script> is treated the same way and runs
+    # to the end of the document, which is what a browser does with it.
+    text = re.sub(r"<script[^>]*>.*?(?:</script\s*>|\Z)", " ", text,
                   flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<style[^>]*>.*?</style>", " ", text,
+    text = re.sub(r"<style[^>]*>.*?(?:</style\s*>|\Z)", " ", text,
                   flags=re.DOTALL | re.IGNORECASE)
     # Tags → space (don't merge adjacent words across tag boundaries).
     text = re.sub(r"<[^>]+>", " ", text)
