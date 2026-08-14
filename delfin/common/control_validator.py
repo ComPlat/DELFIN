@@ -1998,13 +1998,11 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     # Gibbs free energies to electronic ones with nothing to show for it, so
     # the value is derived from the old key instead.
     if "OCCUPIER_compare" in config and not str(config.get("OCCUPIER_compare") or "").strip():
+        # No semicolon in here: the errors are joined with "; " for display.
         errors.append(
-            "OCCUPIER_compare is empty — set it to FSPE or G. FSPE is the "
-            "electronic energy (FINAL SINGLE POINT ENERGY); G is the Gibbs free "
-            "energy, which needs a frequency run per candidate and is added for "
-            "you. Configurations within a few kJ/mol can be ordered differently "
-            "by the two, and the choice also decides which of them seed the next "
-            "redox step."
+            "OCCUPIER_compare is empty — set it to FSPE (electronic energy, "
+            "FINAL SINGLE POINT ENERGY) or G (Gibbs free energy, adds a "
+            "frequency run per candidate)"
         )
     elif "OCCUPIER_compare" not in config:
         legacy = str(config.get("frequency_calculation_OCCUPIER", "") or "").strip()
