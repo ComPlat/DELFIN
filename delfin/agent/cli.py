@@ -1131,8 +1131,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("prompt", nargs="+", help="The user prompt")
     run.add_argument("--session", default="",
                      help="Session ID to resume, or 'latest'")
+    # The old help advertised `quick`, one of the pipeline modes retired
+    # from the dashboard months ago — so the CLI kept offering a mode the
+    # product had dropped, and the flag took it because there is no
+    # `choices=`. Named modes only, and an unknown one falls back to solo
+    # rather than failing, which is what the engine already does.
     run.add_argument("--mode", default="solo",
-                     help="Agent mode: solo / plan / dashboard / quick / …")
+                     help="Agent mode: solo / dashboard / office / research "
+                          "(plan is a permission profile, not a mode)")
     run.add_argument("--backend", default="", choices=["", "api", "cli"],
                      help="api (direct Anthropic) or cli (subprocess)")
     run.add_argument("--provider", default="",
