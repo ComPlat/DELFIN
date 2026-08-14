@@ -389,11 +389,16 @@ def infer_parity_from_m(value: Any, fallback: Optional[str] = None) -> Optional[
 
 def record_auto_preference(parity: str, preferred_index: Optional[int], delta: int,
                            *, m_value: Optional[int] = None, bs_value: Optional[str] = None,
+                           populated: Optional[List[Dict[str, Any]]] = None,
                            root: Optional[Path] = None) -> None:
-    """Remember which FoB index won for a given delta, including m and BS values.
+    """Remember which configuration won for a given delta, and which coexist.
 
-    This stores preferences for all delta values with full winner info (index, m, BS)
-    to enable rule-based sequence generation for own mode.
+    The winner drives the next redox step. `populated` carries every
+    configuration whose Boltzmann weight cleared BOLTZMANN_PARENT_THRESHOLD,
+    including the winner: where a molecule is a thermal mixture rather than a
+    single state, each partner is a starting point the next step has to be
+    derived from. Older state files carry no such list and fall back to the
+    winner alone.
     """
     if preferred_index is None:
         return
@@ -402,11 +407,26 @@ def record_auto_preference(parity: str, preferred_index: Optional[int], delta: i
     entry = state.setdefault(str(delta), {})
 
     # Store full winner info for own mode rule-based generation
-    winner_info = {"index": int(preferred_index)}
+    winner_info: Dict[str, Any] = {"index": int(preferred_index)}
     if m_value is not None:
         winner_info["m"] = int(m_value)
     if bs_value is not None:
         winner_info["BS"] = str(bs_value).strip()
+
+    if populated:
+        kept = [p for p in populated if isinstance(p, dict) and p.get("m") is not None]
+        if len(kept) > 1:
+            winner_info["populated"] = kept
+            logger.info(
+                "[occupier_auto] delta=%s is a thermal mixture; deriving the next step "
+                "from %d configurations: %s",
+                delta, len(kept),
+                ", ".join(
+                    f"m={p.get('m')}{' BS ' + str(p['BS']) if p.get('BS') else ''}"
+                    f" ({100 * float(p.get('weight', 0.0)):.0f}%)"
+                    for p in kept
+                ),
+            )
 
     entry[_parity_token(parity)] = winner_info
     _save_state(state, root_path)
@@ -440,6 +460,94 @@ def _preferred_index_from_state(state: Dict[str, Any], delta: int,
         except Exception:  # noqa: BLE001
             return None
     return None
+
+
+#: Minimum Boltzmann population for a configuration to seed the next redox
+#: step. At 298.15 K, kT is 0.593 kcal/mol; 5 % against the majority is a free
+#: energy gap of about 1.7 kcal/mol, roughly 3 kT. Below that a state is not
+#: meaningfully present in the equilibrium and following it would only cost
+#: calculations; at or above it the substance genuinely is a mixture, and the
+#: oxidised or reduced species can form from either partner.
+BOLTZMANN_PARENT_THRESHOLD = 0.05
+
+
+def _entry_key(entry: Dict[str, Any]) -> Tuple[Any, str]:
+    """Identity of a configuration: its multiplicity and broken-symmetry label."""
+    return entry.get("m"), str(entry.get("BS") or "").strip()
+
+
+def _remap_from(value: Any, local: Dict[int, int]) -> Any:
+    """Rewrite a `from` reference onto merged indices.
+
+    `from` names the configuration whose converged orbitals this one starts
+    from, which is what makes a broken-symmetry solution findable at all
+    instead of collapsing back to the pure state. Merging sequences renumbers
+    everything, so these have to follow. 0 means "start from the input
+    geometry" and stays 0.
+    """
+    if isinstance(value, (list, tuple)):
+        return [local.get(int(v), 0) for v in value if str(v).lstrip("-").isdigit()]
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return local.get(index, 0) if index else 0
+
+
+def merge_sequences(sequences: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Combine per-parent sequences into one, without computing anything twice.
+
+    Two thermally populated parents usually propose overlapping daughters —
+    both may want the same pure multiplicity — and running that twice would
+    cost an optimisation for nothing. Configurations are therefore identified
+    by (multiplicity, BS label): the first occurrence is kept, later ones fold
+    into it, and any `from` pointing at a folded entry is redirected to the
+    survivor.
+    """
+    merged: List[Dict[str, Any]] = []
+    by_key: Dict[Tuple[Any, str], int] = {}
+
+    for sequence in sequences:
+        local: Dict[int, int] = {}
+        added: List[Tuple[Dict[str, Any], Any]] = []
+        for entry in sequence:
+            try:
+                old_index = int(entry["index"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            key = _entry_key(entry)
+            if key in by_key:
+                local[old_index] = by_key[key]
+                continue
+            new_entry = dict(entry)
+            new_entry["index"] = len(merged) + 1
+            merged.append(new_entry)
+            by_key[key] = new_entry["index"]
+            local[old_index] = new_entry["index"]
+            added.append((new_entry, entry.get("from", 0)))
+        for new_entry, original_from in added:
+            new_entry["from"] = _remap_from(original_from, local)
+
+    return merged
+
+
+def populated_parents(winner_info: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The configurations the next redox step should be derived from.
+
+    Normally one: the state that won. When several were populated enough to
+    coexist, all of them — a substance sitting as a 50:50 mixture of two spin
+    states can be oxidised out of either, and the daughter states reachable
+    from one are not the daughter states reachable from the other. Taking only
+    the lower parent quietly assumes a purity the molecule does not have.
+    """
+    if not winner_info:
+        return []
+    populated = winner_info.get("populated")
+    if isinstance(populated, list) and populated:
+        usable = [p for p in populated if isinstance(p, dict) and p.get("m") is not None]
+        if usable:
+            return usable
+    return [winner_info] if winner_info.get("m") is not None else []
 
 
 def _get_winner_info_from_state(state: Dict[str, Any], delta: int,
@@ -1134,25 +1242,44 @@ def _resolve_own_mode_sequences(
 
     # Generate only the opposite parity of the winner
     target_parity = "odd" if source_parity == "even" else "even"
-    prev_m = winner_info["m"]
-    prev_bs = winner_info.get("BS", "")
 
-    logger.debug(
-        "[own_mode] Winner from delta=%s was parity=%s (m=%s, BS=%s), generating parity=%s",
-        prev_delta, source_parity, prev_m, prev_bs, target_parity
-    )
+    # One parent normally, several when the previous step left a thermal
+    # mixture. Each is carried through the same rules and the results are
+    # merged, so a daughter both parents reach is still computed once.
+    parents = populated_parents(winner_info)
+    sequences: List[List[Dict[str, Any]]] = []
+    for parent in parents:
+        parent_seq = generate_sequence_from_winner_rules(
+            even_baseline,
+            odd_baseline,
+            parent["m"],
+            parent.get("BS", "") or "",
+            target_parity,
+            pure_window=pure_window,
+            progressive_from=progressive_from,
+            include_bs=include_bs,
+        )
+        if parent_seq:
+            sequences.append(parent_seq)
 
-    # Generate sequence using rules
-    seq = generate_sequence_from_winner_rules(
-        even_baseline,
-        odd_baseline,
-        prev_m,
-        prev_bs,
-        target_parity,
-        pure_window=pure_window,
-        progressive_from=progressive_from,
-        include_bs=include_bs,
-    )
+    seq = merge_sequences(sequences)
+
+    if len(parents) > 1:
+        logger.info(
+            "[own_mode] delta=%s derived from %d populated configurations (%s) → "
+            "%d candidates for parity=%s",
+            delta, len(parents),
+            ", ".join(
+                f"m={p['m']}{' BS ' + str(p['BS']) if p.get('BS') else ''}" for p in parents
+            ),
+            len(seq), target_parity,
+        )
+    else:
+        logger.debug(
+            "[own_mode] Winner from delta=%s was parity=%s (m=%s, BS=%s), generating parity=%s",
+            prev_delta, source_parity, winner_info.get("m"), winner_info.get("BS", ""),
+            target_parity,
+        )
 
     if seq:
         key = _storage_key(seq, target_parity)
