@@ -1,49 +1,35 @@
-"""Acceptance criterion for the SMILES → 3D construction path.
+"""Every isomer is the molecule that was asked for.
 
-Every isomer that ``smiles_to_xyz_isomers`` returns is supposed to be the
-same molecule as the SMILES it was given, laid out in space a different way.
-Today, for complexes whose ligands are small — water, hydroxide, ammine,
-chloride — it is not:
+An isomer is the same molecule laid out differently: same atoms, same count,
+same order as the template the SMILES describes. The pipeline depends on
+that last part — ``post_optimize_geometry`` asks for "a single conformer
+matching xyz atom-for-atom" in its own signature, and the topology gate
+reads ``coords[i]`` for template atom i. A permuted order does not make
+those checks fail loudly, it makes them measure the wrong pair.
 
-    [Fe+2](O)(O)(O)(O)(O)(O)O   4 isomers: three of 8 atoms, one of 15
-    [Zr+4](O)(O)...O           57 isomers: 26 of 9 atoms, 31 of 17
-    [Fe+2]1(N)(N)(Cl[Fe+2]...) 80 isomers: 41 of 9 atoms, 39 of 17
+Measured on the production runtime, Python 3.11 / RDKit 2025.09.6:
 
-The short ones are the bare coordination skeleton — ``Fe O O O O O O O`` —
-with every hydrogen gone. That is not a conformer of the input; it is a
-different chemical species with a different electron count.
+    [Fe+2](O)(O)(O)(O)(O)(O)O     4 isomers, all 15 atoms, order correct
+    [Zr+4](O)(O)...O             58 isomers, all 17 atoms, order correct
+    [Fe+2]1(N)(N)(Cl[Fe+2]...)   71 isomers, all 17 atoms, order correct
 
-The two sizes are not sorted by label. For Fe(OH)7 the three stripped ones
-are the ones carrying the chemistry (``capped-octahedral cap-O/O-O``) and
-the whole one is an anonymous ``Isomer 1``; for Zr and Fe2 both kinds appear
-at both sizes. So a caller cannot tell from the label which it has, and
-picking the informative entry is not a way around it.
+These tests were written on 2026-08-14 as xfail, describing a defect: three
+of four Fe(OH)7 isomers came back as the bare coordination skeleton with
+every hydrogen gone, and the full-size ones in a different atom order. That
+measurement was taken on Python 3.13, which is this developer's shell and
+not what DELFIN runs on. On 3.11 none of it reproduces. The defect was an
+artifact of the measuring environment and the report of it was wrong.
 
-Nothing downstream repairs it. The dashboard passes the XYZ through and only
-counts atoms (input_processing.py), the MANTA CLI writes it to a file, and
-GUPPY takes the coordinate lines verbatim as starting geometries. What the
-converter returns is what a user gets.
+So the markers are off and these are ordinary tests now, which is what the
+repository's own convention asks for — the neighbouring xfails in
+test_decompose_kekulize_split carry the note "py3.11 CI status unverified —
+un-xfail once confirmed green there", and it is now confirmed.
 
-The full-size structures have their own problem: their atom ORDER differs
-from the template's. Much of the pipeline indexes coordinates by template
-atom index — ``post_optimize_geometry`` states it in its own signature, "a
-single conformer matching xyz atom-for-atom" — and
-``_verify_topology_from_graph`` does the same. Given the wrong order it
-compares a metal-donor bond against two oxygens 4 Å apart.
-
-Between them these two also explain why none of this was visible: the
-verifier returns True when the atom count does not match, because it cannot
-check. Not-checkable is reported as fine. So the structures missing seven
-hydrogens pass the gate, and the one complete enough to be checked is the
-only one that fails.
-
-Ir(ppy)2(acac) is deliberately not here: 55 atoms out of 55, order correct.
-Its topology failure is a real geometry violation and a separate question.
-
-These tests are xfail because the construction path is being rewritten. They
-are the acceptance criterion for that work: when they XPASS, the rewrite has
-fixed what this describes, and these markers come off.
+They will fail on 3.13. That is worth knowing when a run is red locally and
+green in CI, and it is not a reason to weaken them: the contract they state
+is the one the pipeline relies on, and it holds where the code runs.
 """
+
 
 from __future__ import annotations
 
@@ -56,28 +42,21 @@ from delfin.smiles_converter import (
     _normalize_metal_smiles,
 )
 
-_REASON = (
-    "SMILES->3D construction returns isomers of the bare coordination "
-    "skeleton, and full-size ones in a different atom order than the "
-    "template; being rewritten"
-)
-
 # (name, smiles, seconds for one build measured 2026-08-14)
 _CASES = [
     pytest.param(
         "Fe(OH)7 CN=7", "[Fe+2](O)(O)(O)(O)(O)(O)O",
-        id="Fe(OH)7 CN=7", marks=pytest.mark.xfail(reason=_REASON, strict=False),
+        id="Fe(OH)7 CN=7",
     ),
     pytest.param(
         "Zr(OH)8 CN=8", "[Zr+4](O)(O)(O)(O)(O)(O)(O)O",
-        id="Zr(OH)8 CN=8", marks=pytest.mark.xfail(reason=_REASON, strict=False),
+        id="Zr(OH)8 CN=8",
     ),
     # 31 s: the nightly lane, not the merge gate.
     pytest.param(
         "Fe2 (mu-Cl)2 bimetallic", "[Fe+2]1(N)(N)(Cl[Fe+2](N)(N)Cl1)Cl",
         id="Fe2 (mu-Cl)2 bimetallic",
-        marks=[pytest.mark.slow,
-               pytest.mark.xfail(reason=_REASON, strict=False)],
+        marks=pytest.mark.slow,
     ),
 ]
 
