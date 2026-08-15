@@ -1,0 +1,114 @@
+{
+  "Cd(OMe)2(Cl)2(thiadiazole)2": {
+    "labels": [
+      "Cl-trans",
+      "N-trans",
+      "O-trans",
+      "all-cis",
+      "all-trans",
+      "trans-OH Cl0+Cl0|N1+N1|O2+O2",
+      "trans-OH Cl0+Cl0|O2+O2|N1+N1",
+      "trans-OH N1+N1|Cl0+Cl0|O2+O2",
+      "trans-OH N1+N1|O2+O2|Cl0+Cl0",
+      "trans-OH O2+O2|Cl0+Cl0|N1+N1",
+      "trans-OH O2+O2|N1+N1|Cl0+Cl0",
+      "trigonal-prismatic top-ClClN/bot-NOO",
+      "trigonal-prismatic top-ClClO/bot-NNO",
+      "trigonal-prismatic top-ClNN/bot-ClOO",
+      "trigonal-prismatic top-ClNO/bot-ClNO"
+    ],
+    "mean_geom_score": 192.975,
+    "mean_topo_penalty": 26.141,
+    "n_distinct_base": 15,
+    "n_output": 57,
+    "quality_weighted_coverage": 5.936,
+    "wall_seconds": 57.23
+  },
+  "Cd(triazolopyrimidine)2(H2O)4": {
+    "labels": [
+      "",
+      "O-trans",
+      "all-trans",
+      "trans-OH N0+N0|O1+O1|O1+O1",
+      "trans-OH O1+O1|N0+N0|O1+O1",
+      "trans-OH O1+O1|O1+O1|N0+N0",
+      "trigonal-prismatic top-NNO/bot-OOO",
+      "trigonal-prismatic top-NOO/bot-NOO"
+    ],
+    "mean_geom_score": 268.58,
+    "mean_topo_penalty": 14.624,
+    "n_distinct_base": 8,
+    "n_output": 59,
+    "quality_weighted_coverage": 1.341,
+    "wall_seconds": 84.2
+  },
+  "Fe(CO)3(NHC)2": {
+    "labels": [
+      "",
+      "C0-C0-ax",
+      "C0-C1-ax",
+      "C1-C1-ax",
+      "square-pyramidal ap-C1/C0-C0,C1-C1"
+    ],
+    "mean_geom_score": 102.768,
+    "mean_topo_penalty": 14.341,
+    "n_distinct_base": 5,
+    "n_output": 5,
+    "quality_weighted_coverage": 3.007,
+    "wall_seconds": 1.01
+  },
+  "Fe(pyOMe)(CO)3(SAr)(Br)": {
+    "labels": [
+      "C-trans",
+      "Isomer 1",
+      "Isomer 3",
+      "all-cis"
+    ],
+    "mean_geom_score": 120.555,
+    "mean_topo_penalty": 42.274,
+    "n_distinct_base": 4,
+    "n_output": 13,
+    "quality_weighted_coverage": 6.599,
+    "wall_seconds": 60.48
+  },
+  "Ir(carbenyl-phosphine-N-O)Cl": {
+    "labels": [
+      "conf"
+    ],
+    "mean_geom_score": 622.797,
+    "mean_topo_penalty": 264.68,
+    "n_distinct_base": 1,
+    "n_output": 9,
+    "quality_weighted_coverage": 0.016,
+    "wall_seconds": 9.11
+  },
+  "Ir(phosphine-N-O-H)Cl-bicyclic": {
+    "labels": [
+      "conf"
+    ],
+    "mean_geom_score": 577.836,
+    "mean_topo_penalty": 251.67,
+    "n_distinct_base": 1,
+    "n_output": 8,
+    "quality_weighted_coverage": 0.014,
+    "wall_seconds": 9.37
+  },
+  "W(alkylidene-alkoxide-amide-dipyrrolide)": {
+    "labels": [
+      "",
+      "C-N1-ax",
+      "C-O-ax",
+      "Isomer 1",
+      "N1-N2-ax",
+      "N1-O-ax",
+      "square-pyramidal ap-C/N1-O,N2-N2",
+      "square-pyramidal ap-O/C-N1,N2-N2"
+    ],
+    "mean_geom_score": 76.754,
+    "mean_topo_penalty": 40.04,
+    "n_distinct_base": 8,
+    "n_output": 14,
+    "quality_weighted_coverage": 10.014,
+    "wall_seconds": 59.34
+  }
+}
