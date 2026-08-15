@@ -119,22 +119,16 @@ scripts/ccdc_exploit/
 /01_xtb_opt/
 /02_xtb_thermo/
 
-# Isomer-benchmark reference numbers, still ignored, and the reason is not
-# the one that used to be written here.
+# The isomer-benchmark reference numbers are COMMITTED, not ignored.
 #
-# Committing them was tried on 2026-08-14, precisely because a reference
-# that exists only on one developer's disk is not a reference and left the
-# benchmark guarding nothing in CI. It could not be done: producing the
-# file means running the twelve-system pool, and that had not finished
-# after TWO HOURS on a fast multi-core box. A two-core runner would be well
-# past the slow job's own 240-minute cap, so the file cannot be generated
-# here and the test could not run against it there either.
-#
-# So this stays ignored until the pool is cut to a size a run can hold.
-# Until then the benchmark is a tool somebody invokes deliberately
-# (UPDATE_BENCHMARK_BASELINE=1), not a regression guard, and the test skips
-# in half a second instead of pretending otherwise.
-/tests/fixtures/benchmark_baseline.json
+# They were ignored for as long as producing them meant running all 43 pool
+# systems, which had not finished after two hours. A reference that exists
+# only on one developer's disk is not a reference, and while it was absent
+# the benchmark had nothing to compare against in CI and guarded nothing.
+# Measuring each system separately showed the cost was three that never
+# terminate plus a long tail; over the seven the nightly run now measures,
+# the file takes under five minutes to produce. So it exists, and it is
+# here. Re-baseline deliberately with UPDATE_BENCHMARK_BASELINE=1.
 
 # Coverage. The nightly CI job writes these, and so does anyone reproducing
 # it locally, straight into the repository root.

@@ -1,4 +1,9 @@
-"""Isomer-coverage benchmark over a curated pool of 12 metal-complex SMILES.
+"""Isomer-coverage benchmark over a curated pool of metal-complex SMILES.
+
+The pool holds 43 systems; a run measures the seven in ``_NIGHTLY_IDS``,
+chosen by measuring each one and then freezing the answer. See the note
+above that tuple for what the other 36 cost and why they are still here.
+
 
 Runs ``smiles_to_xyz_isomers`` on each SMILES with ``quality_mode='normal'``
 and records per-system metrics (N_output, distinct base-labels, mean
@@ -368,9 +373,70 @@ def _collect_metrics(smi: str) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# What a nightly run measures, and what the pool is for
+# ---------------------------------------------------------------------------
+# The pool is 43 systems. The module docstring said twelve — it grew and the
+# text did not — and running all of them is why this benchmark had never once
+# completed: measured per system on 2026-08-15, three of them do not finish
+# inside ten minutes AND produce nothing while failing to,
+#
+#     >600 s  Fe2(mu-O)(bipy-macrocycle)          n_out=0
+#     >600 s  Fe3(mu-O)3(salen-like)              n_out=0
+#     >600 s  Fe(CNMe)2(dmpe)2                    n_out=0
+#
+# and the other forty sum to 6235 s. So the pool is not uniformly expensive:
+# it is three systems that never terminate and a long tail of two to seven
+# minutes each.
+#
+# NIGHTLY is the affordable slice, chosen by measurement and then frozen —
+# seven systems, 3:02 together, against a nightly run that already takes 58
+# minutes. Four metals, isomer counts from 5 to 59, and the shapes that
+# matter: carbene, pincer, bicyclic, thiadiazole, tetrazolate, alkylidene.
+#
+#   0.6 s   Fe(CO)3(NHC)2                             5 isomers
+#   5.9 s   Ir(carbenyl-phosphine-N-O)Cl              9
+#   5.9 s   Ir(phosphine-N-O-H)Cl-bicyclic            8
+#  36.4 s   Cd(OMe)2(Cl)2(thiadiazole)2              57
+#  36.5 s   W(alkylidene-alkoxide-amide-dipyrrolide) 14
+#  40.6 s   Fe(pyOMe)(CO)3(SAr)(Br)                  13
+#  55.8 s   Cd(triazolopyrimidine)2(H2O)4            59
+#
+# Cheap systems that yield a single isomer were left out although they fit
+# the budget: a coverage benchmark whose entry returns one structure cannot
+# measure coverage, only its disappearance.
+#
+# The other 36 stay in SMILES_POOL. They are curated work and the three that
+# hang are themselves a finding; deleting them would lose both. Run the whole
+# pool deliberately with BENCHMARK_FULL_POOL=1 — it takes over two hours and
+# will not finish under any per-test timeout.
+_NIGHTLY_IDS = (
+    "Fe(CO)3(NHC)2",
+    "Ir(carbenyl-phosphine-N-O)Cl",
+    "Ir(phosphine-N-O-H)Cl-bicyclic",
+    "Cd(OMe)2(Cl)2(thiadiazole)2",
+    "W(alkylidene-alkoxide-amide-dipyrrolide)",
+    "Fe(pyOMe)(CO)3(SAr)(Br)",
+    "Cd(triazolopyrimidine)2(H2O)4",
+)
+
+
+def _selected_pool() -> List[Dict[str, Any]]:
+    if os.environ.get("BENCHMARK_FULL_POOL") == "1":
+        return list(SMILES_POOL)
+    by_id = {e["id"]: e for e in SMILES_POOL}
+    missing = [i for i in _NIGHTLY_IDS if i not in by_id]
+    assert not missing, (
+        f"_NIGHTLY_IDS names systems that are not in SMILES_POOL: {missing}. "
+        "A renamed entry silently drops out of the measured set, and the "
+        "benchmark then compares a smaller pool against a larger baseline."
+    )
+    return [by_id[i] for i in _NIGHTLY_IDS]
+
+
 def _run_benchmark() -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
-    for entry in SMILES_POOL:
+    for entry in _selected_pool():
         out[entry["id"]] = _collect_metrics(entry["smiles"])
     return out
 
