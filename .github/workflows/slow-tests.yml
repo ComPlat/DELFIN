@@ -92,4 +92,10 @@ jobs:
         # never appears: the run dies with the names still unknown.
         # `signal` and not `thread`: the thread method takes the process
         # down with it, which loses every remaining test as well.
-        run: pytest -q -m "slow" --timeout=600 --timeout-method=signal -rf
+        # -rfX and not -rf: an xfail that unexpectedly PASSES is the signal
+        # that something got fixed, and it is the only way an acceptance
+        # criterion tells you it has been met. Reported as a bare count it
+        # cannot be acted on — the 2026-08-15 run said "5 xpassed" against 2
+        # the run before, and there was no way to learn which three without
+        # changing this line and waiting a day.
+        run: pytest -q -m "slow" --timeout=600 --timeout-method=signal -rfX
