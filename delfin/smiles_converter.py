@@ -32125,6 +32125,31 @@ def _ffree_shared_tail(mol, results, dual_parse_done: bool):
         return results
     results = _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done)
     results = _apply_arom_planarize_if_enabled(mol, results, dual_parse_done)
+    # ===== ZWEI WEITERE, UND WARUM SIE JETZT HIERHER GEHOEREN (16.08.2026 abends) ========
+    # Der Docstring oben nennt "nur diese zwei sind champion-aktiv, und nur sie sind hier
+    # verdrahtet".  Das galt, solange die uebrigen sechzehn ausgeschaltet und damit auf
+    # BEIDEN Pfaden No-ops waren.  Fuer die sp2-Planarisierer gilt es nicht mehr:
+    #
+    #   GEMESSEN 16.08.: `ccdc_pyramid_realized` verfehlt 131 von 905 -- und das ist der
+    #   EINZIGE Defekt des Tages, der JEDE andere Achse mitzieht: `graph_geom` 6.33x,
+    #   `ccdc_isomer` 2.68x, `coord_angle` 2.32x, `ml_len` 2.09x, `org_bond` 1.63x.  Keine
+    #   Achse steht bei 1.0.  Schwelle: `pyramid_over_worst > 15.9 Grad` deckt 82.4 % ab.
+    #
+    #   Und der Lauf `pyr131` mass Reichweite **2 von 131** -- nicht weil die Chemie nicht
+    #   traegt, sondern weil beide Korrektoren 2275 Zeilen HINTER dem FF-freien `return`
+    #   stehen (`:32280` gegen `:34555`/`:34558`).
+    #
+    # ⚠ DIE VORBEDINGUNG WAR DIE ATOMZUORDNUNG, und sie ist seit heute da.  Ohne sie waere
+    # das hier ein Nulltest gewesen: beide Korrektoren brauchen `mol`-Atomindizes, FF-freie
+    # Frames tragen Metall-auf-0 plus AddHs-Bloecke.  `_frame_atom_map.frame_to_mol_map`
+    # rekonstruiert die Zuordnung als echte Graphisomorphie; die Korrektoren UEBERSETZEN
+    # seither, statt aufzugeben (`0486a94e`).  Stimmt die Reihenfolge -> Identitaet, also
+    # byte-identisch; ist sie nicht bestimmbar -> Abbruch wie bisher.
+    #
+    # Beide haben ihren eigenen Schalter mit Vorgabe 0 -- dieser Anschluss aendert nichts,
+    # solange sie aus sind.  Er macht sie nur ERREICHBAR, wenn jemand sie einschaltet.
+    results = _apply_fixer_sp2n_planarize_if_enabled(mol, results, dual_parse_done)
+    results = _apply_fixer_sp2c_planarize_if_enabled(mol, results, dual_parse_done)
     return results
 
 
