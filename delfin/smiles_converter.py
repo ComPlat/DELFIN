@@ -4635,6 +4635,13 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                 for i, nbr_idx in enumerate(neighbors):
                     donor_sym = mol.GetAtomWithIdx(nbr_idx).GetSymbol()
                     # TERMINALE M=E-Laenge (16.08.2026).  Vorgabe AUS -> byte-identisch.
+                    # ⚠ DIESE Stelle ist der CN4-PFAD (`_build_xyz_for_4coord_vecs`) und war
+                    # die EINZIGE Verdrahtung im ersten Anlauf -- darum meldete `me42` am
+                    # 16.08. `REACH 0/24` und starb mit rc=3.  Oxo- und Nitridosysteme sind
+                    # ueberwiegend CN5-7.  Die tragende Verdrahtung sitzt seither im M-D-SNAP
+                    # (drei Stellen, ~25180/25265/25471): der schnappt JEDE gebundene
+                    # M-D-Distanz auf ihre Ideallaenge, unabhaengig von der Koordinationszahl,
+                    # und zwar VOR UFF.  Diese Zeile bleibt als CN4-Sonderfall stehen.
                     # Ohne den Schalter oder ohne gereichte Bandtabelle liefert `kind="me"`
                     # denselben Wert wie zuvor, weil `_ml_me_band` dann None gibt.
                     _kind = "sigma"
@@ -25177,7 +25184,7 @@ def _snap_md_distances_to_ideal(
             if cur_d < 1e-8:
                 continue
             try:
-                target_d = float(_get_ml_bond_length(m_sym, d_sym))
+                target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
             except Exception:
                 continue
             if target_d <= 0:
@@ -25262,7 +25269,7 @@ def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
                 if cur_d < 1e-8:
                     continue
                 try:
-                    target_d = float(_get_ml_bond_length(m_sym, d_sym))
+                    target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
                 except Exception:
                     continue
                 if target_d <= 0 or abs(cur_d - target_d) / target_d < 0.05:
@@ -25468,7 +25475,7 @@ def _md_distance_in_tolerance(
                 (mp.x - dp.x) ** 2 + (mp.y - dp.y) ** 2 + (mp.z - dp.z) ** 2
             )
             try:
-                target_d = float(_get_ml_bond_length(m_sym, d_sym))
+                target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
             except Exception:
                 continue
             if target_d <= 0:

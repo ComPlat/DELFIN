@@ -76,6 +76,14 @@ _LOG = logging.getLogger(__name__)
 _ATROP_TWIST_MIN_DEG = 10.0
 _ATROP_TWIST_MAX_DEG = 80.0
 
+# Ordnungszahlen fuer den CIP-artigen Flankenrang.  Bewusst KLEIN gehalten: es geht um eine
+# ORDNUNG zwischen zwei Flanken, nicht um Chemie -- ein unbekanntes Element bekommt 0 und
+# sortiert damit nach unten, statt den Rang unbrauchbar zu machen.
+_ATROP_Z = {
+    "H": 1, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Si": 14, "P": 15, "S": 16, "Cl": 17,
+    "As": 33, "Se": 34, "Br": 35, "Sb": 51, "Te": 52, "I": 53,
+}
+
 _ATROP_SP2_DEG = 3                # sp2: genau drei Nachbarn (schwer + H)
 _ATROP_PLANAR_TOL_DEG = 25.0      # Winkelsumme am Zentrum nahe 360 -> planar
 
@@ -144,22 +152,38 @@ def _atrop_is_mesomeric_amide(syms: Sequence[str], nbrs: List[List[int]],
     return False
 
 
-def _atrop_side_atoms(nbrs: List[List[int]], i: int, j: int) -> Optional[Set[int]]:
-    """Alle Atome auf der j-Seite der Bindung i-j (ohne i).
+def _atrop_side_atoms(syms: Sequence[str], nbrs: List[List[int]],
+                      i: int, j: int) -> Optional[Set[int]]:
+    """Alle Atome auf der j-Seite der Bindung i-j (ohne i), Metalle als Grenze.
 
-    None, wenn die Bindung IM RING liegt -- dann gibt es keine zwei Seiten, und eine Drehung
-    wuerde die Struktur zerreissen.  Das ist zugleich der Ringtest: wird i beim Absuchen der
-    j-Seite erreicht, schliesst sich ein Ring ueber die Bindung.
+    None, wenn die Bindung IM ORGANISCHEN RING liegt -- dann gibt es keine zwei Seiten, und
+    eine Drehung wuerde die Struktur zerreissen.
+
+    ⚠ METALLE WERDEN NICHT DURCHLAUFEN (16.08.2026, aus dem Selbsttest).  Auf `BEBGUL` fand
+    dieses Modul KEINE Achse, waehrend das Auge dort `C26-C27` mit 81.2 Grad fuehrt.  Grund:
+    bei einem CHELATISIERENDEN Biaryl koordinieren BEIDE Arylringe -- es gibt also einen Weg
+    von der einen Seite zur anderen, ueber das METALL.  Das Absuchen hielt die Achse damit
+    fuer eine Ringbindung.  Das ist ein METALLACYCLUS, kein organischer Ring; das Auge sieht
+    ihn nicht, weil es RDKits Ringerkennung auf dem organischen Graphen benutzt.
+
+    ⚠⚠ DARAUS FOLGT EINE BAUGRENZE, DIE NICHT WEGZUPATCHEN IST.  Haengen BEIDE Seiten am
+    Metall, laesst sich die Gegenhaendigkeit NICHT durch starre Drehung erzeugen -- sie
+    wuerde die M-D-Bindung zerreissen.  Genau die Eigenschaft, auf die sich dieses Modul
+    beruft ("eine Drehung um die Bindungsachse aendert ausschliesslich die Torsion"), gilt
+    dort nicht mehr.  `_atrop_find_axes` lehnt solche Achsen AUSDRUECKLICH ab, statt sie
+    falsch zu bauen: ihre Gegenhaendigkeit braucht eine NEUSETZUNG, keine Drehung.
     """
     seen = {j}
     stack = [k for k in nbrs[j] if k != i]
     while stack:
         cur = stack.pop()
         if cur == i:
-            return None                       # Ringschluss -> keine Drehachse
+            return None                       # organischer Ringschluss -> keine Drehachse
         if cur in seen:
             continue
         seen.add(cur)
+        if _is_metal_sym(syms[cur]):
+            continue                          # Metall: Grenze der organischen Seite
         stack.extend(k for k in nbrs[cur] if k not in seen)
     return seen
 
@@ -179,24 +203,129 @@ def _atrop_dihedral(pts: np.ndarray, a: int, i: int, j: int, b: int) -> Optional
     return math.degrees(math.atan2(float(np.dot(m, n2)), float(np.dot(n1, n2))))
 
 
-def _atrop_ref_partner(syms: Sequence[str], nbrs: List[List[int]],
-                       c: int, other: int) -> Optional[int]:
-    """Deterministischer Bezugsnachbar: schweres Atom, kleinster Index.  KEINE CIP-Regel --
-    das Vorzeichen dient hier nur der UNTERSCHEIDUNG zweier Frames, nicht ihrer Benennung.
-    Deshalb darf es auch nicht als M/P im chemischen Sinn gelesen werden."""
-    h = sorted(k for k in _atrop_heavy_nbrs(syms, nbrs, c) if k != other)
-    return h[0] if h else None
+# ===== FLANKEN STATT GANZER SEITE (16.08.2026, nach dem `atrop44`-Verdikt) ==================
+#
+# WARUM UMGESTELLT.  `atrop44` lief additiv und schadensfrei -- `never_worse_ok = true`, alle
+# elf `ccdc_*_lost = 0`, 15 Frames auf 9 Systemen ergaenzt -- und die Achse
+# `ccdc_atropisomer_realized` blieb trotzdem bei **9x false in BEIDEN Armen**.  Das ist der
+# vorregistrierte H0-Fall: ich ergaenze die Gegenhaendigkeit MEINER Achsen, das Auge prueft
+# SEINE, und die beiden Signaturen decken sich nicht.
+#
+# Die alte Fassung verschluesselte auf der GANZEN Seite hinter der Achse (Elementzahl +
+# sortierte Elemente).  Das Auge verschluesselt auf den ZWEI FLANKEN am Achsenatom -- und das
+# ist die Groesse, die die Haendigkeit ueberhaupt definiert: zwei Achsen mit gleichen Flanken,
+# aber verschieden grossen Resten dahinter, sind dieselbe stereogene Situation.
+#
+# ⚠ UND DER BEZUGSPUNKT DES DIEDERWINKELS MUSS MIT.  Die alte Fassung nahm den schweren
+# Nachbarn mit dem KLEINSTEN INDEX.  Das Auge misst ueber die HOCHRANGIGE Flanke.  Mit einem
+# anderen Bezugsatom kann derselbe Frame das umgekehrte Vorzeichen tragen -- mein "P" waere
+# dann das "M" des Auges, und die Enumeration ergaenzte die bereits vorhandene Haendigkeit.
+# Das ist der subtilste Teil der Umstellung und faellt in keinem Selbsttest auf, der nur die
+# eigene Ausgabe vergleicht.
+#
+# KEIN IMPORT AUS DEM AUGE.  Die Konstruktion darf nicht vom Messgeraet abhaengen ("Auge =
+# OBERGRENZE der Konstruktion"), darum ist die Ringerkennung hier aus der Adjazenz gebaut und
+# nicht aus RDKit uebernommen.
 
 
-def _atrop_axis_sig(syms: Sequence[str], nbrs: List[List[int]], i: int, j: int) -> tuple:
-    """Kanonische Achsensignatur -- unabhaengig von der Atomnummerierung, damit dieselbe Achse
-    ueber verschiedene Frames hinweg wiedererkannt wird."""
-    def side_key(c: int, other: int) -> tuple:
-        s = _atrop_side_atoms(nbrs, other, c)
-        if not s:
-            return (syms[c], -1, ())
-        return (syms[c], len(s), tuple(sorted(syms[k] for k in s)))
-    return tuple(sorted((side_key(i, j), side_key(j, i)), key=repr))
+def _atrop_ring_of(nbrs: List[List[int]], i: int, max_size: int = 8) -> Optional[frozenset]:
+    """Kleinster Ring, der `i` enthaelt -- oder None.  Aus der Adjazenz, ohne RDKit.
+
+    `i` liegt in einem Ring, wenn zwei seiner Nachbarn ohne Umweg ueber `i` verbunden sind.
+    Gesucht wird der KUERZESTE solche Weg (Breitensuche), damit ein Atom in einem
+    kondensierten System seinen kleinsten Ring bekommt und nicht den umschliessenden.
+    """
+    best = None
+    nb = list(nbrs[i])
+    for a in range(len(nb)):
+        for b in range(a + 1, len(nb)):
+            src, dst = nb[a], nb[b]
+            prev = {src: None}
+            queue = [src]
+            while queue:
+                cur = queue.pop(0)
+                if cur == dst:
+                    break
+                for k in nbrs[cur]:
+                    if k == i or k in prev:
+                        continue
+                    prev[k] = cur
+                    queue.append(k)
+            if dst not in prev:
+                continue
+            path, cur = [], dst
+            while cur is not None:
+                path.append(cur)
+                cur = prev[cur]
+            ring = frozenset(path) | {i}
+            if len(ring) <= max_size and (best is None or len(ring) < len(best)):
+                best = ring
+    return best
+
+
+def _atrop_sub_profile(o: int, exclude: frozenset,
+                       nbrs: List[List[int]], syms: Sequence[str]) -> tuple:
+    """CIP-artiger Rang des Substituenten an Flankenatom `o`, von der Achse WEG gesehen.
+
+    Schluessel = (absteigend sortierte schwere Ordnungszahlen bis zwei Bindungen weit, -nH).
+    Ohne Atomindex -- ein rein chemischer Rang, ueber Frames hinweg vergleichbar.
+    """
+    heavy_z: List[int] = []
+    n_h = 0
+    seen = {o}
+    shell1 = [k for k in nbrs[o] if k not in exclude]
+    for k in shell1:
+        if syms[k] == "H":
+            n_h += 1
+        else:
+            heavy_z.append(_ATROP_Z.get(syms[k], 0))
+            seen.add(k)
+    for k in [x for x in seen if x != o]:
+        for q in nbrs[k]:
+            if q in exclude or q in seen:
+                continue
+            if syms[q] == "H":
+                n_h += 1
+            else:
+                heavy_z.append(_ATROP_Z.get(syms[q], 0))
+    return (tuple(sorted(heavy_z, reverse=True)), -n_h)
+
+
+def _atrop_flanks(i: int, partner: int, nbrs: List[List[int]],
+                  syms: Sequence[str], ring_i: Optional[frozenset]):
+    """(flankeHoch, flankeNiedrig, schluesselHoch, schluesselNiedrig) oder None.
+
+    Ringatom -> die zwei ORTHO-Ringnachbarn; sonst die zwei schweren Nicht-Partner.
+    None, wenn es nicht genau zwei UNTERSCHEIDBARE Flanken gibt -- dann ist die Achse nicht
+    stereogen (lokale Spiegelebene) und darf gar nicht enumeriert werden.
+    """
+    if ring_i:
+        flanks = [k for k in nbrs[i] if k in ring_i and k != partner]
+        excl_base = ring_i
+    else:
+        flanks = [k for k in nbrs[i] if k != partner and syms[k] != "H"]
+        excl_base = frozenset({i})
+    if len(flanks) != 2:
+        return None
+    f1, f2 = flanks
+    ex = excl_base | {i, partner}
+    k1 = _atrop_sub_profile(f1, ex, nbrs, syms)
+    k2 = _atrop_sub_profile(f2, ex, nbrs, syms)
+    if k1 == (tuple(), 0) and k2 == (tuple(), 0):
+        return None                      # kein Substituent -> keine Rotationsbarriere
+    if k1 == k2:
+        return None                      # ununterscheidbar -> achiral
+    return (f1, f2, k1, k2) if k1 > k2 else (f2, f1, k2, k1)
+
+
+def _atrop_axis_sig_flanks(syms: Sequence[str], i: int, j: int,
+                           kHiA, kLoA, kHiB, kLoB) -> tuple:
+    """Kanonische Achsensignatur aus den FLANKEN -- dieselbe Groesse, die das Auge fuehrt.
+    Die Seiten sind vertauschbar, darum sortiert; das Vorzeichen ist unter Seitentausch
+    invariant, weil dihedral(a,i,j,b) == dihedral(b,j,i,a)."""
+    sideA = (syms[i], kHiA, kLoA)
+    sideB = (syms[j], kHiB, kLoB)
+    return tuple(sorted((repr(sideA), repr(sideB))))
 
 
 def _atrop_find_axes(syms: Sequence[str], pts: np.ndarray,
@@ -214,14 +343,26 @@ def _atrop_find_axes(syms: Sequence[str], pts: np.ndarray,
                    and _atrop_is_planar_sp2(pts, nbrs, j))
             if not (sp2 or _atrop_is_mesomeric_amide(syms, nbrs, i, j)):
                 continue
-            side = _atrop_side_atoms(nbrs, i, j)      # None = im Ring
+            side = _atrop_side_atoms(syms, nbrs, i, j)      # None = im Ring
             if not side or len(side) < 2:
                 continue
-            a = _atrop_ref_partner(syms, nbrs, i, j)
-            b = _atrop_ref_partner(syms, nbrs, j, i)
-            if a is None or b is None:
-                continue                              # ohne zwei Bezugsatome kein Dieder
-            dih = _atrop_dihedral(pts, a, i, j, b)
+            # RINGKRITERIUM (16.08.): mindestens EINE Seite muss ein Ringsystem sein -- eine
+            # Aryleinheit.  Das fehlte in der ersten Fassung ganz, waehrend das Auge es
+            # verlangt; damit nahm ich jede sp2-sp2-Einfachbindung fuer eine Achse.
+            ring_i = _atrop_ring_of(nbrs, i)
+            ring_j = _atrop_ring_of(nbrs, j)
+            if not (ring_i or ring_j):
+                continue
+            fa = _atrop_flanks(i, j, nbrs, syms, ring_i)
+            fb = _atrop_flanks(j, i, nbrs, syms, ring_j)
+            if fa is None or fb is None:
+                continue                  # keine zwei unterscheidbaren Flanken -> nicht stereogen
+            fHiA, _fLoA, kHiA, kLoA = fa
+            fHiB, _fLoB, kHiB, kLoB = fb
+            # ⚠ Der Dieder wird ueber die HOCHRANGIGEN Flanken gemessen -- dieselbe Wahl wie im
+            # Auge.  Mit einem anderen Bezugsatom traegt derselbe Frame das umgekehrte
+            # Vorzeichen, und die Enumeration ergaenzte die bereits vorhandene Haendigkeit.
+            dih = _atrop_dihedral(pts, fHiA, i, j, fHiB)
             if dih is None:
                 continue
             fold = abs(dih)
@@ -233,7 +374,7 @@ def _atrop_find_axes(syms: Sequence[str], pts: np.ndarray,
                 "i": i, "j": j, "dih": dih, "fold": fold,
                 "sign": "P" if dih > 0 else "M",
                 "side": side,
-                "sig": _atrop_axis_sig(syms, nbrs, i, j),
+                "sig": _atrop_axis_sig_flanks(syms, i, j, kHiA, kLoA, kHiB, kLoB),
             })
     return sorted(out, key=lambda d: (d["i"], d["j"]))
 
@@ -386,3 +527,89 @@ def expand_atropisomers(results):
         else:
             out.append(mx)
     return out
+
+
+def _atrop_why(syms, pts, nbrs, i, j) -> str:
+    """An WELCHER Stufe faellt die Bindung i-j durch?  Ein Selbsttest, der nur 'nichts
+    gefunden' meldet, ist wertlos -- er muss die Stufe nennen."""
+    if syms[i] == "H" or syms[j] == "H":
+        return "H"
+    if _is_metal_sym(syms[i]) or _is_metal_sym(syms[j]):
+        return "Metall"
+    sp2i = _atrop_is_planar_sp2(pts, nbrs, i)
+    sp2j = _atrop_is_planar_sp2(pts, nbrs, j)
+    if not ((sp2i and sp2j) or _atrop_is_mesomeric_amide(syms, nbrs, i, j)):
+        return f"nicht sp2/Amid (sp2 i={sp2i} deg={len(nbrs[i])}, j={sp2j} deg={len(nbrs[j])})"
+    side = _atrop_side_atoms(syms, nbrs, i, j)
+    if not side:
+        return "Bindung liegt im Ring"
+    if len(side) < 2:
+        return "Seite zu klein"
+    ri = _atrop_ring_of(nbrs, i)
+    rj = _atrop_ring_of(nbrs, j)
+    if not (ri or rj):
+        return "keine Seite ist ein Ring"
+    fa = _atrop_flanks(i, j, nbrs, syms, ri)
+    fb = _atrop_flanks(j, i, nbrs, syms, rj)
+    if fa is None:
+        return "Seite i: keine zwei unterscheidbaren Flanken"
+    if fb is None:
+        return "Seite j: keine zwei unterscheidbaren Flanken"
+    d = _atrop_dihedral(pts, fa[0], i, j, fb[0])
+    if d is None:
+        return "Dieder nicht berechenbar"
+    f = abs(d)
+    if f > 90.0:
+        f = 180.0 - f
+    if not (_ATROP_TWIST_MIN_DEG <= f <= _ATROP_TWIST_MAX_DEG):
+        return f"Verdrillung {f:.1f} ausserhalb {_ATROP_TWIST_MIN_DEG}-{_ATROP_TWIST_MAX_DEG}"
+    return "OK"
+
+
+if __name__ == "__main__":  # pragma: no cover -- Achsenvergleich gegen das Auge
+    # WOZU.  `atrop44` hat am 16.08. gemessen, dass die Enumeration Frames ergaenzt und die
+    # Achse `ccdc_atropisomer_realized` trotzdem bei null bleibt: meine Achsensignatur war
+    # nicht die des Auges.  Dieser Einstieg druckt die gefundenen Achsen in derselben Form
+    # wie `weddell/detectors/atropisomer_sign.py`, damit sich beide Listen NEBENEINANDER
+    # lesen lassen -- Atompaar, Verdrillung, Vorzeichen.  Decken sie sich nicht, ist ein
+    # weiterer A/B-Lauf sinnlos.
+    #
+    #     python delfin/manta/_atropisomer_enum.py <frame.xyz> [weitere.xyz ...]
+    import sys as _sys
+    for _p in _sys.argv[1:]:
+        try:
+            with open(_p) as _fh:
+                _txt = _fh.read()
+        except Exception as _e:
+            print(f"  {_p}: nicht lesbar ({_e})")
+            continue
+        # Mehrframe-XYZ: nur der erste Frame, wie die Augen-Kommandozeile es auch tut.
+        _lines = _txt.splitlines()
+        try:
+            _n = int(_lines[0].split()[0])
+            _one = "\n".join(_lines[:_n + 2])
+        except Exception:
+            _one = _txt
+        _A = _atrop_analyze(_one)
+        print(f"\n=== {_p} ===")
+        if not _A:
+            print("  keine stereogene Achse gefunden -- Ablehnungsgruende je Kandidat:")
+            _s, _P, _l = _parse_xyz(_one)
+            _nb, _bd = _build_geometric_adjacency(_s, _P)
+            _seen_reason = {}
+            for _i in range(len(_s)):
+                for _j in _nb[_i]:
+                    if _j <= _i:
+                        continue
+                    _r = _atrop_why(_s, _P, _nb, _i, _j)
+                    if _r in ("H", "Metall"):
+                        continue
+                    _seen_reason.setdefault(_r, []).append(f"{_s[_i]}{_i}-{_s[_j]}{_j}")
+            for _r, _ex in sorted(_seen_reason.items(), key=lambda kv: -len(kv[1])):
+                print(f"    {len(_ex):4d}x  {_r}   z.B. {' '.join(_ex[:3])}")
+            continue
+        for _ax in _A["axes"]:
+            print(f"  {_ax['i']}-{_ax['j']}  twist {_ax['fold']:5.1f}  "
+                  f"sign {_ax['sign']}  sig {_ax['sig']}")
+
+
