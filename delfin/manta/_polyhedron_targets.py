@@ -231,14 +231,34 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     # Square antiprism (D4d): top square rotated 45° relative to bottom.
     # On unit sphere with xy-radius cos θ and z = ±sin θ; pick θ=π/4 so both
     # equal √2/2 → unit length.
-    h = np.sqrt(2.0) / 2.0          # = sin(π/4) and = cos(π/4)
+    # ===== theta = 45 GRAD IST KEIN GLEICHKANTIGES ANTIPRISMA (nachgerechnet 16.08.2026)
+    # Mit z = xy-Radius = sqrt(2)/2 (also Polarwinkel 45 Grad) ergeben sich:
+    #     Quadratkante 60.0   Quadratdiagonale 90.0   Zwischenkante 98.4   lang 148.6
+    # Die Quadratkante (60) und die Zwischenkante (98.4) sind dann um 38 Grad
+    # VERSCHIEDEN -- ein Antiprisma mit derart ungleichen Kanten gibt es nicht.
+    #
+    # DIE BEDINGUNG fuer gleiche Kanten, mit c = cos^2(theta):
+    #     Quadratkante   cos = c
+    #     Zwischenkante  cos = cos(45 Grad)*sin^2(theta) - cos^2(theta)
+    #     c = 0.7071*(1-c) - c   ->   c*(2+0.7071) = 0.7071   ->   c = 0.26120
+    # also cos(theta) = 0.51108, sin(theta) = 0.85953, und daraus
+    #     Quadratkante 74.86 (x8)   Zwischenkante 74.86 (x8)
+    #     Diagonale   118.53 (x4)   lang          141.57 (x8)
+    # Genau die Werte, die auch die korrigierte Winkeltabelle fuehrt (74.9/118.5/141.6).
+    #
+    # Vorgabe AUS -> byte-identisch.  Lesestelle des Schalters: `_elements`.
+    from delfin.manta import _elements as _EL
+    if _EL.seesaw_c2v_enabled():
+        _sz, _sr = 0.5110783, 0.8595269      # cos(theta), sin(theta) fuer c = 0.26120
+    else:
+        _sz = _sr = np.sqrt(2.0) / 2.0       # historisch: theta = 45 Grad
     sap_top: List[np.ndarray] = []
     sap_bot: List[np.ndarray] = []
     for k in range(4):
         ang_top = (np.pi / 2.0) * k + np.pi / 4.0  # rotated 45°
         ang_bot = (np.pi / 2.0) * k
-        sap_top.append(_u(h * np.cos(ang_top), h * np.sin(ang_top),  h))
-        sap_bot.append(_u(h * np.cos(ang_bot), h * np.sin(ang_bot), -h))
+        sap_top.append(_u(_sr * np.cos(ang_top), _sr * np.sin(ang_top),  _sz))
+        sap_bot.append(_u(_sr * np.cos(ang_bot), _sr * np.sin(ang_bot), -_sz))
     d["sq_antiprism"] = _stack(sap_top + sap_bot)
     # Cube (Oh): 8 vertices at (±1,±1,±1)/√3
     cube_rows = [
