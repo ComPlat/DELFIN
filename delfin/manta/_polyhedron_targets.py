@@ -287,7 +287,26 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     # rectangular faces (between adjacent vertical edges).
     ttp_rows: List[np.ndarray] = []
     # 6 prism vertices on slightly compressed prism (z=±0.5, xy-r normalised)
-    z9 = 0.5
+    # ===== z = 0.5 IST KEIN GLEICHKANTIGES PRISMA (nachgerechnet 16.08.2026) =====
+    # Mit z = 0.5 (r = 0.866) ergibt sich  Vertikalkante 60.0  gegen  Dreieckskante 97.2
+    # -- 37 Grad auseinander.  Ein Prisma, dessen Kanten so weit auseinanderliegen, ist
+    # keines; und der Kommentar "slightly compressed" verharmlost genau das.
+    #
+    # DIE BEDINGUNG fuer gleiche Kanten (r^2 = 1 - z^2):
+    #     Vertikalkante   cos = r^2 - z^2
+    #     Dreieckskante   cos = -0.5*r^2 + z^2        (Delta phi = 120 Grad)
+    #     r^2 - z^2 = -0.5*r^2 + z^2  ->  1.5*r^2 = 2*z^2  ->  z^2 = 3/7
+    # also z = 0.654654, r = 0.755929, und beide Kanten werden 81.79 Grad; die
+    # Flaechendiagonale wird 135.58.  Das ist die EINZIGE Prismendefinition ohne
+    # freien Parameter -- dieselbe, die die Winkeltabelle des Auges bereits fuehrt.
+    #
+    # ⚠ BETRIFFT NUR `tricapped_tp` (CN 9).  Der Champion-Teil `TPR6` (CN 6, andere
+    # Tabelle, andere Datei) bleibt UNANGETASTET -- er ist der einzige gelandete
+    # Champion-Teil und wird nicht ohne Entscheidung angefasst.
+    #
+    # Vorgabe AUS -> byte-identisch.  Lesestelle des Schalters: `_elements`.
+    from delfin.manta import _elements as _EL
+    z9 = 0.6546537 if _EL.seesaw_c2v_enabled() else 0.5
     r9 = np.sqrt(1.0 - z9 * z9)  # ensure unit length
     for sign in (+1, -1):
         for k in range(3):
