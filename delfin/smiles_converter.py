@@ -1018,6 +1018,48 @@ _PREFERRED_CN4_GEOMETRY: Dict[str, str] = {
     'Al': 'TH', 'Ga': 'TH', 'In': 'TH',
 }
 
+def _preferred_cn4_for(metal_symbol: str, mol=None, metal_idx=None) -> str:
+    """Bevorzugte CN4-Geometrie -- mit d-Zahl, wenn sie sich ableiten laesst.
+
+    DER GEMESSENE DEFEKT (16.08.2026).  Die Tabelle oben fuehrt `'Cu': 'TH'` -- Tetraeder.
+    Das ist richtig fuer **Cu(I) d10** und falsch fuer **Cu(II) d9**, das quadratisch-planar
+    bis JT-gestreckt-oktaedrisch ist -- und Cu(II) ist der weit haeufigere Fall.  Dieselbe
+    Zeile fuer beide Stufen.  (Ebenso `'Au': 'SQ'`: richtig fuer Au(III) d8, falsch fuer
+    Au(I) d10, das LINEAR ist -- das bleibt hier vorerst unangetastet, weil CN2 eine andere
+    Stelle ist.)
+
+    Der Bauer denkt an dieser Stelle bereits in d-Zahlen -- die Kommentare der Tabelle sagen
+    woertlich "d8 metals", "d6 low-spin", "d0-d5, d7, d10".  Nur steht das Ergebnis als fest
+    verdrahtete ELEMENTLISTE da, und ein Element hat mehrere Stufen.
+
+    d8  -> SQ (quadratisch-planar, Ligandenfeld-Stabilisierung)
+    d9  -> SQ (JT-gestreckt; die vier kurzen Bindungen bilden die Ebene)
+    d10 -> TH (keine LFSE, sterisch bestimmt)
+
+    ⚠ NUR wenn die Stufe SICHER ist.  `oxidation_state` liefert `None`, sobald ein Donor
+    nicht klassifizierbar oder mehr als ein Metall vorhanden ist -- dann bleibt es bei der
+    Elementtabelle, also beim heutigen Verhalten.  Vorgabe AUS -> byte-identisch.
+    """
+    base = _PREFERRED_CN4_GEOMETRY.get(metal_symbol, 'SQ')
+    if mol is None or metal_idx is None:
+        return base
+    if not _delfin_env_int("DELFIN_FFFREE_DN_GEOMETRY", 0):
+        return base
+    try:
+        from delfin.manta._oxidation_state import oxidation_state as _ox
+        r = _ox(mol, int(metal_idx))
+    except Exception:
+        return base
+    if r is None:
+        return base
+    _os, d = r
+    if d in (8, 9):
+        return 'SQ'
+    if d == 10:
+        return 'TH'
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Preferred CN=5 geometry per metal
 # ---------------------------------------------------------------------------
@@ -27035,7 +27077,7 @@ def _generate_topological_isomers(
         # confused the isomer count 5->2 and cost build time).  Using _PREFERRED_CN5/6_GEOMETRY adds the
         # CORRECT preferred polyhedron -> fewer, right arrangements -> resolves JAMHUB + fewer timeouts.
         _pref_geom = {2: 'LIN', 3: 'TP',
-                      4: _PREFERRED_CN4_GEOMETRY.get(atom.GetSymbol(), 'SQ'),
+                      4: _preferred_cn4_for(atom.GetSymbol(), mol, atom.GetIdx()),
                       5: _PREFERRED_CN5_GEOMETRY.get(atom.GetSymbol(), 'TBP'),
                       6: _PREFERRED_CN6_GEOMETRY.get(atom.GetSymbol(), 'OH'),
                       7: 'PBP', 8: 'SAP', 9: 'TTP'}.get(n_coord)
@@ -27110,8 +27152,8 @@ def _generate_topological_isomers(
             6: 'OH', 7: 'PBP', 8: 'SAP', 9: 'TTP',
         }
         _PRIMARY_GEOM = dict(_PRIMARY_GEOM_BASE)
-        _PRIMARY_GEOM[4] = _PREFERRED_CN4_GEOMETRY.get(
-            atom.GetSymbol(), 'SQ'
+        _PRIMARY_GEOM[4] = _preferred_cn4_for(
+            atom.GetSymbol(), mol, atom.GetIdx()
         )
         _GEOM_PRETTY = {
             'LIN': 'linear', 'TP': 'trigonal-planar', 'TS': 'T-shaped',
