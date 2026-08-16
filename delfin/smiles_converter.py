@@ -767,14 +767,112 @@ _METALLOID_MD_DONORS = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"
 _METALLOID_MD_FORCE_SHORT = threading.local()
 
 
-def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
+_ML_ME_MIN_N = 50          # Mindeststichprobe je Paar -- s. _ml_me_band
+_ML_ME_CACHE = {}          # Pfad -> {(Metall, Donor): mu}
+
+
+def _ml_me_band(metal_symbol: str, donor_symbol: str):
+    """Terminale M=E MEHRFACHBINDUNGS-Laenge, falls eine kalibrierte Tabelle gereicht wird.
+
+    WOZU (gemessen 16.08.2026).  `ml_len_realized` verfehlt 192 von 953 Systemen, und die
+    Zerlegung nach Elementpaaren ist extrem scharf:
+        O-Re  8.86x | N-Re 7.88x | C-Ir 6.89x | O-V, O-W, O-Rh: NUR Fehler
+        Fe-N  0.25x | Mn-N 0.27x  (geschuetzt -- dort gibt es keine Mehrfachbindung)
+    Es sind durchweg terminale OXO- und NITRIDO-Bindungen an hochvalenten Metallen.  Ursache:
+    DELFIN schreibt sie als EINFACHBINDUNG mit geladenem Endatom (`[O-][Re]`), die
+    Bindungsordnung steht NICHT im RDKit-Graphen -- und `_get_ml_bond_length` schlaegt allein
+    ueber (Metall, Donorelement) nach.  Ein terminales Re=O bekommt damit exakt die Laenge
+    eines verbrueckenden Re-O.
+
+    ⚠ WARUM KEIN EINHEITLICHER FAKTOR.  Aus fuenf Lehrbuchfaellen sah ~0.80 plausibel aus.
+    Auf den Kristallen gemessen (76 Paare mit n >= 50) ist die Verkuerzung PAARSPEZIFISCH:
+        U=O 0.743 (n=1100) | Re=O 0.813 | W=O 0.850 | V=O 0.890 | Mo=O 0.895 (n=4014)
+        die MEHRHEIT 0.98-1.02 -- KEINE Verkuerzung
+        Os=C 1.102, W=C 1.055 -- VERLAENGERUNG
+    Nur 10 von 76 Paaren verkuerzen ueberhaupt.  Ein pauschaler 0.80-Faktor erzeugte bei
+    S/Se/C 0.4-0.5 A Fehler, wo heute keiner ist.  Darum: der WERT wird nachgeschlagen, nicht
+    gerechnet.
+
+    ⚠ LIZENZ.  Die Werte sind CCDC-abgeleitet und bleiben PRIVAT -- in dieser Datei steht
+    KEINE Zahl daraus.  Der Pfad kommt ueber `DELFIN_ML_ME_BANDS`; fehlt er oder fehlt die
+    Datei, liefert diese Funktion None und das Verhalten ist unveraendert.  Dasselbe Muster
+    wie bei den Torsionsbaendern.
+    """
+    path = os.environ.get("DELFIN_ML_ME_BANDS", "")
+    if not path:
+        return None
+    tbl = _ML_ME_CACHE.get(path)
+    if tbl is None:
+        tbl = {}
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    if not line or line[0] == "#":
+                        continue
+                    f = line.rstrip("\n").split("\t")
+                    if len(f) < 6 or f[0] == "metal":
+                        continue
+                    try:
+                        # Die Schwelle wird HIER noch einmal erzwungen, nicht nur beim
+                        # Erzeugen: eine handbearbeitete Tabelle darf keine Zeile mit
+                        # winziger Stichprobe einschmuggeln.
+                        if int(f[5]) < _ML_ME_MIN_N:
+                            continue
+                        tbl[(f[0], f[1])] = float(f[2])
+                    except Exception:
+                        continue
+        except Exception:
+            tbl = {}
+        _ML_ME_CACHE[path] = tbl
+    return tbl.get((metal_symbol, donor_symbol))
+
+
+def _ml_bond_kind(mol, metal_idx: int, donor_idx: int) -> str:
+    """"me" fuer eine TERMINALE Mehrfachbindung (Oxo/Nitrido/Carbin), sonst "sigma".
+
+    DAS KRITERIUM IST STRUKTURELL, NICHT AUS DEM SMILES.  DELFIN schreibt terminales Oxo als
+    `[O-][Re]` -- eine EINFACHBINDUNG mit geladenem Endatom --, die Mehrfachbindungsordnung
+    steht also gar nicht im Graphen.  Genau darum erkennt auch das Auge sie strukturell:
+    ein Donor, dessen EINZIGER schwerer Nachbar das Metall ist, kann nur terminal sein, und
+    ein terminaler O/N/C-Donor an einem Metall ist chemisch eine Mehrfachbindung.
+
+    Wasserstoff zaehlt nicht als schwerer Nachbar; ein OH oder NH2 ist damit korrekt KEIN
+    Oxo.  Nur die Elemente, fuer die es ueberhaupt terminale M=E-Chemie gibt.
+
+    Vorgabe AUS -> byte-identisch (der Schalter wird beim Aufrufer geprueft).
+    """
+    try:
+        a = mol.GetAtomWithIdx(donor_idx)
+        if a.GetSymbol() not in ("O", "N", "C"):
+            return "sigma"
+        if a.GetTotalNumHs() > 0:
+            return "sigma"                       # OH / NH2 ist kein Oxo/Imido
+        heavy = [n.GetIdx() for n in a.GetNeighbors() if n.GetSymbol() != "H"]
+        return "me" if heavy == [metal_idx] else "sigma"
+    except Exception:
+        return "sigma"
+
+
+def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
+                        kind: str = "sigma") -> float:
     """Return estimated M-L bond length in Å.
 
+    ``kind`` (16.08.2026): ``"sigma"`` = gewoehnliche dative/kovalente M-L-Bindung (Vorgabe,
+    Verhalten unveraendert); ``"me"`` = TERMINALE Mehrfachbindung (Oxo/Nitrido/Carbin).  Das
+    Strukturkriterium fuer "me" gehoert zum AUFRUFER, nicht hierher: ein Donor, dessen
+    einziger schwerer Nachbar das Metall ist -- genau so erkennt es auch das Auge, weil die
+    Bindungsordnung nicht im Graphen steht.
+
     Lookup order:
+    0. kind == "me" und eine kalibrierte Tabelle gereicht -> deren Wert (s. _ml_me_band)
     1. Specific (metal, donor) pair in _METAL_LIGAND_BOND_LENGTHS
     2. Sum of covalent radii + 0.5 Å (coordination bond correction)
     3. Default 2.0 Å
     """
+    if kind == "me":
+        _me = _ml_me_band(metal_symbol, donor_symbol)
+        if _me is not None:
+            return float(_me)
     key = (metal_symbol, donor_symbol)
     if key in _METAL_LIGAND_BOND_LENGTHS:
         return _METAL_LIGAND_BOND_LENGTHS[key]
@@ -4494,7 +4592,13 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                                         math.cos(theta)))
                 for i, nbr_idx in enumerate(neighbors):
                     donor_sym = mol.GetAtomWithIdx(nbr_idx).GetSymbol()
-                    bond_len = _get_ml_bond_length(metal_sym, donor_sym)
+                    # TERMINALE M=E-Laenge (16.08.2026).  Vorgabe AUS -> byte-identisch.
+                    # Ohne den Schalter oder ohne gereichte Bandtabelle liefert `kind="me"`
+                    # denselben Wert wie zuvor, weil `_ml_me_band` dann None gibt.
+                    _kind = "sigma"
+                    if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0):
+                        _kind = _ml_bond_kind(mol, mi, nbr_idx)
+                    bond_len = _get_ml_bond_length(metal_sym, donor_sym, _kind)
                     if i < len(vectors):
                         vx, vy, vz = vectors[i]
                         mag = math.sqrt(vx**2 + vy**2 + vz**2)
