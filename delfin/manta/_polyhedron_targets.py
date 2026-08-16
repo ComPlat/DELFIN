@@ -130,11 +130,44 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     ])
     # See-saw / C2v (e.g. SF4-type) — 2 axial + 2 equatorial bent
     # axial on z, equatorial in xz plane, equatorial bent ~30° down off +x/-x
-    d["see_saw"] = _stack([
-        _u(0, 0,  1), _u(0, 0, -1),
-        _u(np.cos(np.deg2rad(15.0)),  0, -np.sin(np.deg2rad(15.0))),
-        _u(-np.cos(np.deg2rad(15.0)), 0, -np.sin(np.deg2rad(15.0))),
-    ])
+    #
+    # ===== DIESE VORGABE IST KEINE WIPPE (nachgerechnet 16.08.2026) =====
+    # Alle vier Vektoren unten haben y = 0, sind also KOPLANAR.  Die Winkel daraus:
+    #     ax-ax 180.0   eq-eq 150.0   ax-eq 105.0 (x2) und 75.0 (x2)
+    # Eine Wippe hat ZWEI fast-trans-Paare nicht -- das ist die Topologie einer
+    # QUADRATEBENE.  Dieselbe Verwechslung steckt in `smiles_converter._TOPO_GEOMETRY_
+    # VECTORS['SS']` (koplanar, eq-eq 157.4) und in der Formreferenz des Auges
+    # (`metric_coord_shape`, eq-eq 160.4 UND 168.6 -- dort sogar zwei).
+    #
+    # DIE WIRKLICHKEIT (SF4-Typ, C2v: trigonale Bipyramide mit einem freien
+    # Elektronenpaar auf einer AEQUATORIALEN Position):
+    #     ax-ax  ~173     eq-eq  ~102     ax-eq  ~87 (x4)
+    # Das freie Paar drueckt die beiden axialen Partner von 180 auf ~173 und die
+    # beiden aequatorialen von 120 auf ~102.  Der eq-eq-Winkel der Vorgabe liegt
+    # damit um 48 Grad ZU WEIT OFFEN -- der groesste Einzelfehler im Eckenbestand.
+    #
+    # MESSBARER BEZUG: die Verwechslungsmatrix vom 16.08. (677 Systeme mit Bauer- UND
+    # Kristallpolyeder) zeigt `SP-4 square planar` <-> `SS-4 seesaw` mit 25 gegen 21 --
+    # 46 Systeme, und sie ist SYMMETRISCH, also eine Klassifikatorgrenze.  Genau das
+    # erwartet man, wenn die "Wippe" in Wahrheit eine Quadratebene beschreibt.
+    #
+    # Vorgabe AUS -> byte-identisch.  Die Lesestelle des Schalters ist `_elements`.
+    from delfin.manta import _elements as _EL
+    if _EL.seesaw_c2v_enabled():
+        _eq = np.deg2rad(51.0)      # halber eq-eq-Winkel -> 102.0
+        _ax = np.deg2rad(3.5)       # Neigung zur C2-Achse -> ax-ax 173.0
+        d["see_saw"] = _stack([
+            _u(np.sin(_ax), 0.0,  np.cos(_ax)),
+            _u(np.sin(_ax), 0.0, -np.cos(_ax)),
+            _u(np.cos(_eq),  np.sin(_eq), 0.0),
+            _u(np.cos(_eq), -np.sin(_eq), 0.0),
+        ])
+    else:
+        d["see_saw"] = _stack([
+            _u(0, 0,  1), _u(0, 0, -1),
+            _u(np.cos(np.deg2rad(15.0)),  0, -np.sin(np.deg2rad(15.0))),
+            _u(-np.cos(np.deg2rad(15.0)), 0, -np.sin(np.deg2rad(15.0))),
+        ])
 
     # ------------- CN = 5 -------------
     # Trigonal bipyramidal (D3h)

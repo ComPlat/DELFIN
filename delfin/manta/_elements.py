@@ -224,3 +224,14 @@ def cov_radii_enabled() -> bool:
     mehr, welche von beiden gewirkt hat.
     """
     return os.environ.get("DELFIN_FFFREE_COV_METALS", "0") == "1"
+
+
+def seesaw_c2v_enabled() -> bool:
+    """DIE EINE Lesestelle fuer die C2v-Wippe (Vorgabe AUS -> byte-identisch).
+
+    Steht HIER und nicht in `_polyhedron_targets`, weil dieses Modul die einzige
+    abhaengigkeitsfreie Stelle im Bauer ist -- dieselbe Begruendung wie fuer die
+    Metallmenge und die Kovalenzradien.  Ein Schalter, der in der Datei sitzt, die er
+    schaltet, wird beim Kopieren der Datei mitkopiert; einer, der hier sitzt, nicht.
+    """
+    return os.environ.get("DELFIN_FFFREE_SEESAW_C2V", "0") == "1"
