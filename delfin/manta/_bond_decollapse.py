@@ -157,6 +157,19 @@ def _ideal_bond(a: str, b: str, aromatic: bool = False) -> float:
             t = None
         if t is not None:
             return t
+    # DIE METALLE, DIE HIER NIE STANDEN (Schalter und Tabelle in `_elements`, Vorgabe
+    # AUS -> byte-identisch; die Lesestelle bleibt dort die EINZIGE).  `_COV` unten
+    # fuehrt 15 Elemente und KEIN Metall: fuer Fe-N liefert es 0.90 + 0.71 = 1.61 A --
+    # eine erfundene Zahl, die das SELBSTGATE traegt und die sieben Augen-Detektoren
+    # durch aufgeblaehte Faktoren kompensieren.
+    # ⚠ MIT DEM SCHALTER SIND DIESE FAKTOREN DOPPELT KOMPENSIERT: metric_md_direction
+    # (1.40), metric_donor_collapse / metric_h_axis / metric_md_angle_realism (1.45)
+    # und metric_coord_geom / metric_coord_shape (1.65) lesen dieselbe Funktion und
+    # fassen dann ZU WEIT.  Das ist KEIN Nulltest -- der erste Lauf misst die KOPPLUNG,
+    # nicht den Nutzen, und die Faktoren gehoeren im selben Schritt auf 1.30 zurueck.
+    from delfin.manta import _elements as _EL
+    if _EL.cov_radii_enabled():
+        return _EL.covalent_radius(a) + _EL.covalent_radius(b)
     return _COV.get(a, 0.9) + _COV.get(b, 0.9)
 
 

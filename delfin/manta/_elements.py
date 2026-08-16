@@ -136,3 +136,91 @@ def is_metal_z(z) -> bool:
         return int(z) in METAL_Z
     except (TypeError, ValueError):
         return False
+
+
+# ===== DER KOVALENZRADIUS -- ZWEITE GROESSE IN DERSELBEN QUELLE (16.08.2026) =====
+#
+# INVENTUR: 100 Radientabellen im Doppelbaum (30 im Bauer, 70 im Auge).  Fuer EISEN
+# stehen darin  0.90 · 0.95 · 1.16 · 1.25 · 1.30 · 1.32 · 1.42 · 1.50 · 1.52  --
+# Spanne 0.62 A.  Mit dem Bindungsfaktor 1.30 heisst "Fe-N gebunden" je nach Tabelle
+# unter 2.09 oder unter 2.90 A.  Das ist keine Toleranz, das ist Beliebigkeit.
+#
+# DIE SCHLIMMSTE STELLE IST DER KANON DES BAUERS SELBST: `_bond_decollapse._COV`
+# fuehrt 15 Elemente und KEIN EINZIGES METALL.  `_ideal_bond("Fe","N")` faellt auf
+# den Default und liefert 0.90 + 0.71 = 1.61 A -- eine erfundene Zahl, und sie traegt
+# das SELBSTGATE.  Sieben Augen-Detektoren lesen dieselbe Funktion und kompensieren
+# das Loch durch aufgeblaehte Faktoren (1.40 / 1.45 / 1.65); `metric_md_short_collapse`
+# schreibt den Grund selbst hin: "bd._COV is missing all TM radii".
+#
+# WARUM CORDERO 2008 UND NICHT PYYKKO: rund 90 % des Baums fuehrt faktisch schon
+# Cordero-Zahlen -- nur an zwei Stellen falsch als "Pyykkoe 2009" etikettiert
+# (`smiles_converter.py:139`, `find_md_break.py:98`; Pyykkoes Fe waere 1.16, nicht
+# 1.32).  Auf Pyykko umzustellen wuerde JEDE kalibrierte Schwelle im Auge gleichzeitig
+# verschieben -- eine Zahl aendern und alles neu eichen ist teurer als eine Etikette
+# korrigieren.  Hier wird die im Baum HERRSCHENDE Konvention explizit gemacht, keine
+# neue eingefuehrt: die Werte sind byte-genau `smiles_converter._COVALENT_RADII`.
+#
+# SPIN: Cordero fuehrt Cr/Mn/Fe/Co zweiwertig (low/high spin).  Diese Tabelle ist
+# durchgehend LOW SPIN (Mn 1.39, Fe 1.32, Co 1.26).  Beide Spinzustaende in EINER
+# Tabelle zu mischen ist ein eigener Fehler und steht heute in
+# `find_coord_geometry_realism.py:99` (Mn high spin neben Ni low spin).
+#
+# ⚠ DIES IST HEUTE DIE DRITTE IMPLEMENTIERUNG, NICHT DIE EINE QUELLE.  Es gibt
+# bereits `find_metal_atom_overlap.cov_radius` (Cordero + mendeleev-Fallback,
+# Default 1.0, D-Behandlung) und `find_ligand_specific.cov_radius` (eigene Tabelle,
+# eine Zeile).  Beide sind MIGRATIONSZIELE, keine Konkurrenz -- "eine Quelle" ist
+# dieses Modul erst, wenn sie hierher delegieren.  Solange das nicht geschehen ist,
+# ist der Satz "wir haben das vereinheitlicht" FALSCH und darf nicht behauptet werden.
+#
+# Quelle: B. Cordero et al., Dalton Trans. 2008, 2832-2838.
+COV_R = {
+    # Hauptgruppe (in fast allen Kopien identisch -- unstrittig)
+    "H": 0.31, "B": 0.84, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57,
+    "Si": 1.11, "P": 1.07, "S": 1.05, "Cl": 1.02,
+    "Ge": 1.20, "As": 1.19, "Se": 1.20, "Br": 1.20,
+    "Sn": 1.39, "Sb": 1.39, "Te": 1.38, "I": 1.39,
+    "Pb": 1.46, "Bi": 1.48, "Po": 1.40,
+    # s-Block
+    "Li": 1.28, "Na": 1.66, "K": 2.03, "Rb": 2.20, "Cs": 2.44,
+    "Be": 0.96, "Mg": 1.41, "Ca": 1.76, "Sr": 1.95, "Ba": 2.15,
+    "Al": 1.21, "Ga": 1.22, "In": 1.42, "Tl": 1.45,
+    # 3d -- LOW SPIN fuer Cr/Mn/Fe/Co
+    "Sc": 1.70, "Ti": 1.60, "V": 1.53, "Cr": 1.39, "Mn": 1.39,
+    "Fe": 1.32, "Co": 1.26, "Ni": 1.24, "Cu": 1.32, "Zn": 1.22,
+    # 4d
+    "Y": 1.90, "Zr": 1.75, "Nb": 1.64, "Mo": 1.54, "Tc": 1.47,
+    "Ru": 1.46, "Rh": 1.42, "Pd": 1.39, "Ag": 1.45, "Cd": 1.44,
+    # 5d
+    "La": 2.07, "Hf": 1.75, "Ta": 1.70, "W": 1.62, "Re": 1.51,
+    "Os": 1.44, "Ir": 1.41, "Pt": 1.36, "Au": 1.36, "Hg": 1.32,
+    # Lanthanoide
+    "Ce": 2.04, "Pr": 2.03, "Nd": 2.01, "Pm": 1.99, "Sm": 1.98, "Eu": 1.98,
+    "Gd": 1.96, "Tb": 1.94, "Dy": 1.92, "Ho": 1.92, "Er": 1.89, "Tm": 1.90,
+    "Yb": 1.87, "Lu": 1.87,
+    # Actinoide
+    "Ac": 2.15, "Th": 2.06, "Pa": 2.00, "U": 1.96, "Np": 1.90, "Pu": 1.87,
+}
+
+COV_R_DEFAULT = 1.50        # dieselbe Vorgabe wie weddell/detectors/_bond_criterion.py
+
+
+def covalent_radius(sym: str) -> float:
+    """Kovalenzradius in Angstroem -- MIT Metallen, mit Isotopennormierung (D/T -> H).
+
+    Die Vorgabe 1.50 ist bewusst GROSSZUEGIG: ein unbekanntes Element ist eher schwer
+    als leicht, und ein zu KLEINER Radius laesst eine echte Bindung VERSCHWINDEN --
+    genau der Fehler, der heute mit 0.90 fuer jedes Metall im Bauer steht.  Ein zu
+    grosser fasst sie nur zu weit.
+    """
+    return COV_R.get(normalise(sym), COV_R_DEFAULT)
+
+
+def cov_radii_enabled() -> bool:
+    """DIE EINE Lesestelle fuer DELFIN_FFFREE_COV_METALS (Vorgabe AUS -> byte-identisch).
+
+    Getrennt von `unified_enabled()`, weil es zwei verschiedene Fragen sind: WELCHE
+    Symbole sind Metalle (Praedikat) und WIE GROSS sind sie (Radius).  Ein gemeinsamer
+    Schalter waere zwei Aenderungen in EINER Achse -- und dann sagt ein Verdikt nicht
+    mehr, welche von beiden gewirkt hat.
+    """
+    return os.environ.get("DELFIN_FFFREE_COV_METALS", "0") == "1"
