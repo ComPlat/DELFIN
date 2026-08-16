@@ -223,7 +223,64 @@ def cov_radii_enabled() -> bool:
     Schalter waere zwei Aenderungen in EINER Achse -- und dann sagt ein Verdikt nicht
     mehr, welche von beiden gewirkt hat.
     """
-    return os.environ.get("DELFIN_FFFREE_COV_METALS", "0") == "1"
+    return (os.environ.get("DELFIN_FFFREE_COV_METALS", "0") == "1"
+            or md_unified_enabled())
+
+
+# ===== DIE M-D-FRAGE: EIN KRITERIUM STATT VIER (16.08.2026) =====================
+#
+# BEFUND (zwei unabhaengige Zensus, Bauer und Auge, 16.08.).  Die Frage "ist X ein Donor
+# von M?" wird heute mit VIER verschiedenen Faktoren auf DERSELBEN Radienquelle
+# beantwortet -- und diese Quelle, `_bond_decollapse._COV`, fuehrt 15 Elemente und KEIN
+# Metall, gibt also jedem Metall 0.90 A:
+#
+#     metric_coord_shape.py:20    MD_FACTOR      1.65
+#     metric_coord_geom.py:46     _MD_FACTOR     1.65
+#     metric_donor_collapse.py:30 MD_BOND_FACTOR 1.45
+#     metric_md_direction.py:93   MD_BOND_FACTOR 1.40
+#
+# Fuer Ir-N ergibt das Schwellen von 2.25 bis 2.66 A -- 0.41 A Spreizung auf derselben
+# Frage; gegen `find_arrangement` (das den ECHTEN Ir-Radius benutzt, 2.97 A) sind es 0.72.
+#
+# 🔑 DIE FAKTOREN SIND KEINE MEINUNG, SIE SIND KOMPENSATION.  `metric_coord_geom.py:11`
+# schreibt es selbst hin ("default factor 1.65, because ..."), `metric_coord_shape.py:155`
+# rechnet es vor: `bd._ideal_bond(Ir,C) = 1.66` statt 2.17.  Der aufgeblaehte Faktor
+# gleicht den fehlenden Metallradius aus.  Zwei Fehler, die sich in der MITTE aufheben
+# und an den RAENDERN auseinanderlaufen.
+#
+# ⚠ WARUM DAS EIN SCHALTER IST UND NICHT ZWEI -- und warum das die Regel 15 Zeilen weiter
+# oben NICHT bricht.  Dort geht es um zwei UNABHAENGIGE Aenderungen, die man einzeln
+# messen koennen muss.  Hier sind es keine zwei: die echten Radien OHNE die Faktoren
+# fassen zu weit (1.65 x 2.17 = 3.58 A fuer Ir-C -- jeder Nachbar wird Donor), die
+# Faktoren OHNE die echten Radien fassen zu eng (1.30 x 1.66 = 2.16 A -- der Donor
+# verschwindet).  Jede Haelfte allein ist SCHLECHTER als der Status quo.  Es ist EINE
+# physikalische Aussage -- "die M-D-Schwelle ist 1.30 x die WAHRE Kovalenzsumme" --, die
+# nur durch die Geschichte auf zwei Dateien verteilt liegt.
+#
+# Wer die Kopplung trotzdem einzeln sehen will: `DELFIN_FFFREE_COV_METALS` schaltet
+# weiterhin NUR die Radien (Lauf `covmet`, 16.08.) und misst damit genau die
+# Doppelkompensation.
+#
+# REICHWEITE.  Das ist eine AUGEN-Aenderung: kein Bau, sondern `loop.py --revalidate SRC
+# --label DST` auf einem fertigen Archiv.  Vorgabe AUS -> byte-identisch.
+
+
+def md_unified_enabled() -> bool:
+    """DIE EINE Lesestelle fuer DELFIN_FFFREE_MD_UNIFIED (Vorgabe AUS)."""
+    return os.environ.get("DELFIN_FFFREE_MD_UNIFIED", "0") == "1"
+
+
+MD_FACTOR_UNIFIED = 1.30    # derselbe Wert wie weddell/detectors/_bond_criterion.py:46
+
+
+def md_factor(legacy: float) -> float:
+    """Der Faktor fuer die M-D-Frage: EINER, sobald die Radien echt sind.
+
+    `legacy` ist der historische Wert des jeweiligen Moduls und wird unveraendert
+    zurueckgegeben, solange der Schalter aus ist -- die Aufrufstelle bleibt damit
+    byte-identisch und behaelt ihre eigene Zahl im Quelltext sichtbar.
+    """
+    return MD_FACTOR_UNIFIED if md_unified_enabled() else float(legacy)
 
 
 # ===== DREI GEOMETRIEN, DREI SCHALTER (aufgetrennt 16.08.2026 nach Gegenpruefung) =====
