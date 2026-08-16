@@ -109,16 +109,60 @@ def planarize_sp2_carbon(xyz: str, mol,
     # eine vertauschte Reihenfolge durch, und dann verflacht der Korrektor die FALSCHEN
     # Atome.  Auf dem legacy-Pfad ist die Pruefung immer wahr (XYZ stammt aus demselben
     # `mol`) und damit byte-identisch; sie ist die Vorbedingung, ihn woanders anzuschliessen.
+    # SEIT 16.08. ABENDS: STATT AUFGEBEN -- UEBERSETZEN.  Derselbe Weg wie im Zwilling
+    # `_fix_sp2n_planarize`: stimmt die Reihenfolge, bleibt es die Identitaet und damit
+    # byte-identisch; stimmt sie nicht, wird die Zuordnung rekonstruiert
+    # (`_frame_atom_map`, echte Graphisomorphie mit generischen Bindungen).  Ist sie nicht
+    # bestimmbar, wird weiterhin abgebrochen -- eine FALSCHE Zuordnung waere schlimmer als
+    # keine, sie liesse den Korrektor die falschen Atome verflachen.
+    _fmap = None
     try:
-        if [a.GetSymbol() for a in mol.GetAtoms()] != list(syms):
-            return xyz, report
+        _same_order = [a.GetSymbol() for a in mol.GetAtoms()] == list(syms)
     except Exception:
         return xyz, report
+    if not _same_order:
+        try:
+            from delfin.manta._frame_atom_map import frame_to_mol_map as _f2m
+            from delfin.manta._coord_angle_corrector import (
+                _build_geometric_adjacency as _adj)
+            _nb, _ = _adj(syms, pts)
+            _m = _f2m(mol, syms, _nb)          # _m[frame] = mol
+        except Exception:
+            _m = None
+        if not _m:
+            return xyz, report
+        _fmap = {int(mi): fi for fi, mi in enumerate(_m)}   # mol -> frame
 
     try:
         groups = detect_planar_sp2c_groups(mol)
     except Exception:
         return xyz, report
+    # Gruppen tragen `mol`-Indizes -> bei abweichender Reihenfolge EINMAL uebersetzen.
+    # Generisch ueber die Schluesselnamen, damit eine spaeter hinzukommende Indexart nicht
+    # stillschweigend unuebersetzt bleibt; faellt ein Index aus der Zuordnung, wird die
+    # Gruppe verworfen statt falsch angewandt.
+    if _fmap is not None:
+        _tr = []
+        for g in groups:
+            g2 = dict(g)
+            ok = True
+            for k, v in g.items():
+                if not (k.endswith("_idx") or k.endswith("_idxs")):
+                    continue
+                if isinstance(v, int):
+                    if v not in _fmap:
+                        ok = False
+                        break
+                    g2[k] = _fmap[v]
+                elif isinstance(v, (list, tuple)):
+                    if any(int(x) not in _fmap for x in v):
+                        ok = False
+                        break
+                    g2[k] = type(v)(_fmap[int(x)] for x in v)
+            if ok:
+                _tr.append(g2)
+        groups = _tr
+
     report["n_candidates"] = len(groups)
     if not groups:
         return xyz, report
