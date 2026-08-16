@@ -30302,7 +30302,27 @@ def _emit_all_trans_by_type_arrangements(
         # or more trans-positions.
         from collections import Counter as _Ctr
         type_counts = _Ctr(donor_labels)
-        if any(c % 2 != 0 for c in type_counts.values()):
+        # ===== GEMISCHTE trans-PAARE (16.08.2026) ====================================
+        # GEMESSEN auf `rows_spy5geom` (965): der Bauer setzt **cis, wo der Kristall trans
+        # ist** -- `build-cis/crystal-trans` 126 Fehler gegen 82 Treffer (1.39x), die
+        # Gegenrichtung 21 gegen 51 (0.37x).  Das Verhaeltnis ist **3.8x**, also eine
+        # gerichtete Verzerrung, und sie ist genau das, was eine trans-blinde Setzung
+        # erzeugen MUSS: zu jeder ersten Position gibt es im Oktaeder VIER cis-Plaetze und
+        # nur EINEN trans.  Dazu `arrangement_complete = false` bei 1.72x -- fehlt EINE der
+        # beiden Anordnungen, scheitert das System.
+        #
+        # WARUM DIESER PASS SIE NICHT LIEFERT.  Er verlangt, dass JEDES trans-Paar zwei
+        # Donoren DESSELBEN Typs traegt -- und bricht hier ganz ab, sobald irgendein Typ
+        # eine UNGERADE Anzahl hat.  Ein Cu mit 2 N + 1 O + 1 Cl bekommt damit GAR KEINE
+        # trans-Anordnung.  Die Fehlerliste nennt genau solche Faelle: `Cu-ON` 3.62x,
+        # `CC-Ir` und `CC-W` stehen bei **nur Fehlern**.
+        #
+        # Mit `DELFIN_FFFREE_TRANS_MIXED=1` faellt beides weg: ungerade Typzahlen brechen
+        # nicht mehr ab, und unten kommen typ-GEMISCHTE Paare dazu.  Rein ADDITIV -- die
+        # Signatur-Dedup und das Topologietor unten bleiben unveraendert, es wird nichts
+        # ersetzt.  Vorgabe AUS -> byte-identisch.
+        _trans_mixed = bool(_delfin_env_int("DELFIN_FFFREE_TRANS_MIXED", 0))
+        if not _trans_mixed and any(c % 2 != 0 for c in type_counts.values()):
             continue
 
         # Geometry candidates with non-empty trans-position lists.
@@ -30379,6 +30399,18 @@ def _emit_all_trans_by_type_arrangements(
                 for di, dj in _it.combinations(dlist, 2):
                     available_type_pairs.append((t, (di, dj)))
 
+            # GEMISCHTE Paare (s. o.).  Ein trans-Paar aus zwei VERSCHIEDENEN Donortypen ist
+            # chemisch der Normalfall -- N trans zu O, C trans zu P -- und war hier bisher
+            # nicht darstellbar.  Sie werden ANGEHAENGT, nicht ersetzt: die gleichtypigen
+            # Partitionen entstehen weiterhin zuerst und behalten ihren Vorrang in der
+            # Aufzaehlung.
+            if _trans_mixed:
+                for li in range(len(donor_labels)):
+                    for lj in range(li + 1, len(donor_labels)):
+                        if donor_labels[li] != donor_labels[lj]:
+                            available_type_pairs.append(
+                                (f"{donor_labels[li]}|{donor_labels[lj]}", (li, lj)))
+
             if len(available_type_pairs) < n_trans_pairs:
                 continue
 
@@ -30386,7 +30418,11 @@ def _emit_all_trans_by_type_arrangements(
             # such that every donor-list-index is used at most once and
             # every trans-pair gets one same-type donor pair.  Capped at
             # 12 partitions per (metal, geom) to keep wall-time bounded.
-            _MAX_PARTITIONS = 12
+            # ⚠ KEINE STILLE KUERZUNG.  Mit gemischten Paaren waechst der Raum deutlich
+            # (fuer CN6 von wenigen gleichtypigen auf bis zu 15 Partitionen), darum ein
+            # eigener, hoeherer Deckel -- und er wird PROTOKOLLIERT, wenn er greift.  Ein
+            # Deckel, der schweigt, liest sich hinterher wie "vollstaendig aufgezaehlt".
+            _MAX_PARTITIONS = 24 if _trans_mixed else 12
             partitions = []
 
             def _backtrack(used_donors, partial):
@@ -30411,6 +30447,15 @@ def _emit_all_trans_by_type_arrangements(
                 return False
 
             _backtrack(set(), [])
+            if len(partitions) >= _MAX_PARTITIONS:
+                try:
+                    logger.warning(
+                        "trans-pass: Deckel %d Partitionen erreicht (%s, CN%d, %s) -- "
+                        "weitere Anordnungen NICHT aufgezaehlt",
+                        _MAX_PARTITIONS, mol.GetAtomWithIdx(metal_idx).GetSymbol(),
+                        n_coord, geom)
+                except Exception:
+                    pass
             if not partitions:
                 continue
 
