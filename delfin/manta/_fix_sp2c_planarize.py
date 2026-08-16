@@ -103,6 +103,17 @@ def planarize_sp2_carbon(xyz: str, mol,
         return xyz, report
     if mol.GetNumAtoms() != len(syms):
         return xyz, report
+    # REIHENFOLGE, NICHT NUR ANZAHL (16.08.2026) -- derselbe Riegel wie im Zwilling
+    # `_fix_sp2n_planarize`.  `detect_planar_sp2c_groups` liefert `mol`-ATOMINDIZES, die
+    # gleich auf die XYZ-Koordinaten angewandt werden; eine reine Anzahlpruefung laesst
+    # eine vertauschte Reihenfolge durch, und dann verflacht der Korrektor die FALSCHEN
+    # Atome.  Auf dem legacy-Pfad ist die Pruefung immer wahr (XYZ stammt aus demselben
+    # `mol`) und damit byte-identisch; sie ist die Vorbedingung, ihn woanders anzuschliessen.
+    try:
+        if [a.GetSymbol() for a in mol.GetAtoms()] != list(syms):
+            return xyz, report
+    except Exception:
+        return xyz, report
 
     try:
         groups = detect_planar_sp2c_groups(mol)

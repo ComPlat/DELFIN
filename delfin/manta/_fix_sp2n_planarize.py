@@ -339,6 +339,25 @@ def planarize_sp2_nitrogen(xyz: str, mol,
         return xyz, report
     if mol.GetNumAtoms() != len(syms):
         return xyz, report
+    # ===== REIHENFOLGE, NICHT NUR ANZAHL (16.08.2026) ===============================
+    # Die Wache darueber prueft die ANZAHL.  `detect_planar_sp2n_groups` liefert aber
+    # `mol`-ATOMINDIZES, und die werden gleich auf die XYZ-Koordinaten angewandt.  Stimmt
+    # die Anzahl und die REIHENFOLGE nicht, greift die Wache nicht -- und der Korrektor
+    # verflacht die FALSCHEN Atome.  Das ist keine stille Wirkungslosigkeit, sondern eine
+    # stille Zerstoerung, und sie waere von aussen nicht von einem Baufehler zu trennen.
+    #
+    # DER FALL IST NICHT HYPOTHETISCH.  `_ffree_shared_tail` warnt woertlich davor: ein aus
+    # dem SMILES geparstes `mol` traegt RDKits Atomreihenfolge, FF-freie Frames tragen
+    # Metall-auf-0 plus AddHs(ligand)-Bloecke in Baureihenfolge -- "the two never coincide".
+    # Genau dieser Bruch hat dort schon den Ring-Pucker-Emitter zu einem Nullhebel gemacht.
+    # Solange dieser Korrektor nur auf dem legacy-Pfad laeuft (wo XYZ aus demselben `mol`
+    # stammt), ist die Pruefung byte-identisch wahr und kostet nichts.  Sie ist die
+    # Vorbedingung dafuer, ihn ueberhaupt woanders anschliessen zu duerfen.
+    try:
+        if [a.GetSymbol() for a in mol.GetAtoms()] != list(syms):
+            return xyz, report
+    except Exception:
+        return xyz, report
 
     try:
         groups = detect_planar_sp2n_groups(mol, include_amide_imine)
