@@ -1724,6 +1724,43 @@ def _apply_stereocenter_enum_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_atropisomer_enum_if_enabled(mol, results, dual_parse_done: bool):
+    """AXIALE Vollstaendigkeit -- env-gated, Vorgabe AUS (der Schaltername steht an genau EINER
+    Stelle: `_atropisomer_enum._atrop_enabled`; hier wird nur gefragt, nie geraten).
+
+    Haengt zu jeder stereogenen Achse (Biaryl UND mesomeres Aryl-Amid) das FEHLENDE Vorzeichen
+    additiv an, damit `ccdc_atropisomer_realized` von FALSE auf TRUE gehen kann, ohne dass je
+    ein Frame verlorengeht.
+
+    WARUM.  Gemessen am 16.08.2026 auf 965 Systemen: die Achse steht bei **0 von 44** -- und
+    die Ursache ist NICHT die Geometrie (mittlere Verdrillung 42.8 Grad ueber 145 Achsen,
+    BIRVUW erreicht 85.2 Grad), sondern die Vollstaendigkeit: **41 % der Achsen tragen nur
+    EINE Haendigkeit**, nur 33 % beide.  Da die Achse verlangt, dass JEDE Achse eines
+    Molekuels ihr Kristallvorzeichen findet, ist bei ~3.3 Achsen je System ein Volltreffer
+    fast ausgeschlossen.
+
+    Spiegelt den Vertrag von `_apply_stereocenter_enum_if_enabled`: additiv, deterministisch,
+    bit-genauer No-op wenn der Schalter aus ist oder keine stereogene Achse existiert; auf dem
+    inneren Dual-Parse-Aufruf uebersprungen (der Union-Dedup muss EINEN konsistenten
+    Frame-Satz sehen).  ``mol`` ist ungenutzt -- der Korrektor arbeitet nur auf XYZ-Text.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    try:
+        from delfin.manta import _atropisomer_enum as _at
+        if not _at._atrop_enabled():
+            return results
+        return _at.expand_atropisomers(results)
+    except Exception as _at_exc:
+        try:
+            logger.debug("atropisomer-enum expansion skipped: %s", _at_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_bond_decollapse_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-25 (2026-05-20) dispatch — final bond-decollapse corrector.
 
@@ -32056,6 +32093,12 @@ def _smiles_to_xyz_isomers_impl(
                 # secondary amines.  Run the fire census on this line before drawing conclusions.
                 if _delfin_env_int("DELFIN_FFFREE_STEREO_ON_FFREE", 0):
                     _ff = _apply_stereocenter_enum_if_enabled(None, _ff, False)
+                # AXIALE Vollstaendigkeit auch hier -- KEIN zweites Tor.  Die Erweiterung ist
+                # ohnehin durch ihren eigenen Schalter gedeckelt (Vorgabe AUS), und ein zweiter
+                # Schalter waere genau die Bauart, an der die Stereozentren-Erweiterung am
+                # 10.08. gescheitert ist: sie stand im Champion und erreichte den FF-freien
+                # Pfad nie.  Aufrufstellen zaehlen, nicht Zeilen.
+                _ff = _apply_atropisomer_enum_if_enabled(None, _ff, False)
                 # ── THE SHARED TAIL (DELFIN_FFFREE_SHARED_TAIL, default OFF -> byte-identical) ──
                 #
                 # The two hand-wired lines above are the symptom, not the cure: pi-coplanar was
@@ -35028,6 +35071,16 @@ def _smiles_to_xyz_isomers_impl(
     # diversity too.  Additive + deterministic -> never-worse by construction.  Bit-exact
     # no-op when DELFIN_STEREOCENTER_ENUM=0 or no coordination-created X-H stereocentre exists.
     results = _apply_stereocenter_enum_if_enabled(mol, results, _dual_parse_done)
+
+    # --- AXIALE Vollstaendigkeit (Atropisomere), additiv, Vorgabe AUS ---------------------
+    # Direkt hinter der Stereozentren-Erweiterung und aus demselben Grund an dieser Stelle:
+    # NACH dem finalen Dedup (die Gegenhaendigkeit ist schweratomnah an ihrer Basis und wuerde
+    # sonst wegkollabieren) und VOR den Rotamer-/Konformer-Erweiterungen (damit jede Haendigkeit
+    # ihre Konformerdiversitaet bekommt).
+    # ⚠ ZWEITE AUFRUFSTELLE IM FF-FREIEN ZWEIG: am 10.08. lief genau diese Modulfamilie NUR auf
+    # legacy, weil der FF-freie Pfad einen eigenen Rumpf hat.  Darum ist sie von Anfang an
+    # beidseitig verdrahtet -- Aufrufstellen zaehlen, nicht Zeilen.
+    results = _apply_atropisomer_enum_if_enabled(mol, results, _dual_parse_done)
 
     # --- Welle-5l Track-6: rotamer-diversity (env-flag gated, default OFF) ---
     # For each emitted isomer, sample staggered rotamers around bulky single
