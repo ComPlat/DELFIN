@@ -226,12 +226,84 @@ def cov_radii_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_COV_METALS", "0") == "1"
 
 
-def seesaw_c2v_enabled() -> bool:
-    """DIE EINE Lesestelle fuer die C2v-Wippe (Vorgabe AUS -> byte-identisch).
+# ===== DREI GEOMETRIEN, DREI SCHALTER (aufgetrennt 16.08.2026 nach Gegenpruefung) =====
+#
+# Zuerst stand hier EIN Schalter fuer alle drei Korrekturen in `_polyhedron_targets`
+# (Wippe, Antiprisma, gekapptes Prisma).  Eine adversariale Gegenpruefung hat das als
+# Fehler nachgewiesen -- und sie zitiert dafuer die Regel, die 15 Zeilen weiter oben in
+# DIESER Datei steht: "Ein gemeinsamer Schalter waere zwei Aenderungen in EINER Achse --
+# und dann sagt ein Verdikt nicht mehr, welche von beiden gewirkt hat."
+#
+# Empirisch ist es nicht einmal EINE Achse:
+#     sq_antiprism   VERBESSERT   (Augen-Abweichung 18.98 -> 1.76 Grad)
+#     tricapped_tp   VERSCHLECHTERT (38.68 -> 45.58 Grad gegen den {90,180}-Zweig)
+#     see_saw        WIRKUNGSLOS  (Reichweite 0, s. u.)
+# Ein A/B haette die Summe aus Sieg, Niederlage und No-op gemeldet und keinen davon.
+#
+# Dazu log der Name: `seesaw_c2v` schaltete CN8 und CN9 mit -- und ausgerechnet der Arm,
+# nach dem er hiess, war der einzige, der nicht feuern kann.  Genau das Muster vom
+# 12.08. ("Verdikte heissen nach dem LABEL, axis-Dateien nach dem ARM").
+#
+# ⚠ IMPORTZEIT: `_polyhedron_targets._IDEAL_VECTORS` wird EINMAL beim Modulimport
+# gebaut.  Diese drei Schalter werden daher genau einmal gelesen -- ein `os.environ`-
+# Setzen mitten im Lauf wirkt NICHT und saehe wie "Reichweite 0" aus.  (Anders als
+# `cov_radii_enabled()`, das pro Aufruf liest.)  Wer sie schaltet, muss es VOR dem
+# Import tun, also ueber die Prozessumgebung.
 
-    Steht HIER und nicht in `_polyhedron_targets`, weil dieses Modul die einzige
-    abhaengigkeitsfreie Stelle im Bauer ist -- dieselbe Begruendung wie fuer die
-    Metallmenge und die Kovalenzradien.  Ein Schalter, der in der Datei sitzt, die er
-    schaltet, wird beim Kopieren der Datei mitkopiert; einer, der hier sitzt, nicht.
+
+def sap_equiedge_enabled() -> bool:
+    """Gleichkantiges Quadrat-Antiprisma (Vorgabe AUS -> byte-identisch).
+
+    Der einzige der drei Fixe, der die Gegenpruefung bestanden hat.  Die alte Vorgabe
+    (Polarwinkel 45 Grad) war der Ausreisser: `polyhedra.py:112` fuehrt 58.20 Grad,
+    `smiles_converter.py:22020` fuehrt 60.50 -- die Korrektur auf 59.26 fuehrt die drei
+    Tabellen zusammen (Spreizung 15 -> 1.5 Grad) und trifft exakt die Werte, die
+    `_GEOM_IDEAL_ANGLES_REAL['SAP']` fuehrt (74.9 / 118.5 / 141.6).
+    """
+    return os.environ.get("DELFIN_FFFREE_SAP_EQUIEDGE", "0") == "1"
+
+
+def seesaw_c2v_enabled() -> bool:
+    """C2v-Wippe (Vorgabe AUS).  ⚠ REICHWEITE NULL -- PARKPOSITION, nicht messen.
+
+    Die Zielzahlen sind fuer SF4 richtig (Tolles & Gwinn 1962: 173.1 / 101.6 / 87.8;
+    die Konstruktion liefert 173.0 / 102.0 / 87.80).  Die AENDERUNG ist trotzdem
+    wirkungslos: `see_saw` wird von KEINEM Konsumenten angefragt --
+    `_polyhedron_targets.py:743` gibt fuer CN4 immer "Td" zurueck, und
+    `_conformer_rank.py:165` fuehrt `_COORD_IDEAL_GEOMS[4] = ("Td", "sqp_4")`.
+
+    ⚠ UND DER BELEG, DEN ICH DAFUER ANGEFUEHRT HABE, TRAEGT NICHT: die Verwechslung
+    `SP-4 <-> SS-4` (25/21) stammt aus `poly_match`, und das speist sich aus
+    `polyhedra.py` REFS -- dort gibt es bei CN4 GAR KEINE Wippe (`:127`).  Die
+    geaenderte Tabelle beeinflusst diese Klassifikation nicht.
+
+    ⚠ Gegenlesart, die ich nicht geprueft hatte: `smiles_converter.py:25123` haelt fest,
+    dass ETKDG bei d8-Pd das METALL aus der Donorebene hebt -- eine GEFALTETE
+    Quadratebene, die als SS-4 klassifiziert wird (CODSIA, Pd 1.17 A out-of-plane).
+    Fuer die gehoert das zweite Paar UEBER 120 Grad, nicht auf 102.  Eine symmetrische
+    Verwechslungsmatrix unterscheidet beide Lesarten NICHT.
     """
     return os.environ.get("DELFIN_FFFREE_SEESAW_C2V", "0") == "1"
+
+
+def tricapped_equiedge_enabled() -> bool:
+    """Gleichkantiges dreifach gekapptes Prisma (Vorgabe AUS).  ⚠ FRAGLICH.
+
+    Die Rechnung stimmt (81.79 / 135.58 bei z = sqrt(3/7)), aber die Aenderung entfernt
+    sich von BEIDEN anderen CN9-Referenzen: `polyhedra.py:118` liefert 69.98 und
+    `smiles_converter.py:22036` liefert 70.54 -- die alte Vorgabe (60.0) lag naeher an
+    ihnen als die neue.  Und das Auge urteilt danach SCHLECHTER: CN9 hat keinen Eintrag
+    in `_GEOM_IDEAL_ANGLES` und faellt auf `[90, 180]` (`smiles_converter.py:19424`);
+    die maximale Abweichung steigt dort von 38.68 auf 45.58 Grad.
+
+    ⚠ Meine Behauptung "die einzige Prismendefinition ohne freien Parameter" ist FALSCH:
+    die KAPPEN-Distanz ist ein zweiter freier Parameter, den die Einheitskugel
+    stillschweigend auf 1 setzt -- reale TTPs (Nd(H2O)9 3+, ReH9 2-) haben deutlich
+    laengere M-Kappe-Abstaende.
+
+    ⚠ Und das Gesetz ist inkonsistent angewandt: `_polyhedron_targets.py:202` baut in
+    DERSELBEN Tabelle ein `trig_prism` (CN6) mit 19.5 Grad ungleichen Kanten, das
+    unangetastet blieb.  TPR6 ist der einzige gelandete Champion-Teil und bleibt
+    gesperrt -- aber dann darf CN9 nicht einseitig verschoben werden.
+    """
+    return os.environ.get("DELFIN_FFFREE_TRICAPPED_EQUIEDGE", "0") == "1"

@@ -248,7 +248,7 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     #
     # Vorgabe AUS -> byte-identisch.  Lesestelle des Schalters: `_elements`.
     from delfin.manta import _elements as _EL
-    if _EL.seesaw_c2v_enabled():
+    if _EL.sap_equiedge_enabled():
         _sz, _sr = 0.5110783, 0.8595269      # cos(theta), sin(theta) fuer c = 0.26120
     else:
         _sz = _sr = np.sqrt(2.0) / 2.0       # historisch: theta = 45 Grad
@@ -306,7 +306,7 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     #
     # Vorgabe AUS -> byte-identisch.  Lesestelle des Schalters: `_elements`.
     from delfin.manta import _elements as _EL
-    z9 = 0.6546537 if _EL.seesaw_c2v_enabled() else 0.5
+    z9 = 0.6546537 if _EL.tricapped_equiedge_enabled() else 0.5
     r9 = np.sqrt(1.0 - z9 * z9)  # ensure unit length
     for sign in (+1, -1):
         for k in range(3):
