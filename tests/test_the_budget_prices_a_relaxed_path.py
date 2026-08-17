@@ -484,3 +484,77 @@ def test_a_hydrogen_pulled_off_a_ring_stays_far_too_expensive():
     # the same drag costs nothing, because it has quietly undone it.
     free = gfn.relax_steps(pulled, method="gfn2", cycles=20, timeout=120.0)
     assert (free["energy"] - here) * 627.5094740631 < spent / 2
+
+
+# --- The scan: a coordinate walked rather than a hand followed --------------
+
+
+def test_the_ceiling_turns_around():
+    """A drag asks what may happen at a temperature; a scan asks for the
+    temperature.
+
+    "+29 kcal/mol" means nothing until it is "and that wants 385 K within the
+    hour", which is the difference between a number and an experiment.  The
+    measured barriers land where the chemistry does: a cyclohexane flip at
+    +11 wants 150 K, a [1,5]-hydrogen shift at +25.5 wants 340 K, a Claisen at
+    +29 wants 385 K, a Cope at +34 wants 450 K.
+    """
+    from delfin.dashboard.structure_editor import (
+        thermal_ceiling, thermal_temperature)
+
+    for kcal in (5.0, 11.0, 22.3, 29.0, 34.0, 120.0):
+        T = thermal_temperature(kcal, 3600.0)
+        assert T is not None
+        # It is the temperature whose ceiling is that barrier.
+        assert thermal_ceiling(T, 3600.0) == pytest.approx(kcal, abs=0.05)
+
+    assert thermal_temperature(22.3, 3600.0) == pytest.approx(298.15, abs=1.0)
+    # Nothing under 5000 K crosses this, and saying so beats printing a number.
+    assert thermal_temperature(2000.0, 3600.0) is None
+    assert thermal_temperature("not a barrier", 3600.0) is None
+
+
+def test_a_fast_crossing_is_said_in_units_it_fits():
+    """An open path is the ordinary case, and it was reported as "about
+    4.18e-06 s" -- a number in the wrong clothes."""
+    body = EDITOR_SOURCE.split("def _thermal_wait(")[1].split("def ")[0]
+    for unit in ("'ps'", "'ns'", "'us'", "'ms'"):
+        assert unit in body, unit
+
+
+def test_the_scan_walks_every_armed_leg_together():
+    """One coordinate answers a rotation or a stretch; a concerted step needs
+    two.
+
+    Driven on the forming bond alone a Claisen prices at +74 kcal/mol; driven
+    on both, it peaks at +29.0 where the literature says 30.
+    """
+    body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
+    body = body.split("def _scan_verdict(")[0]
+    # Every leg gets the same fraction of its own span, so they move together.
+    assert "share = n / float(steps)" in body
+    assert "one['from'] + share * (one['to'] - one['from'])" in body
+    # Held exactly: a scan point is a place, not a suggestion.
+    assert "'mode': 'fix'" in body
+    # And each point starts from the geometry the last one reached.
+    assert "walked = outcome['xyz']" in body
+
+
+def test_a_scan_point_is_relaxed_far_enough_to_mean_something():
+    """A relaxed scan cut short reads as a barrier that is not there.
+
+    Measured on a Diels-Alder approach whose relaxed cost is +3.6 kcal/mol:
+    three cycles say +40.0, six +18.9, twenty +8.3.
+    """
+    line = next(one for one in EDITOR_SOURCE.splitlines()
+                if one.strip().startswith("_SCAN_CYCLES ="))
+    assert int(line.split("=")[1].strip()) >= 20
+
+
+def test_the_scan_says_which_temperature_it_would_take():
+    """Not only that it is closed."""
+    body = EDITOR_SOURCE.split("def _scan_verdict(")[1].split("\n    def ")[0]
+    assert "thermal_temperature(" in body
+    assert "wants about" in body
+    # Wrapped across two lines in the source, so only the start of it.
+    assert "the whole path is " in body
