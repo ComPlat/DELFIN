@@ -2158,6 +2158,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: the molecule following the hand rather than catching up with it.
     _GFN_FOLLOW_CYCLES = 5
 
+    #: And with the thermal budget on, more of them.
+    #:
+    #: The follow then holds the contacts the drag has changed and relaxes
+    #: everything else, which is a relaxed scan and answers a harder question
+    #: than "settle a little towards the hand": what is the lowest energy this
+    #: structure can have with the atoms where the cursor has put them.
+    #: Reaching it takes real reorganisation, and cut short the answer is
+    #: simply too high -- measured on a Diels-Alder approach at 2.18 A, where
+    #: the relaxed path costs +3.6 kcal/mol:
+    #:
+    #:     cycles       3      6     20
+    #:     kcal/mol  +40.0  +18.9   +8.3
+    #:
+    #: Every one of those is a wall in the wrong place, so this is generous.
+    #: It also does not start from nothing: the drag walks in small steps and
+    #: each answer starts from the structure the last one relaxed, so the work
+    #: is spread over the drag rather than repeated in it.  The cost is that
+    #: an answer takes a second or two rather than a tenth, and the leash --
+    #: which only ever lets the hand go as far as the last answer confirmed --
+    #: turns that into a slower drag.  That is the honest price of walking a
+    #: path instead of jumping along it, and it was asked for.
+    _THERMAL_FOLLOW_CYCLES = 20
+
     def _begin_gfn_follow():
         """A drag has started and the molecule is to follow it."""
         if not (submit_relax_btn.value
@@ -2278,6 +2301,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         return
                     current, holding = newest
                     began = time.perf_counter()
+                    # With the budget on, the drag is followed differently:
+                    # the contacts the hand has changed are held and the rest
+                    # is relaxed around them.  That one calculation is both
+                    # the follow and the price -- see contacts_holding for why
+                    # the geometry the mouse leaves cannot be priced as it
+                    # stands, and why holding *these* values and no others is
+                    # what makes the difference between a reaction and a
+                    # structure being torn open.
+                    #
+                    # Empty when the hand is on every atom or on none: a whole
+                    # structure moved as one has changed no internal
+                    # coordinate and costs nothing, and there is nothing to
+                    # hold it against.  The old single point stands in.
+                    contacts = (
+                        _gfn.contacts_holding(
+                            current, holding,
+                            most=1 if len(holding or ()) <= 1 else 2)
+                        if (submit_thermal_btn.value
+                            and not _mopac.is_mopac_method(method)) else [])
                     if _mopac.is_mopac_method(method):
                         # MOPAC takes no held internals and no topology file,
                         # so it is given what it does take. A few cycles, the
@@ -2294,8 +2336,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     else:
                         outcome = _gfn.relax_steps(
                             current, method=method, charge=charge, uhf=uhf,
-                            cycles=_GFN_FOLLOW_CYCLES, timeout=30.0,
-                            constraints=constraints, solvent=wet,
+                            cycles=(_THERMAL_FOLLOW_CYCLES if contacts
+                                    else _GFN_FOLLOW_CYCLES),
+                            timeout=30.0,
+                            constraints=constraints + contacts, solvent=wet,
                             solvation_model=model,
                             topology=_gfn_topology_dir(current),
                         )
@@ -2322,37 +2366,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
                             'each.')
-                    # What the drag has cost so far -- and NOT the energy this
-                    # step came back with.
+                    # What the drag has cost so far: the energy of the
+                    # relaxation that has just run, which held the drag and
+                    # let everything else move.
                     #
-                    # xtb does not hold the dragged atom: it cannot, "$fix
-                    # atoms:" is broken in 6.7.1 and "$constrain atoms:"
-                    # naming one atom does nothing, both measured.  The hold
-                    # is the page's, which keeps the dragged atom where the
-                    # cursor has it and takes the rest from what comes back.
-                    # So the relaxation pulls that atom straight home and
-                    # reports the energy of the repaired structure.  Measured
-                    # on a benzene with a hydrogen dragged out:
+                    # This was a fresh single point on the geometry the page
+                    # sent, and before that the energy of the free follow.
+                    # Both are wrong, in opposite directions, and the two
+                    # mistakes are worth keeping written down because each
+                    # looks right on its own.
                     #
-                    #     C-H at   single point   relax_steps(5) says
-                    #     1.58 A       +38.9          -0.8, C-H back at 1.08
-                    #     2.08 A       +82.7          -0.1, C-H back at 1.06
-                    #     2.58 A      +110.3          -1.2, C-H back at 1.09
-                    #
-                    # A budget fed that number never exceeds a kcal or two
-                    # however far the hand goes, which is exactly how it read:
-                    # a proton could be pulled off with the line underneath
+                    # The free follow undoes the drag -- xtb cannot be asked
+                    # to leave an atom alone, so it pulls it home and reports
+                    # the repaired structure.  On a benzene with a hydrogen
+                    # dragged out, five free cycles: C-H back at 1.08 A and
+                    # -0.8 kcal/mol at 1.58, back at 1.09 and -1.2 at 2.58.
+                    # A proton could be pulled off with the line underneath
                     # saying everything was fine.
                     #
-                    # The geometry the user has made is the one to price, so
-                    # it is priced -- a single point on what the page sent,
-                    # dragged atom included.  Eighty milliseconds on a
-                    # benzene, a hundred and seventy on thirty-eight atoms.
-                    priced = _gfn.optimize_with_gfn(
-                        current, method, charge=charge, uhf=uhf,
-                        timeout=30.0, solvent=wet, solvation_model=model,
-                        topology=_gfn_topology_dir(current), optimise=False,
-                    ) if submit_thermal_btn.value else {}
+                    # The single point overcharges anything that forms a
+                    # bond, because a transition state consists of everything
+                    # rearranging and a rigid geometry rearranges nothing.
+                    # Butadiene and ethylene at 2.18 A: +124.3 against +3.6
+                    # along the relaxed path.  So the wall said no to every
+                    # reaction as firmly as it said no to tearing a ring
+                    # open, and a Diels-Alder that room temperature allows
+                    # needed 1498 K to get through.
+                    #
+                    # Held-and-relaxed is neither.  It cannot undo the drag,
+                    # because the drag is what is held; and it charges for
+                    # the distortion that is really left once the structure
+                    # has done what it can, which is what a barrier is.
+                    priced = outcome if contacts else (
+                        _gfn.optimize_with_gfn(
+                            current, method, charge=charge, uhf=uhf,
+                            timeout=30.0, solvent=wet, solvation_model=model,
+                            topology=_gfn_topology_dir(current),
+                            optimise=False,
+                        ) if submit_thermal_btn.value else {})
                     state['thermal_now'] = priced.get('energy')
                     if submit_thermal_btn.value:
                         spent = _thermal_note(priced.get('energy'))
