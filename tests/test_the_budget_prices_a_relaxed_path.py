@@ -733,4 +733,37 @@ def test_the_leash_is_long_where_the_budget_is_wide_open():
 
     # The budget still decides, whatever the cap says.
     body = EDITOR_SOURCE.split("def _thermal_reach(")[1].split("def ")[0]
-    assert "min(_THERMAL_REACH, room / slope)" in body
+    # The cap is earned now, but the budget is still what decides.
+    assert "min(_reach_cap(), room / slope)" in body
+
+
+def test_the_leash_earns_its_length_from_the_ground():
+    """A fixed cap is the wrong kind of limit.
+
+    It exists so a hand cannot outrun the calculation and step over something
+    the budget would have refused.  On ground the last several answers have all
+    reported as shallow there is nothing to step over, and holding the hand
+    there is a difference without a reason.
+
+    Measured on the same walks: earning its length the leash reaches 1.000 A on
+    a conformer turn against 0.350 fixed, and on a hydrogen being pulled off a
+    benzene it is 0.005 to 0.154 A either way, with the same +75.7 kcal/mol as
+    the worst the hand gets past the ceiling.  Three times the speed where it
+    is free, and nothing at all where it is not -- because what limits a
+    dangerous drag is the slope, never the cap.
+    """
+    line = next(one for one in EDITOR_SOURCE.splitlines()
+                if one.strip().startswith("_THERMAL_REACH_FREE ="))
+    assert float(line.split("=")[1].strip()) > 0.35
+
+    body = EDITOR_SOURCE.split("def _reach_cap(")[1].split("def ")[0]
+    assert "_THERMAL_FLAT_ANSWERS" in body
+    assert "_THERMAL_REACH_FREE" in body
+
+    reach = EDITOR_SOURCE.split("def _thermal_reach(")[1].split("\n    def ")[0]
+    # Counted up while it is shallow, and back to nothing the moment it is not.
+    assert "if slope < _THERMAL_FLAT else 0" in reach
+    # The budget still decides, whatever the cap has earned.
+    assert "min(_reach_cap(), room / slope)" in reach
+    # And a fresh drag starts from no evidence at all.
+    assert "state.pop('thermal_flat', None)" in EDITOR_SOURCE
