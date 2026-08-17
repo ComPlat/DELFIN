@@ -342,19 +342,23 @@ def test_without_a_before_there_is_nothing_to_compare():
     assert all(one["kind"] == "distance" for one in held)
 
 
-def test_a_turn_is_not_put_back_where_the_cursor_had_it():
-    """The torsion is what the hand asked for; a position would fight it.
+def test_the_atom_under_the_hand_stays_under_the_hand():
+    """And when the hold is loose, the line says so instead of shaking.
 
-    A methyl snapped back cannot spin about its own axis to get out of the
-    way, and the same turn that costs +7.9 kcal/mol along the torsion costs
-    +345 held rigid.
+    Drawn as it arrives, an answer puts the grabbed atom beside the cursor --
+    0.102 A through the transition region of a backside attack -- the page
+    draws it back on the next mouse move, and at seven answers a second that
+    is a molecule that shakes.  Laid onto the whole structure it is no better:
+    every other atom then moves the same 0.1 A instead, 0.210 against 0.108.
+
+    So the atom goes back where the cursor has it, as before, and the
+    divergence is reported rather than displayed.  On a palladium pushed at
+    head on it reached 0.7 A and was the only sign anything was wrong.
     """
     assert "str(one.get('kind')) == 'dihedral'" in EDITOR_SOURCE
-    # Price what you show: the relaxed geometry is the one that was priced,
-    # so it is the one that is drawn.  Put back where the cursor had them,
-    # the picture had a bromide 1.27 A from a palladium while the price
-    # belonged to a structure where the metal had got out of the way.
-    assert "settled = (outcome['xyz'] if contacts else" in EDITOR_SOURCE
+    assert "settled = _gfn.hold_atoms_at(" in EDITOR_SOURCE
+    assert "slipped > _SLIP_LOOSE" in EDITOR_SOURCE
+    assert "The hold is loose here" in EDITOR_SOURCE
     # And the geometry a turn is measured against is the one this answer
     # handed back, not the one it was handed: against the latter the
     # difference holds the relaxation as well as the hand, and on a ring
@@ -558,3 +562,40 @@ def test_the_scan_says_which_temperature_it_would_take():
     assert "wants about" in body
     # Wrapped across two lines in the source, so only the start of it.
     assert "the whole path is " in body
+
+
+def test_a_scan_stops_at_the_next_minimum():
+    """Past it, a scan stops describing a reaction and pushes into a structure.
+
+    Measured on a tert-butyl bromide with a chloride, the carbon driven at the
+    nucleophile past the product well: stopped at the minimum it walks 26 of 32
+    points and reports the crossing at +25.2 kcal/mol, wanting 336 K.  Left to
+    run it walks all 32, squeezes the new C-Cl to 1.20 A, and reports +202.9
+    and 2566 K -- the barrier destroyed by the steps that came after it.
+
+    Not detected by the path going flat: a scan keeps driving its coordinate,
+    so past the well it climbs the far wall and never flattens.  That rule
+    never fired once.
+    """
+    body = EDITOR_SOURCE.split("def _scan_arrived(")[1].split("def ")[0]
+    # Over the top, down into something, and rising again.
+    assert "_SCAN_OVER_THE_TOP" in body
+    assert "_SCAN_CLIMBING" in body
+    assert "b - a > _SCAN_UPHILL" in body
+    # And it can be switched off for a deliberate overshoot.
+    assert "submit_scan_whole" in EDITOR_SOURCE
+    assert "not submit_scan_whole.value and _scan_arrived(path)" in EDITOR_SOURCE
+
+
+def test_the_temperature_is_named_whether_the_path_is_open_or_not():
+    """The number a chemist came for was missing exactly when the news was
+    good.
+
+    "It needs 150 K and you have 298" is what makes an open path mean
+    something; without it an open scan said only how long it took.
+    """
+    body = EDITOR_SOURCE.split("def _scan_verdict(")[1].split("\n    def ")[0]
+    # One phrase, before the two branches, so both carry it.
+    assert body.index("wants = (") < body.index("if top[1] <= ceiling:")
+    assert "the whole path is open" in body.replace("'\n", "").replace(
+        "                    f'", "")
