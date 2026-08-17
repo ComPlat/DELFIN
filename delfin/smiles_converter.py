@@ -853,6 +853,43 @@ def _ml_bond_kind(mol, metal_idx: int, donor_idx: int) -> str:
         return "sigma"
 
 
+def _apply_mirror_enum_if_enabled(results):
+    """Spiegelabschluss des Manifolds (17.08.2026).
+
+    Haengt je Frame sein Spiegelbild an.  Braucht KEIN ``mol``: eine Spiegelung ist eine
+    reine Koordinatenoperation, damit entfaellt die Atomreihenfolge-Falle, vor der der
+    Docstring von ``_ffree_shared_tail`` warnt.
+
+    ⚠ DEN SCHALTER PRUEFT DAS MODUL SELBST (``_mirror_enum._is_enabled``).  Bewusst NICHT
+    hier noch einmal: ein Schalter, der an zwei Stellen gelesen wird, driftet -- und die
+    Verwechslung "Stellwert fuer Modulschalter gehalten" (``TORSION_GRID`` gegen
+    ``TORSION_RELAX``, 17.08.) kam genau aus einer solchen Doppelung.
+
+    ⚠ WARUM DAS SICHER IST: eine Spiegelung ist eine ISOMETRIE.  Jede Bindungslaenge,
+    jeder Winkel, jeder M-D-Abstand bleibt EXAKT (Selbsttest: Abstandsmatrix-Delta 0.0);
+    nur die Vorzeichen kippen.  Keine Relaxation, kein Clash moeglich.
+
+    ⚠ UND WARUM DER FRAME UEBERLEBT: beide Entdopplungen sind determinantenkorrigiert
+    und verbieten Spiegelungen ausdruecklich (``permute_dedup._kabsch_rmsd_perm:197``,
+    ``assemble_complex._kabsch_rot:63``) -- ein Enantiomer richtet sich nie aus und wird
+    darum NICHT als Dublette verworfen.  Ohne diese Eigenschaft waere der Pass ein
+    Nulltest gewesen; sie wurde VOR dem Bau im Quelltext geprueft, nicht angenommen.
+
+    Vorgabe des Modulschalters ist 0 -> byte-identisch.
+    """
+    if not results:
+        return results
+    try:
+        from delfin.manta._mirror_enum import expand_results as _mirror_expand
+        return _mirror_expand(results)
+    except Exception as _mx:
+        try:
+            logger.debug("MIRROR-ENUM skipped: %s", _mx)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_me_bond_snap_if_enabled(results):
     """Terminale M=E Mehrfachbindungen auf dem FF-FREIEN Pfad setzen (17.08.2026).
 
@@ -32229,6 +32266,19 @@ def _ffree_shared_tail(mol, results, dual_parse_done: bool):
     # strukturell und aus dem Frame selbst ablesbar.  Verschoben wird genau EIN Atom, das
     # ausser der M-D-Bindung keine hat.  Eigener Schalter, Vorgabe 0 -> byte-identisch.
     results = _apply_me_bond_snap_if_enabled(results)
+    # ===== DER SPIEGELABSCHLUSS (17.08.2026) -- MUSS ZULETZT STEHEN =====================
+    # GEMESSEN: das Korpus traegt keine Stereochemie (9 von 129 314 SMILES).  Haendigkeit
+    # ist damit zu 100 % Enumerationspflicht, nicht Uebertragung.  Von 2269 Fehlschlaegen
+    # sind 1946 "nie gebaut", und bei 1326 davon (68,1 %) fehlen ALLE Zentren -- dort ist
+    # das Spiegelbild EXAKT der fehlende Isomer.
+    #
+    # ⚠ DIE POSITION IST TEIL DES MECHANISMUS, nicht Geschmack.  `_stereocenter_enum`
+    # liest `present`, BEVOR es ergaenzt; `trans208` hat genau so mit 29 zusaetzlichen
+    # Anordnungen die Stereozentren-Falten verdraengt und ein CCDC-Isomer gekostet,
+    # obwohl BEIDE Paesse additiv sind.  Die Faltenenumeration laeuft auf dem FF-freien
+    # Pfad bei :32361, dieser Schwanz wird bei :32429 gerufen -- der Spiegelpass sieht
+    # den fertigen Topf und veraendert fuer niemanden mehr das, was `present` meldet.
+    results = _apply_mirror_enum_if_enabled(results)
     return results
 
 
