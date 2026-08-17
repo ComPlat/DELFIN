@@ -2336,6 +2336,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # against a structure from before whatever happened in between.
         state.pop('thermal_was', None)
         state.pop('thermal_turn', None)
+        state.pop('thermal_flat', None)
         _push_thermal_wall(None)
 
     def _end_gfn_follow():
@@ -2809,10 +2810,36 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: ceiling is +63.5 kcal/mol either way -- the same number at a tenth.
     _THERMAL_REACH = 0.35
 
+    #: And what it grows to once the ground has proved flat.
+    #:
+    #: A fixed cap is the wrong kind of limit.  It exists so a hand cannot
+    #: outrun the calculation and step over something the budget would have
+    #: refused -- but on ground the last several answers have all reported as
+    #: shallow there is nothing to step over, and holding the hand there is a
+    #: difference without a reason.  So the cap is evidence: three answers in a
+    #: row under _THERMAL_FLAT and it lengthens, one steeper answer and it is
+    #: back where it was.
+    #:
+    #: What keeps that safe is that the cap is not what limits a dangerous
+    #: drag -- the slope is.  Measured, pulling a hydrogen off a benzene: the
+    #: leash reaches 0.154 A whether the cap is a tenth or a third, and the
+    #: worst the hand gets past the ceiling is +63.5 kcal/mol either way.  On
+    #: flat ground a long step is cheap by definition, which is what makes it
+    #: a long step.
+    _THERMAL_REACH_FREE = 1.0
+    _THERMAL_FLAT = 20.0          # kcal/mol per angstrom that counts as flat
+    _THERMAL_FLAT_ANSWERS = 3     # how many in a row before it lengthens
+
     #: And the shortest.  Below this the atom stops rather than creeping, and
     #: a step this small is under the width a bond has at room temperature
     #: anyway -- past it the distinction is not one the structure makes.
     _THERMAL_REACH_MIN = 0.005
+
+    def _reach_cap():
+        """How long the leash may be, given what the ground has been like."""
+        return (_THERMAL_REACH_FREE
+                if int(state.get('thermal_flat') or 0) >= _THERMAL_FLAT_ANSWERS
+                else _THERMAL_REACH)
 
     def _thermal_reach(spent, ceiling, xyz, serials):
         """How far the hand may go before the next answer, in angstrom.
@@ -2850,7 +2877,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         climbed = float(spent) - float(last['spent'])
         if climbed <= 0:
             state['thermal_slope'] = climbed / moved
-            return _THERMAL_REACH          # going downhill: no need to hold back
+            state['thermal_flat'] = int(state.get('thermal_flat') or 0) + 1
+            return _reach_cap()            # going downhill: no need to hold back
         slope = climbed / moved            # kcal/mol per angstrom
         # Written down for the line to say.  It is already what shortens the
         # leash, so a steep drag already *feels* heavy; the number is what
@@ -2859,7 +2887,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # are in is the difference between working with the chemistry and
         # against it.
         state['thermal_slope'] = slope
-        return max(_THERMAL_REACH_MIN, min(_THERMAL_REACH, room / slope))
+        state['thermal_flat'] = (int(state.get('thermal_flat') or 0) + 1
+                                 if slope < _THERMAL_FLAT else 0)
+        return max(_THERMAL_REACH_MIN, min(_reach_cap(), room / slope))
 
 
 
