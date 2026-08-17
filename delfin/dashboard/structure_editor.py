@@ -2538,7 +2538,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # and a second one moves the picture while the
                             # user is aiming an atom.
                             said = f'{said} {spent}'
-                        _thermal_wall(current, priced.get('energy'), holding)
+                        # Two refusals that do not depend on the budget.
+                        #
+                        # A loose hold means the price is about a nearby
+                        # structure rather than this one, so advancing the mark
+                        # would confirm a geometry nothing has priced.  It was
+                        # only reported before; on a palladium pushed at head
+                        # on it reached 0.7 A and the drag went on regardless.
+                        #
+                        # And a squeezed contact is not chemistry at any
+                        # temperature.  This one needs no energy at all, which
+                        # is why it holds where GFN2 is weakest -- a transition
+                        # metal, an open shell.  Stretching stays free: that is
+                        # what a reaction does and the budget prices it.
+                        tightest = _gfn.closest_contact(current)[0]
+                        crowded = (tightest is not None
+                                   and tightest < _gfn._TOO_CLOSE)
+                        _thermal_wall(current, priced.get('energy'), holding,
+                                      refuse=(slipped > _SLIP_LOOSE) or crowded)
+                        if crowded:
+                            said = (f'{said} Two atoms are inside '
+                                    f'{tightest:.2f} of a bond length, which '
+                                    f'is no path at any temperature.')
                     # How far the answer put the held atoms from where the
                     # cursor has them.  A held value is an internal
                     # coordinate, so xtb meets it and is free to place the
@@ -2555,6 +2576,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     slipped = _gfn.largest_shift(
                         _gfn.hold_atoms_at(outcome['xyz'], current, holding),
                         outcome['xyz']) if contacts else 0.0
+                    slope = state.get('thermal_slope')
+                    if slope is not None and abs(slope) > 1.0:
+                        said = (f'{said} '
+                                + ('Climbing' if slope > 0 else 'Falling')
+                                + f' {abs(slope):.0f} kcal/mol per A here.')
                     if slipped > _SLIP_LOOSE:
                         said = (f'{said} The hold is loose here '
                                 f'({slipped:.2f} A), so the price is for a '
@@ -2768,7 +2794,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: kcal/mol.  So a budget could be walked past even at a crawl, which is
     #: not a wall anyone can aim at.  The leash is shortened by what the last
     #: two answers say the next step will cost -- see _thermal_reach.
-    _THERMAL_REACH = 0.10
+    #:
+    #: Raised from a tenth after the same measurement was turned on a
+    #: conformer.  Turning a chain torsion on a 24-atom structure the budget
+    #: never came near being spent -- +8 kcal/mol of 22.3 -- and the slope was
+    #: +5 per Angstrom, so what the budget could afford was nearly three
+    #: Angstrom and the cap held it to a tenth anyway.  Every conformer then
+    #: took half a minute of dragging for no reason at all, which reads as a
+    #: tool that does not work rather than one being careful.
+    #:
+    #: It costs nothing where care is wanted, because there the slope does the
+    #: limiting: pulling a hydrogen off a benzene, this cap lets the leash
+    #: reach 0.154 A and no further, and the worst the hand gets past the
+    #: ceiling is +63.5 kcal/mol either way -- the same number at a tenth.
+    _THERMAL_REACH = 0.35
 
     #: And the shortest.  Below this the atom stops rather than creeping, and
     #: a step this small is under the width a bond has at room temperature
@@ -2810,8 +2849,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return _THERMAL_REACH
         climbed = float(spent) - float(last['spent'])
         if climbed <= 0:
+            state['thermal_slope'] = climbed / moved
             return _THERMAL_REACH          # going downhill: no need to hold back
         slope = climbed / moved            # kcal/mol per angstrom
+        # Written down for the line to say.  It is already what shortens the
+        # leash, so a steep drag already *feels* heavy; the number is what
+        # turns that into something a chemist can steer by -- "+8 per A" and
+        # "+160 per A" are two different situations, and knowing which one you
+        # are in is the difference between working with the chemistry and
+        # against it.
+        state['thermal_slope'] = slope
         return max(_THERMAL_REACH_MIN, min(_THERMAL_REACH, room / slope))
 
 
@@ -2838,7 +2885,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['thermal_walled'] = False
         _push_thermal_wall(marks, reach=_THERMAL_REACH)
 
-    def _thermal_wall(xyz, energy, holding):
+    def _thermal_wall(xyz, energy, holding, refuse=False):
         """Hold the hand where the budget ran out, and let go when it is back.
 
         Called from the follow, which already knows the geometry it was handed
@@ -2865,9 +2912,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         }
         if not confirmed:
             return
-        if spent <= ceiling:
-            # Inside the budget: this geometry is confirmed, and the leash
-            # moves up to it.  It is sent on every answer rather than only
+        if spent <= ceiling and not refuse:
+            # Inside the budget, and the geometry is one the price is really
+            # about: confirmed, and the leash moves up to it.  It is sent on every answer rather than only
             # when something changes -- the leash is what keeps the atom from
             # outrunning the calculation, so it has to follow it step by step.
             #
@@ -4243,6 +4290,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     slipped = _gfn.largest_shift(
                         _gfn.hold_atoms_at(outcome['xyz'], current, holding),
                         outcome['xyz']) if contacts else 0.0
+                    slope = state.get('thermal_slope')
+                    if slope is not None and abs(slope) > 1.0:
+                        said = (f'{said} '
+                                + ('Climbing' if slope > 0 else 'Falling')
+                                + f' {abs(slope):.0f} kcal/mol per A here.')
                     if slipped > _SLIP_LOOSE:
                         said = (f'{said} The hold is loose here '
                                 f'({slipped:.2f} A), so the price is for a '
@@ -5640,6 +5692,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         def _work():
             walked, path = xyz, []
             base = None
+            bottom = None
             try:
                 for n in range(1, steps + 1):
                     if state.get('scan_stop'):
@@ -5667,8 +5720,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         base = float(outcome['energy'])
                     spent = (float(outcome['energy']) - base) * _HARTREE_TO_KCAL
                     path.append((held[0]['value'], spent))
+                    # The lowest point since the top, kept with its geometry.
+                    #
+                    # The climb out is what says the minimum is behind us, so
+                    # by the time it is recognised the walk stands two steps
+                    # past it and the structure in the box is squeezed that
+                    # much.  Stopping is not enough; it has to come back to
+                    # the bottom it walked through, which is the geometry
+                    # anyone would want to carry on from.
+                    if bottom is None or spent < bottom[0]:
+                        bottom = (spent, walked, held[0]['value'])
                     if not submit_scan_whole.value and _scan_arrived(path):
                         state['scan_arrived'] = True
+                        if bottom is not None:
+                            walked = bottom[1]
+                            path = path[:path.index(
+                                (bottom[2], bottom[0])) + 1]
                         break
                     lines = [line for line in walked.splitlines()[2:]
                              if line.strip()]
@@ -5684,9 +5751,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             finally:
                 state['scan_run'] = False
 
-                def _done():
+                def _done(final=walked):
                     submit_scan_run_btn.description = 'Run scan'
                     submit_scan_run_btn.icon = 'play'
+                    rows = [line for line in final.splitlines()[2:]
+                            if line.strip()]
+                    if rows:
+                        _write_coords(xyz_document(
+                            rows, 'Scanned to the next minimum'
+                            if state.get('scan_arrived') else 'Scanned'))
                     _set_mol_status(*_scan_verdict(path, steps))
 
                 schedule_ui_update(_done)
@@ -5709,7 +5782,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         T = float(submit_temperature.value or 298.15)
         ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
         needs = thermal_temperature(top[1], _THERMAL_SECONDS)
-        arrived = (' It stopped at the next minimum.'
+        arrived = (f' It came back to the minimum it walked through, at '
+                   f'{path[-1][0]:.3g}.'
                    if state.get('scan_arrived') else '')
         first = (f'The scan walked {len(path)} of {steps} points. Highest '
                  f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, ending '
@@ -6201,15 +6275,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Nothing else can be read that way -- a pasted XYZ says nothing about
         charge, and no input says anything about the spin -- so those stay the
         user's to set.  Returns the SMILES it read, or '' when there was none.
+
+        Except once the user has set it.  A structure is often built from a
+        neutral SMILES and then something charged is put next to it by hand --
+        a chloride beside an alkyl bromide is exactly that -- and the SMILES
+        still says zero.  Every change of method then quietly put it back to
+        zero, and at zero those systems have an odd number of electrons and
+        xtb refuses every step: nothing runs, nothing moves, and the editor
+        looks broken rather than misconfigured.  A number the user has typed
+        is theirs until they load something else.
         """
         smiles = str((state.get('converted_xyz_cache') or {}).get('smiles') or '')
         if not smiles:
             return ''
+        if state.get('charge_is_the_users'):
+            return smiles
+        if state.get('charge_filled_for') == smiles:
+            # Read once, when the structure was made, and not again.  Reading
+            # it afresh every time a method is chosen is what put a hand-set
+            # charge back to zero -- and worse, a charge that had come out of
+            # the SMILES correctly went to zero too, because by then the
+            # cached SMILES was no longer the one that carried it.  Deriving a
+            # setting belongs to the moment the thing it describes is built.
+            return smiles
         try:
+            state['charge_filling'] = True
             submit_gfn_charge.value = int(get_smiles_charge(smiles))
+            state['charge_filled_for'] = smiles
         except Exception:
             return ''
+        finally:
+            state['charge_filling'] = False
         return smiles
+
+    def on_submit_gfn_charge(change):
+        """Remember that the charge is the user's now."""
+        if change.get('name') != 'value' or state.get('charge_filling'):
+            return
+        state['charge_is_the_users'] = True
 
     def _server_method(value=None):
         """Whether this method is computed on the server rather than the page.
@@ -6693,6 +6796,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_btn.observe(on_submit_draw_toggle, names='value')
     submit_element_dd.observe(on_submit_draw_choice, names='value')
     submit_hold_btn.on_click(on_submit_hold)
+    submit_gfn_charge.observe(on_submit_gfn_charge, names='value')
     submit_scan_btn.on_click(on_submit_scan)
     submit_scan_del.on_click(on_submit_scan_del)
     submit_scan_run_btn.on_click(on_submit_scan_run)
@@ -7035,6 +7139,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 _replace_mol_output_text(f'Error: {error or "Conversion failed"}')
                 return
             state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': xyz_string}
+            state['charge_is_the_users'] = False
+            state['charge_filled_for'] = None
             _offer_isomers(
                 [(xyz_string, result['num_atoms'], 'quick')] + preview_items,
                 quick=True)
@@ -7053,6 +7159,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
 
         state['converted_xyz_cache'] = {'smiles': cleaned_data, 'xyz': isomers[0][0]}
+        state['charge_is_the_users'] = False
+        state['charge_filled_for'] = None
         _offer_isomers(isomers)
 
 
