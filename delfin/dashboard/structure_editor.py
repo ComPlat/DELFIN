@@ -2135,8 +2135,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_follow_run'] = run
         return True
 
+    def _clear_thermal_wall():
+        """A drag that has ended has no hand to hold back."""
+        state['thermal_safe'] = {}
+        if state.pop('thermal_walled', False):
+            _push_thermal_wall(None)
+
     def _end_gfn_follow():
         state['gfn_follow'] = False
+        # The hand has gone, so there is nothing left to hold back.  Left
+        # standing, the wall would meet the next drag with the positions of
+        # the last one -- atoms that are not being held any more, marked at
+        # places the structure has since moved away from.
+        _clear_thermal_wall()
 
     #: What the page says about the playback that the user could not see for
     #: themselves.  "received 41 frames" and "drawing" are the playback
@@ -2276,6 +2287,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # and a second one moves the picture while the
                             # user is aiming an atom.
                             said = f'{said} {spent}'
+                        _thermal_wall(current, outcome.get('energy'), holding)
                     state['gfn_last_status'] = said
                     schedule_ui_update(_set_mol_status,
                                        *_gfn_status_lines(said), spinner=True)
@@ -2415,6 +2427,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if seconds < limit:
                 return f'That is about {seconds / unit:.3g} {name}.'
         return ''
+
+    def _thermal_wall(xyz, energy, holding):
+        """Hold the hand where the budget ran out, and let go when it is back.
+
+        Called from the follow, which already knows the geometry it was handed
+        and what it cost.  While the structure is inside its budget the
+        positions of the atoms being dragged are remembered as the last place
+        the hand was allowed to be; the moment it is outside, those go to the
+        page as a wall and the drag may only move back towards them.
+
+        The wall is lifted by itself on the far side of a barrier: past the top
+        the energy falls, the structure is inside its budget again, and the
+        hand is free.  Only a distortion that stays expensive is held -- which
+        is the difference between a reaction and tearing a ring open.
+        """
+        anchor, ceiling = _thermal_budget()
+        if anchor is None or energy is None:
+            return
+        spent = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
+        serials = [int(i) for i in (holding or ())]
+        if spent <= ceiling:
+            # Inside: remember where the hand is standing, and take any wall
+            # down.  Remembered per drag rather than per structure -- these
+            # are the positions of the atoms the hand is on right now.
+            here = _gfn.coordinates_of(xyz)
+            state['thermal_safe'] = {
+                s: [here[3 * s], here[3 * s + 1], here[3 * s + 2]]
+                for s in serials
+                if 0 <= s and 3 * s + 2 < len(here)
+            }
+            if state.pop('thermal_walled', False):
+                _push_thermal_wall(None)
+            return
+        wall = state.get('thermal_safe') or {}
+        if wall and not state.get('thermal_walled'):
+            state['thermal_walled'] = True
+            _push_thermal_wall(wall)
+
+    def _push_thermal_wall(wall):
+        """Tell the page where the hand may no longer go, or that it may."""
+        _run_manip_js(
+            'if(window.__delfinSubmitManip&&'
+            'window.__delfinSubmitManip.setThermalWall)'
+            'window.__delfinSubmitManip.setThermalWall('
+            + json.dumps(submit_scope_id) + ','
+            + (json.dumps({str(k): v for k, v in wall.items()})
+               if wall else 'null') + ');'
+        )
 
     def _set_thermal_anchor(relax=None, note='Measuring from here'):
         """Take the energy of the structure on screen as the budget's zero.
