@@ -23,6 +23,7 @@ what the tab has on screen and named in the result.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -35,8 +36,8 @@ from typing import Any, Callable, Dict, Optional
 
 from . import solvents as _solvents
 
-__all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'find_xtb',
-           'find_binary', 'find_gxtb',
+__all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'contacts_holding',
+           'find_xtb', 'find_binary', 'find_gxtb',
            'held_note', 'hold_atoms_at', 'install_command', 'install_root',
            'install_script',
            'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
@@ -786,6 +787,91 @@ def constraint_input(
     }
 
 
+def contacts_holding(
+    xyz_text: str,
+    dragged: Any,
+    most: int = 2,
+) -> list:
+    """What a drag has changed, as values to hold while the rest relaxes.
+
+    Returns constraint entries in the editor's own shape, so they go to xtb
+    through :func:`constraint_input` like any other held value.
+
+    A dragged geometry cannot be priced as it stands.  A transition state
+    *consists* of everything rearranging -- the diene ends pyramidalise, bond
+    lengths move -- and held rigid the approach is nothing but repulsion.
+    Measured on butadiene and ethylene with GFN2, the two forming bonds at
+    2.18 A: the geometry the mouse leaves costs +124.3 kcal/mol, the same
+    separation along the relaxed path +3.6.  A budget fed the first number
+    needs 1498 K to allow a Diels-Alder that room temperature really does
+    allow, which is how this was found.
+
+    Relaxing freely is no answer either: it undoes the drag.  Nor is holding
+    the atoms where they are -- xtb cannot (``$fix atoms:`` is broken in 6.7.1
+    and ``$constrain atoms:`` on one atom does nothing), and pinning positions
+    would not help if it could.  With ``engine=inertial`` xtb does hold the
+    atom, to 0.000 A, and hands back the energy of *intact benzene*: the ring
+    simply walks the 1.5 A over and takes its hydrogen back.  One atom fixed in
+    space holds no bond stretched.
+
+    What is left is what a relaxed scan does: hold the internal coordinates the
+    hand moved, free everything else.  Which coordinates matters as much as
+    holding them.  Twelve contacts pin the two fragments to each other and
+    price the same geometry at +119 -- nothing gained.  It has to be the few
+    that carry the reaction:
+
+        contacts held    1      2      3      4
+        kcal/mol      +8.3  +19.8  +41.4  +75.2      (true: +3.6)
+
+    So one per dragged atom, distinct partners, and heavy atoms first -- an
+    H...H brush past is not a reaction coordinate and holding it stops the
+    hydrogens bending out of the way.  For a single dragged atom that is its
+    own neighbour, and a hydrogen pulled off a benzene is then priced at +89
+    where it belongs, relaxed or not: there is nowhere for the ring to go.
+    Breaking was always priced correctly; only forming was not.
+    """
+    held = {int(i) for i in (dragged or ())}
+    rows = [line.split() for line in atom_lines(xyz_text)]
+    inside = sorted(i for i in held if 0 <= i < len(rows))
+    outside = [j for j in range(len(rows)) if j not in held]
+    if not inside or not outside:
+        # The hand is on everything, or on nothing.  Either way no contact
+        # between the two describes the drag, and a caller that gets no values
+        # back is being told to price the geometry some other way.
+        return []
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    light = [str(r[0]).strip()[:1].upper() == 'H' and len(str(r[0]).strip()) == 1
+             for r in rows]
+    pairs = sorted(
+        ((1 if (light[i] or light[j]) else 0), math.dist(where[i], where[j]), i, j)
+        for i in inside for j in outside)
+    kept: list = []
+    taken_in: set = set()
+    taken_out: set = set()
+    kind = None
+    for heavy_first, span, i, j in pairs:
+        if i in taken_in or j in taken_out:
+            continue
+        # All of one kind.  A second contact is held to stop a dragged group
+        # turning away from the first one and buying itself a lower price than
+        # its position deserves, and for that it has to be the same sort of
+        # approach: two heavy atoms coming together are a reaction coordinate,
+        # a hydrogen brushing past is not, and holding the second kind stops
+        # the hydrogens bending out of the way -- which is most of what makes
+        # room for a bond.  So a dragged OH is held by its oxygen and its
+        # hydrogen is left free, while both bonds of a Diels-Alder are held.
+        if kind is not None and heavy_first != kind:
+            break
+        kind = heavy_first
+        kept.append({'kind': 'distance', 'atoms': [i, j],
+                     'value': span, 'mode': 'fix'})
+        taken_in.add(i)
+        taken_out.add(j)
+        if len(kept) >= max(1, int(most)):
+            break
+    return kept
+
+
 def read_trajectory(folder: Path) -> list:
     """Every cycle of the optimisation, as flat coordinate lists.
 
@@ -876,13 +962,44 @@ def held_note(held: Dict[str, Any]) -> str:
 INTERACTIVE_CORES = 4
 
 
-def interactive_cores() -> int:
-    """Cores for one interactive run, never more than the machine has."""
+#: And what a bigger one gets.  More cores are not more speed: xtb stops
+#: gaining well before a large machine runs out, and past that it loses.
+#: Measured on this one, twenty GFN2 cycles, best of three:
+#:
+#:     atoms      1     2     4     8    16    32    64
+#:        18   0.37  0.27  0.22  0.27  0.27  0.37
+#:        49   1.47  1.37  1.28  0.87  0.87  1.48
+#:        62   0.72  0.67  0.57  0.57  0.47  0.67
+#:       101               3.44  2.68  2.28  2.59  7.31
+#:       185              13.38 13.03 11.08 11.85 17.49
+#:
+#: Sixteen is the top of it even at 185 atoms, and sixty-four is three times
+#: worse than four.  A machine with 384 cores does not change that -- the work
+#: in one small SCC does not divide that far, and what is left is threads
+#: waiting for each other.  So the ladder is by size, and it ends.
+_CORE_LADDER = ((30, 4), (60, 8))
+_CORE_CEILING = 16
+
+
+def interactive_cores(atoms: Optional[int] = None) -> int:
+    """Cores for one interactive run, never more than the machine has.
+
+    *atoms* is how big the structure is; without it the small-system figure
+    stands, which is what an interactive drag mostly is.
+    """
     said = str(os.environ.get('DELFIN_GFN_CORES', '')).strip()
     if said.isdigit() and int(said) > 0:
+        # Whoever sets this has said what they want, including more than the
+        # measurement recommends.
         wanted = int(said)
-    else:
+    elif atoms is None:
         wanted = INTERACTIVE_CORES
+    else:
+        wanted = _CORE_CEILING
+        for size, cores in _CORE_LADDER:
+            if int(atoms) < size:
+                wanted = cores
+                break
     return max(1, min(wanted, os.cpu_count() or 1))
 
 
@@ -1030,7 +1147,7 @@ def optimize_with_gfn(
         body = atom_lines(xyz_text)
         source.write_text(f'{len(body)}\nfrom the DELFIN viewer\n'
                           + '\n'.join(body) + '\n', encoding='utf-8')
-        cores = interactive_cores()
+        cores = interactive_cores(len(body))
         command = [binary, source.name, *spec['flags'],
                    *(['--opt'] if optimise else []),
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
