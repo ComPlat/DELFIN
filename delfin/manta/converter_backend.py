@@ -746,6 +746,45 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
             n_added += 1
         except Exception:
             continue
+# vdW-level inter-ligand clash floor (Å) for the NEW-frame never-worse gate below.
+# A re-embedded / re-seated conformer must not introduce a non-bonded heavy-heavy
+# contact below this (a backbone folding into a NEIGHBOUR ligand collapses well
+# inside the vdW shell long before the 0.60·Σcov gross-overlap floor _build_is_clean
+# uses fires — measured: ACEQUY Fe(N(Dipp)(SiMe3))3 reembed frames at 1.98-2.01 Å
+# inter-ligand C-C, base frame 2.07-2.38 Å).
+#
+# ⚠ WIEDERHERGESTELLT 17.08.2026 — DIESE ZWEI ZEILEN WAREN FUENFZEHN TAGE WEG.
+# Commit a9b82598 (02.08., "Ring-Pucker an die Stelle, die die Atomreihenfolge des
+# Frames kennt") loeschte sie und liess die zwei Benutzungen in `_interlig_clash_ok`
+# stehen.  Seither warf die Funktion bei JEDEM Aufruf einen NameError, den das
+# `except Exception: continue` in `_append_reembed` verschluckte -- und damit fiel
+# JEDER Frame, der das Selbstgate bestanden hatte, lautlos heraus.
+#
+# GEMESSEN am 17.08. mit zwei Feuerspuren ueber `pool_ffonly` (187 Systeme):
+#   :938 reembed gerufen ........ 367 Treffer / 183 Systeme
+#   :951 Frame in der Schleife .. 2446 / 182
+#   :952 Selbstgate gerufen ..... 2446 / 182
+#   :953 Selbstgate verwirft .... 1156 / 99
+#   :954 Selbstgate BESTANDEN ... 1290 / 146     <- 2446-1156 = 1290, exakt
+#   :955 vdW verwirft ...........    0 / 0
+#   :956 angehaengt .............    0 / 0       <- kein einziger, je
+# 1290 Frames verschwanden zwischen 954 und 956, also IN dieser Funktion.
+#
+# WAS ES GEKOSTET HAT: `BACKBONE_REEMBED` hatte am 01.08. Reichweite 135/187 = 72 %
+# (Byte-Vergleich der actsweep-Arme) und am 17.08. 0/24.  Der Mechanismus zielt auf
+# `ccdc_backbone`, die ZWEITGROESSTE Fehlmasse (411 von 840).  Er war nie kaputt --
+# er erzeugt weiterhin 2446 Frames auf 182 von 187 Systemen.  Es wurde nur nichts
+# davon angenommen.
+#
+# ⚠ DIE LEHRE STEHT SCHON IM REGISTER, und sie hat hier fuenfzehn Tage gekostet:
+# ein Fehler unter einem breiten `except` ist unsichtbar, bis jemand ZAEHLT.  Ein
+# Zensus ueber die Reichweite haette es am 02.08. gefunden; es gab keinen Verlauf,
+# gegen den ein Abfall haette auffallen koennen.  Genau dafuer gibt es seit heute
+# `harness/reach_watch.py` und `results/reach_history.jsonl`.
+_INTERLIG_VDW_FLOOR = 2.0
+_INTERLIG_VDW_TOL = 0.05
+
+
 def _interlig_vdw_gate_enabled() -> bool:
     """vdW-level inter-ligand clash filter for the ADDITIONAL conformer frames
     (backbone re-embed / conformer re-seating).  Active by default whenever those
