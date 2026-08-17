@@ -4710,3 +4710,74 @@ def test_the_hand_is_held_in_the_one_place_that_moves_it():
     assert "> far(atom.x, atom.y, atom.z)" in rule
     assert "var mark = wall[index];" in rule
     assert "setThermalWall: setThermalWall," in js
+
+
+def test_the_leash_is_on_before_the_hand_has_moved_anything(editor, monkeypatch):
+    """It was put on from the first follow answer, and that is a tenth of a
+    second away.
+
+    By then the mouse has taken the atom an angstrom and the bond it was in is
+    gone -- so the one stretch of a drag that was never checked was exactly
+    the one that does the damage.  Which is why a proton could still be pulled
+    off a ring with the budget switched on and saying the right numbers.
+
+    The structure on screen needs no checking to be marked: it is where the
+    budget was last agreed, by definition.
+    """
+    import json
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+    here = editor["coords_widget"].value
+
+    # Switched on first: doing that clears the anchor and measures a new one,
+    # so an anchor planted before it would be wiped by the very act of
+    # turning the budget on.
+    editor["submit_thermal_btn"].value = True
+    editor["submit_relax_btn"].value = True
+    _time.sleep(0.4)          # let the anchoring run give up on the fake xtb
+
+    # A budget that is anchored, as it is once that run has come back.
+    state["thermal_e0"] = -15.877561
+    state["thermal_for"] = tuple(
+        line.split()[0] for line in here.splitlines()
+        if len(line.split()) >= 4)
+
+    editor["submit_gfn_wall"].value = ""
+    editor["submit_cmd_sync"].value = "gfngrab:1:0"
+    deadline = _time.time() + 10
+    while _time.time() < deadline and not editor["submit_gfn_wall"].value:
+        _time.sleep(0.02)
+
+    sent = editor["submit_gfn_wall"].value
+    assert sent, "the leash has to be on at the grab, not after the first answer"
+    payload = json.loads(sent)
+    assert payload["reach"] > 0
+    # Every atom, because which ones the hand is on is not known until the
+    # first drag-follow says so -- and a mark on an atom nobody is moving
+    # costs nothing.
+    assert len(payload["wall"]) == 3, payload["wall"]
+
+
+def test_no_budget_means_no_leash_at_the_grab(editor, monkeypatch):
+    """A leash from a missing anchor would be a limit invented out of nothing,
+    and it would hold hardest exactly where the number is least trustworthy."""
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    state = editor["editor_state"]
+    editor["submit_ff_dd"].value = "gfn2"
+    state["thermal_e0"] = None
+    state["thermal_for"] = None
+    editor["submit_gfn_wall"].value = ""
+
+    editor["submit_cmd_sync"].value = "gfngrab:2:0"
+    _time.sleep(0.3)
+
+    assert editor["submit_gfn_wall"].value == ""

@@ -2486,6 +2486,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: than jumping along it.
     _THERMAL_REACH = 0.10
 
+    def _arm_thermal_leash():
+        """Put the leash on at the moment the hand arrives.
+
+        No calculation: the geometry on screen is the last one the budget
+        agreed to, so it is its own confirmation.  What this buys is the first
+        tenth of a second of a drag -- the stretch before any answer can come
+        back, which is exactly where a yank does its damage.
+        """
+        if not submit_thermal_btn.value:
+            return
+        anchor, _ceiling = _thermal_budget()
+        if anchor is None:
+            return
+        here = _gfn.coordinates_of(_current_xyz() or '')
+        if not here:
+            return
+        marks = {i: [here[3 * i], here[3 * i + 1], here[3 * i + 2]]
+                 for i in range(len(here) // 3)}
+        state['thermal_safe'] = marks
+        state['thermal_walled'] = False
+        _push_thermal_wall(marks, reach=_THERMAL_REACH)
+
     def _thermal_wall(xyz, energy, holding):
         """Hold the hand where the budget ran out, and let go when it is back.
 
@@ -4904,6 +4926,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 'there and starts again from what you make.',
                                 spinner=True)
             _begin_gfn_follow()
+            # The leash goes on before the hand has moved anything.  It used
+            # to be set from the first follow answer, and the first answer is
+            # a tenth of a second away -- by which time the mouse has taken
+            # the atom an angstrom and the bond it was in is gone.  Waiting
+            # for the calculation to say where the structure may stand meant
+            # the one stretch that is never checked was the one that does the
+            # damage.
+            #
+            # The structure on screen needs no checking: it is where the
+            # budget was last agreed, by definition.  Every atom is marked,
+            # not only the ones being dragged, because which those are is not
+            # known until the first drag-follow says so -- and a mark on an
+            # atom nobody is moving costs nothing.
+            _arm_thermal_leash()
             return
 
         if verb == 'gfnfree':
