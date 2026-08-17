@@ -464,20 +464,40 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
         _out = _rpuck.generate(m, frozen=frozen, budget=int(budget), angle_skip={0})
     except Exception:
         return
+    # ===== ZAEHLUNG DER VERWERFUNGSGRUENDE (17.08.2026) ==============================
+    # GEMESSEN am 16.08. (`folds`, 965 Systeme): **1055 von 1766 Ringidentitaeten =
+    # 59,7 % tragen ueber den GANZEN Manifold nur EINE Faltung** -- und das MIT diesem
+    # laufenden Emitter (RING_PUCKER ist Champion-Flag #24, und der FF-freie Pfad ist
+    # 98,8 % der Faelle, Feuerzensus 14.08.).  Der Bauer existiert also, er laeuft, und
+    # die Luecke bleibt.
+    #
+    # Die Frage ist damit nicht "wie bauen wir die zweite Faltung", sondern **an welchem
+    # der sechs Tore sie stirbt**.  Von aussen sieht "erzeugt und verworfen" genauso aus
+    # wie "nie gebaut" -- derselbe Fehlschluss wie beim Feuerzensus am 14.08.
+    #
+    # Reine INSTRUMENTIERUNG: zaehlt und meldet einmal, aendert am Verhalten nichts.
+    # Die Meldung haengt an DELFIN_FFFREE_PUCKER_TRACE (Vorgabe aus), damit sie in
+    # Produktionslaeufen nicht mitlaeuft.
+    _pk = {"erzeugt": len(_out or []), "cap": 0, "anzahl": 0, "reihenfolge": 0,
+           "unclean": 0, "kollaps": 0, "beta": 0, "clash": 0, "akzeptiert": 0}
     for _px, _plab in (_out or []):
         if max_isomers and len(results) >= max_isomers:
+            _pk["cap"] += 1
             break
         try:
             _lines = [ln.split() for ln in _px.splitlines() if ln.strip()]
             if len(_lines) != len(base_syms):
+                _pk["anzahl"] += 1
                 continue
             _ps = [t[0] for t in _lines]
             if _ps != list(base_syms):
+                _pk["reihenfolge"] += 1
                 continue                      # order must survive; never guess a mapping
             _pP = _np.array([[float(t[1]), float(t[2]), float(t[3])] for t in _lines])
             _ps, _pP = _maybe_relax(_ps, _pP)
             if not _build_is_clean(_ps, _pP, cn=cn, geom=geom, donors=donors,
                                    exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+                _pk["unclean"] += 1
                 continue
             # NEVER-WORSE PER SIBLING.  _build_is_clean asks "is this buildable", which is a
             # LOWER bar than "is this good".  Measured 2026-08-02 (ffpuck2): the pass was
@@ -496,9 +516,9 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
                 try:
                     if (_AC._collapsed_heavy_bonds_strict(_ps, _pP)
                             and not _base_bad[0]):
-                        continue                    # introduces a collapse the primary lacks
+                        _pk["kollaps"] += 1; continue   # introduces a collapse the primary lacks
                     if _AC._beta_score(_ps, _pP, _dloc) > _base_bad[1] + 1e-9:
-                        continue                    # flatter donors were the point; worse is not
+                        _pk["beta"] += 1; continue      # flatter donors were the point; worse is not
                 except Exception:
                     pass
             # ... and the same never-worse test _append_reembed already applies to ITS extra
@@ -511,12 +531,27 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
             if _base_min is not None:
                 try:
                     if not _interlig_clash_ok(_ps, _pP, _base_min):
-                        continue
+                        _pk["clash"] += 1; continue
                 except Exception:
                     pass
+            _pk["akzeptiert"] += 1
             results.append((_xyz(_ps, _pP), f"{base_label}-{_plab}"))
         except Exception:
             continue
+    # EINMAL melden, welches Tor die Faltungen kostet.  Ohne diese Zeile ist "erzeugt und
+    # verworfen" von "nie gebaut" nicht zu unterscheiden -- genau der Fehlschluss, der am
+    # 14.08. den Feuerzensus wertlos gemacht hat.  Vorgabe AUS.
+    if os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1" and _pk["erzeugt"]:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "[pucker-trace] %s: erzeugt=%d akzeptiert=%d | verworfen: anzahl=%d "
+                "reihenfolge=%d unclean=%d kollaps=%d beta=%d clash=%d cap=%d",
+                base_label, _pk["erzeugt"], _pk["akzeptiert"], _pk["anzahl"],
+                _pk["reihenfolge"], _pk["unclean"], _pk["kollaps"], _pk["beta"],
+                _pk["clash"], _pk["cap"])
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
