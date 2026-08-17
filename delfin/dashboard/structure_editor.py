@@ -2331,7 +2331,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # hold it against.  The old single point stands in.
                     contacts = (
                         _gfn.contacts_holding(
-                            current, holding, most=2,
+                            current, holding, most=3,
                             was=state.get('thermal_was'),
                             turning=state.get('thermal_turn'))
                         if (submit_thermal_btn.value
@@ -2446,10 +2446,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # kcal/mol along the torsion costs +345 held rigid.
                     turned = [one for one in contacts
                               if str(one.get('kind')) == 'dihedral']
-                    turning = bool(turned)
-                    if turning:
+                    if turned:
                         state['thermal_turn'] = list(turned[0]['atoms'])
-                    settled = (outcome['xyz'] if turning else
+                    # Price what you show.
+                    #
+                    # The atoms used to be put back where the cursor had them
+                    # and the *relaxed* energy reported, so when the held
+                    # values did not determine the drag the two came apart:
+                    # the picture had a bromide 1.27 A from a palladium and
+                    # the price belonged to a structure where the metal had
+                    # got out of the way.  The relaxed geometry is the one
+                    # that was priced, so it is the one that is shown, and
+                    # an atom that will not follow the cursor is the honest
+                    # picture of a structure that refuses to be pushed there.
+                    settled = (outcome['xyz'] if contacts else
                                _gfn.hold_atoms_at(
                                    outcome['xyz'], current, holding))
                     # What the next answer measures the hand against: the
