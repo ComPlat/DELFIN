@@ -24,6 +24,7 @@ import base64
 import html
 import importlib.resources
 import json
+import math
 import os
 import shutil
 import threading
@@ -80,6 +81,7 @@ LABEL_SCALE_DEFAULT = LABEL_PX_DEFAULT / LABEL_PX_PER_SCALE
 #: toFixed(6).  Two structures that differed only in that were two different
 #: histories, and reading which was which off the decimal count is not
 #: something a user should have to do.
+_HARTREE_TO_KCAL = 627.5094740631
 _XYZ_ELEMENT_COLUMNS = 5
 _XYZ_NUMBER_COLUMNS = 24
 _XYZ_DECIMALS = 14
@@ -140,6 +142,48 @@ def _is_editor_comment(line):
     """Whether that comment line is this editor's own claim about a geometry."""
     text = str(line or '').strip().lower()
     return any(text.startswith(one) for one in _EDITOR_COMMENTS)
+
+
+#: Boltzmann, Planck and the gas constant, in the units this file speaks:
+#: kcal/mol for energies, kelvin for temperature, seconds for time.
+_BOLTZMANN_SI = 1.380649e-23          # J/K
+_PLANCK_SI = 6.62607015e-34           # J s
+_GAS_CONSTANT = 1.987204259e-3        # kcal/(mol K)
+
+
+def thermal_ceiling(temperature, seconds):
+    """The highest barrier a structure crosses at *temperature* within
+    *seconds*, in kcal/mol.
+
+    Eyring turned around.  A rate is k = (kB T / h) exp(-dG/RT), and a barrier
+    is crossed about once in 1/k -- so asking how high it may be to be crossed
+    within a given time gives
+
+        dG = R T ln(kB T tau / h)
+
+    which is the whole content of "possible at this temperature".  It is not
+    one number: it depends on how long the user is prepared to wait, and the
+    two make very different chemistry.  At 298 K a second buys 17.5 kcal/mol,
+    an hour 22.3 and a year 27.7; at 773 K an hour buys 59.3.
+
+    Measured against it on a benzene with GFN2, the ring bond stretched with
+    everything else relaxed: 1.55 A costs 9.8 kcal/mol, 1.65 A costs 21.3 and
+    1.75 A costs 34.7.  So at room temperature and an hour the bond can be
+    pulled to about 1.66 A and no further -- the ring cannot be torn open, and
+    that falls out of the energy rather than out of a rule about aromatics.
+    At 773 K the same ceiling reaches 1.9 A, which is the temperature at which
+    benzene really does come apart.
+    """
+    T = max(1.0, float(temperature))
+    # A picosecond is the floor, and it is not arithmetic hygiene: below about
+    # a tenth of that a molecule has not finished one vibration, so there is no
+    # crossing to speak of and no barrier height that means anything.  It also
+    # keeps the logarithm away from zero.
+    tau = max(1e-12, float(seconds))
+    inside = _BOLTZMANN_SI * T * tau / _PLANCK_SI
+    if inside <= 1.0:
+        return 0.0
+    return _GAS_CONSTANT * T * math.log(inside)
 
 
 def scale_for_px(px):
@@ -865,6 +909,73 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         style={'description_width': '14px'},
         layout=widgets.Layout(width='72px', display='none'),
     )
+    #: The thermal budget: what this structure can do at this temperature.
+    #:
+    #: Switched on, it takes the energy of the structure as it stands as the
+    #: anchor and reports every later geometry against it.  What that buys is
+    #: a number that says whether a distortion is chemistry or nonsense: a
+    #: benzene ring bond at 1.55 A is 9.8 kcal/mol and reachable at room
+    #: temperature, at 1.75 A it is 34.7 and reachable at none.
+    #:
+    #: The energy costs nothing.  Every follow step already relaxes the whole
+    #: structure except the atom the hand is holding and hands its energy
+    #: back; nothing read it.  That is exactly the right quantity, too -- a
+    #: point on the constrained path rather than the energy of a geometry
+    #: nothing has relaxed around.
+    submit_thermal_btn = widgets.ToggleButton(
+        value=False, description='Thermal', icon='thermometer-half',
+        tooltip=(
+            'Measure every change against what this structure can actually do '
+            'at the temperature below. The energy is read from the relaxation '
+            'that already runs while you drag, so it costs nothing.'
+        ),
+        layout=widgets.Layout(width='96px', height='30px', display='none'),
+        disabled=True,
+    )
+    submit_temperature = widgets.BoundedFloatText(
+        value=298.15, min=1.0, max=5000.0, step=25.0, description='T/K',
+        style={'description_width': '28px'},
+        layout=widgets.Layout(width='104px', display='none'),
+        disabled=True,
+    )
+    #: How long the user is prepared to wait, which is the other half of
+    #: "possible at this temperature" and is usually left out.  A barrier of
+    #: 22 kcal/mol is an hour at 298 K and a fifth of a second at 373; without
+    #: a timescale the question has no answer.
+    submit_timescale = widgets.Dropdown(
+        options=[('1 s', 1.0), ('1 min', 60.0), ('1 h', 3600.0),
+                 ('1 day', 86400.0), ('1 year', 3.15576e7)],
+        value=3600.0, description='in',
+        style={'description_width': '18px'},
+        layout=widgets.Layout(width='104px', display='none'),
+        disabled=True,
+    )
+    #: Whether switching on relaxes first.  A budget is measured from
+    #: somewhere, and a hand-built structure is often well above its own
+    #: minimum -- anchoring there gives a ceiling that is generous by however
+    #: much strain was already in it.  Relaxing first anchors on the minimum
+    #: and makes the number mean what it says; leaving it off keeps the
+    #: geometry exactly as the user built it, which is sometimes the point.
+    submit_thermal_relax = widgets.Checkbox(
+        value=True, description='relax first', indent=False,
+        tooltip=('Relax once when switching on, so the budget is measured '
+                 'from a minimum. Off anchors on the structure as it stands, '
+                 'strain and all.'),
+        layout=widgets.Layout(width='104px', display='none'),
+        disabled=True,
+    )
+    #: Re-anchor here.  Crossing a barrier lands in a new minimum, and that is
+    #: an intermediate: a molecule that has reacted thermalises and starts
+    #: again, so the next elementary step is measured from there.  Pressed by
+    #: hand rather than done automatically, because only the user knows
+    #: whether what they are looking at is an intermediate or a way station.
+    submit_thermal_anchor_btn = widgets.Button(
+        description='Set here', icon='map-pin', button_style='',
+        tooltip=('Measure from this structure from now on -- the next step of '
+                 'a mechanism starts from the intermediate it reached.'),
+        layout=widgets.Layout(width='104px', height='30px', display='none'),
+        disabled=True,
+    )
     # The lines between the atoms are 3Dmol's own bond list, worked out once
     # when the model was built.  Moving atoms does not touch it, so a bond
     # pulled apart goes on being drawn -- the picture keeps the connectivity
@@ -1242,6 +1353,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
+            submit_thermal_btn, submit_temperature, submit_timescale,
+            submit_thermal_relax, submit_thermal_anchor_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider, submit_sens_slider, submit_play_speed,
@@ -1341,6 +1454,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
         submit_play_speed.disabled = not enabled
+        for widget in (submit_thermal_btn, submit_temperature, submit_timescale,
+                       submit_thermal_relax, submit_thermal_anchor_btn):
+            widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
         submit_sens_slider.disabled = not enabled
         submit_settle_btn.disabled = not enabled
@@ -2145,6 +2261,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
                             'each.')
+                    # What the drag has cost so far.  This step already
+                    # relaxed the whole structure except the atoms the hand is
+                    # holding, so its energy is a point on the constrained
+                    # path -- the same quantity a scan would report, and not
+                    # the energy of a geometry nothing has relaxed around.  It
+                    # came back with every step and nothing read it.
+                    state['thermal_now'] = outcome.get('energy')
+                    if submit_thermal_btn.value:
+                        spent = _thermal_note(outcome.get('energy'))
+                        if spent:
+                            # On the end of the line that is already there,
+                            # never under it: this row stands above the viewer
+                            # and a second one moves the picture while the
+                            # user is aiming an atom.
+                            said = f'{said} {spent}'
                     state['gfn_last_status'] = said
                     schedule_ui_update(_set_mol_status,
                                        *_gfn_status_lines(said), spinner=True)
@@ -2234,6 +2365,118 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['manip_inflight'] = bool(drawn)
         coords_widget.value = text
         return True
+
+    def _thermal_budget():
+        """What this structure may spend, in kcal/mol, and from where.
+
+        Returns ``(anchor_energy_Eh, ceiling_kcal)`` or ``(None, ceiling)``
+        while there is no anchor yet.
+        """
+        ceiling = thermal_ceiling(submit_temperature.value,
+                                  submit_timescale.value)
+        # The anchor names the molecule it was measured on.  Asked of another
+        # one it is not an anchor at all, and the difference between two
+        # unrelated energies would read as a distortion of the second.  Keyed
+        # on the element column the way the perception and the GFN-FF topology
+        # are, so it guards itself rather than depending on a callback firing
+        # -- structure_changed is called from one place, and a structure can
+        # arrive without it.
+        if state.get('thermal_for') != _structure_fingerprint(_current_xyz() or ''):
+            return None, ceiling
+        return state.get('thermal_e0'), ceiling
+
+    def _thermal_note(energy):
+        """Where this geometry stands against the budget, said in one line."""
+        anchor, ceiling = _thermal_budget()
+        if anchor is None or energy is None:
+            return ''
+        spent = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
+        T = float(submit_temperature.value)
+        if spent <= ceiling:
+            return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
+                    f'{T:g} K.')
+        # Said as a time rather than as a number: how long this would take is
+        # the thing a chemist can judge, and 34.7 kcal/mol means nothing until
+        # it is "longer than the age of the earth".
+        return (f'{spent:+.1f} kcal/mol -- past the {ceiling:.1f} this '
+                f'structure has at {T:g} K. {_thermal_wait(spent, T)}')
+
+    def _thermal_wait(kcal, temperature):
+        """How long a barrier of that height takes at that temperature."""
+        T = max(1.0, float(temperature))
+        rate = ((_BOLTZMANN_SI * T / _PLANCK_SI)
+                * math.exp(-max(0.0, float(kcal)) / (_GAS_CONSTANT * T)))
+        if rate <= 0:
+            return 'It does not happen.'
+        seconds = 1.0 / rate
+        for limit, unit, name in ((60, 1, 's'), (3600, 60, 'min'),
+                                  (86400, 3600, 'h'), (3.15576e7, 86400, 'd'),
+                                  (float('inf'), 3.15576e7, 'years')):
+            if seconds < limit:
+                return f'That is about {seconds / unit:.3g} {name}.'
+        return ''
+
+    def _set_thermal_anchor(relax=None, note='Measuring from here'):
+        """Take the energy of the structure on screen as the budget's zero.
+
+        A single point when the structure is to be kept as it is, one
+        optimisation when it is not.  Either way what is stored is an energy
+        of the *chosen method*, so the budget and the drag are the same
+        calculation and their difference means something.
+        """
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        if not xyz or not _gfn.is_gfn_method(method):
+            return
+        wants_relax = (submit_thermal_relax.value if relax is None else relax)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+        state['thermal_e0'] = None
+        _set_mol_status(f'{note}: {_server_label(method)} is measuring the '
+                        'energy of this structure...', spinner=True)
+
+        def _work():
+            outcome = _gfn.optimize_with_gfn(
+                xyz, method, charge=charge, uhf=uhf, timeout=None,
+                solvent=wet, solvation_model=model,
+                topology=(_gfn_topology_dir(xyz)
+                          if _gfn.is_gfn_method(method) else None),
+                optimise=bool(wants_relax),
+            )
+
+            def _done():
+                if not outcome.get('ok') or outcome.get('energy') is None:
+                    _set_mol_status(
+                        'The thermal budget has no anchor: '
+                        + str(outcome.get('status') or 'the energy did not '
+                              'come back.'))
+                    return
+                state['thermal_e0'] = float(outcome['energy'])
+                state['thermal_for'] = _structure_fingerprint(
+                    outcome.get('xyz') or xyz)
+                if wants_relax:
+                    lines = [line for line in outcome['xyz'].splitlines()[2:]
+                             if line.strip()]
+                    if lines:
+                        _write_coords(xyz_document(
+                            lines, 'Relaxed, and the budget measured from here'))
+                _, ceiling = _thermal_budget()
+                _set_mol_status(
+                    f'Measuring from here. At {float(submit_temperature.value):g} K '
+                    f'this structure has {ceiling:.1f} kcal/mol to spend '
+                    f'within {_timescale_label()}.')
+
+            schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _timescale_label():
+        for label, value in submit_timescale.options:
+            if value == submit_timescale.value:
+                return label
+        return f'{submit_timescale.value:g} s'
 
     def _gfn_topology_dir(xyz):
         """Where GFN-FF's perceived bonding is kept while a structure is worked
@@ -4966,6 +5209,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'picture -- take hold of an atom and the frame you are looking at '
             'is the one that is kept.')
 
+    def on_submit_thermal(change):
+        """Switching the budget on anchors it; switching it off forgets."""
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_thermal_btn.value)
+        submit_thermal_btn.button_style = 'info' if active else ''
+        for widget in (submit_temperature, submit_timescale,
+                       submit_thermal_relax, submit_thermal_anchor_btn):
+            widget.layout.display = '' if active else 'none'
+        if not active:
+            state['thermal_e0'] = None
+            state['thermal_for'] = None
+            _set_mol_status('The thermal budget is off. Drags are unmeasured '
+                            'again.')
+            return
+        _set_thermal_anchor()
+
+    def on_submit_thermal_anchor(_button=None):
+        # Never relaxes: this is the user saying "from here", and the geometry
+        # they are pointing at is the one they mean -- an intermediate they
+        # have just reached, not the minimum near it.
+        _set_thermal_anchor(relax=False, note='Measuring from this structure')
+
+    def on_submit_thermal_terms(change):
+        """T or the timescale moved: the anchor stands, the ceiling moves."""
+        if change.get('name') != 'value' or not submit_thermal_btn.value:
+            return
+        _, ceiling = _thermal_budget()
+        spent = _thermal_note(state.get('thermal_now'))
+        _set_mol_status(
+            f'At {float(submit_temperature.value):g} K this structure has '
+            f'{ceiling:.1f} kcal/mol to spend within {_timescale_label()}.'
+            + (f' {spent}' if spent else ''))
+
     def on_submit_sens_changed(change):
         if change.get('name') != 'value':
             return
@@ -5307,6 +5584,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Strength is how many steps the browser's field takes per animation
         # frame, and that field does not run under a server method.
         submit_strength_slider.layout.display = 'none' if server else ''
+        # The thermal budget needs an energy per follow step, and that is
+        # xtb's: MOPAC's follow reports a heat of formation, which is not the
+        # same quantity and cannot be differenced against an xtb anchor.
+        submit_thermal_btn.layout.display = '' if xtb else 'none'
+        if not xtb and submit_thermal_btn.value:
+            submit_thermal_btn.value = False
+        for widget in (submit_temperature, submit_timescale,
+                       submit_thermal_relax, submit_thermal_anchor_btn):
+            widget.layout.display = ('' if (xtb and submit_thermal_btn.value)
+                                     else 'none')
         # And the playback pace is the other way round: only a server engine
         # walks a path worth pacing.  The browser's field draws its own frames
         # as it computes them and there is nothing queued to play.
@@ -5598,6 +5885,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
+    submit_thermal_btn.observe(on_submit_thermal, names='value')
+    submit_temperature.observe(on_submit_thermal_terms, names='value')
+    submit_timescale.observe(on_submit_thermal_terms, names='value')
+    submit_thermal_anchor_btn.on_click(on_submit_thermal_anchor)
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_auto_btn.observe(on_submit_auto_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
@@ -6034,6 +6325,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 submit_manip_btn, submit_draw_btn, submit_dyn_bonds_btn,
                 submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
                 submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
+                # The thermal budget is not in here.  T and the timescale are
+                # how the user is working, like the method and the solvent,
+                # and they do not stop being that because another structure
+                # arrived.  The anchor is the part that belongs to one
+                # structure, and it is an energy rather than a control -- it
+                # is dropped in structure_changed, where the molecule it was
+                # measured on stops being the one on screen.
                 submit_hold_mode)
 
     def _apply_controls(values):
@@ -6109,6 +6407,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def structure_changed():
         """A different structure is on screen now.
 
+        The thermal anchor goes with it: an energy measured on one molecule
+        says nothing about another, and a budget quietly carried over would
+        report a difference between two unrelated numbers as though it were a
+        distortion.
+
         A live force field is a set of parameters worked out for one molecule.
         Stepping from one block to another left the previous one's running
         under the new structure -- with the wrong number of atoms, even, so
@@ -6118,6 +6421,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the new viewer is ready: a viewer appearing clears the parameters it
         finds, so whichever of the two comes second is the one that counts.
         """
+        if state.get('thermal_e0') is not None:
+            state['thermal_e0'] = None
+            if submit_thermal_btn.value:
+                _set_mol_status(
+                    'A different structure: the thermal budget has no anchor '
+                    'here. Press Set here to measure from it.')
         if submit_relax_btn.value:
             _enable_live_forcefield()
 

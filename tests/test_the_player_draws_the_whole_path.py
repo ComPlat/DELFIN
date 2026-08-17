@@ -203,7 +203,12 @@ def test_a_hand_on_the_structure_cuts_the_run_where_the_picture_stands(browser):
                       [".submit-gfn-frame textarea",
                        json.dumps({"run": 1, "from": 0, "frames": path,
                                    "final": 1})])
-        page.wait_for_timeout(900)
+        # Waited for rather than slept through.  A fixed window assumes the
+        # browser gets the processor within it, and on a machine running the
+        # rest of the suite it does not -- the picture had drawn nothing and
+        # the test read that as the player being broken.
+        page.wait_for_function(
+            "s => window.__delfinGfnPlay[s].shown > 3", arg=scope, timeout=30000)
 
         queued = page.evaluate("s => window.__delfinGfnPlay[s].queue.length",
                                scope)
@@ -215,7 +220,9 @@ def test_a_hand_on_the_structure_cuts_the_run_where_the_picture_stands(browser):
         # A hand arrives on the structure.
         page.evaluate("""s => {window._submitManipStateByScope[s] =
             {drag: {kind: 'translate', targets: [1]}};}""", scope)
-        page.wait_for_timeout(500)
+        page.wait_for_function(
+            "s => window.__delfinGfnPlay[s].queue.length === 0",
+            arg=scope, timeout=30000)
 
         assert page.evaluate(
             "s => window.__delfinGfnPlay[s].queue.length", scope) == 0, (
