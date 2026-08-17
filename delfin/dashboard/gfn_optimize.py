@@ -707,6 +707,43 @@ def _atom_count(xyz_text: str) -> int:
 PULL_FORCE_CONSTANT = 0.5
 FIX_FORCE_CONSTANT = 20.0
 
+#: And what a value under the hand is held with, which is neither.
+#:
+#: A fix rings.  The contact a drag holds is perturbed every frame -- the hand
+#: moves, the answer moves the rest, and the next frame asks again -- and a
+#: spring that stiff answers each perturbation with a step big enough to
+#: overshoot the next one.  Measured on a slow drag across an ethylphenol,
+#: counting how often an atom reverses direction between one answer and the
+#: next, which is what a shaking molecule is:
+#:
+#:     k        20     10      5      2      1    0.5
+#:     worst  0.131  0.102  0.071  0.044  0.045  0.040 A
+#:     turns     94    118     23      7      0      1
+#:
+#: Most of that was an atom that was not properly held in the first place --
+#: one distance lets it slide, and the optimiser was chasing it.  Held by two
+#: (see contacts_holding) the same drag turns three times at 20.0, so the
+#: stiffness matters far less than it looked.  A dragged *group* still gains
+#: from softening, because each of its atoms has only one contact: 20.0 turns
+#: three times and moves an atom 0.084 A in a step, 5.0 turns once, 1.0 not
+#: at all.
+#:
+#: It costs almost nothing to soften, because the constraint does not have to
+#: be stiffer than the bond it is holding.  A benzene C-H asked to stand at
+#: 2.200 A comes back at 2.199 under 20.0 and 2.197 under 5.0, priced +89.1
+#: either way.  So this sits at the still end of what is still exact.
+#:
+#: xtb takes one force constant for a whole block, so during a drag this is
+#: also what any value the user is holding gets: thousandths of an Angstrom
+#: looser while an atom is under the hand, exact again when it is let go.
+DRAG_FORCE_CONSTANT = 5.0
+
+#: How much further than the first a second partner may be, and still be
+#: holding the same atom rather than tying it to something across the room.
+#: Between the measured cases -- 1.00 for a ring carbon, 1.7 to 1.8 for an
+#: SN2's chloride, 2.0 for a hydrogen on a ring -- with room on both sides.
+_PIN_SPREAD = 1.4
+
 #: How many atoms each kind of held value names.
 CONSTRAINT_ATOMS = {'distance': 2, 'angle': 3, 'dihedral': 4}
 
@@ -741,7 +778,7 @@ def constraint_input(
     do; see :func:`optimize_with_gfn` for who does it instead.
     """
     kept, dropped = [], []
-    exact = negotiated = False
+    exact = negotiated = dragging = False
     for entry in (constraints or ()):
         kind = str((entry or {}).get('kind') or '').strip().lower()
         wanted = CONSTRAINT_ATOMS.get(kind)
@@ -764,11 +801,17 @@ def constraint_input(
         mode = str((entry or {}).get('mode') or 'pull').lower()
         if mode == 'fix':
             exact = True
+        elif mode == 'drag':
+            dragging = True
         else:
             negotiated = True
         kept.append((kind, indices, value))
 
-    force = FIX_FORCE_CONSTANT if exact else PULL_FORCE_CONSTANT
+    # A value under the hand sets the block's stiffness whatever else is in
+    # it: it is the one being perturbed every frame, so it is the one that
+    # decides whether the picture is still.  See DRAG_FORCE_CONSTANT.
+    force = (DRAG_FORCE_CONSTANT if dragging
+             else FIX_FORCE_CONSTANT if exact else PULL_FORCE_CONSTANT)
     lines = []
     if kept:
         lines.append('$constrain')
@@ -787,10 +830,88 @@ def constraint_input(
     }
 
 
+def _dihedral(where: list, a: int, b: int, c: int, d: int) -> float:
+    """The a-b-c-d torsion in degrees, from a list of (x, y, z)."""
+    def minus(p, q):
+        return (p[0] - q[0], p[1] - q[1], p[2] - q[2])
+
+    def cross(p, q):
+        return (p[1] * q[2] - p[2] * q[1],
+                p[2] * q[0] - p[0] * q[2],
+                p[0] * q[1] - p[1] * q[0])
+
+    def dot(p, q):
+        return sum(one * two for one, two in zip(p, q))
+
+    b0, b1, b2 = minus(where[a], where[b]), minus(where[c], where[b]), \
+        minus(where[d], where[c])
+    length = math.sqrt(dot(b1, b1)) or 1.0
+    b1 = tuple(one / length for one in b1)
+    v = tuple(one - dot(b0, b1) * two for one, two in zip(b0, b1))
+    w = tuple(one - dot(b2, b1) * two for one, two in zip(b2, b1))
+    return math.degrees(math.atan2(dot(cross(b1, v), w), dot(v, w)))
+
+
+def _turned_by(now: float, before: float) -> float:
+    """How far a torsion moved, in degrees, the short way round."""
+    return abs((now - before + 180.0) % 360.0 - 180.0)
+
+
+#: A turn worth holding, and how little a distance may move for the drag to
+#: count as a turn at all.  A hand crosses about a tenth of an Angstrom
+#: between one answer and the next, so a drive at something shows up as
+#: tenths; a pure rotation changes a bonded distance by thousandths (0.1
+#: squared over twice the bond length) and a torsion by degrees.
+_TURN_DEGREES = 0.5
+
+#: How far the hand must have changed a distance for that distance to be what
+#: it is driving.  A hand crosses about a tenth of an Angstrom between one
+#: answer and the next, so a drive at something shows up as tenths; a pure
+#: rotation changes a bonded length by thousandths -- a tenth squared over
+#: twice the bond -- and everything incidental sits below this.
+_DRIVEN_ANGSTROM = 0.02
+
+
+def _went_around(where, then, inside, outside, symbols) -> bool:
+    """Whether the hand's step lay across its bond rather than along it."""
+    moving = max(inside, key=lambda i: math.dist(where[i], then[i]))
+    bonded = [j for j in outside if _is_a_bond(where, symbols, moving, j)]
+    if not bonded:
+        return False
+    j = min(bonded, key=lambda n: math.dist(where[moving], where[n]))
+    step = tuple(where[moving][n] - then[moving][n] for n in range(3))
+    along = tuple(where[moving][n] - where[j][n] for n in range(3))
+    span = math.sqrt(sum(one * one for one in along)) or 1.0
+    along = tuple(one / span for one in along)
+    radial = sum(one * two for one, two in zip(step, along))
+    across = math.sqrt(max(0.0, sum(one * one for one in step) - radial * radial))
+    return across > abs(radial)
+
+
+def _is_a_bond(where, symbols, i, j) -> bool:
+    """Whether these two are bonded, by covalent radii."""
+    from delfin.atom_mapping import cov_radius
+    return (math.dist(where[i], where[j])
+            < 1.25 * (cov_radius(symbols[i]) + cov_radius(symbols[j])))
+
+
+def _snapshot(was, count):
+    """*was* as a list of points, or None if it does not fit this structure."""
+    if was is None:
+        return None
+    before = coordinates_of(was) if isinstance(was, str) else list(was or ())
+    if len(before) != 3 * count:
+        return None
+    return [(before[3 * n], before[3 * n + 1], before[3 * n + 2])
+            for n in range(count)]
+
+
 def contacts_holding(
     xyz_text: str,
     dragged: Any,
     most: int = 2,
+    was: Any = None,
+    turning: Any = None,
 ) -> list:
     """What a drag has changed, as values to hold while the rest relaxes.
 
@@ -832,6 +953,18 @@ def contacts_holding(
     """
     held = {int(i) for i in (dragged or ())}
     rows = [line.split() for line in atom_lines(xyz_text)]
+    # A hand that turns does not stop turning between two frames.  Decided
+    # afresh every answer, the verdict flipped back and forth on a cyclohexane
+    # -- turning, pulling, turning -- and the ring fell back towards the chair
+    # each time the constraint set changed under it.  Once a drag is a turn it
+    # stays one, and only the angle is measured again.
+    if turning is not None and len(turning) == 4:
+        spot = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+        if all(0 <= int(n) < len(spot) for n in turning):
+            return [{'kind': 'dihedral', 'atoms': [int(n) for n in turning],
+                     'mode': 'drag',
+                     'value': _dihedral(spot, *[int(n) for n in turning])}]
+
     inside = sorted(i for i in held if 0 <= i < len(rows))
     outside = [j for j in range(len(rows)) if j not in held]
     if not inside or not outside:
@@ -839,37 +972,203 @@ def contacts_holding(
         # between the two describes the drag, and a caller that gets no values
         # back is being told to price the geometry some other way.
         return []
+    symbols = [str(r[0]) for r in rows]
     where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
-    light = [str(r[0]).strip()[:1].upper() == 'H' and len(str(r[0]).strip()) == 1
-             for r in rows]
-    pairs = sorted(
-        ((1 if (light[i] or light[j]) else 0), math.dist(where[i], where[j]), i, j)
+    light = [one.strip()[:1].upper() == 'H' and len(one.strip()) == 1
+             for one in symbols]
+    then = _snapshot(was, len(rows))
+
+    def moved(i, j):
+        """How far the hand changed this distance, in Angstrom."""
+        if then is None:
+            return 0.0
+        return abs(math.dist(where[i], where[j]) - math.dist(then[i], then[j]))
+
+    # Three kinds of thing a hand can be doing, and they are asked for in the
+    # order that tells them apart.  This is the whole of the rule.
+    #
+    #   1. Making or breaking a bond that is not there yet -- two heavy atoms
+    #      being driven at each other.  That is a reaction coordinate whatever
+    #      the distance happens to be, so it is looked for by *change* and not
+    #      by nearness.  Chosen by nearness instead, one end of a hexadiene
+    #      pushed at the other for a Cope shift picks the carbon it is already
+    #      bonded to -- whose length the push does not change -- and the two
+    #      ends finish 4.19 A apart with the budget reporting +2.0 and no
+    #      objection.
+    #
+    #   2. Stretching a bond that is there.  Pulling a hydrogen off a ring,
+    #      tearing a carbon out of one.
+    #
+    #   3. Neither, and then the hand went around something rather than along
+    #      it: a torsion.  Turning a methyl, flipping a chair.
+    #
+    # Only heavy atoms open a new contact.  A hydrogen sweeping past during a
+    # ring flip changes its distance to something by the whole of the step,
+    # every step, and held it would stop the hydrogens bending out of the way
+    # -- which is most of what makes room for anything.
+    driven = sorted(
+        ((-moved(i, j), math.dist(where[i], where[j]), i, j)
+         for i in inside for j in outside
+         if not light[i] and not light[j]
+         and moved(i, j) >= _DRIVEN_ANGSTROM
+         and not _is_a_bond(where, symbols, i, j)),
+        )
+    pulled = sorted(
+        ((1 if (light[i] or light[j]) else 0),
+         math.dist(where[i], where[j]), i, j)
         for i in inside for j in outside)
+    pulled = [(0.0, span, i, j) for _rank, span, i, j in pulled]
+    if then is not None and not driven and _went_around(where, then, inside,
+                                                        outside, symbols):
+        # Not at anything and not along anything: the hand went *around*.
+        #
+        # Which of the two it is cannot be read off a distance, because a
+        # hand that turns bends the bond a little as well -- it drags in the
+        # plane of the screen, not along an arc.  It can be read off the
+        # step: how much of it lay along the bond being held, and how much
+        # across it.  That needs no threshold in units that do not compare,
+        # and it is what tells a methyl being swung from a hydrogen being
+        # pulled off.
+        pulled = []
+    if then is None:
+        # The first answer of a drag has nothing to compare against, so the
+        # nearest contacts stand in -- heavy atoms first, as ever.
+        driven = []
+        pulled = sorted(
+            ((1 if (light[i] or light[j]) else 0),
+             math.dist(where[i], where[j]), i, j)
+            for i in inside for j in outside)
+        pulled = [(0.0, span, i, j) for _rank, span, i, j in pulled]
+
+    pairs = driven or pulled
     kept: list = []
     taken_in: set = set()
     taken_out: set = set()
-    kind = None
-    for heavy_first, span, i, j in pairs:
-        if i in taken_in or j in taken_out:
+    # One contact per dragged atom -- except when there is only one, which
+    # one distance does not hold at all.  A ring carbon pulled out along a
+    # bond slides along the other one and the ring closes behind it: asked to
+    # stand at 1.72, 1.95 and 2.20 A it came back at 1.41 every time, however
+    # stiffly it was held, and the price was that of a squeezed but whole
+    # benzene.  Two distances pin it, and the same three pulls then cost
+    # +36.6, +75.0 and +105.7 kcal/mol, which is what tearing a ring open is.
+    alone = len(inside) == 1
+    first = None
+    for _change, span, i, j in pairs:
+        if (i in taken_in and not alone) or j in taken_out:
             continue
-        # All of one kind.  A second contact is held to stop a dragged group
-        # turning away from the first one and buying itself a lower price than
-        # its position deserves, and for that it has to be the same sort of
-        # approach: two heavy atoms coming together are a reaction coordinate,
-        # a hydrogen brushing past is not, and holding the second kind stops
-        # the hydrogens bending out of the way -- which is most of what makes
-        # room for a bond.  So a dragged OH is held by its oxygen and its
-        # hydrogen is left free, while both bonds of a Diels-Alder are held.
-        if kind is not None and heavy_first != kind:
+        # And only a partner it is really held *between*.  A second contact
+        # much further off is not a hold, it is a tether: in an SN2 the two
+        # nearest heavy atoms to the arriving chloride are the carbon it is
+        # attacking and the bromide on the far side of it, and holding both
+        # nails the leaving group down.  Measured on Cl- + CH3Br, chloride
+        # driven in from 2.5 A: with one contact C-Br opens 2.01 -> 3.24 A and
+        # the price stays near zero, which is the reaction; with two it stays
+        # at 1.94 -> 1.99 and the price runs to +175, which is a bromide being
+        # crushed into a carbon that already has four bonds.
+        #
+        # The ratio tells them apart cleanly.  A ring carbon sits between two
+        # partners at 1.41 and 1.41 -- a ratio of one, and it needs both.  The
+        # chloride's are 2.5 and 4.4, and a dragged hydrogen's own carbon and
+        # the next ring carbon are 1.09 and 2.15: both far outside, and both
+        # are held perfectly well by one.
+        if first is not None and span > first * _PIN_SPREAD:
             break
-        kind = heavy_first
+        first = span if first is None else first
         kept.append({'kind': 'distance', 'atoms': [i, j],
-                     'value': span, 'mode': 'fix'})
+                     'value': span, 'mode': 'drag'})
         taken_in.add(i)
         taken_out.add(j)
         if len(kept) >= max(1, int(most)):
             break
-    return kept
+
+    if kept or then is None:
+        return kept
+
+    # Neither made nor stretched: the hand went around something.
+    #
+    # A distance cannot hold a turn -- rotating about a bond leaves that
+    # bond's length exactly where it was -- so with only distances the budget
+    # had no grip on a torsion at all, and neither did the drag.  Dragging the
+    # carbon of a methyl round a chain bond, holding only its C-C: the
+    # hydrogens were left behind and the C-H distances went to 0.92 and 2.12
+    # A.  Holding the torsion instead, the same swing keeps C-H at 1.09 and
+    # costs +4.7 kcal/mol over a full turn, which is a single bond.
+    #
+    # And the torsion alone: a hand that turns did not ask for a bond length,
+    # and the one it leaves behind -- an atom pushed rigidly through an arc,
+    # so the bond bent rather than swung -- is not worth defending.  Held
+    # anyway it is defended, and a cyclohexane pushed through its own plane
+    # came back with ring bonds squeezed from 1.53 to 1.37 A.  Let go, they
+    # relax to what they should be, the flip costs +11.1 kcal/mol against a
+    # measured 10.7, and the ring stays a ring.
+    # Heavy first here too.  The nearest bond from a carbon is always one of
+    # its own hydrogens, and a hydrogen has no second bond to walk out along,
+    # so the torsion could not be built at all -- every turn fell through to
+    # holding distances, and a cyclohexane could not be flipped.
+    anchor = min(((1 if (light[i] or light[j]) else 0),
+                  math.dist(where[i], where[j]), i, j)
+                 for i in inside for j in outside
+                 if _is_a_bond(where, symbols, i, j)) \
+        if any(_is_a_bond(where, symbols, i, j)
+               for i in inside for j in outside) else None
+    if anchor is not None:
+        _heavy, _span, i, j = anchor
+        spun = _turn_holding(where, then, [i, j], held, symbols)
+        if spun is not None:
+            return [spun]
+    # A hand that has stopped moving has changed nothing, and nothing is not
+    # an answer: with no values held the price falls back to a single point on
+    # the geometry as it stands, which is the number this whole thing exists
+    # to stop using.  So a still hand holds what a fresh one would.
+    return contacts_holding(xyz_text, dragged, most=most)
+
+
+
+def _turn_holding(where, then, contact, dragged, symbols):
+    """A dihedral to hold, if the hand turned this contact rather than pulled.
+
+    ``None`` when it pulled, when there are not four atoms to make a torsion
+    out of, or when nothing moved.
+
+    The other two atoms have to be *bonded* ones, walked out along the chain,
+    not merely the nearest in space.  Taken by distance they came back as two
+    hydrogens on a neighbouring carbon, and the torsion through those barely
+    moves while the chain swings right round: 0.14 degrees where the real one
+    turned ten.  A torsion is a statement about connectivity, and picking its
+    atoms by proximity is not a smaller version of that.
+    """
+    count = len(symbols)
+    i, j = int(contact[0]), int(contact[1])
+
+    from delfin.atom_mapping import cov_radius
+    radius = [cov_radius(one) for one in symbols]
+
+    def bonded_to(of, without):
+        near = [n for n in range(count)
+                if n != of and n not in without and n not in dragged
+                and math.dist(where[of], where[n])
+                < 1.25 * (radius[of] + radius[n])]
+        # A torsion through the heavy atoms is the one that names a
+        # conformer; through a hydrogen it names how a methyl happens to be
+        # standing.
+        heavy = [n for n in near
+                 if str(symbols[n]).strip().capitalize() != 'H']
+        pick = heavy or near
+        return min(pick, key=lambda n: math.dist(where[of], where[n])) \
+            if pick else None
+
+    k = bonded_to(j, {i})
+    if k is None:
+        return None
+    ell = bonded_to(k, {i, j})
+    if ell is None:
+        return None
+
+    now = _dihedral(where, i, j, k, ell)
+    if _turned_by(now, _dihedral(then, i, j, k, ell)) < _TURN_DEGREES:
+        return None
+    return {'kind': 'dihedral', 'atoms': [i, j, k, ell], 'mode': 'drag',
+            'value': now}
 
 
 def read_trajectory(folder: Path) -> list:

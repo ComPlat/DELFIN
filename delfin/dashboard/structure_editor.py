@@ -2209,10 +2209,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return True
 
     def _clear_thermal_wall():
-        """A drag that has ended has no hand to hold back."""
+        """A drag that has ended has no hand to hold back.
+
+        Sent every time, not only when the budget had actually run out.  A
+        leash is armed the moment an atom is picked up and shortens as the
+        budget is spent, so a drag that stayed well inside it still leaves
+        marks and a reach on the page -- and only the walled case was being
+        released.  The next drag then pulled against the last one's marks,
+        which is a molecule that will not move properly and no line anywhere
+        saying why.  Switching the budget off did not release it either, so
+        it outlived the feature that made it.
+        """
         state['thermal_safe'] = {}
-        if state.pop('thermal_walled', False):
-            _push_thermal_wall(None)
+        state.pop('thermal_walled', None)
+        # The geometry a turn is measured against belongs to the drag that
+        # is over.  Kept, the first answer of the next one would compare
+        # against a structure from before whatever happened in between.
+        state.pop('thermal_was', None)
+        state.pop('thermal_turn', None)
+        _push_thermal_wall(None)
 
     def _end_gfn_follow():
         state['gfn_follow'] = False
@@ -2316,8 +2331,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # hold it against.  The old single point stands in.
                     contacts = (
                         _gfn.contacts_holding(
-                            current, holding,
-                            most=1 if len(holding or ()) <= 1 else 2)
+                            current, holding, most=2,
+                            was=state.get('thermal_was'),
+                            turning=state.get('thermal_turn'))
                         if (submit_thermal_btn.value
                             and not _mopac.is_mopac_method(method)) else [])
                     if _mopac.is_mopac_method(method):
@@ -2422,8 +2438,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # this answer outlives the drag -- applied after the
                     # release it would take them with it, which is the spring
                     # back that looked like the drag being undone.
-                    settled = _gfn.hold_atoms_at(
-                        outcome['xyz'], current, holding)
+                    # Unless a turn is being held, and then the torsion is
+                    # what the hand asked for and a position would fight it.
+                    # Put back where the cursor had them, a methyl turned
+                    # about a chain bond cannot spin about its own axis to
+                    # get out of the way, and the same turn that costs +7.9
+                    # kcal/mol along the torsion costs +345 held rigid.
+                    turned = [one for one in contacts
+                              if str(one.get('kind')) == 'dihedral']
+                    turning = bool(turned)
+                    if turning:
+                        state['thermal_turn'] = list(turned[0]['atoms'])
+                    settled = (outcome['xyz'] if turning else
+                               _gfn.hold_atoms_at(
+                                   outcome['xyz'], current, holding))
+                    # What the next answer measures the hand against: the
+                    # geometry this one handed back, not the one it was
+                    # handed.  Against the latter the difference holds the
+                    # relaxation as well as the hand, and on a ring being
+                    # puckered the relaxation is the larger of the two -- so
+                    # every drag read as a drive at something, the torsion
+                    # never fired, and a cyclohexane could not be flipped.
+                    state['thermal_was'] = settled
                     frames = list(state.get('gfn_follow_frames') or [])
                     frames.append(_gfn.coordinates_of(settled))
                     state['gfn_follow_frames'] = frames
@@ -5544,6 +5580,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not active:
             state['thermal_e0'] = None
             state['thermal_for'] = None
+            # And the page is told, or the last drag's leash outlives the
+            # switch that made it: the marks stay, the reach stays, and the
+            # next drag is held back by a budget that is no longer on.
+            _clear_thermal_wall()
             _set_mol_status('The thermal budget is off. Drags are unmeasured '
                             'again.')
             return
