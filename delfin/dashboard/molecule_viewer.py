@@ -3613,6 +3613,42 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // when the user grabbed a selected atom, a single atom when they grabbed an
     // unselected one. Falls back to the selection so callers without a drag
     // context keep working.
+    /* Where the hand may no longer go.
+     *
+     * The kernel measures what the structure is spending against what it can
+     * spend at the temperature on screen, and when that is gone it sends the
+     * last position the atom held while still inside the budget.  From then
+     * on the hand may only move it back: a step that takes it further from
+     * that mark is dropped, a step that brings it closer is applied.  A
+     * ratchet rather than a prediction -- the kernel answers about ten times
+     * a second and the mouse moves sixty, so anything that tried to guess
+     * between answers would be guessing most of the time.  The cost is one
+     * answer's worth of overshoot before it holds.
+     *
+     * Cleared by the kernel the moment the structure is inside the budget
+     * again, which happens by itself on the far side of a barrier: past the
+     * top the energy falls, so a real transition state is crossed and only a
+     * distortion that stays expensive is held.
+     */
+    function thermalWallBlocks(scopeKey, atom, deltaWorld) {
+        var state = getState(scopeKey);
+        var wall = state.thermalWall;
+        if (!wall) return false;
+        var mark = wall[atom.serial];
+        if (!mark) return false;
+        function far(x, y, z) {
+            var dx = x - mark[0], dy = y - mark[1], dz = z - mark[2];
+            return dx*dx + dy*dy + dz*dz;
+        }
+        return far(atom.x + deltaWorld.x, atom.y + deltaWorld.y,
+                   atom.z + deltaWorld.z) > far(atom.x, atom.y, atom.z);
+    }
+
+    function setThermalWall(scopeKey, wall) {
+        getState(scopeKey).thermalWall = wall || null;
+        return true;
+    }
+
     function applyTranslate(scopeKey, deltaWorld, serials) {
         var viewer = getViewer(scopeKey);
         var state = getState(scopeKey);
@@ -3624,6 +3660,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         targets.forEach(function(serial) {
             var a = byS[serial];
             if (!a) return;
+            if (thermalWallBlocks(scopeKey, a, deltaWorld)) return;
             a.x += deltaWorld.x;
             a.y += deltaWorld.y;
             a.z += deltaWorld.z;
@@ -4613,6 +4650,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         clearSelection: clearSelection,
         setPicks: setPicks,
         setPositions: setPositions,
+        setThermalWall: setThermalWall,
         setDynamicBonds: setDynamicBonds,
         // So a watcher outside this closure can hand the geometry over while
         // the mouse is still down, rather than only when it is let go.

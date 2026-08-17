@@ -4610,3 +4610,97 @@ def test_the_budget_line_goes_on_the_row_that_is_already_there():
     assert "said = f'{said} {spent}'" in follow
     # One line handed to the status, never two.
     assert "_gfn_status_lines(said)" in follow
+
+
+def test_the_wall_goes_up_when_the_budget_is_gone_and_down_again(bare_editor):
+    """The hand is held where the budget ran out, and let go when it is back.
+
+    A ratchet rather than a prediction: the kernel answers about ten times a
+    second and the mouse moves sixty, so anything guessing between answers
+    would be guessing most of the time.  The cost is one answer's worth of
+    overshoot before it holds.
+
+    And it lifts by itself on the far side of a barrier -- past the top the
+    energy falls, the structure is inside its budget again, and the hand is
+    free.  Only a distortion that stays expensive is held, which is the whole
+    difference between a reaction and tearing a ring open.
+    """
+    part, state = bare_editor
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_temperature.value = 298.15
+    part.submit_timescale.value = 3600.0          # ceiling 22.3 kcal/mol
+
+    xyz = ("2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.379 0.000 0.000\n")
+    part.coords_widget.value = xyz
+    anchor = -15.0
+    state["thermal_e0"] = anchor
+    state["thermal_for"] = part._structure_fingerprint(xyz)
+
+    from delfin.dashboard.structure_editor import _HARTREE_TO_KCAL
+
+    def energy(kcal):
+        return anchor + kcal / _HARTREE_TO_KCAL
+
+    # Inside the budget: the place the hand is standing is remembered, and no
+    # wall goes up.
+    part._thermal_wall(xyz, energy(8.0), [1])
+    assert state.get("thermal_walled") is not True
+    assert state["thermal_safe"][1] == [1.379, 0.0, 0.0]
+
+    # Still inside, further out: the mark moves with the hand.
+    further = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.600 0.000 0.000\n"
+    part._thermal_wall(further, energy(20.0), [1])
+    assert state["thermal_safe"][1] == [1.6, 0.0, 0.0]
+    assert state.get("thermal_walled") is not True
+
+    # Past it: the wall goes up, and at the last place that was allowed --
+    # not at where the hand has since dragged to.
+    past = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.900 0.000 0.000\n"
+    part._thermal_wall(past, energy(55.0), [1])
+    assert state["thermal_walled"] is True
+    assert state["thermal_safe"][1] == [1.6, 0.0, 0.0], (
+        "the wall stands where the budget ran out")
+
+    # Back under -- over the top of a barrier -- and the hand is free again.
+    part._thermal_wall(further, energy(12.0), [1])
+    assert state.get("thermal_walled") is not True
+
+
+def test_no_anchor_means_no_wall(bare_editor):
+    """A budget with nothing to measure from cannot hold anything back, and
+    must not: that would be a limit invented out of a missing number."""
+    part, state = bare_editor
+    part.submit_ff_dd.value = "gfn2"
+    state["thermal_e0"] = None
+    state["thermal_for"] = None
+
+    part._thermal_wall("2\nx\nC 0 0 0\nC 1.9 0 0\n", -15.0, [1])
+    assert not state.get("thermal_walled")
+
+
+def test_a_drag_that_ends_takes_its_wall_with_it(bare_editor):
+    """Left standing, the wall would meet the next drag with the positions of
+    the last one -- atoms that are not being held any more, marked at places
+    the structure has since moved away from."""
+    part, state = bare_editor
+    state["thermal_safe"] = {1: [1.6, 0.0, 0.0]}
+    state["thermal_walled"] = True
+
+    part._end_gfn_follow()
+
+    assert state["thermal_safe"] == {}
+    assert not state.get("thermal_walled")
+
+
+def test_the_hand_is_held_in_the_one_place_that_moves_it():
+    """Every path that drags an atom goes through applyTranslate, so the wall
+    belongs there rather than in the mousemove handler that calls it."""
+    from delfin.dashboard import tab_submit
+
+    js = tab_submit.submit_manip_bootstrap_js()
+    body = js.split("function applyTranslate(")[1].split("\n    }")[0]
+    assert "if (thermalWallBlocks(scopeKey, a, deltaWorld)) return;" in body
+    # Further away is refused, closer is allowed -- that is the whole rule.
+    rule = js.split("function thermalWallBlocks(")[1].split("\n    }")[0]
+    assert "> far(atom.x, atom.y, atom.z)" in rule
+    assert "setThermalWall: setThermalWall," in js
