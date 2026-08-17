@@ -2312,22 +2312,47 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
                             'each.')
-                    # What the drag has cost so far.  This step already
-                    # relaxed the whole structure except the atoms the hand is
-                    # holding, so its energy is a point on the constrained
-                    # path -- the same quantity a scan would report, and not
-                    # the energy of a geometry nothing has relaxed around.  It
-                    # came back with every step and nothing read it.
-                    state['thermal_now'] = outcome.get('energy')
+                    # What the drag has cost so far -- and NOT the energy this
+                    # step came back with.
+                    #
+                    # xtb does not hold the dragged atom: it cannot, "$fix
+                    # atoms:" is broken in 6.7.1 and "$constrain atoms:"
+                    # naming one atom does nothing, both measured.  The hold
+                    # is the page's, which keeps the dragged atom where the
+                    # cursor has it and takes the rest from what comes back.
+                    # So the relaxation pulls that atom straight home and
+                    # reports the energy of the repaired structure.  Measured
+                    # on a benzene with a hydrogen dragged out:
+                    #
+                    #     C-H at   single point   relax_steps(5) says
+                    #     1.58 A       +38.9          -0.8, C-H back at 1.08
+                    #     2.08 A       +82.7          -0.1, C-H back at 1.06
+                    #     2.58 A      +110.3          -1.2, C-H back at 1.09
+                    #
+                    # A budget fed that number never exceeds a kcal or two
+                    # however far the hand goes, which is exactly how it read:
+                    # a proton could be pulled off with the line underneath
+                    # saying everything was fine.
+                    #
+                    # The geometry the user has made is the one to price, so
+                    # it is priced -- a single point on what the page sent,
+                    # dragged atom included.  Eighty milliseconds on a
+                    # benzene, a hundred and seventy on thirty-eight atoms.
+                    priced = _gfn.optimize_with_gfn(
+                        current, method, charge=charge, uhf=uhf,
+                        timeout=30.0, solvent=wet, solvation_model=model,
+                        topology=_gfn_topology_dir(current), optimise=False,
+                    ) if submit_thermal_btn.value else {}
+                    state['thermal_now'] = priced.get('energy')
                     if submit_thermal_btn.value:
-                        spent = _thermal_note(outcome.get('energy'))
+                        spent = _thermal_note(priced.get('energy'))
                         if spent:
                             # On the end of the line that is already there,
                             # never under it: this row stands above the viewer
                             # and a second one moves the picture while the
                             # user is aiming an atom.
                             said = f'{said} {spent}'
-                        _thermal_wall(current, outcome.get('energy'), holding)
+                        _thermal_wall(current, priced.get('energy'), holding)
                     state['gfn_last_status'] = said
                     schedule_ui_update(_set_mol_status,
                                        *_gfn_status_lines(said), spinner=True)
