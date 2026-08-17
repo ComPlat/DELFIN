@@ -26,6 +26,7 @@ coordination sphere stays put while the backbone puckers.  Metal-free rings
 pass ``frozen=None``.
 """
 
+import os as _os
 from typing import List, Optional, Set, Tuple
 
 try:
@@ -50,19 +51,48 @@ except Exception:                                    # pragma: no cover
 # lets each candidate fall into the nearest genuine minimum, and a Cremer-Pople
 # dedup distils the candidates to the DISTINCT populated conformers for THIS
 # ring.  This works uniformly for N = 5, 6, 7, 8, 9, ... with no per-size table.
-def _pucker_candidates(n: int) -> List[Tuple[Optional[float], float]]:
-    cands: List[Tuple[Optional[float], float]] = []
+def _pucker_candidates(n: int) -> List[Tuple[float, Optional[float], float]]:
+    """(q_scale, theta, phi) je Kandidat.  `q_scale` multipliziert `_amp(n)`.
+
+    ⚠ WARUM DIE TUPEL JETZT DREI WERTE HABEN (17.08.2026).  Bis hierher tastete diese
+    Funktion die Cremer-Pople-Kugel bei FESTEM RADIUS ab: `_amp(n)` gibt 0.40 A (5-Ring)
+    bis 0.80 A (8-Ring) und wurde an beiden Aufrufstellen unveraendert uebergeben.  Der
+    Kandidat `(0.0, 0.0)` unten ist **theta = 0**, also der SESSEL (Polkappe) -- **nicht**
+    Q = 0.  **Der Mittelpunkt der Kugel, die EBENE, war kein Kandidat.**  Fuer ungerade
+    Ringe war es noch enger: nur die aequatoriale Pseudorotation (`theta=None`), also
+    Umschlag und Twist, nie flach.
+
+    GEMESSEN am 16./17.08. (`folds`, 965 Systeme): von 326 fehlenden Ringmotiven sind
+    **218 PLANAR** -- `5M:planar` 126, `6M:planar` 55, `4M:planar` 37 -- gegen `6M:boat` 30,
+    `6:chair` 25, `5M:puckered` 19, die dieser Generator alle erzeugen kann.  **Zwei Drittel
+    der Luecke sind genau der eine Zustand, den er per Konstruktion nicht kennt.**
+
+    Chemisch ist das kein Randfall: ein fuenfgliedriger Chelatring mit sp2-Donoren liegt oft
+    FLACH; der Generator behandelt ihn wie Cyclopentan.
+
+    `_set_pucker` braucht dafuer KEINE Aenderung: mit Q = 0 werden q2 und q3 null, zj = 0,
+    und jedes nicht eingefrorene Ringatom wird auf die Mittelebene projiziert -- Metall und
+    Donoren bleiben stehen, weil sie in `frozen` sind.  Das ist exakt der planare Zustand.
+
+    Vorgabe AUS -> die Liste ist identisch zu vorher (alle q_scale = 1.0), also
+    byte-identisch.
+    """
+    cands: List[Tuple[float, Optional[float], float]] = []
     even = (n % 2 == 0)
     # equatorial pseudorotation ring — sample fine enough to hit both the boat
     # (phi = 0, 360/n, ...) and the twist (phi halfway between) positions.
     K = max(8, 2 * n)
     for k in range(K):
         phi = 360.0 * k / K
-        cands.append((90.0 if even else None, phi))
+        cands.append((1.0, 90.0 if even else None, phi))
     if even:
         # polar caps: the chair / inverted-chair (alternating) puckers
-        cands.append((0.0, 0.0))
-        cands.append((180.0, 0.0))
+        cands.append((1.0, 0.0, 0.0))
+        cands.append((1.0, 180.0, 0.0))
+    if _os.environ.get("DELFIN_FFFREE_PUCKER_PLANAR", "0") == "1":
+        # DER FLACHE ZUSTAND.  Q = 0 -> alle nicht eingefrorenen Ringatome in die
+        # Mittelebene.  EIN Kandidat je Ring, nicht K -- die Ebene hat kein phi.
+        cands.append((0.0, 0.0, 0.0))
     return cands
 
 
@@ -381,20 +411,20 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     held relax, gives a conformer whose torsion fingerprint differs from every
     kept one (cyclohexane -> {base chair, the twist-boat(s)}, not 7 relabelled
     pseudorotation copies)."""
-    states: List[Optional[Tuple[Optional[float], float]]] = [None]
+    states: List[Optional[Tuple[float, Optional[float], float]]] = [None]
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     n = len(ring)
-    for theta, phi in _pucker_candidates(n):
+    for _qs, theta, phi in _pucker_candidates(n):
         try:
             m2 = Chem.Mol(mol_with_conf)
-            _set_pucker(m2.GetConformer(), ring, _amp(n), theta, phi, frozen)
+            _set_pucker(m2.GetConformer(), ring, _qs * _amp(n), theta, phi, frozen)
             if not _relax_hold_pucker(m2, ring, frozen):
                 continue
             cid = _add_conf(acc, m2)
             if _tfd_distinct(acc, cid, kept_ids, tfd_thr):
                 kept_ids.append(cid)
-                states.append((theta, phi))
+                states.append((_qs, theta, phi))
             else:
                 acc.RemoveConformer(cid)
         except Exception:
@@ -462,8 +492,8 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 st = per_ring_states[ri_i][st_i]
                 if st is None:
                     continue
-                theta, phi = st
-                _set_pucker(conf, rings[ri_i], _amp(len(rings[ri_i])), theta, phi, frozen)
+                _qs2, theta, phi = st
+                _set_pucker(conf, rings[ri_i], _qs2 * _amp(len(rings[ri_i])), theta, phi, frozen)
                 active = True
             if not active:
                 continue
