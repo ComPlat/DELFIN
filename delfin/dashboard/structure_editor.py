@@ -202,6 +202,40 @@ def thermal_ceiling(temperature, seconds):
     return _GAS_CONSTANT * T * math.log(inside)
 
 
+def thermal_temperature(kcal, seconds=_THERMAL_SECONDS):
+    """The temperature at which a barrier of *kcal* is crossed within *seconds*.
+
+    :func:`thermal_ceiling` turned around again.  A drag has to be told what
+    it may do at the temperature it was given, so there the question runs one
+    way; a scan does not -- it walks the whole path and can then answer the
+    question a chemist actually asks, which is *how hot*.  "+29 kcal/mol"
+    means nothing until it is "and that wants 440 K to happen within the
+    hour", which is the difference between a number and an experiment.
+
+    The ceiling rises with temperature everywhere above a kelvin (T times the
+    logarithm of T, both increasing), so bisection finds the answer and there
+    is no need for the Lambert function this inverts to.  Returns ``None``
+    when no temperature under 5000 K will do it -- past that a molecule is not
+    a molecule, and saying so is better than printing a number.
+    """
+    try:
+        wanted = float(kcal)
+    except (TypeError, ValueError):
+        return None
+    if wanted <= thermal_ceiling(1.0, seconds):
+        return 1.0
+    low, high = 1.0, 5000.0
+    if thermal_ceiling(high, seconds) < wanted:
+        return None
+    for _ in range(80):
+        middle = 0.5 * (low + high)
+        if thermal_ceiling(middle, seconds) < wanted:
+            low = middle
+        else:
+            high = middle
+    return 0.5 * (low + high)
+
+
 def scale_for_px(px):
     """The scale factor that makes a digit *px* pixels tall."""
     try:
@@ -1321,6 +1355,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='72px', height='30px'),
         disabled=True,
     )
+    #: The scan: the same selection as Hold, walked instead of held.
+    #:
+    #: Dragging answers "can this happen at this temperature" and answers it
+    #: honestly, but the number beside it depends on how the hand came in --
+    #: the same Diels-Alder measured +16.2 one way and +40.3 another.  A scan
+    #: walks a coordinate the user has *named*, in equal steps, relaxing each
+    #: point from the one before, which is the calculation that produced every
+    #: reference figure in this file.  Grid spacing is not decoration either:
+    #: sampled coarsely that approach reads +4.8 kcal/mol and finely +12.8, so
+    #: the step count belongs to whoever is asking.
+    submit_scan_btn = widgets.Button(
+        description='Scan', button_style='info', icon='line-chart',
+        tooltip=(
+            'Walk the value the selection describes from where it is to where '
+            'you say, relaxing everything else at every step. Several '
+            'coordinates can be armed and are then walked together, which is '
+            'what a concerted reaction needs.'
+        ),
+        layout=widgets.Layout(width='74px', height='30px'),
+        disabled=True,
+    )
+    submit_scan_to = widgets.FloatText(
+        value=0.0, step=0.1, description='',
+        layout=widgets.Layout(width='84px', display='none'),
+        disabled=True,
+    )
+    submit_scan_steps = widgets.BoundedIntText(
+        value=20, min=2, max=400, step=1, description='',
+        layout=widgets.Layout(width='64px', display='none'),
+        disabled=True,
+    )
+    submit_scan_run_btn = widgets.Button(
+        description='Run scan', button_style='success', icon='play',
+        tooltip='Walk every armed coordinate together, and say what it costs.',
+        layout=widgets.Layout(width='104px', height='30px', display='none'),
+        disabled=True,
+    )
+    submit_scan_dd = widgets.Dropdown(
+        options=[('nothing armed', '')], value='',
+        layout=widgets.Layout(width='230px', display='none'),
+        disabled=True,
+    )
+    submit_scan_del = widgets.Button(
+        description='', icon='times', button_style='danger',
+        tooltip='Drop this leg of the scan',
+        layout=widgets.Layout(width='40px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_constraint_dd = widgets.Dropdown(
         options=[('no constraints', '')], value='',
         layout=widgets.Layout(width='210px', display='none'),
@@ -1344,7 +1426,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     )
     submit_internal_group = widgets.HBox(
         [submit_internal_label, submit_internal_value,
-         submit_internal_btn, submit_hold_btn, submit_hold_mode],
+         submit_internal_btn, submit_hold_btn, submit_hold_mode,
+         submit_scan_btn, submit_scan_to, submit_scan_steps,
+         submit_scan_dd, submit_scan_del, submit_scan_run_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -1496,6 +1580,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_internal_btn.disabled = not enabled
         submit_hold_btn.disabled = not enabled
         submit_hold_mode.disabled = not enabled
+        submit_scan_btn.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
         submit_centre_btn.disabled = not enabled
         submit_reset_btn.disabled = not enabled
@@ -2585,14 +2670,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f'structure has at {T:g} K. {_thermal_wait(spent, T)}')
 
     def _thermal_wait(kcal, temperature):
-        """How long a barrier of that height takes at that temperature."""
+        """How long a barrier of that height takes at that temperature.
+
+        Down to picoseconds, not only down to seconds.  A scan that finds an
+        open path is the ordinary case and it was reported as "about 4.18e-06
+        s", which is a number in the wrong clothes: the answer wanted there is
+        "4 microseconds", and below a picosecond there is no crossing to speak
+        of anyway.
+        """
         T = max(1.0, float(temperature))
         rate = ((_BOLTZMANN_SI * T / _PLANCK_SI)
                 * math.exp(-max(0.0, float(kcal)) / (_GAS_CONSTANT * T)))
         if rate <= 0:
             return 'It does not happen.'
         seconds = 1.0 / rate
-        for limit, unit, name in ((60, 1, 's'), (3600, 60, 'min'),
+        for limit, unit, name in ((1e-9, 1e-12, 'ps'), (1e-6, 1e-9, 'ns'),
+                                  (1e-3, 1e-6, 'us'), (1.0, 1e-3, 'ms'),
+                                  (60, 1, 's'), (3600, 60, 'min'),
                                   (86400, 3600, 'h'), (3.15576e7, 86400, 'd'),
                                   (float('inf'), 3.15576e7, 'years')):
             if seconds < limit:
@@ -4170,6 +4264,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['picked'] = indices
         _step_for_selection(indices)
         _refresh_swap(indices)
+        # The two scan fields belong to the selection: they appear when there
+        # is a value to walk and go away again when there is not, so the row
+        # does not carry two empty boxes about for the whole session.
+        _refresh_scan()
         xyz = _current_xyz()
         options = None
         perceived = None
@@ -5314,6 +5412,209 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'Undo puts them back.'
         )
 
+    #: How many rounds of relaxation each point of a scan may take.
+    #:
+    #: More than a follow step, because a scan is not trying to keep up with a
+    #: hand: it is answering the question the drag can only estimate, and a
+    #: relaxed scan cut short reads as a barrier that is not there.  Measured
+    #: on a Diels-Alder approach whose relaxed cost is +3.6 kcal/mol: three
+    #: cycles say +40.0, six +18.9, twenty +8.3.  Each point starts from the
+    #: geometry the last one reached, so the work is spread along the path
+    #: rather than repeated at every step -- which is why a dense scan is
+    #: affordable at all, and a dense scan is the point.
+    _SCAN_CYCLES = 60
+
+    def _scan_legs():
+        return list(state.get('scan_legs') or [])
+
+    def _describe_leg(leg):
+        symbols = []
+        perceived = state.get('perceived')
+        for index in leg['atoms']:
+            symbol = perceived.symbols[index] if perceived else '?'
+            symbols.append(f'{symbol}{index}')
+        unit = 'A' if leg['kind'] == 'distance' else 'deg'
+        return (f"{'-'.join(symbols)} {leg['from']:.3g} -> {leg['to']:.3g} "
+                f"{unit}")
+
+    def _refresh_scan():
+        """Show the armed legs, or nothing at all when there are none."""
+        legs = _scan_legs()
+        showing = '' if legs else 'none'
+        for widget in (submit_scan_dd, submit_scan_del, submit_scan_run_btn):
+            widget.layout.display = showing
+            widget.disabled = not legs
+        options = [(_describe_leg(leg), str(n)) for n, leg in enumerate(legs)]
+        submit_scan_dd.options = options or [('nothing armed', '')]
+        if options:
+            submit_scan_dd.value = options[0][1]
+        # The two fields belong to the selection, not to the list, so they
+        # follow whether something is selected rather than whether anything is
+        # armed.
+        picked = len(state.get('picked') or ())
+        wanted = '' if picked in _CONSTRAINT_KINDS else 'none'
+        for widget in (submit_scan_to, submit_scan_steps):
+            widget.layout.display = wanted
+            widget.disabled = not wanted == ''
+
+    def _suggest_scan_target(kind, value):
+        """Where a scan would go if the user does not say.
+
+        A distance that is a bond is worth pulling apart, one that is not is
+        worth closing: those are the two things a reaction does.  An angle or a
+        torsion goes right round, because that is the conformational space.
+        """
+        if kind != 'distance':
+            return float(value) + 360.0
+        return float(value) * (2.2 if float(value) < 2.0 else 0.55)
+
+    def on_submit_scan(_button=None):
+        """Arm the value the selection describes as a leg of the scan."""
+        indices = list(state.get('picked') or [])
+        kind = _CONSTRAINT_KINDS.get(len(indices))
+        if not kind:
+            _set_mol_status('Pick 2, 3 or 4 atoms before arming a scan.')
+            return
+        here = float(submit_internal_value.value)
+        target = float(submit_scan_to.value)
+        if abs(target - here) < 1e-9:
+            target = _suggest_scan_target(kind, here)
+        legs = [one for one in _scan_legs() if one['atoms'] != indices]
+        legs.append({'kind': kind, 'atoms': indices, 'from': here,
+                     'to': target, 'steps': int(submit_scan_steps.value),
+                     'structure': _structure_fingerprint(_current_xyz() or '')})
+        state['scan_legs'] = legs
+        _refresh_scan()
+        _set_mol_status(
+            f'Armed {_describe_leg(legs[-1])} in {legs[-1]["steps"]} steps. '
+            + ('Arm another to walk them together, which is what a concerted '
+               'step needs, or press Run scan.' if len(legs) == 1 else
+               f'{len(legs)} legs, walked together.'))
+        _clear_selection()
+
+    def on_submit_scan_del(_button=None):
+        legs = _scan_legs()
+        try:
+            which = int(submit_scan_dd.value)
+        except (TypeError, ValueError):
+            return
+        if 0 <= which < len(legs):
+            gone = legs.pop(which)
+            state['scan_legs'] = legs
+            _refresh_scan()
+            _set_mol_status(f'Dropped {_describe_leg(gone)}.')
+
+    def on_submit_scan_run(_button=None):
+        """Walk every armed leg together and say what the path costs."""
+        legs = _scan_legs()
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        if not legs or not xyz:
+            return
+        if not _gfn.is_gfn_method(method):
+            _set_mol_status('A scan needs xtb: choose a GFN method.')
+            return
+        if state.get('scan_run'):
+            state['scan_stop'] = True
+            _set_mol_status('Stopping the scan after this point.')
+            return
+        steps = max(2, min(int(one['steps']) for one in legs))
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+        state['scan_run'] = True
+        state['scan_stop'] = False
+        submit_scan_run_btn.description = 'Stop'
+        submit_scan_run_btn.icon = 'stop'
+        label = _server_label(method)
+
+        def _work():
+            walked, path = xyz, []
+            base = None
+            try:
+                for n in range(1, steps + 1):
+                    if state.get('scan_stop'):
+                        break
+                    share = n / float(steps)
+                    held = [
+                        {'kind': one['kind'], 'atoms': list(one['atoms']),
+                         'mode': 'fix',
+                         'value': one['from'] + share * (one['to'] - one['from'])}
+                        for one in legs
+                    ]
+                    outcome = _gfn.optimize_with_gfn(
+                        walked, method, charge=charge, uhf=uhf,
+                        max_steps=_SCAN_CYCLES, timeout=None,
+                        constraints=held, solvent=wet, solvation_model=model,
+                        topology=_gfn_topology_dir(walked))
+                    if not outcome.get('ok') or outcome.get('energy') is None:
+                        schedule_ui_update(
+                            _set_mol_status,
+                            'The scan stopped at step '
+                            f'{n}: {outcome.get("status") or "it did not run"}')
+                        return
+                    walked = outcome['xyz']
+                    if base is None:
+                        base = float(outcome['energy'])
+                    spent = (float(outcome['energy']) - base) * _HARTREE_TO_KCAL
+                    path.append((held[0]['value'], spent))
+                    lines = [line for line in walked.splitlines()[2:]
+                             if line.strip()]
+                    schedule_ui_update(
+                        _set_mol_status,
+                        f'{label} is walking the scan: step {n} of {steps}, '
+                        f'{held[0]["kind"]} at {held[0]["value"]:.3g}, '
+                        f'{spent:+.1f} kcal/mol so far.', spinner=True)
+                    if lines:
+                        schedule_ui_update(
+                            _write_coords,
+                            xyz_document(lines, 'Scanning'))
+            finally:
+                state['scan_run'] = False
+
+                def _done():
+                    submit_scan_run_btn.description = 'Run scan'
+                    submit_scan_run_btn.icon = 'play'
+                    _set_mol_status(*_scan_verdict(path, steps))
+
+                schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _scan_verdict(path, steps):
+        """What the walk found, and the temperature it would take.
+
+        Said as a temperature rather than only as a number: a drag has to be
+        told what it may do at the temperature it was given, but a scan has
+        walked the whole path and can answer the question a chemist actually
+        asks.  "+29 kcal/mol" means nothing until it is "and that wants 385 K
+        within the hour".
+        """
+        if not path:
+            return ('The scan walked nothing.',)
+        top = max(path, key=lambda one: one[1])
+        ends = path[-1][1]
+        T = float(submit_temperature.value or 298.15)
+        ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
+        needs = thermal_temperature(top[1], _THERMAL_SECONDS)
+        first = (f'The scan walked {len(path)} of {steps} points. Highest '
+                 f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, ending '
+                 f'{ends:+.1f}.')
+        if top[1] <= ceiling:
+            return (first, f'That is inside the {ceiling:.1f} kcal/mol this '
+                           f'structure has at {T:g} K, so the whole path is '
+                           f'open. {_thermal_wait(top[1], T)}')
+        if needs is None:
+            return (first, 'No temperature under 5000 K crosses that within '
+                           f'{_timescale_label()}, which is another way of '
+                           'saying it does not happen.')
+        return (first,
+                f'At {T:g} K only {ceiling:.1f} kcal/mol is available, so the '
+                f'path is closed there. It wants about {needs:.0f} K to be '
+                f'crossed within {_timescale_label()} '
+                f'({needs - 273.15:+.0f} C). {_thermal_wait(top[1], T)}')
+
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
         indices = list(state.get('picked') or [])
@@ -6273,6 +6574,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_btn.observe(on_submit_draw_toggle, names='value')
     submit_element_dd.observe(on_submit_draw_choice, names='value')
     submit_hold_btn.on_click(on_submit_hold)
+    submit_scan_btn.on_click(on_submit_scan)
+    submit_scan_del.on_click(on_submit_scan_del)
+    submit_scan_run_btn.on_click(on_submit_scan_run)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')
     submit_bond_btn.on_click(on_submit_bond)
