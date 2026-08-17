@@ -4699,8 +4699,14 @@ def test_the_hand_is_held_in_the_one_place_that_moves_it():
 
     js = tab_submit.submit_manip_bootstrap_js()
     body = js.split("function applyTranslate(")[1].split("\n    }")[0]
-    assert "if (thermalWallBlocks(scopeKey, a, deltaWorld)) return;" in body
+    # With the index, which is what the kernel is given: see
+    # test_the_number_that_travels_for_a_held_atom_is_its_index, which
+    # measures that.  Keyed by serial this found nothing wherever the two
+    # differ, and the wall silently never fired.
+    assert "if (thermalWallBlocks(scopeKey, a, i, deltaWorld)) continue;" in body
+    assert "targets.indexOf(a.serial) < 0" in body
     # Further away is refused, closer is allowed -- that is the whole rule.
     rule = js.split("function thermalWallBlocks(")[1].split("\n    }")[0]
     assert "> far(atom.x, atom.y, atom.z)" in rule
+    assert "var mark = wall[index];" in rule
     assert "setThermalWall: setThermalWall," in js

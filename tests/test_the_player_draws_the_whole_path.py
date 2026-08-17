@@ -330,3 +330,53 @@ def test_the_pace_reaches_down_to_one_frame_every_ten_seconds(browser):
     crawl = _play(browser, one, settle_ms=6000, pace=10000)
     assert crawl["shown"] == 0, crawl["shown"]
     assert crawl["queue"] >= 59, "the path is all still ahead"
+
+
+def test_the_number_that_travels_for_a_held_atom_is_its_index(browser):
+    """A serial and an index are different numbers, and both are plausible.
+
+    pushXyzToPython names the atoms the hand is on with ffIndicesOf, so what
+    reaches the kernel is a position in getAtoms -- not the atom's serial.  The
+    thermal wall was keyed by serial and looked up nothing wherever the two
+    differ, which is the ordinary case: a benzene could still be pulled open
+    while the budget underneath said it could not.
+
+    Measured rather than read, because this is a contract between two files and
+    reading either one on its own agrees with itself.
+    """
+    from delfin.dashboard import tab_submit
+
+    scope = "sc"
+    page = browser.new_page()
+    try:
+        page.set_content(
+            f'<!doctype html><html><body><div class="{scope}">'
+            '<div class="submit-manip-sync"><textarea></textarea></div></div>'
+            '<script>'
+            'window._submitManipStateByScope={};'
+            # Serials that are deliberately not the indices, as 3Dmol hands
+            # them out once a model has been rebuilt.
+            'window.__ATOMS=[{serial:101,elem:"C",x:0,y:0,z:0},'
+            '{serial:102,elem:"C",x:1.65,y:0,z:0}];'
+            'var MODEL={selectedAtoms:function(){return window.__ATOMS;}};'
+            f'window._submitMolViewerByScope={{"{scope}":'
+            '{getModel:function(){return MODEL;},render:function(){}}};'
+            '</script></body></html>')
+        page.evaluate(tab_submit.submit_manip_bootstrap_js())
+
+        # Split here rather than in the page: a newline escape inside a
+        # Python string is a newline before the browser ever sees it, and a
+        # newline inside a JavaScript string literal is a syntax error.
+        pushed = page.evaluate("""(s) => {
+            window._submitManipStateByScope[s] =
+                {drag: {kind: 'translate', targets: [102]}};
+            window.__delfinSubmitManip.pushXyz(s, 'drag-follow');
+            return document.querySelector('.submit-manip-sync textarea').value;
+        }""", scope)
+        note = pushed.splitlines()[1]
+
+        assert "held=1" in note, note
+        assert "held=102" not in note, (
+            "the kernel is given the index, so the wall must be keyed by it")
+    finally:
+        page.close()

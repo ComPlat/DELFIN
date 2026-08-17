@@ -3630,11 +3630,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
      * top the energy falls, so a real transition state is crossed and only a
      * distortion that stays expensive is held.
      */
-    function thermalWallBlocks(scopeKey, atom, deltaWorld) {
+    function thermalWallBlocks(scopeKey, atom, index, deltaWorld) {
         var state = getState(scopeKey);
         var wall = state.thermalWall;
         if (!wall) return false;
-        var mark = wall[atom.serial];
+        /* Keyed by the atom's position in getAtoms, which is what the kernel
+         * is given: pushXyzToPython writes "held=" from ffIndicesOf, so the
+         * numbers that travel are indices.  Looked up by serial -- as this
+         * did -- the mark is found only where the two happen to coincide, and
+         * where they do not the wall silently never fires.  Which is exactly
+         * how it read: a benzene that could still be pulled open with the
+         * budget saying it could not. */
+        var mark = wall[index];
         if (!mark) return false;
         function far(x, y, z) {
             var dx = x - mark[0], dy = y - mark[1], dz = z - mark[2];
@@ -3655,16 +3662,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (!viewer) return;
         var targets = serials || state.picks.map(function(p) { return p.serial; });
         var atoms = getAtoms(viewer);
-        var byS = {};
-        for (var i = 0; i < atoms.length; i++) byS[atoms[i].serial] = atoms[i];
-        targets.forEach(function(serial) {
-            var a = byS[serial];
-            if (!a) return;
-            if (thermalWallBlocks(scopeKey, a, deltaWorld)) return;
+        // Walked in atom order rather than in target order, because the index
+        // is what the wall is keyed by and it is only known here.
+        for (var i = 0; i < atoms.length; i++) {
+            var a = atoms[i];
+            if (targets.indexOf(a.serial) < 0) continue;
+            if (thermalWallBlocks(scopeKey, a, i, deltaWorld)) continue;
             a.x += deltaWorld.x;
             a.y += deltaWorld.y;
             a.z += deltaWorld.z;
-        });
+        }
         redrawHighlights(scopeKey);
     }
 
