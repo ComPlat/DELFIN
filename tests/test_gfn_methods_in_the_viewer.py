@@ -4455,3 +4455,158 @@ def test_the_frame_a_hand_arrived_on_belongs_to_one_run(editor, monkeypatch):
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
     assert "state.pop('gfn_shown_frame', None)" in start
+
+
+# ---------------------------------------------------------------------------
+# what this structure can do at this temperature
+# ---------------------------------------------------------------------------
+
+
+def test_the_ceiling_is_eyring_turned_around():
+    """"Possible at this temperature" has two halves, and the second is
+    usually left out.
+
+    A rate is k = (kB T / h) exp(-dG/RT), so a barrier crossed within tau may
+    be at most R T ln(kB T tau / h).  At 298 K one second buys 17.5 kcal/mol
+    and a year 27.7 -- the same temperature, four times the chemistry.  A
+    ceiling quoted without a timescale is not a number.
+    """
+    from delfin.dashboard.structure_editor import thermal_ceiling as ceiling
+
+    table = {
+        (298.15, 1.0): 17.5, (298.15, 3600.0): 22.3,
+        (298.15, 3.15576e7): 27.7,
+        (198.15, 3600.0): 14.7, (373.15, 3600.0): 28.1,
+        (773.15, 3600.0): 59.3,
+    }
+    for (T, tau), expected in table.items():
+        got = ceiling(T, tau)
+        assert abs(got - expected) < 0.1, f"{T} K / {tau} s: {got:.1f}"
+
+    # Hotter and longer both buy more, and neither is optional.
+    assert ceiling(373.15, 3600.0) > ceiling(298.15, 3600.0)
+    assert ceiling(298.15, 86400.0) > ceiling(298.15, 1.0)
+    # Never negative, however short the time.  A picosecond is the floor --
+    # below a tenth of that a molecule has not finished one vibration, so
+    # there is no crossing to speak of -- and everything under it lands there.
+    assert ceiling(298.15, 1e-20) == ceiling(298.15, 1e-12)
+    assert 0.0 <= ceiling(298.15, 1e-20) < 2.0
+
+
+def test_the_budget_forbids_tearing_a_ring_and_allows_a_real_distortion():
+    """Measured with GFN2 on a benzene, the ring bond stretched with
+    everything else relaxed -- which is the quantity the follow reports.
+
+        1.45 A   +0.5 kcal/mol      1.75 A  +33.3
+        1.55 A   +8.4               1.90 A  +54.5
+        1.65 A  +20.0
+
+    At 298 K within an hour the structure has 22.3, so the wall falls at about
+    1.66 A.  The ring cannot be pulled open, and that falls out of the energy
+    rather than out of a rule about aromatics -- while 1.55 A, a real
+    distortion, stays available.
+    """
+    from delfin.dashboard.structure_editor import thermal_ceiling as ceiling
+
+    room = ceiling(298.15, 3600.0)
+    measured = {1.45: 0.5, 1.55: 8.4, 1.65: 20.0, 1.75: 33.3, 1.90: 54.5}
+    allowed = {r for r, cost in measured.items() if cost <= room}
+    assert allowed == {1.45, 1.55, 1.65}, allowed
+
+    # And at 773 K the same bond reaches 1.9 A, which is the temperature at
+    # which benzene really does come apart.
+    assert measured[1.90] <= ceiling(773.15, 3600.0)
+
+
+def test_a_single_point_leaves_the_geometry_alone():
+    """The anchor is the energy of the structure as it stands.
+
+    It shares every other decision with the optimisation -- which binary,
+    which parameters, how many cores, the solvent, the charge, the spin --
+    which is why it is a flag on that function rather than a second one that
+    would drift from it.
+    """
+    source = open(_gfn_source(), encoding="utf-8").read()
+    body = source.split("def optimize_with_gfn(")[1].split("\ndef ")[0]
+    assert "optimise: bool = True" in body
+    assert "*(['--opt'] if optimise else [])" in body
+    # No --opt writes no xtbopt.xyz and no path: reading them would hand back
+    # None and read as a failure.
+    assert "if optimise else xyz_text" in body
+    assert "read_trajectory(folder) if optimise else []" in body
+    # And a single point has no geometry to converge, so it is not counted
+    # among the runs that stopped short.
+    assert "(not optimise) or 'GEOMETRY OPTIMIZATION CONVERGED' in output" in body
+
+
+def _gfn_source():
+    from delfin.dashboard import gfn_optimize
+    return gfn_optimize.__file__
+
+
+def test_the_thermal_controls_belong_to_xtb_alone(editor, monkeypatch):
+    """MOPAC's follow reports a heat of formation, which is not the quantity
+    an xtb anchor is in and cannot be differenced against it."""
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    dd = editor["submit_ff_dd"]
+
+    dd.value = "gfn2"
+    assert editor["submit_thermal_btn"].layout.display == ""
+    dd.value = "pm7"
+    assert editor["submit_thermal_btn"].layout.display == "none"
+    dd.value = "uff"
+    assert editor["submit_thermal_btn"].layout.display == "none"
+
+
+def test_the_anchor_belongs_to_one_structure(bare_editor):
+    """An energy measured on one molecule says nothing about another.
+
+    Carried over quietly, the budget would report the difference between two
+    unrelated energies as though it were a distortion of the second.  The
+    anchor names its molecule the way the perception and the GFN-FF topology
+    do -- by the element column -- so it stops answering by itself rather than
+    by a callback firing.  structure_changed is called from one place, and a
+    structure can arrive without it.
+    """
+    part, state = bare_editor
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_temperature.value = 298.15
+    part.submit_timescale.value = 3600.0
+
+    here = part.coords_widget.value
+    state["thermal_e0"] = -15.877561
+    state["thermal_for"] = part._structure_fingerprint(here)
+
+    anchor, ceiling = part._thermal_budget()
+    assert anchor == -15.877561
+    assert abs(ceiling - 22.3) < 0.1
+    assert part._thermal_note(-15.870000), "it reports while it is about this one"
+
+    # Another molecule, and the same stored anchor answers for nothing.
+    part.coords_widget.value = (
+        "2\ncarbon monoxide\nC 0.000 0.000 0.000\nO 1.128 0.000 0.000\n")
+    anchor, ceiling = part._thermal_budget()
+    assert anchor is None, "the budget cannot outlive the molecule"
+    assert abs(ceiling - 22.3) < 0.1, "the ceiling is about T, not about this"
+    assert part._thermal_note(-15.870000) == ""
+
+    # T and the timescale are not per-structure: they are how the user is
+    # working, like the method and the solvent.
+    controls = EDITOR_SOURCE.split("def _structure_controls")[1].split(
+        "\n    def ")[0]
+    assert "submit_temperature" not in controls
+    assert "submit_thermal_btn" not in controls
+
+
+def test_the_budget_line_goes_on_the_row_that_is_already_there():
+    """The status row stands above the viewer, and a second row moves the
+    picture while the user is aiming an atom -- measured once already."""
+    follow = EDITOR_SOURCE.split("def _gfn_follow_step")[1].split(
+        "\n    def ")[0]
+    assert "state['thermal_now'] = outcome.get('energy')" in follow, (
+        "the follow already computes the energy; it has to be read")
+    assert "said = f'{said} {spent}'" in follow
+    # One line handed to the status, never two.
+    assert "_gfn_status_lines(said)" in follow

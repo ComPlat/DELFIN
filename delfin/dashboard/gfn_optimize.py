@@ -901,8 +901,17 @@ def optimize_with_gfn(
     topology: Optional[Path] = None,
     solvent: Optional[str] = None,
     solvation_model: str = 'alpb',
+    optimise: bool = True,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
+
+    With *optimise* false this is a single point: the energy of the geometry
+    as it stands, and the geometry handed straight back.  Everything else --
+    which binary, which parameters, how many cores, the solvent, the charge
+    and the spin -- is the same, which is the reason it lives here rather than
+    in a second function that would drift from this one.  A single point is
+    what a thermal budget is anchored on: the energy of the structure the user
+    switched the mode on with, before anything has been moved.
 
     Returns ``{'ok', 'xyz', 'energy', 'status', 'seconds', 'method'}``.  On any
     failure ``ok`` is False, ``xyz`` is the input unchanged and ``status`` says
@@ -1022,7 +1031,8 @@ def optimize_with_gfn(
         source.write_text(f'{len(body)}\nfrom the DELFIN viewer\n'
                           + '\n'.join(body) + '\n', encoding='utf-8')
         cores = interactive_cores()
-        command = [binary, source.name, *spec['flags'], '--opt',
+        command = [binary, source.name, *spec['flags'],
+                   *(['--opt'] if optimise else []),
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
                    '-P', str(cores)]
         if max_steps:
@@ -1188,8 +1198,13 @@ def optimize_with_gfn(
             except OSError:
                 pass
         output = record.read_text(encoding='utf-8', errors='replace')
-        relaxed = _read_optimised(folder, xyz_text)
-        frames = read_trajectory(folder)
+        # A single point writes no xtbopt.xyz and no path: the geometry that
+        # went in is the geometry that comes back, and there is nothing to
+        # play.  Reading them anyway would find the leftovers of whatever ran
+        # in this directory before, which is nothing here, so it would hand
+        # back None and read as a failure.
+        relaxed = _read_optimised(folder, xyz_text) if optimise else xyz_text
+        frames = read_trajectory(folder) if optimise else []
         if on_frames is not None and len(frames) > sent:
             # The path, once, at the end.  The loop above reads it five times a
             # second at most, so a run shorter than that interval hands over
@@ -1272,7 +1287,9 @@ def optimize_with_gfn(
                            f'as it was. {which_xtb_ran(binary, output)}'),
             }
 
-        converged = 'GEOMETRY OPTIMIZATION CONVERGED' in output
+        # A single point has no geometry to converge, and calling it
+        # unconverged would put it among the runs that stopped short.
+        converged = (not optimise) or 'GEOMETRY OPTIMIZATION CONVERGED' in output
         if not converged:
             # The geometry is still better than the one that went in, so it is
             # handed back -- but not as though it were finished.
