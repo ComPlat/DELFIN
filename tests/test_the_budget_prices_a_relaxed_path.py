@@ -85,22 +85,30 @@ def test_a_hydrogen_contact_is_not_held_alongside_a_heavy_one():
     assert len(held) == 1
 
 
-def test_two_contacts_are_held_when_both_are_the_same_kind():
-    """Two bonds forming at once are both held: that is a cycloaddition."""
-    # Two carbons of one fragment, each with its own carbon partner opposite.
-    pair = (
-        "4\ntwo approaching pairs\n"
-        "C  0.00 0.00 0.00\n"
-        "C  1.40 0.00 0.00\n"
-        "C  0.00 0.00 2.20\n"
-        "C  1.40 0.00 2.20\n"
+def test_two_bonds_forming_at_once_are_both_held():
+    """That is a cycloaddition, and both halves of it are the coordinate."""
+    apart = (
+        "6\ntwo pairs approaching\n"
+        "C  0.00 0.00 0.00\nC  1.40 0.00 0.00\nH -0.60 0.90 0.00\n"
+        "C  0.00 0.00 2.40\nC  1.40 0.00 2.40\nH -0.60 0.90 2.40\n"
     )
-    held = gfn.contacts_holding(pair, [2, 3], most=2)
-    assert len(held) == 2
-    assert {frozenset(h["atoms"]) for h in held} == {
-        frozenset({2, 0}), frozenset({3, 1})}
-    for one in held:
-        assert one["value"] == pytest.approx(2.20, abs=0.01)
+    closer = apart.replace("2.40", "2.20")
+    held = gfn.contacts_holding(closer, [3, 4], most=3, was=apart)
+    pairs = {frozenset(one["atoms"]) for one in held
+             if one["kind"] == "distance"}
+    assert frozenset({3, 0}) in pairs
+    assert frozenset({4, 1}) in pairs
+
+
+def test_a_partner_with_something_in_the_way_is_not_a_contact():
+    """What used to be an element rule is geometry, and says the same thing.\n\n    In an SN2 the arriving nucleophile closes on the carbon and on the leaving\n    group behind it at exactly the same rate, so both look like the coordinate\n    being driven.  One of them has a carbon in the way.  Held anyway the\n    bromide is nailed down -- C-Br stays at 1.94 to 1.99 A and the price runs\n    to +175 kcal/mol, against 2.01 -> 3.24 A and near zero when only the real\n    contact is held.\n    """
+    line = (
+        "3\nchloride, carbon, bromide in a row\n"
+        "Cl  0.00 0.00 0.00\nC   0.00 0.00 2.50\nBr  0.00 0.00 4.44\n"
+    )
+    nearer = line.replace("Cl  0.00 0.00 0.00", "Cl  0.00 0.00 0.20")
+    held = gfn.contacts_holding(nearer, [0], most=3, was=line)
+    assert [frozenset(one["atoms"]) for one in held] == [frozenset({0, 1})]
 
 
 def test_each_atom_is_held_once_and_to_a_partner_of_its_own():
@@ -117,26 +125,27 @@ def test_each_atom_is_held_once_and_to_a_partner_of_its_own():
     assert len(set(partners)) == len(partners)
 
 
-def test_one_atom_alone_is_held_by_two_partners():
-    """One distance does not hold an atom: it slides along the other bond.
+def test_a_hand_grabs_what_hangs_off_what_it_grabs():
+    """An atom dragged out of a molecule is not a physical motion.
 
-    A ring carbon pulled out of a benzene, asked to stand at 1.72, 1.95 and
-    2.20 A, came back at 1.41 every time however stiffly it was held -- the
-    ring closed behind it and the price was that of a squeezed but whole
-    benzene, +22 kcal/mol, which room temperature very nearly affords.  Held
-    by two partners the same three pulls cost +36.6, +75.0 and +105.7.
+    Left behind, the hydrogens of a dragged methyl end up at 0.92 and 2.12 A
+    from their carbon, one of them 1.87 A from where it started.  On a ring it
+    is worse: the axial hydrogen points the way the hand is pushing, so the
+    whole push scores as a C-H stretch, that is what gets held, and the
+    cyclohexane cannot be flipped.
+
+    Terminal, not hydrogen -- an atom whose only bond is to something being
+    dragged comes along whatever it is.
     """
-    ring = (
-        "5\na carbon between two others\n"
-        "C  0.00 0.00 0.00\n"
-        "C  1.50 0.00 0.00\n"
-        "C -0.75 1.30 0.00\n"
-        "H  0.00 0.00 1.09\n"
-        "H  2.00 0.90 0.00\n"
-    )
-    held = gfn.contacts_holding(ring, [0], most=2)
-    assert len(held) == 2, "one contact lets it slide back"
-    assert {h["atoms"][1] for h in held} == {1, 2}
+    from delfin.atom_mapping import cov_radius
+
+    rows = [line.split() for line in gfn.atom_lines(_BUTANE)]
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    radius = [cov_radius(r[0]) for r in rows]
+    # The far carbon brings its three hydrogens and nothing else.
+    assert gfn.with_their_terminals(where, radius, [3]) == {3, 11, 12, 13}
+    # An inner carbon brings its two, and not its carbon neighbours.
+    assert gfn.with_their_terminals(where, radius, [1]) == {1, 7, 8}
 
 
 def test_a_partner_across_the_room_is_a_tether_not_a_hold():
@@ -301,8 +310,8 @@ def test_a_turn_is_held_by_the_angle_and_nothing_else():
     against a measured 10.7.
     """
     across = _moved(_BUTANE, 3, (0.0, 0.0, 0.25))
-    held = gfn.contacts_holding(across, [3], most=2, was=_BUTANE)
-    assert [one["kind"] for one in held] == ["dihedral"]
+    held = gfn.contacts_holding(across, [3], most=3, was=_BUTANE)
+    assert held and {one["kind"] for one in held} == {"dihedral"}
 
 
 def test_a_bond_being_made_is_held_however_far_off_it_is():
@@ -321,7 +330,7 @@ def test_a_bond_being_made_is_held_however_far_off_it_is():
         "C  0.00 0.00 3.40\nC  1.53 0.00 3.40\nH -0.60 0.90 3.40\n"
     )
     closer = _moved(apart, 3, (0.0, 0.0, -0.20))
-    held = gfn.contacts_holding(closer, [3], most=2, was=apart)
+    held = gfn.contacts_holding(closer, [3], most=3, was=apart)
     assert held and held[0]["kind"] == "distance"
     # The carbon it is being driven at, not the carbon it is bonded to.
     assert set(held[0]["atoms"]) == {3, 0}
@@ -341,12 +350,41 @@ def test_a_turn_is_not_put_back_where_the_cursor_had_it():
     +345 held rigid.
     """
     assert "str(one.get('kind')) == 'dihedral'" in EDITOR_SOURCE
-    assert "settled = (outcome['xyz'] if turning else" in EDITOR_SOURCE
+    # Price what you show: the relaxed geometry is the one that was priced,
+    # so it is the one that is drawn.  Put back where the cursor had them,
+    # the picture had a bromide 1.27 A from a palladium while the price
+    # belonged to a structure where the metal had got out of the way.
+    assert "settled = (outcome['xyz'] if contacts else" in EDITOR_SOURCE
     # And the geometry a turn is measured against is the one this answer
     # handed back, not the one it was handed: against the latter the
     # difference holds the relaxation as well as the hand, and on a ring
     # being puckered the relaxation is the larger of the two.
     assert "state['thermal_was'] = settled" in EDITOR_SOURCE
+
+
+def test_only_the_atoms_the_hand_took_hold_of_make_a_statement():
+    """The travellers come along, but they do not each claim a coordinate.
+
+    A methyl's hydrogens riding on their carbon each claimed one, and the two
+    spurious distances they claimed pinned a cyclohexane so it could not be
+    flipped -- +55.4 kcal/mol for a ring pucker that costs +6.9 when only the
+    carbon speaks.  Three coordinates on one atom pin it outright: a Claisen
+    whose new bond was still 4.3 A away then priced at +133.
+    """
+    across = _moved(_BUTANE, 3, (0.0, 0.0, 0.25))
+    held = gfn.contacts_holding(across, [3], most=3, was=_BUTANE)
+    owners = [one["atoms"][0] for one in held]
+    assert owners == [3], owners
+
+    # Two atoms under the hand make two statements, which is a cycloaddition.
+    apart = (
+        "6\ntwo pairs approaching\n"
+        "C  0.00 0.00 0.00\nC  1.40 0.00 0.00\nH -0.60 0.90 0.00\n"
+        "C  0.00 0.00 2.40\nC  1.40 0.00 2.40\nH -0.60 0.90 2.40\n"
+    )
+    closer = apart.replace("2.40", "2.20")
+    held = gfn.contacts_holding(closer, [3, 4], most=3, was=apart)
+    assert sorted(one["atoms"][0] for one in held) == [3, 4]
 
 
 def test_the_follow_prices_the_relaxation_it_ran():
