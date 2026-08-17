@@ -853,6 +853,59 @@ def _ml_bond_kind(mol, metal_idx: int, donor_idx: int) -> str:
         return "sigma"
 
 
+def _apply_me_bond_snap_if_enabled(results):
+    """Terminale M=E Mehrfachbindungen auf dem FF-FREIEN Pfad setzen (17.08.2026).
+
+    Ruft ``delfin.manta._me_bond_snap.snap_me_bonds`` je Frame.  Das Modul arbeitet
+    ausschliesslich auf dem Frame (Symbole + Koordinaten + geometrische Adjazenz) und
+    braucht KEIN ``mol`` -- damit entfaellt die Atomreihenfolge-Falle, an der der
+    Ring-Pucker-Emitter an genau dieser Stelle schon einmal zum Nulltest wurde.
+
+    ⚠ DER SCHALTER IST DERSELBE wie fuer die Legacy-Setzstellen
+    (``DELFIN_FFFREE_ME_BOND_LEN``), nicht ein zweiter.  Eine Achse, ein Schalter --
+    sonst misst ein A/B nicht den Mechanismus, sondern die Verdrahtung.
+
+    ⚠ OHNE KALIBRIERTE TABELLE PASSIERT NICHTS, und das ist eine Lizenzbedingung, keine
+    Bequemlichkeit: ``_ml_me_band`` liefert ``None``, wenn ``DELFIN_ML_ME_BANDS`` fehlt
+    oder das Paar unter der Mindeststichprobe liegt.  Dann faellt ``_get_ml_bond_length``
+    auf den sigma-Wert zurueck -- die Differenz ist null, und ``_target`` gibt ``None``.
+    Der Vergleich gegen den sigma-Wert ist damit die EINZIGE Stelle, an der entschieden
+    wird, ob ein Paar ueberhaupt ein Band hat; hier steht keine CCDC-Zahl.
+
+    Vorgabe 0 -> nicht gerufen -> byte-identisch.
+    """
+    if not results:
+        return results
+    if not _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0):
+        return results
+    try:
+        from delfin.manta._me_bond_snap import snap_me_bonds
+
+        def _target(m_sym: str, d_sym: str):
+            try:
+                sigma = float(_get_ml_bond_length(m_sym, d_sym, "sigma"))
+                me = float(_get_ml_bond_length(m_sym, d_sym, "me"))
+            except Exception:
+                return None
+            if me <= 0.0 or abs(me - sigma) < 1e-9:
+                return None          # kein Band fuer dieses Paar -> nichts tun
+            return me
+
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_results.append((snap_me_bonds(xyz, _target), label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _me_exc:
+        try:
+            logger.debug("ME-BOND-SNAP skipped: %s", _me_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
                         kind: str = "sigma") -> float:
     """Return estimated M-L bond length in Å.
@@ -25269,7 +25322,15 @@ def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
                 if cur_d < 1e-8:
                     continue
                 try:
-                    target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
+                    # ⚠ FEHLERKORREKTUR 17.08.2026: hier stand `_ml_bond_kind(mol, ...)`.
+                    # In DIESEM Rumpf heisst der Parameter `mol_template`; ein `mol` gibt es
+                    # weder lokal noch modulweit.  Mit ME_BOND_LEN=1 flog also ein NameError
+                    # in das `except: continue` darunter -- und uebersprang damit den
+                    # METALLOID-Klemmer GANZ, obwohl `METALLOID_MD_CLAMP` ein Champion-Flag
+                    # ist.  Der neue Schalter schaltete einen alten still ab.  Dieselbe
+                    # Klasse wie der `metal_idx`/`mi`-Fehler in `_manual_metal_embed`:
+                    # ein falscher Name UNTER einem `except` ist unsichtbar, bis man zaehlt.
+                    target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol_template, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
                 except Exception:
                     continue
                 if target_d <= 0 or abs(cur_d - target_d) / target_d < 0.05:
@@ -32150,6 +32211,24 @@ def _ffree_shared_tail(mol, results, dual_parse_done: bool):
     # solange sie aus sind.  Er macht sie nur ERREICHBAR, wenn jemand sie einschaltet.
     results = _apply_fixer_sp2n_planarize_if_enabled(mol, results, dual_parse_done)
     results = _apply_fixer_sp2c_planarize_if_enabled(mol, results, dual_parse_done)
+    # ===== DIE TERMINALEN M=E-BINDUNGEN (17.08.2026) ====================================
+    # GEMESSEN: `me42b` erreichte 2 von 42, `byte_identical` 40 -- und die Ursache ist
+    # NICHT die Chemie, sondern dass der einzige echte Setzer legacy-only ist.  Drei
+    # Verdaechtige wurden einzeln ausgeschlossen: das SMILES-Format nicht (`_ml_bond_kind`
+    # liest die Bindungsordnung gar nicht, es urteilt strukturell), der Pool nicht (28 der
+    # 42 tragen ein echtes terminales O am Metall), die Tabelle nicht (33 von 95 Paaren
+    # sind wirksam kuerzer, darunter Re=O 0.813, W=O 0.850, V=O 0.890, Mo=O 0.895).
+    #
+    # Es war die Verdrahtung: `_clamp_metalloid_md_xyz` ist metalloid-only,
+    # `_md_distance_in_tolerance` ist ein Praedikat, `_manual_metal_embed` ist der CN4-Pfad
+    # -- und `_snap_md_distances_to_ideal` hat seine einzige Aufrufstelle bei :33066,
+    # hinter dem FF-freien `return` bei :32399.
+    #
+    # ⚠ Dieser Anschluss braucht KEIN `mol` und faellt darum nicht in die Atomreihenfolge-
+    # Falle, vor der der Docstring oben warnt: das Kriterium fuer ein terminales M=E ist
+    # strukturell und aus dem Frame selbst ablesbar.  Verschoben wird genau EIN Atom, das
+    # ausser der M-D-Bindung keine hat.  Eigener Schalter, Vorgabe 0 -> byte-identisch.
+    results = _apply_me_bond_snap_if_enabled(results)
     return results
 
 
