@@ -587,6 +587,24 @@ def test_a_scan_stops_at_the_next_minimum():
     assert "not submit_scan_whole.value and _scan_arrived(path)" in EDITOR_SOURCE
 
 
+def test_a_scan_comes_back_to_the_minimum_it_walked_through():
+    """Stopping is not enough: the climb out is what recognises the minimum, so
+    by then the walk stands two steps past it and the structure is squeezed
+    that much.
+
+    Measured on the same tert-butyl bromide: it now ends at C-Cl 1.87 A, which
+    is the product bond, instead of two steps beyond it.
+    """
+    body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
+    body = body.split("def _scan_verdict(")[0]
+    assert "if bottom is None or spent < bottom[0]:" in body
+    assert "bottom = (spent, walked, held[0]['value'])" in body
+    assert "walked = bottom[1]" in body
+    # And the geometry left in the box is that one.
+    assert "def _done(final=walked):" in body
+    assert "Scanned to the next minimum" in body
+
+
 def test_the_temperature_is_named_whether_the_path_is_open_or_not():
     """The number a chemist came for was missing exactly when the news was
     good.
@@ -599,3 +617,120 @@ def test_the_temperature_is_named_whether_the_path_is_open_or_not():
     assert body.index("wants = (") < body.index("if top[1] <= ceiling:")
     assert "the whole path is open" in body.replace("'\n", "").replace(
         "                    f'", "")
+
+
+def test_squeezing_is_refused_without_asking_the_energy():
+    """A net that holds where the energy is weakest.
+
+    Stretching is what a reaction does and the budget prices it; two atoms
+    inside two thirds of a bond are not on any path at any temperature, and
+    saying so needs no calculation -- which is why it also holds for a
+    transition metal, where GFN2 is shaky.
+
+    The floor sits between what was measured on paths that must stay open --
+    a cyclohexane flipping came to 0.94 of a bond, an SN2 driven through its
+    saddle and past its product 0.74, a [1,5]-hydrogen shift 0.78 -- and the
+    one that must not: a ring carbon pushed across its own ring, 0.35.
+    """
+    assert 0.35 < gfn._TOO_CLOSE < 0.74
+
+    ethane = (
+        "8\nethane\n"
+        "C  0.000  0.000  0.000\nC  1.530  0.000  0.000\n"
+        "H -0.370  1.020  0.000\nH -0.370 -0.510  0.880\n"
+        "H -0.370 -0.510 -0.880\nH  1.900  0.510  0.880\n"
+        "H  1.900  0.510 -0.880\nH  1.900 -1.020  0.000\n"
+    )
+    share, i, j = gfn.closest_contact(ethane)
+    assert share > gfn._TOO_CLOSE
+    assert {i, j} == {0, 1} or share == pytest.approx(
+        gfn.closest_contact(ethane)[0])
+
+    squashed = ethane.replace("C  1.530  0.000  0.000", "C  0.700  0.000  0.000")
+    share, _i, _j = gfn.closest_contact(squashed)
+    assert share < gfn._TOO_CLOSE
+
+    assert gfn.closest_contact("1\nlone\nC 0 0 0\n") == (None, None, None)
+
+
+def test_a_loose_hold_stops_the_drag_rather_than_only_saying_so():
+    """Advancing the mark would confirm a geometry nothing has priced.
+
+    On a palladium pushed at head on the hold went 0.7 A loose and the drag
+    carried on regardless, the picture showing a bromide 1.27 A from the metal
+    while the price belonged to a structure where it had got out of the way.
+    """
+    follow = EDITOR_SOURCE.split("def _thermal_wall(")[1].split("def ")[0]
+    assert "def _thermal_wall" not in follow
+    assert "if spent <= ceiling and not refuse:" in follow
+    body = EDITOR_SOURCE.split("state['thermal_now'] = priced.get('energy')")[1]
+    body = body.split("state['gfn_last_status'] = said")[0]
+    assert "refuse=(slipped > _SLIP_LOOSE) or crowded" in body
+    assert "_gfn.closest_contact(current)" in body
+
+
+def test_the_line_says_how_steep_it_is():
+    """It is already what shortens the leash, so a steep drag feels heavy.
+
+    The number is what turns that into something to steer by: "+8 per A" and
+    "+160 per A" are two different situations.
+    """
+    assert "state['thermal_slope'] = slope" in EDITOR_SOURCE
+    assert "kcal/mol per A here." in EDITOR_SOURCE
+    assert "'Climbing' if slope > 0 else 'Falling'" in EDITOR_SOURCE
+
+
+def test_a_setting_is_not_taken_back():
+    """The charge is read off the SMILES when the structure is built, once.
+
+    Read afresh whenever a method is chosen, it put a hand-set charge back to
+    zero -- and a charge that had come out of the SMILES correctly went to
+    zero too, once the cached SMILES was no longer the one carrying it.  At
+    zero those systems have an odd number of electrons and xtb refuses every
+    step, so nothing runs, nothing moves, and the editor looks broken rather
+    than misconfigured.
+    """
+    body = EDITOR_SOURCE.split("def _fill_charge_from_smiles(")[1]
+    body = body.split("def on_submit_gfn_charge(")[0]
+    # Once per structure ...
+    assert "if state.get('charge_filled_for') == smiles:" in body
+    assert "state['charge_filled_for'] = smiles" in body
+    # ... and never over a number the user typed.
+    assert "if state.get('charge_is_the_users'):" in body
+
+    # The flag is raised by the user's own edits, not by the fill itself.
+    said = EDITOR_SOURCE.split("def on_submit_gfn_charge(")[1].split("def ")[0]
+    assert "state.get('charge_filling')" in said
+    assert "state['charge_is_the_users'] = True" in said
+    assert "submit_gfn_charge.observe(on_submit_gfn_charge" in EDITOR_SOURCE
+
+    # A new structure from a new SMILES starts over: then the SMILES speaks.
+    assert EDITOR_SOURCE.count("state['charge_is_the_users'] = False") >= 2
+
+
+def test_the_leash_is_long_where_the_budget_is_wide_open():
+    """A tenth of an Angstrom made every conformer take half a minute.
+
+    Turning a chain torsion on a 24-atom structure the budget never came near
+    being spent -- +8 kcal/mol of 22.3 -- and the slope was +5 per Angstrom, so
+    what the budget could afford was nearly three Angstrom while the cap held
+    it to a tenth.  That reads as a tool that does not work rather than one
+    being careful: the atom lags far behind the cursor, which looks exactly
+    like every answer dragging it back.
+
+    It costs nothing where care is wanted, because there the slope limits it
+    instead: pulling a hydrogen off a benzene the leash reaches 0.154 A and no
+    further, and the worst the hand gets past the ceiling is +63.5 kcal/mol at
+    either cap -- the same number.
+    """
+    line = next(one for one in EDITOR_SOURCE.splitlines()
+                if one.strip().startswith("_THERMAL_REACH ="))
+    reach = float(line.split("=")[1].strip())
+    assert reach > 0.2, "a tenth is a drag nobody can use"
+    # And it is still bounded: the leash is what keeps the hand from
+    # outrunning the calculation, so it may not be arbitrary.
+    assert reach < 1.0
+
+    # The budget still decides, whatever the cap says.
+    body = EDITOR_SOURCE.split("def _thermal_reach(")[1].split("def ")[0]
+    assert "min(_THERMAL_REACH, room / slope)" in body

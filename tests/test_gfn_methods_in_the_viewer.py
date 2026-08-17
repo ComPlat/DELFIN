@@ -4856,7 +4856,10 @@ def test_the_budget_prices_the_geometry_the_user_made(bare_editor):
     follow = SUBMIT_SOURCE.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "optimise=False," in follow
     assert "state['thermal_now'] = priced.get('energy')" in follow
-    assert "_thermal_wall(current, priced.get('energy'), holding)" in follow
+    # Two refusals ride along with the budget now: a hold that does not
+    # determine the drag, and a contact squeezed inside two thirds of a bond.
+    assert "_thermal_wall(current, priced.get('energy'), holding," in follow
+    assert "refuse=(slipped > _SLIP_LOOSE) or crowded" in follow
 
 
 def test_every_field_the_page_reads_is_on_the_page(editor):

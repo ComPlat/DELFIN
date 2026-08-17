@@ -38,7 +38,7 @@ from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'contacts_holding',
            'find_xtb', 'find_binary', 'find_gxtb',
-           'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
+           'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
            'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
            'solvent_note',
@@ -1801,6 +1801,48 @@ def relax_steps(
         result.get('ok') and 'converged in' in str(result.get('status') or '')
     )
     return result
+
+
+#: How close two atoms may come, as a fraction of the bond they would make.
+#:
+#: A net that needs no energy, so it holds where the energy is weakest -- a
+#: transition metal, an open shell, anything GFN2 is shaky about.  Squeezing is
+#: never chemistry: stretching is what a reaction does and the budget already
+#: prices it, but two atoms inside two thirds of a bond length are not on any
+#: path at any temperature.
+#:
+#: Measured on the paths that must stay open, the closest any pair came:
+#: a cyclohexane flipping 0.94, an SN2 driven through its saddle and past its
+#: product 0.74, a [1,5]-hydrogen shift 0.78.  On the one that must not: a ring
+#: carbon pushed across its own ring, 0.35.  And the diatomic cost at these
+#: fractions, GFN2: 0.8 is between +10 and +45 kcal/mol, 0.6 between +153 and
+#: +1083.  So this sits below everything real and above everything broken.
+_TOO_CLOSE = 0.65
+
+
+def closest_contact(xyz_text: str):
+    """The tightest pair in the structure, as (fraction, i, j).
+
+    A fraction of one is two atoms exactly a bond apart; below one they are
+    closer than that.  ``(None, None, None)`` for a structure with fewer than
+    two atoms.
+    """
+    from delfin.atom_mapping import cov_radius
+    rows = [line.split() for line in atom_lines(xyz_text)]
+    if len(rows) < 2:
+        return None, None, None
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    radius = [cov_radius(str(r[0])) for r in rows]
+    worst = (None, None, None)
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            reach = radius[i] + radius[j]
+            if reach <= 0:
+                continue
+            share = math.dist(where[i], where[j]) / reach
+            if worst[0] is None or share < worst[0]:
+                worst = (share, i, j)
+    return worst
 
 
 def settle_onto(xyz_text: str, reference: str, indices: Any) -> str:
