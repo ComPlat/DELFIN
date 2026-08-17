@@ -82,6 +82,22 @@ LABEL_SCALE_DEFAULT = LABEL_PX_DEFAULT / LABEL_PX_PER_SCALE
 #: histories, and reading which was which off the decimal count is not
 #: something a user should have to do.
 _HARTREE_TO_KCAL = 627.5094740631
+
+#: How long a structure is given to do something, in seconds.
+#:
+#: "Possible at this temperature" has two halves and this is the second: a
+#: barrier is not possible or impossible, it is a waiting time.  At 298 K one
+#: of 20 kcal/mol takes a minute and one of 25 takes four days, so the ceiling
+#: depends on how long anyone is watching -- 17.5 kcal/mol for a second, 22.3
+#: for an hour, 27.7 for a year.
+#:
+#: It was a control, and it did not earn the place.  Between a second and a
+#: year the ceiling moves by ten kcal/mol, while the distance between
+#: chemistry and nonsense is twenty against a hundred and more -- so the knob
+#: changed the answer far less than it cost to understand, and it was asked
+#: about twice.  An hour is a reaction set up in a flask, which is what this
+#: is for.
+_THERMAL_SECONDS = 3600.0
 _XYZ_ELEMENT_COLUMNS = 5
 _XYZ_NUMBER_COLUMNS = 24
 _XYZ_DECIMALS = 14
@@ -938,18 +954,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='104px', display='none'),
         disabled=True,
     )
-    #: How long the user is prepared to wait, which is the other half of
-    #: "possible at this temperature" and is usually left out.  A barrier of
-    #: 22 kcal/mol is an hour at 298 K and a fifth of a second at 373; without
-    #: a timescale the question has no answer.
-    submit_timescale = widgets.Dropdown(
-        options=[('1 s', 1.0), ('1 min', 60.0), ('1 h', 3600.0),
-                 ('1 day', 86400.0), ('1 year', 3.15576e7)],
-        value=3600.0, description='in',
-        style={'description_width': '18px'},
-        layout=widgets.Layout(width='104px', display='none'),
-        disabled=True,
-    )
     #: Whether switching on relaxes first.  A budget is measured from
     #: somewhere, and a hand-built structure is often well above its own
     #: minimum -- anchoring there gives a ceiling that is generous by however
@@ -1368,7 +1372,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
-            submit_thermal_btn, submit_temperature, submit_timescale,
+            submit_thermal_btn, submit_temperature,
             submit_thermal_relax, submit_thermal_anchor_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
@@ -1383,6 +1387,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync, submit_cmd_sync,
             submit_manip_status, submit_manip_sync, submit_gfn_frame,
+            # On the page, or the page cannot read it.  It was created and
+            # written to and never placed, so the leash lived in the kernel's
+            # memory alone: the line said the budget was spent and the atom
+            # went on moving, because nothing on the other side had ever seen
+            # a wall.  A widget that is not in the tree is not in the DOM.
+            submit_gfn_wall,
         ],
         layout=widgets.Layout(
             display='none', gap='6px', align_items='center',
@@ -1469,7 +1479,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
         submit_play_speed.disabled = not enabled
-        for widget in (submit_thermal_btn, submit_temperature, submit_timescale,
+        for widget in (submit_thermal_btn, submit_temperature,
                        submit_thermal_relax, submit_thermal_anchor_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
@@ -2449,8 +2459,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Returns ``(anchor_energy_Eh, ceiling_kcal)`` or ``(None, ceiling)``
         while there is no anchor yet.
         """
-        ceiling = thermal_ceiling(submit_temperature.value,
-                                  submit_timescale.value)
+        ceiling = thermal_ceiling(submit_temperature.value, _THERMAL_SECONDS)
         # The anchor names the molecule it was measured on.  Asked of another
         # one it is not an anchor at all, and the difference between two
         # unrelated energies would read as a distortion of the second.  Keyed
@@ -2509,7 +2518,60 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: at whatever rate the energies come back -- at ten a second that is one
     #: angstrom a second, which is the honest cost of walking a path rather
     #: than jumping along it.
+    #:
+    #: That is the *longest* it gets.  Held there it overshoots by design: the
+    #: atom goes a tenth of an angstrom and only then does the calculation say
+    #: what that cost, and on the steep flank of a bond a tenth is fifteen
+    #: kcal/mol.  So a budget could be walked past even at a crawl, which is
+    #: not a wall anyone can aim at.  The leash is shortened by what the last
+    #: two answers say the next step will cost -- see _thermal_reach.
     _THERMAL_REACH = 0.10
+
+    #: And the shortest.  Below this the atom stops rather than creeping, and
+    #: a step this small is under the width a bond has at room temperature
+    #: anyway -- past it the distinction is not one the structure makes.
+    _THERMAL_REACH_MIN = 0.005
+
+    def _thermal_reach(spent, ceiling, xyz, serials):
+        """How far the hand may go before the next answer, in angstrom.
+
+        The room left is the ceiling less what is already spent, and how fast
+        that room is used up is what the last two answers measured: energy per
+        angstrom along the way the drag is actually going.  Dividing one by the
+        other is how far the budget reaches, and the leash is never longer than
+        that.
+
+        It is a straight line through two points on a curve that bends
+        upwards, so it reads the next stretch as cheaper than it is and the
+        step still lands a little over.  A little is the point -- held at a
+        tenth of an angstrom throughout, the same step lands fifteen kcal/mol
+        over on the steep flank of a bond.
+        """
+        room = float(ceiling) - float(spent)
+        if room <= 0:
+            return 0.0
+        here = _gfn.coordinates_of(xyz)
+        last = state.get('thermal_last') or {}
+        state['thermal_last'] = {
+            'spent': float(spent),
+            'at': {s: [here[3 * s], here[3 * s + 1], here[3 * s + 2]]
+                   for s in serials if 3 * s + 2 < len(here)},
+        }
+        moved = 0.0
+        for s in serials:
+            was = (last.get('at') or {}).get(s)
+            now = state['thermal_last']['at'].get(s)
+            if was and now:
+                moved = max(moved, math.dist(was, now))
+        if moved <= 1e-6 or 'spent' not in last:
+            return _THERMAL_REACH
+        climbed = float(spent) - float(last['spent'])
+        if climbed <= 0:
+            return _THERMAL_REACH          # going downhill: no need to hold back
+        slope = climbed / moved            # kcal/mol per angstrom
+        return max(_THERMAL_REACH_MIN, min(_THERMAL_REACH, room / slope))
+
+
 
     def _arm_thermal_leash():
         """Put the leash on at the moment the hand arrives.
@@ -2565,9 +2627,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # moves up to it.  It is sent on every answer rather than only
             # when something changes -- the leash is what keeps the atom from
             # outrunning the calculation, so it has to follow it step by step.
+            #
+            # And it is only as long as the budget still reaches: near the
+            # ceiling the last two answers say what an angstrom costs here,
+            # and the leash is cut to what is left.  Fixed at a tenth
+            # throughout, the step that finds the ceiling has already gone
+            # fifteen kcal/mol past it.
             state['thermal_safe'] = confirmed
             state['thermal_walled'] = False
-            _push_thermal_wall(confirmed, reach=_THERMAL_REACH)
+            _push_thermal_wall(
+                confirmed,
+                reach=_thermal_reach(spent, ceiling, xyz, serials))
             return
         # Spent.  The mark simply stops advancing, and the leash does the
         # rest: the atom may still move anywhere within reach of the last
@@ -2578,7 +2648,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         wall = state.get('thermal_safe') or confirmed
         if not state.get('thermal_walled'):
             state['thermal_walled'] = True
-        _push_thermal_wall(wall, reach=_THERMAL_REACH)
+        # Spent: the mark stops advancing and the leash is what is left of the
+        # budget, which is nothing.  The smallest step keeps the atom able to
+        # come back rather than freezing it where it stands.
+        _push_thermal_wall(wall, reach=_THERMAL_REACH_MIN)
 
     def _push_thermal_wall(wall, reach=0.0):
         """Tell the page where the hand may no longer go, or that it may.
@@ -2660,10 +2733,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         threading.Thread(target=_work, daemon=True).start()
 
     def _timescale_label():
-        for label, value in submit_timescale.options:
-            if value == submit_timescale.value:
-                return label
-        return f'{submit_timescale.value:g} s'
+        """The window the ceiling is quoted over, said in words."""
+        return 'an hour'
 
     def _gfn_topology_dir(xyz):
         """Where GFN-FF's perceived bonding is kept while a structure is worked
@@ -5416,8 +5487,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         active = bool(submit_thermal_btn.value)
         submit_thermal_btn.button_style = 'info' if active else ''
-        for widget in (submit_temperature, submit_timescale,
-                       submit_thermal_relax, submit_thermal_anchor_btn):
+        for widget in (submit_temperature, submit_thermal_relax,
+                       submit_thermal_anchor_btn):
             widget.layout.display = '' if active else 'none'
         if not active:
             state['thermal_e0'] = None
@@ -5791,8 +5862,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_thermal_btn.layout.display = '' if xtb else 'none'
         if not xtb and submit_thermal_btn.value:
             submit_thermal_btn.value = False
-        for widget in (submit_temperature, submit_timescale,
-                       submit_thermal_relax, submit_thermal_anchor_btn):
+        for widget in (submit_temperature, submit_thermal_relax,
+                       submit_thermal_anchor_btn):
             widget.layout.display = ('' if (xtb and submit_thermal_btn.value)
                                      else 'none')
         # And the playback pace is the other way round: only a server engine
@@ -6088,7 +6159,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_thermal_btn.observe(on_submit_thermal, names='value')
     submit_temperature.observe(on_submit_thermal_terms, names='value')
-    submit_timescale.observe(on_submit_thermal_terms, names='value')
     submit_thermal_anchor_btn.on_click(on_submit_thermal_anchor)
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_auto_btn.observe(on_submit_auto_toggle, names='value')

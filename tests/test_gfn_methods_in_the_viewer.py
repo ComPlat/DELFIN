@@ -4573,7 +4573,6 @@ def test_the_anchor_belongs_to_one_structure(bare_editor):
     part, state = bare_editor
     part.submit_ff_dd.value = "gfn2"
     part.submit_temperature.value = 298.15
-    part.submit_timescale.value = 3600.0
 
     here = part.coords_widget.value
     state["thermal_e0"] = -15.877561
@@ -4592,12 +4591,15 @@ def test_the_anchor_belongs_to_one_structure(bare_editor):
     assert abs(ceiling - 22.3) < 0.1, "the ceiling is about T, not about this"
     assert part._thermal_note(-15.870000) == ""
 
-    # T and the timescale are not per-structure: they are how the user is
-    # working, like the method and the solvent.
+    # T is not per-structure: it is how the user is working, like the method
+    # and the solvent.
     controls = EDITOR_SOURCE.split("def _structure_controls")[1].split(
         "\n    def ")[0]
     assert "submit_temperature" not in controls
     assert "submit_thermal_btn" not in controls
+    # And the window is a constant now, not a control.
+    assert "_THERMAL_SECONDS = 3600.0" in EDITOR_SOURCE
+    assert "submit_timescale" not in EDITOR_SOURCE
 
 
 def test_the_budget_line_goes_on_the_row_that_is_already_there():
@@ -4630,7 +4632,11 @@ def test_the_wall_goes_up_when_the_budget_is_gone_and_down_again(bare_editor):
     part, state = bare_editor
     part.submit_ff_dd.value = "gfn2"
     part.submit_temperature.value = 298.15
-    part.submit_timescale.value = 3600.0          # ceiling 22.3 kcal/mol
+    # An hour is the window the ceiling is quoted over: 22.3 kcal/mol at
+    # 298 K.  It was a control and was taken away -- between a second and a
+    # year the ceiling moves ten kcal/mol, while chemistry and nonsense are
+    # twenty against a hundred, so it changed the answer far less than it cost
+    # to understand.
 
     xyz = ("2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.379 0.000 0.000\n")
     part.coords_widget.value = xyz
@@ -4851,3 +4857,65 @@ def test_the_budget_prices_the_geometry_the_user_made(bare_editor):
     assert "optimise=False," in follow
     assert "state['thermal_now'] = priced.get('energy')" in follow
     assert "_thermal_wall(current, priced.get('energy'), holding)" in follow
+
+
+def test_every_field_the_page_reads_is_on_the_page(editor):
+    """A widget that is not in the tree is not in the DOM.
+
+    The wall field was created, given its class and written to, and never
+    placed.  So the leash lived in the kernel's memory alone: the status line
+    said the budget was spent and the atom went on moving, because nothing on
+    the other side had ever seen a wall.  Every part of it worked and the
+    thing did nothing.
+
+    Checked for all three channels rather than the one that was missing --
+    they are the same mistake waiting in three places.
+    """
+    def below(widget):
+        for child in getattr(widget, "children", ()) or ():
+            yield child
+            yield from below(child)
+
+    placed = {id(w) for w in below(editor["submit_manip_toolbar"])}
+    for name in ("submit_gfn_frame", "submit_gfn_wall",
+                 "submit_manip_sync", "submit_cmd_sync"):
+        assert id(editor[name]) in placed, (
+            f"{name} is read off the page and is not on it")
+
+
+def test_the_leash_is_only_as_long_as_the_budget_reaches(bare_editor):
+    """Held at a tenth of an angstrom throughout, it overshoots by design.
+
+    The atom goes a tenth and only then does the calculation say what that
+    cost, and on the steep flank of a bond a tenth is fifteen kcal/mol -- so
+    the budget could be walked past at a crawl, which is not a wall anyone can
+    aim at.  What the last two answers measured is energy per angstrom along
+    the way the drag is going, and the leash is cut to what the room left buys
+    at that rate.
+    """
+    part, state = bare_editor
+    part.submit_temperature.value = 298.15
+    xyz = "2\ntwo\nC 0.000 0.000 0.000\nC 1.400 0.000 0.000\n"
+    ceiling = 22.3
+
+    # First answer: nothing to compare against, so the full leash.
+    state.pop("thermal_last", None)
+    assert part._thermal_reach(2.0, ceiling, xyz, [1]) == part._THERMAL_REACH
+
+    # Second answer, a tenth of an angstrom further on and two kcal dearer:
+    # twenty kcal/mol per angstrom, twenty of room, so a full leash again.
+    further = "2\ntwo\nC 0.000 0.000 0.000\nC 1.500 0.000 0.000\n"
+    assert part._thermal_reach(4.0, ceiling, further, [1]) == part._THERMAL_REACH
+
+    # Now steep and close.  Twenty spent against a ceiling of 22.3 leaves 2.3,
+    # and the last step cost sixteen kcal over a tenth of an angstrom -- a
+    # hundred and sixty an angstrom.  2.3 at that rate is fourteen thousandths
+    # of an angstrom, which is where the leash is cut to.
+    steeper = "2\ntwo\nC 0.000 0.000 0.000\nC 1.600 0.000 0.000\n"
+    reach = part._thermal_reach(20.0, ceiling, steeper, [1])
+    assert abs(reach - 2.3 / 160.0) < 1e-6, reach
+    assert 0.005 < reach < part._THERMAL_REACH, reach
+
+    # Spent: no room, no reach.
+    over = "2\ntwo\nC 0.000 0.000 0.000\nC 1.700 0.000 0.000\n"
+    assert part._thermal_reach(30.0, ceiling, over, [1]) == 0.0
