@@ -4605,8 +4605,10 @@ def test_the_budget_line_goes_on_the_row_that_is_already_there():
     picture while the user is aiming an atom -- measured once already."""
     follow = EDITOR_SOURCE.split("def _gfn_follow_step")[1].split(
         "\n    def ")[0]
-    assert "state['thermal_now'] = outcome.get('energy')" in follow, (
-        "the follow already computes the energy; it has to be read")
+    # Priced from a single point on what the page sent, not from what the
+    # relaxation came back with: xtb pulls the dragged atom home and reports
+    # the repaired structure, so that energy is about a geometry nobody built.
+    assert "state['thermal_now'] = priced.get('energy')" in follow
     assert "said = f'{said} {spent}'" in follow
     # One line handed to the status, never two.
     assert "_gfn_status_lines(said)" in follow
@@ -4781,3 +4783,71 @@ def test_no_budget_means_no_leash_at_the_grab(editor, monkeypatch):
     _time.sleep(0.3)
 
     assert editor["submit_gfn_wall"].value == ""
+
+
+@_needs_xtb
+def test_the_budget_prices_the_geometry_the_user_made(bare_editor):
+    """The follow's own energy is about a structure nobody built.
+
+    xtb does not hold the dragged atom -- it cannot, "$fix atoms:" is broken
+    in 6.7.1 and "$constrain atoms:" naming one atom does nothing, both
+    measured elsewhere in this file.  The hold is the page's: it keeps the
+    dragged atom where the cursor has it and takes the rest from what comes
+    back.  So the relaxation pulls that atom straight home and reports the
+    energy of the repaired structure.
+
+    Measured here on a benzene with one hydrogen dragged out, which is the
+    whole reason the budget never moved:
+
+        C-H at     single point     relax_steps(5)
+        1.58 A         +38.9            -0.8
+        2.08 A         +82.7            -0.1
+        2.58 A        +110.3            -1.2
+
+    A budget fed the right-hand column never exceeds a kcal or two however far
+    the hand goes, and a proton comes off with the line underneath saying
+    everything is fine.
+    """
+    import math
+
+    from delfin.dashboard import gfn_optimize as gfn
+    from delfin.dashboard.structure_editor import _HARTREE_TO_KCAL
+
+    benzene = (
+        "12\nbenzene\n"
+        "C -0.461862 0.762637 -0.238321\nC -0.838289 0.154318 0.927507\n"
+        "C 0.092243 -0.385321 1.788509\nC 1.417041 -0.289502 1.431542\n"
+        "C 1.837785 0.320768 0.256083\nC 0.881377 0.859473 -0.599674\n"
+        "H -1.187136 1.189385 -0.920678\nH -1.902087 0.101819 1.169357\n"
+        "H -0.256407 -0.857624 2.701396\nH 2.142563 -0.706502 2.095963\n"
+        "H 2.885967 0.388017 -0.010677\nH 1.160238 1.344948 -1.527129\n")
+    flat = gfn.coordinates_of(benzene)
+    symbols = [line.split()[0] for line in gfn.atom_lines(benzene)]
+    anchor = gfn.optimize_with_gfn(benzene, "gfn2", optimise=False)["energy"]
+
+    held = 6                                   # the hydrogen on carbon 0
+    away = [flat[3 * held + k] - flat[k] for k in range(3)]
+    reach = math.sqrt(sum(v * v for v in away))
+    pulled = list(flat)
+    for k in range(3):
+        pulled[3 * held + k] = flat[k] + away[k] / reach * (reach + 1.0)
+
+    text = ("12\npulled\n" + "\n".join(
+        f"{symbols[i]} {pulled[3*i]:.6f} {pulled[3*i+1]:.6f} {pulled[3*i+2]:.6f}"
+        for i in range(12)) + "\n")
+
+    single = gfn.optimize_with_gfn(text, "gfn2", optimise=False)
+    followed = gfn.relax_steps(text, method="gfn2", cycles=5, timeout=60)
+    assert single["ok"] and followed["ok"]
+
+    priced = (single["energy"] - anchor) * _HARTREE_TO_KCAL
+    reported = (followed["energy"] - anchor) * _HARTREE_TO_KCAL
+    assert priced > 60, f"a hydrogen an angstrom out has to be expensive: {priced:.1f}"
+    assert abs(reported) < 10, (
+        f"and the relaxation has to be the one that hides it: {reported:.1f}")
+
+    # And the follow prices the geometry rather than the repair.
+    follow = SUBMIT_SOURCE.split("def _gfn_follow_step")[1].split("\n    def ")[0]
+    assert "optimise=False," in follow
+    assert "state['thermal_now'] = priced.get('energy')" in follow
+    assert "_thermal_wall(current, priced.get('energy'), holding)" in follow
