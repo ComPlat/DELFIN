@@ -1386,6 +1386,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='64px', display='none'),
         disabled=True,
     )
+    submit_scan_whole = widgets.Checkbox(
+        value=False, description='all the way', indent=False,
+        tooltip=(
+            'Keep walking past the next minimum. Off, the scan stops once it '
+            'is over a barrier and has settled again, because past that it is '
+            'pushing into a structure rather than following a reaction.'
+        ),
+        layout=widgets.Layout(width='118px', display='none'),
+        disabled=True,
+    )
     submit_scan_run_btn = widgets.Button(
         description='Run scan', button_style='success', icon='play',
         tooltip='Walk every armed coordinate together, and say what it costs.',
@@ -1428,7 +1438,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [submit_internal_label, submit_internal_value,
          submit_internal_btn, submit_hold_btn, submit_hold_mode,
          submit_scan_btn, submit_scan_to, submit_scan_steps,
-         submit_scan_dd, submit_scan_del, submit_scan_run_btn],
+         submit_scan_dd, submit_scan_del, submit_scan_whole,
+         submit_scan_run_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -2243,6 +2254,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: the molecule following the hand rather than catching up with it.
     _GFN_FOLLOW_CYCLES = 5
 
+    #: How far the answer may put a held atom from the cursor before the drag
+    #: counts as under-determined.
+    #:
+    #: A held value is an internal coordinate: xtb meets it and may place the
+    #: molecule anywhere that does.  Measured on a backside attack, chloride
+    #: driven at a carbon, the answer sits 0.008 A off at the start and 0.102 A
+    #: through the transition region -- ordinary freedom, and the price is
+    #: about the structure on screen.  On a palladium pushed at head on it was
+    #: 0.7 A, and there the price belonged to a geometry where the metal had
+    #: got out of the way while the picture showed a bromide 1.27 A from it.
+    #: That is worth saying rather than leaving to be discovered.
+    _SLIP_LOOSE = 0.25
+
     #: And with the thermal budget on, more of them.
     #:
     #: The follow then holds the contacts the drag has changed and relaxes
@@ -2515,6 +2539,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # user is aiming an atom.
                             said = f'{said} {spent}'
                         _thermal_wall(current, priced.get('energy'), holding)
+                    # How far the answer put the held atoms from where the
+                    # cursor has them.  A held value is an internal
+                    # coordinate, so xtb meets it and is free to place the
+                    # molecule anywhere that does; while the values really
+                    # determine the drag that freedom is small, and when it is
+                    # not, the drag is under-determined and the price belongs
+                    # to a different structure than the picture.  On a
+                    # palladium being pushed at, that was 0.7 A and the only
+                    # sign that anything was wrong.  It is said out loud now.
+                    #
+                    # Computed here rather than beside the geometry it is about,
+                    # because the line is written first: read there it was read
+                    # before it was assigned, and the follow died on it.
+                    slipped = _gfn.largest_shift(
+                        _gfn.hold_atoms_at(outcome['xyz'], current, holding),
+                        outcome['xyz']) if contacts else 0.0
+                    if slipped > _SLIP_LOOSE:
+                        said = (f'{said} The hold is loose here '
+                                f'({slipped:.2f} A), so the price is for a '
+                                f'nearby structure rather than this one.')
                     state['gfn_last_status'] = said
                     schedule_ui_update(_set_mol_status,
                                        *_gfn_status_lines(said), spinner=True)
@@ -2533,7 +2577,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                               if str(one.get('kind')) == 'dihedral']
                     if turned:
                         state['thermal_turn'] = list(turned[0]['atoms'])
-                    # Price what you show.
+                    # Price what you show, and show it where the hand left it.
                     #
                     # The atoms used to be put back where the cursor had them
                     # and the *relaxed* energy reported, so when the held
@@ -2541,12 +2585,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the picture had a bromide 1.27 A from a palladium and
                     # the price belonged to a structure where the metal had
                     # got out of the way.  The relaxed geometry is the one
-                    # that was priced, so it is the one that is shown, and
-                    # an atom that will not follow the cursor is the honest
-                    # picture of a structure that refuses to be pushed there.
-                    settled = (outcome['xyz'] if contacts else
-                               _gfn.hold_atoms_at(
-                                   outcome['xyz'], current, holding))
+                    # that was priced, so it is the one that is drawn.
+                    #
+                    # But a held value is an internal coordinate, so xtb meets
+                    # it and is free to put the molecule anywhere that does --
+                    # and the answer comes back slid a little.  Drawn as it
+                    # arrives, the atom leaves the cursor and the next mouse
+                    # move brings it back, seven times a second: measured on a
+                    # backside attack, 0.102 A each way through the transition
+                    # region, which is a molecule that shakes.  Laid back onto
+                    # the hand as a rigid body it costs nothing -- an energy
+                    # does not depend on where a molecule is -- and the two are
+                    # still the same structure.
+                    settled = _gfn.hold_atoms_at(
+                        outcome['xyz'], current, holding)
                     # What the next answer measures the hand against: the
                     # geometry this one handed back, not the one it was
                     # handed.  Against the latter the difference holds the
@@ -4175,6 +4227,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # next round starts from.
                     said = (f'{label} is still going: round {rounds}, '
                             f'{state.get("optimize_moved", 0.0):.3f} A moved.')
+                    # How far the answer put the held atoms from where the
+                    # cursor has them.  A held value is an internal
+                    # coordinate, so xtb meets it and is free to place the
+                    # molecule anywhere that does; while the values really
+                    # determine the drag that freedom is small, and when it is
+                    # not, the drag is under-determined and the price belongs
+                    # to a different structure than the picture.  On a
+                    # palladium being pushed at, that was 0.7 A and the only
+                    # sign that anything was wrong.  It is said out loud now.
+                    #
+                    # Computed here rather than beside the geometry it is about,
+                    # because the line is written first: read there it was read
+                    # before it was assigned, and the follow died on it.
+                    slipped = _gfn.largest_shift(
+                        _gfn.hold_atoms_at(outcome['xyz'], current, holding),
+                        outcome['xyz']) if contacts else 0.0
+                    if slipped > _SLIP_LOOSE:
+                        said = (f'{said} The hold is loose here '
+                                f'({slipped:.2f} A), so the price is for a '
+                                f'nearby structure rather than this one.')
                     state['gfn_last_status'] = said
                     _set_mol_status(*_gfn_status_lines(said), spinner=True)
                     state['optimize_carrying_on'] = True
@@ -5424,6 +5496,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: affordable at all, and a dense scan is the point.
     _SCAN_CYCLES = 60
 
+    #: When a scan has arrived somewhere and should stop.
+    #:
+    #: A scan that runs past the next minimum stops describing a reaction and
+    #: starts pushing into a structure.  Measured on a tert-butyl bromide with
+    #: a chloride: the path crosses at +25.2 kcal/mol, falls to -4.7 in the
+    #: product well, and the steps after that squeezed the new C-Cl to 1.28 A
+    #: -- a number that means nothing, on a geometry the hold no longer
+    #: determined.
+    #:
+    #: Where the next minimum lies cannot be known in advance, but it can be
+    #: recognised.  Not by the path going flat: a scan keeps driving its
+    #: coordinate, so past the well it climbs the far wall and never flattens
+    #: at all -- that rule never fired.  By the climb itself.  Over the top,
+    #: down into something, and then rising again for two steps running: the
+    #: bottom of that is the minimum, and it is behind us.
+    _SCAN_OVER_THE_TOP = 2.0      # kcal/mol below the highest point
+    _SCAN_CLIMBING = 2            # steps of rising again that end it
+    _SCAN_UPHILL = 0.2            # kcal/mol a step counts as rising
+
+    def _scan_arrived(path):
+        """Whether the walk has crossed something and is climbing out again."""
+        if len(path) < _SCAN_CLIMBING + 3:
+            return False
+        spent = [one[1] for one in path]
+        top = max(spent)
+        if top - spent[0] < _SCAN_OVER_THE_TOP:
+            return False              # nothing has been crossed yet
+        floor = min(spent[spent.index(top):])
+        if top - floor < _SCAN_OVER_THE_TOP:
+            return False              # still up there
+        last = spent[-(_SCAN_CLIMBING + 1):]
+        return (all(b - a > _SCAN_UPHILL for a, b in zip(last, last[1:]))
+                and spent[-1] - floor > _SCAN_UPHILL)
+
     def _scan_legs():
         return list(state.get('scan_legs') or [])
 
@@ -5441,7 +5547,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """Show the armed legs, or nothing at all when there are none."""
         legs = _scan_legs()
         showing = '' if legs else 'none'
-        for widget in (submit_scan_dd, submit_scan_del, submit_scan_run_btn):
+        for widget in (submit_scan_dd, submit_scan_del, submit_scan_whole,
+                       submit_scan_run_btn):
             widget.layout.display = showing
             widget.disabled = not legs
         options = [(_describe_leg(leg), str(n)) for n, leg in enumerate(legs)]
@@ -5525,6 +5632,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         model = _solv_model()
         state['scan_run'] = True
         state['scan_stop'] = False
+        state['scan_arrived'] = False
         submit_scan_run_btn.description = 'Stop'
         submit_scan_run_btn.icon = 'stop'
         label = _server_label(method)
@@ -5559,6 +5667,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         base = float(outcome['energy'])
                     spent = (float(outcome['energy']) - base) * _HARTREE_TO_KCAL
                     path.append((held[0]['value'], spent))
+                    if not submit_scan_whole.value and _scan_arrived(path):
+                        state['scan_arrived'] = True
+                        break
                     lines = [line for line in walked.splitlines()[2:]
                              if line.strip()]
                     schedule_ui_update(
@@ -5598,22 +5709,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         T = float(submit_temperature.value or 298.15)
         ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
         needs = thermal_temperature(top[1], _THERMAL_SECONDS)
+        arrived = (' It stopped at the next minimum.'
+                   if state.get('scan_arrived') else '')
         first = (f'The scan walked {len(path)} of {steps} points. Highest '
                  f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, ending '
-                 f'{ends:+.1f}.')
-        if top[1] <= ceiling:
-            return (first, f'That is inside the {ceiling:.1f} kcal/mol this '
-                           f'structure has at {T:g} K, so the whole path is '
-                           f'open. {_thermal_wait(top[1], T)}')
+                 f'{ends:+.1f}.{arrived}')
+        # The temperature is said either way.  Said only when the path was
+        # closed, the number a chemist came for was missing exactly when the
+        # answer was good news -- and "it needs 150 K and you have 298" is
+        # what makes an open path mean something.
         if needs is None:
-            return (first, 'No temperature under 5000 K crosses that within '
-                           f'{_timescale_label()}, which is another way of '
-                           'saying it does not happen.')
+            wants = ('No temperature under 5000 K crosses that within '
+                     f'{_timescale_label()}, which is another way of saying '
+                     'it does not happen.')
+        else:
+            wants = (f'It wants about {needs:.0f} K ({needs - 273.15:+.0f} C) '
+                     f'to be crossed within {_timescale_label()}.')
+        if top[1] <= ceiling:
+            return (first,
+                    f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '
+                    f'the whole path is open. {_thermal_wait(top[1], T)}')
         return (first,
-                f'At {T:g} K only {ceiling:.1f} kcal/mol is available, so the '
-                f'path is closed there. It wants about {needs:.0f} K to be '
-                f'crossed within {_timescale_label()} '
-                f'({needs - 273.15:+.0f} C). {_thermal_wait(top[1], T)}')
+                f'{wants} At {T:g} K only {ceiling:.1f} kcal/mol is '
+                f'available, so the path is closed there. '
+                f'{_thermal_wait(top[1], T)}')
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""

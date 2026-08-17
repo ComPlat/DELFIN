@@ -38,7 +38,7 @@ from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'contacts_holding',
            'find_xtb', 'find_binary', 'find_gxtb',
-           'held_note', 'hold_atoms_at', 'install_command', 'install_root',
+           'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
            'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
            'solvent_note',
@@ -1801,6 +1801,82 @@ def relax_steps(
         result.get('ok') and 'converged in' in str(result.get('status') or '')
     )
     return result
+
+
+def settle_onto(xyz_text: str, reference: str, indices: Any) -> str:
+    """*xyz_text* moved as a rigid body so the named atoms land where
+    *reference* has them.
+
+    A held value is an *internal* coordinate: xtb meets the distance it was
+    given and is free to put the molecule anywhere that meets it.  So an
+    answer comes back with the whole structure slid a little -- the geometry
+    is exactly the one that was priced, and the atom under the cursor is no
+    longer under the cursor.  Measured on a backside attack, chloride driven
+    at a carbon: the answer moves the chloride 0.008 A away at the start and
+    0.102 A through the transition region.  The page has already drawn it at
+    the cursor, the answer draws it beside, the next mouse move draws it back
+    -- about seven times a second, which is a molecule that shakes.
+
+    Turning and shifting the whole structure fixes that and costs nothing:
+    the energy of a molecule does not depend on where it is, so the geometry
+    that was priced and the geometry that is drawn stay the same structure in
+    every sense that matters.  This is what :func:`hold_atoms_at` should have
+    been -- that one moves single atoms, which does change the structure, and
+    it is kept only for the drags nothing is held for.
+
+    Kabsch, on the atoms the hand is holding: one of them gives a shift, two
+    a shift and a turn about their axis, three or more the whole rigid body.
+    """
+    wanted = sorted({int(i) for i in (indices or ())})
+    rows = [line.split() for line in atom_lines(xyz_text)]
+    source = [line.split() for line in atom_lines(reference)]
+    if not wanted or not rows or len(rows) != len(source):
+        return xyz_text
+    if any(not (0 <= i < len(rows)) for i in wanted):
+        return xyz_text
+    here = [[float(r[1]), float(r[2]), float(r[3])] for r in rows]
+    there = [[float(r[1]), float(r[2]), float(r[3])] for r in source]
+
+    def centre(points, of):
+        return [sum(points[i][n] for i in of) / len(of) for n in range(3)]
+
+    mine, yours = centre(here, wanted), centre(there, wanted)
+    moved = [[one[n] - mine[n] for n in range(3)] for one in here]
+    if len(wanted) >= 2:
+        # The 3x3 correlation of the two clouds, and its best rotation.
+        cov = [[sum(moved[i][a] * (there[i][b] - yours[b]) for i in wanted)
+                for b in range(3)] for a in range(3)]
+        turn = _best_rotation(cov)
+        if turn is not None:
+            moved = [[sum(turn[a][b] * one[b] for b in range(3))
+                      for a in range(3)] for one in moved]
+    body = []
+    for row, point in zip(rows, moved):
+        body.append(f'{row[0]:<5}' + ''.join(
+            f'{point[n] + yours[n]:>24.14f}' for n in range(3)))
+    head = str(xyz_text or '').splitlines()
+    comment = head[1] if len(head) > 1 else ''
+    return f'{len(rows)}\n{comment}\n' + '\n'.join(body) + '\n'
+
+
+def _best_rotation(cov):
+    """The rotation matrix Kabsch gives for a 3x3 correlation, or None.
+
+    Solved by Jacobi on the symmetric matrix rather than by pulling in a
+    linear-algebra dependency for nine numbers.
+    """
+    try:
+        import numpy as _np
+    except Exception:
+        return None
+    try:
+        matrix = _np.array(cov, dtype=float)
+        u, _s, vt = _np.linalg.svd(matrix)
+        sign = 1.0 if _np.linalg.det(u @ vt) > 0 else -1.0
+        correct = _np.diag([1.0, 1.0, sign])
+        return (u @ correct @ vt).T.tolist()
+    except Exception:
+        return None
 
 
 def hold_atoms_at(xyz_text: str, reference: str, indices: Any) -> str:
