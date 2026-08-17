@@ -3647,12 +3647,40 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var dx = x - mark[0], dy = y - mark[1], dz = z - mark[2];
             return dx*dx + dy*dy + dz*dz;
         }
-        return far(atom.x + deltaWorld.x, atom.y + deltaWorld.y,
-                   atom.z + deltaWorld.z) > far(atom.x, atom.y, atom.z);
+        var reach = state.thermalReach;
+        if (!(reach > 0)) return false;
+        /* A leash rather than a wall.  A mouse crosses an angstrom in a
+         * hundred milliseconds and the energy behind it arrives about ten
+         * times a second, so a drag that is simply applied jumps from one
+         * geometry to another and the structures in between are never
+         * evaluated.  The ring was open before anything could say it should
+         * not be: what the budget then held back was a distortion that had
+         * already happened.
+         *
+         * So the atom may stand at most *reach* from the last position the
+         * kernel has confirmed, and the mouse may run as far ahead as it
+         * likes.  The atom follows at the rate the path can be checked, which
+         * is what walking it means -- every geometry on the way is one the
+         * calculation has seen. */
+        var after = far(atom.x + deltaWorld.x, atom.y + deltaWorld.y,
+                        atom.z + deltaWorld.z);
+        if (after <= reach * reach) return false;
+        /* Outside the reach, and refused only when it is also going further
+         * out.  A hand coming back towards the mark is always allowed however
+         * far away it starts -- otherwise a structure that has run out of
+         * budget could not be undone, which is the one thing the user needs
+         * to be able to do from there. */
+        return after > far(atom.x, atom.y, atom.z);
     }
 
-    function setThermalWall(scopeKey, wall) {
-        getState(scopeKey).thermalWall = wall || null;
+    function setThermalWall(scopeKey, wall, reach) {
+        var state = getState(scopeKey);
+        state.thermalWall = wall || null;
+        // How far the atom may stand from the last confirmed position.  Zero
+        // is a wall; anything else is a leash the hand pulls against while
+        // the energy catches up.
+        state.thermalReach = (typeof reach === 'number' && reach > 0)
+            ? reach : 0;
         return true;
     }
 
@@ -4658,6 +4686,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setPicks: setPicks,
         setPositions: setPositions,
         setThermalWall: setThermalWall,
+        // Named plainly for the player, which lives in its own closure and
+        // reads the wall off the page on the same clock it reads the path.
+        applyThermalWall: setThermalWall,
         setDynamicBonds: setDynamicBonds,
         // So a watcher outside this closure can hand the geometry over while
         // the mouse is still down, rather than only when it is let go.

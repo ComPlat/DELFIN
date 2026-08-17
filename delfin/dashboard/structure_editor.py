@@ -1095,6 +1095,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     # relaxation ran, the last structure appeared, and nothing in between did.
     # A widget value is ordered, survives a background thread, and cannot be
     # clobbered by the next one.
+    #: Where the hand may no longer go, polled by the page.
+    #:
+    #: Not run_js: that clears its output before displaying, so a second call
+    #: wipes the first, and the wall is written about ten times a second while
+    #: a drag is running.  It was sent that way at first and simply never
+    #: arrived -- the budget said the structure was fifty-five kcal/mol past
+    #: what it can spend and the ring came apart anyway.  A widget the page
+    #: reads on its own clock cannot be overwritten before it is seen, which
+    #: is why the trajectory travels this way too.
+    #:
+    #: A field of its own rather than sharing the frame field, because that is
+    #: one slot as well: a wall written between two frames would be gone by
+    #: the time the page looked.
+    submit_gfn_wall = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    submit_gfn_wall.add_class('submit-gfn-wall')
     submit_gfn_frame = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
     submit_gfn_frame.add_class('submit-gfn-frame')
 
@@ -1734,6 +1749,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    }\n'
             '    return null;\n'
             '  }\n'
+            '  function setWall(w,reach){\n'
+            '    var api=window.__delfinSubmitManip;\n'
+            '    if(!api||!api.setThermalWall) return;\n'
+            '    try{ api.setThermalWall(scope,w,reach); }catch(e){}\n'
+            '  }\n'
+            '  function readWall(){\n'
+            '    /* Where the hand may no longer go.  Read on this clock and\n'
+            '       not handed over by run_js: that clears its output before\n'
+            '       displaying, so of two calls in quick succession only the\n'
+            '       second survives -- and the kernel writes this about ten\n'
+            '       times a second while a drag is running.  Sent that way it\n'
+            '       never arrived, and a ring came apart under a budget that\n'
+            '       said it could not. */\n'
+            '    var field=inScope(".submit-gfn-wall input, '
+            '.submit-gfn-wall textarea");\n'
+            '    if(!field) return;\n'
+            '    var text=field.value||"";\n'
+            '    if(text===play.wallText) return;\n'
+            '    play.wallText=text;\n'
+            '    if(!text){ setWall(null); return; }\n'
+            '    try{ var got=JSON.parse(text)||{};\n'
+            '      setWall(got.wall||null, got.reach||0); }\n'
+            '    catch(e){}\n'
+            '  }\n'
             '  function read(arrivedAt){\n'
             '    /* Fullscreen moves the viewer into an overlay that carries\n'
             '       the same scope class, and the frame field is not one of the\n'
@@ -2049,6 +2088,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      if(!play.toldStop){ play.toldStop=1;\n'
             '        say("stopped at frame "+(play.shown||0)); }\n'
             '    }\n'
+            '    readWall();\n'
             '    read(now);\n'
             '    if(play.queue.length){\n'
             '      if(!play.started) play.started=now;\n'
@@ -2428,6 +2468,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return f'That is about {seconds / unit:.3g} {name}.'
         return ''
 
+    #: How far an atom may stand from the last position the calculation has
+    #: confirmed, in angstrom.
+    #:
+    #: A mouse crosses an angstrom in a hundred milliseconds and xtb answers
+    #: about ten times a second on a small molecule, so a drag that is simply
+    #: applied jumps from one geometry to another and everything in between is
+    #: never evaluated.  Measuring the endpoint is not enough to say whether a
+    #: path was possible: the ring is already open by the time anything can
+    #: object, and what the budget then refuses is a distortion that has
+    #: happened.
+    #:
+    #: A tenth of an angstrom is about twice the thermal spread of a stiff
+    #: bond, so the leash never fights an ordinary drag and the atom advances
+    #: at whatever rate the energies come back -- at ten a second that is one
+    #: angstrom a second, which is the honest cost of walking a path rather
+    #: than jumping along it.
+    _THERMAL_REACH = 0.10
+
     def _thermal_wall(xyz, energy, holding):
         """Hold the hand where the budget ran out, and let go when it is back.
 
@@ -2447,34 +2505,56 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         spent = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
         serials = [int(i) for i in (holding or ())]
-        if spent <= ceiling:
-            # Inside: remember where the hand is standing, and take any wall
-            # down.  Remembered per drag rather than per structure -- these
-            # are the positions of the atoms the hand is on right now.
-            here = _gfn.coordinates_of(xyz)
-            state['thermal_safe'] = {
-                s: [here[3 * s], here[3 * s + 1], here[3 * s + 2]]
-                for s in serials
-                if 0 <= s and 3 * s + 2 < len(here)
-            }
-            if state.pop('thermal_walled', False):
-                _push_thermal_wall(None)
+        here = _gfn.coordinates_of(xyz)
+        confirmed = {
+            s: [here[3 * s], here[3 * s + 1], here[3 * s + 2]]
+            for s in serials
+            if 0 <= s and 3 * s + 2 < len(here)
+        }
+        if not confirmed:
             return
-        wall = state.get('thermal_safe') or {}
-        if wall and not state.get('thermal_walled'):
+        if spent <= ceiling:
+            # Inside the budget: this geometry is confirmed, and the leash
+            # moves up to it.  It is sent on every answer rather than only
+            # when something changes -- the leash is what keeps the atom from
+            # outrunning the calculation, so it has to follow it step by step.
+            state['thermal_safe'] = confirmed
+            state['thermal_walled'] = False
+            _push_thermal_wall(confirmed, reach=_THERMAL_REACH)
+            return
+        # Spent.  The mark simply stops advancing, and the leash does the
+        # rest: the atom may still move anywhere within reach of the last
+        # confirmed position, which is how it gets back.  A reach of zero was
+        # tried first and freezes the atom outright -- it sits on the mark, so
+        # every direction increases its distance from it, backwards included,
+        # and a structure that had run out of budget could not be undone.
+        wall = state.get('thermal_safe') or confirmed
+        if not state.get('thermal_walled'):
             state['thermal_walled'] = True
-            _push_thermal_wall(wall)
+        _push_thermal_wall(wall, reach=_THERMAL_REACH)
 
-    def _push_thermal_wall(wall):
-        """Tell the page where the hand may no longer go, or that it may."""
-        _run_manip_js(
-            'if(window.__delfinSubmitManip&&'
-            'window.__delfinSubmitManip.setThermalWall)'
-            'window.__delfinSubmitManip.setThermalWall('
-            + json.dumps(submit_scope_id) + ','
-            + (json.dumps({str(k): v for k, v in wall.items()})
-               if wall else 'null') + ');'
-        )
+    def _push_thermal_wall(wall, reach=0.0):
+        """Tell the page where the hand may no longer go, or that it may.
+
+        Through a widget the page reads on its own clock, never through
+        run_js: that clears its output before displaying, so of two calls in
+        quick succession only the second survives -- and this is written about
+        ten times a second while a drag is running.  Sent that way it never
+        arrived at all.
+
+        The serial makes two identical walls two different values, or
+        traitlets would say nothing the second time and a wall that went down
+        and up again in the same place would stay down.
+        """
+        state['thermal_wall_serial'] = int(
+            state.get('thermal_wall_serial') or 0) + 1
+        payload = {'n': state['thermal_wall_serial'],
+                   'reach': float(reach),
+                   'wall': ({str(k): v for k, v in wall.items()}
+                            if wall else None)}
+        schedule_ui_update(
+            lambda text=json.dumps(payload): setattr(
+                submit_gfn_wall, 'value', text))
 
     def _set_thermal_anchor(relax=None, note='Measuring from here'):
         """Take the energy of the structure on screen as the budget's zero.

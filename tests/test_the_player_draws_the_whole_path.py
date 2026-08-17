@@ -380,3 +380,180 @@ def test_the_number_that_travels_for_a_held_atom_is_its_index(browser):
             "the kernel is given the index, so the wall must be keyed by it")
     finally:
         page.close()
+
+
+def test_the_wall_reaches_the_page_and_can_be_taken_down(browser):
+    """It was sent with run_js and never arrived.
+
+    run_js clears its output before displaying, so of two calls in quick
+    succession only the second survives -- and the kernel writes the wall
+    about ten times a second while a drag is running.  The budget said the
+    structure was fifty-five kcal/mol past what it can spend and the ring came
+    apart anyway, because the holding-back never left the kernel.
+
+    It travels as a widget value the page reads on its own clock now, the same
+    way the trajectory does, in a field of its own: the frame field is one
+    slot too, and a wall written between two frames would be gone before the
+    page looked.
+    """
+    import json as _json
+
+    from delfin.dashboard import tab_submit
+
+    script = _player_script()
+    scope = script.split('var scope=')[1].split(';')[0].strip().strip('"')
+    page = browser.new_page()
+    try:
+        page.set_content(
+            f'<!doctype html><html><body><div class="{scope}">'
+            '<div class="submit-gfn-frame"><textarea></textarea></div>'
+            '<div class="submit-gfn-wall"><input></div>'
+            '<div class="submit-cmd-sync"><input></div>'
+            '<button class="submit-optimize-switch mod-active">O</button></div>'
+            '<script>window._submitManipStateByScope={};'
+            'window.__ATOMS=[{serial:101,elem:"C",x:0,y:0,z:0},'
+            '{serial:102,elem:"C",x:1.65,y:0,z:0}];'
+            'var MODEL={selectedAtoms:function(){return window.__ATOMS;}};'
+            f'window._submitMolViewerByScope={{"{scope}":'
+            '{getModel:function(){return MODEL;},render:function(){}}};'
+            '</script></body></html>')
+        page.evaluate(tab_submit.submit_manip_bootstrap_js())
+        page.evaluate(script)
+
+        def wall():
+            return page.evaluate(
+                "s => (window._submitManipStateByScope[s] || {}).thermalWall"
+                " || null", scope)
+
+        def write(payload):
+            page.evaluate("([sel, t]) => {document.querySelector(sel).value = t;}",
+                          [".submit-gfn-wall input", _json.dumps(payload)])
+
+        assert wall() is None
+
+        # Keyed by index, which is the number the kernel is given.
+        write({"n": 1, "wall": {"1": [1.65, 0.0, 0.0]}})
+        page.wait_for_function(
+            "s => !!(window._submitManipStateByScope[s] || {}).thermalWall",
+            arg=scope, timeout=15000)
+        assert wall() == {"1": [1.65, 0, 0]}
+
+        # And down again on the far side of a barrier, where the energy falls
+        # and the structure is back inside its budget.
+        write({"n": 2, "wall": None})
+        page.wait_for_function(
+            "s => !(window._submitManipStateByScope[s] || {}).thermalWall",
+            arg=scope, timeout=15000)
+        assert wall() is None
+    finally:
+        page.close()
+
+
+def _drag_page(browser, scope_holder):
+    """A page with the manipulation script live and its mouse handlers bound.
+
+    onViewerReady is what attaches the overlay and binds them; without it the
+    events go nowhere and every assertion about a drag passes because nothing
+    moved at all.  That is how the first version of this test read.
+    """
+    from delfin.dashboard import tab_submit
+
+    scope = "sc"
+    scope_holder.append(scope)
+    page = browser.new_page()
+    page.set_content(
+        f'<!doctype html><html><body><div class="{scope}">'
+        '<div class="submit-mol-output" '
+        'style="position:relative;width:600px;height:600px">'
+        '<canvas width="600" height="600"></canvas></div>'
+        '<div class="submit-manip-sync"><textarea></textarea></div></div>'
+        '<script>window._submitManipStateByScope={};'
+        'window.__ATOMS=[{serial:101,elem:"C",x:0,y:0,z:0},'
+        '{serial:102,elem:"C",x:1.379,y:0,z:0}];'
+        'var MODEL={selectedAtoms:function(){return window.__ATOMS;}};'
+        f'window._submitMolViewerByScope={{"{scope}":'
+        '{getModel:function(){return MODEL;},render:function(){}}};'
+        '</script></body></html>')
+    page.evaluate(tab_submit.submit_manip_bootstrap_js())
+    page.evaluate("(s) => {window.__delfinSubmitManip.onViewerReady("
+                  "s, document.querySelector('.submit-mol-output'));}", scope)
+    return page
+
+
+def test_the_hand_cannot_outrun_the_calculation(browser):
+    """A mouse crosses an angstrom in a hundred milliseconds.
+
+    The energy behind it arrives about ten times a second, so a drag that is
+    simply applied jumps from one geometry to the next and the structures in
+    between are never evaluated.  Measuring only where the hand ends up cannot
+    say whether the path was possible: the ring is open before anything can
+    object, and what a budget then refuses is a distortion that has already
+    happened.
+
+    Measured here on the real drag path -- the same mousemove handler the page
+    binds -- with twenty events of two pixels, which is what an ordinary drag
+    is made of:
+
+        no leash          +1.20 A     the ring comes apart
+        leash of 0.10 A   +0.06 A     it waits for the calculation
+
+    The mark advances with every answer that is inside the budget, so in use
+    the atom keeps moving -- at the rate the path can be checked, which is
+    what walking it means.
+    """
+    holder = []
+    page = _drag_page(browser, holder)
+    scope = holder[0]
+    try:
+        def where():
+            return round(page.evaluate("window.__ATOMS[1].x"), 3)
+
+        def start_at(value):
+            page.evaluate("v => {window.__ATOMS[1].x = v;}", value)
+
+        def leash(mark, reach):
+            page.evaluate(
+                "([s, m, r]) => {window.__delfinSubmitManip.setThermalWall("
+                "s, m === null ? null : {'1': [m, 0, 0]}, r);}",
+                [scope, mark, reach])
+
+        def drag(pixels_each, times):
+            page.evaluate("""([s, d, n]) => {
+                var st = window._submitManipStateByScope[s];
+                st.dragSensitivity = 1;
+                var X = 100;
+                st.drag = {kind: 'translate', targets: [102],
+                           movedEnough: true, snapshotted: true,
+                           lastX: X, lastY: 100, startX: X, startY: 100};
+                for (var i = 0; i < n; i++) {
+                    X += d;
+                    window.dispatchEvent(new MouseEvent('mousemove',
+                        {clientX: X, clientY: 100, bubbles: true}));
+                }
+            }""", [scope, pixels_each, times])
+
+        # Nothing holding it: the hand takes the atom wherever it likes.
+        start_at(1.379)
+        leash(None, 0)
+        drag(2, 20)
+        loose = where()
+        assert loose > 2.3, (
+            f"the drag has to be able to tear it open, or this proves nothing: "
+            f"{loose}")
+
+        # On the leash, with the mark standing still because no answer has
+        # come back yet: it advances to the edge and waits.
+        start_at(1.379)
+        leash(1.379, 0.10)
+        drag(2, 20)
+        held = where()
+        assert held - 1.379 <= 0.101, f"the leash let go: {held}"
+        assert held > 1.379, "and it must still follow the hand as far as it may"
+
+        # Back is always possible: a structure that has run out of budget has
+        # to be undoable, and that is the one thing needed from there.
+        before = where()
+        drag(-2, 20)
+        assert where() < before, f"the way back was blocked: {before} -> {where()}"
+    finally:
+        page.close()
