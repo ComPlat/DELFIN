@@ -2634,6 +2634,76 @@ def _joint_declash_frame(out_syms, P, fixed, block_specs, geom=None):
         return P
 
 
+def _refine_guarded(out_syms, P, fixed):
+    """``refine()`` mit der Zusicherung der Setzung davor und dahinter.
+
+    ⚠️ WARUM DIESE FUNKTION EXISTIERT -- ein Fehler von mir, am 18.08. gemessen und
+    hier festgehalten, damit ihn niemand wiederholt.  Ich hatte den Schutz zuerst
+    INLINE an EINE Aufrufstelle geschrieben (``assemble_heteroleptic_from_mols``) und
+    danach auf den 19 gemessenen OC-6-Faellen geprueft: 19 von 19 byte-identisch.  Das
+    sah aus wie "die Zusicherung haelt".  Die Positivkontrolle hat es widerlegt: mit
+    Toleranz 0,0001 Angstroem -- wo JEDE Relaxation anschlagen muss -- blieb der Bau
+    ebenfalls identisch.  Der Block lief also nie.  Der FF-freie Chelatbauer geht durch
+    ``assemble_from_config`` -> ``_finish_config_frame``, eine ANDERE Funktion mit einer
+    EIGENEN refine-Aufrufstelle.
+    Ich hatte die Zeile auf Erreichbarkeit geprueft und die FUNKTION nicht -- dieselbe
+    Bauart wie ``ISOLATED_SEAT``, das ich am selben Tag bei anderen dokumentiert habe.
+    ⇒ Der Schutz gehoert an ALLE vier refine-Aufrufstellen, also in EINE Funktion.
+
+    Vorgabe AUS -> byte-identisch: ohne den Schalter ist dies exakt der alte
+    ``try: P = refine(...) except: pass``-Block.
+    """
+    _assert_on = os.environ.get("DELFIN_FFFREE_ASSERT_ENFORCE", "0") == "1"
+    _assertion, _P_before = None, None
+    if _assert_on:
+        try:
+            from delfin.manta import _frame_assertions as _FA
+            _assertion = _FA.derive((list(out_syms), P))
+            _P_before = P.copy()
+        except Exception:
+            _assertion = _P_before = None
+    try:
+        from delfin.manta.refine import refine as _refine
+        P = _refine(out_syms, P, fixed)
+    except Exception:
+        pass
+    if _assertion is not None and _P_before is not None:
+        try:
+            from delfin.manta import _frame_assertions as _FA
+            _v = _FA.violations(_assertion, (list(out_syms), P))
+            # ⚠️ EINE SPUR, WEIL EIN BYTE-VERGLEICH HIER NICHT ENTSCHEIDET.
+            # Der erste Rauchtest zeigte "identisch" -- und das hat drei mit blossem
+            # Auge ununterscheidbare Ursachen: (a) der Block laeuft nicht, (b)
+            # derive() liefert None, (c) refine() bewegt nichts, dann ist die
+            # Ruecknahme ein No-op.  Genau diese Verwechslung hat am 14.08. den
+            # Feuerzensus Befunde erfinden lassen.  Die Spur trennt sie:
+            #   derived=1 sagt (b) ab, moved=... sagt (c) ab, broke=1 ist der Treffer.
+            # DELFIN_ASSERT_TRACE=<pfad>, sonst still und kostenlos.
+            _tp = os.environ.get("DELFIN_ASSERT_TRACE", "")
+            if _tp and _tp != "0":
+                try:
+                    _mv = float(np.max(np.linalg.norm(P - _P_before, axis=1)))
+                except Exception:
+                    _mv = -1.0
+                try:
+                    with open(_tp, "a") as _fh:
+                        _fh.write("[ASSERT] n=%d derived=1 moved=%.4f broke=%d %s\n"
+                                  % (len(out_syms), _mv,
+                                     1 if (_v and _v.get("any_broken")) else 0,
+                                     "" if not _v else
+                                     "md=%d planar=%d frozen=%d trans=%d" % (
+                                         _v.get("md_broken", 0), _v.get("planar_broken", 0),
+                                         _v.get("frozen_moved", 0),
+                                         _v.get("trans_lost_metals", 0))))
+                except Exception:
+                    pass
+            if _v is not None and _v.get("any_broken"):
+                P = _P_before              # Ruecknahme: die Behauptung wiegt schwerer
+        except Exception:
+            pass
+    return P
+
+
 def _sphere_flex_frame(out_syms, P, fixed, block_specs):
     """Apply the env-gated soft coordination-sphere clash relax to one assembled
     frame (``DELFIN_FFFREE_SPHERE_FLEX``).  Donors are soft-restrained (not frozen)
@@ -2743,27 +2813,7 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
         # nichts weg; er gibt ihr nur, was sie bisher nicht wusste.
         #
         # DELFIN_FFFREE_ASSERT_ENFORCE (Vorgabe 0 -> byte-identisch).
-        _assert_on = os.environ.get("DELFIN_FFFREE_ASSERT_ENFORCE", "0") == "1"
-        _assertion, _P_before = None, None
-        if _assert_on:
-            try:
-                from delfin.manta import _frame_assertions as _FA
-                _assertion = _FA.derive((list(out_syms), P))
-                _P_before = P.copy()
-            except Exception:
-                _assertion = _P_before = None
-        try:
-            from delfin.manta.refine import refine as _refine
-            P = _refine(out_syms, P, fixed)
-        except Exception:
-            pass
-        if _assertion is not None and _P_before is not None:
-            try:
-                from delfin.manta import _frame_assertions as _FA
-                if not _FA.holds(_assertion, (list(out_syms), P)):
-                    P = _P_before          # Ruecknahme: die Behauptung wiegt schwerer
-            except Exception:
-                pass
+        P = _refine_guarded(out_syms, P, fixed)
         # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
         # byte-id): when rigid M-D-axis selection is not enough and ligand-internal
         # rotation is needed, jointly optimise all rotatable single bonds of the
@@ -3020,11 +3070,7 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         if not np.all(np.isfinite(P)):
             continue
         if refine:
-            try:
-                from delfin.manta.refine import refine as _refine
-                P = _refine(out_syms, P, fixed)
-            except Exception:
-                pass
+            P = _refine_guarded(out_syms, P, fixed)
             # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
             # byte-id); torsion-only, never-worse, metal+donors (`fixed`) frozen.
             P = _torsion_relax_frame(out_syms, P, fixed, block_specs)
@@ -3578,11 +3624,7 @@ def assemble_hapto(metal, geometry, d, variant=None):
             return None
     # FF-free geometric clash-relief (η-ring + σ-donors all frozen so the rigid
     # ring + constructed coordination are preserved; periphery relaxes only).
-    try:
-        from delfin.manta.refine import refine as _refine
-        P = _refine(out_syms, P, fixed)
-    except Exception:
-        pass
+    P = _refine_guarded(out_syms, P, fixed)
     if not np.all(np.isfinite(P)):
         return None
     return out_syms, P, sorted(set(donors)), exempt_pairs
@@ -4616,11 +4658,7 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True, geom=None
     except Exception:
         pass
     # FF-free geometric clash-relief (both tracks)
-    try:
-        from delfin.manta.refine import refine as _refine
-        P = _refine(out_syms, P, fixed)
-    except Exception:
-        pass
+    P = _refine_guarded(out_syms, P, fixed)
     # #308 whole-complex torsion-space clash relax (env-gated, default-OFF byte-id):
     # joint multi-axis torsion of all rotatable single bonds, metal + donors (`fixed`)
     # frozen.  Chelate ring + M-D arms are ring bonds -> kept rigid by construction;
