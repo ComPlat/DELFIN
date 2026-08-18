@@ -1553,3 +1553,153 @@ def test_a_walk_that_never_settles_says_so_rather_than_pretending():
     # And the barrier it reports is the syn one it went over.
     rise = float(said.split("a rise of")[1].split()[0])
     assert 3.5 < rise < 6.5, said
+
+
+@_needs_xtb
+def test_a_torsion_restraint_is_periodic_and_not_a_spring():
+    """Which is why the hand could not turn anything.
+
+    A harmonic in an angle has a step in it where the angle wraps, so xtb does
+    not use one for a torsion: it uses ``k * (1 - cos d)``.  Measured under
+    GFN2 on anti-butane held 120 degrees from its target, the residue is
+    4.7063 kcal/mol -- ``k * rad^2`` says 13.76 and ``k * (1 - cos)`` says
+    4.7063.  An angle *is* a spring in radians, and a distance one in Bohr,
+    which makes three shapes for the one force constant xtb takes per block.
+
+    So the same number pulls a fifth as hard on a torsion as on a distance.
+    Sized as a distance, the hand's largest torque was 6.2 kcal/mol per radian
+    against a rotational barrier needing about 11 -- it stuck 21 degrees out
+    and converged there at any number of cycles, which is a force balance and
+    not a calculation that ran out of steps.
+    """
+    import math
+
+    def torsion(text):
+        here = gfn.coordinates_of(text)
+        at = [(here[3 * i], here[3 * i + 1], here[3 * i + 2])
+              for i in range(4)]
+        return gfn._dihedral(at, 0, 1, 2, 3)
+
+    start = gfn.optimize_with_gfn(_ANTI_BUTANE, "gfn2", max_steps=400,
+                                  timeout=300)
+    assert start.get("ok"), start.get("status")
+    asked = [{"kind": "dihedral", "atoms": [0, 1, 2, 3], "mode": "push",
+              "force": 0.005, "value": 60.0}]
+    held = gfn.optimize_with_gfn(start["xyz"], "gfn2", max_steps=300,
+                                 timeout=300, constraints=asked)
+    assert held.get("ok"), held.get("status")
+    clean = gfn.optimize_with_gfn(held["xyz"], "gfn2", timeout=300,
+                                  optimise=False)
+    residue = (held["energy"] - clean["energy"]) * 627.5095
+    lag = 60.0 - torsion(held["xyz"])
+
+    # It did not move at all: 0.005 is far too soft to turn a butane.
+    assert abs(lag) > 100.0, lag
+    # And what it cost is the periodic form, not the spring.
+    periodic = 0.005 * (1.0 - math.cos(math.radians(lag))) * 627.5095
+    spring = 0.005 * math.radians(lag) ** 2 * 627.5095
+    assert residue == pytest.approx(periodic, rel=0.02), (residue, periodic)
+    assert residue < spring / 2, (residue, spring)
+
+    # Which is what restraint_energy has to subtract, or a pushed torsion is
+    # priced with the hand in it.
+    def value_of(xyz, entry):
+        here = gfn.coordinates_of(xyz)
+        at = [(here[3 * i], here[3 * i + 1], here[3 * i + 2])
+              for i in entry["atoms"]]
+        return gfn._dihedral(at, 0, 1, 2, 3)
+
+    bias = gfn.restraint_energy(held["xyz"], asked, value_of)
+    assert (held["energy"] - bias) == pytest.approx(clean["energy"], abs=1e-5)
+
+
+def test_the_hardest_the_hand_can_pull_is_the_number_it_is_set_to():
+    """In each coordinate's own units, which is the only way one number can
+    mean one thing across three shapes.
+
+    A distance stores ``k * d^2`` in Bohr, an angle the same in radians, and a
+    torsion ``k * (1 - cos d)``.  So a force constant sized for one is the
+    wrong strength for the others, and xtb takes one for the whole block --
+    which is why the block's constant is sized for the coordinate the hand is
+    actually driving, and a turn is a torsion.
+    """
+    import math
+
+    hand = 44.6                       # kcal/mol/A at 298 K within the hour
+
+    # A distance: hardest at full stretch, 2 k reach.
+    k = gfn.push_constant(hand)
+    hardest = 2 * k * (gfn.PUSH_REACH / gfn.BOHR_IN_ANGSTROM) * 627.5095 \
+        / gfn.BOHR_IN_ANGSTROM
+    assert hardest == pytest.approx(hand, rel=1e-9)
+
+    # A torsion: k sin d, hardest at a right angle, so simply k.
+    kd = gfn.push_constant(hand, kind="dihedral")
+    assert kd * 627.5095 == pytest.approx(hand, rel=1e-9)
+    # And it takes a much larger number to pull as hard.
+    assert kd > 5 * k
+
+    # The block follows the coordinate the hand is driving.
+    turning = gfn.as_pushes(
+        [{"kind": "dihedral", "atoms": [0, 1, 2, 3], "value": 60.0},
+         {"kind": "distance", "atoms": [0, 3], "value": 3.0}],
+        None, hand)
+    assert all(one["force"] == pytest.approx(kd) for one in turning), turning
+    stretching = gfn.as_pushes(
+        [{"kind": "distance", "atoms": [0, 3], "value": 3.0}], None, hand)
+    assert stretching[0]["force"] == pytest.approx(k)
+
+    # The reach for an angle is the same reach, in the units xtb measures one
+    # in: an angstrom is 1.8897 Bohr, so it is 1.8897 radians.
+    assert gfn.PUSH_REACH_DEGREES == pytest.approx(
+        math.degrees(gfn.PUSH_REACH / gfn.BOHR_IN_ANGSTROM))
+    assert gfn.PUSH_REACH_DEGREES == pytest.approx(108.3, abs=0.1)
+
+
+@_needs_xtb
+def test_room_temperature_can_turn_a_molecule_into_its_own_conformers():
+    """The thing the budget must never forbid.
+
+    Anti-butane, the C-C-C-C torsion pushed by a hand sized for 298 K within
+    the hour.  Measured: it turns 70 degrees in the first step and goes on
+    turning, where a hand sized as a distance -- which is what it was --
+    stopped 21 degrees out and stayed there however many cycles it was given.
+
+    At 150 K it still turns, because a 4.8 kcal/mol rotational barrier needs
+    about 11 kcal/mol per radian and the hand there is 22.  It is the wall
+    that refuses what the temperature cannot pay for, not the hand.
+    """
+    def torsion(text):
+        here = gfn.coordinates_of(text)
+        at = [(here[3 * i], here[3 * i + 1], here[3 * i + 2])
+              for i in range(4)]
+        return gfn._dihedral(at, 0, 1, 2, 3)
+
+    start = gfn.optimize_with_gfn(_ANTI_BUTANE, "gfn2", max_steps=400,
+                                  timeout=300)
+    assert start.get("ok"), start.get("status")
+    was = torsion(start["xyz"])
+
+    def turned(ceiling):
+        force = gfn.push_force_for(ceiling)
+        k = gfn.push_constant(force, kind="dihedral")
+        out = gfn.optimize_with_gfn(
+            start["xyz"], "gfn2", max_steps=60, timeout=300,
+            constraints=[{"kind": "dihedral", "atoms": [0, 1, 2, 3],
+                          "mode": "push", "force": k,
+                          "value": was - gfn.PUSH_REACH_DEGREES}])
+        assert out.get("ok"), out.get("status")
+        return abs(was - torsion(out["xyz"]))
+
+    # A hand for room temperature turns it a long way in a single step.
+    assert turned(22.3) > 45.0, turned(22.3)
+    # And one for 150 K still turns it past the eclipsed barrier at 120.
+    assert turned(10.9) > 45.0, turned(10.9)
+    # Sized as a distance -- 22.3 / reach, and then read as a torsion
+    # constant -- it sticks, which is what this was.
+    stuck = gfn.optimize_with_gfn(
+        start["xyz"], "gfn2", max_steps=60, timeout=300,
+        constraints=[{"kind": "dihedral", "atoms": [0, 1, 2, 3],
+                      "mode": "push", "force": gfn.push_constant(22.3),
+                      "value": was - gfn.PUSH_REACH_DEGREES}])
+    assert abs(was - torsion(stuck["xyz"])) < 30.0, "it used to stick here"
