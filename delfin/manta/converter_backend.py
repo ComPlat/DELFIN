@@ -2725,6 +2725,73 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         name = _classify_coloring(geom_key, vertex_elems)
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         out.append((_xyz(syms, P), label))
+        # ===== DIE ERGAENZTEN POLYEDER BEKAMEN NIE EINEN KONFORMER ==============
+        # Gemessen 18.08.2026 ueber 423720 Frame-Etiketten aus sechs Archiven:
+        #
+        #   OC-6 (primaer)   11575 Etiketten, davon 82,9 % mit -conf
+        #   TBP-5 (primaer)   1899 Etiketten, davon 84,5 %
+        #   TPR-6  (nur hier)  1855 Etiketten, davon   0,0 %
+        #   SPY-5  (nur hier)   333 Etiketten, davon   0,0 %
+        #
+        # Und der Beleg, der "diese Systeme haben eben keine Konformere"
+        # ausschliesst: auf denselben 147 Systemen, die OC-6 UND TPR-6 bauen,
+        # traegt OC-6 81,7 % Konformere und TPR-6 NULL.  Bei 928 Systemen mit T-4
+        # UND SP-4 (CN4_BOTH, Champion) gibt es NULL Systeme, in denen beide
+        # Familien einen Konformer tragen.
+        #
+        # Der Grund ist eine Auslassung, kein Entwurf: diese Funktion hat genau EIN
+        # `out.append` und ruft KEINEN Geschwister-Erzeuger -- obwohl der aufrufende
+        # Rumpf sechzig Zeilen hoeher beide stehen hat.  Alle betroffenen Flags
+        # (SIGMA_ENSEMBLE, CN4_BOTH, TPR6) sind Champion, alle liegen auf DEMSELBEN
+        # Pfad.  Es ist die groesste der gemessenen Summe-statt-Produkt-Luecken,
+        # rund 9700 fehlende Etiketten.
+        #
+        # ⚠ WARUM EIGENER SCHALTER UND NICHT MANIFOLD_PRODUCT: der Prismenpfad ist
+        # im Kommentar bei :2474-2478 bereits als "28 % hart gegen einen Boden von
+        # 4,7 %" vermessen.  Mehr Frames auf einem HARTEN Polyeder verschieben die
+        # harte Quote -- das ist ausdruecklich NICHT als "additiv, also sicher" zu
+        # buchen, sondern gegen den Champion zu messen.  Ein eigener Schalter haelt
+        # die beiden Befunde trennbar.
+        #
+        # ⚠ geom_name, NICHT d["geometry"]: diese Funktion baut ein ANDERES Polyeder
+        # als das des Systems.  Ein kopierter Block mit d["geometry"] wuerde das
+        # Prisma gegen das Oktaeder messen und alles verwerfen.
+        #
+        # DELFIN_FFFREE_ENUM_GEOM_SIBLINGS (Vorgabe 0 -> byte-identisch).
+        if os.environ.get("DELFIN_FFFREE_ENUM_GEOM_SIBLINGS", "0") == "1":
+            try:
+                _ens = AC.assemble_heteroleptic_ensemble(
+                    d["metal"], geom_name, vertex_specs,
+                    n_frames=max(2, int(os.environ.get(
+                        "DELFIN_FFFREE_ENUM_GEOM_NFRAMES", "6"))))
+            except Exception:
+                _ens = None
+            _pxyz = _xyz(syms, P)
+            for _ei, _efr in enumerate(_ens or []):
+                if max_isomers and len(out) >= max_isomers:
+                    break
+                try:
+                    _es, _eP, _ed = _efr
+                except Exception:
+                    continue
+                _exyz = _xyz(_es, _eP)
+                if _exyz == _pxyz:
+                    continue                      # das ist der Primaerframe selbst
+                # DIESELBE LATTE WIE DER PRIMAERFRAME.  Das Selbstgate bekommt
+                # graph_bonds und block_bounds -- genau die zwei Argumente, deren
+                # Fehlen an anderer Stelle zu ergaenzten Frames mit gebrochener
+                # Topologie gefuehrt hat.
+                try:
+                    if not _build_is_clean(_es, _eP, cn=d.get("cn"), geom=geom_name,
+                                           donors=_ed, exempt_pairs=_ex,
+                                           graph_bonds=_gb, block_bounds=_bb):
+                        continue
+                    if (AC._collapsed_heavy_bonds_strict(_es, _eP)
+                            and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                        continue
+                except Exception:
+                    continue
+                out.append((_exyz, "%s-conf%d" % (label, _ei + 1)))
     return out
 
 
