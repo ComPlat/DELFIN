@@ -1167,12 +1167,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: out of where it stands, and how far it gets is the field's answer, not
     #: the cursor's.
     #:
-    #: The number is a share of a C-H stretch (662 kcal/mol/A^2) and, with the
-    #: reach the viewer applies, it is the largest force the hand can put in.
-    #: 0.1 is 66 kcal/mol/A: enough to drive torsions and angles, not enough
-    #: to stretch a bond by more than a tenth of an angstrom -- deformations
-    #: only.  1.0 is a hand as strong as the bond, which can break it.  0 is
-    #: the old rigid hand, for placing an atom exactly where it is wanted.
+    #: The number is a share of what a bond holds, and both engines are set
+    #: against that same yardstick even though they apply it very differently.
+    #: In the browser it is a share of a C-H stretch, 662 kcal/mol/A^2, and a
+    #: tenth of it drives torsions and angles while stretching a bond by less
+    #: than a tenth of an angstrom.  Under xtb it is a share of 110 kcal/mol/A,
+    #: which is where a C-C (112), a C-H (98) and a C-O (120) all give way.
+    #:
+    #: 1.0 is a hand as strong as the bond, which can break it.  0 is the old
+    #: rigid hand, for placing an atom exactly where it is wanted.
+    #:
+    #: With the thermal budget on, the temperature caps it: a force over the
+    #: reach does work, so the hand may pull with at most what the ceiling can
+    #: pay for.  At 298 K within the hour that is 22 kcal/mol/A -- a fifth of
+    #: a bond, which deforms and cannot tear.
     submit_pull_slider = widgets.FloatSlider(
         value=0.1, min=0.0, max=3.0, step=0.05,
         description='Pull', continuous_update=False,
@@ -1402,24 +1410,51 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='74px', height='30px'),
         disabled=True,
     )
+    #: Which way, said in the words the coordinate is in.
+    #:
+    #: "closer" and "further" next to a bare 0 and a bare 20 said nothing
+    #: about what any of the three were: the direction read as a setting with
+    #: no subject, and the two numbers as numbers with no units.  The options
+    #: are rewritten for the kind of coordinate that is picked -- two atoms
+    #: are closer or further apart, three or four are narrower or wider -- and
+    #: the numbers carry their own labels.
     submit_scan_way = widgets.Dropdown(
-        options=[('closer', 'in'), ('further', 'out')], value='in',
+        options=[('closer together', 'in'), ('further apart', 'out')],
+        value='in',
         tooltip=(
             'Which way to walk. A scan stops at the next minimum, so where it '
             'ends is the chemistry rather than a number -- the direction is '
             'the one thing that cannot be read off the selection.'
         ),
-        layout=widgets.Layout(width='96px', display='none'),
+        layout=widgets.Layout(width='168px', display='none'),
+        disabled=True,
+    )
+    #: Where to stop, for the cases that need one.
+    #:
+    #: Normally nothing: a scan walks to the next minimum, so where it ends is
+    #: the chemistry.  A number typed here is how two atoms came to be asked
+    #: for 0.60 A when the bond between them is 1.53, and as a field that was
+    #: always on screen showing a bare 0 it read as something that had to be
+    #: filled in.  It appears when it is asked for, and then it is the end of
+    #: the walk: following a figure from the literature, or fixing the ratio
+    #: of two coordinates in a coupled scan.
+    submit_scan_stop_at = widgets.Checkbox(
+        value=False, description='to a set value', indent=False,
+        tooltip=('Off, the scan walks to the next minimum. On, it walks to '
+                 'the value you give.'),
+        layout=widgets.Layout(width='128px', display='none'),
         disabled=True,
     )
     submit_scan_to = widgets.FloatText(
-        value=0.0, step=0.1, description='',
-        layout=widgets.Layout(width='84px', display='none'),
+        value=0.0, step=0.1, description='to',
+        style={'description_width': '18px'},
+        layout=widgets.Layout(width='96px', display='none'),
         disabled=True,
     )
     submit_scan_steps = widgets.BoundedIntText(
-        value=20, min=2, max=400, step=1, description='',
-        layout=widgets.Layout(width='64px', display='none'),
+        value=20, min=2, max=400, step=1, description='steps',
+        style={'description_width': '38px'},
+        layout=widgets.Layout(width='104px', display='none'),
         disabled=True,
     )
     submit_scan_whole = widgets.Checkbox(
@@ -1503,8 +1538,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_internal_group = widgets.HBox(
         [submit_internal_label, submit_internal_value,
          submit_internal_btn, submit_hold_btn, submit_hold_mode,
-         submit_scan_btn, submit_scan_to, submit_scan_steps,
-         submit_scan_way, submit_scan_dd, submit_scan_del, submit_scan_whole,
+         submit_scan_btn, submit_scan_way, submit_scan_steps,
+         submit_scan_stop_at, submit_scan_to,
+         submit_scan_dd, submit_scan_del, submit_scan_whole,
          submit_scan_how, submit_scan_run_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
@@ -2141,8 +2177,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    /* The atoms the hand is moving.  Coordinates that come back\n'
             '       describe where they were when they were sent, and the\n'
             '       cursor has moved on since -- so those are the ones the\n'
-            '       playback must leave alone. */\n'
+            '       playback must leave alone.\n'
+            '\n'
+            '       Unless the hand is a force, and then they are exactly the\n'
+            '       ones it must draw: how far the atom got is the answer to\n'
+            '       the question the drag asked, and keeping it under the\n'
+            '       cursor is how a pull was made to look like a move. */\n'
             '    var st=(window._submitManipStateByScope||{})[scope];\n'
+            '    if(st&&st.ffPull) return [];\n'
             '    return (st&&st.drag&&st.drag.targets)||[];\n'
             '  }\n'
             '  function followIsOn(){\n'
@@ -2454,6 +2496,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return bool(state.get('gfn_follow')
                     or state.get('optimize_run') is not None)
 
+    def _pull_force():
+        """How hard the hand may pull under a server method, in kcal/mol/A.
+
+        ``None`` is the rigid hand: the coordinate is set and the calculation
+        is told to meet it, which is what this always did.
+
+        A share of what a bond holds, so the setting means the same thing here
+        as it does in the browser's field even though the two apply it quite
+        differently.  Measured under GFN2 by pushing until the coordinate
+        either settles or runs away, a C-C gives at 56 kcal/mol/A, a C-H at
+        49, a C-O at 60 -- near enough one number that "half a bond" is a
+        statement about any molecule rather than about ethane.
+
+        And with the budget on, the temperature has the last word.  A force
+        applied over the reach does work, so the most the hand may pull with
+        is the ceiling divided by that reach: 22.3 kcal/mol at 298 K within
+        the hour is a hand of 22, a fifth of a bond -- it deforms and it
+        cannot break anything.  At 1500 K the ceiling is 117, past what a bond
+        holds, and it can break one.  That is the thermal limit made into
+        something the user cannot get round, rather than a refusal arriving
+        after the ring is already open.
+        """
+        share = float(submit_pull_slider.value or 0.0)
+        if share <= 0:
+            return None
+        force = share * _gfn.A_BOND_HOLDS
+        if submit_thermal_btn.value:
+            _, ceiling = _thermal_budget()
+            if ceiling is not None:
+                force = min(force, float(ceiling) / _gfn.PUSH_REACH)
+        return max(0.5, force)
+
     def _gfn_follow_step(xyz, holding=()):
         """Relax around the atom the hand is holding, and send that back.
 
@@ -2529,14 +2603,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     stale = bool(holding) and not any(
                         0 <= int(i) < count for i in holding)
                     pricing = bool(submit_thermal_btn.value) and not stale
+                    # The hand as a force rather than as a value.
+                    #
+                    # The coordinates the hand has changed were held exactly,
+                    # so the calculation was told what the answer had to be and
+                    # arranged the rest around it.  There was nothing the
+                    # chemistry could refuse: a bond went wherever the mouse
+                    # went, and the budget could only say afterwards that it
+                    # should not have.  Pushed instead, the coordinate gets a
+                    # force with a ceiling and settles where the two balance,
+                    # which is what "the atom follows the mouse as far as it
+                    # can" means.  See :func:`_pull_force` for the ceiling.
+                    # MOPAC takes no held internals at all, so there is no
+                    # coordinate for a force to act on there: the hand stays
+                    # what it was, which is a placement.  Left in, a pull under
+                    # PM7 would have had nothing to push and everything to
+                    # undo -- the answer owns the atom, and without a push the
+                    # answer is a free relaxation.
+                    pull = (_pull_force()
+                            if not stale and not _mopac.is_mopac_method(method)
+                            else None)
+                    # xtb takes one force constant for the whole block, and a
+                    # push is three orders of magnitude softer than a hold.
+                    # With both in it the hold's stiffness wins, so the pull
+                    # would quietly go back to being a placement -- the same
+                    # number, the same picture, a different experiment.  The
+                    # user's hold is what they asked for, so it stands, and
+                    # the line says what that costs.
+                    held_too = bool(constraints) and pull is not None
+                    if held_too:
+                        pull = None
+                    # Worked out whenever there is a hand to describe, and not
+                    # only when there is a budget to charge.  Behind the
+                    # budget, a pull with the budget off had no coordinate to
+                    # act on at all: the follow relaxed freely and the answer
+                    # -- which no longer puts the atom back under the cursor --
+                    # undid the drag on every step.
                     contacts = (
                         _gfn.contacts_holding(
                             current, holding, most=3,
                             was=state.get('thermal_was'),
                             turning=state.get('thermal_turn'),
                             holding=state.get('thermal_holding'))
-                        if (pricing
+                        if ((pricing or pull is not None)
                             and not _mopac.is_mopac_method(method)) else [])
+                    if pull is not None and contacts:
+                        contacts = _gfn.as_pushes(
+                            contacts, state.get('thermal_was') or current,
+                            pull, value_of=_value_in)
                     if _mopac.is_mopac_method(method):
                         # MOPAC takes no held internals and no topology file,
                         # so it is given what it does take. A few cycles, the
@@ -2553,7 +2667,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     else:
                         outcome = _gfn.relax_steps(
                             current, method=method, charge=charge, uhf=uhf,
-                            cycles=(_THERMAL_FOLLOW_CYCLES if contacts
+                            # Twenty cycles are the *budget's*, not the
+                            # hold's: a price has to be for a properly
+                            # relaxed path or the wall stands in the wrong
+                            # place.  Keyed on the contacts, a pull with no
+                            # budget quadrupled the cost of every step of
+                            # every drag -- 0.09 s became 0.36 on a hundred
+                            # atoms -- to buy an accuracy nothing was going
+                            # to read.  A drag that is only a drag stays at
+                            # five, which is about ten answers a second.
+                            cycles=(_THERMAL_FOLLOW_CYCLES if pricing
                                     else _GFN_FOLLOW_CYCLES),
                             timeout=30.0,
                             constraints=constraints + contacts, solvent=wet,
@@ -2579,10 +2702,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # itself, and is invisible unless it is counted here.
                     many = (f' holding {len(holding)} atoms,'
                             if len(holding) > 1 else '')
+                    # What the hand is allowed to pull with, said in the units
+                    # that decide what it can do.  A number nobody can see is
+                    # a number nobody can act on, and this one is the whole
+                    # difference between a deformation and a torn molecule.
+                    hand = ''
+                    if held_too:
+                        hand = (' A held value and a pull cannot share one '
+                                'force constant in xtb, so the hand is '
+                                'placing rather than pulling.')
+                    elif pull is not None:
+                        hand = (f' Pulling at {pull:.0f} kcal/mol/A, '
+                                f'{pull / _gfn.A_BOND_HOLDS:.2f} of what a '
+                                f'bond holds.')
                     said = (f'{label} is following the drag:{many} {steps} '
                             f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
-                            'each.')
+                            f'each.{hand}')
                     # What the drag has cost so far: the energy of the
                     # relaxation that has just run, which held the drag and
                     # let everything else move.
@@ -2614,13 +2750,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # because the drag is what is held; and it charges for
                     # the distortion that is really left once the structure
                     # has done what it can, which is what a barrier is.
-                    priced = outcome if contacts else (
-                        _gfn.optimize_with_gfn(
+                    # A value held exactly leaves no restraint energy worth
+                    # the name -- 20.0 meets it to a thousandth -- so that
+                    # answer is its own price.  A push leaves a real one, it is
+                    # meant to, and priced as it stands the budget would be
+                    # charged for the hand as well as for the structure:
+                    # measured on an ethane pulled to 2.46 A, 1.42 kcal/mol of
+                    # it was the restraint.  So a pushed step is priced by a
+                    # single point on the geometry it actually reached, which
+                    # is also the geometry on screen.
+                    if contacts and pull is None:
+                        priced = outcome
+                    elif contacts and pricing:
+                        # The restraint's own energy is arithmetic, not a
+                        # second calculation: xtb's is k*d^2 with d in Bohr,
+                        # measured against a single point at 0.0000 kcal/mol
+                        # over a distance, an angle and a torsion.  Asked for
+                        # instead, it was a whole extra xtb process on every
+                        # step of every drag.
+                        bias = _gfn.restraint_energy(
+                            outcome['xyz'], constraints + contacts, _value_in)
+                        priced = (
+                            dict(outcome, energy=float(outcome['energy']) - bias)
+                            if bias is not None else
+                            _gfn.optimize_with_gfn(
+                                outcome['xyz'], method, charge=charge, uhf=uhf,
+                                timeout=30.0, solvent=wet,
+                                solvation_model=model,
+                                topology=_gfn_topology_dir(current),
+                                optimise=False))
+                    elif pricing:
+                        priced = _gfn.optimize_with_gfn(
                             current, method, charge=charge, uhf=uhf,
                             timeout=30.0, solvent=wet, solvation_model=model,
                             topology=_gfn_topology_dir(current),
                             optimise=False,
-                        ) if pricing else {})
+                        )
+                    else:
+                        priced = {}
                     if not stale:
                         state['thermal_now'] = priced.get('energy')
                     if stale and submit_thermal_btn.value:
@@ -2649,10 +2816,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # the whole of it down turned an UnboundLocalError into
                         # a NameError in a different function, which is what
                         # comes of chasing a use instead of the definition.
+                        # Only meaningful for a hand that sets a value.  A
+                        # push is *meant* to come up short -- that is the
+                        # answer it asked for -- so measuring the shortfall
+                        # against a rigid hand and refusing the drag for it
+                        # would refuse every pull there is.
                         slipped = _gfn.largest_shift(
                             _gfn.hold_atoms_at(
                                 outcome['xyz'], current, holding),
-                            outcome['xyz']) if contacts else 0.0
+                            outcome['xyz']) if (contacts and pull is None) \
+                            else 0.0
                         # Two refusals that do not depend on the budget.
                         #
                         # A loose hold means the price is about a nearby
@@ -2666,7 +2839,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # is why it holds where GFN2 is weakest -- a transition
                         # metal, an open shell.  Stretching stays free: that is
                         # what a reaction does and the budget prices it.
-                        tightest = _gfn.closest_contact(current)[0]
+                        # Read off where the structure actually is.  Under
+                        # a push that is the answer, not the geometry that was
+                        # sent: what was sent carries the hand's wish, and a
+                        # wish an angstrom into somebody else's atom is not a
+                        # squeezed contact -- it is a question, and the answer
+                        # to it is exactly that the atoms did not go there.
+                        tightest = _gfn.closest_contact(
+                            outcome['xyz'] if (contacts and pull is not None)
+                            else current)[0]
                         crowded = (tightest is not None
                                    and tightest < _gfn._TOO_CLOSE)
                         _thermal_slope(
@@ -2763,9 +2944,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the hand as a rigid body it costs nothing -- an energy
                     # does not depend on where a molecule is -- and the two are
                     # still the same structure.
-                    settled = (came_back if came_back is not None else
-                               _gfn.hold_atoms_at(
-                                   outcome['xyz'], current, holding))
+                    # Under a rigid hand the held atoms go back where the
+                    # cursor had them; that is what a rigid hand is.  Under a
+                    # pull they emphatically do not -- how far the atom got is
+                    # the answer to the question the drag asked, and putting it
+                    # back under the cursor is how a force was made to look
+                    # like a move.  The structure is laid onto the geometry it
+                    # was handed by everything that is *not* held, so the
+                    # molecule stays where it is on screen and only what was
+                    # pulled has moved.
+                    if came_back is not None:
+                        settled = came_back
+                    elif pull is not None and contacts:
+                        count = len(_gfn.atom_lines(current))
+                        grabbed = {int(i) for i in (holding or ())}
+                        rest = [i for i in range(count) if i not in grabbed]
+                        settled = _gfn.settle_onto(
+                            outcome['xyz'], current, rest or range(count))
+                    else:
+                        settled = _gfn.hold_atoms_at(
+                            outcome['xyz'], current, holding)
                     # What the next answer measures the hand against: the
                     # geometry this one handed back, not the one it was
                     # handed.  Against the latter the difference holds the
@@ -5665,13 +5863,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     _SCAN_CLIMBING = 2            # steps of rising again that end it
     _SCAN_UPHILL = 0.2            # kcal/mol a step counts as rising
 
+    def _climbed(spent):
+        """The top of the path, and how far it stands above what came before.
+
+        A barrier is a rise out of a minimum, and the first point of a path is
+        not necessarily one.  Measured against the first point instead, a walk
+        that starts strained reports a barrier smaller than it is -- and a
+        push, whose first point relaxes what the hand posed, reports none at
+        all: every later point sits below the start and the highest point on
+        the path is the start itself, which came back as "it wants about 3 K",
+        the temperature of no barrier.
+
+        So the rise is measured from the lowest point *before* the top, which
+        is the minimum the path actually left.
+        """
+        top = max(spent)
+        where = spent.index(top)
+        return top, top - min(spent[:where + 1])
+
     def _scan_arrived(path):
         """Whether the walk has crossed something and is climbing out again."""
         if len(path) < _SCAN_CLIMBING + 3:
             return False
         spent = [one[1] for one in path]
-        top = max(spent)
-        if top - spent[0] < _SCAN_OVER_THE_TOP:
+        top, rise = _climbed(spent)
+        if rise < _SCAN_OVER_THE_TOP:
             return False              # nothing has been crossed yet
         floor = min(spent[spent.index(top):])
         if top - floor < _SCAN_OVER_THE_TOP:
@@ -5745,9 +5961,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # armed.
         picked = len(state.get('picked') or ())
         wanted = '' if picked in _CONSTRAINT_KINDS else 'none'
-        for widget in (submit_scan_way, submit_scan_to, submit_scan_steps):
+        for widget in (submit_scan_way, submit_scan_steps, submit_scan_stop_at):
             widget.layout.display = wanted
             widget.disabled = not wanted == ''
+        # Two atoms are closer or further apart; three or four are narrower or
+        # wider.  The words follow what is picked, so the direction is never a
+        # setting with no subject.
+        kind = _CONSTRAINT_KINDS.get(picked)
+        submit_scan_way.options = (
+            [('closer together', 'in'), ('further apart', 'out')]
+            if kind == 'distance'
+            else [('narrower', 'in'), ('wider', 'out')])
+        # The end of the walk only when one has been asked for.
+        set_end = wanted == '' and bool(submit_scan_stop_at.value)
+        submit_scan_to.layout.display = '' if set_end else 'none'
+        submit_scan_to.disabled = not set_end
 
     #: The shortest a scan may ask two atoms to be, as a share of the bond
     #: they would make.
@@ -5831,9 +6059,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status('Pick 2, 3 or 4 atoms before arming a scan.')
             return
         here = float(submit_internal_value.value)
-        target = float(submit_scan_to.value)
-        if abs(target - here) < 1e-9 or target == 0.0:
-            target = _suggest_scan_target(kind, here, submit_scan_way.value)
+        # A value only when one was asked for.  Read out of the field either
+        # way, an empty field was a target of zero, and a scan told to walk a
+        # distance to zero walks it into a collision -- which is what the
+        # floor below then had to catch.
+        target = _suggest_scan_target(kind, here, submit_scan_way.value)
+        if submit_scan_stop_at.value:
+            asked = float(submit_scan_to.value)
+            if abs(asked - here) > 1e-9:
+                target = asked
         legs = [one for one in _scan_legs() if one['atoms'] != indices]
         leg = {'kind': kind, 'atoms': indices, 'from': here,
                'to': target, 'steps': int(submit_scan_steps.value),
@@ -6022,21 +6256,36 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 * _HARTREE_TO_KCAL))
                 return out
 
-            def _unbiased(here):
+            def _unbiased(here, applied=()):
                 """The energy of this geometry with no force on it.
 
                 A push leaves a real restraint energy behind -- it is meant to,
                 that is the force -- and xtb reports the biased total.  Priced
                 as it stands, a path would carry its own push in the barrier:
                 measured on an ethane pulled to 2.46 A, +1.42 kcal/mol of the
-                answer was the restraint.  So every point of a push is priced
-                by a single point on the geometry it reached.
+                answer was the restraint.
+
+                Taken off rather than calculated away.  xtb's restraint is
+                k*d^2 with d in Bohr for a distance and in radians for an
+                angle, measured, so the residue is arithmetic -- and it agrees
+                with a real calculation without the constraints to 0.0000
+                kcal/mol over a distance, an angle and a torsion.  Asking for
+                that calculation instead doubled the cost of every point.
                 """
                 got = _gfn.optimize_with_gfn(
                     here, method, charge=charge, uhf=uhf, timeout=None,
                     solvent=wet, solvation_model=model,
                     topology=_gfn_topology_dir(here), optimise=False)
                 return got.get('energy')
+
+            def _priced(got, applied):
+                """What the push just reached, with its own force taken out."""
+                if got.get('energy') is None:
+                    return None
+                bias = _gfn.restraint_energy(got['xyz'], applied, _value_in)
+                if bias is None:
+                    return _unbiased(got['xyz'])
+                return float(got['energy']) - bias
 
             try:
                 if pushing:
@@ -6109,7 +6358,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'{n}: {outcome.get("status") or "it did not run"}')
                         return
                     walked = outcome['xyz']
-                    energy = _unbiased(walked) if pushing else outcome['energy']
+                    energy = (_priced(outcome, held) if pushing
+                              else outcome['energy'])
                     if energy is None:
                         schedule_ui_update(
                             _set_mol_status,
@@ -6229,10 +6479,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not path:
             return ('The scan walked nothing.',)
         top = max(path, key=lambda one: one[1])
+        # The barrier is the rise out of the minimum the path left, not the
+        # height above whatever the first point happened to be -- see
+        # :func:`_climbed`.  Both are said: the rise is what a temperature is
+        # worked out from, and the height is where the path stands.
+        _, rise = _climbed([one[1] for one in path])
         ends = path[-1][1]
         T = float(submit_temperature.value or 298.15)
         ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
-        needs = thermal_temperature(top[1], _THERMAL_SECONDS)
+        needs = thermal_temperature(rise, _THERMAL_SECONDS)
         arrived = (f' It came back to the minimum it walked through, at '
                    f'{path[-1][0]:.3g}.'
                    if state.get('scan_arrived') else '')
@@ -6250,7 +6505,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         many = (f'{len(path)} points' if len(path) > steps
                 else f'{len(path)} of {steps} points')
         first = (f'The scan walked {many}. Highest '
-                 f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, ending '
+                 f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, a rise of '
+                 f'{rise:.1f} out of the minimum before it, ending '
                  f'{ends:+.1f}.{arrived}')
         # The temperature is said either way.  Said only when the path was
         # closed, the number a chemist came for was missing exactly when the
@@ -6263,14 +6519,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         else:
             wants = (f'It wants about {needs:.0f} K ({needs - 273.15:+.0f} C) '
                      f'to be crossed within {_timescale_label()}.')
-        if top[1] <= ceiling:
+        if rise <= ceiling:
             return (first,
                     f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '
-                    f'the whole path is open. {_thermal_wait(top[1], T)}')
+                    f'the whole path is open. {_thermal_wait(rise, T)}')
         return (first,
                 f'{wants} At {T:g} K only {ceiling:.1f} kcal/mol is '
                 f'available, so the path is closed there. '
-                f'{_thermal_wait(top[1], T)}')
+                f'{_thermal_wait(rise, T)}')
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
@@ -6628,6 +6884,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                scale_for_px(submit_label_size.value))
         )
 
+    def on_submit_scan_stop_at(change):
+        """The end of the walk asked for, or not.
+
+        Filled in with what the coordinate measures now the first time it is
+        asked for, so it opens on a number that means something instead of on
+        a zero that has to be guessed at.
+        """
+        if change.get('name') != 'value':
+            return
+        if submit_scan_stop_at.value and not float(submit_scan_to.value):
+            try:
+                submit_scan_to.value = float(submit_internal_value.value)
+            except (TypeError, ValueError):
+                pass
+        _refresh_scan()
+
     def on_submit_pull_changed(change):
         if change.get('name') != 'value':
             return
@@ -6956,9 +7228,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Strength is how many steps the browser's field takes per animation
         # frame, and that field does not run under a server method.
         submit_strength_slider.layout.display = 'none' if server else ''
-        # The pull is the browser field answering a force, so it means nothing
-        # under a server method: there the hand still sets the coordinate.
-        submit_pull_slider.layout.display = 'none' if server else ''
+        # Shown under both.  It used to be hidden under a server method on
+        # the grounds that the pull was the browser field's -- which is
+        # precisely why dragging under GFN went on setting coordinates: the
+        # one place where the budget and the scan live was the one place the
+        # hand was still absolute.  xtb answers it now, through the internal
+        # coordinates the hand is changing.
+        submit_pull_slider.layout.display = ''
         # The thermal budget needs an energy per follow step, and that is
         # xtb's: MOPAC's follow reports a heat of formation, which is not the
         # same quantity and cannot be differenced against an xtb anchor.
@@ -6971,6 +7247,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_scan_btn.layout.display = '' if xtb else 'none'
         if not xtb:
             for widget in (submit_scan_way, submit_scan_to, submit_scan_steps,
+                           submit_scan_stop_at,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
                            submit_scan_how, submit_scan_run_btn):
                 widget.layout.display = 'none'
@@ -7298,6 +7575,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_label_size.observe(on_submit_label_size, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_pull_slider.observe(on_submit_pull_changed, names='value')
+    submit_scan_stop_at.observe(on_submit_scan_stop_at, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_thermal_btn.observe(on_submit_thermal, names='value')

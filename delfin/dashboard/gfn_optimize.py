@@ -36,8 +36,8 @@ from typing import Any, Callable, Dict, Optional
 
 from . import solvents as _solvents
 
-__all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'contacts_holding',
-           'push_constant',
+__all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'constraint_input',
+           'contacts_holding', 'push_constant', 'restraint_energy',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
@@ -748,6 +748,24 @@ DRAG_FORCE_CONSTANT = 5.0
 #: 2.50, measured under GFN2 -- it is not a gentle setting at all, it is
 #: simply less than exact.
 EH_PER_BOHR2_IN_KCAL = 627.5095 / (0.529177210903 ** 2)
+BOHR_IN_ANGSTROM = 0.529177210903
+
+#: What xtb's restraint actually costs, measured rather than assumed.
+#:
+#: ``E = k * d^2``, not the half of that a spring is usually written with, and
+#: *d* is in Bohr for a distance and in radians for an angle or a torsion.
+#: Measured under GFN2 on an ethane and a propane by differencing the reported
+#: total against a single point on the same geometry, the ratio against
+#: ``0.5 * k * d^2`` came out at 2.00 for every one of four force constants
+#: across two decades, and an angle's bias matched ``k * rad^2`` to four
+#: figures while ``k * deg^2`` was out by a factor of three thousand.
+#:
+#: Two things follow.  The force a constant applies is ``2 * k * d``, so a
+#: number offered to the user as kcal/mol/A has to be halved on the way in --
+#: see :func:`push_constant`.  And the restraint's own energy can be
+#: subtracted from the answer instead of asking for a second calculation
+#: without it, which is one xtb process saved on every step of every drag.
+RESTRAINT_IS_K_TIMES_D_SQUARED = True
 
 #: How far ahead a push holds its target, in Angstrom.
 #:
@@ -759,6 +777,10 @@ EH_PER_BOHR2_IN_KCAL = 627.5095 / (0.529177210903 ** 2)
 PUSH_REACH = 1.0
 
 #: The ceiling force a push starts and ends with, in kcal/mol/A.
+#:
+#: The same xtb force constants throughout -- what changed when the factor of
+#: two in the restraint was measured is what these numbers are *called*, not
+#: what they do.
 #:
 #: A ceiling and not a fixed force: the restraint applies ``k * reach`` only
 #: while the coordinate has not moved at all, and what the structure keeps is
@@ -779,22 +801,131 @@ PUSH_REACH = 1.0
 #: to 400 kJ/mol works out at roughly 25 to 100 kcal/mol/A of model force.  It
 #: starts below anything that can break a C-C and ends above it, because
 #: finding a reaction is raising the force until something gives.
-PUSH_FORCE_FROM = 4.0
-PUSH_FORCE_TO = 120.0
+PUSH_FORCE_FROM = 8.0
+PUSH_FORCE_TO = 240.0
+
+#: What a bond holds, as a force, in kcal/mol/A.
+#:
+#: The yardstick the hand is set against, and it is worth having because it
+#: turns out to be nearly one number.  Bisected under GFN2, the same push
+#: applied over and over until the coordinate either settles or runs away:
+#:
+#:     C-C in ethane     holds 112, breaks by 116
+#:     C-H in ethane      holds 98, breaks by 100
+#:     C-O in methanol   holds 120, breaks by 122
+#:
+#: Three bonds of quite different length and strength, all of them giving way
+#: between 98 and 122.  So "as hard as a bond" is a real quantity and not a
+#: figure of speech, and a hand set at half of it deforms a molecule without
+#: being able to take it apart -- whatever the molecule is made of.
+A_BOND_HOLDS = 110.0
+
+#: How far a push may be asked for beyond where the coordinate stands.
+#:
+#: Degrees for an angle or a torsion, since a hand that turns something is
+#: reported in those.  xtb takes one force constant for a whole block, so the
+#: distance's constant is what an angle in the same block gets as well; the
+#: reach is what keeps that sane rather than a second constant, which xtb
+#: would read and ignore.
+PUSH_REACH_DEGREES = 20.0
+
+
+def as_pushes(entries: Any, reference: Any, force: float,
+              value_of: Any = None) -> list:
+    """The same held coordinates, as forces instead of as values.
+
+    *entries* are what :func:`contacts_holding` worked out the hand is
+    changing, carrying the values the hand is *asking* for.  Each becomes a
+    push of at most *force* kcal/mol/A towards that value, held no further
+    than a reach from where the coordinate stands in *reference* -- so what
+    the structure feels is a force with a ceiling, and how far it actually
+    goes is the structure's answer.
+
+    *value_of* reads one entry's coordinate off a geometry; the editor passes
+    its own, which is the only place that arithmetic lives.
+    """
+    out = []
+    for entry in (entries or ()):
+        kind = str((entry or {}).get('kind') or '')
+        wanted = (entry or {}).get('value')
+        try:
+            wanted = float(wanted)
+        except (TypeError, ValueError):
+            continue
+        reach = PUSH_REACH if kind == 'distance' else PUSH_REACH_DEGREES
+        now = None
+        if reference is not None and value_of is not None:
+            try:
+                now = value_of(reference, entry)
+            except Exception:
+                now = None
+        if now is not None:
+            gap = wanted - now
+            if abs(gap) > reach:
+                wanted = now + math.copysign(reach, gap)
+        out.append({'kind': kind,
+                    'atoms': [int(i) for i in (entry.get('atoms') or ())],
+                    'mode': 'push',
+                    'force': push_constant(force),
+                    'value': wanted})
+    return out
 
 
 def push_constant(force: float, reach: float = PUSH_REACH) -> float:
     """The xtb force constant whose ceiling is *force* kcal/mol/A.
 
-    A restraint of stiffness *k* held *reach* from where the coordinate stands
-    applies at most ``k * reach``, and less than that once the coordinate has
-    moved towards it.  The caller puts the target *reach* ahead again at every
-    step, so the ceiling is the same at every point of a path however far it
-    has already come -- which is what makes a ramp of these a ramp of forces.
+    xtb's restraint is ``k * d^2``, so what it applies is ``2 * k * d`` -- the
+    two is measured, not assumed, and leaving it out made every force in this
+    file a claim about half of what was really being applied.
+
+    Held *reach* from where the coordinate stands, the restraint applies at
+    most ``2 * k * reach``, and less than that once the coordinate has moved
+    towards it.  The caller puts the target *reach* ahead again at every step,
+    so the ceiling is the same at every point of a path however far it has
+    already come -- which is what makes a ramp of these a ramp of forces.
     Returned in xtb's units, which is the only place that conversion lives.
     """
     span = float(reach) or PUSH_REACH
-    return float(force) / (EH_PER_BOHR2_IN_KCAL * span)
+    return float(force) / (2.0 * EH_PER_BOHR2_IN_KCAL * span)
+
+
+def restraint_energy(xyz_text: str, constraints: Any, value_of: Any) -> Any:
+    """What the restraints in *constraints* contribute to the reported energy.
+
+    In Hartree, to be taken off the total xtb hands back.  ``None`` when it
+    cannot be worked out, and then the caller has to ask for a calculation
+    without them instead of guessing.
+
+    A push is *meant* to leave a residue -- that residue is the force -- so an
+    answer priced as it stands carries the hand as well as the structure.  The
+    alternative was a second xtb process per step with the constraints taken
+    out; this is the same number for none of the time.
+    """
+    prepared = constraint_input(constraints, atoms=_atom_count(xyz_text))
+    k = prepared.get('force')
+    if not k or not prepared.get('held'):
+        return 0.0
+    dropped = [id(one) for one in (prepared.get('dropped') or ())]
+    total = 0.0
+    for entry in (constraints or ()):
+        if id(entry) in dropped:
+            continue
+        got = value_of(xyz_text, entry)
+        if got is None:
+            return None
+        try:
+            gap = float(entry.get('value')) - float(got)
+        except (TypeError, ValueError):
+            return None
+        if str(entry.get('kind')) == 'distance':
+            gap /= BOHR_IN_ANGSTROM
+        else:
+            # A torsion is periodic, and 359 degrees away is one degree away.
+            if str(entry.get('kind')) == 'dihedral':
+                gap = (gap + 180.0) % 360.0 - 180.0
+            gap = math.radians(gap)
+        total += k * gap * gap
+    return total
 
 
 #: How many atoms each kind of held value names.
