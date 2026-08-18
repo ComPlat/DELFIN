@@ -115,9 +115,12 @@ def test_editor_ships_no_debug_logging():
 
 
 def test_dragging_an_atom_relaxes_the_rest_through_the_force_field():
-    """Avogadro's manipulation: the grabbed atom follows the cursor exactly and
-    the molecule settles around it. The relaxation runs in the browser because
-    a per-frame round trip to the kernel costs 45 ms."""
+    """Avogadro's manipulation: the grabbed atom follows the cursor and the
+    molecule settles around it. The relaxation runs in the browser because a
+    per-frame round trip to the kernel costs 45 ms.
+
+    Exactly, when the hand is set to rigid; otherwise it is pulled and the
+    field decides how far it gets -- see the pull test below."""
     # Frozen atoms are a gradient mask on the engine side, set once per drag.
     assert 'ffBeginDrag(scopeKey, state.drag.targets)' in EDITOR
     assert 'ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets))' in EDITOR
@@ -1675,9 +1678,12 @@ def test_the_relaxation_does_not_own_the_frame_the_page_needs():
     assert 'state.ffBusy' in relax
     # And a batch that never comes back must not hold the loop for ever.
     assert 'ffBusySince' in relax
-    # What the hand holds stays where the hand put it: the answer describes
-    # where it was when it was asked for, which under the cursor is the past.
-    assert 'var held = (state.drag && state.drag.targets) || null;' in relax
+    # What the *rigid* hand holds stays where the hand put it: the answer
+    # describes where it was when it was asked for, which under the cursor is
+    # the past.  Under a pull the field owns those atoms too and its answer is
+    # written back in full -- that is the whole point of pulling.
+    assert ('var held = (!state.ffPull && state.drag && state.drag.targets)'
+            in relax)
     assert 'skipSerials' in _body('ffWritePositions')
 
 
@@ -2044,3 +2050,102 @@ def test_a_step_is_recorded_before_it_happens_not_after(tab):
     assert "_remember('an optimisation')" in source
     optimise = source.split("_remember('an optimisation')")[1][:200]
     assert 'state[\'optimize_run\'] = token' in optimise
+
+
+def test_the_hand_pulls_the_atom_instead_of_placing_it():
+    """A drag is a force on the atom, not a new coordinate for it.
+
+    Setting the coordinate is why a molecule could be pulled into any shape at
+    all: the hand won absolutely and the field only got to tidy up afterwards,
+    so there was nothing that could refuse.  Nobody who does this well works
+    that way -- VMD/NAMD's interactive MD turns a drag into a force, Narupa
+    biases the dynamics through a field whose strength the user sets, and
+    Reiher's real-time quantum chemistry hands the response back as force
+    feedback.  Pull, and the bond pulls back; the atom follows exactly as far
+    as the balance allows, which is the flattest way out of where it stands.
+
+    So the grabbed atom is emphatically *not* frozen -- a frozen atom has
+    nothing for a force to act on -- and nothing is moved by the mouse handler
+    at all.  The target moves; the atoms arrive with the relaxation.
+    """
+    begin = _body('ffBeginDrag')
+    # A pull takes hold of atoms without freezing them.  Only what the user
+    # pinned stays frozen, which is what the empty extra list means.
+    assert 'ffApplyFrozen(scopeKey, [])' in begin
+    assert 'ffPullApply(scopeKey);' in begin
+    # Rigid is still reachable, and is also what happens when there is nothing
+    # to take hold of -- a grab on an atom that is not there falls back to the
+    # old path rather than silently doing nothing.
+    assert 'state.pullShare > 0' in begin
+    assert 'if (want.length) {' in begin
+    assert 'state.ffPull = null;' in begin
+    assert 'ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets));' in begin
+
+    # The mouse moves the wanted point and nothing else.
+    assert 'if (state2.ffPull) {' in EDITOR
+    assert 'ffPullWant(scopeKey, delta);' in EDITOR
+    want = _body('ffPullWant')
+    assert 'w.x += deltaWorld.x;' in want
+    # The thermal leash bounds what may be *asked* for, not where the atom is:
+    # under a pull the atom never goes anywhere the field did not take it.
+    assert 'thermalWallBlocks(scopeKey, w, w.atom, deltaWorld)' in want
+
+    # Letting go clears the pull before anything else, and whether or not the
+    # field is still there -- one left behind would go on dragging the atom
+    # towards a point the mouse abandoned the next time the engine ran.
+    end = _body('ffEndDrag')
+    assert end.index('ffLetGo(scopeKey);') < end.index('if (!ffEnabled(state)) return;')
+    assert 'ffTether(scopeKey, []);' in _body('ffLetGo')
+
+    # Under a pull the field owns the held atoms too, so its answer is written
+    # back in full.  Under the rigid hand they are the page's and are skipped.
+    assert 'var held = (!state.ffPull && state.drag && state.drag.targets)' in EDITOR
+
+    # The engine runs in a worker as often as not, and it has to hear about
+    # the pull as well -- posted before the step, so it is in effect for it.
+    from delfin.dashboard.molecule_viewer import FF_WORKER_LOOP_JS
+    assert "message.cmd === 'tether'" in FF_WORKER_LOOP_JS
+    assert 'FF.tether(message.scope, message.list);' in FF_WORKER_LOOP_JS
+    assert "ffTellWorker({cmd: 'tether'" in EDITOR
+
+
+def test_how_hard_the_hand_pulls_is_the_users_to_set():
+    """And it is set in units of the thing it pulls against.
+
+    A force constant means nothing on its own; a share of a bond means
+    something immediately.  Measured on the browser field: at a tenth of a
+    bond a dragged hydrogen travels 1.97 A and the C-H it hangs on gives
+    0.05 A -- the deformation goes into the angles and torsions, which are an
+    order of magnitude softer.  At one whole bond the same drag stretches it
+    to 1.68 A, and at three to 2.63 A.
+
+    Zero is the old rigid hand, kept deliberately: placing an atom exactly
+    where it is wanted is sometimes the point, and it is one click away.
+    """
+    setter = _body('setPullStrength')
+    # A share of a bond, and the bond is the one the measurements used.
+    assert 'var PULL_LIKE_A_BOND = 662.0;' in EDITOR
+    assert 'state.pullShare = Math.min(3, asked);' in setter
+    assert "if (!isFinite(asked) || asked < 0) asked = 0;" in setter
+    # Changed mid-drag it takes effect without letting go.
+    assert 'if (state.ffPull) ffPullApply(scopeKey);' in setter
+    assert 'setPullStrength: setPullStrength,' in EDITOR
+
+    # The ceiling on the force is the engine's to enforce, so it travels with
+    # every pull rather than being clamped once per mouse event.
+    assert 'var PULL_REACH = 1.0;' in EDITOR
+    assert 'reach: PULL_REACH' in _body('ffPullApply')
+
+    # On the toolbar, wired both ways, and re-applied when the field is
+    # handed its parameters so a reload keeps the feel the user set.
+    source = SUBMIT_SOURCE
+    assert 'submit_pull_slider = widgets.FloatSlider(' in source
+    assert "description='Pull'" in source
+    assert 'submit_pull_slider.observe(on_submit_pull_changed' in source
+    assert source.count('setPullStrength(') == 2, source.count('setPullStrength(')
+    # Meaningless where the browser field does not run: under a server method
+    # the hand still sets the coordinate.
+    assert ("submit_pull_slider.layout.display = 'none' if server else ''"
+            in source)
+    # Enabled and disabled with the rest of the manipulation toolbar.
+    assert 'submit_pull_slider.disabled = not enabled' in source

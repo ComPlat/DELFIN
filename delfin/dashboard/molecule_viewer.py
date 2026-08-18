@@ -1211,6 +1211,8 @@ self.onmessage = function (e) {
             FF.configure(message.scope, message.opts);
         } else if (message.cmd === 'grab') {
             FF.grab(message.scope, message.list);
+        } else if (message.cmd === 'tether') {
+            FF.tether(message.scope, message.list);
         } else if (message.cmd === 'dispose') {
             FF.dispose(message.scope);
         } else if (message.cmd === 'step') {
@@ -1263,6 +1265,29 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     var PICK_RADIUS_PX = 9;
     var DEFAULT_ATOM_SCALE = 0.28;
 
+    //: How hard the hand pulls, in units of a bond.
+    //
+    //: Dragging used to set the atom's coordinates outright: the hand won
+    //: absolutely, and a molecule could be pulled into any shape at all
+    //: because nothing on the other side had a say.  A pull is a force
+    //: instead.  The atom goes where the field lets it, which is the flattest
+    //: way out of where it stands -- it follows the mouse downhill rather
+    //: than being carried.
+    //
+    //: The number is a share of a C-H stretch, 662 kcal/mol/A^2, and together
+    //: with the reach below it is the largest force the hand can apply.  A
+    //: tenth of a bond is 66 kcal/mol/A: enough to drive torsions and angles,
+    //: not enough to stretch a bond by more than a tenth of an angstrom.  One
+    //: whole bond is a hand as strong as the bond, which can break it.  Zero
+    //: is the old rigid hand, kept because placing an atom exactly where it
+    //: is wanted is sometimes the point.
+    var PULL_LIKE_A_BOND = 662.0;
+    var DEFAULT_PULL_SHARE = 0.1;
+    //: How far the wanted point may stand ahead of the atom before the pull
+    //: stops growing.  This is what turns a stiffness into a force limit: drag
+    //: as far across the screen as you like and the atom feels the same.
+    var PULL_REACH = 1.0;
+
     function getViewer(scopeKey) {
         return (window._submitMolViewerByScope || {})[scopeKey] || null;
     }
@@ -1274,6 +1299,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 scopeKey: scopeKey,
                 ffActive: false,
                 settleOnRelease: true,
+                pullShare: DEFAULT_PULL_SHARE,
                 pinned: [],
                 ffFrameMs: 16,
                 picks: [],
@@ -3251,12 +3277,81 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         try { window.__delfinFF.grab(scopeKey, list); } catch (e) {}
         ffTellWorker({cmd: 'grab', scope: scopeKey, list: list});
     }
+    function pullConstant(state) {
+        return (state.pullShare || 0) * PULL_LIKE_A_BOND;
+    }
+    // The whole set at once, because that is what a mouse move is: one
+    // message a frame, replacing the last.  An empty list lets go.
+    function ffTether(scopeKey, list) {
+        try { window.__delfinFF.tether(scopeKey, list || []); } catch (e) {}
+        ffTellWorker({cmd: 'tether', scope: scopeKey, list: list || []});
+    }
+    // Where the hand wants each atom it has hold of, as the field is told it.
+    // The reach travels with it, so the ceiling on the force is enforced every
+    // step the engine takes rather than only when the mouse reports.
+    function ffPullApply(scopeKey) {
+        var state = getState(scopeKey);
+        var pull = state.ffPull;
+        if (!pull || !pull.want.length) return false;
+        var k = pullConstant(state);
+        var list = [];
+        for (var i = 0; i < pull.want.length; i++) {
+            var w = pull.want[i];
+            list.push({atom: w.atom, k: k, reach: PULL_REACH,
+                       x: w.x, y: w.y, z: w.z});
+        }
+        ffTether(scopeKey, list);
+        return true;
+    }
+    // The mouse has moved: the wanted point moves with it, the atom does not.
+    function ffPullWant(scopeKey, deltaWorld) {
+        var state = getState(scopeKey);
+        var pull = state.ffPull;
+        if (!pull) return false;
+        for (var i = 0; i < pull.want.length; i++) {
+            var w = pull.want[i];
+            // The thermal leash bounds the *wanted* point, not the atom: what
+            // the budget has not paid for cannot be asked for either.
+            if (thermalWallBlocks(scopeKey, w, w.atom, deltaWorld)) continue;
+            w.x += deltaWorld.x; w.y += deltaWorld.y; w.z += deltaWorld.z;
+        }
+        return ffPullApply(scopeKey);
+    }
+    function ffLetGo(scopeKey) {
+        var state = getState(scopeKey);
+        if (!state.ffPull) return;
+        state.ffPull = null;
+        ffTether(scopeKey, []);
+    }
+    // Which atoms a pull would take hold of, and where each of them starts.
+    function ffWantFrom(viewer, targets) {
+        var atoms = getAtoms(viewer);
+        var want = [];
+        for (var i = 0; i < atoms.length; i++) {
+            if (targets.indexOf(atoms[i].serial) < 0) continue;
+            want.push({atom: i, serial: atoms[i].serial,
+                       x: atoms[i].x, y: atoms[i].y, z: atoms[i].z});
+        }
+        return want;
+    }
     function ffBeginDrag(scopeKey, targets) {
         var state = getState(scopeKey);
         if (!ffEnabled(state)) return;
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
-        ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets));
+        // A pulled atom must be free to move, or the force has nothing to act
+        // on: it is emphatically not frozen.  Only what the user pinned is.
+        var want = (state.pullShare > 0) ? ffWantFrom(viewer, targets) : [];
+        if (want.length) {
+            state.ffPull = {want: want};
+            ffApplyFrozen(scopeKey, []);
+            ffPullApply(scopeKey);
+        } else {
+            // Nothing to take hold of -- or the rigid hand, which owns the
+            // coordinate and freezes it so the field cannot argue.
+            state.ffPull = null;
+            ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets));
+        }
         state.ffFrameMs = 16;
     }
     function unpinAll(scopeKey) {
@@ -3349,8 +3444,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 state.ffStats = reply.stats || null;
                 var live = getViewer(scopeKey);
                 if (!live) { done(false); return; }
-                // Whatever the hand is holding stays where the hand put it.
-                var held = (state.drag && state.drag.targets) || null;
+                // Whatever the *rigid* hand is holding stays where the
+                // hand put it.  Under a pull the field owns those atoms too --
+                // that is the whole point of it -- so the answer is written
+                // back in full.
+                var held = (!state.ffPull && state.drag && state.drag.targets)
+                    || null;
                 ffWritePositions(live, reply.positions, held);
                 applyFixedInternals(scopeKey);
                 done(true);
@@ -3525,8 +3624,25 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return state.dragSensitivity;
     }
 
+    //: How hard the hand pulls, as a share of a bond.  Zero is the rigid
+    //: hand: the coordinate is set outright and the field is frozen out of it.
+    function setPullStrength(scopeKey, share) {
+        var state = getState(scopeKey);
+        var asked = parseFloat(share);
+        if (!isFinite(asked) || asked < 0) asked = 0;
+        state.pullShare = Math.min(3, asked);
+        // Changed mid-drag it takes effect without letting go, so the feel can
+        // be found while a structure is being pulled rather than between goes.
+        if (state.ffPull) ffPullApply(scopeKey);
+        return state.pullShare;
+    }
+
     function ffEndDrag(scopeKey, heldSerials) {
         var state = getState(scopeKey);
+        // Before anything else, and whether or not the field is still there:
+        // a pull left behind would go on dragging the atom towards a point
+        // the mouse abandoned, the next time the engine ran.
+        ffLetGo(scopeKey);
         if (!ffEnabled(state)) return;
         // Off by choice: placing an atom somewhere and having it stay there is
         // sometimes exactly what is wanted, even though the geometry is then
@@ -4050,10 +4166,19 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     y: basis.right.y * dx * s - basis.up.y * dy * s,
                     z: basis.right.z * dx * s - basis.up.z * dy * s
                 };
-                applyTranslate(scopeKey, delta, d.targets);
-                // The grabbed atoms are already where the cursor put them --
-                // applyTranslate has drawn that -- and the relaxation pulls
-                // everything else after them, drawn again when it answers.
+                if (state2.ffPull) {
+                    // The hand says where it wants them; the field says how
+                    // much of that they get.  Nothing is moved here at all --
+                    // the atoms arrive with the relaxation, along the way out
+                    // that costs least.
+                    ffPullWant(scopeKey, delta);
+                } else {
+                    applyTranslate(scopeKey, delta, d.targets);
+                }
+                // Under the rigid hand the grabbed atoms are already where the
+                // cursor put them -- applyTranslate has drawn that -- and the
+                // relaxation pulls everything else after them, drawn again
+                // when it answers.
                 ffRelaxAsync(scopeKey, function(moved) {
                     if (moved) redrawHighlights(scopeKey);
                 });
@@ -4699,6 +4824,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
         setDragSensitivity: setDragSensitivity,
+        setPullStrength: setPullStrength,
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
         centreOnSystem: centreOnSystem,

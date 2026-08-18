@@ -600,7 +600,7 @@ def test_a_scan_comes_back_to_the_minimum_it_walked_through():
     body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
     body = body.split("def _scan_verdict(")[0]
     assert "if bottom is None or spent < bottom[0]:" in body
-    assert "bottom = (spent, walked, held[0]['value'])" in body
+    assert "bottom = (spent, walked, reached)" in body
     assert "walked = bottom[1]" in body
     # And the geometry left in the box is that one.
     assert "def _done(final=walked):" in body
@@ -937,3 +937,236 @@ def test_holding_a_value_is_a_step_of_its_own():
     hold = EDITOR_SOURCE.split("def on_submit_hold(")[1].split("\n    def ")[0]
     assert "_remember(f'holding" in hold
 
+
+
+def test_a_hold_that_names_nothing_is_not_priced():
+    """The page names the atoms it is holding by their place in the structure
+    it is looking at, and the kernel reads them against the structure it was
+    sent.  When the two have moved apart -- the structure changed under the
+    drag, or a frame arrived from before it did -- not one of those numbers
+    names an atom that is there.
+
+    :func:`gfn_optimize.contacts_holding` then correctly finds no coordinate
+    to hold and returns nothing, which is indistinguishable from the honest
+    empty case (the hand on everything, or on nothing) -- and the price fell
+    straight through to the rigid single point.  That is the one that
+    overcharges anything forming a bond twenty to thirty times over, and it
+    did so with nothing said: the wall could take a drag back on a number
+    computed for a structure neither side was looking at.
+    """
+    assert gfn.contacts_holding(_ETHANE, [99, 100]) == []
+    source = EDITOR_SOURCE
+    assert 'count = len(_gfn.atom_lines(current))' in source
+    assert 'stale = bool(holding) and not any(' in source
+    assert "pricing = bool(submit_thermal_btn.value) and not stale" in source
+    # Nothing is charged, nothing is remembered, and the wall does not run.
+    assert 'if not stale:\n' in source
+    assert 'if pricing:' in source
+    assert ') if pricing else {})' in source
+    # And it is said, because a step that is not priced looks exactly like a
+    # step that cost nothing.
+    assert 'does not have, so this step is not priced.' in source
+
+
+def test_the_anchor_never_takes_the_drag_back():
+    """Switching the budget on mid-drag asked for the drag to be measured, and
+    answered by undoing it.
+
+    The anchor relaxes first by default -- which is right when it is set on a
+    structure at rest, and exactly wrong while a hand is on one: it optimised
+    the geometry under the cursor and wrote the result into the coordinate
+    box.  A hand on the molecule outranks the setting, and the structure the
+    user is holding is measured as it stands.
+
+    The same optimisation takes as long as it takes, and the editor is not
+    frozen while it runs.  Its answer is only allowed to move the structure it
+    was actually measuring; when the editor has moved on, the anchor belongs
+    to the older structure, which is what the fingerprint already decides --
+    so all that is left is to say so rather than overwrite what was done in
+    the meantime.
+    """
+    source = EDITOR_SOURCE
+    assert "held = bool(state.get('gfn_follow'))" in source
+    assert 'if held:\n            wants_relax = False' in source
+    assert "note = 'Measuring from the structure as it stands'" in source
+
+    assert "moved_on = _current_xyz() != xyz" in source
+    assert 'if wants_relax and not moved_on:' in source
+    assert 'belongs to the older one' in source
+
+
+def test_a_push_is_a_force_and_says_so_in_the_units_of_one():
+    """xtb takes its distance force constants in Hartree per Bohr squared, so
+    0.5 says nothing about how hard it pulls until it is converted -- it is
+    1120 kcal/mol/A^2, half again as stiff as a C-C bond, which is why a
+    "pull" drags an ethane's C-C from 1.52 to 2.46 A when asked for 2.50.
+
+    A push is set in the units the ramp is thought in: the force it applies,
+    in kcal/mol/A.  The restraint is held :data:`PUSH_REACH` ahead of wherever
+    the coordinate now stands, so what the structure feels is k*reach and not
+    a spring that pulls harder the further it has to go.
+    """
+    assert gfn.EH_PER_BOHR2_IN_KCAL == pytest.approx(2240.9, abs=0.5)
+    # 20 kcal/mol/A held one angstrom ahead.
+    assert gfn.push_constant(20.0) == pytest.approx(
+        20.0 / gfn.EH_PER_BOHR2_IN_KCAL, rel=1e-12)
+    # Half the reach, twice the stiffness, the same force.
+    assert (gfn.push_constant(20.0, reach=0.5)
+            == pytest.approx(2 * gfn.push_constant(20.0), rel=1e-9))
+    # AFIR's own range, read through its collision parameter.
+    assert 4.0 <= gfn.PUSH_FORCE_FROM < gfn.PUSH_FORCE_TO <= 200.0
+
+
+def test_a_push_and_a_hold_cannot_share_one_force_constant():
+    """xtb takes one force constant for a whole $constrain block -- a second
+    ``force constant=`` line is read and ignored, measured -- and a push is
+    three orders of magnitude softer than a hold.
+
+    Run together the hold's stiffness wins and the push silently becomes an
+    ordinary scan: the same picture, the same number, a different experiment.
+    So the stiffer one wins, ``mixed`` says the two were asked for at once,
+    and the scan refuses rather than running the wrong thing.
+    """
+    soft = gfn.push_constant(20.0)
+    alone = gfn.constraint_input(
+        [{'kind': 'distance', 'atoms': [0, 1], 'value': 2.0,
+          'mode': 'push', 'force': soft}], atoms=8)
+    assert alone['force'] == pytest.approx(soft)
+    assert alone['mixed'] is False
+    together = gfn.constraint_input(
+        [{'kind': 'distance', 'atoms': [0, 1], 'value': 2.0,
+          'mode': 'push', 'force': soft},
+         {'kind': 'distance', 'atoms': [2, 3], 'value': 1.6, 'mode': 'fix'}],
+        atoms=8)
+    assert together['force'] == gfn.FIX_FORCE_CONSTANT
+    assert together['mixed'] is True
+
+    source = EDITOR_SOURCE
+    assert "pushing = str(submit_scan_how.value) == 'push'" in source
+    assert 'cannot share one force constant in ' in source
+    # A force between two atoms drives a distance; an angle is what the two
+    # bonds that make it already say.
+    assert "A push is a force between two atoms, so it walks distances." in source
+
+
+def test_a_push_is_priced_without_its_own_force_in_the_answer():
+    """A push leaves a real restraint energy behind -- it is meant to, that is
+    the force -- and xtb reports the biased total.
+
+    Measured under GFN2: an ethane whose C-C was pulled towards 2.50 A comes
+    back at 2.464 with a reported -7.201065 Eh, and a single point on that
+    same geometry gives -7.203332.  The 1.42 kcal/mol between them is the
+    restraint, and priced as it stands every point of a push would carry its
+    own push in the barrier.
+    """
+    source = EDITOR_SOURCE
+    assert 'def _unbiased(here):' in source
+    assert "energy = _unbiased(walked) if pushing else outcome['energy']" in source
+    # And the path records where the coordinate *got to*, because a push does
+    # not dictate a value -- that is the whole point of it.
+    assert 'reached = (_value_in(walked, legs[0]) if pushing' in source
+    assert 'path.append((reached, spent))' in source
+
+
+def test_a_push_ramps_geometrically_and_prices_what_it_falls_through():
+    """The range is thirty to one, and where the reaction goes over is what
+    matters: measured on butadiene and ethylene, equal steps of six put no
+    point at all on the barrier.  Twenty geometric points from 4 to 120 put
+    five between 9 and 20.
+
+    Even then a crossing has a threshold -- a force either pays for it or does
+    not -- so the last step falls through: 2.53 A at +4.4 kcal/mol to 1.54 A
+    at -64.2, with the top never sampled.  The segment it fell through is then
+    walked with the coordinate held, which is the one thing coordinate driving
+    is good at now that both ends are known rather than guessed: that puts a
+    point at 2.363 A and +6.3, which is the top.
+
+    The push found the path and the walk priced it.  Neither could have done
+    both -- which is why the editor does both.
+    """
+    source = EDITOR_SOURCE
+    assert 'growth = (_gfn.PUSH_FORCE_TO / _gfn.PUSH_FORCE_FROM) ** (' in source
+    assert 'force = force * growth if n > 1 else force' in source
+    # Bisected from where the step started, so what is refined is the force
+    # and not the path.
+    assert 'force = (stood + force) / 2.0' in source
+    assert 'while (tries < _PUSH_REFINE and outcome.get(\'ok\')' in source
+    # And the crossing itself is priced, held exactly so no restraint energy
+    # is left in the answer.
+    assert 'def _across(here, was, now_at):' in source
+    assert 'path.extend(_across(' in source
+    assert "'mode': 'fix'," in source
+    # The zero is the structure as it stands: a path that crosses on its first
+    # step has to have something to have crossed from.
+    assert 'base = _unbiased(walked)' in source
+    assert "path.append((_value_in(walked, legs[0]), 0.0))" in source
+
+
+@_needs_xtb
+def test_a_force_below_the_bond_settles_and_one_above_it_breaks():
+    """Which is the whole reason a push is a force rather than a value.
+
+    A restraint held :data:`PUSH_REACH` ahead of wherever the coordinate now
+    stands applies at most ``k * reach``, and the structure keeps whatever of
+    that it can answer.  Measured under GFN2 on an ethane at rest at 1.5212 A,
+    the same push applied over and over:
+
+        30 kcal/mol/A   1.6270, 1.6413, 1.6413, 1.6413, 1.6413, 1.6413
+        60 kcal/mol/A   1.7613, 1.8815, 1.9736, 2.0686, 2.2524, 2.8766
+
+    Thirty settles and stays there however long it is pushed -- the bond can
+    answer it.  Sixty never settles: past the inflection of the curve the
+    restoring force falls away, so once the push is stronger than the most the
+    bond can pull back with, nothing balances it and the bond goes.
+
+    That is the statement the ramp is built on.  Whether a deformation is
+    possible stops being an accident of how far the mouse was dragged, or of
+    what number was typed into a target box, and becomes a force the user set
+    -- and the scan finds the reaction by raising it until something gives.
+    """
+    import math
+
+    def bond(text):
+        here = gfn.coordinates_of(text)
+        return math.dist(here[0:3], here[3:6])
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=200, timeout=300)
+    assert start.get("ok"), start.get("status")
+
+    def pushed(text, force):
+        out = gfn.optimize_with_gfn(
+            text, "gfn2", max_steps=60, timeout=300,
+            constraints=[{"kind": "distance", "atoms": [0, 1],
+                          "mode": "push", "force": gfn.push_constant(force),
+                          "value": bond(text) + gfn.PUSH_REACH}])
+        assert out.get("ok"), out.get("status")
+        return out["xyz"]
+
+    gentle, walk = start["xyz"], []
+    for _ in range(4):
+        gentle = pushed(gentle, 30.0)
+        walk.append(bond(gentle))
+    # It arrives somewhere and stays: the last three are the same structure.
+    assert walk[-1] == pytest.approx(walk[-2], abs=2e-3), walk
+    assert walk[-2] == pytest.approx(walk[-3], abs=2e-3), walk
+    assert walk[-1] < bond(start["xyz"]) + 0.25, walk
+
+    hard, tore = start["xyz"], []
+    for _ in range(6):
+        hard = pushed(hard, 60.0)
+        tore.append(bond(hard))
+    # And it never arrives: every step is further out than the last.
+    assert tore == sorted(tore), tore
+    assert tore[-1] > 2.5, tore
+
+    # The reported energy carries the restraint, which is why a push is priced
+    # by a single point on the geometry it reached.
+    biased = gfn.optimize_with_gfn(
+        start["xyz"], "gfn2", max_steps=60, timeout=300,
+        constraints=[{"kind": "distance", "atoms": [0, 1], "mode": "push",
+                      "force": gfn.push_constant(60.0),
+                      "value": bond(start["xyz"]) + gfn.PUSH_REACH}])
+    clean = gfn.optimize_with_gfn(biased["xyz"], "gfn2", timeout=300,
+                                  optimise=False)
+    assert biased["energy"] > clean["energy"], (biased["energy"],
+                                                clean["energy"])
