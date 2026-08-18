@@ -2347,6 +2347,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state.pop('thermal_was', None)
         state.pop('thermal_turn', None)
         state.pop('thermal_holding', None)
+        # The slope too.  Nothing cleared it, so the first answer of every
+        # drag reported the last one's number -- on a different atom, and
+        # after a rollback with the opposite sign: measured, an atom being
+        # pulled strictly uphill was reported as "Falling 94 kcal/mol per A".
+        state.pop('thermal_slope', None)
+        state.pop('thermal_last', None)
         _push_thermal_wall(None)
 
     def _end_gfn_follow():
@@ -2800,6 +2806,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # arrive without it.
         if state.get('thermal_for') != _structure_fingerprint(_current_xyz() or ''):
             return None, ceiling
+        # And to the method that measured it.  An anchor is an energy, and an
+        # energy of one method against energies of another is not a
+        # difference at all: measured, an anchor taken under GFN2 and then
+        # read against GFN-FF priced an untouched structure at +6384 kcal/mol
+        # against a 22.3 ceiling, so every drag sprang straight back.  The
+        # other way round is quieter and worse -- a C-C torn to 3 A reported
+        # "-6117.9 of 22.3 available" and the wall never fired.
+        if state.get('thermal_method') != str(submit_ff_dd.value):
+            return None, ceiling
         return state.get('thermal_e0'), ceiling
 
     def _thermal_note(energy):
@@ -2926,7 +2941,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Past it.  Hand back the last geometry that was not, if there is one;
         # a drag that was already over budget when it started has nowhere to
         # go, and then the hand simply keeps what it has and the line says so.
-        return state.get('thermal_good')
+        #
+        # And it has to be *this* molecule.  Nothing cleared it, so a benzene
+        # kept from an earlier drag was handed back during a drag on water:
+        # measured, the coordinate box became twelve atoms of benzene and a
+        # thirty-six float frame went to a three-atom viewer, with nothing
+        # anywhere saying the molecule had been replaced.
+        good = state.get('thermal_good')
+        if good and len(_gfn.atom_lines(good)) != len(_gfn.atom_lines(xyz)):
+            state.pop('thermal_good', None)
+            return None
+        return good
 
     def _push_thermal_wall(wall, reach=0.0):
         """Tell the page where the hand may no longer go, or that it may.
@@ -2989,6 +3014,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                               'come back.'))
                     return
                 state['thermal_e0'] = float(outcome['energy'])
+                state['thermal_method'] = method
                 state['thermal_for'] = _structure_fingerprint(
                     outcome.get('xyz') or xyz)
                 if wants_relax:
@@ -4751,6 +4777,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         if abs(float(submit_internal_value.value) - float(entry['value'])) < 1e-9:
             return  # the box was filled with the held value, not edited
+        _remember(f'retuning {_describe_constraint(entry)}')
         held = list(state.get('constraints') or [])
         held[position] = dict(entry, value=float(submit_internal_value.value))
         state['constraints'] = held
@@ -5052,7 +5079,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         history = list(state.get('history') or [])
         current = coords_widget.value
-        if history and history[-1].get('coords') == current:
+        # The same picture *and* the same held values.  Judged on the picture
+        # alone, a Hold was never a step of its own -- it changes no
+        # coordinate -- so Undo walked straight past it, wiped it on the way,
+        # and reported whatever it did land on.  Hold, then a scan, then Undo
+        # took back two actions on one press and named one of them.
+        same = (history and history[-1].get('coords') == current
+                and history[-1].get('constraints')
+                == list(state.get('constraints') or []))
+        if same:
             # Two actions from the same picture are one step back, and the
             # step is named after the first of them: going back to that state
             # undoes everything since, and the earliest is what the user would
@@ -5542,14 +5577,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return (all(b - a > _SCAN_UPHILL for a, b in zip(last, last[1:]))
                 and spent[-1] - floor > _SCAN_UPHILL)
 
+    def _value_of_constraint(entry):
+        """What that coordinate measures on the structure now, or None.
+
+        None when it names atoms this structure does not have -- which is what
+        a scan armed on one molecule and run on another does, and what made the
+        atom list throw on the next click rather than say so.
+        """
+        here = _gfn.coordinates_of(_current_xyz() or '')
+        atoms = [int(i) for i in (entry.get('atoms') or ())]
+        if not atoms or any(i < 0 or 3 * i + 2 >= len(here) for i in atoms):
+            return None
+        at = [(here[3 * i], here[3 * i + 1], here[3 * i + 2]) for i in atoms]
+        if entry.get('kind') == 'distance' and len(at) == 2:
+            return math.dist(at[0], at[1])
+        if entry.get('kind') == 'angle' and len(at) == 3:
+            first = [a - b for a, b in zip(at[0], at[1])]
+            second = [a - b for a, b in zip(at[2], at[1])]
+            one = math.sqrt(sum(v * v for v in first)) or 1.0
+            two = math.sqrt(sum(v * v for v in second)) or 1.0
+            cosine = sum(a * b for a, b in zip(first, second)) / (one * two)
+            return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+        if entry.get('kind') == 'dihedral' and len(at) == 4:
+            return _gfn._dihedral(at, 0, 1, 2, 3)
+        return None
+
     def _scan_legs():
         return list(state.get('scan_legs') or [])
 
     def _describe_leg(leg):
         symbols = []
         perceived = state.get('perceived')
+        known = getattr(perceived, 'symbols', None) or ()
         for index in leg['atoms']:
-            symbol = perceived.symbols[index] if perceived else '?'
+            symbol = known[index] if 0 <= index < len(known) else '?'
             symbols.append(f'{symbol}{index}')
         unit = 'A' if leg['kind'] == 'distance' else 'deg'
         return (f"{'-'.join(symbols)} {leg['from']:.3g} -> {leg['to']:.3g} "
@@ -5672,13 +5733,34 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         method = str(submit_ff_dd.value)
         if not legs or not xyz:
             return
-        if not _gfn.is_gfn_method(method):
-            _set_mol_status('A scan needs xtb: choose a GFN method.')
-            return
+        # Stopping first.  Behind the method check, a scan started under GFN2
+        # and then switched away could not be stopped at all: the button read
+        # Stop, was enabled, and answered "a scan needs xtb" while the run it
+        # was meant to end walked on to the last point and overwrote the box.
         if state.get('scan_run'):
             state['scan_stop'] = True
             _set_mol_status('Stopping the scan after this point.')
             return
+        if not _gfn.is_gfn_method(method):
+            _set_mol_status('A scan needs xtb: choose a GFN method.')
+            return
+        # From where the structure is *now*, not from where it was when the
+        # leg was armed.  Left as armed, a second press walked from a value
+        # the molecule no longer had: measured, a C-C at 4.012 was compressed
+        # to 2.137 in one step and the run reported a 77 kcal/mol barrier with
+        # a temperature and a timescale attached, all of it invented.
+        fresh = []
+        for one in legs:
+            now = _value_of_constraint(one)
+            if now is None:
+                _set_mol_status(
+                    f'The scan cannot start: {_describe_leg(one)} names atoms '
+                    'this structure does not have. Drop it and arm it again.')
+                return
+            fresh.append(dict(one, **{'from': now}))
+        legs = fresh
+        state['scan_legs'] = legs
+        _refresh_scan()
         steps = max(2, min(int(one['steps']) for one in legs))
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
@@ -5716,12 +5798,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if state.get('scan_stop'):
                         break
                     share = n / float(steps)
+                    # What the user is holding goes with it.
+                    #
+                    # A scan built its list from its own legs and nothing else,
+                    # so a held value -- the whole point of "hold this while
+                    # you walk that" -- never reached xtb at all.  Measured: a
+                    # C-H held at 1.60 came back at 1.080 after the scan, while
+                    # the same hold under Optimise gave 1.599.  The list went
+                    # on showing it throughout.
                     held = [
                         {'kind': one['kind'], 'atoms': list(one['atoms']),
                          'mode': 'fix',
                          'value': one['from'] + share * (one['to'] - one['from'])}
                         for one in legs
                     ]
+                    walking = {tuple(one['atoms']) for one in legs}
+                    held += [dict(one) for one in (state.get('constraints') or [])
+                             if tuple(one.get('atoms') or ()) not in walking]
                     outcome = _gfn.optimize_with_gfn(
                         walked, method, charge=charge, uhf=uhf,
                         max_steps=_SCAN_CYCLES, timeout=None,
@@ -5802,6 +5895,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 def _done(final=walked):
                     submit_scan_run_btn.description = 'Run scan'
                     submit_scan_run_btn.icon = 'play'
+                    # A run that walked nothing writes nothing and says only
+                    # why.  It used to rewrite the box's comment to 'Scanned'
+                    # over a geometry that had never moved, and then report
+                    # 'The scan walked nothing' as though that were a result.
+                    if not path:
+                        return
                     rows = [line for line in final.splitlines()[2:]
                             if line.strip()]
                     if rows:
@@ -5833,6 +5932,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         arrived = (f' It came back to the minimum it walked through, at '
                    f'{path[-1][0]:.3g}.'
                    if state.get('scan_arrived') else '')
+        if state.get('scan_stop') and not state.get('scan_arrived'):
+            arrived = (' You stopped it there, so the highest point is where '
+                       'the walk was interrupted rather than a barrier.')
         crowded = state.get('scan_crowded')
         if crowded:
             arrived = (f' It stopped: two atoms came inside {crowded:.2f} of a '
@@ -5885,6 +5987,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # while the structure it was set on is the one on screen.
             'structure': _structure_fingerprint(_current_xyz() or ''),
         }
+        _remember(f'holding {_describe_constraint(entry)}')
         held = list(state.get('constraints') or [])
         held = [c for c in held if c['atoms'] != indices]
         held.append(entry)
@@ -5935,6 +6038,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status('Nothing to go back to yet.')
             return
         state['constraints'] = []
+        state['scan_legs'] = []
         state['bond_edits'] = {}
         state['hand_bonds'] = {}
         state['hyb_overrides'] = {}
@@ -6537,6 +6641,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # xtb's: MOPAC's follow reports a heat of formation, which is not the
         # same quantity and cannot be differenced against an xtb anchor.
         submit_thermal_btn.layout.display = '' if xtb else 'none'
+        # And the scan, for the same reason: it is xtb's.  Left visible under
+        # UFF or PM7 a whole scan could be armed, with the line saying "or
+        # press Run scan" -- an instruction that cannot work -- and the
+        # refusal arrived only on the press.  Switching away with one armed
+        # said nothing at all.
+        submit_scan_btn.layout.display = '' if xtb else 'none'
+        if not xtb:
+            for widget in (submit_scan_way, submit_scan_to, submit_scan_steps,
+                           submit_scan_dd, submit_scan_del, submit_scan_whole,
+                           submit_scan_run_btn):
+                widget.layout.display = 'none'
+            if _scan_legs():
+                _set_mol_status(
+                    f'{_server_label(submit_ff_dd.value)} cannot walk a scan '
+                    '-- that is xtb\'s. The armed legs are kept for when you '
+                    'come back to a GFN method.')
         if not xtb and submit_thermal_btn.value:
             submit_thermal_btn.value = False
         for widget in (submit_temperature, submit_thermal_relax,
@@ -6673,10 +6793,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             else:
                 said = (
                     f'Optimise now uses {label}. Set the charge (q) and the '
-                    'multiplicity (M): xtb needs both, and a wrong spin on a '
-                    'metal gives a confident wrong answer rather than an error. '
-                    'Switch Dynamik Opt on to have the molecule follow an atom '
-                    'you drag.')
+                    f'multiplicity (M): {label} needs both, and a wrong spin '
+                    'on a metal gives a confident wrong answer rather than an '
+                    'error. Switch Dynamik Opt on to have the molecule follow '
+                    'an atom you drag.')
         if said or carried:
             _set_mol_status(said, carried)
 
@@ -6715,6 +6835,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         else:
             coord_lines = new_lines
         coord_body = '\n'.join(xyz_body(coord_lines))
+        # The count belongs to the body, not to whatever was in the box
+        # before.  Kept from the old header, three rows of water landed under
+        # a twelve of benzene and the box held a malformed XYZ that everything
+        # downstream went on reading.
+        coord_rows = [one for one in coord_body.splitlines() if one.strip()]
         # Preserve the user's original header (atom count + comment line) if
         # present in the current coords_widget value.
         #
@@ -6735,7 +6860,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 kept = old_lines[1]
                 if _is_editor_comment(kept):
                     kept = 'Edited in DELFIN viewer'
-                header = f'{old_lines[0]}\n{kept}\n'
+                # The comment is the user's and is kept; the count is the
+                # body's.  Carried over from the old header, three rows of
+                # water landed under a twelve of benzene and everything
+                # downstream went on reading a malformed XYZ.
+                header = f'{len(coord_rows)}\n{kept}\n'
             except ValueError:
                 pass
         # A drag has just finished. If a polyhedron is being held, work out
@@ -7305,13 +7434,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 submit_hold_mode)
 
     def _apply_controls(values):
-        for widget, value in zip(_structure_controls(), values or ()):
-            try:
-                if widget.value != value:
-                    widget.value = value
-            except Exception:
-                # A list that no longer offers what it offered then.
-                pass
+        # Same reason as reset_controls: giving a structure its switches back
+        # is the editor's doing, not the user's.
+        state['charge_filling'] = True
+        try:
+            for widget, value in zip(_structure_controls(), values or ()):
+                try:
+                    if widget.value != value:
+                        widget.value = value
+                except Exception:
+                    # A list that no longer offers what it offered then.
+                    pass
+        finally:
+            state['charge_filling'] = False
         # And then whatever the method on screen does not have, taken away
         # again.  A restore writes the switches one by one, and a memory made
         # under one method can hand a switch to another that has no such
@@ -7364,6 +7499,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # The shapes the rest of the editor reads without asking.
         for key, empty in (('perceived', None), ('poly_applied', None),
                            ('poly_metal', None), ('constraints', []),
+                           ('scan_legs', []),
                            ('bond_edits', {}), ('hand_bonds', {}),
                            ('hyb_overrides', {}), ('history', []),
                            ('structure_undo', [])):
@@ -7412,13 +7548,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         To the defaults, not to off -- switching Settle off here took away
         something the editor is supposed to start with.
         """
-        for widget in _controls_a_new_structure_resets():
-            start = _CONTROL_START.get(id(widget))
-            try:
-                if widget.value != start:
-                    widget.value = start
-            except Exception:
-                pass
+        # Not the user's doing, so it must not be recorded as the user's.
+        # This writes the charge, which fires the observer that remembers a
+        # number the user typed -- so a reset the editor performed marked the
+        # charge as theirs, and from then on it was never read off a SMILES
+        # again.  Measured: an acetate then ran at zero.
+        state['charge_filling'] = True
+        try:
+            for widget in _controls_a_new_structure_resets():
+                start = _CONTROL_START.get(id(widget))
+                try:
+                    if widget.value != start:
+                        widget.value = start
+                except Exception:
+                    pass
+        finally:
+            state['charge_filling'] = False
 
     def _offer_isomers(isomers, quick=False, show=True):
         """Every structure a conversion produced, to wherever they belong.

@@ -144,7 +144,18 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
     // the diagnostics panel can isolate one term at a time.
     var T_BOND = 1, T_ANGLE = 2, T_TORSION = 4, T_VDW = 8, T_RESTRAINT = 16;
     var T_INVERSION = 32;
-    var T_ALL = 63;
+    //: The hand, as a force rather than as a position.
+    //
+    // Everyone who does interactive manipulation well applies a force.
+    // VMD/NAMD's IMD translates a drag into forces on the atoms; Narupa
+    // biases the dynamics through an external field whose strength the user
+    // controls; Reiher's real-time quantum chemistry hands the response back
+    // as force feedback.  Nobody sets a coordinate, and that is why none of
+    // them has to prevent unphysical geometry -- it cannot arise.  You pull,
+    // the bond pulls back, and the atom follows exactly as far as the balance
+    // allows, so tearing one means pulling harder than it holds.
+    var T_TETHER = 64;
+    var T_ALL = 127;
     // Restraint kinds, as sent in the payload.
     var R_DISTANCE = 0, R_ANGLE = 1, R_DIHEDRAL = 2;
 
@@ -273,6 +284,10 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
             chunk: INITIAL_CHUNK,
             lambda: INITIAL_LAMBDA,
             frozen: [],
+            tetN: 0,
+            tetA: new Int32Array(0), tetK: new Float64Array(0),
+            tetX: new Float64Array(0), tetY: new Float64Array(0),
+            tetZ: new Float64Array(0),
             frames: 0,
             totalSteps: 0,
             lastSteps: 0,
@@ -871,7 +886,90 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
                 }
             }
         }
+        if ((which & T_TETHER) && st.tetN) {
+            var tg = grad ? new Float64Array(3 * st.n) : null;
+            for (var tt = 0; tt < st.tetN; tt++) {
+                var ta = 3 * st.tetA[tt], tk = st.tetK[tt];
+                var tdx = pos[ta] - st.tetX[tt],
+                    tdy = pos[ta + 1] - st.tetY[tt],
+                    tdz = pos[ta + 2] - st.tetZ[tt];
+                e += 0.5 * tk * (tdx * tdx + tdy * tdy + tdz * tdz);
+                if (tg) {
+                    tg[ta] += tk * tdx;
+                    tg[ta + 1] += tk * tdy;
+                    tg[ta + 2] += tk * tdz;
+                }
+            }
+            if (tg) {
+                // A pull that only deforms.
+                //
+                // Every other term is invariant under moving the molecule, so
+                // its net force and torque are zero.  A spring is not: it has
+                // a preferred place, and sliding the whole structure towards
+                // it is a zero-energy mode of everything else.  So a minimiser
+                // answers a pull by *translating*, never by stretching --
+                // measured, at every force constant from 1 to 2000 the atom
+                // reached its target in full and the bond it hangs on stayed
+                // at 1.094 A.  Re-framing afterwards cannot help: a rigid move
+                // changes no internal coordinate.
+                //
+                // Taking the net force and torque out of the pull leaves the
+                // part that can only be answered by changing shape, which is
+                // what the hand meant.  It is what inertia does in interactive
+                // MD, where the rest of the molecule simply cannot respond in
+                // one step; here there is no time, so it has to be said.
+                projectOutRigid(st, pos, tg);
+                for (var tq = 0; tq < 3 * st.n; tq++) grad[tq] += tg[tq];
+            }
+        }
         return e;
+    }
+
+    function projectOutRigid(st, pos, f) {
+        // Six modes: three translations, three rotations about the centroid.
+        // Gram-Schmidt, so no matrix is inverted and a linear molecule (whose
+        // rotation modes are degenerate) costs nothing extra.
+        var n = st.n, n3 = 3 * n, a, k, m;
+        if (n < 2) return;
+        var cx = 0, cy = 0, cz = 0;
+        for (a = 0; a < n; a++) { cx += pos[3*a]; cy += pos[3*a+1]; cz += pos[3*a+2]; }
+        cx /= n; cy /= n; cz /= n;
+        var modes = [];
+        for (k = 0; k < 3; k++) {
+            var t = new Float64Array(n3);
+            for (a = 0; a < n; a++) t[3*a + k] = 1.0;
+            modes.push(t);
+        }
+        for (k = 0; k < 3; k++) {
+            var r = new Float64Array(n3);
+            for (a = 0; a < n; a++) {
+                var qx = pos[3*a] - cx, qy = pos[3*a+1] - cy, qz = pos[3*a+2] - cz;
+                if (k === 0) { r[3*a] = 0; r[3*a+1] = -qz; r[3*a+2] = qy; }
+                else if (k === 1) { r[3*a] = qz; r[3*a+1] = 0; r[3*a+2] = -qx; }
+                else { r[3*a] = -qy; r[3*a+1] = qx; r[3*a+2] = 0; }
+            }
+            modes.push(r);
+        }
+        for (m = 0; m < modes.length; m++) {
+            var v = modes[m];
+            for (var j = 0; j < m; j++) {
+                var u = modes[j], dot = 0.0;
+                for (k = 0; k < n3; k++) dot += v[k] * u[k];
+                for (k = 0; k < n3; k++) v[k] -= dot * u[k];
+            }
+            var norm = 0.0;
+            for (k = 0; k < n3; k++) norm += v[k] * v[k];
+            norm = Math.sqrt(norm);
+            if (norm < 1e-8) { modes[m] = null; continue; }
+            for (k = 0; k < n3; k++) v[k] /= norm;
+        }
+        for (m = 0; m < modes.length; m++) {
+            var w = modes[m];
+            if (!w) continue;
+            var along = 0.0;
+            for (k = 0; k < n3; k++) along += f[k] * w[k];
+            for (k = 0; k < n3; k++) f[k] -= along * w[k];
+        }
     }
 
     function applyMask(st, grad) {
@@ -1143,6 +1241,32 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         };
     }
 
+    function tether(scopeKey, pulls) {
+        // Where the hand wants each atom it is holding, and how hard.
+        //
+        // The whole set at once, because that is what a mouse move is: one
+        // message a frame, replacing the last.  An empty list lets go.
+        var st = getState(scopeKey);
+        if (!st) return false;
+        var src = pulls || [];
+        var a = new Int32Array(src.length), k = new Float64Array(src.length);
+        var x = new Float64Array(src.length), y = new Float64Array(src.length),
+            z = new Float64Array(src.length);
+        var m = 0;
+        for (var t = 0; t < src.length; t++) {
+            var one = src[t] || {};
+            var at = one.atom | 0;
+            if (at < 0 || at >= st.n) continue;
+            if (!isFinite(one.x) || !isFinite(one.y) || !isFinite(one.z)) continue;
+            if (!isFinite(one.k) || one.k < 0) continue;
+            a[m] = at; x[m] = one.x; y[m] = one.y; z[m] = one.z; k[m] = one.k;
+            m++;
+        }
+        st.tetN = m; st.tetA = a; st.tetX = x; st.tetY = y; st.tetZ = z;
+        st.tetK = k;
+        return true;
+    }
+
     function grab(scopeKey, atomIndices) {
         var st = getState(scopeKey);
         if (!st) return false;
@@ -1342,6 +1466,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         if (term === 'torsion') return T_TORSION;
         if (term === 'vdw') return T_VDW;
         if (term === 'restraints' || term === 'restraint') return T_RESTRAINT;
+        if (term === 'tether' || term === 'tethers') return T_TETHER;
         if (term === 'inversion' || term === 'inversions') return T_INVERSION;
         return T_ALL;
     }
@@ -1372,6 +1497,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
     window.__delfinFF = {
         load: load,
         grab: grab,
+        tether: tether,
         step: step,
         release: release,
         energy: energy,

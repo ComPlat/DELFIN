@@ -27,6 +27,8 @@ import shutil
 
 import pytest
 
+import pathlib
+
 from delfin.dashboard import gfn_optimize as gfn
 from editor_source import EDITOR_SOURCE
 
@@ -820,4 +822,118 @@ def test_a_still_hand_holds_what_it_was_already_holding():
     assert len(src) > 1, "the follow has to hand the last set back in"
     assert "state['thermal_holding'] = [dict(one) for one in contacts]" \
         in EDITOR_SOURCE
+
+
+# --- what an audit of the transitions turned up ----------------------------
+
+
+def test_a_scan_honours_what_the_user_is_holding():
+    """"Hold this while you walk that" is the whole point of a relaxed scan.
+
+    The list was built from the scan's own legs and nothing else, so a held
+    value never reached xtb.  Measured on an ethane: a C-H held at 1.60 came
+    back at 1.080 after the scan and at 1.599 under Optimise -- the same hold,
+    honoured by one and ignored by the other, with the list showing it
+    throughout and the line saying nothing.
+    """
+    body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
+    body = body.split("def _scan_verdict(")[0]
+    assert "walking = {tuple(one['atoms']) for one in legs}" in body
+    assert "state.get('constraints')" in body
+    # A coordinate that is both held and walked is walked: two values for one
+    # thing cannot both be met, and the leg is what the user just asked for.
+    assert "not in walking" in body
+
+
+def test_a_scan_reads_its_start_from_the_structure_it_is_on():
+    """Left as armed, a second press walked from a value the molecule no
+    longer had.
+
+    Measured: a C-C at 4.012 was compressed to 2.137 in one step and the run
+    reported a 77 kcal/mol barrier with a temperature and a timescale
+    attached, all of it invented.
+    """
+    body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
+    body = body.split("def _scan_verdict(")[0]
+    assert "_value_of_constraint(one)" in body
+    assert "dict(one, **{'from': now})" in body
+    # And a leg naming atoms that are gone says so instead of throwing.
+    assert "names atoms '" in body
+
+
+def test_armed_legs_do_not_outlive_their_structure():
+    """A scan armed on one molecule names atoms the next one may not have.
+
+    Left armed it threw on the first click after loading a smaller structure,
+    and run it walked a coordinate that was not there at all -- reported as a
+    completed scan, because the run reads only whether xtb answered.
+    """
+    assert "state['scan_legs'] = []" in EDITOR_SOURCE
+    from delfin.dashboard import tab_submit
+    host = pathlib.Path(tab_submit.__file__).read_text(encoding="utf-8")
+    assert "state['scan_legs'] = []" in host
+    # And describing a leg survives atoms that are gone.
+    body = EDITOR_SOURCE.split("def _describe_leg(")[1].split("\n    def ")[0]
+    assert "if 0 <= index < len(known)" in body
+
+
+def test_stop_comes_before_the_method_check():
+    """Behind it, a scan started under GFN2 and then switched away could not be
+    stopped at all: the button read Stop, was enabled, answered "a scan needs
+    xtb", and the run it was meant to end walked to the last point and
+    overwrote the box."""
+    body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
+    body = body.split("def _scan_verdict(")[0]
+    assert body.index("state.get('scan_run')") < body.index("A scan needs xtb")
+
+
+def test_the_anchor_belongs_to_the_method_that_measured_it():
+    """An energy of one method against energies of another is not a
+    difference.
+
+    Measured: an anchor taken under GFN2 and read against GFN-FF priced an
+    untouched structure at +6384 kcal/mol against a 22.3 ceiling, so every
+    drag sprang straight back.  The other way round is quieter and worse -- a
+    C-C torn to 3 A reported "-6117.9 of 22.3 available" and the wall never
+    fired.
+    """
+    body = EDITOR_SOURCE.split("def _thermal_budget(")[1].split("\n    def ")[0]
+    assert "state.get('thermal_method') != str(submit_ff_dd.value)" in body
+    assert "state['thermal_method'] = method" in EDITOR_SOURCE
+
+
+def test_the_editor_does_not_forge_the_users_consent_on_the_charge():
+    """reset_controls writes the charge, which fires the observer that
+    remembers a number the user typed.
+
+    So a reset the editor performed marked the charge as theirs, and from then
+    on it was never read off a SMILES again -- measured, an acetate then ran at
+    zero.
+    """
+    for name in ("def reset_controls(", "def _apply_controls("):
+        body = EDITOR_SOURCE.split(name)[1].split("\n    def ")[0]
+        assert "state['charge_filling'] = True" in body, name
+        assert "finally:" in body, name
+
+
+def test_the_scan_controls_belong_to_the_method_that_can_run_them():
+    """Left visible under UFF or PM7 a whole scan could be armed, with the line
+    saying "or press Run scan" -- an instruction that cannot work -- and the
+    refusal arrived only on the press."""
+    body = EDITOR_SOURCE.split("submit_thermal_btn.layout.display = '' if xtb")[1]
+    body = body.split("\n    def ")[0]
+    assert "submit_scan_btn.layout.display = '' if xtb else 'none'" in body
+    assert "submit_scan_run_btn" in body
+
+
+def test_holding_a_value_is_a_step_of_its_own():
+    """Judged on the picture alone a Hold was never one -- it changes no
+    coordinate -- so Undo walked straight past it, wiped it on the way, and
+    reported whatever it did land on.  Hold, then a scan, then Undo took back
+    two actions on one press and named one of them."""
+    body = EDITOR_SOURCE.split("def _remember(what)")[1].split("\n    def ")[0]
+    assert "history[-1].get('constraints')" in body
+    assert "list(state.get('constraints') or [])" in body
+    hold = EDITOR_SOURCE.split("def on_submit_hold(")[1].split("\n    def ")[0]
+    assert "_remember(f'holding" in hold
 
