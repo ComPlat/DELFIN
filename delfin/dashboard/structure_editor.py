@@ -2336,7 +2336,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # against a structure from before whatever happened in between.
         state.pop('thermal_was', None)
         state.pop('thermal_turn', None)
-        state.pop('thermal_flat', None)
         _push_thermal_wall(None)
 
     def _end_gfn_follow():
@@ -2439,6 +2438,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # structure moved as one has changed no internal
                     # coordinate and costs nothing, and there is nothing to
                     # hold it against.  The old single point stands in.
+                    came_back = None
                     contacts = (
                         _gfn.contacts_holding(
                             current, holding, most=3,
@@ -2574,8 +2574,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         tightest = _gfn.closest_contact(current)[0]
                         crowded = (tightest is not None
                                    and tightest < _gfn._TOO_CLOSE)
-                        _thermal_wall(current, priced.get('energy'), holding,
-                                      refuse=(slipped > _SLIP_LOOSE) or crowded)
+                        _thermal_slope(
+                            (float(priced['energy'])
+                             - float(_thermal_budget()[0] or 0.0))
+                            * _HARTREE_TO_KCAL,
+                            current, [int(i) for i in (holding or ())]
+                        ) if priced.get('energy') is not None \
+                            and _thermal_budget()[0] is not None else None
+                        came_back = _thermal_wall(
+                            current, priced.get('energy'), holding,
+                            refuse=(slipped > _SLIP_LOOSE) or crowded)
+                        if came_back is not None:
+                            said = (f'{said} Past the budget, so the last '
+                                    f'structure that was inside it is back.')
                         if crowded:
                             said = (f'{said} Two atoms are inside '
                                     f'{tightest:.2f} of a bond length, which '
@@ -2633,8 +2644,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the hand as a rigid body it costs nothing -- an energy
                     # does not depend on where a molecule is -- and the two are
                     # still the same structure.
-                    settled = _gfn.hold_atoms_at(
-                        outcome['xyz'], current, holding)
+                    settled = (came_back if came_back is not None else
+                               _gfn.hold_atoms_at(
+                                   outcome['xyz'], current, holding))
                     # What the next answer measures the hand against: the
                     # geometry this one handed back, not the one it was
                     # handed.  Against the latter the difference holds the
@@ -2781,93 +2793,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return f'That is about {seconds / unit:.3g} {name}.'
         return ''
 
-    #: How far an atom may stand from the last position the calculation has
-    #: confirmed, in angstrom.
-    #:
-    #: A mouse crosses an angstrom in a hundred milliseconds and xtb answers
-    #: about ten times a second on a small molecule, so a drag that is simply
-    #: applied jumps from one geometry to another and everything in between is
-    #: never evaluated.  Measuring the endpoint is not enough to say whether a
-    #: path was possible: the ring is already open by the time anything can
-    #: object, and what the budget then refuses is a distortion that has
-    #: happened.
-    #:
-    #: A tenth of an angstrom is about twice the thermal spread of a stiff
-    #: bond, so the leash never fights an ordinary drag and the atom advances
-    #: at whatever rate the energies come back -- at ten a second that is one
-    #: angstrom a second, which is the honest cost of walking a path rather
-    #: than jumping along it.
-    #:
-    #: That is the *longest* it gets.  Held there it overshoots by design: the
-    #: atom goes a tenth of an angstrom and only then does the calculation say
-    #: what that cost, and on the steep flank of a bond a tenth is fifteen
-    #: kcal/mol.  So a budget could be walked past even at a crawl, which is
-    #: not a wall anyone can aim at.  The leash is shortened by what the last
-    #: two answers say the next step will cost -- see _thermal_reach.
-    #:
-    #: Raised from a tenth after the same measurement was turned on a
-    #: conformer.  Turning a chain torsion on a 24-atom structure the budget
-    #: never came near being spent -- +8 kcal/mol of 22.3 -- and the slope was
-    #: +5 per Angstrom, so what the budget could afford was nearly three
-    #: Angstrom and the cap held it to a tenth anyway.  Every conformer then
-    #: took half a minute of dragging for no reason at all, which reads as a
-    #: tool that does not work rather than one being careful.
-    #:
-    #: It costs nothing where care is wanted, because there the slope does the
-    #: limiting: pulling a hydrogen off a benzene, this cap lets the leash
-    #: reach 0.154 A and no further, and the worst the hand gets past the
-    #: ceiling is +63.5 kcal/mol either way -- the same number at a tenth.
-    _THERMAL_REACH = 0.35
+    def _thermal_slope(spent, xyz, serials):
+        """What an angstrom costs here, from the last two answers.
 
-    #: And what it grows to once the ground has proved flat.
-    #:
-    #: A fixed cap is the wrong kind of limit.  It exists so a hand cannot
-    #: outrun the calculation and step over something the budget would have
-    #: refused -- but on ground the last several answers have all reported as
-    #: shallow there is nothing to step over, and holding the hand there is a
-    #: difference without a reason.  So the cap is evidence: three answers in a
-    #: row under _THERMAL_FLAT and it lengthens, one steeper answer and it is
-    #: back where it was.
-    #:
-    #: What keeps that safe is that the cap is not what limits a dangerous
-    #: drag -- the slope is.  Measured, pulling a hydrogen off a benzene: the
-    #: leash reaches 0.154 A whether the cap is a tenth or a third, and the
-    #: worst the hand gets past the ceiling is +63.5 kcal/mol either way.  On
-    #: flat ground a long step is cheap by definition, which is what makes it
-    #: a long step.
-    _THERMAL_REACH_FREE = 1.0
-    _THERMAL_FLAT = 20.0          # kcal/mol per angstrom that counts as flat
-    _THERMAL_FLAT_ANSWERS = 3     # how many in a row before it lengthens
+        All that is left of the leash.  That held the hand to a fraction of an
+        angstrom per answer so every geometry could be priced before the next
+        was allowed, and it made the drag unusable -- and it was not even safe
+        once it was long enough to feel right: lengthened on ground the last
+        answers called flat it stood at 1.000 A going into a C-H bond 1.09 A
+        long, which is a bond torn in a single frame.  The hand is free now and
+        the price arrives behind it; see _thermal_wall.
 
-    #: And the shortest.  Below this the atom stops rather than creeping, and
-    #: a step this small is under the width a bond has at room temperature
-    #: anyway -- past it the distinction is not one the structure makes.
-    _THERMAL_REACH_MIN = 0.005
-
-    def _reach_cap():
-        """How long the leash may be, given what the ground has been like."""
-        return (_THERMAL_REACH_FREE
-                if int(state.get('thermal_flat') or 0) >= _THERMAL_FLAT_ANSWERS
-                else _THERMAL_REACH)
-
-    def _thermal_reach(spent, ceiling, xyz, serials):
-        """How far the hand may go before the next answer, in angstrom.
-
-        The room left is the ceiling less what is already spent, and how fast
-        that room is used up is what the last two answers measured: energy per
-        angstrom along the way the drag is actually going.  Dividing one by the
-        other is how far the budget reaches, and the leash is never longer than
-        that.
-
-        It is a straight line through two points on a curve that bends
-        upwards, so it reads the next stretch as cheaper than it is and the
-        step still lands a little over.  A little is the point -- held at a
-        tenth of an angstrom throughout, the same step lands fifteen kcal/mol
-        over on the steep flank of a bond.
+        The number itself is worth keeping and saying.  "+8 per A" and "+160
+        per A" are two different situations, and knowing which one you are in
+        is the difference between working with the chemistry and against it.
         """
-        room = float(ceiling) - float(spent)
-        if room <= 0:
-            return 0.0
         here = _gfn.coordinates_of(xyz)
         last = state.get('thermal_last') or {}
         state['thermal_last'] = {
@@ -2882,105 +2822,62 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if was and now:
                 moved = max(moved, math.dist(was, now))
         if moved <= 1e-6 or 'spent' not in last:
-            return _THERMAL_REACH
-        climbed = float(spent) - float(last['spent'])
-        if climbed <= 0:
-            state['thermal_slope'] = climbed / moved
-            state['thermal_flat'] = int(state.get('thermal_flat') or 0) + 1
-            return _reach_cap()            # going downhill: no need to hold back
-        slope = climbed / moved            # kcal/mol per angstrom
-        # Written down for the line to say.  It is already what shortens the
-        # leash, so a steep drag already *feels* heavy; the number is what
-        # turns that into something a chemist can steer by -- "+8 per A" and
-        # "+160 per A" are two different situations, and knowing which one you
-        # are in is the difference between working with the chemistry and
-        # against it.
-        state['thermal_slope'] = slope
-        state['thermal_flat'] = (int(state.get('thermal_flat') or 0) + 1
-                                 if slope < _THERMAL_FLAT else 0)
-        return max(_THERMAL_REACH_MIN, min(_reach_cap(), room / slope))
-
-
+            return
+        state['thermal_slope'] = (float(spent) - float(last['spent'])) / moved
 
     def _arm_thermal_leash():
-        """Put the leash on at the moment the hand arrives.
+        """Remember where the budget still agreed, so there is somewhere back to.
 
-        No calculation: the geometry on screen is the last one the budget
-        agreed to, so it is its own confirmation.  What this buys is the first
-        tenth of a second of a drag -- the stretch before any answer can come
-        back, which is exactly where a yank does its damage.
+        There used to be a leash here: the hand was held to a fraction of an
+        Angstrom per answer so every geometry on the way could be priced
+        before the next one was allowed.  It is rigorous and it is unusable --
+        the drag becomes a slideshow, and the one thing that made the editor
+        worth using went with it.  Worse, it is not even safe once it is long
+        enough to feel right: lengthened on flat ground it stood at 1.000 A
+        going into a C-H bond 1.09 A long, which is a bond torn in one frame,
+        before anything had been asked.
+
+        So the hand is free and the answer arrives behind it.  What this keeps
+        is the geometry to come back to.
         """
         if not submit_thermal_btn.value:
             return
         anchor, _ceiling = _thermal_budget()
         if anchor is None:
             return
-        here = _gfn.coordinates_of(_current_xyz() or '')
-        if not here:
-            return
-        marks = {i: [here[3 * i], here[3 * i + 1], here[3 * i + 2]]
-                 for i in range(len(here) // 3)}
-        state['thermal_safe'] = marks
-        state['thermal_walled'] = False
-        _push_thermal_wall(marks, reach=_THERMAL_REACH)
+        here = _current_xyz() or ''
+        if here:
+            state['thermal_good'] = here
 
     def _thermal_wall(xyz, energy, holding, refuse=False):
-        """Hold the hand where the budget ran out, and let go when it is back.
+        """Keep what the budget agreed to, and take back what it did not.
 
-        Called from the follow, which already knows the geometry it was handed
-        and what it cost.  While the structure is inside its budget the
-        positions of the atoms being dragged are remembered as the last place
-        the hand was allowed to be; the moment it is outside, those go to the
-        page as a wall and the drag may only move back towards them.
+        Act, then undo, rather than hold back.  The hand cannot be stopped at
+        the right place in real time -- xtb is far too slow for that and always
+        will be -- but nothing that was not allowed has to be *kept*.  So the
+        drag runs free, the price arrives a moment behind it, and a geometry
+        that turns out to be past the budget is replaced by the last one that
+        was inside it.  The structure springs back, visibly, and what is left
+        in the box has always been priced and allowed.
 
-        The wall is lifted by itself on the far side of a barrier: past the top
-        the energy falls, the structure is inside its budget again, and the
-        hand is free.  Only a distortion that stays expensive is held -- which
-        is the difference between a reaction and tearing a ring open.
+        What this gives up is that the path between two answers is no longer
+        sampled without gaps.  For a drag whose price climbs steadily -- a bond
+        stretched, an atom pulled out -- the endpoint catches it every time.
+        Something that jumps a narrow barrier and is cheap again on the far
+        side could slip through, and that is what the scan is for: it walks the
+        coordinate rather than following a hand.
         """
         anchor, ceiling = _thermal_budget()
         if anchor is None or energy is None:
-            return
+            return None
         spent = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
-        serials = [int(i) for i in (holding or ())]
-        here = _gfn.coordinates_of(xyz)
-        confirmed = {
-            s: [here[3 * s], here[3 * s + 1], here[3 * s + 2]]
-            for s in serials
-            if 0 <= s and 3 * s + 2 < len(here)
-        }
-        if not confirmed:
-            return
         if spent <= ceiling and not refuse:
-            # Inside the budget, and the geometry is one the price is really
-            # about: confirmed, and the leash moves up to it.  It is sent on every answer rather than only
-            # when something changes -- the leash is what keeps the atom from
-            # outrunning the calculation, so it has to follow it step by step.
-            #
-            # And it is only as long as the budget still reaches: near the
-            # ceiling the last two answers say what an angstrom costs here,
-            # and the leash is cut to what is left.  Fixed at a tenth
-            # throughout, the step that finds the ceiling has already gone
-            # fifteen kcal/mol past it.
-            state['thermal_safe'] = confirmed
-            state['thermal_walled'] = False
-            _push_thermal_wall(
-                confirmed,
-                reach=_thermal_reach(spent, ceiling, xyz, serials))
-            return
-        # Spent.  The mark simply stops advancing, and the leash does the
-        # rest: the atom may still move anywhere within reach of the last
-        # confirmed position, which is how it gets back.  A reach of zero was
-        # tried first and freezes the atom outright -- it sits on the mark, so
-        # every direction increases its distance from it, backwards included,
-        # and a structure that had run out of budget could not be undone.
-        wall = state.get('thermal_safe') or confirmed
-        if not state.get('thermal_walled'):
-            state['thermal_walled'] = True
-        # Spent: the mark stops advancing and the leash is what is left of the
-        # budget, which is nothing.  The smallest step keeps the atom able to
-        # come back rather than freezing it where it stands.
-        _push_thermal_wall(wall, reach=_THERMAL_REACH_MIN)
+            state['thermal_good'] = xyz
+            return None
+        # Past it.  Hand back the last geometry that was not, if there is one;
+        # a drag that was already over budget when it started has nowhere to
+        # go, and then the hand simply keeps what it has and the line says so.
+        return state.get('thermal_good')
 
     def _push_thermal_wall(wall, reach=0.0):
         """Tell the page where the hand may no longer go, or that it may.
@@ -5630,6 +5527,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             widget.layout.display = wanted
             widget.disabled = not wanted == ''
 
+    #: The shortest a scan may ask two atoms to be, as a share of the bond
+    #: they would make.
+    #:
+    #: Not a calibration -- a statement.  A scan drives its coordinate wherever
+    #: it is told, so a target under a bond length walks straight into one and
+    #: the atoms collapse: asked for 0.60 A between two ring carbons whose bond
+    #: is 1.53, it went there.  Slightly under one is real (a bond compresses
+    #: in a transition state), well under one is not, and nothing has to be
+    #: measured to know which side of that a number is on.
+    _SCAN_NO_CLOSER = 0.85
+
+    def _scan_floor_for(leg):
+        """The shortest this leg may be driven to, or None if it is an angle."""
+        if leg['kind'] != 'distance' or len(leg['atoms']) != 2:
+            return None
+        rows = [line.split() for line in _gfn.atom_lines(_current_xyz() or '')]
+        if any(not (0 <= i < len(rows)) for i in leg['atoms']):
+            return None
+        from delfin.atom_mapping import cov_radius
+        reach = sum(cov_radius(str(rows[i][0])) for i in leg['atoms'])
+        return _SCAN_NO_CLOSER * reach
+
     def _suggest_scan_target(kind, value):
         """Where a scan would go if the user does not say.
 
@@ -5653,16 +5572,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if abs(target - here) < 1e-9:
             target = _suggest_scan_target(kind, here)
         legs = [one for one in _scan_legs() if one['atoms'] != indices]
-        legs.append({'kind': kind, 'atoms': indices, 'from': here,
-                     'to': target, 'steps': int(submit_scan_steps.value),
-                     'structure': _structure_fingerprint(_current_xyz() or '')})
+        leg = {'kind': kind, 'atoms': indices, 'from': here,
+               'to': target, 'steps': int(submit_scan_steps.value),
+               'structure': _structure_fingerprint(_current_xyz() or '')}
+        floor = _scan_floor_for(leg)
+        clipped = ''
+        if floor is not None and leg['to'] < floor:
+            clipped = (f' Asked for {leg["to"]:.3g}, which is inside the bond '
+                       f'those two would make, so it stops at {floor:.3g}.')
+            leg['to'] = floor
+        legs.append(leg)
         state['scan_legs'] = legs
         _refresh_scan()
         _set_mol_status(
             f'Armed {_describe_leg(legs[-1])} in {legs[-1]["steps"]} steps. '
             + ('Arm another to walk them together, which is what a concerted '
                'step needs, or press Run scan.' if len(legs) == 1 else
-               f'{len(legs)} legs, walked together.'))
+               f'{len(legs)} legs, walked together.') + clipped)
         _clear_selection()
 
     def on_submit_scan_del(_button=None):
@@ -5696,9 +5622,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
         model = _solv_model()
+        # One entry, before anything moves.  A scan rewrites the structure
+        # from end to end, and it went into no history at all: Undo stepped
+        # back past it to whatever had been done before, and Reset -- which
+        # returns to the structure as it was loaded -- had had that structure
+        # replaced underneath it.  There was no way back to where the scan
+        # started from.  Every step in this editor has to be one entry, and a
+        # scan is a step.
+        _remember(f'a scan of {_describe_leg(legs[0])}'
+                  + (f' and {len(legs) - 1} more' if len(legs) > 1 else ''))
         state['scan_run'] = True
         state['scan_stop'] = False
         state['scan_arrived'] = False
+        state['scan_crowded'] = None
         submit_scan_run_btn.description = 'Stop'
         submit_scan_run_btn.icon = 'stop'
         label = _server_label(method)
@@ -5707,6 +5643,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             walked, path = xyz, []
             base = None
             bottom = None
+            standing = None
             try:
                 for n in range(1, steps + 1):
                     if state.get('scan_stop'):
@@ -5733,6 +5670,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if base is None:
                         base = float(outcome['energy'])
                     spent = (float(outcome['energy']) - base) * _HARTREE_TO_KCAL
+                    # The same floor the drag has.  A scan drives its
+                    # coordinate wherever it was told, so a target set past the
+                    # far side of a bond walks straight into one -- atoms
+                    # collapsing into each other, which is no path at any
+                    # temperature and no number worth reporting.  Two thirds of
+                    # a bond, measured between what must stay open (an SN2
+                    # through its saddle came to 0.74) and what must not (a ring
+                    # carbon pushed across its ring, 0.35).
+                    tightest = _gfn.closest_contact(walked)[0]
+                    if tightest is not None and tightest < _gfn._TOO_CLOSE:
+                        # And hand back the last point that was not crowded.
+                        # Stopping is not enough on its own: the geometry that
+                        # tripped the floor is the one that would be left in
+                        # the box, and a scan that ends on two carbons 0.98 A
+                        # apart has reported a collapse rather than refused
+                        # one.
+                        state['scan_crowded'] = tightest
+                        walked = standing if standing is not None else walked
+                        break
+                    standing = walked
                     path.append((held[0]['value'], spent))
                     # The lowest point since the top, kept with its geometry.
                     #
@@ -5799,6 +5756,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         arrived = (f' It came back to the minimum it walked through, at '
                    f'{path[-1][0]:.3g}.'
                    if state.get('scan_arrived') else '')
+        crowded = state.get('scan_crowded')
+        if crowded:
+            arrived = (f' It stopped: two atoms came inside {crowded:.2f} of a '
+                       f'bond length, which is no path at any temperature. The '
+                       f'target is past the far side of a bond.')
         first = (f'The scan walked {len(path)} of {steps} points. Highest '
                  f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, ending '
                  f'{ends:+.1f}.{arrived}')
