@@ -36,8 +36,9 @@ from typing import Any, Callable, Dict, Optional
 
 from . import solvents as _solvents
 
-__all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'constraint_input',
-           'contacts_holding', 'push_constant', 'restraint_energy',
+__all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
+           'constraint_input', 'contacts_holding', 'graph_changed',
+           'push_constant', 'restraint_energy',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
@@ -812,6 +813,12 @@ PUSH_FORCE_TO = 240.0
 
 #: What a bond holds, as a force, in kcal/mol/A.
 #:
+#: A force is a slope, so this is the whole meaning of the setting: the hand
+#: climbs any part of the surface less steep than it is, and stops where the
+#: surface gets steeper.  Which is why "as hard as a bond" is the right
+#: yardstick -- a bond that holds at 110 kcal/mol/A is a wall 110 kcal/mol/A
+#: steep, and a hand set below that walks up to it and no further.
+#:
 #: The yardstick the hand is set against, and it is worth having because it
 #: turns out to be nearly one number.  Bisected under GFN2, the same push
 #: applied over and over until the coordinate either settles or runs away:
@@ -875,7 +882,8 @@ def push_force_for(energy: float, reach: float = PUSH_REACH) -> float:
 
 
 def as_pushes(entries: Any, reference: Any, force: float,
-              value_of: Any = None) -> list:
+              value_of: Any = None, reach: Any = PUSH_REACH,
+              most: Any = None) -> list:
     """The same held coordinates, as forces instead of as values.
 
     *entries* are what :func:`contacts_holding` worked out the hand is
@@ -887,6 +895,22 @@ def as_pushes(entries: Any, reference: Any, force: float,
 
     *value_of* reads one entry's coordinate off a geometry; the editor passes
     its own, which is the only place that arithmetic lives.
+
+    The hand gets stronger the further it is dragged, which is what pulling
+    on something is like -- but what is *asked for* stays within the reach.
+    Those are two different things and conflating them cost both ways round.
+    Capped, the hand could never do more than the slider was already set for
+    however far it was dragged.  Uncapped, the target ran arbitrarily far
+    ahead of the structure and a few cycles of a strong restraint overshot it
+    and came back, which on screen is a molecule that shakes.
+
+    So the target is held at the reach and the force constant carries the
+    excess: at twice the reach the push is twice as strong, and the force at
+    the target is exactly what an unclamped spring would have applied there.
+    Same physics, nothing to overshoot.
+
+    *most* is the largest force the hand may reach whatever the drag does,
+    which is what a temperature is; ``None`` is no limit at all.
     """
     # One force constant for the whole block, sized for the coordinate the
     # hand is actually driving.  A turn is a torsion, and the distances that
@@ -896,7 +920,29 @@ def as_pushes(entries: Any, reference: Any, force: float,
     kinds = [str((one or {}).get('kind') or '') for one in (entries or ())]
     leads = ('dihedral' if 'dihedral' in kinds
              else 'angle' if 'angle' in kinds else 'distance')
-    constant = push_constant(force, kind=leads)
+
+    def _span(kind, far):
+        return far if kind == 'distance' else math.degrees(far
+                                                           / BOHR_IN_ANGSTROM)
+
+    # How far the hand has run ahead of the structure, in reaches.  Read off
+    # the coordinate the hand is driving, since that is the one it is pulling.
+    far = PUSH_REACH if reach is None else float(reach)
+    over = 1.0
+    if far > 0 and reference is not None and value_of is not None:
+        for entry in (entries or ()):
+            if str((entry or {}).get('kind') or '') != leads:
+                continue
+            try:
+                stands = value_of(reference, entry)
+                gap = abs(float(entry.get('value')) - float(stands))
+            except (TypeError, ValueError, Exception):
+                continue
+            over = max(over, gap / _span(leads, far))
+    pulling = float(force) * over
+    if most is not None:
+        pulling = min(pulling, float(most))
+    constant = push_constant(pulling, kind=leads)
     out = []
     for entry in (entries or ()):
         kind = str((entry or {}).get('kind') or '')
@@ -905,17 +951,17 @@ def as_pushes(entries: Any, reference: Any, force: float,
             wanted = float(wanted)
         except (TypeError, ValueError):
             continue
-        reach = PUSH_REACH if kind == 'distance' else PUSH_REACH_DEGREES
+        span = _span(kind, far)
         now = None
-        if reference is not None and value_of is not None:
+        if reference is not None and value_of is not None and span > 0:
             try:
                 now = value_of(reference, entry)
             except Exception:
                 now = None
         if now is not None:
             gap = wanted - now
-            if abs(gap) > reach:
-                wanted = now + math.copysign(reach, gap)
+            if abs(gap) > span:
+                wanted = now + math.copysign(span, gap)
         out.append({'kind': kind,
                     'atoms': [int(i) for i in (entry.get('atoms') or ())],
                     'mode': 'push',
@@ -1173,6 +1219,57 @@ _ALONG_ENOUGH = 0.5
 def _is_a_bond(where, radius, i, j, slack: float = 1.25) -> bool:
     """Whether these two are bonded, by covalent radii."""
     return math.dist(where[i], where[j]) < slack * (radius[i] + radius[j])
+
+
+def bond_graph(xyz_text: str, slack: float = 1.25) -> frozenset:
+    """Which atoms this geometry has bonded to which, by covalent radii.
+
+    The same test the rest of this file contacts with, and the same one the
+    viewer draws lines with, so what is compared is what is seen.  Returned as
+    a frozen set of index pairs, which makes "did the molecule stay the same
+    molecule" a set difference.
+
+    Covalent radii and nothing else: a bond order would need a wavefunction,
+    and this has to be answerable ten times a second on whatever the hand has
+    just made -- including geometries no method would call a molecule.
+    """
+    rows = [line.split() for line in atom_lines(xyz_text)]
+    if not rows:
+        return frozenset()
+    from delfin.atom_mapping import cov_radius
+
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    radius = [cov_radius(str(r[0])) for r in rows]
+    return frozenset(
+        (i, j)
+        for i in range(len(rows)) for j in range(i + 1, len(rows))
+        if _is_a_bond(where, radius, i, j, slack=slack))
+
+
+def graph_changed(before: Any, after: Any, symbols: Any = None) -> str:
+    """What happened between two bond graphs, said in words, or ''.
+
+    Named by element and number rather than by index, because "C3-Br4 would
+    break" is a sentence a chemist can act on and "(2, 3) left the set" is
+    not.
+    """
+    made = sorted(set(after or ()) - set(before or ()))
+    gone = sorted(set(before or ()) - set(after or ()))
+    if not made and not gone:
+        return ''
+
+    def name(pair):
+        if not symbols:
+            return f'{pair[0] + 1}-{pair[1] + 1}'
+        return '-'.join(f'{symbols[n]}{n + 1}' for n in pair
+                        if 0 <= n < len(symbols))
+
+    said = []
+    if gone:
+        said.append('breaks ' + ', '.join(name(one) for one in gone[:3]))
+    if made:
+        said.append('makes ' + ', '.join(name(one) for one in made[:3]))
+    return ' and '.join(said)
 
 
 def _occluded(where, radius, i, j) -> bool:

@@ -1409,6 +1409,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: reference figure in this file.  Grid spacing is not decoration either:
     #: sampled coarsely that approach reads +4.8 kcal/mol and finely +12.8, so
     #: the step count belongs to whoever is asking.
+    #: Drag without letting the molecule become a different one.
+    #:
+    #: A third thing the drag can be asked to respect, beside the budget and
+    #: the running field.  The budget says what a temperature can pay for; this
+    #: says the bonds are the ones they were, whatever it costs -- which is
+    #: what "move this group over there" means when the answer is not supposed
+    #: to be a reaction.
+    #:
+    #: xtb cannot be told to keep a topology, so this is a wall like the
+    #: budget's: the step runs, the graph is read off what came back, and a
+    #: step that made or broke a bond is replaced by the last one that did
+    #: not.  Under GFN-FF it is already true -- that method reads its bonding
+    #: once and keeps it -- and under the browser's field it is true by
+    #: construction, since the terms are assigned once.  Where it says
+    #: something is GFN2 and its relatives, which decide the bonding afresh
+    #: from the electrons at every step.
+    submit_topology_btn = widgets.ToggleButton(
+        value=False, description='Keep bonds', icon='link',
+        tooltip=('Drag without making or breaking any bond. A step that '
+                 'changes the bonding is taken back, so the molecule stays '
+                 'the molecule it was.'),
+        layout=widgets.Layout(width='118px', height='30px'),
+        disabled=True,
+    )
     submit_scan_btn = widgets.Button(
         description='Scan', button_style='info', icon='line-chart',
         tooltip=(
@@ -1467,14 +1491,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='104px', display='none'),
         disabled=True,
     )
-    submit_scan_whole = widgets.Checkbox(
-        value=False, description='all the way', indent=False,
+    #: Walk the whole thing, rather than stopping at the next minimum.
+    #:
+    #: "all the way" said nothing about what it was all the way *to*.  What it
+    #: is for is a whole curve: a torsion turned right round has three minima
+    #: and three barriers, and stopping at the first of them is exactly wrong
+    #: when the profile is the point.  Off is the right default -- past the
+    #: next minimum a reaction scan is pushing into a structure rather than
+    #: following anything.
+    submit_scan_whole = widgets.ToggleButton(
+        value=False, description='Whole profile', icon='chart-line',
         tooltip=(
-            'Keep walking past the next minimum. Off, the scan stops once it '
-            'is over a barrier and has settled again, because past that it is '
-            'pushing into a structure rather than following a reaction.'
+            'Keep walking past the next minimum, for the whole curve -- a '
+            'torsion turned right round has three minima and three barriers. '
+            'Off, the scan stops once it is over a barrier and has settled '
+            'again, because past that it is pushing into a structure rather '
+            'than following a reaction.'
         ),
-        layout=widgets.Layout(width='118px', display='none'),
+        layout=widgets.Layout(width='146px', height='30px', display='none'),
         disabled=True,
     )
     #: Walk the coordinate, or push it with a force.
@@ -1581,6 +1615,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_thermal_btn, submit_temperature,
             submit_thermal_relax, submit_thermal_anchor_btn,
+            submit_topology_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider, submit_pull_slider, submit_sens_slider,
@@ -1689,7 +1724,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_pull_slider.disabled = not enabled
         submit_play_speed.disabled = not enabled
         for widget in (submit_thermal_btn, submit_temperature,
-                       submit_thermal_relax, submit_thermal_anchor_btn):
+                       submit_thermal_relax, submit_thermal_anchor_btn,
+                       submit_topology_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
         submit_sens_slider.disabled = not enabled
@@ -2537,18 +2573,57 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         share = float(submit_pull_slider.value or 0.0)
         if share <= 0:
             return None
-        force = share * _gfn.A_BOND_HOLDS
-        if submit_thermal_btn.value:
-            _, ceiling = _thermal_budget()
-            if ceiling is not None:
-                # What the temperature grants is an *energy*, and a restraint
-                # is a spring: it reaches its force only at full stretch and is
-                # weaker all the way there, so it can spend half of force
-                # times reach.  Capped at the ceiling divided by the reach --
-                # as this was -- the hand could only ever spend half of what
-                # the temperature allowed.
-                force = min(force, _gfn.push_force_for(float(ceiling)))
-        return max(0.5, force)
+        return max(0.5, share * _gfn.A_BOND_HOLDS)
+
+    def _still_spent(current, holding):
+        """Whether the budget is spent and the hand has not come back in.
+
+        Remembered from the step that spent it, as the coordinates the hand
+        was asking for then.  The hand has come back when every one of them is
+        closer to what the kept structure has than it was -- which is the hand
+        easing off, and is the only thing that can make the drag affordable
+        again.
+        """
+        stuck = state.get('thermal_spent')
+        if not stuck:
+            return False
+        good = state.get('thermal_good')
+        if not good or len(_gfn.atom_lines(good)) != len(
+                _gfn.atom_lines(current)):
+            state.pop('thermal_spent', None)
+            return False
+        for one in stuck:
+            wanted = _value_in(current, one)
+            standing = _value_in(good, one)
+            if wanted is None or standing is None:
+                continue
+            if abs(wanted - standing) < abs(one['value'] - standing) - 1e-6:
+                state.pop('thermal_spent', None)
+                return False
+        return True
+
+    def _pull_most():
+        """The hardest the hand may ever pull, or None for no limit at all.
+
+        The hand grows with the drag, so the slider is where it *starts* and
+        this is where it stops.  Without a temperature to answer to there is
+        no reason for it to stop anywhere: the setting is the user's and drag
+        far enough and anything comes apart, which is what pulling on
+        something is like.
+
+        With the budget on the temperature decides.  What it grants is an
+        energy, and a restraint is a spring -- it reaches its force only at
+        full stretch and is weaker all the way there -- so the force whose
+        push can spend the ceiling over the reach is twice the ceiling divided
+        by it: 45 kcal/mol per Angstrom and per radian at 298 K within the
+        hour, four tenths of what a bond holds.  Measured on a bromobenzene
+        dragged five angstroms: the C-Br holds at 2.12 A there, and comes off
+        to 4.37 with no budget at all.
+        """
+        if not submit_thermal_btn.value:
+            return None
+        _, ceiling = _thermal_budget()
+        return None if ceiling is None else _gfn.push_force_for(float(ceiling))
 
     def _gfn_follow_step(xyz, holding=()):
         """Relax around the atom the hand is holding, and send that back.
@@ -2596,6 +2671,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         return
                     current, holding = newest
                     began = time.perf_counter()
+                    # Once the budget is spent, stand still rather than shake.
+                    #
+                    # The wall acts and then undoes: the step runs, the price
+                    # arrives, and a geometry past the budget is replaced by
+                    # the last one that was inside it.  Under a hand that goes
+                    # on pulling, that is strain-and-snap several times a
+                    # second -- the structure springs back to the same place
+                    # over and over, which is what the shaking was.  It is
+                    # spent; there is nothing left to compute.  So the answer
+                    # is handed straight back until the hand comes in again,
+                    # which costs no xtb at all and is perfectly still.
+                    if _still_spent(current, holding):
+                        schedule_ui_update(
+                            _set_mol_status,
+                            *_gfn_status_lines(state.get('gfn_last_status')),
+                            spinner=True)
+                        continue
                     # With the budget on, the drag is followed differently:
                     # the contacts the hand has changed are held and the rest
                     # is relaxed around them.  That one calculation is both
@@ -2672,7 +2764,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if pull is not None and contacts:
                         contacts = _gfn.as_pushes(
                             contacts, state.get('thermal_was') or current,
-                            pull, value_of=_value_in)
+                            pull, value_of=_value_in, most=_pull_most())
                     if _mopac.is_mopac_method(method):
                         # MOPAC takes no held internals and no topology file,
                         # so it is given what it does take. A few cycles, the
@@ -2729,14 +2821,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # a number nobody can act on, and this one is the whole
                     # difference between a deformation and a torn molecule.
                     hand = ''
+                    if pull is not None and contacts:
+                        # What was really applied, not what the slider says:
+                        # the hand grows with the drag, so the two are only
+                        # the same at the start of one.
+                        applied = _gfn.push_pulls_hardest(
+                            str(contacts[0].get('kind') or 'distance')
+                        ) * float(contacts[0].get('force') or 0.0)
+                        hand = (f' Pulling at {applied:.0f} kcal/mol/A, '
+                                f'{applied / _gfn.A_BOND_HOLDS:.2f} of what a '
+                                f'bond holds.')
                     if held_too:
                         hand = (' A held value and a pull cannot share one '
                                 'force constant in xtb, so the hand is '
                                 'placing rather than pulling.')
-                    elif pull is not None:
-                        hand = (f' Pulling at {pull:.0f} kcal/mol/A, '
-                                f'{pull / _gfn.A_BOND_HOLDS:.2f} of what a '
-                                f'bond holds.')
                     said = (f'{label} is following the drag:{many} {steps} '
                             f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
@@ -2882,6 +2980,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         came_back = _thermal_wall(
                             current, priced.get('energy'), holding,
                             refuse=(slipped > _SLIP_LOOSE) or crowded)
+                        # What the hand was asking for when it ran out, so the
+                        # next steps can tell "still pulling" from "easing
+                        # off" without running anything.
+                        state['thermal_spent'] = (
+                            [dict(one) for one in contacts]
+                            if came_back is not None and contacts else None)
                         if came_back is not None:
                             said = (f'{said} Past the budget, so the last '
                                     f'structure that was inside it is back.')
@@ -2986,6 +3090,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     else:
                         settled = _gfn.hold_atoms_at(
                             outcome['xyz'], current, holding)
+                    # Whatever the budget said, the molecule stays the
+                    # molecule it was if that was asked for.  Judged on what
+                    # the user would be left with rather than on the raw
+                    # answer, because that is what outlives the drag.
+                    kept, changed = _topology_wall(settled)
+                    if kept is not None:
+                        settled = kept
+                        said = (f'{said} Held: that step {changed}, and the '
+                                f'bonding is being kept.')
+                        rows = [line for line in kept.splitlines()[2:]
+                                if line.strip()]
+                        if rows:
+                            schedule_ui_update(
+                                _write_coords,
+                                xyz_document(
+                                    rows, 'Kept: the bonding would have '
+                                          'changed'),
+                                True)
                     # What the next answer measures the hand against: the
                     # geometry this one handed back, not the one it was
                     # handed.  Against the latter the difference holds the
@@ -3249,6 +3371,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state.pop('thermal_good', None)
             return None
         return good
+
+    def _topology_wall(xyz):
+        """Keep the molecule the molecule it was, and take back what did not.
+
+        The same shape as the budget's wall and for the same reason: xtb
+        cannot be told to hold a topology, and a hand cannot be stopped at the
+        right place in real time.  So the step runs, the bonding is read off
+        what came back, and a step that made or broke one is replaced by the
+        last one that did not.
+
+        Returns the geometry to go back to, or None when nothing changed.  The
+        second value is what changed, for the line.
+        """
+        if not submit_topology_btn.value or not xyz:
+            state.pop('topology_good', None)
+            return None, ''
+        was = state.get('topology_graph')
+        rows = [line.split() for line in _gfn.atom_lines(xyz)]
+        who = _structure_fingerprint(xyz)
+        if was is None or state.get('topology_for') != who:
+            # First look, or a different molecule: this one is the one to
+            # keep.  Carried over, a benzene's bonding would be held against
+            # a water and every step would read as a change.
+            state['topology_graph'] = _gfn.bond_graph(xyz)
+            state['topology_for'] = who
+            state['topology_good'] = xyz
+            return None, ''
+        now = _gfn.bond_graph(xyz)
+        if now == was:
+            state['topology_good'] = xyz
+            return None, ''
+        said = _gfn.graph_changed(was, now, [str(r[0]) for r in rows])
+        return state.get('topology_good'), said
 
     def _push_thermal_wall(wall, reach=0.0):
         """Tell the page where the hand may no longer go, or that it may.
@@ -3781,7 +3936,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'window.__delfinSubmitManip.setOptimizerStrength('
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
             'window.__delfinSubmitManip.setPullStrength('
-            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)});'
+            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)},'
+            f'{json.dumps(_pull_most())});'
             # Re-applied with the rest, so a reload keeps the feel the user set.
             'window.__delfinSubmitManip.setDragSensitivity('
             f'{json.dumps(submit_scope_id)},{float(submit_sens_slider.value)});'
@@ -6857,6 +7013,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         active = bool(submit_thermal_btn.value)
         submit_thermal_btn.button_style = 'info' if active else ''
+        # The page's hand has a ceiling exactly while the budget does.
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setPullStrength('
+            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)},'
+            f'{json.dumps(_pull_most() if active else None)});'
+        )
         for widget in (submit_temperature, submit_thermal_relax,
                        submit_thermal_anchor_btn):
             widget.layout.display = '' if active else 'none'
@@ -6871,6 +7035,49 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             'again.')
             return
         _set_thermal_anchor()
+
+    def on_submit_scan_whole(change):
+        """Only the light on the button; what it means is read where it is
+        used."""
+        if change.get('name') != 'value':
+            return
+        submit_scan_whole.button_style = (
+            'info' if submit_scan_whole.value else '')
+
+    def on_submit_topology(change):
+        """Keep bonds, switched on or off.
+
+        The graph is taken from the structure as it stands now, so what is
+        kept is what the user is looking at when they ask for it -- not
+        whatever was perceived when the molecule was loaded, which may be
+        several edits ago.
+        """
+        if change.get('name') != 'value':
+            return
+        on = bool(submit_topology_btn.value)
+        submit_topology_btn.button_style = 'info' if on else ''
+        for key in ('topology_graph', 'topology_for', 'topology_good'):
+            state.pop(key, None)
+        if not on:
+            _set_mol_status('Bonds are free to make and break again.')
+            return
+        xyz = _current_xyz()
+        if not xyz:
+            return
+        state['topology_graph'] = _gfn.bond_graph(xyz)
+        state['topology_for'] = _structure_fingerprint(xyz)
+        state['topology_good'] = xyz
+        method = str(submit_ff_dd.value)
+        # Where it already holds, say so rather than let it look like it is
+        # doing something.  GFN-FF reads its bonding once and keeps it, and
+        # the browser's field is assigned its terms once.
+        already = ('' if _gfn.is_gfn_method(method) and method != 'gfnff'
+                   else f' {_server_label(method)} already keeps its bonding, '
+                        'so this changes nothing under it.')
+        _set_mol_status(
+            f'Keeping the {len(state["topology_graph"])} bonds this structure '
+            f'has. A drag that would make or break one is taken back.'
+            + already)
 
     def on_submit_thermal_anchor(_button=None):
         # Never relaxes: this is the user saying "from here", and the geometry
@@ -6972,7 +7179,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setPullStrength('
-            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)});'
+            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)},'
+            f'{json.dumps(_pull_most())});'
         )
 
     def on_submit_strength_changed(change):
@@ -7641,6 +7849,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_pull_slider.observe(on_submit_pull_changed, names='value')
     submit_scan_stop_at.observe(on_submit_scan_stop_at, names='value')
+    submit_topology_btn.observe(on_submit_topology, names='value')
+    submit_scan_whole.observe(on_submit_scan_whole, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_thermal_btn.observe(on_submit_thermal, names='value')

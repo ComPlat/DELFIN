@@ -1288,13 +1288,29 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     //: differently -- here the pull is projected free of translation and
     //: rotation, so most of it never reaches an internal coordinate at all.
     var PULL_LIKE_A_BOND = 662.0;
+    //: What a bond holds as a *force*, which is the scale the kernel sets its
+    //: ceiling in -- measured under GFN2 at 112 for a C-C, 98 for a C-H and
+    //: 120 for a C-O.  Here only to read that ceiling onto this engine's
+    //: scale, since the two apply the same share very differently.
+    var A_BOND_HOLDS = 110.0;
     //: Opened at what room temperature allows on the other engine, so the
     //: two feel like the same hand and switching the budget on does not make
     //: the drag stronger.
     var DEFAULT_PULL_SHARE = 0.4;
-    //: How far the wanted point may stand ahead of the atom before the pull
-    //: stops growing.  This is what turns a stiffness into a force limit: drag
-    //: as far across the screen as you like and the atom feels the same.
+    //: How far ahead of the atom the wanted point is *asked for*.
+    //
+    //: Not a ceiling on the pull.  The hand goes on getting stronger the
+    //: further it is dragged -- drag far enough and a bond gives, which is
+    //: what pulling on something is like -- but what is asked for stays
+    //: within this, and the strength carries the excess: at twice the reach
+    //: the pull is twice as hard, which is exactly what an unclamped spring
+    //: would apply there.  Same force, nothing to overshoot.
+    //
+    //: Conflating the two cost both ways round.  Held at the reach, the hand
+    //: could never do more than the slider was already set for however far it
+    //: was dragged.  Let off it, the target ran arbitrarily far ahead and a
+    //: few steps of a strong pull overshot and came back, which on screen is
+    //: a molecule that shakes.
     var PULL_REACH = 1.0;
     //: The hand, drawn.  Distinct from the pick colours and from the pivot,
     //: because it is neither: it is not part of the molecule.
@@ -3337,11 +3353,36 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // Where the hand wants each atom it has hold of, as the field is told it.
     // The reach travels with it, so the ceiling on the force is enforced every
     // step the engine takes rather than only when the mouse reports.
+    // How much harder than its setting the hand is pulling, because of how
+    // far it has been dragged: one at the reach, two at twice it.
+    function pullOver(scopeKey, viewer) {
+        var state = getState(scopeKey);
+        var pull = state.ffPull;
+        if (!pull) return 1;
+        var atoms = getAtoms(viewer), over = 1;
+        for (var i = 0; i < pull.want.length; i++) {
+            var w = pull.want[i], a = atoms[w.atom];
+            if (!a || a.serial !== w.serial) continue;
+            var dx = w.x - a.x, dy = w.y - a.y, dz = w.z - a.z;
+            var d = Math.sqrt(dx*dx + dy*dy + dz*dz) / PULL_REACH;
+            if (d > over) over = d;
+        }
+        return over;
+    }
     function ffPullApply(scopeKey) {
         var state = getState(scopeKey);
         var pull = state.ffPull;
         if (!pull || !pull.want.length) return false;
-        var k = pullConstant(state);
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return false;
+        var k = pullConstant(state) * pullOver(scopeKey, viewer);
+        // A ceiling only where there is a reason for one, which is a
+        // temperature.  The kernel says so, because it is the side that knows
+        // whether the budget is on.
+        if (state.pullMost > 0) {
+            var cap = state.pullMost * PULL_LIKE_A_BOND / A_BOND_HOLDS;
+            if (k > cap) k = cap;
+        }
         var list = [];
         for (var i = 0; i < pull.want.length; i++) {
             var w = pull.want[i];
@@ -3741,11 +3782,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
     //: How hard the hand pulls, as a share of a bond.  Zero is the rigid
     //: hand: the coordinate is set outright and the field is frozen out of it.
-    function setPullStrength(scopeKey, share) {
+    function setPullStrength(scopeKey, share, most) {
         var state = getState(scopeKey);
         var asked = parseFloat(share);
         if (!isFinite(asked) || asked < 0) asked = 0;
         state.pullShare = Math.min(3, asked);
+        // The hardest the hand may ever pull, in the same units as the
+        // slider's own scale, or nothing at all for no ceiling.  A ceiling is
+        // what a temperature is, and the kernel is the side that knows
+        // whether the budget is on.
+        var cap = parseFloat(most);
+        state.pullMost = (isFinite(cap) && cap > 0) ? cap : 0;
         // Changed mid-drag it takes effect without letting go, so the feel can
         // be found while a structure is being pulled rather than between goes.
         if (state.ffPull) ffPullApply(scopeKey);
