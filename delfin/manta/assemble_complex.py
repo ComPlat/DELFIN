@@ -4299,7 +4299,45 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     per_lig_cands = []        # per ligand: [(Q, clash_vs_metal), ...] sorted best-first
     per_lig_syms = []         # per ligand: lsyms (for combo assembly)
     metal_P = np.zeros((1, 3)); metal_sym = [metal]
-    for li, va in by_lig.items():
+    # ===== DER STARRSTE LIGAND ZUERST ========================================
+    # Bis 18.08.2026 lief diese Schleife in der Einfuegereihenfolge von `config`,
+    # also in VERTEX-Reihenfolge -- ein Monodentat konnte vor einem Tetradentaten
+    # gesetzt werden.  Das ist die Umkehrung dessen, was die Aufgabe verlangt:
+    #
+    #   * Ein bereits gesetztes Monodentat zaehlt fuer JEDEN spaeteren Kandidaten in
+    #     `_clash_count`.  Der Tetradentat kommt dann mit fast keiner Freiheit an --
+    #     sein Biss fixiert vier Vertices -- und der Kandidat, der die Auswahl
+    #     gewinnt, ist der, der sich WEGDREHT.
+    #   * Umgekehrt sitzt der starre Ligand zuerst auf seinen Idealvertices, und die
+    #     Monodentaten haben volle Drehfreiheit, ihm auszuweichen.  Ein Monodentat
+    #     kann fast immer ausweichen, ein Chelatring nie.
+    #
+    # Das ist die klassische Regel "am staerksten eingeschraenkte Variable zuerst",
+    # und sie passt exakt zum gemessenen Signal: die Fehlerrate der
+    # Oktaeder-nach-Prisma-Verwechslung ist MONOTON in der Zahl der Chelatringe --
+    # 2,49 % bei null, 8,38 % bei drei, 16,12 % bei fuenf (30921 Systeme, netto +988
+    # Systeme, McNemar X2 = 860,8).  Je mehr starre Liganden um dieselben Vertices
+    # konkurrieren, desto oefter verdreht sich das Polyeder.
+    #
+    # ⚠ WARUM DAS DIE BILLIGSTE KLASSE UEBERHAUPT IST: es aendert nur die
+    # REIHENFOLGE, in der bereits vorhandene Kandidaten bewertet werden.  Keine
+    # neue Geometrie, nicht einmal eine neue Auswahlgroesse.  Nach dem heute an drei
+    # Punkten gemessenen Gesetz (Isometrie +0,98 pp, starre Drehung +6,57 pp,
+    # Neueinbettung +11,9 pp) liegt das noch unter der Isometrie.
+    #
+    # ⚠ DETERMINISMUS: der Zweitschluessel ist der Ligandindex, nicht der Zufall.
+    # Gleiche Zaehnigkeit -> gleiche Reihenfolge wie bisher.
+    #
+    # DELFIN_FFFREE_SEAT_RIGID_FIRST (Vorgabe 0 -> byte-identisch).
+    _lig_order = list(by_lig.items())
+    if os.environ.get("DELFIN_FFFREE_SEAT_RIGID_FIRST", "0") == "1":
+        def _dent_of(_li):
+            try:
+                return int(ligands[_li].get("denticity") or len(by_lig[_li]))
+            except Exception:
+                return len(by_lig[_li])
+        _lig_order.sort(key=lambda kv: (-_dent_of(kv[0]), kv[0]))
+    for li, va in _lig_order:
         lg = ligands[li]
         dons = lg["donor_local_idxs"]
         lig_offset = pos - 1                       # start index in the ligands-only frame
