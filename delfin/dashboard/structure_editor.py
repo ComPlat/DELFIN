@@ -972,35 +972,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: back; nothing read it.  That is exactly the right quantity, too -- a
     #: point on the constrained path rather than the energy of a geometry
     #: nothing has relaxed around.
-    #: Conformations only: the frame is held and nothing but torsions can
-    #: move.
-    #:
-    #: A budget makes tearing something expensive; this makes it impossible,
-    #: which is the guarantee a conformational search actually wants.  No
-    #: energy is consulted and nothing is estimated -- a bond cannot come
-    #: apart because its length is one of the things being held.
-    #:
-    #: Held, not frozen, and the difference is worth stating rather than
-    #: discovering.  xtb's constraints are harmonic and take one force
-    #: constant for the whole block, so sixty-four of them give against each
-    #: other: measured on a 24-atom structure turned sixty degrees, the worst
-    #: bond drifts 0.088 A and the worst angle 4.9 degrees.  Stiffening does
-    #: not help -- at a force constant of 60 it is 0.099 A and 5.6 degrees,
-    #: and at 200 xtb stops with an error.  A bond stays a bond, which is the
-    #: guarantee; exactly unchanged is not on offer here and would want a
-    #: different mechanism entirely -- turning a torsion in internal
-    #: coordinates, where the lengths and angles are never touched at all.
-    submit_rigid_btn = widgets.ToggleButton(
-        value=False, description='Frame', icon='lock',
-        tooltip=(
-            'Hold every bond and every angle, so a drag turns things instead '
-            'of stretching them. A bond stays a bond -- it cannot be pulled '
-            'apart -- but the hold is a spring, not a rod: about a tenth of '
-            'an Angstrom and five degrees of give, which is as tight as xtb '
-            'constraints go.'
-        ),
-        layout=widgets.Layout(width='90px', height='30px'),
-    )
     submit_thermal_btn = widgets.ToggleButton(
         value=False, description='Thermal', icon='thermometer-half',
         tooltip=(
@@ -1506,7 +1477,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_manip_undo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
-            submit_rigid_btn, submit_thermal_btn, submit_temperature,
+            submit_thermal_btn, submit_temperature,
             submit_thermal_relax, submit_thermal_anchor_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
@@ -2375,7 +2346,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # against a structure from before whatever happened in between.
         state.pop('thermal_was', None)
         state.pop('thermal_turn', None)
-        state.pop('frame_held', None)
+        state.pop('thermal_holding', None)
         _push_thermal_wall(None)
 
     def _end_gfn_follow():
@@ -2479,23 +2450,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # coordinate and costs nothing, and there is nothing to
                     # hold it against.  The old single point stands in.
                     came_back = None
-                    # The frame first: with it on a drag may only turn things,
-                    # and there is nothing for the contacts to add.  It was
-                    # taken at the grab -- read from the geometry the drag has
-                    # already made of it, every bond would be held at whatever
-                    # the yank produced.
-                    if (submit_rigid_btn.value
-                            and not _mopac.is_mopac_method(method)
-                            and state.get('frame_held')):
-                        contacts = list(state['frame_held'])
-                    else:
-                        contacts = (
-                            _gfn.contacts_holding(
-                                current, holding, most=3,
-                                was=state.get('thermal_was'),
-                                turning=state.get('thermal_turn'))
-                            if (submit_thermal_btn.value
-                                and not _mopac.is_mopac_method(method)) else [])
+                    contacts = (
+                        _gfn.contacts_holding(
+                            current, holding, most=3,
+                            was=state.get('thermal_was'),
+                            turning=state.get('thermal_turn'),
+                            holding=state.get('thermal_holding'))
+                        if (submit_thermal_btn.value
+                            and not _mopac.is_mopac_method(method)) else [])
                     if _mopac.is_mopac_method(method):
                         # MOPAC takes no held internals and no topology file,
                         # so it is given what it does take. A few cycles, the
@@ -2692,6 +2654,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # about a chain bond cannot spin about its own axis to
                     # get out of the way, and the same turn that costs +7.9
                     # kcal/mol along the torsion costs +345 held rigid.
+                    if contacts:
+                        state['thermal_holding'] = [dict(one) for one in contacts]
                     turned = [one for one in contacts
                               if str(one.get('kind')) == 'dihedral']
                     if turned:
@@ -2716,17 +2680,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the hand as a rigid body it costs nothing -- an energy
                     # does not depend on where a molecule is -- and the two are
                     # still the same structure.
-                    # In frame mode the answer stands as it is.  Put back
-                    # where the cursor has it, the dragged atom carries the
-                    # bond it was supposed to be unable to stretch, and the
-                    # frame holds nothing: measured, a hydrogen yanked to
-                    # 3.20 A was drawn at 3.20 with every bond "held".  The
-                    # hand asks, the frame answers, and how far the atom
-                    # actually gets is the answer.
                     settled = (came_back if came_back is not None else
-                               outcome['xyz']
-                               if (submit_rigid_btn.value
-                                   and state.get('frame_held')) else
                                _gfn.hold_atoms_at(
                                    outcome['xyz'], current, holding))
                     # What the next answer measures the hand against: the
@@ -2737,22 +2691,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # every drag read as a drive at something, the torsion
                     # never fired, and a cyclohexane could not be flipped.
                     state['thermal_was'] = settled
-                    # In frame mode the box is written too, for the same
-                    # reason the rollback writes it: the frames go to the
-                    # viewer, but what outlives the drag is the page's own
-                    # model, and that has the atom where the cursor left it.
-                    # Measured, a hydrogen yanked to 3.20 A was drawn at 1.08
-                    # with the frame holding and the box kept 3.20 -- so
-                    # letting go still kept the torn one.
-                    if (submit_rigid_btn.value and state.get('frame_held')
-                            and came_back is None):
-                        rows = [line for line in settled.splitlines()[2:]
-                                if line.strip()]
-                        if rows:
-                            schedule_ui_update(
-                                _write_coords,
-                                xyz_document(rows, 'Turned, with the frame held'),
-                                True)
                     frames = list(state.get('gfn_follow_frames') or [])
                     frames.append(_gfn.coordinates_of(settled))
                     state['gfn_follow_frames'] = frames
@@ -2935,20 +2873,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if moved <= 1e-6 or 'spent' not in last:
             return
         state['thermal_slope'] = (float(spent) - float(last['spent'])) / moved
-
-    def _arm_frame():
-        """Take the frame at the moment the hand arrives, not after.
-
-        Read from the geometry the drag has already made of it, every bond and
-        angle is held at whatever the yank produced -- a C-H at 3.20 A is then
-        dutifully kept at 3.20, and the switch does nothing at all.  The frame
-        is a property of the structure before the hand touched it.
-        """
-        if not submit_rigid_btn.value:
-            state.pop('frame_held', None)
-            return
-        here = _current_xyz() or ''
-        state['frame_held'] = _gfn.frame_constraints(here) if here else None
 
     def _arm_thermal_leash():
         """Remember where the budget still agreed, so there is somewhere back to.
@@ -5390,7 +5314,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # not only the ones being dragged, because which those are is not
             # known until the first drag-follow says so -- and a mark on an
             # atom nobody is moving costs nothing.
-            _arm_frame()
             _arm_thermal_leash()
             return
 
@@ -5774,6 +5697,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_stop'] = False
         state['scan_arrived'] = False
         state['scan_crowded'] = None
+        state['scan_frame_run'] = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = state['scan_frame_run']
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
         submit_scan_run_btn.description = 'Stop'
         submit_scan_run_btn.icon = 'stop'
         label = _server_label(method)
@@ -5783,6 +5710,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             base = None
             bottom = None
             standing = None
+            shown = []
             try:
                 for n in range(1, steps + 1):
                     if state.get('scan_stop'):
@@ -5847,17 +5775,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             path = path[:path.index(
                                 (bottom[2], bottom[0])) + 1]
                         break
-                    lines = [line for line in walked.splitlines()[2:]
-                             if line.strip()]
                     schedule_ui_update(
                         _set_mol_status,
                         f'{label} is walking the scan: step {n} of {steps}, '
                         f'{held[0]["kind"]} at {held[0]["value"]:.3g}, '
                         f'{spent:+.1f} kcal/mol so far.', spinner=True)
-                    if lines:
-                        schedule_ui_update(
-                            _write_coords,
-                            xyz_document(lines, 'Scanning'))
+                    # Down the frame channel, not into the box.
+                    #
+                    # Every write to the box rebuilds the viewer from nothing,
+                    # so a thirty-point scan was thirty rebuilds -- the picture
+                    # crawled and the browser sometimes stopped answering
+                    # altogether.  The follow has always streamed frames for
+                    # exactly this reason; the scan was writing the box because
+                    # it was easier, and thirty rebuilds is not a detail.
+                    shown.append(_gfn.coordinates_of(walked))
+                    schedule_ui_update(
+                        lambda text=json.dumps({
+                            'run': state.get('scan_frame_run'),
+                            'from': len(shown) - 1,
+                            'follow': 1,
+                            'frames': [shown[-1]],
+                        }): setattr(submit_gfn_frame, 'value', text))
             finally:
                 state['scan_run'] = False
 
