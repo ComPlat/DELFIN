@@ -3398,11 +3398,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['topology_for'] = who
             state['topology_good'] = xyz
             return None, ''
-        now = _gfn.bond_graph(xyz)
-        if now == was:
+        # With hysteresis, or a bond resting on the threshold decides the
+        # answer differently ten times a second and the drag sticks on a
+        # molecule that is not changing at all.
+        holds, said = _gfn.graph_holds(was, xyz)
+        if holds:
             state['topology_good'] = xyz
             return None, ''
-        said = _gfn.graph_changed(was, now, [str(r[0]) for r in rows])
         return state.get('topology_good'), said
 
     def _push_thermal_wall(wall, reach=0.0):
