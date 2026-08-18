@@ -185,8 +185,25 @@ def _find_centers(syms: List[str], pts: np.ndarray, nbrs: List[List[int]],
     def _pkey(x):
         return (syms[x], tuple(sorted(syms[y] for y in nbrs[x] if y not in metal_set)))
     centers: List[dict] = []
+    # ===== SB UND BI STANDEN IN DER DONORLISTE UND WURDEN ALS METALL UEBERSPRUNGEN =====
+    # Gemessen 18.08.2026 auf 620 Diastereomer-Faellen: _STEREO_DONOR_ELEMENTS (:61) fuehrt
+    # N, P, As, Sb, Bi -- aber ``metal_set`` kommt aus _coord_angle_corrector._is_metal_sym,
+    # und dessen _METAL_Z_RANGES (:69-73) enthaelt Z 51 (Sb) und Z 83 (Bi).  Die
+    # Metallpruefung steht ZWEI ZEILEN VOR der Elementpruefung, also waren Sb und Bi
+    # unerreichbar: sie sind in der Liste, aber der Pfad kommt nie bei ihnen an.  Wirksam
+    # war {N, P, As}, nicht {N, P, As, Sb, Bi}.
+    # Betroffen: 33 Zentren in 26 Systemen, davon 19 freie SbR3-Donoren ohne Ring -- genau
+    # der XR-Fall, fuer den der Zweig unten gebaut wurde.
+    #
+    # DELFIN_STEREOCENTER_PNICTOGEN_METALLOID (Vorgabe 0 -> byte-identisch) laesst die
+    # Elementpruefung vorgehen.  Ein Sb, das SELBST das Zentralmetall ist, faellt trotzdem
+    # heraus: der Test ``ms`` weiter unten verlangt einen Metallnachbarn, und die Nachbarn
+    # eines Zentralmetalls sind Donoren.
+    _pnict_metalloid = (os.environ.get(
+        "DELFIN_STEREOCENTER_PNICTOGEN_METALLOID", "0") == "1")
     for d in range(len(syms)):
-        if d in metal_set:
+        if d in metal_set and not (_pnict_metalloid
+                                   and syms[d] in _STEREO_DONOR_ELEMENTS):
             continue
         if syms[d] not in _STEREO_DONOR_ELEMENTS:
             continue                                   # only pnictogen donors form a stable centre

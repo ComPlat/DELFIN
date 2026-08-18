@@ -32528,6 +32528,24 @@ def _smiles_to_xyz_isomers_impl(
                         _tail_mol = None
                     if _tail_mol is not None:
                         _ff = _ffree_shared_tail(_tail_mol, _ff, False)
+                # ===== DER SPIEGELABSCHLUSS BRAUCHT KEINEN FREMDEN SCHALTER ============
+                # Gemessen 18.08.2026: der Pass lag ausschliesslich IM Shared Tail, also
+                # hinter DELFIN_FFFREE_SHARED_TAIL (Vorgabe 0).  Jedes Spiegel-A/B musste
+                # den Schalter deshalb in BEIDEN Armen mitfuehren -- und der Shared Tail
+                # aktiviert nebenbei ISOLATED_SEAT und AROM_PLANARIZE, die beiden
+                # Champion-Flags, die FF-frei sonst nie feuern.  Die Grundlinie war damit
+                # NICHT der ausgelieferte Champion, und loop.py hat das auch gemeldet
+                # ("UNDECLARED AXIS ... the arms are NOT the shipped champion").
+                # Ein Mechanismus, der nur unter einem fremden Schalter messbar ist, kann
+                # nicht in den Champion landen -- man landete zwei Dinge auf einmal.
+                #
+                # Der Spiegel braucht diesen Schalter nicht: er braucht KEIN ``mol`` (eine
+                # Spiegelung ist eine reine Koordinatenoperation), also entfaellt genau der
+                # Grund, aus dem der Shared Tail ueberhaupt gattert -- das teure Parsen.
+                # Hier steht er darum unbedingt, gattert nur durch seinen EIGENEN Schalter
+                # (Vorgabe 0 -> byte-identisch) und ist bei SHARED_TAIL=1 ein No-op, weil
+                # expand_results seit heute idempotent ist (Label-Suffix ``_mirror``).
+                _ff = _apply_mirror_enum_if_enabled(_ff)
                 # RING PUCKER FOR THE FF-FREE PATH: the hook that USED to sit here has been
                 # removed, and the reason is worth keeping.
                 #

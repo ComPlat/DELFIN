@@ -158,9 +158,23 @@ def expand_results(results):
     added: List[Tuple[str, str]] = []
     n_achiral = 0
     n_failed = 0
+    n_already = 0
     for (xyz, label) in results:
         if len(added) >= max_added:
             break
+        # ===== IDEMPOTENZ (18.08.2026) ==========================================
+        # Der Pass war NICHT idempotent: das Spiegelbild eines Spiegelbildes ist
+        # wieder das Original, und die Dublettenpruefung ``m == xyz`` sieht das
+        # nicht, weil sie gegen die EINGABE vergleicht, nicht gegen die Menge.
+        # Zweimaliges Anwenden haette also jedes Original ein zweites Mal
+        # angehaengt.  Das war bisher folgenlos, weil es genau EINE Aufrufstelle
+        # gab -- und genau das aendert sich mit der zweiten, die den Pass vom
+        # Schalter DELFIN_FFFREE_SHARED_TAIL unabhaengig macht.
+        # Eine Bedingung, die nur unter der heutigen Verdrahtung stimmt, ist eine
+        # Falle fuer die naechste.
+        if str(label).endswith("_mirror"):
+            n_already += 1
+            continue
         m = mirror_frame(xyz)
         if m is None:
             n_achiral += 1
