@@ -2436,7 +2436,13 @@ def test_the_follow_is_paced_by_the_machine_not_by_a_clock(player_js):
 
 
 def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
-    """The whole of the spring-back, driven the way the page drives it."""
+    """The whole of the spring-back, driven the way the page drives it.
+
+    This is the *rigid* hand -- Pull at zero -- which is what the editor did
+    everywhere before the hand became a force, and what it still does when the
+    user asks for exact placement.  What the pull does instead is the test
+    below.
+    """
     import json as _json
     import time as _time
 
@@ -2452,6 +2458,7 @@ def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
     refs["coords_widget"].value = propane
     state["current_xyz_for_copy"] = {"content": propane}
     refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_pull_slider"].value = 0.0        # the rigid hand
     refs["submit_relax_btn"].value = True
     refs["submit_cmd_sync"].value = "gfngrab:1:"
 
@@ -2478,6 +2485,77 @@ def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
         for i in range(1, 9) for n in range(3)
     )
     assert moved > 0.005, "and everything else has to have followed"
+
+
+@_needs_xtb
+def test_a_pulled_atom_gets_as_far_as_the_force_allows(editor):
+    """The same drag twice, with two strengths of hand.
+
+    A carbon of a propane is asked half an angstrom straight out along its
+    own C-C, which is asking the bond to stretch.  Measured under GFN-FF, one
+    follow step from 1.1600 with the wish at 1.6600: a hand at a tenth of a
+    bond reaches 1.2071, and one at three bonds' worth reaches 1.2566 -- twice
+    as far, and neither of them anywhere near the wish.
+
+    A step is five to twenty cycles, not a minimisation, so a drag is many of
+    these and what they do accumulates; what one of them shows is the balance,
+    which is the mechanism.
+
+    Nothing refuses the drag.  Nothing has to: the force is applied, the
+    chemistry answers it, and how far the atom gets *is* the answer.  Which
+    the rigid hand could never give, because there the atom went wherever the
+    cursor went and the calculation was told to agree.
+    """
+    import json as _json
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
+    )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfnff"
+    refs["submit_relax_btn"].value = True
+
+    rows = [line.split() for line in gfn.atom_lines(propane)]
+    was = float(rows[0][1])
+    rows[0][1] = f"{was + 0.50:.6f}"
+    wished = float(rows[0][1])
+    pushed = ("11\nDELFIN drag-follow held=0\n"
+              + "\n".join(" ".join(r) for r in rows) + "\n")
+
+    def follow(share):
+        for key in ("thermal_was", "thermal_holding", "thermal_turn",
+                    "gfn_follow_frames"):
+            state.pop(key, None)
+        refs["submit_gfn_frame"].value = ""
+        refs["submit_pull_slider"].value = share
+        refs["submit_cmd_sync"].value = f"gfngrab:{int(share * 100) + 1}:"
+        refs["submit_manip_sync"].value = ""
+        refs["submit_manip_sync"].value = pushed
+        deadline = _time.time() + 60
+        while _time.time() < deadline and not (
+                _json.loads(refs["submit_gfn_frame"].value or "{}")
+                .get("frames")):
+            _time.sleep(0.01)
+        frames = _json.loads(refs["submit_gfn_frame"].value or "{}").get("frames")
+        assert frames, refs["mol_status"].value
+        return frames[-1][0]
+
+    gentle = follow(0.1)
+    hard = follow(3.0)
+    # Neither arrives.  That is what a force does instead of a placement, and
+    # the rigid hand -- the test above -- puts it at the wish to the digit.
+    assert wished - gentle > 0.35, (gentle, wished)
+    assert wished - hard > 0.3, (hard, wished)
+    # And the strong hand gets substantially further in the same step.
+    assert (hard - was) > 1.5 * (gentle - was), (was, gentle, hard)
 
 
 @_needs_xtb
@@ -4826,7 +4904,7 @@ def test_the_budget_prices_the_geometry_the_user_made(bare_editor):
     assert "came_back = _thermal_wall(" in follow
     assert "refuse=(slipped > _SLIP_LOOSE) or crowded" in follow
     # And what it hands back is what gets drawn.
-    assert "settled = (came_back if came_back is not None else" in follow
+    assert "if came_back is not None:\n                        settled = came_back" in follow
 
 
 def test_every_field_the_page_reads_is_on_the_page(editor):
@@ -4927,3 +5005,171 @@ def test_a_drag_with_the_budget_on_answers_at_all(editor):
     assert frames, (
         "no frame came back with the budget on: "
         + str(refs["mol_status"].value))
+
+
+def test_a_barrier_is_a_rise_out_of_a_minimum_not_a_height_above_the_start(
+        bare_editor):
+    """A scan's first point is not necessarily a minimum, and measured against
+    it a barrier comes out wrong in whichever direction the start is wrong.
+
+    A push made that unmissable.  Its first point relaxes what the hand posed,
+    so every later point sits *below* the start, the highest point on the path
+    is the start itself, and the answer came back as "it wants about 3 K" --
+    the temperature of no barrier at all, on a path that had just crossed one.
+
+    Measured from the lowest point before the top instead, the two ways of
+    walking the same Diels-Alder agree.  Butadiene and ethylene 3.13 A apart
+    under GFN2, twenty points each:
+
+        walk the value   top +6.4 kcal/mol at 2.305 A, rise 6.4
+        push with force  top +6.3 kcal/mol at 2.364 A, rise 6.3
+
+    Which is the check worth having: the coordinate that was driven and the
+    force that was applied are different experiments, and they find the same
+    barrier.
+    """
+    part, _state = bare_editor
+    climbed = part._climbed
+
+    # A path that starts at a minimum: the rise is the height.
+    assert climbed([0.0, 2.0, 9.0, 4.0]) == (9.0, 9.0)
+    # One that starts strained and relaxes into its basin first: the rise is
+    # out of the basin, not out of the strain.
+    assert climbed([3.0, 0.0, 9.0, 4.0]) == (9.0, 9.0)
+    # And a push, whose start is the highest thing on the path: nothing has
+    # been climbed, and that is what has to be said rather than a temperature.
+    top, rise = climbed([0.0, -4.0, -60.0, -58.0])
+    assert top == 0.0 and rise == 0.0
+    # The minimum *before* the top, never one after it -- otherwise the fall
+    # into the product would be counted as part of the climb.
+    assert climbed([0.0, 5.0, -60.0]) == (5.0, 5.0)
+
+
+def test_under_a_server_method_the_hand_is_a_force_too(bare_editor):
+    """Which is where it matters most, and where it was missing.
+
+    The browser's field is refused outright under a GFN method -- a UFF
+    relaxation under a molecule whose method box says GFN is a different
+    calculation wearing the right label -- so the pull, built on that field,
+    did not exist in the one mode the budget and the scan live in.  Dragging
+    there went on setting coordinates: the atom was placed, the answer was
+    told to meet the value, and there was nothing the chemistry could refuse.
+
+    xtb holds internal coordinates and not positions, so the force is applied
+    where the drag can be expressed: the coordinates
+    :func:`gfn_optimize.contacts_holding` works out the hand is changing
+    become pushes with a ceiling, and where they settle is the answer.
+    """
+    from delfin.dashboard import gfn_optimize as gfn
+
+    part, _state = bare_editor
+    force = part._pull_force
+    slider = part.submit_pull_slider
+
+    # Zero is the rigid hand, and it says so by not being a force at all.
+    slider.value = 0.0
+    assert force() is None
+    # Otherwise a share of what a bond holds -- one number for a C-C (56), a
+    # C-H (49) and a C-O (60), measured by pushing until each gives way.
+    slider.value = 1.0
+    assert force() == pytest.approx(gfn.A_BOND_HOLDS)
+    slider.value = 0.5
+    assert force() == pytest.approx(gfn.A_BOND_HOLDS / 2)
+
+    # And the coordinates the hand changed are turned into forces, held no
+    # further than a reach from where they stand.
+    pushed = gfn.as_pushes(
+        [{'kind': 'distance', 'atoms': [0, 1], 'value': 4.0, 'mode': 'drag'}],
+        'reference', 22.0, value_of=lambda _x, _e: 2.0)
+    assert pushed[0]['mode'] == 'push'
+    assert pushed[0]['value'] == pytest.approx(2.0 + gfn.PUSH_REACH)
+    assert pushed[0]['force'] == pytest.approx(gfn.push_constant(22.0))
+    # Asking for less than the reach is asking for exactly that.
+    near = gfn.as_pushes(
+        [{'kind': 'distance', 'atoms': [0, 1], 'value': 2.4, 'mode': 'drag'}],
+        'reference', 22.0, value_of=lambda _x, _e: 2.0)
+    assert near[0]['value'] == pytest.approx(2.4)
+
+
+def test_the_temperature_says_how_hard_the_hand_may_pull(bare_editor):
+    """The thermal limit made into something that cannot be got round.
+
+    Before this the budget could only refuse a geometry after the hand had
+    already made it -- the ring was open, and what came back was that it
+    should not have been.  A force applied over the reach does work, so the
+    most the hand may pull with is what the ceiling can pay for, and a
+    deformation the temperature cannot afford simply does not happen.
+
+    At 298 K within the hour the ceiling is 22.3 kcal/mol, so the hand pulls
+    with 22 -- a fifth of what a bond holds, which deforms and cannot tear.
+    At 1500 K it is 117, which is past what a bond holds and takes one
+    apart.  Which is the behaviour the editor was asked for from the start:
+    a Diels-Alder at room temperature, a torn molecule only where the
+    temperature really would tear one.
+    """
+    from delfin.dashboard import gfn_optimize as gfn
+
+    part, _state = bare_editor
+    force = part._pull_force
+    part.submit_pull_slider.value = 3.0        # as hard as it goes
+    part.submit_thermal_btn.value = True
+    part.submit_temperature.value = 298.15
+    room = force()
+    assert room == pytest.approx(22.3, abs=1.0), room
+    assert room < gfn.A_BOND_HOLDS / 4
+
+    part.submit_temperature.value = 1500.0
+    hot = force()
+    assert hot == pytest.approx(117.0, abs=3.0), hot
+    assert hot > gfn.A_BOND_HOLDS
+
+    # With the budget off the slider is the whole story again.
+    part.submit_thermal_btn.value = False
+    assert force() == pytest.approx(3.0 * gfn.A_BOND_HOLDS)
+
+
+def test_the_page_sends_the_wish_and_draws_the_answer(bare_editor):
+    """Two different things the moment the hand is a force.
+
+    The page used to move the atom itself and name it as held, and whoever
+    answered had to put it back exactly there -- so the picture showed the
+    cursor's geometry whatever the calculation said.  Under a pull it moves
+    nothing: it accumulates where the hand *wants* the atom, sends that in
+    place of the coordinate so the kernel can see what is being asked for,
+    and draws only what comes back.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    js = submit_manip_bootstrap_js()
+    # The wish is clamped to the reach before it is sent -- the same clamp the
+    # browser's engine applies, so the hand has one ceiling and not two, and
+    # so what travels is a geometry rather than a point five angstroms inside
+    # somebody else's atom.
+    assert 'function pullWishes(scopeKey, viewer)' in js
+    assert 'var f = (d > PULL_REACH) ? PULL_REACH / d : 1;' in js
+    assert 'serializeXyz(viewer, note,' in js
+    assert 'function serializeXyz(viewer, header, swap)' in js
+    assert 'var p = (swap && swap[i]) ? swap[i] : a;' in js
+
+    # And the pull is set up before the engine is asked about, because under a
+    # server method there is no engine on the page at all.
+    begin = js.split('function ffBeginDrag(')[1].split('\n    }')[0]
+    assert begin.index('state.ffPull =') < begin.index('if (!ffEnabled(state))')
+
+    # The playback draws the pulled atoms rather than leaving them alone.
+    source = EDITOR_SOURCE
+    assert "if(st&&st.ffPull) return [];" in source
+    # And the kernel lays its answer onto what is *not* held, so the molecule
+    # stays where it is and only what was pulled has moved.
+    assert 'settled = _gfn.settle_onto(' in source
+    assert 'rest = [i for i in range(count) if i not in grabbed]' in source
+
+    # Only where there is something to push, though.  The answer owning the
+    # atom and no force acting on it is a free relaxation drawn over the drag,
+    # which undoes it on every step -- so with no coordinate to push, or under
+    # a method that has none to give, the hand stays a placement.
+    assert 'elif pull is not None and contacts:' in source
+    assert ('pull = (_pull_force()\n'
+            '                            if not stale '
+            'and not _mopac.is_mopac_method(method)\n'
+            '                            else None)') in source

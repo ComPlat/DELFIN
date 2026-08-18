@@ -1505,17 +1505,45 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         while (text.length < 24) text = ' ' + text;
         return text;
     }
-    function serializeXyz(viewer, header) {
+    // *swap*, when given, puts other coordinates in for the atoms it names:
+    // the places the hand wants them, so whoever answers can see what is being
+    // asked for.  The picture is not touched -- what the hand wants and where
+    // the atom is are two different things the moment the hand is a force.
+    function serializeXyz(viewer, header, swap) {
         var atoms = getAtoms(viewer);
         if (!atoms.length) return '';
         var lines = [atoms.length.toString(), header || 'Edited in DELFIN viewer'];
         for (var i = 0; i < atoms.length; i++) {
             var a = atoms[i];
+            var p = (swap && swap[i]) ? swap[i] : a;
             var el = a.elem || a.atom || 'X';
             while (el.length < 5) el = el + ' ';
-            lines.push(el + xyzColumn(a.x) + xyzColumn(a.y) + xyzColumn(a.z));
+            lines.push(el + xyzColumn(p.x) + xyzColumn(p.y) + xyzColumn(p.z));
         }
         return lines.join('\n');
+    }
+
+    // Where the hand wants each held atom, no further ahead than the reach.
+    // The same clamp the engine applies, so the force has the same ceiling
+    // whichever of the two is answering -- and so what is sent is a geometry
+    // and not a wish five angstroms inside somebody else's atom.
+    function pullWishes(scopeKey, viewer) {
+        var state = getState(scopeKey);
+        var pull = state.ffPull;
+        if (!pull || !pull.want.length) return null;
+        var atoms = getAtoms(viewer);
+        var swap = {}, any = false;
+        for (var i = 0; i < pull.want.length; i++) {
+            var w = pull.want[i];
+            var a = atoms[w.atom];
+            if (!a || a.serial !== w.serial) continue;
+            var dx = w.x - a.x, dy = w.y - a.y, dz = w.z - a.z;
+            var d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            var f = (d > PULL_REACH) ? PULL_REACH / d : 1;
+            swap[w.atom] = {x: a.x + dx * f, y: a.y + dy * f, z: a.z + dz * f};
+            any = true;
+        }
+        return any ? swap : null;
     }
 
     function snapshotForUndo(scopeKey) {
@@ -1564,7 +1592,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var indices = ffIndicesOf(viewer, targets);
             if (indices.length) note += ' held=' + indices.join(',');
         }
-        var xyz = serializeXyz(viewer, note);
+        var xyz = serializeXyz(viewer, note,
+                               note ? pullWishes(scopeKey, viewer) : null);
         var proto = (input.tagName === 'TEXTAREA')
             ? window.HTMLTextAreaElement.prototype
             : window.HTMLInputElement.prototype;
@@ -3336,20 +3365,24 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     }
     function ffBeginDrag(scopeKey, targets) {
         var state = getState(scopeKey);
-        if (!ffEnabled(state)) return;
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
+        // Set up before the engine is asked about, because under a server
+        // method there is no engine here at all and the hand still has to be
+        // a force: the kernel answers instead, and what it needs is the same
+        // wanted point.  Left behind the check, dragging under GFN went on
+        // setting coordinates -- which is what it looked like.
+        var want = (state.pullShare > 0) ? ffWantFrom(viewer, targets) : [];
+        state.ffPull = want.length ? {want: want} : null;
+        if (!ffEnabled(state)) return;
         // A pulled atom must be free to move, or the force has nothing to act
         // on: it is emphatically not frozen.  Only what the user pinned is.
-        var want = (state.pullShare > 0) ? ffWantFrom(viewer, targets) : [];
-        if (want.length) {
-            state.ffPull = {want: want};
+        if (state.ffPull) {
             ffApplyFrozen(scopeKey, []);
             ffPullApply(scopeKey);
         } else {
             // Nothing to take hold of -- or the rigid hand, which owns the
             // coordinate and freezes it so the field cannot argue.
-            state.ffPull = null;
             ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets));
         }
         state.ffFrameMs = 16;
@@ -3641,7 +3674,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var state = getState(scopeKey);
         // Before anything else, and whether or not the field is still there:
         // a pull left behind would go on dragging the atom towards a point
-        // the mouse abandoned, the next time the engine ran.
+        // the mouse abandoned, the next time the engine ran -- and under a
+        // server method it would go on being sent as the hand's wish.
         ffLetGo(scopeKey);
         if (!ffEnabled(state)) return;
         // Off by choice: placing an atom somewhere and having it stay there is

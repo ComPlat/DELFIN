@@ -773,7 +773,7 @@ def test_the_polyhedron_reconsiders_once_per_drag_not_twice_a_second():
     no drag-end marker at all, and one drag produces exactly one."""
     push = _body('pushXyzToPython')
     assert "var note = reason ? ('DELFIN ' + reason) : null;" in push
-    assert "serializeXyz(viewer, note)" in push
+    assert "serializeXyz(viewer, note,\n" in push
     # The heartbeat inside the relaxation loop is the field saying where it
     # has got to, and it is named that.  It carried no reason at all once,
     # which made it indistinguishable on the kernel side from anything else
@@ -2077,9 +2077,12 @@ def test_the_hand_pulls_the_atom_instead_of_placing_it():
     # to take hold of -- a grab on an atom that is not there falls back to the
     # old path rather than silently doing nothing.
     assert 'state.pullShare > 0' in begin
-    assert 'if (want.length) {' in begin
-    assert 'state.ffPull = null;' in begin
+    assert 'state.ffPull = want.length ? {want: want} : null;' in begin
     assert 'ffApplyFrozen(scopeKey, ffIndicesOf(viewer, targets));' in begin
+    # The pull is set up before the engine is asked about, because under a
+    # server method there is no engine on this page at all and the hand still
+    # has to be a force -- the kernel answers it instead.
+    assert begin.index('state.ffPull =') < begin.index('if (!ffEnabled(state))')
 
     # The mouse moves the wanted point and nothing else.
     assert 'if (state2.ffPull) {' in EDITOR
@@ -2143,9 +2146,10 @@ def test_how_hard_the_hand_pulls_is_the_users_to_set():
     assert "description='Pull'" in source
     assert 'submit_pull_slider.observe(on_submit_pull_changed' in source
     assert source.count('setPullStrength(') == 2, source.count('setPullStrength(')
-    # Meaningless where the browser field does not run: under a server method
-    # the hand still sets the coordinate.
-    assert ("submit_pull_slider.layout.display = 'none' if server else ''"
-            in source)
+    # Shown under both engines.  Hidden under a server method -- as it was at
+    # first, on the grounds that the pull belonged to the browser's field --
+    # the one place where the budget and the scan live was the one place the
+    # hand stayed absolute, which is exactly how it read.
+    assert "submit_pull_slider.layout.display = ''" in source
     # Enabled and disabled with the rest of the manipulation toolbar.
     assert 'submit_pull_slider.disabled = not enabled' in source
