@@ -1376,6 +1376,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='74px', height='30px'),
         disabled=True,
     )
+    submit_scan_way = widgets.Dropdown(
+        options=[('closer', 'in'), ('further', 'out')], value='in',
+        tooltip=(
+            'Which way to walk. A scan stops at the next minimum, so where it '
+            'ends is the chemistry rather than a number -- the direction is '
+            'the one thing that cannot be read off the selection.'
+        ),
+        layout=widgets.Layout(width='96px', display='none'),
+        disabled=True,
+    )
     submit_scan_to = widgets.FloatText(
         value=0.0, step=0.1, description='',
         layout=widgets.Layout(width='84px', display='none'),
@@ -1438,7 +1448,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [submit_internal_label, submit_internal_value,
          submit_internal_btn, submit_hold_btn, submit_hold_mode,
          submit_scan_btn, submit_scan_to, submit_scan_steps,
-         submit_scan_dd, submit_scan_del, submit_scan_whole,
+         submit_scan_way, submit_scan_dd, submit_scan_del, submit_scan_whole,
          submit_scan_run_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
@@ -2587,6 +2597,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         if came_back is not None:
                             said = (f'{said} Past the budget, so the last '
                                     f'structure that was inside it is back.')
+                            # The box as well, not only the picture.
+                            #
+                            # The frames go to the viewer, but the coordinate
+                            # box is written from the page's own model when the
+                            # hand lets go -- and that model still has the atom
+                            # where the cursor left it.  So the drag sprang
+                            # back on screen, the user let go, and what was
+                            # kept was the torn structure after all: measured,
+                            # the viewer drew 1.40 A while the box held 3.40.
+                            # The rollback has to reach the thing that outlives
+                            # the drag.
+                            rows = [line for line
+                                    in came_back.splitlines()[2:]
+                                    if line.strip()]
+                            if rows:
+                                schedule_ui_update(
+                                    _write_coords,
+                                    xyz_document(
+                                        rows,
+                                        'Past the budget: back to the last '
+                                        'structure that was inside it'),
+                                    True)
                         if crowded:
                             said = (f'{said} Two atoms are inside '
                                     f'{tightest:.2f} of a bond length, which '
@@ -5523,7 +5555,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # armed.
         picked = len(state.get('picked') or ())
         wanted = '' if picked in _CONSTRAINT_KINDS else 'none'
-        for widget in (submit_scan_to, submit_scan_steps):
+        for widget in (submit_scan_way, submit_scan_to, submit_scan_steps):
             widget.layout.display = wanted
             widget.disabled = not wanted == ''
 
@@ -5549,16 +5581,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         reach = sum(cov_radius(str(rows[i][0])) for i in leg['atoms'])
         return _SCAN_NO_CLOSER * reach
 
-    def _suggest_scan_target(kind, value):
-        """Where a scan would go if the user does not say.
+    #: How far a scan may walk when nobody has said where to stop.
+    #:
+    #: It stops at the next minimum, so this is only the emergency brake for a
+    #: walk that has no next minimum -- two fragments pulled apart never find
+    #: one, they simply separate.  Generous enough that it is never what ends
+    #: an ordinary scan.
+    _SCAN_AS_FAR_AS = {'distance': 2.5, 'angle': 180.0, 'dihedral': 360.0}
 
-        A distance that is a bond is worth pulling apart, one that is not is
-        worth closing: those are the two things a reaction does.  An angle or a
-        torsion goes right round, because that is the conformational space.
+    def _suggest_scan_target(kind, value, way='in'):
+        """Where a scan walks when the user has given a direction and no end.
+
+        The end used to be the thing the user typed, and it is the wrong thing
+        to ask for: the scan stops at the next minimum anyway, so where it ends
+        is the chemistry rather than a number -- and a number typed there is
+        how two atoms came to be asked for 0.60 A when the bond between them is
+        1.53.  The direction is the one thing that cannot be read off the
+        selection, so that is what is asked, and the number stays for the two
+        cases that need it: following a figure from the literature, and a
+        coupled scan over two coordinates, where it is the ratio of the two
+        ends that fixes the path.
         """
-        if kind != 'distance':
-            return float(value) + 360.0
-        return float(value) * (2.2 if float(value) < 2.0 else 0.55)
+        far = _SCAN_AS_FAR_AS.get(kind, 360.0)
+        return float(value) + (far if way == 'out' else -far)
 
     def on_submit_scan(_button=None):
         """Arm the value the selection describes as a leg of the scan."""
@@ -5569,8 +5614,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         here = float(submit_internal_value.value)
         target = float(submit_scan_to.value)
-        if abs(target - here) < 1e-9:
-            target = _suggest_scan_target(kind, here)
+        if abs(target - here) < 1e-9 or target == 0.0:
+            target = _suggest_scan_target(kind, here, submit_scan_way.value)
         legs = [one for one in _scan_legs() if one['atoms'] != indices]
         leg = {'kind': kind, 'atoms': indices, 'from': here,
                'to': target, 'steps': int(submit_scan_steps.value),

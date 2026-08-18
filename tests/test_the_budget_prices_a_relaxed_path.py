@@ -706,3 +706,37 @@ def test_a_setting_is_not_taken_back():
 
     # A new structure from a new SMILES starts over: then the SMILES speaks.
     assert EDITOR_SOURCE.count("state['charge_is_the_users'] = False") >= 2
+
+
+def test_a_scan_is_told_a_direction_rather_than_an_end():
+    """Where it ends is the chemistry, not a number.
+
+    A scan stops at the next minimum, so the end was the wrong thing to ask
+    for -- and a number typed there is how two atoms came to be asked for
+    0.60 A when the bond between them is 1.53.  The direction is the one thing
+    that cannot be read off the selection, so that is what is asked; the
+    number stays for the two cases that need it, following a figure from the
+    literature and a coupled scan over two coordinates, where it is the ratio
+    of the two ends that fixes the path.
+
+    Driven on a real editor with nothing typed: further apart walks a C-C from
+    1.52 to 4.02 A and wants 1607 K, closer walks it to 1.29 and wants 334 K.
+    """
+    assert "submit_scan_way" in EDITOR_SOURCE
+    body = EDITOR_SOURCE.split("def _suggest_scan_target(")[1].split("def ")[0]
+    assert "way == 'out'" in body
+    assert "_SCAN_AS_FAR_AS" in body
+
+    # The far end is only the brake for a walk with no next minimum -- two
+    # fragments pulled apart never find one -- so it is generous.
+    line = next(one for one in EDITOR_SOURCE.splitlines()
+                if one.strip().startswith("_SCAN_AS_FAR_AS ="))
+    assert "'distance': 2.5" in line
+
+    # And it still gives way to the floor: nothing may be asked closer than
+    # the bond it would make.
+    arm = EDITOR_SOURCE.split("def on_submit_scan(")[1].split("def ")[0]
+    assert "_suggest_scan_target(kind, here, submit_scan_way.value)" in arm
+    assert "floor = _scan_floor_for(leg)" in arm
+    assert arm.index("_suggest_scan_target(") < arm.index("floor = ")
+
