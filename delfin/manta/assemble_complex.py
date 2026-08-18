@@ -2558,11 +2558,101 @@ def _ligand_confs_from_mol(frag_mol, k=10):
             AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
         except Exception:
             pass
+    _symmetrize_degenerate(m, cids)
     syms = [a.GetSymbol() for a in m.GetAtoms()]
     out = (syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m)
     if key is not None and len(_CONF_CACHE) < _CONF_CACHE_MAX:
         _CONF_CACHE[key] = out
     return out
+
+
+def _symmetrize_degenerate(m, cids):
+    """Entartete Bindungspaare auf EINE Laenge setzen -- Carboxylat, Nitro, Amidinat.
+
+    ===== DIE KEKULE-ZEICHNUNG IST KEINE GEOMETRIE ==============================
+    Eine SMILES zeichnet ein Carboxylat als ``C(=O)[O-]`` -- eine Doppel- und eine
+    Einfachbindung.  In Wirklichkeit sind beide C-O gleich lang.  Gemessen 18.08.
+    gegen die TREFFER-Verteilung (nur Systeme mit ``org_bond_realized == false``):
+
+        Nitro,      schlimmste Bindung N-O:  24,79 % gegen 1,94 %  = 12,75x
+        Carboxylat, schlimmste Bindung C-O:  24,82 % gegen 7,00 %  =  3,55x
+
+    Und die Richtung ist eindeutig: bei Nitro sind **29 von 30 ZU LANG**, mittlere
+    Abweichung 0,233 Angstroem, davon **19 auf der gezeichneten EINFACHbindung**.
+    Das ist die Kekule-Signatur unverstellt.  Sie verdoppelt ausserdem
+    ``pyramidal_sp2`` (Faktor 2,41) und trifft damit die dreifach gemessene
+    pi-Wurzel von der Bauseite.
+    Reichweite: 780 von 10000 Systemen hart entartet (7,8 %).
+
+    ⚠ WARUM HIER UND NICHT IN EINEM KORREKTOR.  Diese Funktion laeuft im
+    METALLFREI geschnittenen Ligandfragment, VOR der Platzierung -- sie ist Teil
+    der Konstruktion des Ligandgeruests, keine Nachkorrektur am fertigen Komplex.
+    Der naheliegende Ort ``refine._precompute_arom_targets`` haette Reichweite
+    nahe NULL: seine Never-worse-Wache schliesst alles aus, was die
+    Koordinationssphaere beruehrt -- und 281 von 301 Carboxylaten sind am Metall.
+
+    ⚠ WARUM DIE AROMATEN-ACHSE ES NICHT SCHON TUT.  ``AROM_SEAT`` verlangt an allen
+    drei Sitzstellen RDKit-Aromatizitaet oder einen geometrischen 5/6-Ring.  Ein
+    Carboxylat ist keins von beidem; der acac-Chelatring waere ein Sechsring, traegt
+    aber das Metall und faellt heraus.  Reichweite auf diesen Gruppen: exakt 0.
+
+    DIE REGEL ist elementagnostisch, damit sie nicht auf Muster festgelegt ist:
+    fuer jedes Schweratom X werden seine ENDSTAENDIGEN schweren Nachbarn nach
+    Element gruppiert; hat eine Gruppe mindestens zwei Mitglieder UND
+    unterschiedliche Bindungsordnungen, ist sie entartet und alle ihre Bindungen
+    bekommen die MITTLERE Laenge.  Das trifft Carboxylat, Nitro, Nitrat, Sulfonat,
+    Phosphonat und Amidinat, ohne dass eines davon im Code steht.  Sind die
+    Ordnungen bereits gleich, wird nichts angefasst -- dann hat der Zeichner die
+    Symmetrie schon ausgedrueckt.
+
+    DELFIN_FFFREE_MESOMERY_SEAT (Vorgabe 0 -> byte-identisch).
+    """
+    if os.environ.get("DELFIN_FFFREE_MESOMERY_SEAT", "0") != "1":
+        return
+    try:
+        groups = []
+        for a in m.GetAtoms():
+            if a.GetSymbol() == "H":
+                continue
+            by_el = {}
+            for b in a.GetBonds():
+                nb = b.GetOtherAtom(a)
+                if nb.GetSymbol() == "H":
+                    continue
+                # endstaendig: ausser X kein weiterer schwerer Nachbar
+                if sum(1 for x in nb.GetNeighbors() if x.GetSymbol() != "H") != 1:
+                    continue
+                by_el.setdefault(nb.GetSymbol(), []).append(
+                    (nb.GetIdx(), float(b.GetBondTypeAsDouble())))
+            for _el, mem in by_el.items():
+                if len(mem) < 2:
+                    continue
+                if len({round(o, 2) for _i, o in mem}) < 2:
+                    continue          # schon symmetrisch gezeichnet -> nichts zu tun
+                groups.append((a.GetIdx(), [i for i, _o in mem]))
+        if not groups:
+            return
+        for c in cids:
+            conf = m.GetConformer(c)
+            for cen, terms in groups:
+                pc = np.array(conf.GetAtomPosition(cen), float)
+                vecs, lens = [], []
+                for t in terms:
+                    v = np.array(conf.GetAtomPosition(t), float) - pc
+                    n = float(np.linalg.norm(v))
+                    if n < 1e-6:
+                        vecs, lens = [], []
+                        break
+                    vecs.append(v / n)
+                    lens.append(n)
+                if not lens:
+                    continue
+                tgt = float(sum(lens) / len(lens))
+                for t, v in zip(terms, vecs):
+                    p = pc + v * tgt
+                    conf.SetAtomPosition(t, (float(p[0]), float(p[1]), float(p[2])))
+    except Exception:
+        pass                          # eine Vorgabe, die nicht greift, darf nichts kosten
 
 
 def _clash_count(Q, existing, syms_Q, syms_ex):
