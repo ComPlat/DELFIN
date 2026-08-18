@@ -30,6 +30,7 @@ import pytest
 import pathlib
 
 from delfin.dashboard import gfn_optimize as gfn
+from delfin.dashboard.structure_editor import thermal_temperature
 from editor_source import EDITOR_SOURCE
 
 _needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
@@ -1384,7 +1385,8 @@ def _a_part():
         update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
 
 
-def _scanned(how, steps=20, seconds=600, structure=None, legs=None):
+def _scanned(how, steps=20, seconds=600, structure=None, legs=None,
+             energy='E'):
     """Run the editor's own Run scan on the Diels-Alder and hand back the lot.
 
     The real part, driven the way the button drives it -- this class of defect
@@ -1416,6 +1418,7 @@ def _scanned(how, steps=20, seconds=600, structure=None, legs=None):
     state["current_xyz_for_copy"] = {"content": text}
     part.submit_ff_dd.value = "gfn2"
     part.submit_scan_how.value = how
+    part.submit_scan_energy.value = energy
     state["scan_legs"] = legs or [
         {"kind": "distance", "atoms": [0, 10], "from": 3.134, "to": 0.7,
          "steps": steps, "structure": None},
@@ -1502,7 +1505,9 @@ def test_the_walk_comes_back_to_the_bottom_of_the_descent():
     summit, bottom = None, None
     for spent, where in ((0.0, 'a'), (3.0, 'b'), (8.0, 'c')):
         summit, bottom = descent(summit, bottom, spent, where, spent)
-    assert (summit, bottom) == (8.0, (8.0, 'c', 8.0))
+    # The top keeps its geometry too, because a free energy is asked for
+    # there and the walk has moved on by the time it is.
+    assert (summit, bottom) == ((8.0, 'c', 8.0), (8.0, 'c', 8.0))
 
     # Coming down again: the bottom follows the descent...
     summit, bottom = descent(summit, bottom, 4.0, 'd', 4.0)
@@ -1510,11 +1515,11 @@ def test_the_walk_comes_back_to_the_bottom_of_the_descent():
     # ...and *not* back to the start, which is lower than any of it.
     summit, bottom = descent(summit, bottom, 5.0, 'e', 5.0)
     assert bottom == (4.0, 'd', 4.0), 'the descent is what is being tracked'
-    assert summit == 8.0
+    assert summit == (8.0, 'c', 8.0)
 
     # A second, higher top starts the descent over.
     summit, bottom = descent(summit, bottom, 9.0, 'f', 9.0)
-    assert (summit, bottom) == (9.0, (9.0, 'f', 9.0))
+    assert (summit, bottom) == ((9.0, 'f', 9.0), (9.0, 'f', 9.0))
 
     source = EDITOR_SOURCE
     assert 'summit, bottom = _descent(' in source
@@ -1740,7 +1745,9 @@ def test_without_a_temperature_the_hand_has_no_ceiling():
     assert part._pull_most() is None, 'nothing may cap the hand'
     part.submit_thermal_btn.value = True
     part.submit_temperature.value = 298.15
-    assert part._pull_most() == pytest.approx(gfn.push_force_for(22.3), rel=0.05)
+    # Nothing caps the hand at any temperature: a temperature grants an
+    # energy, and the wall is what enforces that on what was reached.
+    assert part._pull_most() is None
 
     # What is *asked for* stays within the reach either way -- a target that
     # runs arbitrarily far ahead is overshot in a few cycles and comes back,
@@ -1944,3 +1951,93 @@ def test_the_topology_watch_is_the_one_a_conformer_search_uses():
 
     # And nothing at all is a molecule that did not change.
     assert gfn.graph_holds(was, _BROMOBENZENE) == (True, '')
+
+
+@_needs_xtb
+def test_a_free_energy_is_a_hessian_and_is_asked_for_never_assumed():
+    """The ceiling is a free energy of activation and what is priced against
+    it is an electronic one, which is an approximation and is meant as one.
+
+    A Hessian is not free: measured under GFN2, 0.57 s against 0.29 for
+    sixteen atoms and 3.72 against 0.76 for twenty-four.  A drag answers ten
+    times a second, so there is no version of that which has a free energy in
+    it -- and an entropy term roughly constant along a path largely cancels in
+    a difference, which is what makes the approximation a reasonable one
+    rather than merely a cheap one.
+
+    A scan can afford it, and that is where it is offered.
+    """
+    warm = gfn.optimize_with_gfn(_ETHANE, "gfn2", timeout=300, optimise=False,
+                                 free_energy=True, thermo_kelvin=298.15)
+    assert warm.get("ok"), warm.get("status")
+    assert warm.get("free_energy") is not None
+    # A free energy is above the electronic one at room temperature -- the
+    # zero point alone sees to that.
+    assert warm["free_energy"] > warm["energy"]
+
+    hot = gfn.optimize_with_gfn(_ETHANE, "gfn2", timeout=300, optimise=False,
+                                free_energy=True, thermo_kelvin=800.0)
+    assert hot.get("ok"), hot.get("status")
+    # The same structure, so the same electronic energy; and G falls as the
+    # temperature rises, because -TS does.
+    assert hot["energy"] == pytest.approx(warm["energy"], abs=1e-8)
+    assert hot["free_energy"] < warm["free_energy"]
+
+    # Not asked for, not taken.
+    plain = gfn.optimize_with_gfn(_ETHANE, "gfn2", timeout=300, optimise=False)
+    assert plain.get("free_energy") is None
+
+
+@_needs_xtb
+def test_the_scan_can_be_priced_with_free_energies():
+    """At the three places they are both affordable and meaningful: where the
+    walk started, the highest point it crossed, and the minimum it came to.
+
+    Not at every point -- twenty Hessians is a scan that takes minutes instead
+    of seconds, and an RRHO free energy only means something at a stationary
+    point anyway.
+
+    Measured on the Diels-Alder, pushed, at 298.15 K: +6.3 kcal/mol to the top
+    and -64.2 to the end as electronic energies, +3.3 and -58.5 as free ones.
+    Both differences go the way they should -- the approach complex is held
+    together by nothing much, so it pays entropy to reach the top, and two
+    molecules becoming one pay more of it to stay there.
+    """
+    part, state, box = _scanned("push")
+    assert state.get("scan_free") is None, "E unless G is asked for"
+    plain = part.mol_status.value
+    assert "free energ" not in plain, plain
+
+    part, state, box = _scanned("push", energy="G")
+    free = state.get("scan_free")
+    assert free is not None, part.mol_status.value
+    top, ends = free
+    assert 1.0 < top < 6.0, free
+    assert -70.0 < ends < -45.0, free
+
+    said = part.mol_status.value
+    assert "as a free energy at 298.15 K" in said, said
+    # And the temperature is worked out from the free energy, not from the
+    # electronic one standing beside it: read the other way round, the line
+    # quoted one number and reasoned from the other.
+    wants = float(said.split("It wants about")[1].split()[0])
+    assert wants == pytest.approx(
+        thermal_temperature(top, 3600.0), abs=5.0), (wants, top)
+
+
+def test_the_free_energy_is_taken_where_it_means_something():
+    """Three Hessians, on geometries the walk keeps for the purpose."""
+    source = EDITOR_SOURCE
+    assert 'submit_scan_energy = widgets.Dropdown(' in source
+    assert "('price with G', 'G')" in source
+    assert 'def _free(here):' in source
+    assert 'free_energy=True,' in source
+    # Unconstrained, or the Hessian has the restraint's own curvature in it.
+    assert 'with no restraint in it' in source
+    # The start is the first point of the walk, which is the structure relaxed
+    # at the value it already had.
+    assert 'if began_at is None:' in source
+    assert 'ends = bottom[1] if bottom is not None else walked' in source
+    # And it is the barrier the temperature is worked out from.
+    assert "free = state.get('scan_free')" in source
+    assert 'rise = free[0]' in source
