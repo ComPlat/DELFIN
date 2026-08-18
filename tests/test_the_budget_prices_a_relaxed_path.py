@@ -767,3 +767,4 @@ def test_the_leash_earns_its_length_from_the_ground():
     assert "min(_reach_cap(), room / slope)" in reach
     # And a fresh drag starts from no evidence at all.
     assert "state.pop('thermal_flat', None)" in EDITOR_SOURCE
+
