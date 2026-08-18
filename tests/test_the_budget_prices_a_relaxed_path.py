@@ -2041,3 +2041,80 @@ def test_the_free_energy_is_taken_where_it_means_something():
     # And it is the barrier the temperature is worked out from.
     assert "free = state.get('scan_free')" in source
     assert 'rise = free[0]' in source
+
+
+@_needs_xtb
+def test_xtb_finds_its_own_way_between_the_two_ends_of_a_scan():
+    """A scan drives a coordinate somebody chose; the path finder is given two
+    structures and finds its own way between them.
+
+    So it answers the question the scan can only approach -- and it needs the
+    scan first, because the scan is what makes a product to aim at.  Measured
+    on the butadiene and ethylene: 23 points in under four seconds, a forward
+    barrier of 3 to 6 kcal/mol, 69 back, about -65 for the reaction, and an
+    estimated transition state with the two forming bonds at 2.52 A.  The scan
+    of the same reaction put its highest point at +6.3 and 2.36.  Two methods
+    that share no machinery, agreeing.
+
+    It is metadynamics, so it is not the same twice: xtb keeps the best of its
+    runs and the best is the lowest, which makes the barrier an upper bound
+    that comes down as more are run.
+    """
+    import math
+
+    start = gfn.optimize_with_gfn(_DIELS_ALDER, "gfn2", max_steps=400,
+                                  timeout=300)
+    assert start.get("ok"), start.get("status")
+    walked = start["xyz"]
+    for target in (2.8, 2.4, 2.0, 1.7, 1.56):
+        got = gfn.optimize_with_gfn(
+            walked, "gfn2", max_steps=80, timeout=300,
+            constraints=[{"kind": "distance", "atoms": [0, 10],
+                          "mode": "fix", "value": target},
+                         {"kind": "distance", "atoms": [3, 11],
+                          "mode": "fix", "value": target}])
+        assert got.get("ok"), got.get("status")
+        walked = got["xyz"]
+    product = gfn.optimize_with_gfn(walked, "gfn2", max_steps=400, timeout=300)
+    assert product.get("ok"), product.get("status")
+
+    found = gfn.walk_the_path(start["xyz"], product["xyz"], "gfn2")
+    assert found.get("ok"), found.get("status")
+    assert 1.0 < found["barrier"] < 12.0, found
+    assert found["back"] > 40.0, found
+    assert -75.0 < found["reaction"] < -50.0, found
+    # How near it came to what it was aimed at, which is the one number that
+    # says whether the answer is about the reaction that was asked for.
+    assert found["rmsd"] is not None and found["rmsd"] < 0.3, found
+    assert found["points"] and found["points"] > 5, found
+
+    # And the transition state it estimates, with the two bonds half made.
+    here = gfn.coordinates_of(found["ts"])
+    assert len(here) == 48, len(here)
+    for pair in ((0, 10), (3, 11)):
+        span = math.dist(here[3 * pair[0]:3 * pair[0] + 3],
+                         here[3 * pair[1]:3 * pair[1] + 3])
+        assert 2.1 < span < 2.9, (pair, span)
+
+    # Two structures of different molecules are not a reaction, and are said
+    # so rather than walked between.
+    assert not gfn.walk_the_path(_ETHANE, _BROMOBENZENE, "gfn2")["ok"]
+
+
+def test_the_path_is_offered_once_there_is_something_to_walk_between():
+    """It cannot invent a product to aim at, so it appears when a scan has
+    made one -- and what it finds is one step, which Undo takes back whole."""
+    source = EDITOR_SOURCE
+    assert 'submit_path_btn = widgets.Button(' in source
+    assert "description='Find the path'" in source
+    assert "state['scan_ends'] = (" in source
+    assert "if state.get('scan_ends'):" in source
+    assert "submit_path_btn.layout.display = ''" in source
+    assert 'def on_submit_path(_button=None):' in source
+    assert 'submit_path_btn.on_click(on_submit_path)' in source
+    # Its own answer, kept as its own step.
+    assert "_remember('the transition state the path finder estimated')" in source
+    assert "'Estimated transition state, from the path'" in source
+    # And how near it came, because the finder always reports a barrier and
+    # only this says whether it is about the reaction that was asked for.
+    assert 'RMSD of the structure ' in source

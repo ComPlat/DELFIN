@@ -1565,6 +1565,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='136px', display='none'),
         disabled=True,
     )
+    #: Find the way between the two ends a scan has just produced.
+    #:
+    #: A scan drives a coordinate somebody chose; xtb's path finder is given
+    #: two structures and finds its own way between them, with metadynamics
+    #: pushing away from where it has been and pulling towards the product.
+    #: So it answers the question the scan can only approach -- and it needs
+    #: the scan first, because the scan is what makes a product to aim at.
+    #:
+    #: Measured on the butadiene and ethylene the scan had just walked: 3.6 s,
+    #: forward barrier 5.755 kcal/mol, backward 69.586, reaction energy
+    #: -63.831, and an estimated transition state with the two forming bonds
+    #: at 2.524 and 2.520 A.  The scan of the same reaction put its highest
+    #: point at +6.3 and 2.36.  Two methods that share no machinery, agreeing.
+    submit_path_btn = widgets.Button(
+        description='Find the path', icon='route', button_style='info',
+        tooltip=('Let xtb find its own way between where the scan started and '
+                 'where it ended, and hand back the transition state it '
+                 'estimates. Needs a finished scan.'),
+        layout=widgets.Layout(width='140px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_scan_run_btn = widgets.Button(
         description='Run scan', button_style='success', icon='play',
         tooltip='Walk every armed coordinate together, and say what it costs.',
@@ -1609,7 +1630,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
          submit_scan_btn, submit_scan_way, submit_scan_steps,
          submit_scan_stop_at, submit_scan_to,
          submit_scan_dd, submit_scan_del, submit_scan_whole,
-         submit_scan_how, submit_scan_energy, submit_scan_run_btn],
+         submit_scan_how, submit_scan_energy, submit_scan_run_btn,
+         submit_path_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -6408,6 +6430,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_arrived'] = False
         state['scan_came_back'] = None
         state['scan_free'] = None
+        state['scan_ends'] = None
         state['scan_crowded'] = None
         state['scan_frame_run'] = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = state['scan_frame_run']
@@ -6725,6 +6748,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         None if None in (one, top, other) else
                         ((top - one) * _HARTREE_TO_KCAL,
                          (other - one) * _HARTREE_TO_KCAL))
+                # The two ends, for whoever wants to walk between them.
+                # A path finder is given two structures and finds its own way;
+                # what it cannot do is invent a product to aim at, and this is
+                # where one comes from.
+                if began_at and path:
+                    state['scan_ends'] = (
+                        began_at, bottom[1] if bottom is not None else walked)
             finally:
                 state['scan_run'] = False
 
@@ -6737,6 +6767,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # 'The scan walked nothing' as though that were a result.
                     if not path:
                         return
+                    # There are two ends now, so the path finder has something
+                    # to be given.
+                    if state.get('scan_ends'):
+                        submit_path_btn.layout.display = ''
+                        submit_path_btn.disabled = False
                     rows = [line for line in final.splitlines()[2:]
                             if line.strip()]
                     if rows:
@@ -6746,6 +6781,92 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     _set_mol_status(*_scan_verdict(path, steps))
 
                 schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def on_submit_path(_button=None):
+        """Walk between the two ends the scan left, and keep what is found.
+
+        Its own answer, not a refinement of the scan's: the scan drove a
+        coordinate somebody chose and this finds its own way between two
+        structures.  When the two agree, that is worth more than either of
+        them alone; when they do not, the difference is the interesting part
+        and both numbers are said.
+        """
+        ends = state.get('scan_ends')
+        method = str(submit_ff_dd.value)
+        if not ends:
+            _set_mol_status('Run a scan first: a path needs two structures, '
+                            'and the scan is what makes the second one.')
+            return
+        if not _gfn.is_gfn_method(method):
+            _set_mol_status('A path needs xtb: choose a GFN method.')
+            return
+        if state.get('path_run'):
+            return
+        state['path_run'] = True
+        submit_path_btn.disabled = True
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+        label = _server_label(method)
+        _set_mol_status(f'{label} is looking for a path between the two ends '
+                        'of the scan...', spinner=True)
+
+        def _work():
+            found = _gfn.walk_the_path(
+                ends[0], ends[1], method, charge=charge, uhf=uhf,
+                solvent=wet, solvation_model=model)
+
+            def _done():
+                state['path_run'] = False
+                submit_path_btn.disabled = False
+                if not found.get('ok'):
+                    _set_mol_status(str(found.get('status')
+                                        or 'The path finder did not run.'))
+                    return
+                T = float(submit_temperature.value or 298.15)
+                needs = thermal_temperature(found['barrier'], _THERMAL_SECONDS)
+                # How near the path came to the structure it was aimed at.
+                # Without it a barrier is a number about some other reaction:
+                # the finder always reports one, and only this says whether it
+                # is the one that was asked for.
+                near = found.get('rmsd')
+                aimed = ('' if near is None else
+                         f' It came within {near:.2f} A RMSD of the structure '
+                         f'it was aiming at.')
+                lines = [
+                    f'{label} walked {found.get("points") or "a"} points in '
+                    f'{found["seconds"]:.1f} s: {found["barrier"]:.1f} '
+                    f'kcal/mol forward'
+                    + (f', {found["back"]:.1f} back' if found.get('back')
+                       is not None else '')
+                    + (f', {found["reaction"]:.1f} for the reaction'
+                       if found.get('reaction') is not None else '')
+                    + f'.{aimed}',
+                ]
+                lines.append(
+                    'No temperature under 5000 K crosses that within '
+                    f'{_timescale_label()}.' if needs is None else
+                    f'It wants about {needs:.0f} K '
+                    f'({needs - 273.15:+.0f} C) within {_timescale_label()}; '
+                    f'you have {thermal_ceiling(T, _THERMAL_SECONDS):.1f} '
+                    f'kcal/mol at {T:g} K.')
+                rows = [line for line in (found.get('ts') or '').splitlines()[2:]
+                        if line.strip()]
+                if rows:
+                    # One step, which Undo takes back whole -- the same as a
+                    # scan, because this replaces the structure just as much.
+                    _remember('the transition state the path finder estimated')
+                    _write_coords(xyz_document(
+                        rows, 'Estimated transition state, from the path'))
+                    lines.append(
+                        'The structure it estimates for the transition state '
+                        'is in the box; Undo takes it back.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -7623,7 +7744,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                            submit_scan_stop_at,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
                            submit_scan_how, submit_scan_energy,
-                           submit_scan_run_btn):
+                           submit_scan_run_btn, submit_path_btn):
                 widget.layout.display = 'none'
             if _scan_legs():
                 _set_mol_status(
@@ -7952,6 +8073,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_stop_at.observe(on_submit_scan_stop_at, names='value')
     submit_topology_btn.observe(on_submit_topology, names='value')
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
+    submit_path_btn.on_click(on_submit_path)
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_thermal_btn.observe(on_submit_thermal, names='value')
