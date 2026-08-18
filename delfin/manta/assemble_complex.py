@@ -4336,7 +4336,25 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 return int(ligands[_li].get("denticity") or len(by_lig[_li]))
             except Exception:
                 return len(by_lig[_li])
+        _before = [kv[0] for kv in _lig_order]
         _lig_order.sort(key=lambda kv: (-_dent_of(kv[0]), kv[0]))
+        # ⚠️ SPUR, WEIL "byte-identisch" HIER DREI URSACHEN HAT: der Block laeuft
+        # nicht, die Reihenfolge stand schon richtig, oder sie aendert sich und das
+        # Ergebnis konvergiert trotzdem.  Der erste Rauchtest lieferte 19 von 19
+        # identisch -- ohne diese Zeile waere nicht zu sagen, welche davon zutrifft,
+        # und "bringt nichts" waere eine Behauptung statt einer Messung.
+        # Der Fall "stand schon richtig" ist dabei kein Misserfolg, sondern die
+        # Antwort: dann tut der Bauer es bereits implizit.
+        _tp = os.environ.get("DELFIN_SEAT_ORDER_TRACE", "")
+        if _tp and _tp != "0":
+            _after = [kv[0] for kv in _lig_order]
+            try:
+                with open(_tp, "a") as _fh:
+                    _fh.write("[SEATORD] nlig=%d dents=%s changed=%d\n"
+                              % (len(_before), [_dent_of(i) for i in _before],
+                                 1 if _after != _before else 0))
+            except Exception:
+                pass
     for li, va in _lig_order:
         lg = ligands[li]
         dons = lg["donor_local_idxs"]
