@@ -2712,11 +2712,58 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
             fixed.add(pos + di); pos += len(lsyms)
     P = np.vstack(blocks)
     if refine:
+        # ===== DIE SETZUNG UEBERGIBT DER RELAXATION IHRE ZUSICHERUNG ==============
+        # Gemessen 2026-08-18 auf 30921 Systemen: netto 988 Systeme fliessen vom
+        # Oktaeder ins trigonale Prisma (McNemar X2 = 860,8), der Bauer erzeugt 2,99
+        # mal zu viele Prismen, waehrend jede andere Form zwischen 0,86 und 1,29
+        # bleibt.  Es sind aber KEINE Prismen -- die CShM-Masse liegt unimodal bei 8
+        # bis 12 statt bei 16,7, also ein HALBER Bailar-Twist.  Und es ist keine
+        # Auswahl: poly_match ist in 1061 von 1061 Faellen false, obwohl das Auge den
+        # besten Frame ueber den GANZEN Manifold liest -- im ganzen Manifold gibt es
+        # kein Oktaeder.  Das Signal ist die Verzahnung, monoton von 2,49 % bei null
+        # Chelatringen auf 16,12 % bei fuenf; Metall und d-Zahl sind flach.
+        #
+        # ⇒ Die Setzung stellt das Polyeder richtig, und der Chelatzug dreht es danach
+        # heraus.  Genau dafuer ist das Zusicherungsprotokoll gebaut: die Konstruktion
+        # sagt, WAS sie behauptet, und die Relaxation darf es nicht brechen.
+        #
+        # Die vorhandene Gegenmassnahme im Quelltext (smiles_converter.py:38074, die
+        # UFF-Winkelziele auf die gegenueberliegenden Donorpaare) haengt ueber :27451
+        # an apply_uff und liegt hinter dem FF-freien Return -- sie lief auf diesem
+        # Pfad NIE.  Dies hier ist ihr FF-freies Gegenstueck, und es korrigiert nicht,
+        # es VERBIETET: bricht die Relaxation die Zusicherung, gilt der Frame VOR der
+        # Relaxation.  Never-worse per Konstruktion, kein Zielwert, keine Schwelle,
+        # die sich auf einen Pool feintunen liesse.
+        #
+        # ⚠ WARUM DAS KEIN REPARATEUR IST.  Der Modulzensus vom 18.08. hat gemessen,
+        # dass 20 von 21 Reparateuren ohnehin nichts tun und der eine verbleibende
+        # (die unbedingte Nachrelaxation) TRAGEND ist -- ohne sie wird jede Achse
+        # schlechter (uffoffE).  Die Antwort ist also nicht "keine Optimierung",
+        # sondern "keine BLINDE Optimierung".  Dieser Block nimmt der Relaxation
+        # nichts weg; er gibt ihr nur, was sie bisher nicht wusste.
+        #
+        # DELFIN_FFFREE_ASSERT_ENFORCE (Vorgabe 0 -> byte-identisch).
+        _assert_on = os.environ.get("DELFIN_FFFREE_ASSERT_ENFORCE", "0") == "1"
+        _assertion, _P_before = None, None
+        if _assert_on:
+            try:
+                from delfin.manta import _frame_assertions as _FA
+                _assertion = _FA.derive((list(out_syms), P))
+                _P_before = P.copy()
+            except Exception:
+                _assertion = _P_before = None
         try:
             from delfin.manta.refine import refine as _refine
             P = _refine(out_syms, P, fixed)
         except Exception:
             pass
+        if _assertion is not None and _P_before is not None:
+            try:
+                from delfin.manta import _frame_assertions as _FA
+                if not _FA.holds(_assertion, (list(out_syms), P)):
+                    P = _P_before          # Ruecknahme: die Behauptung wiegt schwerer
+            except Exception:
+                pass
         # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
         # byte-id): when rigid M-D-axis selection is not enough and ligand-internal
         # rotation is needed, jointly optimise all rotatable single bonds of the

@@ -43,6 +43,7 @@ sp2-Planarisierer schon gescheitert sind) gar nicht erst entsteht.
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Dict, List, Optional, Tuple
 
@@ -57,6 +58,8 @@ from delfin.manta._coord_angle_corrector import (
 # Toleranzen.  Bewusst GROSSZUEGIG: dies misst, ob eine Zusicherung GEBROCHEN wurde,
 # nicht ob sie perfekt eingehalten ist.  Ein zu enger Wert erzeugt Rauschen und macht
 # die Zahl unbrauchbar -- derselbe Fehler wie bei zu scharfen Augen-Schwellen.
+_TRANS_MIN_DEG = 150.0    # ab hier gilt ein Donorpaar als gegenueberstehend
+_TRANS_DROP_DEG = 15.0    # zulaessiger Abfall des groessten D-M-D-Winkels
 _MD_TOL_A = 0.10          # Angstroem, M-D-Laenge
 _PLANAR_TOL_A = 0.20      # Angstroem, Abstand des Zentrums von der Ebene seiner Nachbarn
 _FROZEN_TOL_A = 0.05      # Angstroem, Bewegung eines eingefrorenen Atoms
@@ -82,7 +85,13 @@ def derive(xyz: str) -> Optional[Dict]:
     if not xyz:
         return None
     try:
-        syms, P, _lines = _parse_xyz(xyz)
+        # Auch ``(syms, P)`` direkt: der Bauer haelt seine Frames als Arrays und muesste
+        # sonst fuer jede Pruefung eine XYZ-Zeichenkette bauen und wieder zerlegen --
+        # zweimal Formatierung pro Frame, nur damit die Signatur stimmt.
+        if isinstance(xyz, tuple):
+            syms, P = xyz[0], np.asarray(xyz[1], float)
+        else:
+            syms, P, _lines = _parse_xyz(xyz)
         nbrs, _bl = _build_geometric_adjacency(syms, P)
     except Exception:
         return None
@@ -111,9 +120,67 @@ def derive(xyz: str) -> Optional[Dict]:
         if oop is not None and oop <= _env_float("DELFIN_ASSERT_PLANAR_TOL", _PLANAR_TOL_A):
             planar.append((i, (heavy[0], heavy[1], heavy[2])))
 
+    # ===== DIE ANORDNUNG DER DONOREN IST AUCH EINE BEHAUPTUNG =====================
+    # Gemessen 2026-08-18 auf 30921 Systemen: netto 988 Systeme fliessen vom Oktaeder
+    # ins trigonale Prisma (McNemar X2 = 860,8).  Der Bauer erzeugt 2,99 mal zu viele
+    # Prismen, waehrend jede andere Form zwischen 0,86 und 1,29 bleibt -- und der
+    # Zufluss ins Prisma ist exakt so gross wie der Abfluss aus dem Oktaeder.
+    #
+    # Es sind aber KEINE Prismen: die CShM-Masse gegen OC-6 liegt unimodal bei 8 bis 12
+    # (Median 11,03), waehrend ein ideales TPR-6 bei 16,7 laege.  Es sind Oktaeder auf
+    # halbem Weg -- ein unvollstaendiger Bailar-Twist.  Und es ist keine Auswahl: in
+    # 1061 von 1061 Faellen ist poly_match false, obwohl das Auge den BESTEN Frame ueber
+    # den ganzen Manifold liest.  Im ganzen Manifold gibt es kein Oktaeder.
+    #
+    # Das Signal ist die VERZAHNUNG, monoton: 2,49 % bei null Chelatringen, 16,12 % bei
+    # fuenf.  Metall und d-Zahl sind flach.  Der Chelatzug dreht das Polyeder, nachdem
+    # die Setzung es richtig gestellt hat.
+    #
+    # DIE INVARIANTE, die das festhaelt, ist billig und richtungsscharf: die Zahl der
+    # TRANS-PAARE je Metall.  Ein Oktaeder hat drei, ein trigonales Prisma null.  Ein
+    # halber Twist senkt sie.  Kein CShM, keine Referenzform, keine Schwelle mit
+    # Feinabstimmung -- nur "was der Bauer an gegenueberliegenden Donoren gesetzt hat,
+    # darf die Relaxation nicht verlieren".
+    trans: Dict[int, Tuple[int, float]] = {}
+    _tmin = _env_float("DELFIN_ASSERT_TRANS_MIN_DEG", _TRANS_MIN_DEG)
+    for m in metals:
+        _dn = [d for d in (nbrs[m] if m < len(nbrs) else [])
+               if syms[d] != "H" and not _is_metal_sym(syms[d])]
+        trans[m] = _trans_stats(P, m, _dn, _tmin)
+
     return {"n": len(syms), "frozen": sorted({*metals, *donors}),
-            "md": sorted(md), "planar": planar,
+            "md": sorted(md), "planar": planar, "trans": trans,
             "P": P.copy()}
+
+
+def _trans_stats(P, m: int, donors, tmin_deg: float) -> Tuple[int, float]:
+    """``(Zahl der Paare ueber der Schwelle, groesster D-M-D-Winkel)`` am Metall m.
+
+    ⚠ WARUM BEIDES UND NICHT NUR DIE ZAHL.  Der erste Entwurf zaehlte nur Paare
+    ueber 150 Grad -- und der eigene Selbsttest hat ihn widerlegt: ein HALBER
+    Bailar-Twist (30 Grad) bewegt einen trans-Winkel von 180 auf 155,6 Grad, bleibt
+    also ueber der Schwelle, waehrend ein ganzer Twist (60 Grad) auf 131,8 faellt.
+    Gemessen ist aber genau der halbe -- die CShM-Masse der 1061 Faelle liegt bei
+    8 bis 12 statt bei 16,7.  Eine Schwellenzaehlung haette den gemessenen Defekt
+    komplett uebersehen und dabei "keine Verletzung" gemeldet.
+    Der groesste Winkel faellt beim halben Twist um 24,4 Grad und ist damit das
+    richtige Mass; die Zaehlung bleibt als zweites, grobes Signal daneben.
+    """
+    n, mx = 0, 0.0
+    for a in range(len(donors)):
+        for b in range(a + 1, len(donors)):
+            va = P[donors[a]] - P[m]
+            vb = P[donors[b]] - P[m]
+            na, nb = float(np.linalg.norm(va)), float(np.linalg.norm(vb))
+            if na < 1e-9 or nb < 1e-9:
+                continue
+            c = float(np.dot(va, vb)) / (na * nb)
+            c = max(-1.0, min(1.0, c))
+            ang = math.degrees(math.acos(c))
+            if ang >= tmin_deg:
+                n += 1
+            mx = max(mx, ang)
+    return n, mx
 
 
 def _oop(P, c: int, a: int, b: int, d: int) -> Optional[float]:
@@ -134,10 +201,14 @@ def violations(assertion: Optional[Dict], xyz_after: str) -> Optional[Dict]:
     Gibt Zaehler und die groessten Abweichungen.  ``None``, wenn nicht vergleichbar
     (andere Atomzahl -- dann ist es kein "spaeterer Frame desselben Baus").
     """
-    if not assertion or not xyz_after:
+    if not assertion or xyz_after is None or (
+            not isinstance(xyz_after, tuple) and not xyz_after):
         return None
     try:
-        syms2, P2, _l = _parse_xyz(xyz_after)
+        if isinstance(xyz_after, tuple):
+            syms2, P2 = xyz_after[0], np.asarray(xyz_after[1], float)
+        else:
+            syms2, P2, _l = _parse_xyz(xyz_after)
     except Exception:
         return None
     if not syms2 or P2 is None or len(syms2) != assertion.get("n"):
@@ -149,7 +220,6 @@ def violations(assertion: Optional[Dict], xyz_after: str) -> Optional[Dict]:
     pl_tol = _env_float("DELFIN_ASSERT_PLANAR_TOL", _PLANAR_TOL_A)
     fr_tol = _env_float("DELFIN_ASSERT_FROZEN_TOL", _FROZEN_TOL_A)
 
-    n_md = worst_md = 0.0, 0.0
     n_md, worst_md = 0, 0.0
     for (m, d, l0) in assertion["md"]:
         l1 = float(np.linalg.norm(P2[d] - P2[m]))
@@ -172,12 +242,35 @@ def violations(assertion: Optional[Dict], xyz_after: str) -> Optional[Dict]:
             n_fr += 1
             worst_fr = max(worst_fr, mv)
 
+    # TRANS-PAARE: nur der VERLUST zaehlt.  Ein Pass, der aus einem verzerrten Frame ein
+    # regelmaessigeres macht, gewinnt Paare hinzu -- das ist kein Bruch, das ist der
+    # Zweck der Relaxation.  Nur die Gegenrichtung ist der gemessene Defekt.
+    _tmin = _env_float("DELFIN_ASSERT_TRANS_MIN_DEG", _TRANS_MIN_DEG)
+    _tdrop = _env_float("DELFIN_ASSERT_TRANS_DROP_DEG", _TRANS_DROP_DEG)
+    n_tr, worst_tr = 0, 0.0
+    try:
+        _nb2, _ = _build_geometric_adjacency(syms2, P2)
+    except Exception:
+        _nb2 = None
+    for m, (c0, mx0) in (assertion.get("trans") or {}).items():
+        if _nb2 is None or m >= len(_nb2):
+            continue
+        _dn = [d for d in _nb2[m]
+               if syms2[d] != "H" and not _is_metal_sym(syms2[d])]
+        c1, mx1 = _trans_stats(P2, m, _dn, _tmin)
+        _drop = mx0 - mx1
+        if c1 < c0 or _drop > _tdrop:
+            n_tr += 1
+            worst_tr = max(worst_tr, _drop)
+
     return {"md_broken": n_md, "md_total": len(assertion["md"]), "md_worst": round(worst_md, 3),
             "planar_broken": n_pl, "planar_total": len(assertion["planar"]),
             "planar_worst": round(worst_pl, 3),
             "frozen_moved": n_fr, "frozen_total": len(assertion["frozen"]),
             "frozen_worst": round(worst_fr, 3),
-            "any_broken": bool(n_md or n_pl or n_fr)}
+            "trans_lost_metals": n_tr, "trans_total_metals": len(assertion.get("trans") or {}),
+            "trans_worst": worst_tr,
+            "any_broken": bool(n_md or n_pl or n_fr or n_tr)}
 
 
 def holds(assertion: Optional[Dict], xyz_after: str) -> bool:
@@ -275,7 +368,34 @@ def _self_test() -> int:
     print(f"7 nicht vergleichbar -> None, holds() blockiert nicht: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    print(f"\n{7 - fails}/7 bestanden")
+    # 8) DER GEMESSENE DEFEKT: Oktaeder -> halber Bailar-Twist.  Ein reines OC-6 hat drei
+    #    Trans-Paare; dreht man das untere Dreieck um 30 Grad Richtung Prisma, verliert es
+    #    alle drei.  Genau das ist die Bewegung, die 988 Systeme netto ins Prisma traegt
+    #    (McNemar X2 = 860,8 auf 30921 Systemen), und ihre CShM-Masse liegt bei 8 bis 12
+    #    statt 16,7 -- also HALBER Twist, nicht ganzer.
+    def _oct(twist_deg):
+        rows = [("Fe", 0.0, 0.0, 0.0)]
+        r, zh = 2.00, 1.1547           # r*cos(54,7 Grad); ergibt exakt 90/180 Grad
+        rho = 1.63299                  # r*sin(54,7 Grad)
+        for k, (ph, zs) in enumerate([(0.0, +1), (120.0, +1), (240.0, +1),
+                                      (60.0, -1), (180.0, -1), (300.0, -1)]):
+            a = math.radians(ph + (twist_deg if zs < 0 else 0.0))
+            rows.append(("N", rho * math.cos(a), rho * math.sin(a), zs * zh))
+        return _xyz(rows)
+    a8 = derive(_oct(0.0))
+    v8 = violations(a8, _oct(30.0))            # 30 Grad = halbe Strecke zum Prisma
+    v8b = violations(a8, _oct(0.0))
+    ok = (a8 is not None and a8["trans"].get(0, (0, 0.0))[0] == 3
+          and abs(a8["trans"][0][1] - 180.0) < 0.5
+          and v8 is not None and v8["trans_lost_metals"] == 1 and v8["trans_worst"] > 20.0
+          and v8b["trans_lost_metals"] == 0 and not v8b["any_broken"])
+    print(f"8 halber Bailar-Twist: max D-M-D vorher="
+          f"{a8['trans'][0][1]:.1f} Grad, Abfall={v8['trans_worst']:.1f} Grad, "
+          f"gebrochen={v8['trans_lost_metals']} (unveraendert: "
+          f"{v8b['trans_lost_metals']})  {'OK' if ok else 'FEHLER'}")
+    fails += 0 if ok else 1
+
+    print(f"\n{8 - fails}/8 bestanden")
     return 1 if fails else 0
 
 
