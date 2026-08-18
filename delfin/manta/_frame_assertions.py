@@ -72,7 +72,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def derive(xyz: str) -> Optional[Dict]:
+def derive(xyz, frozen=None) -> Optional[Dict]:
     """Die Zusicherung, die ein fertig konstruierter Frame TRAEGT.
 
     Abgeleitet aus dem Frame selbst -- kein `mol`, keine Atomindizes von aussen:
@@ -148,7 +148,22 @@ def derive(xyz: str) -> Optional[Dict]:
                if syms[d] != "H" and not _is_metal_sym(syms[d])]
         trans[m] = _trans_stats(P, m, _dn, _tmin)
 
-    return {"n": len(syms), "frozen": sorted({*metals, *donors}),
+    # ⚠️ WELCHE MENGE IST EINGEFROREN -- DIE ABGELEITETE ODER DIE ZUGESAGTE?
+    # Gemessen 18.08. auf den Oktaederfaellen: der erste Treffer der Zusicherung war
+    # `frozen=2` bei einer Bewegung von 0,194 Angstroem.  Das sieht nach Defekt aus --
+    # kann aber genauso eine DEFINITIONSLUECKE sein: derive() leitet Metall plus
+    # geometrische Nachbarn ab, waehrend refine() vom Bauer die Menge `fixed`
+    # bekommt.  Fallen die auseinander, meldet die Zusicherung einen Bruch fuer ein
+    # Atom, das nie zugesagt war -- und der Ruecknahme-Schalter wuerde auf einem
+    # Messfehler ausloesen.
+    # Darum nimmt derive() jetzt die Menge des Bauers entgegen.  Dann ist die
+    # Invariante exakt sein eigener Vertrag ("diese Atome haelst du fest") und nicht
+    # meine Rekonstruktion davon.  Ohne Argument bleibt alles wie bisher.
+    _frozen = (sorted({int(i) for i in frozen if 0 <= int(i) < len(syms)})
+               if frozen is not None else sorted({*metals, *donors}))
+
+    return {"n": len(syms), "frozen": _frozen,
+            "frozen_source": "builder" if frozen is not None else "derived",
             "md": sorted(md), "planar": planar, "trans": trans,
             "P": P.copy()}
 

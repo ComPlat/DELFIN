@@ -2658,7 +2658,9 @@ def _refine_guarded(out_syms, P, fixed):
     if _assert_on:
         try:
             from delfin.manta import _frame_assertions as _FA
-            _assertion = _FA.derive((list(out_syms), P))
+            # Die Menge des BAUERS, nicht meine Rekonstruktion davon: refine() bekommt
+            # `fixed` als Zusage, also ist genau das der Vertrag, den es halten muss.
+            _assertion = _FA.derive((list(out_syms), P), frozen=fixed)
             _P_before = P.copy()
         except Exception:
             _assertion = _P_before = None
