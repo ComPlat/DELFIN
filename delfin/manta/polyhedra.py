@@ -143,6 +143,53 @@ COV = {
     "Ir": 1.41, "Pt": 1.36, "Au": 1.36, "Hg": 1.32, "La": 2.07,
 }
 
+# ===== DIE TABELLE WAR ABGESCHNITTEN, NICHT FALSCH ====================================
+# Gemessen 2026-08-18 gegen 30735 Kristalle: die Radiensumme ist global fast unverzerrt
+# (sigma-Klasse, 260172 Bindungen, mittlerer vorzeichenbehafteter Fehler +0,014 A).  Der
+# Fehler sitzt nicht in den EINTRAEGEN, sondern in den LUECKEN -- md_distance faellt bei
+# jedem unbekannten Metall auf COV.get(metal, 1.5) zurueck, und der GESAMTE f-Block ausser
+# La fehlt:
+#     Dy 2834 Bindungen -0,232 A | U 2479 -0,239 | Eu 1758 -0,259 | Yb 1690 -0,207
+#     Tb 1687 -0,232 | Gd 1568 -0,251 | Sm 1174 -0,262 | Nd 964 -0,285 | Ce 738 -0,295
+#     Pr 620 -0,303 | Th 313 -0,226 | Np/Pu 187 ~ -0,30
+# Rund 18600 Kristallbindungen sind systematisch 0,20 bis 0,30 A zu kurz, und zwar aus
+# einem einzigen dict.get-Vorgabewert.  Kein Modell, kein Mechanismus -- eine Luecke.
+#
+# Die vorhandenen Werte SIND Cordero et al. (Dalton Trans. 2008, 2832) -- Sc 1,70, Ti 1,60,
+# V 1,53, Zr 1,75, Y 1,90, La 2,07 stimmen ziffernweise, und Mn/Fe/Co stehen auf dem
+# Mittel aus low- und high-spin.  Diese Ergaenzung setzt dieselbe Quelle fort und fuegt
+# keine neue Systematik hinzu.  OFFENE LITERATUR, keine CCDC-Zahl -- die Datei bleibt
+# oeffentlich lizenzsauber.
+#
+# DELFIN_FFFREE_COV_COMPLETE (Vorgabe 0 -> byte-identisch).  Der Schalter ist noetig, weil
+# die Ergaenzung Champion-Verhalten aendert: ein Dy-Komplex wird um 0,42 A weiter gesetzt.
+# Das ist chemisch richtig und trotzdem ein A/B wert -- die Setzung darf sich nicht
+# unbemerkt verschieben.
+_COV_CORDERO_REST = {
+    # Alkali / Erdalkali
+    "Li": 1.28, "Be": 0.96, "Na": 1.66, "Mg": 1.41, "K": 2.03, "Ca": 1.76,
+    "Rb": 2.20, "Sr": 1.95, "Cs": 2.44, "Ba": 2.15,
+    # Hauptgruppen-Metalle und Metalloide (auch als DONOR relevant, s. _donor_cov)
+    "B": 0.84, "Al": 1.21, "Si": 1.11, "Ga": 1.22, "Ge": 1.20,
+    "In": 1.42, "Sn": 1.39, "Sb": 1.39, "Te": 1.38,
+    "Tl": 1.45, "Pb": 1.46, "Bi": 1.48, "Po": 1.40, "At": 1.50,
+    # das eine fehlende d-Metall
+    "Tc": 1.47,
+    # Lanthanoide -- der groesste Block der Fehlmasse
+    "Ce": 2.04, "Pr": 2.03, "Nd": 2.01, "Pm": 1.99, "Sm": 1.98, "Eu": 1.98,
+    "Gd": 1.96, "Tb": 1.94, "Dy": 1.92, "Ho": 1.92, "Er": 1.89, "Tm": 1.90,
+    "Yb": 1.87, "Lu": 1.87,
+    # Actinoide
+    "Ac": 2.15, "Th": 2.06, "Pa": 2.00, "U": 1.96, "Np": 1.90, "Pu": 1.87,
+    "Am": 1.80, "Cm": 1.69,
+}
+
+if os.environ.get("DELFIN_FFFREE_COV_COMPLETE", "0") == "1":
+    # setdefault, nicht update: ein vorhandener Eintrag ist gemessen oder bewusst gesetzt
+    # und wird NIE ueberschrieben.  Die Ergaenzung kann damit nur Luecken schliessen.
+    for _el, _r in _COV_CORDERO_REST.items():
+        COV.setdefault(_el, _r)
+
 
 def ref_vectors(geometry: str) -> np.ndarray:
     for (cn, shape), v in REFS.items():
