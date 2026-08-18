@@ -1281,8 +1281,17 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     //: whole bond is a hand as strong as the bond, which can break it.  Zero
     //: is the old rigid hand, kept because placing an atom exactly where it
     //: is wanted is sometimes the point.
+    //:
+    //: The same number means the same *share* on the server side, where it is
+    //: read against what a bond holds as a force rather than as a stiffness.
+    //: The two engines are calibrated separately because they apply it very
+    //: differently -- here the pull is projected free of translation and
+    //: rotation, so most of it never reaches an internal coordinate at all.
     var PULL_LIKE_A_BOND = 662.0;
-    var DEFAULT_PULL_SHARE = 0.1;
+    //: Opened at what room temperature allows on the other engine, so the
+    //: two feel like the same hand and switching the budget on does not make
+    //: the drag stronger.
+    var DEFAULT_PULL_SHARE = 0.4;
     //: How far the wanted point may stand ahead of the atom before the pull
     //: stops growing.  This is what turns a stiffness into a force limit: drag
     //: as far across the screen as you like and the atom feels the same.

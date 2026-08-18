@@ -752,13 +752,19 @@ BOHR_IN_ANGSTROM = 0.529177210903
 
 #: What xtb's restraint actually costs, measured rather than assumed.
 #:
-#: ``E = k * d^2``, not the half of that a spring is usually written with, and
-#: *d* is in Bohr for a distance and in radians for an angle or a torsion.
-#: Measured under GFN2 on an ethane and a propane by differencing the reported
-#: total against a single point on the same geometry, the ratio against
-#: ``0.5 * k * d^2`` came out at 2.00 for every one of four force constants
-#: across two decades, and an angle's bias matched ``k * rad^2`` to four
-#: figures while ``k * deg^2`` was out by a factor of three thousand.
+#: ``E = k * d^2``, not the half of that a spring is usually written with,
+#: with *d* in Bohr for a distance and in radians for an angle.  A torsion is
+#: not that shape at all: it is ``k * (1 - cos d)``, which is what a periodic
+#: coordinate has to be -- a harmonic in the angle would have a step in it
+#: where the angle wraps.
+#:
+#: Measured under GFN2 on an ethane, a propane and a butane by differencing
+#: the reported total against a single point on the same geometry.  The ratio
+#: against ``0.5 * k * d^2`` came out at 2.00 for every one of four force
+#: constants across two decades; an angle's residue matched ``k * rad^2`` to
+#: four figures while ``k * deg^2`` was out by three thousand; and a butane
+#: torsion held 120 degrees from its target cost 4.7063 kcal/mol where
+#: ``k * rad^2`` says 13.76 and ``k * (1 - cos)`` says 4.7063.
 #:
 #: Two things follow.  The force a constant applies is ``2 * k * d``, so a
 #: number offered to the user as kcal/mol/A has to be halved on the way in --
@@ -820,14 +826,52 @@ PUSH_FORCE_TO = 240.0
 #: being able to take it apart -- whatever the molecule is made of.
 A_BOND_HOLDS = 110.0
 
-#: How far a push may be asked for beyond where the coordinate stands.
+#: The same reach, in the units xtb measures an angle in.
 #:
-#: Degrees for an angle or a torsion, since a hand that turns something is
-#: reported in those.  xtb takes one force constant for a whole block, so the
-#: distance's constant is what an angle in the same block gets as well; the
-#: reach is what keeps that sane rather than a second constant, which xtb
-#: would read and ignore.
-PUSH_REACH_DEGREES = 20.0
+#: xtb takes one force constant for a whole block, so an angle in the same
+#: block as a distance gets the distance's constant -- and its restraint is
+#: ``k * radians^2`` where the distance's is ``k * Bohr^2``.  One angstrom is
+#: 1.8897 Bohr, so the reach that gives an angle the same energy as a distance
+#: is 1.8897 radians: 108.3 degrees.
+#:
+#: A round number was used instead, and twenty degrees of it.  That gave a
+#: torsion 0.38 kcal/mol to spend where the distance had 11.15 -- a thirtieth
+#: -- and a rotational barrier is about three.  So the hand could stretch
+#: bonds and could not turn anything, and a molecule could not be put into its
+#: own conformers at any temperature.  Which is the one thing room temperature
+#: certainly does allow.
+PUSH_REACH_DEGREES = math.degrees(PUSH_REACH / BOHR_IN_ANGSTROM)
+
+
+def push_energy(force: float, reach: float = PUSH_REACH) -> float:
+    """The most work a push of *force* can do over its reach, in kcal/mol.
+
+    Half of force times reach, because a restraint is a spring: it reaches
+    *force* only at full stretch and is weaker all the way there.  Which is
+    why a hand set to the thermal ceiling divided by the reach could only ever
+    spend half of what the temperature allowed.
+    """
+    return 0.5 * float(force) * (float(reach) or PUSH_REACH)
+
+
+def push_force_for(energy: float, reach: float = PUSH_REACH) -> float:
+    """The force whose push can spend *energy* kcal/mol over its reach.
+
+    The inverse of :func:`push_energy`, and the one the thermal budget wants:
+    what the temperature grants is an energy, and what a hand is set in is a
+    force.
+
+    A hand that can *spend* a barrier's worth is not automatically a hand that
+    can *drive* it -- a spring pulling a system over a hill has to be steeper
+    than the hill at its steepest, which for a three-fold torsion of height B
+    is 1.5 B per radian.  At 298 K this comes out at 45 kcal/mol per Angstrom
+    and per radian against a 4.8 kcal/mol rotational barrier that needs about
+    11, so there is room; at 150 K it is 22 against the same 11, and there
+    still is.  What stops what the temperature forbids is the wall, which
+    prices the structure that was actually reached -- not the hand, which only
+    has to be able to ask.
+    """
+    return 2.0 * float(energy) / (float(reach) or PUSH_REACH)
 
 
 def as_pushes(entries: Any, reference: Any, force: float,
@@ -844,6 +888,15 @@ def as_pushes(entries: Any, reference: Any, force: float,
     *value_of* reads one entry's coordinate off a geometry; the editor passes
     its own, which is the only place that arithmetic lives.
     """
+    # One force constant for the whole block, sized for the coordinate the
+    # hand is actually driving.  A turn is a torsion, and the distances that
+    # come with it are anchors -- they are asked for where they already are,
+    # so a constant that would be fierce for a drag costs them nothing and
+    # holds the fragment together while the torsion negotiates.
+    kinds = [str((one or {}).get('kind') or '') for one in (entries or ())]
+    leads = ('dihedral' if 'dihedral' in kinds
+             else 'angle' if 'angle' in kinds else 'distance')
+    constant = push_constant(force, kind=leads)
     out = []
     for entry in (entries or ()):
         kind = str((entry or {}).get('kind') or '')
@@ -866,12 +919,33 @@ def as_pushes(entries: Any, reference: Any, force: float,
         out.append({'kind': kind,
                     'atoms': [int(i) for i in (entry.get('atoms') or ())],
                     'mode': 'push',
-                    'force': push_constant(force),
+                    'force': constant,
                     'value': wanted})
     return out
 
 
-def push_constant(force: float, reach: float = PUSH_REACH) -> float:
+def push_pulls_hardest(kind: str, reach: float = PUSH_REACH) -> float:
+    """The hardest one unit of force constant can pull, over the reach.
+
+    In kcal/mol per Angstrom for a distance and per radian for an angle or a
+    torsion, which is the same statement in each coordinate's own units.  The
+    three store energy in three different shapes -- ``k * d^2`` in Bohr, in
+    radians, and ``k * (1 - cos d)`` -- so one number means three different
+    strengths, and xtb takes one number for the whole block.  This is where
+    the three are written down and nowhere else.
+    """
+    span = (float(reach) or PUSH_REACH) / BOHR_IN_ANGSTROM
+    if str(kind) == 'dihedral':
+        # k * (1 - cos d): the torque is k * sin d, hardest at a right angle.
+        return 627.5095
+    if str(kind) == 'angle':
+        return 2.0 * 627.5095 * span
+    # A distance is asked for in Angstrom and answered in Bohr.
+    return 2.0 * EH_PER_BOHR2_IN_KCAL * (float(reach) or PUSH_REACH)
+
+
+def push_constant(force: float, reach: float = PUSH_REACH,
+                  kind: str = 'distance') -> float:
     """The xtb force constant whose ceiling is *force* kcal/mol/A.
 
     xtb's restraint is ``k * d^2``, so what it applies is ``2 * k * d`` -- the
@@ -883,10 +957,21 @@ def push_constant(force: float, reach: float = PUSH_REACH) -> float:
     towards it.  The caller puts the target *reach* ahead again at every step,
     so the ceiling is the same at every point of a path however far it has
     already come -- which is what makes a ramp of these a ramp of forces.
+
+    *kind* is the coordinate the constant is meant for, and it matters a
+    great deal: a torsion stores ``k * (1 - cos d)`` where a distance stores
+    ``k * d^2``, so the same number pulls a fifth as hard on one as on the
+    other.  Sized as a distance -- as it was -- the hand's largest torque fell
+    just short of an ordinary rotational barrier, and a molecule could not be
+    turned into its own conformers at any temperature.  Which is the one thing
+    room temperature certainly does allow.
+
+    Set here so that the hardest the hand can pull is *force*, in the
+    coordinate's own units: kcal/mol per Angstrom, or per radian.
+
     Returned in xtb's units, which is the only place that conversion lives.
     """
-    span = float(reach) or PUSH_REACH
-    return float(force) / (2.0 * EH_PER_BOHR2_IN_KCAL * span)
+    return float(force) / push_pulls_hardest(kind, reach)
 
 
 def restraint_energy(xyz_text: str, constraints: Any, value_of: Any) -> Any:
@@ -917,14 +1002,16 @@ def restraint_energy(xyz_text: str, constraints: Any, value_of: Any) -> Any:
             gap = float(entry.get('value')) - float(got)
         except (TypeError, ValueError):
             return None
-        if str(entry.get('kind')) == 'distance':
-            gap /= BOHR_IN_ANGSTROM
+        kind = str(entry.get('kind'))
+        if kind == 'distance':
+            total += k * (gap / BOHR_IN_ANGSTROM) ** 2
+        elif kind == 'dihedral':
+            # Periodic: 359 degrees away is one degree away, and the shape is
+            # k * (1 - cos) rather than a harmonic -- measured.
+            gap = (gap + 180.0) % 360.0 - 180.0
+            total += k * (1.0 - math.cos(math.radians(gap)))
         else:
-            # A torsion is periodic, and 359 degrees away is one degree away.
-            if str(entry.get('kind')) == 'dihedral':
-                gap = (gap + 180.0) % 360.0 - 180.0
-            gap = math.radians(gap)
-        total += k * gap * gap
+            total += k * math.radians(gap) ** 2
     return total
 
 

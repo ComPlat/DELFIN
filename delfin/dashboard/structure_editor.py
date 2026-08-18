@@ -1177,18 +1177,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: 1.0 is a hand as strong as the bond, which can break it.  0 is the old
     #: rigid hand, for placing an atom exactly where it is wanted.
     #:
-    #: With the thermal budget on, the temperature caps it: a force over the
-    #: reach does work, so the hand may pull with at most what the ceiling can
-    #: pay for.  At 298 K within the hour that is 22 kcal/mol/A -- a fifth of
-    #: a bond, which deforms and cannot tear.
+    #: It opens at 0.4, which is what room temperature allows.  A tenth was
+    #: gentler than the budget's own hand, so switching the budget *on* made
+    #: the drag stronger -- which is backwards, and is not what a ceiling
+    #: should feel like.  Without the budget this is the whole story and the
+    #: top of it takes anything apart; with the budget on, the temperature is
+    #: the ceiling and this can only ask for less than it.
+    #:
+    #: With the thermal budget on, the temperature sets it instead: the hand
+    #: becomes the force whose push can spend the ceiling over its reach, 45
+    #: kcal/mol per Angstrom and per radian at 298 K within the hour.  Enough
+    #: to turn a molecule into its own conformers, which is what the setting
+    #: is for; what refuses what the temperature cannot pay for is the wall.
     submit_pull_slider = widgets.FloatSlider(
-        value=0.1, min=0.0, max=3.0, step=0.05,
+        value=0.4, min=0.0, max=3.0, step=0.05,
         description='Pull', continuous_update=False,
         readout=True, readout_format='.2f',
-        tooltip=('How hard dragging pulls, as a share of a bond. 0.1 bends '
-                 'angles and torsions but cannot stretch a bond; 1.0 is as '
-                 'strong as the bond and can break it; 0 places the atom '
-                 'outright.'),
+        tooltip=('How hard dragging pulls, as a share of a bond. 0.4 is what '
+                 'room temperature allows: it turns a molecule into its own '
+                 'conformers and cannot break a bond. 1.0 is as strong as the '
+                 'bond; 3.0 takes anything apart; 0 places the atom outright. '
+                 'With the thermal budget on the temperature caps it, and '
+                 'this can only ask for less.'),
         style={'description_width': '58px'},
         layout=widgets.Layout(width='200px'),
         disabled=True,
@@ -2509,14 +2519,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         49, a C-O at 60 -- near enough one number that "half a bond" is a
         statement about any molecule rather than about ethane.
 
-        And with the budget on, the temperature has the last word.  A force
-        applied over the reach does work, so the most the hand may pull with
-        is the ceiling divided by that reach: 22.3 kcal/mol at 298 K within
-        the hour is a hand of 22, a fifth of a bond -- it deforms and it
-        cannot break anything.  At 1500 K the ceiling is 117, past what a bond
-        holds, and it can break one.  That is the thermal limit made into
-        something the user cannot get round, rather than a refusal arriving
-        after the ring is already open.
+        And with the budget on, the temperature sets it.  What the
+        temperature grants is an energy, so the hand is the force whose push
+        can spend that much over its reach: 22.3 kcal/mol at 298 K within the
+        hour is a hand of 45 kcal/mol per Angstrom and per radian, four tenths
+        of what a bond holds.  At 150 K it is 22, at 1500 K it is 234.
+
+        The hand is sized so that everything the temperature allows can be
+        *asked for* -- a rotational barrier of 4.8 kcal/mol needs about 11
+        kcal/mol per radian to be driven over, and 22 is enough for it.  What
+        refuses what the temperature does not allow is the wall, which prices
+        the structure that was actually reached: a hand strong enough to drive
+        a barrier can always be dragged for longer than one barrier's worth,
+        and no force ceiling can prevent that.  The two are different jobs and
+        this is only the first of them.
         """
         share = float(submit_pull_slider.value or 0.0)
         if share <= 0:
@@ -2525,7 +2541,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if submit_thermal_btn.value:
             _, ceiling = _thermal_budget()
             if ceiling is not None:
-                force = min(force, float(ceiling) / _gfn.PUSH_REACH)
+                # What the temperature grants is an *energy*, and a restraint
+                # is a spring: it reaches its force only at full stretch and is
+                # weaker all the way there, so it can spend half of force
+                # times reach.  Capped at the ceiling divided by the reach --
+                # as this was -- the hand could only ever spend half of what
+                # the temperature allowed.
+                force = min(force, _gfn.push_force_for(float(ceiling)))
         return max(0.5, force)
 
     def _gfn_follow_step(xyz, holding=()):
@@ -6862,10 +6884,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _, ceiling = _thermal_budget()
         spent = _thermal_note(state.get('thermal_now'))
+        # The hand as well, because that is the part of the budget the user
+        # can feel: the number in the line and the strength of the drag move
+        # together, and without saying so a temperature that changed nothing
+        # visible looked like a temperature that changed nothing.
+        hand = _pull_force()
+        told = ('' if hand is None else
+                f' The hand pulls with {hand:.0f} kcal/mol/A, '
+                f'{hand / _gfn.A_BOND_HOLDS:.2f} of what a bond holds.')
         _set_mol_status(
             f'At {float(submit_temperature.value):g} K this structure has '
             f'{ceiling:.1f} kcal/mol to spend within {_timescale_label()}.'
-            + (f' {spent}' if spent else ''))
+            + told + (f' {spent}' if spent else ''))
 
     def on_submit_sens_changed(change):
         if change.get('name') != 'value':
