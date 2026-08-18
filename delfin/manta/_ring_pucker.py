@@ -155,7 +155,6 @@ def _set_pucker(conf, ring, Q, theta, phi, frozen: Optional[Set[int]] = None):
     q2 = Q * (_np.sin(th) if th is not None else 1.0)
     q3 = Q * (_np.cos(th) if th is not None else 0.0)
     frozen = frozen or set()
-    _FLAT_ONLY.clear()
     for j, idx in enumerate(ring):
         # a frozen ring atom (metal / coordinating donor of a chelate ring) keeps
         # its position -> only the backbone puckers, the coordination sphere is
@@ -499,7 +498,25 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     # Spiegelabschluss (+1,0 pp), nicht die von BACKBONE_REEMBED (+11,9 pp).
     #
     # Vorgabe AUS -> Ringmenge unveraendert -> byte-identisch.
+    # ⚠️ HIER, NICHT IN _set_pucker -- ein Fehler von mir, am 18.08. gemessen.
+    # `_FLAT_ONLY.clear()` stand in `_set_pucker`, also in der Funktion, die je
+    # RING einmal laeuft.  Folge: Ring 0 wurde korrekt flach gehalten, danach war
+    # die Menge leer, und JEDER weitere Ring bekam die volle Faltleiter bei
+    # Q = 0,63 Angstroem.  Der Mechanismus hat den konjugierten Chelatring also
+    # GEFALTET, statt ihn zu BEGRADIGEN -- das genaue Gegenteil seines Zwecks.
+    #
+    # Der Beweis stand in den Etiketten: 246 von 256 Pucker-Etiketten beginnen mit
+    # `r0:base` (nur Ring 0 blieb flach), und die Zustandsindizes an Ringen ab 1
+    # laufen bis 15 -- ein flat-only-Ring kann hoechstens Index 1 haben, und 15 ist
+    # exakt die volle Kandidatenzahl eines Sechsrings.
+    # Chemisch gemessen an vier Salicylaldiminato-Chelaten: Walsh-Winkel am
+    # Azomethin-Kohlenstoff 13,1 bis 17,5 Grad, waehrend der Kristall dieselben
+    # Zentren bei hoechstens 1,4 Grad haelt; in einem Frame riss eine Bindung.
+    #
+    # ⇒ Der Torterm `smiles_ccdc_regressed`, an dem `planarA` blockierte, hatte
+    # RECHT.  Ihn zu lockern haette den Baufehler einzementiert.
     if _os.environ.get("DELFIN_FFFREE_PUCKER_PLANAR", "0") == "1":
+        _FLAT_ONLY.clear()
         _have = {frozenset(r) for r in rings}
         for _r in rings_raw:
             if frozenset(_r) in _have or not (5 <= len(_r) <= 8):
