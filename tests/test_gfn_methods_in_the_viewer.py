@@ -4131,13 +4131,28 @@ def test_the_follow_does_not_move_a_structure_an_optimisation_owns(editor, monke
     box was given an owner for, one step earlier in the same path, and the
     press is the later of the two things the user asked for.
 
-    Driven on gfn_follow_busy, which _gfn_follow_step sets before it starts its
-    thread -- the run itself happens off this one, so waiting for it to appear
-    is a race and its absence would prove nothing.
+    Driven on gfn_follow_busy, which _gfn_follow_step sets before it starts
+    its thread -- the run itself happens off this one, so waiting for it to
+    appear is a race and its absence would prove nothing.
+
+    And the thread is held at its calculation while the flag is read.  Left to
+    run, it reaches the end of the step and clears the flag again, and whether
+    it has done so by the time the next line executes is up to the scheduler:
+    the test passed alone and failed in company, which is the worst way for a
+    test to be wrong.
     """
+    import threading as _threading
+
     from delfin.dashboard import tab_submit
 
     monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    holding = _threading.Event()
+
+    def _held(*_a, **_k):
+        holding.wait(10)
+        return {"ok": False, "status": "held for the test"}
+
+    monkeypatch.setattr(tab_submit._gfn, "relax_steps", _held)
     state = editor["editor_state"]
     editor["submit_ff_dd"].value = "gfn2"
     editor["submit_relax_btn"].value = True
@@ -4161,6 +4176,7 @@ def test_the_follow_does_not_move_a_structure_an_optimisation_owns(editor, monke
     # optimising, the same push does start a follow.
     state["optimize_run"] = None
     assert push() is True, 'and it still follows when nothing owns the structure'
+    holding.set()
 
     follow = EDITOR_SOURCE.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "if state.get('optimize_run') is not None:" in follow

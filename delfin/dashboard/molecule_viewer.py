@@ -1287,6 +1287,13 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     //: stops growing.  This is what turns a stiffness into a force limit: drag
     //: as far across the screen as you like and the atom feels the same.
     var PULL_REACH = 1.0;
+    //: The hand, drawn.  Distinct from the pick colours and from the pivot,
+    //: because it is neither: it is not part of the molecule.
+    var PULL_COLOR = '#ff6d00';
+    //: How many dashes the band is made of.  Dashes rather than a line,
+    //: because a solid segment between two points in a molecule reads as a
+    //: bond, and this is the one thing on screen that is not one.
+    var PULL_DASHES = 3;
 
     function getViewer(scopeKey) {
         return (window._submitMolViewerByScope || {})[scopeKey] || null;
@@ -1894,6 +1901,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 });
             }
         }
+        // The hand is redrawn with the rest, so it follows the atom when a
+        // frame arrives from the kernel as well as when the mouse moves.
+        drawPull(scopeKey);
         // The numbers, if any are shown, belong on the atom cores -- and this
         // is the frame in which those have just moved. Nothing happens when
         // they are switched off.
@@ -3351,6 +3361,69 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (!state.ffPull) return;
         state.ffPull = null;
         ffTether(scopeKey, []);
+        drawPull(scopeKey);
+        var viewer = getViewer(scopeKey);
+        if (viewer) { try { viewer.render(); } catch (e) {} }
+    }
+
+    // The band between the atom and where the hand has it.
+    //
+    // Under a server method every frame the picture gets comes from the
+    // kernel, and the kernel answers about ten times a second -- so an atom
+    // that is being pulled and is not giving way looks exactly like an atom
+    // that is not listening.  Interactive molecular dynamics has drawn this
+    // band since VMD, for this reason: it shows the two things that are
+    // actually true, where the hand is and how far the atom is from it.
+    //
+    // It is drawn to the *clamped* point, not to the cursor.  Past the reach
+    // the pull stops growing, so the extra mouse travel buys nothing and
+    // drawing it would promise something the structure is not being asked
+    // for.  What the length of the band shows is therefore the force: short
+    // while the atom is keeping up, at full stretch when the hand is pulling
+    // as hard as it is allowed to.
+    //
+    // Nothing here is rendered: every caller renders once for its own
+    // reasons, and a second render is a second frame's worth of work.
+    function drawPull(scopeKey) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return;
+        var old = state.pullShapes || [];
+        for (var d = 0; d < old.length; d++) {
+            try { viewer.removeShape(old[d]); } catch (e) {}
+        }
+        state.pullShapes = [];
+        var swap = pullWishes(scopeKey, viewer);
+        if (!swap) return;
+        var atoms = getAtoms(viewer);
+        for (var key in swap) {
+            if (!Object.prototype.hasOwnProperty.call(swap, key)) continue;
+            var a = atoms[key | 0];
+            if (!a) continue;
+            var to = swap[key];
+            // Nothing to show while the atom is where the hand wants it --
+            // which is every press that turns out to be a click.
+            var gx = to.x - a.x, gy = to.y - a.y, gz = to.z - a.z;
+            if (gx * gx + gy * gy + gz * gz < 1e-4) continue;
+            try {
+                for (var n = 0; n < PULL_DASHES; n++) {
+                    var from = n / PULL_DASHES, upto = (n + 0.55) / PULL_DASHES;
+                    state.pullShapes.push(viewer.addLine({
+                        start: {x: a.x + (to.x - a.x) * from,
+                                y: a.y + (to.y - a.y) * from,
+                                z: a.z + (to.z - a.z) * from},
+                        end: {x: a.x + (to.x - a.x) * upto,
+                              y: a.y + (to.y - a.y) * upto,
+                              z: a.z + (to.z - a.z) * upto},
+                        color: PULL_COLOR
+                    }));
+                }
+                state.pullShapes.push(viewer.addSphere({
+                    center: {x: to.x, y: to.y, z: to.z},
+                    radius: 0.20, color: PULL_COLOR, opacity: 0.5
+                }));
+            } catch (e) {}
+        }
     }
     // Which atoms a pull would take hold of, and where each of them starts.
     function ffWantFrom(viewer, targets) {
@@ -4206,6 +4279,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     // the atoms arrive with the relaxation, along the way out
                     // that costs least.
                     ffPullWant(scopeKey, delta);
+                    // And the band moves at the rate of the hand rather than
+                    // at the rate of the answers.  Under a server method the
+                    // next frame is a tenth of a second away, so without this
+                    // there is nothing on screen between one answer and the
+                    // next -- which reads as a drag that is not working.
+                    // Rendered here only when nothing else is about to: with
+                    // the browser's field running, the relaxation draws this
+                    // same frame a moment later.
+                    drawPull(scopeKey);
+                    if (!ffEnabled(state2)) {
+                        try { viewer.render(); } catch (_e) {}
+                    }
                 } else {
                     applyTranslate(scopeKey, delta, d.targets);
                 }
@@ -4315,6 +4400,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.pivot = null;
         state.shapes = [];
         state.pivotShape = null;
+        state.pullShapes = [];
         state.undo = [];
         state.viewerEl = viewerEl || state.viewerEl ||
             (getRoot(scopeKey) ? getRoot(scopeKey).querySelector('.submit-mol-output') : null);

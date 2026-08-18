@@ -599,8 +599,7 @@ def test_a_scan_comes_back_to_the_minimum_it_walked_through():
     """
     body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
     body = body.split("def _scan_verdict(")[0]
-    assert "if bottom is None or spent < bottom[0]:" in body
-    assert "bottom = (spent, walked, reached)" in body
+    assert "summit, bottom = _descent(" in body
     assert "walked = bottom[1]" in body
     # And the geometry left in the box is that one.
     assert "def _done(final=walked):" in body
@@ -1313,3 +1312,244 @@ def test_the_price_is_taken_off_rather_than_calculated_again():
     # stands and the hand goes back to placing -- said, not done quietly.
     assert 'held_too = bool(constraints) and pull is not None' in source
     assert 'force constant in xtb, so the hand is ' in source
+
+
+#: Butadiene and ethylene, 3.13 A apart, the pair of forming bonds C0-C10 and
+#: C3-C11.  The canonical case for this file, and the one the whole thermal
+#: budget was found by.
+_DIELS_ALDER = """16
+butadiene + ethylene
+C    -1.513968    -0.052220    -0.000218
+C    -0.727133     1.018345     0.000508
+C     0.727133     1.018345    -0.000489
+C     1.513968    -0.052221    -0.000515
+H    -2.586669     0.037851    -0.000292
+H    -1.123085    -1.055140     0.000253
+H    -1.182283     2.001164     0.000336
+H     1.182284     2.001164    -0.000174
+H     2.586666     0.037852     0.000482
+H     1.123087    -1.055140     0.000109
+C    -0.658113    -0.352221     3.000000
+C     0.658112    -0.352221     3.000000
+H    -1.229821     0.561379     3.000000
+H    -1.229821    -1.265820     3.000000
+H     1.229820     0.561379     3.000000
+H     1.229820    -1.265820     3.000000
+"""
+
+
+#: Anti-butane, relaxed under GFN2.  The C-C-C-C torsion driven out of it
+#: climbs an eclipsed barrier and lands in gauche, which is about a kcal/mol
+#: *above* anti -- so the whole path stays above where it started, which is
+#: the shape the rollback got wrong.
+_ANTI_BUTANE = """14
+anti butane
+C           -1.90036682238427       -0.40522890085261       -0.00000000065310
+C           -0.62801675190148        0.43382104896482        0.00000000150501
+C            0.62801675180062       -0.43382104895564        0.00000000084359
+C            1.90036682257197        0.40522890071014       -0.00000000032059
+H           -2.78101451548991        0.23301179233175       -0.00000000265027
+H           -1.93775123301378       -1.04166818927924        0.88181350768924
+H           -1.93775122992223       -1.04166818905944       -0.88181350801416
+H           -0.61878667852378        1.07937568029498        0.88172390770606
+H           -0.61878667758192        1.07937568065370       -0.88172390502591
+H            0.61878667902179       -1.07937568022256        0.88172390743112
+H            0.61878667712936       -1.07937568041878       -0.88172390533084
+H            2.78101451539509       -0.23301179225031       -0.00000000153618
+H            1.93775123262623        1.04166818899364        0.88181350716460
+H            1.93775123027231        1.04166818908956       -0.88181350880857
+"""
+
+
+def _a_part():
+    """One structure editor, built over a coordinate box of its own."""
+    import tempfile
+
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ("calc", "archive", "office"):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / "calc", archive_dir=room / "archive",
+                           office_dir=room / "office")
+    ctx.run_js = lambda _script: None
+    return structure_editor.build(
+        ctx, state={}, coords_widget=widgets.Textarea(value=_ETHANE),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
+
+
+def _scanned(how, steps=20, seconds=600, structure=None, legs=None):
+    """Run the editor's own Run scan on the Diels-Alder and hand back the lot.
+
+    The real part, driven the way the button drives it -- this class of defect
+    survives every reading of the source, because the source says exactly what
+    it means to do.
+    """
+    import tempfile
+    import time
+
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ("calc", "archive", "office"):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / "calc", archive_dir=room / "archive",
+                           office_dir=room / "office")
+    ctx.run_js = lambda _script: None
+    state = {}
+    text = structure if structure is not None else _DIELS_ALDER
+    box = widgets.Textarea(value=text)
+    part = structure_editor.build(
+        ctx, state=state, coords_widget=box, viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
+    state["current_xyz_for_copy"] = {"content": text}
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_scan_how.value = how
+    state["scan_legs"] = legs or [
+        {"kind": "distance", "atoms": [0, 10], "from": 3.134, "to": 0.7,
+         "steps": steps, "structure": None},
+        {"kind": "distance", "atoms": [3, 11], "from": 3.135, "to": 0.7,
+         "steps": steps, "structure": None},
+    ]
+    began = time.time()
+    part.on_submit_scan_run()
+    while state.get("scan_run") and time.time() - began < seconds:
+        time.sleep(0.05)
+    assert not state.get("scan_run"), "the scan never finished"
+    return part, state, box
+
+
+def _forming(text):
+    import math
+
+    here = gfn.coordinates_of(text)
+    return (math.dist(here[0:3], here[30:33]),
+            math.dist(here[9:12], here[33:36]))
+
+
+@_needs_xtb
+def test_a_scan_hands_back_the_minimum_it_crossed_into_not_the_one_it_left():
+    """"The scan walked 1 of 20 points. Highest +0.0 kcal/mol."
+
+    It had walked all twenty, crossed a barrier and landed in a product -- and
+    then handed back the structure it started from and described *that* as
+    what it found.  A scan that works reads exactly like a scan that does
+    nothing.
+
+    The lowest point since the top was kept as the lowest point of the whole
+    path.  A scan starts in a well and climbs out of it, so the lowest point
+    of the whole path is almost always the first one; the walk then "came back
+    to the minimum it walked through" by going back to the beginning, and the
+    path was cut to that single point, which threw the barrier away and left a
+    verdict describing the stump.
+
+    Driven here on the real part.  Both ways of walking, because it was never
+    about which: measured under GFN2, the value walked tops at +6.2 kcal/mol
+    at 2.28 A and the force pushed at +6.3 at 2.36, both ending -64.2 in
+    cyclohexene at about 1.55.
+    """
+    for how in ("hold", "push"):
+        part, state, box = _scanned(how)
+        said = part.mol_status.value
+
+        assert state.get("scan_arrived"), (how, said)
+        # It crossed something, and says how much.
+        assert "a rise of" in said, (how, said)
+        rise = float(said.split("a rise of")[1].split()[0])
+        assert 4.0 < rise < 9.0, (how, said)
+        # And it is not the temperature of no barrier at all.
+        wants = float(said.split("It wants about")[1].split()[0])
+        assert 60 < wants < 120, (how, said)
+
+        # What is left in the box is the product it walked into, not the
+        # reactants it started from.
+        close, other = _forming(box.value)
+        assert close < 1.8 and other < 1.8, (how, close, other)
+        assert "Scanned to the next minimum" in box.value
+
+        # And it is one step, which Undo takes back whole.
+        part.on_submit_manip_undo()
+        back, also = _forming(box.value)
+        assert back > 3.0 and also > 3.0, (how, back, also)
+
+
+def test_the_walk_comes_back_to_the_bottom_of_the_descent():
+    """Not to the bottom of the path, which is usually where it started.
+
+    A scan starts in a well and climbs out of it, so the lowest point of the
+    whole path is almost always the first one.  Kept as "the minimum it walked
+    through", every scan that crossed anything handed back the structure it
+    began with -- and, because the path was then cut back to that one point,
+    reported "The scan walked 1 of 20 points. Highest +0.0 kcal/mol.  It came
+    back to the minimum it walked through."  Which is what it did.  It is also
+    indistinguishable from a scan that did nothing.
+    """
+    descent = _a_part()._descent
+
+    # Walking up: every point is a new highest, and the descent restarts at
+    # each of them, so the bottom is always the point itself.
+    summit, bottom = None, None
+    for spent, where in ((0.0, 'a'), (3.0, 'b'), (8.0, 'c')):
+        summit, bottom = descent(summit, bottom, spent, where, spent)
+    assert (summit, bottom) == (8.0, (8.0, 'c', 8.0))
+
+    # Coming down again: the bottom follows the descent...
+    summit, bottom = descent(summit, bottom, 4.0, 'd', 4.0)
+    assert bottom == (4.0, 'd', 4.0)
+    # ...and *not* back to the start, which is lower than any of it.
+    summit, bottom = descent(summit, bottom, 5.0, 'e', 5.0)
+    assert bottom == (4.0, 'd', 4.0), 'the descent is what is being tracked'
+    assert summit == 8.0
+
+    # A second, higher top starts the descent over.
+    summit, bottom = descent(summit, bottom, 9.0, 'f', 9.0)
+    assert (summit, bottom) == (9.0, (9.0, 'f', 9.0))
+
+    source = EDITOR_SOURCE
+    assert 'summit, bottom = _descent(' in source
+    # The path is not cut back to it either: cut, the verdict describes the
+    # stump instead of the walk, and the barrier that was just crossed is
+    # thrown away.
+    assert "state['scan_came_back'] = (bottom[2], bottom[0])" in source
+    assert "came = state.get('scan_came_back')" in source
+    assert 'ends = came[1] if came else path[-1][1]' in source
+    assert "state['scan_came_back'] = None" in source
+
+
+@_needs_xtb
+def test_a_walk_that_never_settles_says_so_rather_than_pretending():
+    """Anti-butane, driven a whole turn of the C-C-C-C torsion.
+
+    Measured under GFN2, ten degrees a step: it climbs the eclipsed barrier to
+    +2.40 kcal/mol at 120, falls into gauche at +0.44 near 70, and climbs the
+    syn barrier to +4.78 at 0.  Never more than 1.96 below the highest point
+    it has reached, and the rule wants two -- so the walk goes the whole way
+    and does not claim to have arrived anywhere.
+
+    Which is the honest answer.  A gauche well 1.96 deep is a real minimum and
+    a real thing to want to stop at; what the scan may not do is *say* it
+    stopped at one when it did not, and the two are distinguished here so that
+    a change to the threshold cannot quietly turn one into the other.
+    """
+    part, state, box = _scanned(
+        "hold", structure=_ANTI_BUTANE,
+        legs=[{"kind": "dihedral", "atoms": [0, 1, 2, 3], "from": 180.0,
+               "to": -60.0, "steps": 24, "structure": None}])
+    said = part.mol_status.value
+    assert not state.get("scan_arrived"), said
+    assert "came back to the minimum" not in said, said
+    assert "walked 24 of 24 points" in said, said
+    # And the barrier it reports is the syn one it went over.
+    rise = float(said.split("a rise of")[1].split()[0])
+    assert 3.5 < rise < 6.5, said
