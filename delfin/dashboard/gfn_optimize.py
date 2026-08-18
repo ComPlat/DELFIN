@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, Optional
 from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'contacts_holding',
+           'push_constant',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
@@ -738,6 +739,63 @@ FIX_FORCE_CONSTANT = 20.0
 #: looser while an atom is under the hand, exact again when it is let go.
 DRAG_FORCE_CONSTANT = 5.0
 
+#: What one xtb force constant is worth, in the units a chemist reads.
+#:
+#: xtb takes its distance force constants in Hartree per Bohr squared, so a
+#: number like 0.5 says nothing about how hard it pulls until it is converted:
+#: 0.5 is 1120 kcal/mol/A^2, half again as stiff as a C-C bond.  Which is why
+#: a "pull" moves an ethane's C-C from 1.52 to 2.46 A when it is asked for
+#: 2.50, measured under GFN2 -- it is not a gentle setting at all, it is
+#: simply less than exact.
+EH_PER_BOHR2_IN_KCAL = 627.5095 / (0.529177210903 ** 2)
+
+#: How far ahead a push holds its target, in Angstrom.
+#:
+#: A harmonic restraint left at a fixed far target pulls harder the further it
+#: is from being met, so it is a spring and not a force.  Moved up with the
+#: structure each step -- always this far ahead of where the coordinate now
+#: stands -- what the molecule feels is a constant k*reach, which is what an
+#: artificial force is.  See :func:`push_constant`.
+PUSH_REACH = 1.0
+
+#: The ceiling force a push starts and ends with, in kcal/mol/A.
+#:
+#: A ceiling and not a fixed force: the restraint applies ``k * reach`` only
+#: while the coordinate has not moved at all, and what the structure keeps is
+#: whatever of it the structure can answer.  Which is the property the whole
+#: thing rests on.  Measured under GFN2 on an ethane at rest at 1.5212 A, the
+#: same push applied over and over:
+#:
+#:     30 kcal/mol/A   1.6270, 1.6413, 1.6413, 1.6413, 1.6413, 1.6413
+#:     60 kcal/mol/A   1.7613, 1.8815, 1.9736, 2.0686, 2.2524, 2.8766
+#:
+#: Thirty settles and stays, however long it is pushed.  Sixty never settles:
+#: past the inflection of the curve the restoring force falls away, so once
+#: the push is stronger than the most the bond can pull back with, nothing
+#: balances it.  So a force below a bond deforms and a force above it breaks
+#: -- and which of the two happens is a number the user set.
+#:
+#: The range is AFIR's own, read through its collision parameter: gamma of 100
+#: to 400 kJ/mol works out at roughly 25 to 100 kcal/mol/A of model force.  It
+#: starts below anything that can break a C-C and ends above it, because
+#: finding a reaction is raising the force until something gives.
+PUSH_FORCE_FROM = 4.0
+PUSH_FORCE_TO = 120.0
+
+
+def push_constant(force: float, reach: float = PUSH_REACH) -> float:
+    """The xtb force constant whose ceiling is *force* kcal/mol/A.
+
+    A restraint of stiffness *k* held *reach* from where the coordinate stands
+    applies at most ``k * reach``, and less than that once the coordinate has
+    moved towards it.  The caller puts the target *reach* ahead again at every
+    step, so the ceiling is the same at every point of a path however far it
+    has already come -- which is what makes a ramp of these a ramp of forces.
+    Returned in xtb's units, which is the only place that conversion lives.
+    """
+    span = float(reach) or PUSH_REACH
+    return float(force) / (EH_PER_BOHR2_IN_KCAL * span)
+
 
 #: How many atoms each kind of held value names.
 CONSTRAINT_ATOMS = {'distance': 2, 'angle': 3, 'dihedral': 4}
@@ -773,7 +831,8 @@ def constraint_input(
     do; see :func:`optimize_with_gfn` for who does it instead.
     """
     kept, dropped = [], []
-    exact = negotiated = dragging = False
+    exact = negotiated = dragging = pushing = False
+    softest = None
     for entry in (constraints or ()):
         kind = str((entry or {}).get('kind') or '').strip().lower()
         wanted = CONSTRAINT_ATOMS.get(kind)
@@ -798,6 +857,16 @@ def constraint_input(
             exact = True
         elif mode == 'drag':
             dragging = True
+        elif mode == 'push':
+            # An artificial force rather than a value to be met: the entry
+            # brings its own stiffness, because what the push is *for* is that
+            # the structure decides where it ends up.
+            pushing = True
+            try:
+                asked = float((entry or {}).get('force'))
+            except (TypeError, ValueError):
+                asked = push_constant(PUSH_FORCE_FROM)
+            softest = asked if softest is None else min(softest, asked)
         else:
             negotiated = True
         kept.append((kind, indices, value))
@@ -805,8 +874,16 @@ def constraint_input(
     # A value under the hand sets the block's stiffness whatever else is in
     # it: it is the one being perturbed every frame, so it is the one that
     # decides whether the picture is still.  See DRAG_FORCE_CONSTANT.
+    # A push is three orders of magnitude softer than a hold, and there is
+    # one force constant for the block, so the two cannot both be had.  The
+    # stiffer wins -- a value the user said to hold is held -- and ``mixed``
+    # says so, which is what lets the caller refuse instead of quietly turning
+    # a push into a scan.
     force = (DRAG_FORCE_CONSTANT if dragging
-             else FIX_FORCE_CONSTANT if exact else PULL_FORCE_CONSTANT)
+             else FIX_FORCE_CONSTANT if exact
+             else PULL_FORCE_CONSTANT if negotiated
+             else softest if pushing and softest is not None
+             else PULL_FORCE_CONSTANT)
     lines = []
     if kept:
         lines.append('$constrain')
@@ -821,7 +898,8 @@ def constraint_input(
         'held': len(kept),
         'dropped': dropped,
         # Both kinds in one set, and only one force constant to hold them with.
-        'mixed': bool(exact and negotiated),
+        'mixed': bool(exact and negotiated)
+                 or bool(pushing and (exact or negotiated or dragging)),
     }
 
 

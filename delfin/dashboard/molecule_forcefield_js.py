@@ -287,7 +287,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
             tetN: 0,
             tetA: new Int32Array(0), tetK: new Float64Array(0),
             tetX: new Float64Array(0), tetY: new Float64Array(0),
-            tetZ: new Float64Array(0),
+            tetZ: new Float64Array(0), tetR: new Float64Array(0),
             frames: 0,
             totalSteps: 0,
             lastSteps: 0,
@@ -889,15 +889,41 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         if ((which & T_TETHER) && st.tetN) {
             var tg = grad ? new Float64Array(3 * st.n) : null;
             for (var tt = 0; tt < st.tetN; tt++) {
-                var ta = 3 * st.tetA[tt], tk = st.tetK[tt];
+                var ta = 3 * st.tetA[tt], tk = st.tetK[tt], tr = st.tetR[tt];
                 var tdx = pos[ta] - st.tetX[tt],
                     tdy = pos[ta + 1] - st.tetY[tt],
                     tdz = pos[ta + 2] - st.tetZ[tt];
-                e += 0.5 * tk * (tdx * tdx + tdy * tdy + tdz * tdz);
-                if (tg) {
-                    tg[ta] += tk * tdx;
-                    tg[ta + 1] += tk * tdy;
-                    tg[ta + 2] += tk * tdz;
+                var td2 = tdx * tdx + tdy * tdy + tdz * tdz;
+                // Harmonic while the target is within reach, and a constant
+                // pull of k*reach beyond it -- the flat-bottomed restraint
+                // steered dynamics uses, read the other way round.
+                //
+                // Without the far half the hand gets stronger the further it
+                // is dragged, so *every* setting tears a molecule apart given
+                // enough desk.  With it the strength is a force limit: at a
+                // tenth of a bond the hardest the hand can pull is 66
+                // kcal/mol/A, which stretches a C-H by a tenth of an angstrom
+                // and no further, and the angles and torsions -- an order of
+                // magnitude softer -- take the rest.  That is what makes a
+                // gentle setting mean "conformations only".
+                //
+                // The two halves meet in value and in slope at d = reach, so
+                // there is no step for the minimiser to fall off.
+                if (tr > 0 && td2 > tr * tr) {
+                    var td = Math.sqrt(td2), tf = tk * tr / td;
+                    e += 0.5 * tk * tr * tr + tk * tr * (td - tr);
+                    if (tg) {
+                        tg[ta] += tf * tdx;
+                        tg[ta + 1] += tf * tdy;
+                        tg[ta + 2] += tf * tdz;
+                    }
+                } else {
+                    e += 0.5 * tk * td2;
+                    if (tg) {
+                        tg[ta] += tk * tdx;
+                        tg[ta + 1] += tk * tdy;
+                        tg[ta + 2] += tk * tdz;
+                    }
                 }
             }
             if (tg) {
@@ -1251,7 +1277,7 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
         var src = pulls || [];
         var a = new Int32Array(src.length), k = new Float64Array(src.length);
         var x = new Float64Array(src.length), y = new Float64Array(src.length),
-            z = new Float64Array(src.length);
+            z = new Float64Array(src.length), r = new Float64Array(src.length);
         var m = 0;
         for (var t = 0; t < src.length; t++) {
             var one = src[t] || {};
@@ -1260,10 +1286,13 @@ MOLECULE_FF_BOOTSTRAP_JS = r"""
             if (!isFinite(one.x) || !isFinite(one.y) || !isFinite(one.z)) continue;
             if (!isFinite(one.k) || one.k < 0) continue;
             a[m] = at; x[m] = one.x; y[m] = one.y; z[m] = one.z; k[m] = one.k;
+            // How far the target may stand ahead before the pull stops
+            // growing.  Left out, the spring is a plain spring.
+            r[m] = (isFinite(one.reach) && one.reach > 0) ? one.reach : 0;
             m++;
         }
         st.tetN = m; st.tetA = a; st.tetX = x; st.tetY = y; st.tetZ = z;
-        st.tetK = k;
+        st.tetK = k; st.tetR = r;
         return true;
     }
 

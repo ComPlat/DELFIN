@@ -570,8 +570,8 @@ def test_the_hand_is_a_force_not_a_position():
     assert 'var T_TETHER = 64;' in js
     assert "if (term === 'tether' || term === 'tethers') return T_TETHER;" in js
     block = js.split('if ((which & T_TETHER)')[1].split('return e;')[0]
-    # Harmonic in the displacement.
-    assert 'e += 0.5 * tk * (tdx * tdx + tdy * tdy + tdz * tdz);' in block
+    # Harmonic in the displacement while the target is within reach.
+    assert 'e += 0.5 * tk * td2;' in block
     assert 'tg[ta] += tk * tdx;' in block
     # And what reaches the gradient is the part that can only be answered by
     # changing shape.  Every other term is invariant under moving the molecule
@@ -669,3 +669,212 @@ console.log(JSON.stringify(out));
     assert out['onTarget'] == pytest.approx(0.0, abs=1e-12)
     assert out['letGo'] == pytest.approx(0.0, abs=1e-12)
 
+
+
+def test_the_pull_has_a_ceiling_so_its_strength_is_a_force():
+    """A plain spring gets stronger the further it is dragged.
+
+    Which means every setting tears a molecule apart given enough desk: the
+    hand's strength would only say how *fast* that happened, never whether it
+    could.  So beyond a reach the pull stops growing and becomes a constant
+    k*reach -- the flat-bottomed restraint steered dynamics uses, read the
+    other way round.  Then the number the user sets is a force limit, and
+    "this deformation is possible and that one is not" is a statement the
+    setting can actually make.
+
+    The two halves meet in value and in slope at d = reach, so there is no
+    step for the minimiser to fall off.
+    """
+    js = _JS
+    block = js.split('if ((which & T_TETHER)')[1].split('return e;')[0]
+    assert 'if (tr > 0 && td2 > tr * tr) {' in block
+    # Harmonic up to the reach, linear past it, joined at the same value.
+    assert 'e += 0.5 * tk * tr * tr + tk * tr * (td - tr);' in block
+    # And a force of exactly k*reach, in the direction of the target.
+    assert 'var td = Math.sqrt(td2), tf = tk * tr / td;' in block
+    # A reach travels with each pull, and left out it is a plain spring.
+    assert 'r[m] = (isFinite(one.reach) && one.reach > 0) ? one.reach : 0;' in js
+    assert 'st.tetK = k; st.tetR = r;' in js
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_the_ceiling_is_smooth_and_the_force_stops_growing():
+    """Measured in node: past the reach the force is k*reach and stays there,
+    the energy is continuous and differentiable where the two halves meet, and
+    a pull past the ceiling still has no net force and no net torque.
+
+    The force is read from central differences of the tether energy, not from
+    the gradient the engine hands out: that one has had the rigid part taken
+    out of it and so is deliberately not the derivative of anything.
+    """
+    import tempfile
+
+    driver = """
+globalThis.window = {};
+__ENGINE__
+var FF = window.__delfinFF;
+var PAY = __PAYLOAD__;
+var POS = __POSITIONS__;
+var K = 50.0, R = 1.0;
+FF.load('t', PAY);
+var out = {near: [], far: [], grad: 0};
+// Atom 1 pulled from further and further away, straight along +x.
+function at(d) {
+  FF.tether('t', [{atom: 1, x: POS[3] - d, y: POS[4], z: POS[5], k: K, reach: R}]);
+  var g = FF.debugGradient('t', POS, 'tether');
+  // The pull on the atom itself, before the rigid part is taken out, is what
+  // the ceiling is about -- read it back from the energy instead, which the
+  // projection does not touch.
+  var h = 1e-6, plus, minus;
+  var probe = POS.slice();
+  probe[3] = POS[3] + h; plus = FF.debugEnergy('t', probe, 'tether');
+  probe[3] = POS[3] - h; minus = FF.debugEnergy('t', probe, 'tether');
+  return {d: d, e: FF.debugEnergy('t', POS, 'tether'),
+          f: (plus - minus) / (2 * h)};
+}
+var ds = [0.1, 0.5, 0.9, 0.999, 1.001, 1.5, 3.0, 8.0];
+for (var i = 0; i < ds.length; i++) {
+  var r = at(ds[i]);
+  (ds[i] <= R ? out.near : out.far).push(r);
+}
+// Far past the reach the pull is still one that can only change shape.
+FF.tether('t', [{atom: 1, x: POS[3] - 4.0, y: POS[4], z: POS[5], k: K, reach: R}]);
+var g4 = Array.prototype.slice.call(FF.debugGradient('t', POS, 'tether'));
+var N = PAY.n_atoms, a, cx = 0, cy = 0, cz = 0;
+for (a = 0; a < N; a++) { cx += POS[3*a]/N; cy += POS[3*a+1]/N; cz += POS[3*a+2]/N; }
+var fx = 0, fy = 0, fz = 0, tx = 0, ty = 0, tz = 0, big = 0;
+for (a = 0; a < N; a++) {
+  fx += g4[3*a]; fy += g4[3*a+1]; fz += g4[3*a+2];
+  var qx = POS[3*a]-cx, qy = POS[3*a+1]-cy, qz = POS[3*a+2]-cz;
+  tx += qy*g4[3*a+2] - qz*g4[3*a+1];
+  ty += qz*g4[3*a]   - qx*g4[3*a+2];
+  tz += qx*g4[3*a+1] - qy*g4[3*a];
+}
+for (a = 0; a < g4.length; a++) big = Math.max(big, Math.abs(g4[a]));
+out.biggest = big;
+out.netForce = Math.max(Math.abs(fx), Math.abs(fy), Math.abs(fz));
+out.netTorque = Math.max(Math.abs(tx), Math.abs(ty), Math.abs(tz));
+console.log(JSON.stringify(out));
+"""
+    script = (driver
+              .replace('__ENGINE__', _JS)
+              .replace('__PAYLOAD__', json.dumps(_PAYLOAD))
+              .replace('__POSITIONS__', json.dumps(_POS)))
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(script)
+        path = fh.name
+    done = subprocess.run([_NODE, path], capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr[-800:]
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    # Inside the reach the force grows with the distance, as a spring does.
+    for row in out['near']:
+        assert abs(row['f']) == pytest.approx(50.0 * row['d'], rel=1e-4), row
+    # Outside it the force is k*reach whatever the distance -- 8 A out pulls
+    # exactly as hard as 1.001 A out.
+    for row in out['far']:
+        assert abs(row['f']) == pytest.approx(50.0, rel=1e-4), row
+    # No step where the two halves meet: the energy either side of the reach
+    # differs by what a thousandth of an angstrom is worth and no more.
+    just_in = [r for r in out['near'] if r['d'] > 0.99][0]
+    just_out = [r for r in out['far'] if r['d'] < 1.01][0]
+    assert just_out['e'] - just_in['e'] == pytest.approx(0.1, abs=1e-3), out
+    # And out there it is still a pull that can only change shape: the
+    # ceiling caps the magnitude, it does not put the net force back.
+    assert out['biggest'] > 1.0, out
+    assert out['netForce'] < 1e-9 * out['biggest'], out
+    assert out['netTorque'] < 1e-8 * out['biggest'], out
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_a_gentle_hand_bends_the_molecule_but_cannot_stretch_a_bond():
+    """What the strength setting buys, measured rather than asserted.
+
+    A hydrogen is dragged four angstroms across the screen in two hundred
+    mouse steps, at each strength in turn, and what it does to the C-H bond it
+    hangs on is read off.  A tenth of a bond takes the atom 1.97 A -- angles
+    and torsions are an order of magnitude softer than a stretch, so that is
+    where the deformation goes -- while the bond itself gives 0.05 A.  A whole
+    bond's worth of hand pulls it to 1.68 A, and three bonds' worth to 2.63 A.
+
+    That is the scale the slider is drawn on: below about a quarter it is a
+    conformational tool and bond lengths hold; at one it is as strong as what
+    it is pulling against; above that it takes a structure apart.  Which of
+    those the user wants is theirs to say -- the point is that it is now a
+    number they set rather than something the geometry cannot refuse.
+    """
+    import tempfile
+
+    driver = """
+globalThis.window = {};
+__ENGINE__
+var FF = window.__delfinFF;
+var PAY = __PAYLOAD__;
+var POS = __POSITIONS__;
+function dist(p, a, b) {
+  var dx = p[3*a] - p[3*b], dy = p[3*a+1] - p[3*b+1], dz = p[3*a+2] - p[3*b+2];
+  return Math.sqrt(dx*dx + dy*dy + dz*dz);
+}
+// Settle first, so what is measured is deformation and not leftover strain.
+FF.load('m', PAY);
+var p = POS.slice(), i;
+for (i = 0; i < 400; i++) p = Array.prototype.slice.call(FF.step('m', p));
+var base = p.slice();
+var out = {bond0: dist(base, 0, 4), rows: []};
+var shares = [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0];
+for (var si = 0; si < shares.length; si++) {
+  var k = shares[si] * 662.0;
+  FF.load('s' + si, PAY);
+  var q = base.slice();
+  var wx = base[12], wy = base[13], wz = base[14];   // atom 4, the hydrogen
+  for (var step = 0; step < 200; step++) {
+    wx += 0.02;                                      // the mouse, 4 A of it
+    FF.tether('s' + si, [{atom: 4, x: wx, y: wy, z: wz, k: k, reach: 1.0}]);
+    q = Array.prototype.slice.call(FF.step('s' + si, q));
+  }
+  var held = dist(q, 0, 4);
+  var moved = Math.sqrt(Math.pow(q[12]-base[12], 2) + Math.pow(q[13]-base[13], 2)
+                        + Math.pow(q[14]-base[14], 2));
+  FF.tether('s' + si, []);                           // letting go
+  for (i = 0; i < 400; i++) q = Array.prototype.slice.call(FF.step('s' + si, q));
+  out.rows.push({share: shares[si], bondHeld: held, moved: moved,
+                 bondAfter: dist(q, 0, 4)});
+}
+console.log(JSON.stringify(out));
+"""
+    script = (driver
+              .replace('__ENGINE__', _JS)
+              .replace('__PAYLOAD__', json.dumps(_PAYLOAD))
+              .replace('__POSITIONS__', json.dumps(_POS)))
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(script)
+        path = fh.name
+    done = subprocess.run([_NODE, path], capture_output=True, text=True,
+                          timeout=300)
+    assert done.returncode == 0, done.stderr[-800:]
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    rows = {row['share']: row for row in out['rows']}
+    assert out['bond0'] == pytest.approx(1.094, abs=0.01), out
+
+    # A tenth of a bond moves the atom two angstroms and stretches the bond by
+    # a twentieth of one: the deformation goes into the soft coordinates.
+    gentle = rows[0.1]
+    assert gentle['moved'] > 1.5, gentle
+    assert gentle['bondHeld'] - out['bond0'] < 0.08, gentle
+
+    # And it goes on being true of every setting below a quarter of a bond,
+    # while a whole bond's worth stretches it by more than half an angstrom.
+    assert rows[0.25]['bondHeld'] - out['bond0'] < 0.15, rows[0.25]
+    assert rows[1.0]['bondHeld'] - out['bond0'] > 0.5, rows[1.0]
+    assert rows[3.0]['bondHeld'] > rows[1.0]['bondHeld'], out
+
+    # Harder always means further, with no setting that undoes the last.
+    order = [rows[s]['bondHeld'] for s in (0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0)]
+    assert order == sorted(order), out
+
+    # Letting go gives the bond back: the pull strains the structure while it
+    # is held and leaves nothing behind.  A harmonic field has no bond to
+    # break, so what "3.0 tears it apart" means here is a bond held at 2.63 A
+    # -- it is the *user's* structure, under a real method, that stays torn.
+    for row in out['rows']:
+        assert row['bondAfter'] == pytest.approx(out['bond0'], abs=0.01), row
