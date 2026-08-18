@@ -38,7 +38,7 @@ from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'constraint_input', 'contacts_holding', 'graph_changed',
-           'graph_holds', 'push_constant', 'restraint_energy',
+           'graph_holds', 'push_constant', 'restraint_energy', 'walk_the_path',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
@@ -1768,6 +1768,141 @@ def interactive_cores(atoms: Optional[int] = None) -> int:
                 wanted = cores
                 break
     return max(1, min(wanted, os.cpu_count() or 1))
+
+
+#: What xtb's path finder says when it has found one.
+_PATH_FORWARD_RE = re.compile(r'forward\s+barrier \(kcal\)\s*:\s*(-?\d+\.\d+)')
+_PATH_BACK_RE = re.compile(r'backward barrier \(kcal\)\s*:\s*(-?\d+\.\d+)')
+_PATH_REACTION_RE = re.compile(r'reaction energy\s+\(kcal\)\s*:\s*(-?\d+\.\d+)')
+_PATH_TAKEN_RE = re.compile(r'path\s+(\d+) taken with\s+(\d+) points')
+_PATH_RMSD_RE = re.compile(
+    r'run\s+(\d+)\s+barrier:\s*(-?\d+\.\d+)\s+dE:\s*(-?\d+\.\d+)'
+    r'\s+product-end path RMSD:\s*(\d+\.\d+)')
+
+#: How the path is asked for.  Two runs, because the first often finds a way
+#: round rather than over: measured on a Diels-Alder, run 1 reported a barrier
+#: of 51.49 kcal/mol and run 2 of 8.32, and xtb takes the better of them.
+PATH_RUNS = 2
+PATH_POINTS = 25
+
+
+def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
+                  charge: int = 0, uhf: int = 0,
+                  solvent: Optional[str] = None,
+                  solvation_model: str = 'alpb',
+                  points: int = PATH_POINTS, runs: int = PATH_RUNS,
+                  timeout: Optional[float] = 600.0) -> Dict[str, Any]:
+    """Find a way from *reactant* to *product*, and say what it costs.
+
+    xtb's own path finder: metadynamics with a bias that pushes away from
+    where it has been and pulls towards the product, run a few times with
+    different strengths, and the best of them kept.  It answers the question a
+    scan can only approach -- a scan drives a coordinate somebody chose, and
+    this one is given two structures and finds its own way between them.
+
+    Which is why it belongs after a scan rather than instead of one: the scan
+    is what produces a product to aim at.  Measured on a butadiene and an
+    ethylene, 2.6 s: forward barrier 5.754 kcal/mol, backward 69.586, reaction
+    energy -63.831, and an estimated transition state with the two forming
+    bonds at 2.524 and 2.520 A.  The scan of the same reaction put its highest
+    point at +6.3 kcal/mol and 2.36 A -- two methods that share no machinery,
+    agreeing.
+
+    It is metadynamics, so it is not the same twice.  xtb keeps the best of
+    its runs and the best is the lowest, which makes the barrier an upper
+    bound that comes down as more are run: measured on the same reaction, two
+    goes gave 5.755 and 3.3 kcal/mol, both with an estimated transition state
+    at 2.52 A.  A number quoted from this is worth what a stochastic search is
+    worth, and saying which is part of reporting it.
+
+    Returns ``{'ok', 'barrier', 'back', 'reaction', 'ts', 'points', 'rmsd',
+    'seconds', 'status'}``.  *rmsd* is how near the path actually came to the
+    product it was aimed at, which is the one number that says whether the
+    answer is about the reaction that was asked for.
+    """
+    key = str(method or 'gfn2').lower()
+    spec = GFN_METHODS.get(key) or GFN_METHODS['gfn2']
+    label = spec['label']
+    binary = find_binary(key)
+    if binary is None:
+        return {'ok': False, 'status': (f'A path needs xtb, which was not '
+                                        f'found in {_where_it_looked()}.')}
+    here = [line for line in atom_lines(reactant)]
+    there = [line for line in atom_lines(product)]
+    if not here or len(here) != len(there):
+        return {'ok': False,
+                'status': ('A path needs two structures of the same molecule; '
+                           f'these have {len(here)} and {len(there)} atoms.')}
+
+    started = time.perf_counter()
+    folder = Path(tempfile.mkdtemp(prefix='delfin-path-'))
+    try:
+        (folder / 'from.xyz').write_text(
+            f'{len(here)}\nfrom\n' + '\n'.join(here) + '\n', encoding='utf-8')
+        (folder / 'to.xyz').write_text(
+            f'{len(there)}\nto\n' + '\n'.join(there) + '\n', encoding='utf-8')
+        (folder / 'path.inp').write_text(
+            '$path\n'
+            f'   nrun={max(1, int(runs))}\n'
+            f'   npoint={max(5, int(points))}\n'
+            '   anopt=10\n'
+            '   kpush=0.003\n'
+            '   kpull=-0.015\n'
+            '   ppull=0.05\n'
+            '$end\n', encoding='utf-8')
+        cores = interactive_cores(len(here))
+        command = [binary, 'from.xyz', *spec['flags'], '--path', 'to.xyz',
+                   '--input', 'path.inp',
+                   '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
+                   '-P', str(cores)]
+        command += _solvents.xtb_flags(solvation_model, solvent)
+        environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
+                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G')
+        own = parameter_home(binary)
+        if own:
+            environment['XTBPATH'] = own
+        try:
+            done = subprocess.run(command, cwd=str(folder), env=environment,
+                                  capture_output=True, text=True,
+                                  timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {'ok': False,
+                    'status': (f'The path finder ran past {timeout:.0f} s and '
+                               'was stopped.')}
+        except OSError as exc:
+            return {'ok': False, 'status': f'The path finder did not run: {exc}'}
+        output = (done.stdout or '') + (done.stderr or '')
+        forward = _PATH_FORWARD_RE.search(output)
+        if not forward:
+            # It ran and found nothing worth reporting.  Which is an answer:
+            # these two structures are not joined by anything this method can
+            # walk, and saying so beats a number that is not there.
+            return {'ok': False, 'seconds': time.perf_counter() - started,
+                    'output': output[-4000:],
+                    'status': (f'{label} found no path between the two '
+                               'structures.')}
+        back = _PATH_BACK_RE.search(output)
+        reaction = _PATH_REACTION_RE.search(output)
+        taken = _PATH_TAKEN_RE.search(output)
+        rmsd = None
+        if taken:
+            for one in _PATH_RMSD_RE.finditer(output):
+                if one.group(1) == taken.group(1):
+                    rmsd = float(one.group(4))
+        guess = folder / 'xtbpath_ts.xyz'
+        ts = guess.read_text(encoding='utf-8') if guess.is_file() else None
+        seconds = time.perf_counter() - started
+        return {
+            'ok': True, 'seconds': seconds,
+            'barrier': float(forward.group(1)),
+            'back': float(back.group(1)) if back else None,
+            'reaction': float(reaction.group(1)) if reaction else None,
+            'points': int(taken.group(2)) if taken else None,
+            'rmsd': rmsd, 'ts': ts, 'method': key,
+            'status': (f'{label} walked a path in {seconds:.1f} s.'),
+        }
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def optimize_with_gfn(
