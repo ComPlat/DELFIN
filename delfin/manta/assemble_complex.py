@@ -2609,6 +2609,22 @@ def _symmetrize_degenerate(m, cids):
     """
     if os.environ.get("DELFIN_FFFREE_MESOMERY_SEAT", "0") != "1":
         return
+    # ⚠️ DIE SPUR MUSS VOR DEM try STEHEN.  Im ersten Entwurf lag sie darin -- eine
+    # Ausnahme waehrend der Gruppensuche waere damit im `except: pass` gelandet, OHNE
+    # eine Zeile zu schreiben, und haette sich von "keine Gruppe gefunden" nicht
+    # unterscheiden lassen.  Ein stiller Ausnahmepfad ist genau die Luecke, an der
+    # der Feuerzensus am 14.08. Befunde erfunden hat.
+    _mtp = os.environ.get("DELFIN_MESO_TRACE", "")
+
+    def _mtrace(txt):
+        if not _mtp or _mtp == "0":
+            return
+        try:
+            with open(_mtp, "a") as _fh:
+                _fh.write("[MESO] %s\n" % txt)
+        except Exception:
+            pass
+
     try:
         groups = []
         for a in m.GetAtoms():
@@ -2630,8 +2646,14 @@ def _symmetrize_degenerate(m, cids):
                 if len({round(o, 2) for _i, o in mem}) < 2:
                     continue          # schon symmetrisch gezeichnet -> nichts zu tun
                 groups.append((a.GetIdx(), [i for i, _o in mem]))
+        # DIESELBE SPUR-DISZIPLIN WIE BEIM ZUSICHERUNGSPROTOKOLL: ein byte-identischer
+        # Bau hat auch hier mehrere ununterscheidbare Ursachen -- die Funktion laeuft
+        # nicht, sie findet keine Gruppe, sie bricht ab, oder sie findet eine und die
+        # Bindungen sind bereits gleich lang.
         if not groups:
+            _mtrace("natoms=%d groups=0 moved=0.0" % m.GetNumAtoms())
             return
+        _worst = 0.0
         for c in cids:
             conf = m.GetConformer(c)
             for cen, terms in groups:
@@ -2648,11 +2670,16 @@ def _symmetrize_degenerate(m, cids):
                 if not lens:
                     continue
                 tgt = float(sum(lens) / len(lens))
-                for t, v in zip(terms, vecs):
+                for t, v, l0 in zip(terms, vecs, lens):
+                    _worst = max(_worst, abs(tgt - l0))
                     p = pc + v * tgt
                     conf.SetAtomPosition(t, (float(p[0]), float(p[1]), float(p[2])))
-    except Exception:
-        pass                          # eine Vorgabe, die nicht greift, darf nichts kosten
+        _mtrace("natoms=%d groups=%d conf=%d worst_shift=%.4f"
+                % (m.GetNumAtoms(), len(groups), len(cids), _worst))
+    except Exception as _mx:
+        # eine Vorgabe, die nicht greift, darf nichts kosten -- aber sie darf auch
+        # nicht schweigen, sonst liest sich der Abbruch wie "nichts gefunden".
+        _mtrace("ABBRUCH %s" % type(_mx).__name__)
 
 
 def _clash_count(Q, existing, syms_Q, syms_ex):
