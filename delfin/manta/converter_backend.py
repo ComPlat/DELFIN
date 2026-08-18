@@ -658,6 +658,48 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
     exists is altered or dropped."""
     if os.environ.get("DELFIN_FFFREE_TORSION_WELLS", "0") != "1" or not lig_groups:
         return
+    # ===== SIEBEN AUSGAENGE, SECHS DAVON STUMM ================================
+    # Gemessen 18.08.2026: diese Funktion hat im GESAMTEN Korpus null Frames
+    # angehaengt -- 2739 Dateien in archive_tors10k_on, 0 Etiketten `-well`.
+    # Ihre Nachbarn an derselben Aufrufstelle haben dagegen geliefert: `-pucker`
+    # ~1010, `-conf` 30416, `-lp` 62, `-beta` 55.  Die Aufrufzeilen :1852 und
+    # :1856 stehen VIER Zeilen auseinander und bekommen identische Argumente --
+    # Erreichbarkeit, Vorlage-Mol, Etikettenverlust und das Selbstgate als
+    # solches sind damit ausgeschlossen.
+    #
+    # Historisch ist die Ursache belegt: die Funktion wurde am 03.08. in einen
+    # NameError HINEINGEBOREN (`_INTERLIG_VDW_FLOOR` war am 02.08. geloescht
+    # worden, wiederhergestellt erst am 17.08. um 10:59), und `except: continue`
+    # verschluckte ihn fuer JEDEN Kandidaten.  Fuer den tors10k-Lauf traegt das
+    # aber NICHT mehr: dessen aelteste Archivdateien stammen von 17.08. 13:56,
+    # also drei Stunden nach dem Restore.
+    #
+    # ⇒ Es bleiben zwei Verdaechtige, und sie sind ohne Zaehler NICHT trennbar:
+    #   (A) `dofs` ist fast immer leer -- `_config_template_mol` bindet M-D
+    #       DATIV, also sind alle Chelatringe echte RDKit-Ringe und `IsInRing`
+    #       wirft jede Chelat-Rueckgratbindung heraus;
+    #   (B) alle Kombinationen fallen an der 0,95x-base_min-Latte durch.
+    # "Erzeugt und verworfen" ist von "nie gebaut" nicht zu unterscheiden --
+    # exakt der Fehlschluss vom 14.08., an dem der Feuerzensus Befunde erfunden
+    # hat.  Der Ring-Pucker hat dafuer am 17.08. seinen Zaehler bekommen; diese
+    # Funktion nicht.  Hiermit doch.
+    #
+    # DELFIN_FFFREE_WELLS_TRACE=<pfad>, sonst still und kostenlos.
+    _wk = {"cand": 0, "no_dof": 0, "tmpl_none": 0, "import": 0, "same": 0,
+           "unclean": 0, "collapse": 0, "beta": 0, "clash": 0, "exc": 0,
+           "added": 0, "dof_n": 0}
+
+    def _wtrace():
+        _p = os.environ.get("DELFIN_FFFREE_WELLS_TRACE", "")
+        if not _p or _p == "0":
+            return
+        try:
+            with open(_p, "a") as _fh:
+                _fh.write("[WELLS] " + " ".join(
+                    "%s=%d" % (k, v) for k, v in sorted(_wk.items())) + "\n")
+        except Exception:
+            pass
+
     try:
         from delfin.manta import assemble_complex as _AC
         from rdkit import Chem as _Chem
@@ -665,9 +707,13 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
         import numpy as _np
         import itertools as _it
     except Exception:
+        _wk["import"] = 1
+        _wtrace()
         return
     m = _config_template_mol(metal, lig_groups, base_syms)
     if m is None:
+        _wk["tmpl_none"] = 1
+        _wtrace()
         return
     frozen = {0} | {int(x) for x in (donors or [])}
     _dloc = sorted(int(x) for x in (donors or []))
