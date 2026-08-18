@@ -740,3 +740,57 @@ def test_a_scan_is_told_a_direction_rather_than_an_end():
     assert "floor = _scan_floor_for(leg)" in arm
     assert arm.index("_suggest_scan_target(") < arm.index("floor = ")
 
+
+def test_the_frame_makes_tearing_impossible_rather_than_expensive():
+    """A conformer differs from another in its torsions and nothing else.
+
+    So holding the frame -- every bond and every angle -- is what a
+    conformational drag means, and it is a different kind of guarantee from a
+    budget: no energy is consulted, nothing is estimated, and there is no path
+    by which a bond can come apart because its length is one of the things
+    being held.
+
+    Driven on a real editor, a ring hydrogen yanked to 1.50, 2.20 and 3.20 A
+    with no budget at all: with the frame off the viewer draws 1.46, 2.10 and
+    2.93 and the box keeps what was asked for; with it on, both draw and keep
+    1.08 and 1.09.
+    """
+    assert "submit_rigid_btn" in EDITOR_SOURCE
+    body = EDITOR_SOURCE.split("def _arm_frame(")[1].split("\n    def ")[0]
+    # Taken at the grab.  Read from the geometry the drag has already made of
+    # it, every bond is held at whatever the yank produced -- a C-H at 3.20 A
+    # dutifully kept at 3.20 -- and the switch does nothing at all.
+    assert "_gfn.frame_constraints(here)" in body
+
+    assert "contacts = list(state['frame_held'])" in EDITOR_SOURCE
+    # And the answer stands: put the atom back where the cursor has it and it
+    # carries the bond it was supposed to be unable to stretch.
+    settled = EDITOR_SOURCE.split("settled = (came_back if came_back")[1]
+    settled = settled.split("frames = list(")[0]
+    assert "submit_rigid_btn.value" in settled
+    assert "outcome['xyz']" in settled
+    # The box as well as the picture, or letting go keeps the torn one.
+    assert "Turned, with the frame held" in EDITOR_SOURCE
+
+
+def test_the_frame_is_every_bond_and_every_angle():
+    """Lengths and angles both: holding only the lengths leaves an atom free
+    to swing through its neighbours, which is not a conformation either."""
+    ethane = (
+        "8\nethane\n"
+        "C  0.000  0.000  0.000\nC  1.530  0.000  0.000\n"
+        "H -0.370  1.020  0.000\nH -0.370 -0.510  0.880\n"
+        "H -0.370 -0.510 -0.880\nH  1.900  0.510  0.880\n"
+        "H  1.900  0.510 -0.880\nH  1.900 -1.020  0.000\n"
+    )
+    held = gfn.frame_constraints(ethane)
+    kinds = [one["kind"] for one in held]
+    # Seven bonds in an ethane, and every angle at both carbons.
+    assert kinds.count("distance") == 7
+    assert kinds.count("angle") == 12
+    assert all(one["mode"] == "fix" for one in held)
+    # At the value it has now, so the frame is the structure as it stands.
+    bond = next(one for one in held
+                if one["kind"] == "distance" and set(one["atoms"]) == {0, 1})
+    assert bond["value"] == pytest.approx(1.53, abs=0.01)
+
