@@ -1805,6 +1805,14 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                             _ok = False                       # cannot prove it is as good -> do not add
                     if _ok:
                         results.append((_bx, f"{_lab}-beta"))
+                        if _prod_on:
+                            # Saat fuer das Kreuzprodukt -- siehe die Begruendung am Ende
+                            # dieser Schleife.  Gemessen 18.08.: `conf x beta` ist die
+                            # ZWEITGROESSTE fehlende Kombination (223 Systeme bedienen
+                            # beide Achsen, 0 bauen das Produkt; rund 1870 fehlende
+                            # Etiketten), und `ccdc_backbone` ist dort in 33,3 % der
+                            # Faelle unrealisiert gegen einen Boden von 30,1 %.
+                            _prod_seeds.append((_bs, _bP, f"{_lab}-beta", donors))
         # LONE-PAIR ORIENTATION AS A SIBLING (DELFIN_FFFREE_LP_SIBLING, default OFF).
         #
         # Seating two donors onto two vertices leaves exactly ONE rotational freedom -- about
@@ -1848,6 +1856,11 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                         _better = _nocoll = False
                     if _better and _nocoll:
                         results.append((_lx, f"{_lab}-lp"))
+                        if _prod_on:
+                            # `conf x lp` ist die FUENFTGROESSTE fehlende Kombination
+                            # (112 Systeme bedienen beide, 0 bauen das Produkt; rund 1210
+                            # fehlende Etiketten).  Dieselbe Saat wie oben.
+                            _prod_seeds.append((_ls, _lP, f"{_lab}-lp", _dl))
         # SIGMA-ENSEMBLE CONFORMERS, now as siblings of the accepted frame rather than in
         # place of it (see the long note where the old short-circuit branch used to be).
         # Every one clears the same per-frame self-gate as before; the one that reproduces
