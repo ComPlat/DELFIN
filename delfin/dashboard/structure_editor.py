@@ -1541,6 +1541,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='150px', display='none'),
         disabled=True,
     )
+    #: Price the walk with an electronic energy, or with a free one.
+    #:
+    #: E throughout is the default and is a fair approximation: an entropy
+    #: term that is roughly constant along a path largely cancels in a
+    #: difference.  Where it does not -- a reaction that ties two molecules
+    #: into one, a rotor that stops turning at the top -- G is the number a
+    #: chemist actually wants, and the ceiling it is compared against is a
+    #: free energy anyway.
+    #:
+    #: Not at every point.  A free energy is a Hessian, and a Hessian is not
+    #: free: measured under GFN2, 0.57 s against 0.29 for sixteen atoms and
+    #: 3.72 against 0.76 for twenty-four, which over twenty points is a scan
+    #: that takes minutes instead of seconds.  And an RRHO free energy only
+    #: means something at a stationary point.  So it is asked for at the three
+    #: places where it is both affordable and meaningful: where the walk
+    #: started, the highest point it crossed, and the minimum it came to.
+    submit_scan_energy = widgets.Dropdown(
+        options=[('price with E', 'E'), ('price with G', 'G')], value='E',
+        tooltip=('Electronic energies throughout, or a free energy at the '
+                 'start, the top and the end -- three Hessians, at the '
+                 'temperature above.'),
+        layout=widgets.Layout(width='136px', display='none'),
+        disabled=True,
+    )
     submit_scan_run_btn = widgets.Button(
         description='Run scan', button_style='success', icon='play',
         tooltip='Walk every armed coordinate together, and say what it costs.',
@@ -1585,7 +1609,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
          submit_scan_btn, submit_scan_way, submit_scan_steps,
          submit_scan_stop_at, submit_scan_to,
          submit_scan_dd, submit_scan_del, submit_scan_whole,
-         submit_scan_how, submit_scan_run_btn],
+         submit_scan_how, submit_scan_energy, submit_scan_run_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -2603,27 +2627,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return True
 
     def _pull_most():
-        """The hardest the hand may ever pull, or None for no limit at all.
+        """The hardest the hand may ever pull.  Nothing, now, ever.
 
-        The hand grows with the drag, so the slider is where it *starts* and
-        this is where it stops.  Without a temperature to answer to there is
-        no reason for it to stop anywhere: the setting is the user's and drag
-        far enough and anything comes apart, which is what pulling on
-        something is like.
+        A temperature grants an *energy*, and that is the whole of what it
+        says.  Steepness follows from it on its own: a steep part of the
+        surface spends the budget in a short distance, so at a low temperature
+        a steep path simply does not go far -- there is nothing left for a
+        force ceiling to add.
 
-        With the budget on the temperature decides.  What it grants is an
-        energy, and a restraint is a spring -- it reaches its force only at
-        full stretch and is weaker all the way there -- so the force whose
-        push can spend the ceiling over the reach is twice the ceiling divided
-        by it: 45 kcal/mol per Angstrom and per radian at 298 K within the
-        hour, four tenths of what a bond holds.  Measured on a bromobenzene
-        dragged five angstroms: the C-Br holds at 2.12 A there, and comes off
-        to 4.37 with no budget at all.
+        It was capping the force as well, derived from the ceiling over a
+        chosen length.  That needs a length no temperature supplies, and it
+        can forbid what the temperature allows: sized as a distance it left
+        the hand too weak to turn a torsion, so a molecule could not be put
+        into its own conformers at room temperature -- which is the one thing
+        room temperature certainly does allow.
+
+        What enforces the temperature is the wall, which prices the structure
+        that was actually reached and hands back the last one that was inside
+        the budget.  That is exact, it is coordinate-independent, and it needs
+        no length at all.  The slider is the hand, the wall is the limit, and
+        the two do not have to agree about anything.
+
+        Kept as a function rather than deleted because the question "should
+        anything cap this" is worth having an answer to in one place.
         """
-        if not submit_thermal_btn.value:
-            return None
-        _, ceiling = _thermal_budget()
-        return None if ceiling is None else _gfn.push_force_for(float(ceiling))
+        return None
 
     def _gfn_follow_step(xyz, holding=()):
         """Relax around the atom the hand is holding, and send that back.
@@ -6077,10 +6105,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         read as "The scan walked 1 of 20 points. Highest +0.0 kcal/mol", which
         is indistinguishable from a scan that did nothing at all.
         """
-        if summit is None or spent > summit:
-            return spent, (spent, geometry, value)
+        here = (spent, geometry, value)
+        if summit is None or spent > summit[0]:
+            return here, here
         if bottom is None or spent < bottom[0]:
-            return summit, (spent, geometry, value)
+            return summit, here
         return summit, bottom
 
     def _scan_arrived(path):
@@ -6151,7 +6180,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         legs = _scan_legs()
         showing = '' if legs else 'none'
         for widget in (submit_scan_dd, submit_scan_del, submit_scan_whole,
-                       submit_scan_how, submit_scan_run_btn):
+                       submit_scan_how, submit_scan_energy,
+                       submit_scan_run_btn):
             widget.layout.display = showing
             widget.disabled = not legs
         options = [(_describe_leg(leg), str(n)) for n, leg in enumerate(legs)]
@@ -6377,6 +6407,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_stop'] = False
         state['scan_arrived'] = False
         state['scan_came_back'] = None
+        state['scan_free'] = None
         state['scan_crowded'] = None
         state['scan_frame_run'] = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = state['scan_frame_run']
@@ -6406,6 +6437,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             base = None
             bottom = None
             summit = None
+            began_at = None
             standing = None
             shown = []
             force = _gfn.PUSH_FORCE_FROM
@@ -6459,6 +6491,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 (float(got['energy']) - base)
                                 * _HARTREE_TO_KCAL))
                 return out
+
+            def _free(here):
+                """The free energy of this geometry, unconstrained.
+
+                Its own calculation, with no restraint in it: a Hessian taken
+                on a biased surface has the restraint's own curvature in its
+                frequencies, and the whole point of asking for G is that the
+                number means something.
+                """
+                got = _gfn.optimize_with_gfn(
+                    here, method, charge=charge, uhf=uhf, timeout=None,
+                    solvent=wet, solvation_model=model,
+                    topology=_gfn_topology_dir(here), optimise=False,
+                    free_energy=True,
+                    thermo_kelvin=float(submit_temperature.value or 298.15))
+                return got.get('free_energy')
 
             def _unbiased(here, applied=()):
                 """The energy of this geometry with no force on it.
@@ -6592,6 +6640,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         walked = standing if standing is not None else walked
                         break
                     standing = walked
+                    if began_at is None:
+                        # The first point, which is the start relaxed at the
+                        # value it already had -- a minimum in every direction
+                        # but the one being walked, which is what a free
+                        # energy wants.
+                        began_at = walked
                     # Where the coordinate *is*, not where it was asked to be.
                     # A push does not dictate a value -- that is the whole
                     # point of it -- so the path is read off the structure.
@@ -6655,6 +6709,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             'follow': 1,
                             'frames': [shown[-1]],
                         }): setattr(submit_gfn_frame, 'value', text))
+                # And the free energy, at the three places it is both
+                # affordable and meaningful: where the walk started, the
+                # highest point it crossed, and the minimum it came to.
+                if (str(submit_scan_energy.value) == 'G' and began_at
+                        and summit is not None and not state.get('scan_stop')):
+                    schedule_ui_update(
+                        _set_mol_status,
+                        f'{label} is taking three Hessians for the free '
+                        'energies...', spinner=True)
+                    ends = bottom[1] if bottom is not None else walked
+                    one, top, other = (_free(began_at), _free(summit[1]),
+                                       _free(ends))
+                    state['scan_free'] = (
+                        None if None in (one, top, other) else
+                        ((top - one) * _HARTREE_TO_KCAL,
+                         (other - one) * _HARTREE_TO_KCAL))
             finally:
                 state['scan_run'] = False
 
@@ -6701,6 +6771,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _, rise = _climbed([one[1] for one in path])
         ends = came[1] if came else path[-1][1]
         T = float(submit_temperature.value or 298.15)
+        # The free energies, where they were asked for, and then they are the
+        # barrier -- not a second opinion printed beside it.  Eyring inverts a
+        # free energy of activation, so a ceiling compared against anything
+        # else is an approximation standing in for one; when the real thing is
+        # there it is what the temperature is worked out from.  Read after the
+        # temperature was taken from the electronic rise, the line quoted one
+        # number and reasoned from the other.
+        free = state.get('scan_free')
+        if free is not None:
+            rise = free[0]
         ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
         needs = thermal_temperature(rise, _THERMAL_SECONDS)
         arrived = (f' It came back to the minimum it walked through, at '
@@ -6719,10 +6799,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # rather than as "27 of 20".
         many = (f'{len(path)} points' if len(path) > steps
                 else f'{len(path)} of {steps} points')
-        first = (f'The scan walked {many}. Highest '
-                 f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, a rise of '
-                 f'{rise:.1f} out of the minimum before it, ending '
-                 f'{ends:+.1f}.{arrived}')
+        # Said as one quantity or as two, never as two wearing one name: a
+        # highest point in E beside a rise in G reads as a contradiction, and
+        # a reader has no way to tell which is which.
+        if free is None:
+            first = (f'The scan walked {many}. Highest '
+                     f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, a rise of '
+                     f'{rise:.1f} out of the minimum before it, ending '
+                     f'{ends:+.1f}.{arrived}')
+        else:
+            first = (f'The scan walked {many}. Highest at {top[0]:.3g}: '
+                     f'{free[0]:+.1f} kcal/mol as a free energy at {T:g} K '
+                     f'({top[1]:+.1f} electronic), ending {free[1]:+.1f} '
+                     f'({ends:+.1f}).{arrived} The free energies are from '
+                     f'three Hessians -- where it started, the top, and where '
+                     f'it came to -- and they are what the temperature below '
+                     f'is worked out from.')
+        if free is None and str(submit_scan_energy.value) == 'G':
+            first += (' The free energies could not be taken, so these are '
+                      'electronic.')
         # The temperature is said either way.  Said only when the path was
         # closed, the number a chemist came for was missing exactly when the
         # answer was good news -- and "it needs 150 K and you have 298" is
@@ -7093,13 +7188,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _, ceiling = _thermal_budget()
         spent = _thermal_note(state.get('thermal_now'))
-        # The hand as well, because that is the part of the budget the user
-        # can feel: the number in the line and the strength of the drag move
-        # together, and without saying so a temperature that changed nothing
-        # visible looked like a temperature that changed nothing.
+        # What the ceiling is worth as a slope, which is the part of it a
+        # drag can be felt against: a barrier of that height climbed over an
+        # angstrom is that steep, and the hand walks up anything shallower
+        # than itself.  Said beside the hand's own setting rather than as a
+        # cap on it -- the temperature limits the energy and nothing else.
         hand = _pull_force()
-        told = ('' if hand is None else
-                f' The hand pulls with {hand:.0f} kcal/mol/A, '
+        steep = _gfn.push_force_for(float(ceiling)) if ceiling else None
+        told = ('' if hand is None or steep is None else
+                f' That is a slope of about {steep:.0f} kcal/mol/A over an '
+                f'angstrom; the hand is set to {hand:.0f}, '
                 f'{hand / _gfn.A_BOND_HOLDS:.2f} of what a bond holds.')
         _set_mol_status(
             f'At {float(submit_temperature.value):g} K this structure has '
@@ -7524,7 +7622,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             for widget in (submit_scan_way, submit_scan_to, submit_scan_steps,
                            submit_scan_stop_at,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
-                           submit_scan_how, submit_scan_run_btn):
+                           submit_scan_how, submit_scan_energy,
+                           submit_scan_run_btn):
                 widget.layout.display = 'none'
             if _scan_legs():
                 _set_mol_status(

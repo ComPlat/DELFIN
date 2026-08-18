@@ -4623,7 +4623,9 @@ def test_a_single_point_leaves_the_geometry_alone():
     source = open(_gfn_source(), encoding="utf-8").read()
     body = source.split("def optimize_with_gfn(")[1].split("\ndef ")[0]
     assert "optimise: bool = True" in body
-    assert "*(['--opt'] if optimise else [])" in body
+    # And a free energy is a Hessian, which is asked for and never
+    # assumed -- a drag answering ten times a second cannot have one.
+    assert "else ['--opt'] if optimise" in source
     # No --opt writes no xtbopt.xyz and no path: reading them would hand back
     # None and read as a failure.
     assert "if optimise else xyz_text" in body
@@ -5120,41 +5122,46 @@ def test_the_temperature_says_how_hard_the_hand_may_pull(bare_editor):
     most the hand may pull with is what the ceiling can pay for, and a
     deformation the temperature cannot afford simply does not happen.
 
-    At 298 K within the hour the ceiling is 22.3 kcal/mol, so the hand pulls
-    with 45 kcal/mol per Angstrom and per radian -- four tenths of what a bond
-    holds, and enough to drive the 4.8 kcal/mol rotational barrier that needs
-    about 11 kcal/mol per radian.  At 150 K it is 22 and still enough; at
-    1500 K it is 234, twice what a bond holds.
+    A temperature grants an energy, and that is the whole of what it says.
+    Steepness follows from it on its own: a steep part of the surface spends
+    the budget in a short distance, so at a low temperature a steep path
+    simply does not go far, and there is nothing left for a force ceiling to
+    add.
 
-    The hand is sized so that everything the temperature allows can be *asked
-    for*.  What refuses what it does not allow is the wall, which prices the
-    structure that was actually reached -- a hand strong enough to drive one
-    barrier can always be dragged for longer than one barrier's worth, and no
-    force ceiling can prevent that.  The two are different jobs and this is
-    the first of them.
+    It capped the force as well for a while, derived from the ceiling over a
+    chosen length -- and that needs a length no temperature supplies, and it
+    forbade what the temperature allows: sized as a distance it left the hand
+    too weak to turn a torsion, so a molecule could not be put into its own
+    conformers at room temperature.
+
+    What enforces the temperature is the wall, which prices the structure that
+    was actually reached and hands back the last one inside the budget.  That
+    is exact, coordinate-independent, and needs no length at all.
     """
     from delfin.dashboard import gfn_optimize as gfn
 
     part, _state = bare_editor
-    # The slider is where the hand *starts*; the temperature is where it
-    # stops, because the hand grows with the drag.
-    most = part._pull_most
-    part.submit_pull_slider.value = 3.0        # as hard as it starts
+    part.submit_pull_slider.value = 3.0
     part.submit_thermal_btn.value = True
     part.submit_temperature.value = 298.15
-    room = most()
-    assert room == pytest.approx(44.6, abs=2.0), room
-    assert room < gfn.A_BOND_HOLDS / 2
 
+    # Nothing caps the hand, at any temperature: the slider is the hand and
+    # the wall is the limit, and the two do not have to agree about anything.
+    assert part._pull_most() is None
     part.submit_temperature.value = 1500.0
-    hot = most()
-    assert hot == pytest.approx(234.0, abs=6.0), hot
-    assert hot > 2 * gfn.A_BOND_HOLDS
-
-    # With the budget off nothing stops it at all: the hand goes on getting
-    # stronger the further it is dragged, and its top takes anything apart.
+    assert part._pull_most() is None
     part.submit_thermal_btn.value = False
-    assert most() is None
+    assert part._pull_most() is None
+
+    # What the temperature is worth as a slope is still said, because that is
+    # the part of it a drag can be felt against -- said beside the hand's own
+    # setting rather than as a cap on it.
+    from delfin.dashboard.structure_editor import thermal_ceiling
+    room = gfn.push_force_for(thermal_ceiling(298.15, 3600.0))
+    assert room == pytest.approx(44.6, abs=2.0), room
+    hot = gfn.push_force_for(thermal_ceiling(1500.0, 3600.0))
+    assert hot == pytest.approx(234.0, abs=6.0), hot
+    assert 'That is a slope of about ' in EDITOR_SOURCE
 
 
 def test_the_page_sends_the_wish_and_draws_the_answer(bare_editor):
@@ -5234,18 +5241,20 @@ def test_without_the_budget_the_hand_is_the_users_alone(bare_editor):
     slider.value = 0.0
     assert force() is None, "zero is the rigid hand"
 
-    # The default is what room temperature allows, so turning the budget on
-    # is felt as a ceiling and not as a change of feel.
+    # The default is what room temperature is worth as a slope, so the two
+    # are the same hand and switching the budget on is not felt as a change
+    # of feel.
     slider.value = 0.4
+    assert force() == pytest.approx(gfn.push_force_for(22.3), rel=0.06)
+
+    # And the budget does not move the hand at all -- it limits the energy,
+    # which the wall enforces on what was actually reached.
     part.submit_thermal_btn.value = True
     part.submit_temperature.value = 298.15
-    assert force() == pytest.approx(most(), rel=0.05), (force(), most())
-
-    # The slider says where it starts, the temperature where it stops, and
-    # neither moves the other.
+    assert force() == pytest.approx(0.4 * gfn.A_BOND_HOLDS)
+    assert most() is None
     slider.value = 3.0
     assert force() == pytest.approx(3.0 * gfn.A_BOND_HOLDS)
-    assert most() == pytest.approx(gfn.push_force_for(22.3), rel=0.05)
 
     # And the slider opens there.
     source = EDITOR_SOURCE

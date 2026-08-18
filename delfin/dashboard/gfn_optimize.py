@@ -100,6 +100,9 @@ WATCH_INTERVAL = 0.01
 FRAME_READ_INTERVAL = 0.05
 
 _ENERGY_RE = re.compile(r'TOTAL ENERGY\s+(-?\d+\.\d+)')
+#: What xtb prints when it has been given a Hessian to work from.  The msRRHO
+#: free energy at whatever temperature the $thermo block asked for.
+_FREE_ENERGY_RE = re.compile(r'TOTAL FREE ENERGY\s+(-?\d+\.\d+)')
 _VERSION_RE = re.compile(r'xtb version\s+([0-9.]+)')
 # What the run says it did, taken from its own output rather than from the
 # flags we passed: an xtb that ignored a flag would otherwise be indisting-
@@ -875,6 +878,16 @@ def push_force_for(energy: float, reach: float = PUSH_REACH) -> float:
        *tau* is ``R T ln(kB T tau / h)`` -- 22.3 kcal/mol at 298.15 K within
        the hour, 10.9 at 150 K, 117 at 1500 K.  See ``thermal_ceiling``.
        Nothing is chosen here.
+
+       That ceiling is a free energy and what is priced against it is an
+       electronic one, which is an approximation and is meant as one.  A free
+       energy is a Hessian, and a Hessian is not free: measured under GFN2,
+       0.57 s against 0.29 for sixteen atoms and 3.72 against 0.76 for
+       twenty-four.  A drag answers ten times a second, so there is no version
+       of this that has a free energy in it -- and an entropy term that is
+       roughly constant along a path largely cancels in a difference, which is
+       why the approximation is a reasonable one rather than merely a cheap
+       one.
     2. That energy into a force.  A restraint is a spring: it reaches its
        force only at full stretch and is weaker all the way there, so what it
        can spend over a displacement is half of force times displacement.
@@ -1773,6 +1786,8 @@ def optimize_with_gfn(
     solvent: Optional[str] = None,
     solvation_model: str = 'alpb',
     optimise: bool = True,
+    free_energy: bool = False,
+    thermo_kelvin: float = 298.15,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -1902,16 +1917,26 @@ def optimize_with_gfn(
         source.write_text(f'{len(body)}\nfrom the DELFIN viewer\n'
                           + '\n'.join(body) + '\n', encoding='utf-8')
         cores = interactive_cores(len(body))
+        # A free energy is a Hessian, and a Hessian is not free: measured
+        # under GFN2, 0.57 s against 0.29 for sixteen atoms and 3.72 against
+        # 0.76 for twenty-four.  So it is asked for and never assumed.
         command = [binary, source.name, *spec['flags'],
-                   *(['--opt'] if optimise else []),
+                   *(['--ohess'] if (optimise and free_energy)
+                     else ['--opt'] if optimise
+                     else ['--hess'] if free_energy else []),
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
                    '-P', str(cores)]
         if max_steps:
             command += ['--cycles', str(int(max_steps))]
         command += _solvents.xtb_flags(model, wet)
         held = constraint_input(constraints, atoms=len(body))
-        if held['text']:
-            (folder / 'xtb.inp').write_text(held['text'], encoding='utf-8')
+        # One input file, whatever is in it: a second --input replaces the
+        # first rather than adding to it.
+        asked = held['text']
+        if free_energy:
+            asked += f'$thermo\n  temp={float(thermo_kelvin):g}\n$end\n'
+        if asked:
+            (folder / 'xtb.inp').write_text(asked, encoding='utf-8')
             command += ['--input', 'xtb.inp']
         # GFN-FF's perceived bonding, carried in from the caller's directory
         # if it has one from an earlier run on this molecule.  Only GFN-FF has
@@ -2095,6 +2120,14 @@ def optimize_with_gfn(
                 energy = float(found.group(1))
             except ValueError:
                 energy = None
+        free = None
+        if free_energy:
+            told = _FREE_ENERGY_RE.search(output)
+            if told:
+                try:
+                    free = float(told.group(1))
+                except ValueError:
+                    free = None
         seconds = time.perf_counter() - started
 
         if relaxed is None:
@@ -2165,7 +2198,7 @@ def optimize_with_gfn(
             # The geometry is still better than the one that went in, so it is
             # handed back -- but not as though it were finished.
             return {
-                'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
+                'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet, 'solvation_model': model,
@@ -2175,7 +2208,7 @@ def optimize_with_gfn(
                            + solvent_note(wet, model) + held_note(held)),
             }
         return {
-            'ok': True, 'xyz': relaxed, 'energy': energy, 'method': key,
+            'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet, 'solvation_model': model,
