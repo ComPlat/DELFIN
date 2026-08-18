@@ -31375,16 +31375,67 @@ def _clean_gate_filter(isomers):
         _bad_flags = [_certainly_bad(f) for f in frames]
         if os.environ.get("DELFIN_FFFREE_CLEAN_GATE_LAST_OF_KIND", "0") == "1":
             try:
+                # ===== DER FINGERABDRUCK WAR BLIND FUER DIE ANORDNUNG =================
+                # Gemessen 2026-08-18 auf gk10kb (10000 Systeme, 9600 verglichen): der Boden
+                # senkt hard_frame_frac um 6,64 Prozentpunkte -- und verliert dabei
+                #     isomers_lost 40 | ccdc_arrangement_lost 37 | ccdc_backbone_lost 26
+                # OBWOHL "letztes seiner Art" lief.  Das ist kein Widerspruch, sondern die
+                # Definition der Gruppe: der Schluessel unten ist das sortierte ELEMENT-
+                # MULTISET der ersten Schale.  cis und trans haben dasselbe Multiset.  Eine
+                # ganze Anordnungsfamilie kann also ausgeloescht werden, ohne dass ihre
+                # Gruppe je leer wird -- die Rettung greift nie, weil ein anderes Isomer
+                # denselben Fingerabdruck traegt.
+                #
+                # Exakt dieselbe Wurzel wie Commit 1caa9123 ("Faltungs-Vollstaendigkeit pro
+                # ANORDNUNGSFAMILIE statt pro Geometrie-Gruppe").  Zum zweiten Mal dieselbe
+                # Verwechslung: "gleiche Elemente" ist nicht "gleiche Anordnung".
+                #
+                # DELFIN_FFFREE_CLEAN_GATE_KIND_ARRANGEMENT (Vorgabe 0 -> byte-identisch)
+                # haengt an den Schluessel das Multiset der D-M-D-Winkelklassen: fuer jedes
+                # Donorpaar (Element, Element, Winkelband).  Damit trennen sich cis/trans,
+                # fac/mer und axial/aequatorial.
+                #
+                # ⚠️ RICHTUNG DER AENDERUNG: ein FEINERER Schluessel erzeugt MEHR Gruppen,
+                # und mehr Gruppen koennen nur MEHR Frames retten, nie weniger.  Die
+                # Aenderung ist damit monoton zugunsten der Vollstaendigkeit und kann kein
+                # Isomer kosten, das der grobe Schluessel gerettet haette.  Der Preis liegt
+                # auf der anderen Seite: der Boden verwirft weniger, der Gewinn an
+                # hard_frame_frac faellt kleiner aus.  Genau das ist zu messen.
+                #
+                # Das Winkelband ist bewusst GROB (45 Grad).  Verzerrung darf eine Gruppe
+                # spalten -- das ist die sichere Richtung -- aber Rauschen soll nicht jede
+                # Gruppe in Einzelframes zerlegen.  Ideal-Oktaeder 90/180 -> Baender 2/4,
+                # Tetraeder 109,5 -> 2, trigonale Bipyramide 90/120/180 -> 2/3/4.
+                _kind_arr = (os.environ.get(
+                    "DELFIN_FFFREE_CLEAN_GATE_KIND_ARRANGEMENT", "0") == "1")
+
                 def _coord_fp(f):
                     syms = f[0]
                     out = []
                     for mi in range(n_atoms):
                         if not _is_metal(syms[mi]):
                             continue
-                        sh = sorted(syms[k] for k in range(n_atoms)
-                                    if k != mi and syms[k] != "H" and not _is_metal(syms[k])
-                                    and math.sqrt(_d2(f, mi, k)) < md_shell)
-                        out.append(syms[mi] + ":" + ",".join(sh))
+                        _don = [k for k in range(n_atoms)
+                                if k != mi and syms[k] != "H" and not _is_metal(syms[k])
+                                and math.sqrt(_d2(f, mi, k)) < md_shell]
+                        sh = sorted(syms[k] for k in _don)
+                        _key = syms[mi] + ":" + ",".join(sh)
+                        if _kind_arr and len(_don) >= 2:
+                            _ang = []
+                            for _ai in range(len(_don)):
+                                for _bi in range(_ai + 1, len(_don)):
+                                    _a, _b = _don[_ai], _don[_bi]
+                                    _ra2, _rb2 = _d2(f, mi, _a), _d2(f, mi, _b)
+                                    if _ra2 <= 0.0 or _rb2 <= 0.0:
+                                        continue
+                                    _c = ((_ra2 + _rb2 - _d2(f, _a, _b))
+                                          / (2.0 * math.sqrt(_ra2) * math.sqrt(_rb2)))
+                                    _c = max(-1.0, min(1.0, _c))
+                                    _band = int(round(math.degrees(math.acos(_c)) / 45.0))
+                                    _e1, _e2 = sorted((syms[_a], syms[_b]))
+                                    _ang.append("%s%s%d" % (_e1, _e2, _band))
+                            _key += ";" + ",".join(sorted(_ang))
+                        out.append(_key)
                     return "|".join(sorted(out))
                 _groups = {}
                 for _i, f in enumerate(frames):
