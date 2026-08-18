@@ -1691,6 +1691,11 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                 syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"
         results.append((_xyz(syms, P), _lab))
+        # Saat fuer das Kreuzprodukt Konformer x Faltung -- siehe die lange Begruendung
+        # am Ende dieser Schleife.  Pro akzeptiertem Frame frisch, nie ueber Frames
+        # hinweg gesammelt: der Faltungspass braucht die Atomreihenfolge SEINES Frames.
+        _prod_on = os.environ.get("DELFIN_FFFREE_MANIFOLD_PRODUCT", "0") == "1"
+        _prod_seeds = []
         # BETA AS A SIBLING, NOT AS A REPLACEMENT (DELFIN_FFFREE_BETA_SIBLING, default OFF).
         #
         # Measured 2026-08-02: choosing the flat-beta conformer INSTEAD of the clash-minimal
@@ -1841,6 +1846,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                 except Exception:
                     continue                          # cannot prove equivalence -> do not add
                 results.append((_sxyz, f"{_lab}-conf{_sfi+1}"))
+                if _prod_on:
+                    _prod_seeds.append((_ss, _sP, f"{_lab}-conf{_sfi+1}", _sd))
         # Ring-pucker siblings of this accepted frame (default OFF -> byte-identical).
         # Runs HERE, next to the frame it belongs to, because this is where the frame's
         # own atom order is known -- see the function for why the same call from the
@@ -1862,6 +1869,61 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
         _append_reembed(results, d["metal"], _clg,
                         syms, P, _lab, cn=d.get("cn"), geom=d.get("geometry"),
                         donors=donors)
+        # ===== DER MANIFOLD WAR EINE SUMME, KEIN PRODUKT ==========================
+        # Gemessen 2026-08-18 an 143904 Frame-Etiketten aus fuenf Archiven: die
+        # Kombination "Konformer UND Ringfaltung" existiert NULL mal, obwohl beide
+        # Achsen einzeln reichlich vertreten sind (6518 Faltungs- gegen 94191
+        # Konformer-Etiketten).  107 Systeme bedienen beide Achsen -- keines baut ein
+        # einziges Kreuzprodukt:
+        #     CECWEM  1 primaer + 1 conf + 9 pucker = 11 gebaut,  Produkt waere 20
+        #     QILQUX  4 + 17 + 10                   = 39 gebaut,  Produkt waere 231
+        #     XIZTOS  2 + 15 + 6                    = 23 gebaut,  Produkt waere 119
+        # Die Ursache steht drei Aufrufe weiter oben: die Geschwister-Erzeuger bekommen
+        # alle `syms, P`, also das UNVERAENDERTE Primaerframe.  Sie schreiben in
+        # `results`, lesen es aber nie.  Die Nachpaesse in smiles_converter sind dagegen
+        # eine echte Kette (_ff = f(_ff)) -- deshalb komponieren nur die.
+        #
+        # DELFIN_FFFREE_MANIFOLD_PRODUCT (Vorgabe 0 -> byte-identisch) laesst die
+        # Faltungs- und Torsionspaesse zusaetzlich ueber die AKZEPTIERTEN
+        # Konformer-Geschwister laufen.  Aus 1 + 1 + 9 wird 1 + 1 + 9 + 9.
+        #
+        # ⚠ WARUM NUR DIE KONFORMER-SAAT UND NICHT AUCH -beta/-lp/-reembed:
+        # der gemessene Befund ist "pucker x conf = 0"; -beta und -lp sind klein
+        # (Einzelframes), und _append_reembed ist gemessen SCHMUTZIG (bbrefix: +11,9 pp
+        # harte Frames).  Ein Produkt ueber eine schmutzige Achse vervielfacht den
+        # Schmutz.  Die Erweiterung auf weitere Saaten gehoert hinter das
+        # Zusicherungsprotokoll, nicht hierhin.
+        #
+        # ⚠ KEINE STILLE KAPPUNG.  Der Deckel meldet sich, wenn er bindet -- eine stille
+        # Kappung liest sich hinterher als "mehr gab es nicht", und genau dieser Fehler
+        # steckt schon in dofs[:4] und _WELL_MAX_SIBLINGS.
+        if _prod_on and _prod_seeds:
+            # Der Deckel ist ein BACKSTOP, kein Auswahlmittel: 24 liegt ueber der
+            # groessten beobachteten Saatzahl (QILQUX, 17).  Er meldet sich ueber den
+            # Trace-Kanal dieses Moduls -- also sichtbar, sobald
+            # DELFIN_FFFREE_ISO_TRACE auf eine Datei zeigt, und sonst nicht.  Das ist
+            # bewusst hier notiert: eine Kappung, von der man nur unter einem zweiten
+            # Schalter erfaehrt, ist halb still, und wer die Zahlen liest, muss das
+            # wissen.  Die eigentliche Schranke bleibt max_isomers.
+            _pmax = max(1, int(os.environ.get(
+                "DELFIN_FFFREE_MANIFOLD_PRODUCT_MAX", "24")))
+            if len(_prod_seeds) > _pmax:
+                _ff_trace_write(
+                    "[PRODUCT_CAP] seeds=%d cap=%d dropped=%d lab=%s"
+                    % (len(_prod_seeds), _pmax, len(_prod_seeds) - _pmax, _lab))
+            for _ps, _pP, _plab, _pd in _prod_seeds[:_pmax]:
+                if max_isomers and len(results) >= max_isomers:
+                    break
+                _append_ffree_ring_puckers(results, d["metal"], _clg, _ps, _pP, _plab,
+                                           cn=d.get("cn"), geom=d.get("geometry"),
+                                           donors=(_pd if _pd is not None else donors),
+                                           exempt_pairs=_ex, graph_bonds=_gb,
+                                           max_isomers=max_isomers)
+                _append_ffree_torsion_wells(results, d["metal"], _clg, _ps, _pP, _plab,
+                                            cn=d.get("cn"), geom=d.get("geometry"),
+                                            donors=(_pd if _pd is not None else donors),
+                                            exempt_pairs=_ex, graph_bonds=_gb,
+                                            max_isomers=max_isomers)
     return results or None
 
 
