@@ -794,3 +794,50 @@ def test_the_frame_is_every_bond_and_every_angle():
                 if one["kind"] == "distance" and set(one["atoms"]) == {0, 1})
     assert bond["value"] == pytest.approx(1.53, abs=0.01)
 
+
+def test_the_editor_writing_the_box_is_not_a_new_structure():
+    """The host starts a structure over unless it is told it is the same one.
+
+    Charge back to zero, multiplicity to one, and every held value, bond edit
+    and history entry thrown away.  That is right for a structure someone
+    loads and wrong for every write this editor makes -- and a scan makes one
+    per point, so it lost the charge it was told to run at mid-scan, and the
+    undo history with it.
+
+    Measured with the host's own reset attached, a six-point scan on a charge
+    of -1 and a multiplicity of 2: without the flag it came back at 0 and 1
+    with no history at all, and the host had called it a new structure seven
+    times; with it, -1 and 2, the history intact, and not once.
+    """
+    body = EDITOR_SOURCE.split("def _write_coords(")[1].split("\n    def ")[0]
+    assert "state['structure_edit_inflight'] = True" in body
+    assert "state['structure_edit_inflight'] = False" in body
+    # Set around the write and cleared afterwards, whatever happens.
+    assert body.index("= True") < body.index("coords_widget.value = text")
+    assert "finally:" in body
+
+
+
+
+def test_a_drag_is_not_a_new_structure_either():
+    """The drag's own way back into the box was the one that killed the budget.
+
+    Unguarded, the host started the structure over on every single drag --
+    charge to zero, multiplicity to one, held values and history gone, and
+    structure_changed dropping the thermal anchor with them.  Without an anchor
+    there is no budget, so nothing could be refused and nothing taken back,
+    which is why the budget appeared to do nothing at all.
+
+    Measured with the host's reset attached, a ring hydrogen yanked to 1.90,
+    2.60 and 3.20 A: before, the anchor was gone after the first yank and the
+    viewer drew 1.96; after, the anchor is still set on all three, the host has
+    called it a new structure not once, and both the viewer and the box hold
+    1.08.
+    """
+    body = EDITOR_SOURCE.split("def on_submit_manip_sync(")[1]
+    body = body.split("\n    def ")[0]
+    assert "state['structure_edit_inflight'] = True" in body
+    assert "coords_widget.value = payload" in body
+    assert body.index("= True") < body.index("coords_widget.value = payload")
+    assert "finally:" in body
+
