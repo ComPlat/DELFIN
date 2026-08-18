@@ -51,6 +51,13 @@ except Exception:                                    # pragma: no cover
 # lets each candidate fall into the nearest genuine minimum, and a Cremer-Pople
 # dedup distils the candidates to the DISTINCT populated conformers for THIS
 # ring.  This works uniformly for N = 5, 6, 7, 8, 9, ... with no per-size table.
+# Ringe, die NUR den flachen Zustand bekommen (konjugierte Metallacyclen, die
+# `_is_puckerable` ablehnt).  Wird je `generate`-Aufruf neu befuellt; ein Ring
+# hierin erhaelt in `_ring_pucker_states` AUSSCHLIESSLICH den Q=0-Kandidaten,
+# damit ein konjugierter Ring begradigt und nicht gefaltet wird.
+_FLAT_ONLY: set = set()
+
+
 def _pucker_candidates(n: int) -> List[Tuple[float, Optional[float], float]]:
     """(q_scale, theta, phi) je Kandidat.  `q_scale` multipliziert `_amp(n)`.
 
@@ -148,6 +155,7 @@ def _set_pucker(conf, ring, Q, theta, phi, frozen: Optional[Set[int]] = None):
     q2 = Q * (_np.sin(th) if th is not None else 1.0)
     q3 = Q * (_np.cos(th) if th is not None else 0.0)
     frozen = frozen or set()
+    _FLAT_ONLY.clear()
     for j, idx in enumerate(ring):
         # a frozen ring atom (metal / coordinating donor of a chelate ring) keeps
         # its position -> only the backbone puckers, the coordination sphere is
@@ -415,7 +423,11 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     n = len(ring)
-    for _qs, theta, phi in _pucker_candidates(n):
+    _cands = _pucker_candidates(n)
+    if frozenset(ring) in _FLAT_ONLY:
+        # NUR begradigen, nicht falten -- s. den Block in `generate`.
+        _cands = [(0.0, 0.0, 0.0)]
+    for _qs, theta, phi in _cands:
         try:
             m2 = Chem.Mol(mol_with_conf)
             _set_pucker(m2.GetConformer(), ring, _qs * _amp(n), theta, phi, frozen)
@@ -463,6 +475,42 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     frozen = frozen or set()
     rings = [_ring_order(mol_with_conf, r) for r in rings_raw
              if _is_puckerable(mol_with_conf, r)]
+    # ===== DER FLACHE ZUSTAND FUER KONJUGIERTE RINGE (18.08.2026) =====================
+    # GEMESSEN (16./17.08., `folds`, 965 Systeme): von 326 fehlenden Ringmotiven sind
+    # **218 PLANAR** -- 5M 126 - 6M 55 - 4M 37 -- und ALLE drei Klassen sind
+    # METALLACYCLEN (`find_conformer_completeness:254` baut den Namen als
+    # f"{sz}{'M' if is_metallacycle else ''}:{basin}").
+    #
+    # `_is_puckerable` laesst genau diese nicht herein: es verlangt "kein aromatisches
+    # Ringatom" und ">= 3 sp3-Ringatome", und begruendet das damit, ein konjugierter Ring
+    # SEI ohnehin planar und rigide.  Das Auge misst das Gegenteil: der Kristall-
+    # Planarzustand FEHLT im Bau.  Beides zusammen heisst -- der Ring wird von etwas
+    # anderem gefaltet, und das einzige Modul, das ihn absichtlich flach setzen koennte,
+    # darf ihn nicht anfassen.  `planar138` und `pktrace` haben das bestaetigt
+    # (affected 0, auch mit bewusst umgangener Reichweitensperre).
+    #
+    # ⚠ NUR DER Q=0-ZUSTAND, kein Pucker.  Diese Ringe sollen nicht gefaltet, sondern
+    # BEGRADIGT werden; `_ring_pucker_states` bietet ihnen darum ausschliesslich die
+    # Projektion in die Mittelebene an.  Metall und Donoren stehen in `frozen` und
+    # bewegen sich nicht -- die Koordinationssphaere bleibt unberuehrt.
+    #
+    # ⚠ KLASSE: ENUMERATOR, kein Reparateur (Modulzensus 18.08.).  Er PROJIZIERT bei
+    # eingefrorenem Kern, statt neu zu erzeugen -- dieselbe Klasse wie der
+    # Spiegelabschluss (+1,0 pp), nicht die von BACKBONE_REEMBED (+11,9 pp).
+    #
+    # Vorgabe AUS -> Ringmenge unveraendert -> byte-identisch.
+    if _os.environ.get("DELFIN_FFFREE_PUCKER_PLANAR", "0") == "1":
+        _have = {frozenset(r) for r in rings}
+        for _r in rings_raw:
+            if frozenset(_r) in _have or not (5 <= len(_r) <= 8):
+                continue
+            try:
+                _ro = _ring_order(mol_with_conf, _r)
+            except Exception:
+                continue
+            if _ro:
+                _FLAT_ONLY.add(frozenset(_ro))
+                rings.append(_ro)
     if not rings:
         return []
     # per-ring distinct pucker states (index 0 == base pucker for every ring),
