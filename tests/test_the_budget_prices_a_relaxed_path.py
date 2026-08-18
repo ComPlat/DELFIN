@@ -356,7 +356,7 @@ def test_the_atom_under_the_hand_stays_under_the_hand():
     head on it reached 0.7 A and was the only sign anything was wrong.
     """
     assert "str(one.get('kind')) == 'dihedral'" in EDITOR_SOURCE
-    assert "settled = _gfn.hold_atoms_at(" in EDITOR_SOURCE
+    assert "_gfn.hold_atoms_at(" in EDITOR_SOURCE
     assert "slipped > _SLIP_LOOSE" in EDITOR_SOURCE
     assert "The hold is loose here" in EDITOR_SOURCE
     # And the geometry a turn is measured against is the one this answer
@@ -675,7 +675,7 @@ def test_the_line_says_how_steep_it_is():
     The number is what turns that into something to steer by: "+8 per A" and
     "+160 per A" are two different situations.
     """
-    assert "state['thermal_slope'] = slope" in EDITOR_SOURCE
+    assert "state['thermal_slope'] = (float(spent)" in EDITOR_SOURCE
     assert "kcal/mol per A here." in EDITOR_SOURCE
     assert "'Climbing' if slope > 0 else 'Falling'" in EDITOR_SOURCE
 
@@ -706,65 +706,3 @@ def test_a_setting_is_not_taken_back():
 
     # A new structure from a new SMILES starts over: then the SMILES speaks.
     assert EDITOR_SOURCE.count("state['charge_is_the_users'] = False") >= 2
-
-
-def test_the_leash_is_long_where_the_budget_is_wide_open():
-    """A tenth of an Angstrom made every conformer take half a minute.
-
-    Turning a chain torsion on a 24-atom structure the budget never came near
-    being spent -- +8 kcal/mol of 22.3 -- and the slope was +5 per Angstrom, so
-    what the budget could afford was nearly three Angstrom while the cap held
-    it to a tenth.  That reads as a tool that does not work rather than one
-    being careful: the atom lags far behind the cursor, which looks exactly
-    like every answer dragging it back.
-
-    It costs nothing where care is wanted, because there the slope limits it
-    instead: pulling a hydrogen off a benzene the leash reaches 0.154 A and no
-    further, and the worst the hand gets past the ceiling is +63.5 kcal/mol at
-    either cap -- the same number.
-    """
-    line = next(one for one in EDITOR_SOURCE.splitlines()
-                if one.strip().startswith("_THERMAL_REACH ="))
-    reach = float(line.split("=")[1].strip())
-    assert reach > 0.2, "a tenth is a drag nobody can use"
-    # And it is still bounded: the leash is what keeps the hand from
-    # outrunning the calculation, so it may not be arbitrary.
-    assert reach < 1.0
-
-    # The budget still decides, whatever the cap says.
-    body = EDITOR_SOURCE.split("def _thermal_reach(")[1].split("def ")[0]
-    # The cap is earned now, but the budget is still what decides.
-    assert "min(_reach_cap(), room / slope)" in body
-
-
-def test_the_leash_earns_its_length_from_the_ground():
-    """A fixed cap is the wrong kind of limit.
-
-    It exists so a hand cannot outrun the calculation and step over something
-    the budget would have refused.  On ground the last several answers have all
-    reported as shallow there is nothing to step over, and holding the hand
-    there is a difference without a reason.
-
-    Measured on the same walks: earning its length the leash reaches 1.000 A on
-    a conformer turn against 0.350 fixed, and on a hydrogen being pulled off a
-    benzene it is 0.005 to 0.154 A either way, with the same +75.7 kcal/mol as
-    the worst the hand gets past the ceiling.  Three times the speed where it
-    is free, and nothing at all where it is not -- because what limits a
-    dangerous drag is the slope, never the cap.
-    """
-    line = next(one for one in EDITOR_SOURCE.splitlines()
-                if one.strip().startswith("_THERMAL_REACH_FREE ="))
-    assert float(line.split("=")[1].strip()) > 0.35
-
-    body = EDITOR_SOURCE.split("def _reach_cap(")[1].split("def ")[0]
-    assert "_THERMAL_FLAT_ANSWERS" in body
-    assert "_THERMAL_REACH_FREE" in body
-
-    reach = EDITOR_SOURCE.split("def _thermal_reach(")[1].split("\n    def ")[0]
-    # Counted up while it is shallow, and back to nothing the moment it is not.
-    assert "if slope < _THERMAL_FLAT else 0" in reach
-    # The budget still decides, whatever the cap has earned.
-    assert "min(_reach_cap(), room / slope)" in reach
-    # And a fresh drag starts from no evidence at all.
-    assert "state.pop('thermal_flat', None)" in EDITOR_SOURCE
-

@@ -4616,80 +4616,64 @@ def test_the_budget_line_goes_on_the_row_that_is_already_there():
     assert "_gfn_status_lines(said)" in follow
 
 
-def test_the_wall_goes_up_when_the_budget_is_gone_and_down_again(bare_editor):
-    """The hand is held where the budget ran out, and let go when it is back.
+def test_the_last_affordable_structure_is_what_comes_back(bare_editor):
+    """Act, then undo, rather than hold the hand back.
 
-    A ratchet rather than a prediction: the kernel answers about ten times a
-    second and the mouse moves sixty, so anything guessing between answers
-    would be guessing most of the time.  The cost is one answer's worth of
-    overshoot before it holds.
-
-    And it lifts by itself on the far side of a barrier -- past the top the
-    energy falls, the structure is inside its budget again, and the hand is
-    free.  Only a distortion that stays expensive is held, which is the whole
-    difference between a reaction and tearing a ring open.
+    A leash that waits for the price makes the drag a slideshow, and it is not
+    even safe once it is long enough to feel right: lengthened on flat ground
+    it stood at 1.000 A going into a C-H bond 1.09 A long, which is a bond
+    torn in one frame before anything had been asked.  So the hand runs free,
+    the price arrives behind it, and what was not allowed is simply not kept.
     """
     part, state = bare_editor
     part.submit_ff_dd.value = "gfn2"
     part.submit_temperature.value = 298.15
-    # An hour is the window the ceiling is quoted over: 22.3 kcal/mol at
-    # 298 K.  It was a control and was taken away -- between a second and a
-    # year the ceiling moves ten kcal/mol, while chemistry and nonsense are
-    # twenty against a hundred, so it changed the answer far less than it cost
-    # to understand.
-
-    xyz = ("2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.379 0.000 0.000\n")
+    state["thermal_e0"] = -15.0
+    xyz = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.379 0.000 0.000\n"
+    # The budget checks its anchor against the structure on screen, so that is
+    # the one it has to be looking at.
     part.coords_widget.value = xyz
-    anchor = -15.0
-    state["thermal_e0"] = anchor
     state["thermal_for"] = part._structure_fingerprint(xyz)
 
-    from delfin.dashboard.structure_editor import _HARTREE_TO_KCAL
-
     def energy(kcal):
-        return anchor + kcal / _HARTREE_TO_KCAL
+        return -15.0 + kcal / 627.5094740631
 
-    # Inside the budget: the place the hand is standing is remembered, and no
-    # wall goes up.
-    part._thermal_wall(xyz, energy(8.0), [1])
-    assert state.get("thermal_walled") is not True
-    assert state["thermal_safe"][1] == [1.379, 0.0, 0.0]
+    # Inside the budget: kept, and nothing is handed back.
+    assert part._thermal_wall(xyz, energy(8.0), [1]) is None
+    assert state["thermal_good"] == xyz
 
-    # Still inside, further out: the mark moves with the hand.
+    # Still inside, further out: that becomes the one to come back to.
     further = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.600 0.000 0.000\n"
-    part._thermal_wall(further, energy(20.0), [1])
-    assert state["thermal_safe"][1] == [1.6, 0.0, 0.0]
-    assert state.get("thermal_walled") is not True
+    assert part._thermal_wall(further, energy(20.0), [1]) is None
+    assert state["thermal_good"] == further
 
-    # Past it: the wall goes up, and at the last place that was allowed --
-    # not at where the hand has since dragged to.
+    # Past it: the last affordable one is handed back -- not where the hand
+    # has since dragged to.
     past = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.900 0.000 0.000\n"
-    part._thermal_wall(past, energy(55.0), [1])
-    assert state["thermal_walled"] is True
-    assert state["thermal_safe"][1] == [1.6, 0.0, 0.0], (
-        "the wall stands where the budget ran out")
+    assert part._thermal_wall(past, energy(55.0), [1]) == further
 
-    # Back under -- over the top of a barrier -- and the hand is free again.
-    part._thermal_wall(further, energy(12.0), [1])
-    assert state.get("thermal_walled") is not True
+    # Back under, over the top of a barrier, and it is kept again.
+    assert part._thermal_wall(further, energy(12.0), [1]) is None
+
+    # And a hold that does not determine the drag is refused the same way,
+    # however cheap it looks: the price is about a different structure.
+    assert part._thermal_wall(past, energy(1.0), [1], refuse=True) == further
 
 
-def test_no_anchor_means_no_wall(bare_editor):
-    """A budget with nothing to measure from cannot hold anything back, and
-    must not: that would be a limit invented out of a missing number."""
+def test_no_anchor_means_nothing_is_taken_back(bare_editor):
+    """A budget with nothing to measure from cannot refuse anything, and must
+    not: that would be a limit invented out of a missing number."""
     part, state = bare_editor
     part.submit_ff_dd.value = "gfn2"
     state["thermal_e0"] = None
     state["thermal_for"] = None
 
-    part._thermal_wall("2\nx\nC 0 0 0\nC 1.9 0 0\n", -15.0, [1])
-    assert not state.get("thermal_walled")
+    assert part._thermal_wall("2\nx\nC 0 0 0\nC 1.9 0 0\n", -15.0, [1]) is None
 
 
-def test_a_drag_that_ends_takes_its_wall_with_it(bare_editor):
-    """Left standing, the wall would meet the next drag with the positions of
-    the last one -- atoms that are not being held any more, marked at places
-    the structure has since moved away from."""
+def test_a_drag_that_ends_takes_its_marks_with_it(bare_editor):
+    """Left standing, they would meet the next drag with the last one's
+    geometry -- a structure the molecule has since moved away from."""
     part, state = bare_editor
     state["thermal_safe"] = {1: [1.6, 0.0, 0.0]}
     state["thermal_walled"] = True
@@ -4720,55 +4704,30 @@ def test_the_hand_is_held_in_the_one_place_that_moves_it():
     assert "setThermalWall: setThermalWall," in js
 
 
-def test_the_leash_is_on_before_the_hand_has_moved_anything(editor, monkeypatch):
-    """It was put on from the first follow answer, and that is a tenth of a
-    second away.
+def test_the_grab_remembers_where_to_come_back_to(editor, monkeypatch):
+    """Before the first answer there is nothing priced yet, so the geometry on
+    screen stands in: it is the last one the budget agreed to, which makes it
+    its own confirmation."""
+    refs = editor
+    state = refs["editor_state"]
+    xyz = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.379 0.000 0.000\n"
+    refs["coords_widget"].value = xyz
+    state["current_xyz_for_copy"] = {"content": xyz}
+    refs["submit_ff_dd"].value = "gfn2"
+    state["thermal_e0"] = -15.0
+    state["thermal_for"] = None
+    refs["submit_thermal_btn"].value = True
+    state["thermal_e0"] = -15.0
+    state["thermal_for"] = refs["structure_fingerprint"](xyz) \
+        if "structure_fingerprint" in refs else state.get("thermal_for")
+    state.pop("thermal_good", None)
 
-    By then the mouse has taken the atom an angstrom and the bond it was in is
-    gone -- so the one stretch of a drag that was never checked was exactly
-    the one that does the damage.  Which is why a proton could still be pulled
-    off a ring with the budget switched on and saying the right numbers.
+    refs["submit_cmd_sync"].value = "gfngrab:1:"
 
-    The structure on screen needs no checking to be marked: it is where the
-    budget was last agreed, by definition.
-    """
-    import json
-    import time as _time
-
-    from delfin.dashboard import tab_submit
-
-    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
-    state = editor["editor_state"]
-    editor["submit_ff_dd"].value = "gfn2"
-    here = editor["coords_widget"].value
-
-    # Switched on first: doing that clears the anchor and measures a new one,
-    # so an anchor planted before it would be wiped by the very act of
-    # turning the budget on.
-    editor["submit_thermal_btn"].value = True
-    editor["submit_relax_btn"].value = True
-    _time.sleep(0.4)          # let the anchoring run give up on the fake xtb
-
-    # A budget that is anchored, as it is once that run has come back.
-    state["thermal_e0"] = -15.877561
-    state["thermal_for"] = tuple(
-        line.split()[0] for line in here.splitlines()
-        if len(line.split()) >= 4)
-
-    editor["submit_gfn_wall"].value = ""
-    editor["submit_cmd_sync"].value = "gfngrab:1:0"
-    deadline = _time.time() + 10
-    while _time.time() < deadline and not editor["submit_gfn_wall"].value:
-        _time.sleep(0.02)
-
-    sent = editor["submit_gfn_wall"].value
-    assert sent, "the leash has to be on at the grab, not after the first answer"
-    payload = json.loads(sent)
-    assert payload["reach"] > 0
-    # Every atom, because which ones the hand is on is not known until the
-    # first drag-follow says so -- and a mark on an atom nobody is moving
-    # costs nothing.
-    assert len(payload["wall"]) == 3, payload["wall"]
+    # Either it has something to come back to, or the budget had no anchor to
+    # judge by -- never a drag that is running with neither.
+    assert state.get("thermal_good") or state.get("thermal_e0") is None \
+        or state.get("thermal_for") is None
 
 
 def test_no_budget_means_no_leash_at_the_grab(editor, monkeypatch):
@@ -4858,8 +4817,10 @@ def test_the_budget_prices_the_geometry_the_user_made(bare_editor):
     assert "state['thermal_now'] = priced.get('energy')" in follow
     # Two refusals ride along with the budget now: a hold that does not
     # determine the drag, and a contact squeezed inside two thirds of a bond.
-    assert "_thermal_wall(current, priced.get('energy'), holding," in follow
+    assert "came_back = _thermal_wall(" in follow
     assert "refuse=(slipped > _SLIP_LOOSE) or crowded" in follow
+    # And what it hands back is what gets drawn.
+    assert "settled = (came_back if came_back is not None else" in follow
 
 
 def test_every_field_the_page_reads_is_on_the_page(editor):
@@ -4886,42 +4847,24 @@ def test_every_field_the_page_reads_is_on_the_page(editor):
             f"{name} is read off the page and is not on it")
 
 
-def test_the_leash_is_only_as_long_as_the_budget_reaches(bare_editor):
-    """Held at a tenth of an angstrom throughout, it overshoots by design.
+def test_the_line_is_told_how_steep_the_ground_is(bare_editor):
+    """All that is left of the leash, and the part worth keeping.
 
-    The atom goes a tenth and only then does the calculation say what that
-    cost, and on the steep flank of a bond a tenth is fifteen kcal/mol -- so
-    the budget could be walked past at a crawl, which is not a wall anyone can
-    aim at.  What the last two answers measured is energy per angstrom along
-    the way the drag is going, and the leash is cut to what the room left buys
-    at that rate.
+    "+8 per A" and "+160 per A" are two different situations, and knowing
+    which one you are in is the difference between working with the chemistry
+    and against it.
     """
     part, state = bare_editor
-    part.submit_temperature.value = 298.15
-    xyz = "2\ntwo\nC 0.000 0.000 0.000\nC 1.400 0.000 0.000\n"
-    ceiling = 22.3
-
-    # First answer: nothing to compare against, so the full leash.
     state.pop("thermal_last", None)
-    assert part._thermal_reach(2.0, ceiling, xyz, [1]) == part._THERMAL_REACH
+    state.pop("thermal_slope", None)
+    here = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.500 0.000 0.000\n"
+    further = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.600 0.000 0.000\n"
 
-    # Second answer, a tenth of an angstrom further on and two kcal dearer:
-    # twenty kcal/mol per angstrom, twenty of room, so a full leash again.
-    further = "2\ntwo\nC 0.000 0.000 0.000\nC 1.500 0.000 0.000\n"
-    assert part._thermal_reach(4.0, ceiling, further, [1]) == part._THERMAL_REACH
-
-    # Now steep and close.  Twenty spent against a ceiling of 22.3 leaves 2.3,
-    # and the last step cost sixteen kcal over a tenth of an angstrom -- a
-    # hundred and sixty an angstrom.  2.3 at that rate is fourteen thousandths
-    # of an angstrom, which is where the leash is cut to.
-    steeper = "2\ntwo\nC 0.000 0.000 0.000\nC 1.600 0.000 0.000\n"
-    reach = part._thermal_reach(20.0, ceiling, steeper, [1])
-    assert abs(reach - 2.3 / 160.0) < 1e-6, reach
-    assert 0.005 < reach < part._THERMAL_REACH, reach
-
-    # Spent: no room, no reach.
-    over = "2\ntwo\nC 0.000 0.000 0.000\nC 1.700 0.000 0.000\n"
-    assert part._thermal_reach(30.0, ceiling, over, [1]) == 0.0
+    # One answer says nothing about a slope; two do.
+    part._thermal_slope(10.0, here, [1])
+    assert state.get("thermal_slope") is None
+    part._thermal_slope(26.0, further, [1])
+    assert state["thermal_slope"] == pytest.approx(160.0, rel=0.05)
 
 
 @_needs_xtb
