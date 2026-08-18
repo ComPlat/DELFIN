@@ -4577,6 +4577,9 @@ def test_the_anchor_belongs_to_one_structure(bare_editor):
     here = part.coords_widget.value
     state["thermal_e0"] = -15.877561
     state["thermal_for"] = part._structure_fingerprint(here)
+    # And the method it was measured with: read against another engine, an
+    # untouched structure priced at +6384 kcal/mol against a 22.3 ceiling.
+    state["thermal_method"] = "gfn2"
 
     anchor, ceiling = part._thermal_budget()
     assert anchor == -15.877561
@@ -4629,6 +4632,9 @@ def test_the_last_affordable_structure_is_what_comes_back(bare_editor):
     part.submit_ff_dd.value = "gfn2"
     part.submit_temperature.value = 298.15
     state["thermal_e0"] = -15.0
+    # The anchor names its method as well as its structure: an energy of one
+    # method against energies of another is not a difference.
+    state["thermal_method"] = "gfn2"
     xyz = "2\ntwo atoms\nC 0.000 0.000 0.000\nC 1.379 0.000 0.000\n"
     # The budget checks its anchor against the structure on screen, so that is
     # the one it has to be looking at.

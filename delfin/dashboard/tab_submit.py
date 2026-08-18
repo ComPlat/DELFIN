@@ -615,6 +615,12 @@ def create_tab(ctx):
             # way it starts on any other.
             _editor.reset_controls()
             state['constraints'] = []
+            # A scan armed on one molecule names atoms the next one may not
+            # have.  Left armed it threw on the first click after loading a
+            # smaller structure, and run it walked a coordinate that was not
+            # there at all -- reported as a completed scan, because the run
+            # reads only whether xtb answered.
+            state['scan_legs'] = []
             state['bond_edits'] = {}
             state['hand_bonds'] = {}
             state['hyb_overrides'] = {}

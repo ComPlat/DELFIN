@@ -496,7 +496,7 @@ def test_restraint_gradients_match_finite_differences():
     179 degrees from the wrap: 2.5e-8, 3.9e-9, 9.4e-10 and 2.2e-8."""
     js = _JS
     assert 'T_RESTRAINT = 16' in js
-    assert 'var T_ALL = 63;' in js
+    assert 'var T_ALL = 127;' in js
     assert 'R_DISTANCE = 0, R_ANGLE = 1, R_DIHEDRAL = 2' in js
 
     block = js.split('// -- user restraints')[1].split('// -- Lennard-Jones')[0]
@@ -548,3 +548,124 @@ def test_convergence_is_judged_on_progress_not_on_the_gradient():
     staged = source.split('st.pos.set(st.probe);')[1][:400]
     assert 'st.quietFrames = 0;' in staged
     assert 'st.converged = false;' in staged
+
+
+def test_the_hand_is_a_force_not_a_position():
+    """Nobody who does this well sets an atom's coordinate.
+
+    VMD/NAMD's IMD translates a drag into forces on the atoms, Narupa biases
+    the dynamics through an external field whose strength the user controls,
+    and Reiher's real-time quantum chemistry hands the response back as force
+    feedback.  None of them has to prevent unphysical geometry because it
+    cannot arise: you pull, the bond pulls back, and the atom follows exactly
+    as far as the balance allows -- so tearing one means pulling harder than
+    it holds, which is a number the user owns rather than an accident.
+
+    A harmonic spring from the atom to where the cursor has it.  Checked in
+    node against central finite differences: 9.3e-10 for the term alone and
+    9.1e-9 with everything else running, and the energy is exactly zero both
+    when the atom sits on its target and when the hand lets go.
+    """
+    js = _JS
+    assert 'var T_TETHER = 64;' in js
+    assert "if (term === 'tether' || term === 'tethers') return T_TETHER;" in js
+    block = js.split('if ((which & T_TETHER)')[1].split('return e;')[0]
+    # Harmonic in the displacement.
+    assert 'e += 0.5 * tk * (tdx * tdx + tdy * tdy + tdz * tdz);' in block
+    assert 'tg[ta] += tk * tdx;' in block
+    # And what reaches the gradient is the part that can only be answered by
+    # changing shape.  Every other term is invariant under moving the molecule
+    # and so has no net force or torque; a spring has a preferred place, and
+    # sliding the whole structure towards it is a zero-energy mode of
+    # everything else.  Measured before this: at every force constant from 1
+    # to 2000 the atom reached its target in full and the bond it hangs on
+    # stayed at 1.094 A -- the minimiser translated rather than stretched.
+    # Re-framing afterwards cannot help, since a rigid move changes no
+    # internal coordinate.
+    assert 'projectOutRigid(st, pos, tg);' in block
+    # The whole set at once, because that is what a mouse move is, and an
+    # empty list lets go.
+    assert 'function tether(scopeKey, pulls) {' in js
+    assert 'tether: tether,' in js
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_the_pull_can_only_change_shape():
+    """A spring is not invariant under moving the molecule, and every other
+    term is.
+
+    So a minimiser answers a pull by *translating*: measured at every force
+    constant from 1 to 2000, the atom reached its target in full and the bond
+    it hangs on stayed at 1.094 A.  Re-framing the answer afterwards cannot
+    help -- a rigid move changes no internal coordinate.  What does help is
+    taking the net force and torque out of the pull, which leaves only the
+    part that has to be answered by changing shape.  Then the same pulls give
+    1.139, 1.218, 1.422, 1.779 and 2.100 A at 20, 60, 200, 700 and 2000.
+
+    That force is no longer the derivative of the tether energy -- it is a
+    constraint force, and the property worth checking is the one it is built
+    for.
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    driver = """
+globalThis.window = {};
+__ENGINE__
+var FF = window.__delfinFF;
+var PAY = __PAYLOAD__;
+var POS = __POSITIONS__;
+var N = PAY.n_atoms;
+FF.load('t', PAY);
+FF.tether('t', [{atom: 1, x: 2.30, y: 0.60, z: 0.40, k: 12.0},
+                {atom: 4, x: -1.10, y: -1.40, z: 0.90, k: 3.5}]);
+var out = {};
+var g = Array.prototype.slice.call(FF.debugGradient('t', POS, 'tether'));
+
+// net force, and net torque about the centroid: both have to be gone
+var fx = 0, fy = 0, fz = 0, cx = 0, cy = 0, cz = 0, a;
+for (a = 0; a < N; a++) { cx += POS[3*a]/N; cy += POS[3*a+1]/N; cz += POS[3*a+2]/N; }
+for (a = 0; a < N; a++) { fx += g[3*a]; fy += g[3*a+1]; fz += g[3*a+2]; }
+var tx = 0, ty = 0, tz = 0;
+for (a = 0; a < N; a++) {
+  var qx = POS[3*a]-cx, qy = POS[3*a+1]-cy, qz = POS[3*a+2]-cz;
+  tx += qy*g[3*a+2] - qz*g[3*a+1];
+  ty += qz*g[3*a]   - qx*g[3*a+2];
+  tz += qx*g[3*a+1] - qy*g[3*a];
+}
+out.netForce = Math.max(Math.abs(fx), Math.abs(fy), Math.abs(fz));
+out.netTorque = Math.max(Math.abs(tx), Math.abs(ty), Math.abs(tz));
+var big = 0;
+for (a = 0; a < g.length; a++) big = Math.max(big, Math.abs(g[a]));
+out.biggest = big;
+
+// the energy itself is untouched: harmonic, zero on target, zero when let go
+out.energy = FF.debugEnergy('t', POS, 'tether');
+FF.tether('t', [{atom: 1, x: POS[3], y: POS[4], z: POS[5], k: 12.0}]);
+out.onTarget = FF.debugEnergy('t', POS, 'tether');
+FF.tether('t', []);
+out.letGo = FF.debugEnergy('t', POS, 'tether');
+console.log(JSON.stringify(out));
+"""
+    script = (driver
+              .replace('__ENGINE__', _JS)
+              .replace('__PAYLOAD__', json.dumps(_PAYLOAD))
+              .replace('__POSITIONS__', json.dumps(_POS)))
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(script)
+        path = fh.name
+    done = subprocess.run([_NODE, path], capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr[-800:]
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    # The pull can only change shape: no net force, no net torque, and yet a
+    # force worth having.
+    assert out['biggest'] > 1.0, out
+    assert out['netForce'] < 1e-9 * max(1.0, out['biggest']), out
+    assert out['netTorque'] < 1e-8 * max(1.0, out['biggest']), out
+    # The energy is a plain harmonic one: zero on target, zero when let go.
+    assert out['energy'] > 0.0
+    assert out['onTarget'] == pytest.approx(0.0, abs=1e-12)
+    assert out['letGo'] == pytest.approx(0.0, abs=1e-12)
+
