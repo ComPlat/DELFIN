@@ -1703,3 +1703,189 @@ def test_room_temperature_can_turn_a_molecule_into_its_own_conformers():
                       "mode": "push", "force": gfn.push_constant(22.3),
                       "value": was - gfn.PUSH_REACH_DEGREES}])
     assert abs(was - torsion(stuck["xyz"])) < 30.0, "it used to stick here"
+
+
+#: Bromobenzene, relaxed under GFN2.  An aryl C-Br is the case that has to
+#: work both ways: room temperature genuinely cannot break one within the
+#: hour, and a hand with no temperature to answer to has to be able to.
+_BROMOBENZENE = """12
+bromobenzene
+C   0.000  1.396  0.000
+C   1.209  0.698  0.000
+C   1.209 -0.698  0.000
+C   0.000 -1.396  0.000
+C  -1.209 -0.698  0.000
+C  -1.209  0.698  0.000
+Br  0.000  3.300  0.000
+H   2.155  1.244  0.000
+H   2.155 -1.244  0.000
+H   0.000 -2.486  0.000
+H  -2.155 -1.244  0.000
+H  -2.155  1.244  0.000
+"""
+
+
+def test_without_a_temperature_the_hand_has_no_ceiling():
+    """Drag further, pull harder.  Which is what pulling on something is like.
+
+    The reach was applied always, so the hand could never do more than the
+    slider was already set for however far it was dragged -- a ceiling on a
+    setting that has no reason for one.  A ceiling is what a *temperature* is:
+    with the budget on the reach comes back, and past the point where the hand
+    is already pulling as hard as the temperature allows, dragging further
+    buys nothing.
+    """
+    part = _a_part()
+    part.submit_thermal_btn.value = False
+    assert part._pull_most() is None, 'nothing may cap the hand'
+    part.submit_thermal_btn.value = True
+    part.submit_temperature.value = 298.15
+    assert part._pull_most() == pytest.approx(gfn.push_force_for(22.3), rel=0.05)
+
+    # What is *asked for* stays within the reach either way -- a target that
+    # runs arbitrarily far ahead is overshot in a few cycles and comes back,
+    # which on screen is a molecule that shakes.
+    far = gfn.as_pushes(
+        [{'kind': 'distance', 'atoms': [0, 6], 'value': 6.0}],
+        'reference', 44.0, value_of=lambda _x, _e: 1.9)
+    assert far[0]['value'] == pytest.approx(1.9 + gfn.PUSH_REACH)
+    # The strength carries the excess instead: four reaches out, four times
+    # as hard, which is exactly what an unclamped spring would apply there.
+    near = gfn.as_pushes(
+        [{'kind': 'distance', 'atoms': [0, 6], 'value': 2.9}],
+        'reference', 44.0, value_of=lambda _x, _e: 1.9)
+    assert far[0]['force'] == pytest.approx(4.1 * near[0]['force'], rel=0.02)
+    # Unless something says otherwise, and only a temperature does.
+    held = gfn.as_pushes(
+        [{'kind': 'distance', 'atoms': [0, 6], 'value': 6.0}],
+        'reference', 44.0, value_of=lambda _x, _e: 1.9, most=44.0)
+    assert held[0]['force'] == pytest.approx(near[0]['force'])
+
+    source = EDITOR_SOURCE
+    assert 'most=_pull_most()' in source
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+    js = submit_manip_bootstrap_js()
+    assert 'function setPullStrength(scopeKey, share, most)' in js
+    assert 'function pullOver(scopeKey, viewer)' in js
+    assert 'var k = pullConstant(state) * pullOver(scopeKey, viewer);' in js
+    assert 'if (state.pullMost > 0) {' in js
+
+
+@_needs_xtb
+def test_room_temperature_holds_an_aryl_bromide_and_nothing_else_does():
+    """The two halves of the same setting, on the same bond.
+
+    Measured under GFN2, the C-Br of a bromobenzene at rest at 1.909 A with
+    the mouse dragged five angstroms out:
+
+        thermal budget on at 298 K   held at 2.120
+        budget off, hand at 0.4      torn to 4.367
+        budget off, hand at 3.0      torn to 4.403
+
+    An aryl C-Br really does not break at room temperature within the hour,
+    and a hand with no temperature to answer to really should be able to break
+    one -- so both of those are right, and they are the same code with one
+    number changed.
+    """
+    import math
+
+    def bond(text):
+        here = gfn.coordinates_of(text)
+        return math.dist(here[0:3], here[18:21])
+
+    start = gfn.optimize_with_gfn(_BROMOBENZENE, "gfn2", max_steps=400,
+                                  timeout=300)
+    assert start.get("ok"), start.get("status")
+    rest = bond(start["xyz"])
+
+    def dragged(force, reach):
+        here, wish = start["xyz"], rest
+        for _ in range(8):
+            wish += 0.5                       # the mouse keeps going
+            target = wish if not reach else min(wish, bond(here) + reach)
+            out = gfn.optimize_with_gfn(
+                here, "gfn2", max_steps=20, timeout=300,
+                constraints=[{"kind": "distance", "atoms": [0, 6],
+                              "mode": "push",
+                              "force": gfn.push_constant(force),
+                              "value": target}])
+            if not out.get("ok"):
+                break
+            here = out["xyz"]
+        return bond(here)
+
+    # The temperature holds it, however far the mouse goes.
+    held = dragged(gfn.push_force_for(22.3), gfn.PUSH_REACH)
+    assert held < rest + 0.6, held
+
+    # And with no temperature to answer to, the hand takes it off -- at the
+    # setting the editor opens on, not only at the top of the slider.
+    torn = dragged(0.4 * gfn.A_BOND_HOLDS, 0.0)
+    assert torn > 3.5, torn
+    assert dragged(3.0 * gfn.A_BOND_HOLDS, 0.0) > 3.5
+
+
+@_needs_xtb
+def test_keeping_the_bonds_keeps_the_molecule():
+    """A third thing the drag can be asked to respect.
+
+    The budget says what a temperature can pay for; this says the bonds are
+    the ones they were, whatever it costs -- which is what "move this group
+    over there" means when the answer is not supposed to be a reaction.
+
+    xtb cannot be told to keep a topology, so it is a wall like the budget's:
+    the step runs, the bonding is read off what came back, and a step that
+    made or broke one is replaced by the last that did not.  Measured on the
+    real part, a bromide dragged off a tertiary carbon under GFN2 with the
+    hand at its hardest: without it the C-Br goes from 2.055 to 7.204 A and
+    the structure comes back with 21 bonds instead of 22; with it the bond
+    holds at 2.066 and all 22 are there.
+    """
+    graph = gfn.bond_graph(_BROMOBENZENE)
+    assert (0, 6) in graph, "the C-Br is a bond to begin with"
+    assert len(graph) == 12, graph
+
+    # Pulled apart, it is not.
+    rows = [line.split() for line in gfn.atom_lines(_BROMOBENZENE)]
+    rows[6][2] = f"{float(rows[6][2]) + 3.0:.6f}"
+    apart = "12\ntorn\n" + "\n".join(" ".join(r) for r in rows) + "\n"
+    after = gfn.bond_graph(apart)
+    assert (0, 6) not in after
+
+    # And what changed is said in a sentence a chemist can act on.
+    symbols = [str(r[0]) for r in rows]
+    assert gfn.graph_changed(graph, after, symbols) == "breaks C1-Br7"
+    assert gfn.graph_changed(after, graph, symbols) == "makes C1-Br7"
+    assert gfn.graph_changed(graph, graph, symbols) == ""
+
+
+def test_the_bonds_are_kept_by_taking_the_step_back():
+    """Not by asking xtb to hold them, which it cannot do."""
+    source = EDITOR_SOURCE
+    assert 'def _topology_wall(xyz):' in source
+    assert 'submit_topology_btn = widgets.ToggleButton(' in source
+    assert "description='Keep bonds'" in source
+    # Judged on what the user would be left with, not on the raw answer.
+    assert 'kept, changed = _topology_wall(settled)' in source
+    assert 'bonding is being kept.' in source
+    # The box as well as the picture, or letting go keeps the broken one.
+    assert "'Kept: the bonding would have '" in source
+    # It belongs to this molecule and no other.
+    assert "state.get('topology_for') != who" in source
+    # And where it already holds, it says so instead of looking busy.
+    assert 'already keeps its bonding, ' in source
+
+
+def test_the_whole_profile_is_a_switch_that_says_what_it_does():
+    """"all the way" said nothing about what it was all the way to.
+
+    What it is for is a whole curve: a torsion turned right round has three
+    minima and three barriers, and stopping at the first is exactly wrong when
+    the profile is the point.  Off stays the default -- past the next minimum
+    a reaction scan is pushing into a structure rather than following one.
+    """
+    source = EDITOR_SOURCE
+    assert 'submit_scan_whole = widgets.ToggleButton(' in source
+    assert "description='Whole profile'" in source
+    assert 'submit_scan_whole.observe(on_submit_scan_whole' in source
+    assert 'not submit_scan_whole.value and _scan_arrived(path)' in source

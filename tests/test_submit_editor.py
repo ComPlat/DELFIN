@@ -2145,7 +2145,10 @@ def test_how_hard_the_hand_pulls_is_the_users_to_set():
     assert 'submit_pull_slider = widgets.FloatSlider(' in source
     assert "description='Pull'" in source
     assert 'submit_pull_slider.observe(on_submit_pull_changed' in source
-    assert source.count('setPullStrength(') == 2, source.count('setPullStrength(')
+    # Handed over with the parameters, moved by hand, and re-sent when the
+    # budget goes on or off -- the page's hand has a ceiling exactly while
+    # the budget does.
+    assert source.count('setPullStrength(') == 3, source.count('setPullStrength(')
     # Shown under both engines.  Hidden under a server method -- as it was at
     # first, on the grounds that the pull belonged to the browser's field --
     # the one place where the budget and the scan live was the one place the

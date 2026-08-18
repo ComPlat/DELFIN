@@ -5085,8 +5085,8 @@ def test_under_a_server_method_the_hand_is_a_force_too(bare_editor):
     # Zero is the rigid hand, and it says so by not being a force at all.
     slider.value = 0.0
     assert force() is None
-    # Otherwise a share of what a bond holds -- one number for a C-C (56), a
-    # C-H (49) and a C-O (60), measured by pushing until each gives way.
+    # Otherwise a share of what a bond holds -- one number for a C-C (112), a
+    # C-H (98) and a C-O (120), measured by pushing until each gives way.
     slider.value = 1.0
     assert force() == pytest.approx(gfn.A_BOND_HOLDS)
     slider.value = 0.5
@@ -5099,12 +5099,16 @@ def test_under_a_server_method_the_hand_is_a_force_too(bare_editor):
         'reference', 22.0, value_of=lambda _x, _e: 2.0)
     assert pushed[0]['mode'] == 'push'
     assert pushed[0]['value'] == pytest.approx(2.0 + gfn.PUSH_REACH)
-    assert pushed[0]['force'] == pytest.approx(gfn.push_constant(22.0))
-    # Asking for less than the reach is asking for exactly that.
+    # Two reaches out, so twice as hard: the hand grows with the drag while
+    # what it asks for stays within reach.
+    assert pushed[0]['force'] == pytest.approx(gfn.push_constant(44.0))
+    # Asking for less than the reach is asking for exactly that, at the
+    # strength it was set to.
     near = gfn.as_pushes(
         [{'kind': 'distance', 'atoms': [0, 1], 'value': 2.4, 'mode': 'drag'}],
         'reference', 22.0, value_of=lambda _x, _e: 2.0)
     assert near[0]['value'] == pytest.approx(2.4)
+    assert near[0]['force'] == pytest.approx(gfn.push_constant(22.0))
 
 
 def test_the_temperature_says_how_hard_the_hand_may_pull(bare_editor):
@@ -5132,22 +5136,25 @@ def test_the_temperature_says_how_hard_the_hand_may_pull(bare_editor):
     from delfin.dashboard import gfn_optimize as gfn
 
     part, _state = bare_editor
-    force = part._pull_force
-    part.submit_pull_slider.value = 3.0        # as hard as it goes
+    # The slider is where the hand *starts*; the temperature is where it
+    # stops, because the hand grows with the drag.
+    most = part._pull_most
+    part.submit_pull_slider.value = 3.0        # as hard as it starts
     part.submit_thermal_btn.value = True
     part.submit_temperature.value = 298.15
-    room = force()
+    room = most()
     assert room == pytest.approx(44.6, abs=2.0), room
     assert room < gfn.A_BOND_HOLDS / 2
 
     part.submit_temperature.value = 1500.0
-    hot = force()
+    hot = most()
     assert hot == pytest.approx(234.0, abs=6.0), hot
     assert hot > 2 * gfn.A_BOND_HOLDS
 
-    # With the budget off the slider is the whole story again.
+    # With the budget off nothing stops it at all: the hand goes on getting
+    # stronger the further it is dragged, and its top takes anything apart.
     part.submit_thermal_btn.value = False
-    assert force() == pytest.approx(3.0 * gfn.A_BOND_HOLDS)
+    assert most() is None
 
 
 def test_the_page_sends_the_wish_and_draws_the_answer(bare_editor):
@@ -5215,31 +5222,30 @@ def test_without_the_budget_the_hand_is_the_users_alone(bare_editor):
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     part, _state = bare_editor
-    force = part._pull_force
+    force, most = part._pull_force, part._pull_most
     slider = part.submit_pull_slider
     part.submit_thermal_btn.value = False
 
-    # The whole range, and nothing between the slider and the drag.
+    # The whole range, and nothing at all between the slider and the drag.
     slider.value = 3.0
     assert force() == pytest.approx(3.0 * gfn.A_BOND_HOLDS)
     assert force() > 2 * gfn.A_BOND_HOLDS, "the top has to take things apart"
+    assert most() is None, "and nothing may cap it"
     slider.value = 0.0
     assert force() is None, "zero is the rigid hand"
 
-    # The default is what room temperature allows, on both sides of the
-    # switch, so turning the budget on is felt as a ceiling and not as a
-    # change of feel.
+    # The default is what room temperature allows, so turning the budget on
+    # is felt as a ceiling and not as a change of feel.
     slider.value = 0.4
-    loose = force()
     part.submit_thermal_btn.value = True
     part.submit_temperature.value = 298.15
-    assert loose == pytest.approx(force(), rel=0.05), (loose, force())
+    assert force() == pytest.approx(most(), rel=0.05), (force(), most())
 
-    # Above the temperature the budget wins; below it the slider does.
+    # The slider says where it starts, the temperature where it stops, and
+    # neither moves the other.
     slider.value = 3.0
-    assert force() == pytest.approx(gfn.push_force_for(22.3), rel=0.05)
-    slider.value = 0.1
-    assert force() == pytest.approx(0.1 * gfn.A_BOND_HOLDS)
+    assert force() == pytest.approx(3.0 * gfn.A_BOND_HOLDS)
+    assert most() == pytest.approx(gfn.push_force_for(22.3), rel=0.05)
 
     # And the slider opens there.
     source = EDITOR_SOURCE
