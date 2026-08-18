@@ -4922,3 +4922,59 @@ def test_the_leash_is_only_as_long_as_the_budget_reaches(bare_editor):
     # Spent: no room, no reach.
     over = "2\ntwo\nC 0.000 0.000 0.000\nC 1.700 0.000 0.000\n"
     assert part._thermal_reach(30.0, ceiling, over, [1]) == 0.0
+
+
+@_needs_xtb
+def test_a_drag_with_the_budget_on_answers_at_all(editor):
+    """The whole chain, once, with the budget switched on.
+
+    Every test of the follow drove it with the budget off, so a name read
+    before it was assigned *inside* the budget's own branch broke nothing any
+    of them touched: with the budget off the branch never runs.  With it on
+    the follow thread died on the first step, no frame ever came back, and the
+    molecule simply did not move -- which is indistinguishable from the wall
+    doing its job, so it survived three pushes and was reported as "with
+    thermal it does not work any more".
+
+    This drives it the way the page does and asks only that an answer comes
+    back at all.  That is the assertion the whole feature rests on.
+    """
+    import json as _json
+    import time as _time
+
+    refs = editor
+    state = refs["editor_state"]
+    propane = (
+        "11\npropane\n"
+        "C 1.16 0.48 -0.22\nC 0.13 -0.61 0.01\nC -1.26 -0.02 0.21\n"
+        "H 2.15 0.03 -0.37\nH 0.92 1.07 -1.11\nH 1.22 1.16 0.63\n"
+        "H 0.41 -1.20 0.89\nH 0.11 -1.29 -0.85\nH -1.99 -0.82 0.38\n"
+        "H -1.28 0.64 1.08\nH -1.58 0.55 -0.66\n"
+    )
+    refs["coords_widget"].value = propane
+    state["current_xyz_for_copy"] = {"content": propane}
+    refs["submit_ff_dd"].value = "gfn2"
+    refs["submit_thermal_btn"].value = True
+
+    deadline = _time.time() + 90
+    while _time.time() < deadline and state.get("thermal_e0") is None:
+        _time.sleep(0.05)
+    assert state.get("thermal_e0") is not None, (
+        f"the budget found no anchor: {refs['mol_status'].value}")
+
+    refs["submit_relax_btn"].value = True
+    refs["submit_cmd_sync"].value = "gfngrab:1:"
+    rows = [line.split() for line in gfn.atom_lines(propane)]
+    rows[0][1] = f"{float(rows[0][1]) - 0.12:.6f}"
+    refs["submit_manip_sync"].value = (
+        "11\nDELFIN drag-follow held=0\n"
+        + "\n".join(" ".join(r) for r in rows) + "\n")
+
+    deadline = _time.time() + 90
+    while _time.time() < deadline and not (
+            _json.loads(refs["submit_gfn_frame"].value or "{}").get("frames")):
+        _time.sleep(0.05)
+    frames = _json.loads(refs["submit_gfn_frame"].value or "{}").get("frames")
+    assert frames, (
+        "no frame came back with the budget on: "
+        + str(refs["mol_status"].value))

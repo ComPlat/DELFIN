@@ -2539,6 +2539,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # and a second one moves the picture while the
                             # user is aiming an atom.
                             said = f'{said} {spent}'
+                        # How far the answer put the held atoms from where
+                        # the cursor has them.  A held value is an internal
+                        # coordinate, so xtb meets it and is free to place the
+                        # molecule anywhere that does; while the values really
+                        # determine the drag that freedom is small, and when it
+                        # is not, the drag is under-determined and the price
+                        # belongs to a different structure than the picture.
+                        # On a palladium being pushed at, that was 0.7 A and
+                        # the only sign that anything was wrong.
+                        #
+                        # Measured here, beside the geometry it is about, and
+                        # said further down where the line is built.  Moving
+                        # the whole of it down turned an UnboundLocalError into
+                        # a NameError in a different function, which is what
+                        # comes of chasing a use instead of the definition.
+                        slipped = _gfn.largest_shift(
+                            _gfn.hold_atoms_at(
+                                outcome['xyz'], current, holding),
+                            outcome['xyz']) if contacts else 0.0
                         # Two refusals that do not depend on the budget.
                         #
                         # A loose hold means the price is about a nearby
@@ -2561,31 +2580,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             said = (f'{said} Two atoms are inside '
                                     f'{tightest:.2f} of a bond length, which '
                                     f'is no path at any temperature.')
-                    # How far the answer put the held atoms from where the
-                    # cursor has them.  A held value is an internal
-                    # coordinate, so xtb meets it and is free to place the
-                    # molecule anywhere that does; while the values really
-                    # determine the drag that freedom is small, and when it is
-                    # not, the drag is under-determined and the price belongs
-                    # to a different structure than the picture.  On a
-                    # palladium being pushed at, that was 0.7 A and the only
-                    # sign that anything was wrong.  It is said out loud now.
-                    #
-                    # Computed here rather than beside the geometry it is about,
-                    # because the line is written first: read there it was read
-                    # before it was assigned, and the follow died on it.
-                    slipped = _gfn.largest_shift(
-                        _gfn.hold_atoms_at(outcome['xyz'], current, holding),
-                        outcome['xyz']) if contacts else 0.0
-                    slope = state.get('thermal_slope')
-                    if slope is not None and abs(slope) > 1.0:
-                        said = (f'{said} '
-                                + ('Climbing' if slope > 0 else 'Falling')
-                                + f' {abs(slope):.0f} kcal/mol per A here.')
-                    if slipped > _SLIP_LOOSE:
-                        said = (f'{said} The hold is loose here '
-                                f'({slipped:.2f} A), so the price is for a '
-                                f'nearby structure rather than this one.')
+                        # Both of these belong to the budget, so they are said
+                        # where the budget is: read one indent further out,
+                        # they are read on a drag that never set them, and the
+                        # ordinary drag -- the one with no budget at all --
+                        # dies on the first step.
+                        slope = state.get('thermal_slope')
+                        if slope is not None and abs(slope) > 1.0:
+                            said = (f'{said} '
+                                    + ('Climbing' if slope > 0 else 'Falling')
+                                    + f' {abs(slope):.0f} kcal/mol per A here.')
+                        if slipped > _SLIP_LOOSE:
+                            said = (f'{said} The hold is loose here '
+                                    f'({slipped:.2f} A), so the price is for '
+                                    f'a nearby structure rather than this '
+                                    f'one.')
                     state['gfn_last_status'] = said
                     schedule_ui_update(_set_mol_status,
                                        *_gfn_status_lines(said), spinner=True)
@@ -4304,31 +4313,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # next round starts from.
                     said = (f'{label} is still going: round {rounds}, '
                             f'{state.get("optimize_moved", 0.0):.3f} A moved.')
-                    # How far the answer put the held atoms from where the
-                    # cursor has them.  A held value is an internal
-                    # coordinate, so xtb meets it and is free to place the
-                    # molecule anywhere that does; while the values really
-                    # determine the drag that freedom is small, and when it is
-                    # not, the drag is under-determined and the price belongs
-                    # to a different structure than the picture.  On a
-                    # palladium being pushed at, that was 0.7 A and the only
-                    # sign that anything was wrong.  It is said out loud now.
-                    #
-                    # Computed here rather than beside the geometry it is about,
-                    # because the line is written first: read there it was read
-                    # before it was assigned, and the follow died on it.
-                    slipped = _gfn.largest_shift(
-                        _gfn.hold_atoms_at(outcome['xyz'], current, holding),
-                        outcome['xyz']) if contacts else 0.0
-                    slope = state.get('thermal_slope')
-                    if slope is not None and abs(slope) > 1.0:
-                        said = (f'{said} '
-                                + ('Climbing' if slope > 0 else 'Falling')
-                                + f' {abs(slope):.0f} kcal/mol per A here.')
-                    if slipped > _SLIP_LOOSE:
-                        said = (f'{said} The hold is loose here '
-                                f'({slipped:.2f} A), so the price is for a '
-                                f'nearby structure rather than this one.')
                     state['gfn_last_status'] = said
                     _set_mol_status(*_gfn_status_lines(said), spinner=True)
                     state['optimize_carrying_on'] = True
