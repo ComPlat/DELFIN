@@ -38,7 +38,7 @@ from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'constraint_input', 'contacts_holding', 'graph_changed',
-           'push_constant', 'restraint_energy',
+           'graph_holds', 'push_constant', 'restraint_energy',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
@@ -1221,7 +1221,31 @@ def _is_a_bond(where, radius, i, j, slack: float = 1.25) -> bool:
     return math.dist(where[i], where[j]) < slack * (radius[i] + radius[j])
 
 
-def bond_graph(xyz_text: str, slack: float = 1.25) -> frozenset:
+#: Where a bond starts and stops being one, as a share of the two radii.
+#:
+#: ORCA's GOAT calls a bond anything inside 1.3 times the sum of the covalent
+#: radii, and by default keeps the bonds a structure came with -- only
+#: ``GOAT-EXPLORE`` lets them break.  The same number is used here, because
+#: this is the same question and a conformer search is where it has been
+#: thought about hardest.
+#:
+#: The second one is what a *drag* needs and a conformer search does not.  A
+#: bond sitting on the threshold flickers from one answer to the next, ten
+#: times a second, so a single number makes the wall fire on a molecule that
+#: is not changing at all and the drag sticks for no reason.  A bond that was
+#: there has to be clearly gone before it counts as broken, and one that was
+#: not has to be clearly there.  Between the two nothing is decided, which is
+#: what a threshold with hysteresis is for.
+#: The band has to be wider than the wobble and narrower than a bond that
+#: is really going.  Measured between two follow answers, a bond length
+#: moves by two to five hundredths of an angstrom; and for a C-Br, whose
+#: radii come to 1.960, these two put the band at 2.548 to 2.744 A -- two
+#: tenths wide, and a C-Br at 2.80 is called broken, which it is.
+BOND_STARTS_AT = 1.3
+BOND_STOPS_AT = 1.4
+
+
+def bond_graph(xyz_text: str, slack: float = BOND_STARTS_AT) -> frozenset:
     """Which atoms this geometry has bonded to which, by covalent radii.
 
     The same test the rest of this file contacts with, and the same one the
@@ -1244,6 +1268,39 @@ def bond_graph(xyz_text: str, slack: float = 1.25) -> frozenset:
         (i, j)
         for i in range(len(rows)) for j in range(i + 1, len(rows))
         if _is_a_bond(where, radius, i, j, slack=slack))
+
+
+def graph_holds(before: Any, xyz_text: str) -> tuple:
+    """Whether *xyz_text* still has the bonds *before* had, and what changed.
+
+    Returns ``(holds, said)``.  Judged with hysteresis: a remembered bond is
+    still one out to :data:`BOND_STOPS_AT`, and a new one counts only inside
+    :data:`BOND_STARTS_AT`.  Between the two nothing is decided, which is what
+    keeps a bond resting on the threshold from flickering the answer several
+    times a second and stopping a drag that is not changing anything.
+    """
+    rows = [line.split() for line in atom_lines(xyz_text)]
+    if not rows:
+        return True, ''
+    from delfin.atom_mapping import cov_radius
+
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    radius = [cov_radius(str(r[0])) for r in rows]
+    was = {tuple(sorted(one)) for one in (before or ())}
+    gone, made = [], []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            span = math.dist(where[i], where[j]) / (radius[i] + radius[j])
+            if (i, j) in was:
+                if span > BOND_STOPS_AT:
+                    gone.append((i, j))
+            elif span < BOND_STARTS_AT:
+                made.append((i, j))
+    if not gone and not made:
+        return True, ''
+    symbols = [str(r[0]) for r in rows]
+    return False, graph_changed(
+        was, (was - set(gone)) | set(made), symbols)
 
 
 def graph_changed(before: Any, after: Any, symbols: Any = None) -> str:

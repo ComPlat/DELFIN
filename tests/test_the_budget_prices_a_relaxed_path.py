@@ -1889,3 +1889,58 @@ def test_the_whole_profile_is_a_switch_that_says_what_it_does():
     assert "description='Whole profile'" in source
     assert 'submit_scan_whole.observe(on_submit_scan_whole' in source
     assert 'not submit_scan_whole.value and _scan_arrived(path)' in source
+
+
+def test_the_topology_watch_is_the_one_a_conformer_search_uses():
+    """A bond is anything inside 1.3 times the sum of the covalent radii.
+
+    ORCA's GOAT uses that number and, by default, keeps the bonds a structure
+    came with -- only its EXPLORE variant lets them break, and its REACT
+    variant counts the topological difference as the sum of broken plus formed
+    bonds.  The same question, and a conformer search is where it has been
+    thought about hardest, so the same number.
+
+    What a conformer search does not need and a drag does is hysteresis.  It
+    compares finished optimisations; a drag asks ten times a second, so a bond
+    resting on the threshold decides the answer differently from one answer to
+    the next and the wall fires on a molecule that is not changing at all.  A
+    bond that was there has to be clearly gone before it counts as broken and
+    one that was not has to be clearly there: measured, a bond length moves
+    two to five hundredths of an angstrom between answers, and for a C-Br the
+    band is 2.548 to 2.744 A.
+    """
+    import math
+
+    assert gfn.BOND_STARTS_AT == 1.3
+    assert gfn.BOND_STOPS_AT > gfn.BOND_STARTS_AT
+
+    was = gfn.bond_graph(_BROMOBENZENE)
+    rows = [line.split() for line in gfn.atom_lines(_BROMOBENZENE)]
+
+    def pulled(out):
+        moved = [list(one) for one in rows]
+        moved[6][2] = f"{float(moved[6][2]) + out:.6f}"
+        return "12\npulled\n" + "\n".join(" ".join(one) for one in moved) + "\n"
+
+    def span(text):
+        here = gfn.coordinates_of(text)
+        return math.dist(here[0:3], here[18:21])
+
+    # Stretched well past where a bond is first called one, and still held:
+    # that is the band, and it is what stops the flicker.
+    inside = pulled(0.7)
+    assert span(inside) > gfn.BOND_STARTS_AT * 1.96, span(inside)
+    assert gfn.graph_holds(was, inside)[0], span(inside)
+
+    # Clearly gone, and said by name.
+    torn = pulled(1.4)
+    holds, said = gfn.graph_holds(was, torn)
+    assert not holds, (span(torn), said)
+    assert said == "breaks C1-Br7", said
+
+    # A bond that was never there has to be clearly there to count.
+    apart = gfn.bond_graph(pulled(3.0))
+    assert gfn.graph_holds(apart, _BROMOBENZENE)[1] == "makes C1-Br7"
+
+    # And nothing at all is a molecule that did not change.
+    assert gfn.graph_holds(was, _BROMOBENZENE) == (True, '')
