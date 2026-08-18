@@ -5881,6 +5881,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         where = spent.index(top)
         return top, top - min(spent[:where + 1])
 
+    def _descent(summit, bottom, spent, geometry, value):
+        """The highest point so far, and the lowest one since it.
+
+        Returned as a pair, updated by one step at a time, because that is all
+        a scan can afford to keep: the geometry of every point of a long walk
+        over a large structure is a great deal of memory for a question with a
+        two-value answer.
+
+        The reset on a new highest point is the whole of it.  Kept over the
+        whole path instead -- which is what this did -- the lowest point of a
+        scan that starts in a well and climbs out of it is the *first* one, so
+        every scan that found anything handed back the structure it began with
+        and called it the minimum it had walked through.  On the page that
+        read as "The scan walked 1 of 20 points. Highest +0.0 kcal/mol", which
+        is indistinguishable from a scan that did nothing at all.
+        """
+        if summit is None or spent > summit:
+            return spent, (spent, geometry, value)
+        if bottom is None or spent < bottom[0]:
+            return summit, (spent, geometry, value)
+        return summit, bottom
+
     def _scan_arrived(path):
         """Whether the walk has crossed something and is climbing out again."""
         if len(path) < _SCAN_CLIMBING + 3:
@@ -6174,6 +6196,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_run'] = True
         state['scan_stop'] = False
         state['scan_arrived'] = False
+        state['scan_came_back'] = None
         state['scan_crowded'] = None
         state['scan_frame_run'] = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = state['scan_frame_run']
@@ -6202,6 +6225,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             walked, path = xyz, []
             base = None
             bottom = None
+            summit = None
             standing = None
             shown = []
             force = _gfn.PUSH_FORCE_FROM
@@ -6402,7 +6426,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             came_from, was,
                             [_value_in(walked, one) for one in legs]))
                     path.append((reached, spent))
-                    # The lowest point since the top, kept with its geometry.
+                    # The lowest point *since the top*, kept with its
+                    # geometry.
                     #
                     # The climb out is what says the minimum is behind us, so
                     # by the time it is recognised the walk stands two steps
@@ -6410,14 +6435,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # much.  Stopping is not enough; it has to come back to
                     # the bottom it walked through, which is the geometry
                     # anyone would want to carry on from.
-                    if bottom is None or spent < bottom[0]:
-                        bottom = (spent, walked, reached)
+                    #
+                    # Since the top, and not the lowest of the whole path:
+                    # see :func:`_descent`.
+                    summit, bottom = _descent(
+                        summit, bottom, spent, walked, reached)
                     if not submit_scan_whole.value and _scan_arrived(path):
                         state['scan_arrived'] = True
                         if bottom is not None:
                             walked = bottom[1]
-                            path = path[:path.index(
-                                (bottom[2], bottom[0])) + 1]
+                            # The path itself is *not* cut back to it.  Cut,
+                            # the verdict describes the stump rather than the
+                            # walk: the barrier that was just crossed is
+                            # thrown away and what is reported is the one
+                            # point that is left.
+                            state['scan_came_back'] = (bottom[2], bottom[0])
                         break
                     schedule_ui_update(
                         _set_mol_status,
@@ -6479,18 +6511,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not path:
             return ('The scan walked nothing.',)
         top = max(path, key=lambda one: one[1])
+        # Where the walk was left, which after coming back to a minimum is not
+        # the last point it took.
+        came = state.get('scan_came_back')
         # The barrier is the rise out of the minimum the path left, not the
         # height above whatever the first point happened to be -- see
         # :func:`_climbed`.  Both are said: the rise is what a temperature is
         # worked out from, and the height is where the path stands.
         _, rise = _climbed([one[1] for one in path])
-        ends = path[-1][1]
+        ends = came[1] if came else path[-1][1]
         T = float(submit_temperature.value or 298.15)
         ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
         needs = thermal_temperature(rise, _THERMAL_SECONDS)
         arrived = (f' It came back to the minimum it walked through, at '
-                   f'{path[-1][0]:.3g}.'
-                   if state.get('scan_arrived') else '')
+                   f'{came[0]:.3g}.'
+                   if state.get('scan_arrived') and came else '')
         if state.get('scan_stop') and not state.get('scan_arrived'):
             arrived = (' You stopped it there, so the highest point is where '
                        'the walk was interrupted rather than a barrier.')

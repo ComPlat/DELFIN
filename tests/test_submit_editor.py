@@ -2153,3 +2153,137 @@ def test_how_hard_the_hand_pulls_is_the_users_to_set():
     assert "submit_pull_slider.layout.display = ''" in source
     # Enabled and disabled with the rest of the manipulation toolbar.
     assert 'submit_pull_slider.disabled = not enabled' in source
+
+
+#: The band is viewer JavaScript, so it is driven the way the force field is:
+#: node runs exactly the code the browser will run, against a stand-in viewer
+#: that records what was drawn.  Skipped cleanly where node is not installed.
+_NODE = __import__("shutil").which("node")
+
+_BAND_DRIVER = r"""
+var shapes = [], drawn = [];
+globalThis.document = {
+  querySelector: function(){ return null; }, querySelectorAll: function(){ return []; },
+  createElement: function(){ return {style:{}, classList:{add:function(){},remove:function(){}}}; },
+  addEventListener: function(){}, body: {appendChild: function(){}}
+};
+globalThis.window = {
+  document: document, addEventListener: function(){},
+  requestAnimationFrame: function(fn){ fn(); return 1; },
+  cancelAnimationFrame: function(){}, getComputedStyle: function(){ return {}; },
+  HTMLInputElement: {prototype:{}}, HTMLTextAreaElement: {prototype:{}},
+  Event: function(){}
+};
+__BOOTSTRAP__
+var scope = 's1';
+var atoms = [{serial:0, elem:'C', x:0, y:0, z:0}, {serial:1, elem:'C', x:1.53, y:0, z:0}];
+var model = {atoms: atoms, selectedAtoms: function(){ return atoms; }};
+var viewer = {
+  getModel: function(){ return model; }, selectedAtoms: function(){ return atoms; },
+  addLine: function(o){ var s={kind:'line',o:o}; shapes.push(s); drawn.push(s); return s; },
+  addSphere: function(o){ var s={kind:'sphere',o:o}; shapes.push(s); drawn.push(s); return s; },
+  removeShape: function(s){ var i=shapes.indexOf(s); if(i>=0) shapes.splice(i,1); },
+  render: function(){}
+};
+window._submitMolViewerByScope[scope] = viewer;
+var st = window._submitManipStateByScope[scope] = {
+  mode:'manip', scopeKey:scope, ffActive:false, settleOnRelease:true, pullShare:0.1,
+  pinned:[], ffFrameMs:16, picks:[], pivot:null, shapes:[], pivotShape:null,
+  undo:[], overlay:null, viewerEl:null, canvas:null, rect:null, drag:null
+};
+function draw(){ drawn = []; window.__delfinSubmitManip.setPositions(scope, [0,0,0, 1.53,0,0]); }
+var out = {};
+draw(); out.quiet = drawn.length;
+st.ffPull = {want:[{atom:0, serial:0, x:-0.4, y:0, z:0}]};
+draw();
+out.short = drawn.map(function(s){ return s.kind; });
+out.shortEnd = drawn[drawn.length-1].o.center;
+out.color = drawn[0].o.color;
+st.ffPull = {want:[{atom:0, serial:0, x:-3.0, y:0, z:0}]};
+draw(); out.farEnd = drawn[drawn.length-1].o.center;
+out.liveWhilePulling = shapes.length;
+st.ffPull = {want:[{atom:0, serial:0, x:-0.001, y:0, z:0}]};
+draw(); out.aClick = drawn.length;
+st.ffPull = null;
+draw(); out.afterLetGo = drawn.length; out.liveAfter = shapes.length;
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_the_hand_is_drawn_because_the_answer_is_slow():
+    """An atom being pulled and not giving way looks like an atom that is not
+    listening.
+
+    Under a server method every frame the picture gets comes from the kernel,
+    and the kernel answers about ten times a second.  Nothing else on screen
+    moves at the rate of the hand, so a drag that is doing exactly what it
+    should -- applying a force the chemistry is refusing -- reads as a drag
+    that is broken.  Interactive molecular dynamics has drawn a band between
+    the cursor and the atom since VMD, for this reason.
+
+    It is drawn to the *clamped* point rather than to the cursor, so its
+    length is the force: short while the atom is keeping up, and at full
+    stretch when the hand is pulling as hard as it is allowed to.  Drawn to
+    the cursor it would promise something the structure is not being asked
+    for, since past the reach the pull stops growing.
+
+    Driven in node against a stand-in viewer that records what was drawn.
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    script = _BAND_DRIVER.replace('__BOOTSTRAP__', EDITOR)
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(script)
+        path = fh.name
+    done = subprocess.run([_NODE, path], capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr[-800:]
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+
+    # Nothing held, nothing drawn.
+    assert out['quiet'] == 0, out
+    # Held: dashes and a mark where the hand is.  Dashes rather than a line,
+    # because a solid segment between two points in a molecule reads as a
+    # bond, and this is the one thing on screen that is not one.
+    assert out['short'] == ['line', 'line', 'line', 'sphere'], out
+    assert out['color'] == '#ff6d00', out
+    # Inside the reach the mark is the wish itself.
+    assert out['shortEnd'] == {'x': -0.4, 'y': 0, 'z': 0}, out
+    # Past it the band stops growing, because so does the pull: three
+    # angstroms of mouse and one angstrom of band.
+    assert out['farEnd'] == {'x': -1, 'y': 0, 'z': 0}, out
+    # A press that turns out to be a click draws nothing at all.
+    assert out['aClick'] == 0, out
+    # And letting go takes it away, leaving nothing behind on the viewer.
+    assert out['afterLetGo'] == 0, out
+    assert out['liveWhilePulling'] == 4, out
+    assert out['liveAfter'] == 0, out
+
+
+def test_the_band_moves_at_the_rate_of_the_hand():
+    """Not at the rate of the answers, which is the whole point of it.
+
+    Redrawn from the mouse handler as well as from every path that moves
+    atoms, so it follows the cursor between one kernel frame and the next --
+    and rendered there only when nothing else is about to, because with the
+    browser's field running the relaxation draws the same frame a moment
+    later and a second render is a second frame's worth of work.
+    """
+    move = EDITOR.split("if (state2.ffPull) {")[1].split('} else {')[0]
+    assert 'ffPullWant(scopeKey, delta);' in move
+    assert 'drawPull(scopeKey);' in move
+    assert 'if (!ffEnabled(state2)) {' in move
+
+    # Redrawn with everything else that moves atoms, so a frame from the
+    # kernel takes the band with it.
+    assert 'drawPull(scopeKey);' in _body('drawHighlightsNow')
+    # Letting go clears it, and that path does render -- nothing else will.
+    assert 'drawPull(scopeKey);' in _body('ffLetGo')
+    # Nothing is rendered inside the drawing itself: every caller renders once
+    # for its own reasons.
+    assert 'viewer.render()' not in _body('drawPull')
+    # And a new viewer starts with no band left over from the old one.
+    assert 'state.pullShapes = [];' in _body('onViewerReady')
