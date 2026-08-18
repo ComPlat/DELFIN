@@ -22,6 +22,10 @@ from delfin.manta import metal_sphere_builder as MSB
 import delfin.manta._bond_decollapse as _bd
 
 SEED = 42
+# Band der Polyedertreue-Auswahl (18.08.2026).  Siehe die lange Begruendung an der
+# Auswahlstelle: ungebinnt entschiede die Gleitkommazahl jeden Vergleich und der
+# gelandete Beta-Term kaeme nie wieder zum Zug.
+_POLY_FIDELITY_BIN = 0.05
 
 
 def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -2494,6 +2498,22 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     Result is memoised by canonical SMILES + k (deterministic embed): repeated calls
     for the same ligand (e.g. the ensemble builder's variant loop) skip the costly
     re-embed.  The cached coords/mol are NOT mutated by any caller."""
+    # ⚠️ EINTRITTSSPUR.  Der erste Mesomerie-Rauchtest lieferte SECHS gebaute Systeme
+    # und NULL Spurzeilen -- die Vorgabe sass hinter dem MMFF-Block und wurde nie
+    # erreicht.  Das hat drei Ursachen, die sich ohne Messung nicht trennen lassen:
+    # die Funktion wird gar nicht gerufen, sie liefert aus dem Cache, oder sie kehrt
+    # vorher zurueck.  Mein statischer Nachweis "assemble_from_config ruft sie bei
+    # :4381" war WAHR und trotzdem nicht hinreichend -- zum dritten Mal heute die
+    # Verwechslung von "die Stelle existiert" mit "dieser Lauf kommt dort an".
+    # Diese eine Zeile beantwortet es, und sie kostet nichts, wenn der Pfad leer ist.
+    _entp = os.environ.get("DELFIN_MESO_TRACE", "")
+    if _entp and _entp != "0":
+        try:
+            with open(_entp, "a") as _fh:
+                _fh.write("[ENTER] _ligand_confs_from_mol natoms=%d k=%d\n"
+                          % (frag_mol.GetNumAtoms(), int(k)))
+        except Exception:
+            pass
     key = None
     try:
         key = (Chem.MolToSmiles(frag_mol), int(k))
@@ -2818,6 +2838,24 @@ def _refine_guarded(out_syms, P, fixed):
                     pass
             if _v is not None and _v.get("any_broken"):
                 P = _P_before              # Ruecknahme: die Behauptung wiegt schwerer
+                # ===== NUR ZUR DIAGNOSE, NIE IM BETRIEB ==========================
+                # Frage, die das beantwortet: der volle Lauf ueber die 19
+                # Oktaederfaelle brach die Zusicherung SECHSMAL (109 Aufrufe, alle
+                # sechs trans) -- und lieferte trotzdem 19 von 19 byte-identische
+                # Archivdateien.  Zwei Erklaerungen, beide plausibel:
+                #   (a) die betroffenen Frames verwirft das Selbstgate ohnehin, sie
+                #       stehen in KEINEM Arm im Archiv;
+                #   (b) ein Pass NACH refine stellt den verdrehten Zustand wieder her.
+                # Beide erzeugen byte-identische Archive, ein Byte-Vergleich kann sie
+                # also nicht trennen -- dieselbe Falle wie beim ersten Rauchtest.
+                # DELFIN_ASSERT_MARK_ROLLBACK=1 verschiebt den zurueckgenommenen Frame
+                # zusaetzlich um 100 Angstroem.  So ein Frame ist geometrisch
+                # unmoeglich und faellt durch jedes Tor.  Bleibt das Archiv DANN immer
+                # noch byte-identisch, stand der Frame nie darin -> Fall (a).
+                # Aendert es sich, erreicht die Ruecknahme das Archiv sehr wohl ->
+                # Fall (b), und die Ursache liegt hinter refine.
+                if os.environ.get("DELFIN_ASSERT_MARK_ROLLBACK", "0") == "1":
+                    P = P + np.array([100.0, 0.0, 0.0], float)
         except Exception:
             pass
     return P
@@ -4450,10 +4488,15 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             "DELFIN_FFFREE_BETA_AWARE_SELECT", "0") == "1"
         best_Q, best_clash = None, 1e18
         best_coll = True                            # a collapsed pick loses to a clean one
+        best_pol = 10 ** 9                          # ... dann die Polyedertreue (18.08.)
         best_beta = float("inf")                    # ... and among equals, the flatter donor
+        # Vorgabe AUS -> _pol ist fuer JEDEN Kandidaten 0, der Tupelvergleich faellt
+        # damit exakt auf die historische Reihenfolge zurueck: byte-identisch.
+        _polysel = os.environ.get("DELFIN_FFFREE_POLY_FIDELITY_SEAT", "0") == "1"
         cands = []                                  # (Q, clash_vs_metal) for ensemble
         seen_local = []                             # intra-ligand RMSD dedup
         for lP in coords_list:
+            dent_targets = None       # nur der polydentate Zweig setzt Zielvertices
             if lg["denticity"] == 1:
                 v = va[0][0]
                 Vunit = ref[v] / np.linalg.norm(ref[v])
@@ -4490,6 +4533,9 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                            * MSB.md_distance(metal, lsyms[dons_d[i]],
                                              atom=lg["mol"].GetAtomWithIdx(int(dons_d[i])),
                                              mol=lg["mol"]) for i in range(dent)]
+                # Die Zielvertices dieses Chelats -- ab hier weiss die Auswahl, WO die
+                # Donoren eigentlich hingehoeren, und kann Treue dazu bewerten.
+                dent_targets = targets
                 # config-faithful seating is only meaningful for ASYMMETRIC chelates
                 # (distinct donor elements); for symmetric chelates every arm seating
                 # is the same isomer, so keep the best-fit (lower ring strain).
@@ -4600,8 +4646,59 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             # historic `cl < best_clash` exactly -- byte-identical.
             _coll = bool(_csel and _collapsed_heavy_bonds_strict(lsyms, Q))
             _bta = _beta_score(lsyms, Q, dons) if _bsel else 0.0
-            if (_coll, cl, _bta) < (best_coll, best_clash, best_beta):
-                best_coll, best_clash, best_beta, best_Q = _coll, cl, _bta, Q
+            # ===== POLYEDERTREUE ALS AUSWAHLKRITERIUM ==========================
+            # DER BEFUND, DER DIESEN TERM ERZWINGT (18.08., 30921 Systeme): netto
+            # +988 Systeme fliessen vom Oktaeder ins trigonale Prisma, McNemar
+            # X2 = 860,8; der Bauer erzeugt 2,99 mal zu viele Prismen, waehrend jede
+            # andere Form zwischen 0,86 und 1,29 bleibt.  Es sind keine Prismen --
+            # CShM-Median 11,03 statt 16,7, also ein HALBER Bailar-Twist.  Und das
+            # Signal ist die VERZAHNUNG, monoton von 2,49 % bei null Chelatringen auf
+            # 16,12 % bei fuenf.  Metall und d-Zahl sind flach.
+            #
+            # ⚠ WARUM HIER UND NICHT IN DER RELAXATION -- das ist heute ENTSCHIEDEN,
+            # nicht vermutet.  Das Zusicherungsprotokoll wurde an alle vier
+            # refine-Aufrufstellen gehaengt und fing den Twist sechsmal (109 Aufrufe,
+            # alle sechs trans).  Trotzdem blieben 19 von 19 Archivdateien
+            # byte-identisch.  Der Diskriminator: die Ruecknahme zusaetzlich um 100
+            # Angstroem verschoben -- ein Frame, den jedes Tor verwirft und jeder
+            # Byte-Vergleich saehe.  Das Archiv blieb identisch.  ⇒ Die Frames, deren
+            # Zusicherung bricht, werden ohnehin verworfen; die UEBERLEBENDEN sind
+            # schon verdreht, wenn sie bei refine ankommen.  Die Relaxation ist als
+            # Ursache damit ausgeschlossen -- der Chelatzug greift HIER, bei der
+            # Platzierung.
+            #
+            # Der Bauer setzt die Donoren auf `targets` (ideale Vertices mal
+            # md_distance), aber ein starrer Chelatring kann sie nicht alle erreichen:
+            # _orient_chelate_to_vertices legt ihn so gut wie moeglich an, und der
+            # Rest ist Abweichung.  Bisher entschied darueber NICHTS -- die Auswahl
+            # las (Kollaps, Clash, Beta).  Ein Konformer, der das Polyeder um 30 Grad
+            # verdreht, gewann gegen einen treuen, sobald er einen Clash weniger
+            # hatte oder auch nur frueher kam.
+            #
+            # ⚠ WARUM DAS BILLIG IST: reine AUSWAHL unter bereits gebauten
+            # Kandidaten -- es entsteht keine neue Geometrie.  Nach dem heute
+            # gemessenen Gesetz (Isometrie +0,98 pp, starre Drehung +6,57 pp,
+            # Neueinbettung +11,9 pp) ist das die guenstigste Klasse ueberhaupt.
+            #
+            # ⚠ WARUM GEBINNT: `_pol` ist eine Gleitkommazahl.  Ungebinnt entschiede
+            # sie praktisch jeden Vergleich und `_bta` kaeme nie wieder zum Zug --
+            # das waere eine stille Abschaltung eines gelandeten Terms.  Das Band von
+            # 0,05 Angstroem laesst sie nur sprechen, wenn der Unterschied gross
+            # genug ist, um chemisch etwas zu heissen.
+            #
+            # DELFIN_FFFREE_POLY_FIDELITY_SEAT (Vorgabe 0 -> byte-identisch).
+            _pol = 0
+            if _polysel and dent_targets is not None:
+                try:
+                    _dev = [float(np.linalg.norm(Q[dons_d[i]] - dent_targets[i]))
+                            for i in range(len(dent_targets))]
+                    _pol = int(round((sum(d * d for d in _dev) / len(_dev)) ** 0.5
+                                     / _POLY_FIDELITY_BIN))
+                except Exception:
+                    _pol = 0
+            if (_coll, cl, _pol, _bta) < (best_coll, best_clash, best_pol, best_beta):
+                best_coll, best_clash, best_pol, best_beta, best_Q = (
+                    _coll, cl, _pol, _bta, Q)
             if ensemble:
                 # dedup conformers of THIS ligand by intra-ligand RMSD (identity corr.)
                 dup = False
