@@ -741,60 +741,6 @@ def test_a_scan_is_told_a_direction_rather_than_an_end():
     assert arm.index("_suggest_scan_target(") < arm.index("floor = ")
 
 
-def test_the_frame_makes_tearing_impossible_rather_than_expensive():
-    """A conformer differs from another in its torsions and nothing else.
-
-    So holding the frame -- every bond and every angle -- is what a
-    conformational drag means, and it is a different kind of guarantee from a
-    budget: no energy is consulted, nothing is estimated, and there is no path
-    by which a bond can come apart because its length is one of the things
-    being held.
-
-    Driven on a real editor, a ring hydrogen yanked to 1.50, 2.20 and 3.20 A
-    with no budget at all: with the frame off the viewer draws 1.46, 2.10 and
-    2.93 and the box keeps what was asked for; with it on, both draw and keep
-    1.08 and 1.09.
-    """
-    assert "submit_rigid_btn" in EDITOR_SOURCE
-    body = EDITOR_SOURCE.split("def _arm_frame(")[1].split("\n    def ")[0]
-    # Taken at the grab.  Read from the geometry the drag has already made of
-    # it, every bond is held at whatever the yank produced -- a C-H at 3.20 A
-    # dutifully kept at 3.20 -- and the switch does nothing at all.
-    assert "_gfn.frame_constraints(here)" in body
-
-    assert "contacts = list(state['frame_held'])" in EDITOR_SOURCE
-    # And the answer stands: put the atom back where the cursor has it and it
-    # carries the bond it was supposed to be unable to stretch.
-    settled = EDITOR_SOURCE.split("settled = (came_back if came_back")[1]
-    settled = settled.split("frames = list(")[0]
-    assert "submit_rigid_btn.value" in settled
-    assert "outcome['xyz']" in settled
-    # The box as well as the picture, or letting go keeps the torn one.
-    assert "Turned, with the frame held" in EDITOR_SOURCE
-
-
-def test_the_frame_is_every_bond_and_every_angle():
-    """Lengths and angles both: holding only the lengths leaves an atom free
-    to swing through its neighbours, which is not a conformation either."""
-    ethane = (
-        "8\nethane\n"
-        "C  0.000  0.000  0.000\nC  1.530  0.000  0.000\n"
-        "H -0.370  1.020  0.000\nH -0.370 -0.510  0.880\n"
-        "H -0.370 -0.510 -0.880\nH  1.900  0.510  0.880\n"
-        "H  1.900  0.510 -0.880\nH  1.900 -1.020  0.000\n"
-    )
-    held = gfn.frame_constraints(ethane)
-    kinds = [one["kind"] for one in held]
-    # Seven bonds in an ethane, and every angle at both carbons.
-    assert kinds.count("distance") == 7
-    assert kinds.count("angle") == 12
-    assert all(one["mode"] == "fix" for one in held)
-    # At the value it has now, so the frame is the structure as it stands.
-    bond = next(one for one in held
-                if one["kind"] == "distance" and set(one["atoms"]) == {0, 1})
-    assert bond["value"] == pytest.approx(1.53, abs=0.01)
-
-
 def test_the_editor_writing_the_box_is_not_a_new_structure():
     """The host starts a structure over unless it is told it is the same one.
 
@@ -840,4 +786,38 @@ def test_a_drag_is_not_a_new_structure_either():
     assert "coords_widget.value = payload" in body
     assert body.index("= True") < body.index("coords_widget.value = payload")
     assert "finally:" in body
+
+
+def test_a_scan_streams_frames_instead_of_rewriting_the_box():
+    """Every write to the box rebuilds the viewer from nothing.
+
+    A thirty-point scan was thirty rebuilds: the picture crawled and the
+    browser sometimes stopped answering altogether.  The follow has always
+    streamed frames for exactly this reason.  Measured on a twenty-point scan:
+    the box is written once, at the end, and twenty frames go down the
+    channel.
+    """
+    body = EDITOR_SOURCE.split("def on_submit_scan_run(")[1]
+    body = body.split("def _scan_verdict(")[0]
+    assert "shown.append(_gfn.coordinates_of(walked))" in body
+    assert "setattr(submit_gfn_frame, 'value', text)" in body
+    # And the box only at the end, where the result is.
+    assert "_write_coords" not in body.split("def _done(")[0]
+    assert "_write_coords" in body
+
+
+def test_a_still_hand_holds_what_it_was_already_holding():
+    """Nothing changed, so nothing about what is held should change either.
+
+    Derived afresh, a hand that has stopped can be handed a *different* set --
+    the nearest contact rather than the one the drag was driving -- and the
+    structure then slides towards something nobody asked for while nothing is
+    moving.
+    """
+    body = gfn.contacts_holding.__doc__ or ""
+    assert "holding" in gfn.contacts_holding.__code__.co_varnames
+    src = EDITOR_SOURCE.split("holding=state.get('thermal_holding')")
+    assert len(src) > 1, "the follow has to hand the last set back in"
+    assert "state['thermal_holding'] = [dict(one) for one in contacts]" \
+        in EDITOR_SOURCE
 

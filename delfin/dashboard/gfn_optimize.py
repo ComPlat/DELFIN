@@ -38,7 +38,7 @@ from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'atom_lines', 'constraint_input', 'contacts_holding',
            'find_xtb', 'find_binary', 'find_gxtb',
-           'closest_contact', 'frame_constraints', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
+           'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
            'install_xtb', 'is_gfn_method', 'read_trajectory', 'SOLVENTS',
            'solvent_note',
@@ -966,59 +966,13 @@ def _snapshot(was, count):
             for n in range(count)]
 
 
-def frame_constraints(xyz_text: str) -> list:
-    """Every bond and every angle in the structure, at the value it has now.
-
-    A conformer differs from another only in its torsions, so holding the
-    frame -- the lengths and the angles -- is what a conformational drag
-    actually means.  It makes tearing something *impossible* rather than
-    expensive, which is a different kind of guarantee from a budget: no energy
-    is consulted, nothing is estimated, and there is no path by which a bond
-    can come apart because its length is one of the things being held.
-
-    Measured on a 24-atom structure, 22 bonds and 42 angles held while a chain
-    torsion was turned: the torsion follows the hand to within a few degrees
-    -- asked 35, 22, 15, 359, 350 it gave 37, 30, 14, 5, 353 -- and the worst
-    any bond drifts is 0.098 A, which is nowhere near a bond coming apart.
-    """
-    from delfin.atom_mapping import cov_radius
-    rows = [line.split() for line in atom_lines(xyz_text)]
-    if len(rows) < 2:
-        return []
-    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
-    radius = [cov_radius(str(r[0])) for r in rows]
-    held: list = []
-    near = {i: [] for i in range(len(rows))}
-    for i in range(len(rows)):
-        for j in range(i + 1, len(rows)):
-            if not _is_a_bond(where, radius, i, j):
-                continue
-            near[i].append(j)
-            near[j].append(i)
-            held.append({'kind': 'distance', 'atoms': [i, j], 'mode': 'fix',
-                         'value': math.dist(where[i], where[j])})
-    for k, ties in near.items():
-        for a in range(len(ties)):
-            for b in range(a + 1, len(ties)):
-                i, j = ties[a], ties[b]
-                first = [where[i][n] - where[k][n] for n in range(3)]
-                second = [where[j][n] - where[k][n] for n in range(3)]
-                one = math.sqrt(sum(v * v for v in first)) or 1.0
-                two = math.sqrt(sum(v * v for v in second)) or 1.0
-                cosine = sum(p * q for p, q in zip(first, second)) / (one * two)
-                held.append({
-                    'kind': 'angle', 'atoms': [i, k, j], 'mode': 'fix',
-                    'value': math.degrees(math.acos(max(-1.0, min(1.0, cosine)))),
-                })
-    return held
-
-
 def contacts_holding(
     xyz_text: str,
     dragged: Any,
     most: int = 3,
     was: Any = None,
     turning: Any = None,
+    holding: Any = None,
 ) -> list:
     """The internal coordinates the hand moved, to hold while the rest relaxes.
 
@@ -1168,8 +1122,24 @@ def contacts_holding(
         # A hand that has stopped moving has changed nothing, and nothing is
         # not an answer: with no values held the price falls back to a single
         # point on the geometry as it stands, which is the number this whole
-        # thing exists to stop using.  So a still hand holds what a fresh one
-        # would.
+        # thing exists to stop using.
+        #
+        # What it holds is what it was already holding.  Derived afresh, a
+        # still hand can be handed a *different* set -- the nearest contact
+        # rather than the one the drag was driving -- and the structure then
+        # slides towards something nobody asked for while nothing is moving.
+        # Nothing changed, so nothing about what is held should change either.
+        if holding:
+            kept = [dict(one) for one in holding]
+            for one in kept:
+                atoms = [int(n) for n in one['atoms']]
+                if any(not (0 <= n < len(where)) for n in atoms):
+                    return contacts_holding(xyz_text, dragged, most=most)
+                one['value'] = (math.dist(where[atoms[0]], where[atoms[1]])
+                                if one['kind'] == 'distance'
+                                else _dihedral(where, *atoms)
+                                if one['kind'] == 'dihedral' else one['value'])
+            return kept
         return contacts_holding(xyz_text, dragged, most=most)
     top = sorted(best.values(), key=lambda one: -one[0])[0][0]
     kept = [one for one in ranked
