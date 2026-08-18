@@ -2830,7 +2830,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['manip_inflight'] = False
             return False
         state['manip_inflight'] = bool(drawn)
-        coords_widget.value = text
+        # The same molecule, changed -- never a different one.
+        #
+        # The host treats any write to the box as a structure it has not seen
+        # unless it is told otherwise, and starts that one over: charge back
+        # to zero, multiplicity to one, and every held value, bond edit and
+        # history entry thrown away.  That is right for a structure someone
+        # loads and wrong for every write this editor makes, and a scan makes
+        # one per point -- so a scan lost the charge it was told to run at,
+        # mid-scan, and the undo history with it.
+        state['structure_edit_inflight'] = True
+        try:
+            coords_widget.value = text
+        finally:
+            state['structure_edit_inflight'] = False
         return True
 
     def _thermal_budget():
@@ -6852,7 +6865,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['manip_inflight'] = False
             return
         state['manip_inflight'] = True
-        coords_widget.value = payload
+        # The same molecule, moved -- not one the host has never seen.
+        #
+        # This is the drag's own way back into the box, and unguarded it made
+        # the host start the structure over on every single drag: charge to
+        # zero, multiplicity to one, held values and history gone, and
+        # structure_changed dropping the thermal anchor with them.  Without an
+        # anchor there is no budget, so nothing could be refused and nothing
+        # taken back -- which is why the budget appeared to do nothing at all,
+        # measured: the anchor was gone after the first yank and the charge
+        # with it.
+        state['structure_edit_inflight'] = True
+        try:
+            coords_widget.value = payload
+        finally:
+            state['structure_edit_inflight'] = False
         if state.pop('poly_recheck', False):
             # After the coordinates have landed, so the assignment is worked
             # out from where the ligands actually are now.
