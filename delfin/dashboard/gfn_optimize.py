@@ -868,6 +868,36 @@ def push_force_for(energy: float, reach: float = PUSH_REACH) -> float:
     what the temperature grants is an energy, and what a hand is set in is a
     force.
 
+    The whole chain from a temperature to an xtb force constant, so that where
+    it stops being derived is visible rather than buried:
+
+    1. Eyring, inverted.  The largest barrier crossable at *T* within a time
+       *tau* is ``R T ln(kB T tau / h)`` -- 22.3 kcal/mol at 298.15 K within
+       the hour, 10.9 at 150 K, 117 at 1500 K.  See ``thermal_ceiling``.
+       Nothing is chosen here.
+    2. That energy into a force.  A restraint is a spring: it reaches its
+       force only at full stretch and is weaker all the way there, so what it
+       can spend over a displacement is half of force times displacement.
+       ``F = 2 * ceiling / reach``.  Nothing is chosen here either, *given* a
+       reach.
+    3. The force into a constant, per coordinate kind, from the shapes xtb
+       actually uses -- measured, not assumed: ``k d^2`` in Bohr for a
+       distance, the same in radians for an angle, ``k (1 - cos d)`` for a
+       torsion.  See :func:`push_constant`.  Nothing is chosen here.
+
+    The reach is chosen.  It is the length over which the barrier is taken to
+    be climbed, and no temperature says what that should be -- it is a
+    chemical scale: a bond being made or broken has its top something like
+    half an angstrom to an angstrom from the minimum, so an angstrom is used,
+    and the angular reach is that same length in the units xtb measures an
+    angle in.  It is worth knowing how much rests on it: at four tenths of an
+    angstrom -- the inflection of a Morse bond, which is another defensible
+    reading -- room temperature would come out at 111 kcal/mol/A, which is
+    exactly what a bond holds, and room temperature would break bonds.  An
+    angstrom gives 45, four tenths of a bond, and that has been checked
+    against real cases at three temperatures: it turns a molecule into its own
+    conformers at 150 K and holds an aryl C-Br at 298 K.
+
     A hand that can *spend* a barrier's worth is not automatically a hand that
     can *drive* it -- a spring pulling a system over a hill has to be steeper
     than the hill at its steepest, which for a three-fold torsion of height B
