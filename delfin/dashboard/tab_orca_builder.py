@@ -187,7 +187,18 @@ def create_tab(ctx):
     orca_method = widgets.Dropdown(options=method_options, value='PBE0',
                                    description='Method:',
                                    layout=widgets.Layout(width='250px'), style=ws)
-    orca_job_type = widgets.Dropdown(options=['SP', 'OPT', 'FREQ', 'OPT FREQ'],
+    #: OptTS is ORCA's saddle-point optimiser, and it is here because there
+    #: is now something to give it: the editor's scan walks a reaction and its
+    #: path finder hands back an estimated transition state, and what that
+    #: estimate wants next is a real optimisation to a first-order saddle.
+    #:
+    #: It is not Opt with a different name.  A saddle search follows one mode
+    #: uphill and every other down, so it needs to know which mode -- which
+    #: means a Hessian, and OptTS without one starts from the identity and
+    #: walks to a minimum or to nothing.  So choosing it turns on Calc_Hess,
+    #: and the input says so where it can be read rather than in a manual.
+    orca_job_type = widgets.Dropdown(options=['SP', 'OPT', 'FREQ', 'OPT FREQ',
+                                              'OPTTS', 'OPTTS FREQ'],
                                      value='OPT', description='Job Type:',
                                      layout=widgets.Layout(width='250px'), style=ws)
     orca_basis = widgets.Dropdown(options=basis_options, value='def2-SVP',
@@ -777,6 +788,36 @@ def create_tab(ctx):
         return (f'# Held in the editor on {blocks[shown][0]}, while this\n'
                 f'# input reads {blocks[0][0]}. Check the atom numbers.\n')
 
+    def _build_geom_block():
+        """One %geom, carrying whatever wants to be in it.
+
+        ORCA reads one; two in an input is one of them silently thrown away.
+        A saddle search needs a Hessian to know which mode to climb, and the
+        editor's holds need a Constraints section, and both live here.
+        """
+        wants_ts = 'OPTTS' in str(orca_job_type.value or '').upper()
+        held = _build_constraints_block()
+        if not wants_ts:
+            return held
+        note = ''
+        inside = []
+        if held:
+            # The notes come out with it; they are comment lines and belong
+            # above the block rather than inside it.
+            body = held.split('%geom Constraints\n', 1)
+            if len(body) == 2:
+                note = body[0]
+                inside = ['  Constraints'] + [
+                    line for line in body[1].splitlines()
+                    if line.strip() and line.strip() != 'end'] + ['  end']
+        # An initial Hessian, because a saddle search that does not know which
+        # mode to climb is an ordinary optimisation with a worse convergence
+        # criterion.  Recalculated every five steps: the mode being followed
+        # changes character as the structure moves, and a Hessian from the
+        # starting guess stops describing it.
+        return (note + '%geom\n  Calc_Hess true\n  Recalc_Hess 5\n'
+                + ('\n'.join(inside) + '\n' if inside else '') + 'end')
+
     def _build_constraints_block():
         """The coordinates held in the editor, in ORCA's own syntax.
 
@@ -860,7 +901,7 @@ def create_tab(ctx):
         pal_block = f'%pal\n  nprocs {orca_pal.value}\nend'
         maxcore_line = f'%maxcore {orca_maxcore.value}'
         output_block = _build_output_block()
-        constraints_block = _build_constraints_block()
+        constraints_block = _build_geom_block()
         coord_block = _build_coord_block()
         inp = f'{keyword_line}\n\n{pal_block}\n\n{maxcore_line}\n'
         if output_block:
@@ -1874,7 +1915,7 @@ def create_tab(ctx):
         # What the editor holds, kept in step the same way %output is: the
         # preview is the user's to edit, so the block is replaced where it is
         # rather than the whole input written again.
-        new_geom = _build_constraints_block()
+        new_geom = _build_geom_block()
         held = re.search(r'%geom\b.*?\n\s*end\s*\nend', text,
                          flags=re.DOTALL | re.IGNORECASE)
         if held:
@@ -2607,6 +2648,10 @@ def create_tab(ctx):
         'orca_mol_nav_row': orca_mol_nav_row,
         'orca_mol_output': orca_mol_output,
         'update_orca_preview': update_orca_preview,
+        # What the tab would write, without writing it: an input is the
+        # whole product of this tab and it was only reachable by pressing
+        # the button that submits one.
+        'generate_orca_input': generate_orca_input,
         # The structure editor this tab holds, under the names it uses.
         **orca_editor.exported,
         'editor_state': state,
