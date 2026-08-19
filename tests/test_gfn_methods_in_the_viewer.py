@@ -4352,7 +4352,13 @@ def test_the_playback_pace_is_the_users_and_not_the_backlogs(player_js):
     that quietly sped it back up would take that away, so the setting wins.
     """
     step = player_js.split("function stepMs()")[1].split("function ")[0]
-    assert "if(play.pace) return play.pace;" in step
+    # Zero is a value, not a missing one: it means "keep up", so the test is
+    # for the pace having been set at all rather than for it being truthy.
+    assert ("if(play.pace!==undefined&&play.pace!==null) return play.pace;"
+            in step)
+    # And a hand on the structure is live whatever the slider says, because a
+    # drag is not a replay.
+    assert "if(play.held) return 0;" in step
     # And it is asked first, before any of the backlog rules.
     assert step.index("play.pace") < step.index("n>60")
 
@@ -5316,3 +5322,41 @@ def test_moving_an_atom_and_pulling_on_one_are_both_offered(bare_editor):
     # function, or one of them would keep sending the slider on its own.
     assert source.count('setPullStrength(') == 3
     assert source.count('_hand_share()') == 4
+
+
+def test_a_drag_keeps_up_and_the_top_of_the_slider_means_keep_up(bare_editor):
+    """Two ways the picture fell behind what had been computed.
+
+    A drag queued its answers and drew them at the slider's pace, and then
+    dropped whatever was still queued when the hand let go -- which is the
+    springing back, and is why it looks more alive the moment the mouse is
+    up.  A drag is not a replay: a frame held back during one is a frame the
+    picture is behind the hand by, so while the hand is down the player runs
+    live whatever the slider says.
+
+    And the top of the slider was 60 frames a second, which is one frame per
+    animation frame -- so a burst of thirty answers put the picture half a
+    second behind and it never caught up.  The top is not a speed, it is
+    "keep up": zero, which the page reads as everything that has arrived,
+    this frame.
+    """
+    part, _state = bare_editor
+    sent = []
+    part.submit_play_speed.value = int(part.submit_play_speed.max)
+    # What the page is told at the top, and what it is told below it.
+    from delfin.dashboard import structure_editor as _se
+    source = EDITOR_SOURCE
+    assert "asked >= int(submit_play_speed.max)" in source
+    assert "pace = (0 if asked" in source
+    assert 'The picture keeps up with the calculation' in source
+
+    # The player itself: a hand on the structure is live, and zero drains the
+    # whole queue in one frame rather than dividing by it.
+    assert "'    if(play.held) return 0;" in source
+    assert "if(play.pace!==undefined&&play.pace!==null) return play.pace;" in source
+    assert "'      if(ms<=0){" in source
+    assert "play.last=play.queue[play.queue.length-1];" in source
+    # And the drain counts every frame it skipped past, or the count that
+    # decides which frame a grab keeps would drift.
+    assert "play.shown=(play.shown||0)+play.queue.length;" in source
+    assert sent == []
