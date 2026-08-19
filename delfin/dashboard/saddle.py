@@ -18,10 +18,11 @@ saddle, and this sharpens the estimate into a converged transition state --
 with the one imaginary frequency that says it is one.
 
 It runs where the dashboard runs, which on a cluster is the login node, and
-that is a place with rules.  So: one core, two gigabytes, and a timeout in
+that is a place with rules.  So: a few cores, two gigabytes, and a timeout in
 minutes rather than hours -- and only the methods that can finish inside
-that.  A saddle search on a real basis set is a job, and the ORCA Builder is
-where jobs are submitted; this is deliberately the other thing.
+that.  Four is the most a login node is usually happy to lend; a saddle
+search on a real basis set is a job, and the ORCA Builder is where jobs are
+submitted.
 """
 
 from __future__ import annotations
@@ -99,7 +100,7 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
                        charge: int = 0, uhf: int = 0,
                        solvent: Optional[str] = None,
                        max_steps: int = 60,
-                       cores: int = 1,
+                       cores: int = 4,
                        timeout: Optional[float] = 180.0) -> Dict[str, Any]:
     """Climb to the nearest first-order saddle, and say whether one was found.
 
@@ -113,11 +114,12 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
     changes character as the structure moves, and one taken at the start stops
     describing it.
 
-    One core and two gigabytes by default, and three minutes.  This runs where
-    the dashboard runs, and on a cluster that is the login node -- a place
-    where a calculation is welcome exactly as long as it is small and short.
-    A run that wants more than that is a job, and saying so is better than
-    taking the node.
+    Four cores and two gigabytes by default, and three minutes.  This runs
+    where the dashboard runs, and on a cluster that is the login node -- a
+    place where a calculation is welcome exactly as long as it is small and
+    short.  Four is about the most such a node is usually happy to lend, and a
+    run that wants more than that is a job: saying so is better than taking
+    the node.
     """
     keyword = SADDLE_METHODS.get(str(method or '').lower())
     if keyword is None:

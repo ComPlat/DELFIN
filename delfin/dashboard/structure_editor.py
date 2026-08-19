@@ -2189,8 +2189,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    if(data&&data.halt){\n'
             '      /* The run was switched off.  Playing out the queue after\n'
             '         that is the picture carrying on without the thing it is\n'
-            '         a picture of. */\n'
-            '      play.queue=[]; play.seen=(data.frames||[]).length;\n'
+            '         a picture of.\n'
+            '\n'
+            '         The count of what has been shown stays.  Set from the\n'
+            '         halt payload -- which carries no frames, so it set zero\n'
+            '         -- the next write for the same run looked entirely new,\n'
+            '         and its window began mid-stream: measured, a Stop at\n'
+            '         frame 69 then drew 57, 59, 61, 63, 65, 67, 69.  Time\n'
+            '         running backwards and the tail played twice, on every\n'
+            '         Stop. */\n'
+            '      play.queue=[];\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
             '        /* Which frame is on screen.  Stopping keeps that one:\n'
             '           frames xtb had already computed but nobody had seen\n'
@@ -2212,14 +2220,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '         played carried over, so a shorter run than the one\n'
             '         before it played nothing at all -- which is what made\n'
             '         the playback look like it worked only sometimes. */\n'
-            '      if(play.queue.length){\n'
+            '      if(play.queue.length&&!data.abandoned){\n'
             '        /* Land the run that is ending on its last frame first.\n'
             '           Dropped there, the viewer keeps whatever it had drawn\n'
             '           while the kernel keeps the geometry it computed, and\n'
             '           the two drift apart: the next drag then hands over a\n'
             '           structure that is behind, and the relaxation nobody saw\n'
             '           is walked again -- which is every earlier drag being\n'
-            '           made a second time. */\n'
+            '           made a second time.\n'
+            '\n'
+            '           Unless the run was abandoned, and then its queue is\n'
+            '           exactly what must not be drawn: the kernel threw those\n'
+            '           frames away because the user has just changed the\n'
+            '           structure under them.  Landing on the newest of them\n'
+            '           put the viewer on a geometry nobody has any more, and\n'
+            '           nothing wrote over it afterwards. */\n'
             '        show(play.last,play.queue[play.queue.length-1],1);\n'
             '      }\n'
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
@@ -2424,6 +2439,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '           held?String(play.shown||0):"");\n'
             '    }\n'
             '    if(play.held&&!followIsOn()){\n'
+            '      /* Still read.  The widget is one slot, so a write that is\n'
+            '         not read is a write the next one erases: measured with\n'
+            '         Relax off, a drag over six frames lost all six and the\n'
+            '         picture jumped forward on release.  Reading keeps the\n'
+            '         count honest and the wall is read with it. */\n'
+            '      readWall(); read(now);\n'
             '      window.requestAnimationFrame(frame); return;\n'
             '    }\n'
             '    if(play.held){\n'
@@ -4311,7 +4332,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # the geometry the user has just made.
         blank = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = blank
-        submit_gfn_frame.value = json.dumps({'run': blank, 'frames': []})
+        # Said out loud, because a new run and an abandoned one look the
+        # same to the page and want opposite things: a run that ended cleanly
+        # should be landed on its last frame, and one the user has just
+        # cut off must not be drawn at all -- those frames are about a
+        # structure that no longer exists.
+        submit_gfn_frame.value = json.dumps(
+            {'run': blank, 'frames': [], 'abandoned': 1})
         return True
 
     def _stand_down_after_interrupt():
@@ -6599,10 +6626,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                   + (f' and {len(legs) - 1} more' if len(legs) > 1 else ''))
         state['scan_run'] = True
         state['scan_stop'] = False
+        state['scan_gap_first'] = None
+        state['scan_gap_least'] = None
         state['scan_arrived'] = False
         state['scan_came_back'] = None
         state['scan_free'] = None
         state['scan_ends'] = None
+        state['scan_depth'] = ''
         state['scan_crowded'] = None
         state['scan_frame_run'] = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = state['scan_frame_run']
@@ -6814,6 +6844,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         return
                     if base is None:
                         base = float(energy)
+                    # Whether the method can still answer here.
+                    #
+                    # A closed-shell single determinant describes two electrons
+                    # in one orbital, and there are regions of every surface
+                    # where they are not in one: a bond half broken, a ring
+                    # opening, a double bond turned.  The frontier gap says so
+                    # before the energy does, and a scan is where a walk runs
+                    # into such a region without anyone choosing to.
+                    #
+                    # Kept as the narrowest seen and compared against the
+                    # first point, because what matters is where the walk went
+                    # and not where it started.
+                    if outcome.get('gap') is not None:
+                        if state.get('scan_gap_first') is None:
+                            state['scan_gap_first'] = outcome['gap']
+                        narrow = state.get('scan_gap_least')
+                        if narrow is None or outcome['gap'] < narrow:
+                            state['scan_gap_least'] = outcome['gap']
                     spent = (float(energy) - base) * _HARTREE_TO_KCAL
                     # The same floor the drag has.  A scan drives its
                     # coordinate wherever it was told, so a target set past the
@@ -6924,6 +6972,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # A path finder is given two structures and finds its own way;
                 # what it cannot do is invent a product to aim at, and this is
                 # where one comes from.
+                state['scan_depth'] = _gfn.method_is_out_of_its_depth(
+                    state.get('scan_gap_least'), state.get('scan_gap_first'))
                 if began_at and path:
                     state['scan_ends'] = (
                         began_at, bottom[1] if bottom is not None else walked)
@@ -7268,6 +7318,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'three Hessians -- where it started, the top, and where '
                      f'it came to -- and they are what the temperature below '
                      f'is worked out from.')
+        if state.get('scan_depth'):
+            first += ' ' + state['scan_depth']
         if free is None and str(submit_scan_energy.value) == 'G':
             first += (' The free energies could not be taken, so these are '
                       'electronic.')

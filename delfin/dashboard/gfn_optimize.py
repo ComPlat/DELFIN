@@ -837,14 +837,24 @@ PUSH_FORCE_TO = 240.0
 
 #: What a bond holds, as a force, in kcal/mol/A.
 #:
-#: How small a frontier gap has to be before a single-determinant answer
-#: stops being one, and how much of a fall counts as a warning.
+#: When a frontier gap says a single-determinant answer has stopped being
+#: one: how far it has to fall, and how small it has to get.
 #:
-#: Both, because either alone misses a case: a molecule that starts with a
-#: small gap is not suddenly in trouble, and one whose gap halves on the way
-#: up is, even if what it falls to still sounds respectable.  Measured under
-#: GFN2 on a 2-butene, 5.28 eV at cis and 2.42 at the twisted top.
-GAP_IS_SMALL = 3.0
+#: The *fall* is the signal, not the value.  A great many perfectly ordinary
+#: systems simply have a small gap -- transition-metal complexes, long
+#: conjugated chains, anything with close-lying frontier orbitals -- and they
+#: are not in trouble for it; a warning keyed on the value alone would fire on
+#: every one of them all the time, which is noise and teaches people to
+#: ignore it.  What means something is a gap that *closes on the way*: two
+#: electrons that were a pair and are not one any more.
+#:
+#: So: fallen to about half, and low enough afterwards to matter.  Or very low
+#: on its own, where there is nothing to compare against.  Measured under GFN2
+#: driving a torsion through a double bond, 5.26 eV at the start and 1.44 at
+#: the top; and on the transition state a path finder estimated, 5.28 and
+#: 2.42.
+GAP_IS_SMALL = 1.5
+GAP_WORTH_SAYING = 3.0
 GAP_HAS_FALLEN = 0.55
 
 
@@ -864,7 +874,8 @@ def method_is_out_of_its_depth(gap: Any, was: Any = None) -> str:
         return ''
     fell = False
     try:
-        fell = float(was) > 0 and gap < GAP_HAS_FALLEN * float(was)
+        fell = (float(was) > 0 and gap < GAP_HAS_FALLEN * float(was)
+                and gap < GAP_WORTH_SAYING)
     except (TypeError, ValueError):
         fell = False
     if gap >= GAP_IS_SMALL and not fell:

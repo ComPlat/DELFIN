@@ -2328,13 +2328,23 @@ def test_the_method_says_when_it_has_stopped_being_able_to_answer():
     trans lies 1.5 below.  A barrier quoted without that is a number somebody
     will use.
 
-    Both tests, because either alone misses a case: a molecule that starts
-    with a small gap is not suddenly in trouble, and one whose gap halves on
-    the way up is, even if what it falls to still sounds respectable.
+    The *fall* is the signal and not the value.  A great many perfectly
+    ordinary systems simply have a small gap -- transition-metal complexes,
+    long conjugated chains, anything with close-lying frontier orbitals -- and
+    they are not in trouble for it.  Keyed on the value alone this would fire
+    on every one of them, all the time, which is noise and teaches people to
+    ignore it.
     """
     # A comfortable gap, and nothing to say.
     assert gfn.method_is_out_of_its_depth(5.28) == ''
     assert gfn.method_is_out_of_its_depth(4.0, 5.28) == ''
+    # A system that simply has a small gap and keeps it: silent.
+    assert gfn.method_is_out_of_its_depth(2.0, 2.1) == ''
+    # And one that halves from very wide to still-wide: also silent, because
+    # nothing has closed.
+    assert gfn.method_is_out_of_its_depth(6.0, 12.0) == ''
+    # But the same small-gap system when its gap closes further: said.
+    assert 'frontier gap' in gfn.method_is_out_of_its_depth(0.8, 2.0)
     # Halved on the way up: said, with both numbers.
     fell = gfn.method_is_out_of_its_depth(2.42, 5.28)
     assert 'frontier gap is 2.4 eV' in fell, fell
@@ -2342,6 +2352,7 @@ def test_the_method_says_when_it_has_stopped_being_able_to_answer():
     assert 'worth checking open-shell' in fell, fell
     # Small on its own, with nothing to compare against.
     assert 'frontier gap is 1.2 eV' in gfn.method_is_out_of_its_depth(1.2)
+    assert gfn.GAP_IS_SMALL < gfn.GAP_WORTH_SAYING
     # And nothing to read is nothing to say, rather than a warning about None.
     assert gfn.method_is_out_of_its_depth(None) == ''
     assert gfn.method_is_out_of_its_depth('') == ''
@@ -2354,7 +2365,7 @@ def test_the_gap_is_read_from_the_run_that_was_going_to_happen_anyway():
     assert got.get("ok"), got.get("status")
     assert got.get("gap") is not None
     # An ethane is nowhere near the edge of anything.
-    assert got["gap"] > gfn.GAP_IS_SMALL, got["gap"]
+    assert got["gap"] > gfn.GAP_WORTH_SAYING, got["gap"]
     assert gfn.method_is_out_of_its_depth(got["gap"]) == ''
 
 
@@ -2365,3 +2376,38 @@ def test_the_path_says_it_where_the_barrier_is_reported():
     assert "shape.get('gap'), start.get('gap'))" in source
     assert "if state.get('path_depth'):" in source
     assert "lines.append(state['path_depth'])" in source
+
+
+@_needs_xtb
+def test_a_scan_says_when_the_method_has_run_out_of_depth():
+    """A walk runs into such a region without anyone choosing to.
+
+    There are places on every surface where a closed-shell single determinant
+    stops describing what is there -- a bond half broken, a ring opening, a
+    double bond turned -- and the number that comes back from one is not wrong
+    by a little.  The path finder said so already; a scan is where it matters
+    more, because a scan has no target and reports whatever it reaches.
+
+    Measured on the torsion of a 2-butene, which is the plainest example
+    rather than the point: the frontier gap falls from 5.26 eV at the start to
+    1.44 at the top, and the walk reports +84.6 kcal/mol -- a number somebody
+    would otherwise use.
+
+    Kept as the narrowest gap seen and compared against the first point,
+    because what matters is where the walk went and not where it started.
+    """
+    part, state, box = _scanned(
+        "hold", structure=_CIS_BUTENE, seconds=900,
+        legs=[{"kind": "dihedral", "atoms": [0, 1, 2, 3], "from": 0.0,
+               "to": 180.0, "steps": 18, "structure": None}])
+    first, least = state.get("scan_gap_first"), state.get("scan_gap_least")
+    assert first is not None and least is not None, (first, least)
+    assert least < first, (first, least)
+    said = part.mol_status.value
+    assert "frontier gap" in said, said
+    assert "worth checking open-shell" in said, said
+    # And it names no chemistry: the rule is about closed-shell determinants,
+    # and the system it was measured on belongs in a docstring rather than on
+    # the screen of somebody working on a different one.
+    for word in ("butene", "alkene", "cis", "trans", "Diels"):
+        assert word not in said, (word, said)
