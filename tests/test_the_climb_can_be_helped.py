@@ -292,6 +292,42 @@ def test_a_method_with_a_basis_set_is_refused_and_named_as_a_job():
     assert not climb.climb_to_saddle('', 'gfn2')['ok']
 
 
+@_needs_xtb
+def test_gfn_ff_is_not_allowed_to_write_into_the_directory_it_is_run_from(tmp_path):
+    """A dashboard runs where the user launched it, which is often their project.
+
+    Measured: an in-process GFN-FF drops ``gfnff_topo`` -- 142 kB of it -- into
+    the process's working directory, and the library takes no working directory
+    to be told about.  The command line has one of its own and left nothing at
+    all behind in the same test, so GFN-FF goes out that way even where the
+    library is installed.  The suite's own guard against writing into the
+    checkout is what found this, which is the second reason to keep that guard.
+    """
+    import os
+
+    was = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        walk = climb.Climb(_COMPLEX, 'gfnff')
+        try:
+            assert isinstance(walk.engine, climb._CommandLine), type(walk.engine)
+            walk.start()
+            walk.step()
+        finally:
+            walk.close()
+        left = sorted(p.name for p in tmp_path.iterdir())
+    finally:
+        os.chdir(was)
+    assert left == [], left
+    # GFN2 has no such file and keeps the faster engine.
+    quick = climb.Climb(_COMPLEX, 'gfn2')
+    try:
+        assert isinstance(quick.engine, climb._InProcess) \
+            or not climb.have_fast_gradients()
+    finally:
+        quick.close()
+
+
 # -- against ORCA -----------------------------------------------------------
 
 @_needs_xtb
