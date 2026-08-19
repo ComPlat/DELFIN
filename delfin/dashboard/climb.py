@@ -642,7 +642,9 @@ class Climb:
         differences because the whole method rests on the sign of one
         eigenvalue, and forward differences get that wrong near a saddle where
         the curvature is small.  Checked against xtb's own ``--hess``: -394.76
-        against -394.6 cm-1 on the same structure.
+        against -394.6 cm-1 on the same structure -- but see :meth:`verdict`
+        for where the two part company, which is on symmetric structures and
+        is a property of GFN2's gradient rather than of this differencing.
         """
         flat = self.bohr.reshape(-1)
         size = flat.size
