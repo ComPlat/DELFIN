@@ -2057,6 +2057,48 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         apply_hybridisation_overrides(perceived, state.get('hyb_overrides') or {})
 
+    def _play_pace():
+        """How fast the page walks the path, in milliseconds a frame.
+
+        The slider counts frames a second and the player counts the delay
+        between them.  The top of the slider is not a speed but "keep
+        up", which is zero here and which the page answers by taking
+        everything that has arrived in one go -- at 60 frames a second it
+        was one frame per animation frame, so a burst of thirty answers
+        put the picture half a second behind and it never caught up.
+        """
+        asked = int(submit_play_speed.value)
+        pace = (0 if asked >= int(submit_play_speed.max)
+                else max(1, int(round(1000.0 / max(1, asked)))))
+        return pace
+
+    def _frame_payload(run, **fields):
+        """A write for the frame channel, named for its run and paced.
+
+        The pace rides with the frames because the channel that carried
+        it on its own -- run_js -- clears its output before it displays,
+        and so races the start-up script that builds the player.  A page
+        that lost that race played at the built-in 55 ms a frame however
+        the slider was set, which is what "the top of the slider is not
+        the fastest it goes" was.
+        """
+        return json.dumps(dict(fields, run=run, pace=_play_pace()))
+
+    def _frame_run_is_current(run):
+        """Whether a payload prepared for *run* may still be written.
+
+        Every writer keeps the run number it started with, and three of
+        them never asked again: a hand being followed, the settle after a
+        release, and the scan.  Anything that moves the run number on
+        while one of those has an answer in flight -- Optimise, a scan, a
+        hand landing on the structure, an edit that abandons a run --
+        left it writing frames about a structure that had been replaced.
+        The player sees a run it does not know, resets, and walks the
+        stale path over the new one: that is the trajectory shown twice,
+        and the jump back to where it began.
+        """
+        return int(run or 0) == int(state.get('gfn_run', 0))
+
     def _install_gfn_frame_watcher():
         """Teach the page to play the trajectory, once.
 
@@ -2082,7 +2124,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '  var scope=' + json.dumps(submit_scope_id) + ';\n'
             '  window.__delfinGfnPlay=window.__delfinGfnPlay||{};\n'
             '  if(window.__delfinGfnPlay[scope]) return;\n'
-            '  var play={queue:[],at:0,started:0,last:null,seen:0,run:null};\n'
+            '  var play={queue:[],at:0,started:0,last:null,seen:0,'
+            'run:null,top:0,stopped:0,pace:' + json.dumps(_play_pace())
+            + '};\n'
             '  window.__delfinGfnPlay[scope]=play;\n'
             '  var STEP_MS=55;\n'
             '  function stepMs(){\n'
@@ -2183,22 +2227,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    if(text===play.parsedText) return;\n'
             '    play.parsedText=text;\n'
             '    if(!text){ play.queue=[]; play.seen=0; play.last=null;'
-            ' play.run=null; return; }\n'
+            ' play.run=null; play.stopped=0; return; }\n'
             '    var data=null;\n'
             '    try{ data=JSON.parse(text); }catch(e){ return; }\n'
+            '    /* The pace travels with the frames.  It reached the page\n'
+            '       only through run_js before, which clears its output\n'
+            '       before it displays -- so the one write that carries it\n'
+            '       races the start-up script that creates this player, and\n'
+            '       a page that lost that race ran at the built-in 55 ms a\n'
+            '       frame while the slider said the top.  Carried on the\n'
+            '       payload it cannot be lost: the writes that matter are\n'
+            '       the ones the run is already making. */\n'
+            '    if(data&&data.pace!==undefined&&data.pace!==null)\n'
+            '      play.pace=data.pace;\n'
+            '    var frames=(data&&data.frames)||[];\n'
+            '    var run=(data&&data.run)||0;\n'
+            '    /* A run number only ever goes up.  The kernel hands one\n'
+            '       out for every optimisation, drag, settle and scan, and\n'
+            '       each of those keeps the number it was given until it\n'
+            '       stops answering -- which can be a whole xtb round after\n'
+            '       the run it belongs to was replaced.  A write from one of\n'
+            '       those arrives naming a run the page has already left,\n'
+            '       and the check below reads it as a *new* run: it resets,\n'
+            '       and walks the abandoned path over the structure the user\n'
+            '       has just made.  That is the trajectory seen twice.\n'
+            '       Refusing anything older than the newest run seen makes\n'
+            '       that impossible however late the write is. */\n'
+            '    if(play.top&&run&&run<play.top) return;\n'
+            '    if(run>(play.top||0)) play.top=run;\n'
             '    if(data&&data.halt){\n'
             '      /* The run was switched off.  Playing out the queue after\n'
             '         that is the picture carrying on without the thing it is\n'
             '         a picture of.\n'
             '\n'
             '         The count of what has been shown stays.  Set from the\n'
-            '         halt payload -- which carries no frames, so it set zero\n'
-            '         -- the next write for the same run looked entirely new,\n'
-            '         and its window began mid-stream: measured, a Stop at\n'
-            '         frame 69 then drew 57, 59, 61, 63, 65, 67, 69.  Time\n'
-            '         running backwards and the tail played twice, on every\n'
-            '         Stop. */\n'
-            '      play.queue=[];\n'
+            '         halt payload -- which carries no frames, so it set\n'
+            '         zero -- the next write for the same run looked\n'
+            '         entirely new, and its window began mid-stream:\n'
+            '         measured, a Stop at frame 69 then drew 57, 59, 61, 63,\n'
+            '         65, 67, 69.  Time running backwards and the tail\n'
+            '         played twice, on every Stop.\n'
+            '\n'
+            '         And it is the halted run that stops, not whichever\n'
+            '         one is playing.  A worker notices the switch went up\n'
+            '         a whole xtb round late, by which time the next run can\n'
+            '         be under way -- and a halt nobody addressed cleared\n'
+            '         that one\'s queue and reported it stopped. */\n'
+            '      if(run&&play.run!==null&&run!==play.run) return;\n'
+            '      play.queue=[]; play.stopped=1;\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
             '        /* Which frame is on screen.  Stopping keeps that one:\n'
             '           frames xtb had already computed but nobody had seen\n'
@@ -2206,8 +2282,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '        say("stopped at frame "+(play.shown||0)); }\n'
             '      return;\n'
             '    }\n'
-            '    var frames=(data&&data.frames)||[];\n'
-            '    var run=(data&&data.run)||0;\n'
 
             '    /* Whether these frames belong to a molecule following a hand\n'
             '       rather than to a minimisation.  The two are told apart\n'
@@ -2230,16 +2304,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '           made a second time.\n'
             '\n'
             '           Unless the run was abandoned, and then its queue is\n'
-            '           exactly what must not be drawn: the kernel threw those\n'
-            '           frames away because the user has just changed the\n'
-            '           structure under them.  Landing on the newest of them\n'
-            '           put the viewer on a geometry nobody has any more, and\n'
-            '           nothing wrote over it afterwards. */\n'
+            '           exactly what must not be drawn: the kernel threw\n'
+            '           those frames away because the user has just changed\n'
+            '           the structure under them.  Landing on the newest of\n'
+            '           them put the viewer on a geometry nobody has any\n'
+            '           more, and nothing wrote over it afterwards. */\n'
             '        show(play.last,play.queue[play.queue.length-1],1);\n'
             '      }\n'
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
             '      play.shown=0; play.toldStop=0; play.complete=0;\n'
+            '      play.stopped=0;\n'
             '    }\n'
+            '    /* A run that was stopped stays stopped.  The kernel refuses\n'
+            '       to write for it once the switch is up; this is the same\n'
+            '       refusal on the page, for the write that was already in\n'
+            '       flight when Stop was pressed.  Taken up, it walks the\n'
+            '       very path the user stopped. */\n'
+            '    if(play.stopped) return;\n'
             '    /* The whole path is in hand: play it out whatever the switch\n'
             '       does, because the switch going up is how a finished run\n'
             '       announces itself -- the kernel turns it off the moment the\n'
@@ -2305,6 +2386,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '       kept far above any real path, because a queue that grows\n'
             '       without one is a leak rather than a feature. */\n'
             '    if(play.queue.length>100000){\n'
+            '      /* The oldest go, and the count of where the picture\n'
+            '         has got to moves on by exactly as many.  It did not,\n'
+            '         and that count is what a grab hands the kernel as the\n'
+            '         frame to keep: measured over a cap of ten, the picture\n'
+            '         stood at frame 70 and reported frame 1, so taking hold\n'
+            '         of an atom would have cut the run 69 frames behind\n'
+            '         what was on the screen -- the structure jumping back\n'
+            '         to a geometry nobody had seen for a minute. */\n'
+            '      play.shown=(play.shown||0)+(play.queue.length-100000);\n'
             '      play.queue=play.queue.slice(-100000);\n'
             '    }\n'
             '  }\n'
@@ -2439,11 +2529,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '           held?String(play.shown||0):"");\n'
             '    }\n'
             '    if(play.held&&!followIsOn()){\n'
-            '      /* Still read.  The widget is one slot, so a write that is\n'
-            '         not read is a write the next one erases: measured with\n'
-            '         Relax off, a drag over six frames lost all six and the\n'
-            '         picture jumped forward on release.  Reading keeps the\n'
-            '         count honest and the wall is read with it. */\n'
+            '      /* Still read.  The widget is one slot, so a write that\n'
+            '         is not read is a write the next one erases: measured\n'
+            '         with Relax off, a drag over six frames lost all six\n'
+            '         and the picture jumped forward on release.  Reading\n'
+            '         keeps the count honest -- and an abandoned run is\n'
+            '         announced on this channel, so a player that stops\n'
+            '         reading the moment a hand lands never hears that the\n'
+            '         frames it is holding are about a structure that no\n'
+            '         longer exists.  The wall is read with it. */\n'
             '      readWall(); read(now);\n'
             '      window.requestAnimationFrame(frame); return;\n'
             '    }\n'
@@ -3363,12 +3457,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # and a minute of dragging is three hundred frames of a
                     # hundred atoms in each of them.
                     trail = frames[-40:]
-                    payload = json.dumps({'run': state.get('gfn_follow_run'),
-                                          'from': len(frames) - len(trail),
-                                          'follow': 1, 'frames': trail})
+                    drag_run = state.get('gfn_follow_run')
+                    payload = _frame_payload(
+                        drag_run, **{'from': len(frames) - len(trail),
+                                     'follow': 1, 'frames': trail})
+                    # Asked at the write and not at the answer: an xtb
+                    # round is long enough for the run under it to have
+                    # been replaced, and the frame is then about a
+                    # structure that is no longer anywhere.
                     schedule_ui_update(
-                        lambda text=payload: setattr(
-                            submit_gfn_frame, 'value', text))
+                        lambda text=payload, r=drag_run: setattr(
+                            submit_gfn_frame, 'value', text)
+                        if _frame_run_is_current(r) else None)
             finally:
                 state['gfn_follow_busy'] = False
 
@@ -3988,11 +4088,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             walked = list(frames)
             trail = walked[-8:]
             state['gfn_settle_walked'] = len(walked)
+            text = _frame_payload(
+                run, **{'from': offset + len(walked) - len(trail),
+                        'follow': 1, 'frames': trail})
+            # A settle outlives the release that started it, so it is the
+            # writer most likely to still be answering after the user has
+            # moved on to something else.
             schedule_ui_update(
-                lambda t=trail, f=offset + len(walked) - len(trail): setattr(
-                    submit_gfn_frame, 'value',
-                    json.dumps({'run': run, 'from': f, 'follow': 1,
-                                'frames': t})))
+                lambda t=text, r=run: setattr(
+                    submit_gfn_frame, 'value', t)
+                if _frame_run_is_current(r) else None)
 
         def _work():
             began = time.perf_counter()
@@ -4333,12 +4438,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         blank = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = blank
         # Said out loud, because a new run and an abandoned one look the
-        # same to the page and want opposite things: a run that ended cleanly
-        # should be landed on its last frame, and one the user has just
-        # cut off must not be drawn at all -- those frames are about a
+        # same to the page and want opposite things: a run that ended
+        # cleanly should be landed on its last frame, and one the user has
+        # just cut off must not be drawn at all -- those frames are about a
         # structure that no longer exists.
-        submit_gfn_frame.value = json.dumps(
-            {'run': blank, 'frames': [], 'abandoned': 1})
+        submit_gfn_frame.value = _frame_payload(
+            blank, **{'frames': [], 'abandoned': 1})
         return True
 
     def _stand_down_after_interrupt():
@@ -4522,7 +4627,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         button = submit_optimize_all_btn if every_frame else submit_optimize_btn
         if isinstance(change, dict) and change.get('name') == 'value':
             if not button.value:
+                running = state.get('optimize_run')
                 state['optimize_run'] = None      # off: the run ends itself
+                if running is not None:
+                    # Pressed while it was still walking, so this is a Stop
+                    # and not the switch coming up behind a run that
+                    # finished.  The run number moves on, and every write
+                    # the stopped run still has in hand is refused: it had
+                    # frames computed and not yet sent when it was told to
+                    # stop, and writing them afterwards put the player back
+                    # where that window began.  Measured, a Stop at frame
+                    # 69 then drew 57, 59, 61, 63, 65, 67, 69 -- the tail a
+                    # second time, and time running backwards.
+                    #
+                    # Only for a real Stop.  A run that converged sets this
+                    # to None itself and then lifts the switch, and moving
+                    # the number there would refuse its own final write --
+                    # which is the one frame that has to land.
+                    state['gfn_run'] = int(state.get('gfn_run', 0)) + 1
                 return
         elif not button.value:
             return
@@ -4639,9 +4761,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # one has frames in hand when it is told to stop, and writing
                 # them afterwards played the abandoned path over the structure
                 # the user had just made.
-                if state.get('gfn_run') != run_id:
+                if not _frame_run_is_current(run_id):
                     return
-                payload = {'run': run_id, 'from': first, 'frames': t}
+                payload = {'from': first, 'frames': t}
                 if last:
                     # Named, so this write differs from the one before it even
                     # when it carries the same frames: the field is a widget
@@ -4649,7 +4771,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # again unchanged, so the repeat that is the whole point of
                     # a final write would never leave the kernel.
                     payload['final'] = 1
-                submit_gfn_frame.value = json.dumps(payload)
+                submit_gfn_frame.value = _frame_payload(run_id, **payload)
 
             schedule_ui_update(_write)
 
@@ -6626,13 +6748,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                   + (f' and {len(legs) - 1} more' if len(legs) > 1 else ''))
         state['scan_run'] = True
         state['scan_stop'] = False
-        state['scan_gap_first'] = None
-        state['scan_gap_least'] = None
         state['scan_arrived'] = False
         state['scan_came_back'] = None
         state['scan_free'] = None
         state['scan_ends'] = None
-        state['scan_depth'] = ''
         state['scan_crowded'] = None
         state['scan_frame_run'] = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = state['scan_frame_run']
@@ -6844,24 +6963,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         return
                     if base is None:
                         base = float(energy)
-                    # Whether the method can still answer here.
-                    #
-                    # A closed-shell single determinant describes two electrons
-                    # in one orbital, and there are regions of every surface
-                    # where they are not in one: a bond half broken, a ring
-                    # opening, a double bond turned.  The frontier gap says so
-                    # before the energy does, and a scan is where a walk runs
-                    # into such a region without anyone choosing to.
-                    #
-                    # Kept as the narrowest seen and compared against the
-                    # first point, because what matters is where the walk went
-                    # and not where it started.
-                    if outcome.get('gap') is not None:
-                        if state.get('scan_gap_first') is None:
-                            state['scan_gap_first'] = outcome['gap']
-                        narrow = state.get('scan_gap_least')
-                        if narrow is None or outcome['gap'] < narrow:
-                            state['scan_gap_least'] = outcome['gap']
                     spent = (float(energy) - base) * _HARTREE_TO_KCAL
                     # The same floor the drag has.  A scan drives its
                     # coordinate wherever it was told, so a target set past the
@@ -6945,13 +7046,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # exactly this reason; the scan was writing the box because
                     # it was easier, and thirty rebuilds is not a detail.
                     shown.append(_gfn.coordinates_of(walked))
+                    scan_run = state.get('scan_frame_run')
                     schedule_ui_update(
-                        lambda text=json.dumps({
-                            'run': state.get('scan_frame_run'),
-                            'from': len(shown) - 1,
-                            'follow': 1,
-                            'frames': [shown[-1]],
-                        }): setattr(submit_gfn_frame, 'value', text))
+                        lambda text=_frame_payload(
+                            scan_run, **{'from': len(shown) - 1,
+                                         'follow': 1,
+                                         'frames': [shown[-1]]}),
+                        r=scan_run: setattr(submit_gfn_frame, 'value', text)
+                        if _frame_run_is_current(r) else None)
                 # And the free energy, at the three places it is both
                 # affordable and meaningful: where the walk started, the
                 # highest point it crossed, and the minimum it came to.
@@ -6972,8 +7074,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # A path finder is given two structures and finds its own way;
                 # what it cannot do is invent a product to aim at, and this is
                 # where one comes from.
-                state['scan_depth'] = _gfn.method_is_out_of_its_depth(
-                    state.get('scan_gap_least'), state.get('scan_gap_first'))
                 if began_at and path:
                     state['scan_ends'] = (
                         began_at, bottom[1] if bottom is not None else walked)
@@ -7028,22 +7128,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         The interactive half of a transition state: pose one by hand or take
         the path finder's estimate, press, and a few seconds later it is a
         converged first-order saddle or it is not, and which is said.
-
-        Watched while it climbs, and stoppable, which the same press does.  A
-        minimisation that is following the wrong thing fails and says so; a
-        climb does not -- it succeeds at arriving somewhere nobody wanted, and
-        the only way to know that is early is to watch it happen.
         """
-        if state.get('saddle_run'):
-            # The same button, because there is only one thing to want while
-            # it climbs.  What it reached is kept.
-            state['saddle_stop'] = True
-            _set_mol_status('Stopping the climb...', spinner=True)
-            return
         xyz = _current_xyz()
         method = str(submit_ff_dd.value)
         if not xyz:
-            _set_mol_status('There is no structure to climb from.')
+            return
+        if state.get('saddle_run'):
             return
         if method.lower() not in _saddle.SADDLE_METHODS:
             _set_mol_status(
@@ -7052,66 +7142,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'the ORCA Builder.')
             return
         state['saddle_run'] = True
-        state['saddle_stop'] = False
-        # The picture belongs to this climb and to nothing else.  A number the
-        # page has not seen yet, so whatever was queued from before cannot
-        # play out over it.
-        state['saddle_frame_run'] = int(state.get('gfn_run', 0)) + 1
-        state['gfn_run'] = state['saddle_frame_run']
-        _ensure_manip_bootstrap()
-        schedule_ui_update(_install_gfn_frame_watcher)
-        submit_saddle_btn.description = 'Stop'
-        submit_saddle_btn.icon = 'stop'
+        submit_saddle_btn.disabled = True
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
         _set_mol_status('Climbing to the nearest saddle point...', spinner=True)
 
         def _work():
-            sent = [0]
-
-            def _watch(walked, energies):
-                """Every accepted step, as it is accepted.
-
-                Down the frame channel and not into the box: a write to the
-                box rebuilds the viewer from nothing, and a climb of thirty
-                steps would be thirty rebuilds.  The energy comes with the
-                geometry because ORCA puts it on the comment line, so the
-                status can say where the climb is as well as show it.
-                """
-                if state.get('gfn_run') != state.get('saddle_frame_run'):
-                    return
-                for n in range(sent[0], len(walked)):
-                    schedule_ui_update(
-                        lambda text=json.dumps({
-                            'run': state.get('saddle_frame_run'),
-                            'from': n,
-                            'follow': 1,
-                            'frames': [[round(float(v), 4)
-                                        for v in walked[n]]],
-                        }): setattr(submit_gfn_frame, 'value', text))
-                sent[0] = len(walked)
-                climbed = None
-                if len(energies) > 1 and None not in (energies[0],
-                                                      energies[-1]):
-                    climbed = (energies[-1] - energies[0]) * _HARTREE_TO_KCAL
-                schedule_ui_update(
-                    _set_mol_status,
-                    f'Climbing: step {len(walked)}'
-                    + (f', {climbed:+.1f} kcal/mol from where it started.'
-                       if climbed is not None else '.'),
-                    spinner=True)
-
             found = _saddle.optimise_to_saddle(
-                xyz, method, charge=charge, uhf=uhf, solvent=wet,
-                on_frame=_watch,
-                should_stop=lambda: bool(state.get('saddle_stop')))
+                xyz, method, charge=charge, uhf=uhf, solvent=wet)
 
             def _done():
                 state['saddle_run'] = False
-                state['saddle_stop'] = False
-                submit_saddle_btn.description = 'To the saddle'
-                submit_saddle_btn.icon = 'mountain'
+                submit_saddle_btn.disabled = False
                 rows = [line for line in (found.get('xyz') or '').splitlines()[2:]
                         if line.strip()]
                 if not found.get('ok'):
@@ -7375,8 +7418,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'three Hessians -- where it started, the top, and where '
                      f'it came to -- and they are what the temperature below '
                      f'is worked out from.')
-        if state.get('scan_depth'):
-            first += ' ' + state['scan_depth']
         if free is None and str(submit_scan_energy.value) == 'G':
             first += (' The free energies could not be taken, so these are '
                       'electronic.')
@@ -7649,11 +7690,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         # The top of the slider is not a speed, it is "keep up": zero, which
         # the page reads as "take everything that has arrived, this frame".
-        # At 60 it was one frame per animation frame, so a burst of thirty
-        # answers put the picture half a second behind and it never caught up.
-        asked = int(submit_play_speed.value)
-        pace = (0 if asked >= int(submit_play_speed.max)
-                else max(1, int(round(1000.0 / max(1, asked)))))
+        # This is the quick way and it reaches a page with nothing running;
+        # the frames carry the same number, because this write races the
+        # start-up script that builds the player and can lose.
+        pace = _play_pace()
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinGfnPlay&&window.__delfinGfnPlay['
