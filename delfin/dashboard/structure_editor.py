@@ -1601,6 +1601,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: -63.831, and an estimated transition state with the two forming bonds
     #: at 2.524 and 2.520 A.  The scan of the same reaction put its highest
     #: point at +6.3 and 2.36.  Two methods that share no machinery, agreeing.
+    #: Two structures, marked one at a time.
+    #:
+    #: The path finder needs a start and an end and cannot invent either.  A
+    #: scan leaves both, which is where this began -- but a great many
+    #: questions arrive as two structures the user already has, and a
+    #: cis/trans isomerisation is the plainest of them: build cis, mark it,
+    #: build trans, press.  Nothing about the reaction has to be guessed at,
+    #: which is exactly the case a scan is worst at.
+    #:
+    #: Measured on 2-butene: a scan of the C-C=C-C torsion cannot do it at all
+    #: -- one dihedral does not pin four substituents, so the constraint is
+    #: met by pyramidalising the carbons rather than by twisting the bond, and
+    #: the walk reports +95 kcal/mol at 150 degrees and a "trans" 64 above
+    #: cis.  Given the two structures instead, the path finder answers in four
+    #: seconds: 51.4 kcal/mol forward, trans 1.53 below cis, and its estimated
+    #: transition state at 87.5 degrees, which is where a twisted alkene is.
+    submit_path_from_btn = widgets.Button(
+        description='Path from here', icon='map-pin',
+        tooltip=('Mark the structure on screen as where a path starts. Then '
+                 'load or build the other one and press Find the path.'),
+        layout=widgets.Layout(width='142px', height='30px'),
+        disabled=True,
+    )
     submit_path_btn = widgets.Button(
         description='Find the path', icon='route', button_style='info',
         tooltip=('Let xtb find its own way between where the scan started and '
@@ -1678,7 +1701,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
          submit_scan_stop_at, submit_scan_to,
          submit_scan_dd, submit_scan_del, submit_scan_whole,
          submit_scan_how, submit_scan_energy, submit_scan_run_btn,
-         submit_path_btn],
+         submit_path_from_btn, submit_path_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -1819,7 +1842,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_play_speed.disabled = not enabled
         for widget in (submit_thermal_btn, submit_temperature,
                        submit_thermal_relax, submit_thermal_anchor_btn,
-                       submit_topology_btn, submit_saddle_btn):
+                       submit_topology_btn, submit_saddle_btn,
+                       submit_path_from_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
         submit_sens_slider.disabled = not enabled
@@ -6921,6 +6945,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def on_submit_path_from(_button=None):
+        """Mark what is on screen as where a path starts.
+
+        The other end is whatever is on screen when Find the path is pressed,
+        so the two are marked one at a time and nothing has to hold two
+        structures at once.
+        """
+        xyz = _current_xyz()
+        if not xyz:
+            return
+        state['path_from'] = xyz
+        submit_path_btn.layout.display = ''
+        submit_path_btn.disabled = False
+        _set_mol_status(
+            f'Marked as the start of a path ({len(_gfn.atom_lines(xyz))} '
+            'atoms). Load or build the other structure and press Find the '
+            'path.')
+
     def on_submit_path(_button=None):
         """Walk between the two ends the scan left, and keep what is found.
 
@@ -6930,11 +6972,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         them alone; when they do not, the difference is the interesting part
         and both numbers are said.
         """
-        ends = state.get('scan_ends')
+        # A marked start and whatever is on screen, or the two ends a scan
+        # left.  The marked pair comes first: it is the one the user set on
+        # purpose, and a scan from an earlier question should not quietly win
+        # over it.
         method = str(submit_ff_dd.value)
+        marked = state.get('path_from')
+        here = _current_xyz()
+        if marked and here and marked.strip() != here.strip():
+            ends = (marked, here)
+        else:
+            ends = state.get('scan_ends')
         if not ends:
-            _set_mol_status('Run a scan first: a path needs two structures, '
-                            'and the scan is what makes the second one.')
+            _set_mol_status(
+                'A path needs two structures. Press Path from here on one of '
+                'them and then this on the other -- or run a scan, which '
+                'leaves both.')
             return
         if not _gfn.is_gfn_method(method):
             _set_mol_status('A path needs xtb: choose a GFN method.')
@@ -6959,6 +7012,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # transition state" is a phrase and one imaginary frequency is a
             # fact.  Cheap: 0.6 s on sixteen atoms.
             state['path_shape'] = None
+            state['path_depth'] = ''
             if found.get('ok') and found.get('ts'):
                 shape = _gfn.optimize_with_gfn(
                     found['ts'], method, charge=charge, uhf=uhf, timeout=None,
@@ -6966,6 +7020,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     free_energy=True,
                     thermo_kelvin=float(submit_temperature.value or 298.15))
                 state['path_shape'] = shape.get('imaginary')
+                # And whether the method can still answer where the barrier
+                # is.  A closed shell describes two electrons in one orbital;
+                # at the top of a bond-breaking barrier they are not in one,
+                # and the frontier gap says so before the energy does.
+                # Measured on a 2-butene: 5.28 eV at cis and 2.42 at the
+                # twisted top, where GFN2 also invents a minimum 64 kcal/mol
+                # above cis that real trans lies 1.5 below.
+                start = _gfn.optimize_with_gfn(
+                    ends[0], method, charge=charge, uhf=uhf, timeout=None,
+                    solvent=wet, solvation_model=model, optimise=False)
+                state['path_depth'] = _gfn.method_is_out_of_its_depth(
+                    shape.get('gap'), start.get('gap'))
 
             def _done():
                 state['path_run'] = False
@@ -7011,6 +7077,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # not knowing.  Measured on this one: a single imaginary
                 # frequency at -131.4 cm-1, so it really is a saddle point at
                 # this level of theory and worth handing to ORCA's OptTS.
+                if state.get('path_depth'):
+                    lines.append(state['path_depth'])
                 shape = state.get('path_shape')
                 if shape is not None:
                     if shape.get('count') == 1:
@@ -8266,6 +8334,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_topology_btn.observe(on_submit_topology, names='value')
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
     submit_path_btn.on_click(on_submit_path)
+    submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
