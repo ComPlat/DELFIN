@@ -38,7 +38,8 @@ from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'constraint_input', 'contacts_holding', 'graph_changed',
-           'graph_holds', 'push_constant', 'restraint_energy', 'walk_the_path',
+           'graph_holds', 'method_is_out_of_its_depth', 'push_constant',
+           'restraint_energy', 'walk_the_path',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
@@ -107,6 +108,20 @@ _FREE_ENERGY_RE = re.compile(r'TOTAL FREE ENERGY\s+(-?\d+\.\d+)')
 #: a minimum, a transition state, or neither.  xtb counts them itself, against
 #: a cutoff of its own, so this is read rather than worked out again.
 _IMAGINARY_RE = re.compile(r'#\s*imaginary freq\.\s+(\d+)')
+#: How far apart the frontier orbitals are, which is how a single-determinant
+#: method says whether it is still able to answer.
+#:
+#: It closes where two electrons stop being a pair.  Measured under GFN2 on a
+#: 2-butene: 5.28 eV at the cis minimum and 2.42 at the twisted transition
+#: state, where the pi bond is broken and the right description is two singly
+#: occupied orbitals -- which a closed shell cannot be.  The number that comes
+#: back there is not wrong by a little: GFN2 puts the twisted structure 49
+#: kcal/mol up as a singlet, and there is a spurious minimum 64 above cis
+#: where real trans lies 1.5 below.
+#:
+#: Nothing in this file can fix that; it is what the method is.  What it can
+#: do is notice, because the gap says so.
+_GAP_RE = re.compile(r'HOMO-LUMO GAP\s+(-?\d+\.\d+)')
 _EIGVAL_RE = re.compile(r'eigval\s*:\s*(.+)')
 _VERSION_RE = re.compile(r'xtb version\s+([0-9.]+)')
 # What the run says it did, taken from its own output rather than from the
@@ -821,6 +836,47 @@ PUSH_FORCE_TO = 240.0
 
 #: What a bond holds, as a force, in kcal/mol/A.
 #:
+#: How small a frontier gap has to be before a single-determinant answer
+#: stops being one, and how much of a fall counts as a warning.
+#:
+#: Both, because either alone misses a case: a molecule that starts with a
+#: small gap is not suddenly in trouble, and one whose gap halves on the way
+#: up is, even if what it falls to still sounds respectable.  Measured under
+#: GFN2 on a 2-butene, 5.28 eV at cis and 2.42 at the twisted top.
+GAP_IS_SMALL = 3.0
+GAP_HAS_FALLEN = 0.55
+
+
+def method_is_out_of_its_depth(gap: Any, was: Any = None) -> str:
+    """What to say when the frontier gap says the answer is not one.
+
+    Empty when there is nothing to say.  A closed-shell single determinant
+    describes two electrons in one orbital; where the gap closes they are not
+    in one any more, and the energy that comes back is about a state the
+    method cannot represent.  It cannot be fixed here -- it is what the method
+    is -- but it can be said, and a barrier quoted without it is a number
+    somebody will use.
+    """
+    try:
+        gap = float(gap)
+    except (TypeError, ValueError):
+        return ''
+    fell = False
+    try:
+        fell = float(was) > 0 and gap < GAP_HAS_FALLEN * float(was)
+    except (TypeError, ValueError):
+        fell = False
+    if gap >= GAP_IS_SMALL and not fell:
+        return ''
+    said = (f'The frontier gap is {gap:.1f} eV there'
+            + (f', down from {float(was):.1f}' if fell else '')
+            + '. A closed-shell method describes two electrons in one orbital, '
+              'and where the gap closes they are not in one -- so this barrier '
+              'is the method at the edge of what it can represent, and is '
+              'worth checking open-shell.')
+    return said
+
+
 #: A force is a slope, so this is the whole meaning of the setting: the hand
 #: climbs any part of the surface less steep than it is, and stops where the
 #: surface gets steeper.  Which is why "as hard as a bond" is the right
@@ -1813,12 +1869,17 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
     point at +6.3 kcal/mol and 2.36 A -- two methods that share no machinery,
     agreeing.
 
-    It is metadynamics, so it is not the same twice.  xtb keeps the best of
-    its runs and the best is the lowest, which makes the barrier an upper
-    bound that comes down as more are run: measured on the same reaction, two
-    goes gave 5.755 and 3.3 kcal/mol, both with an estimated transition state
-    at 2.52 A.  A number quoted from this is worth what a stochastic search is
-    worth, and saying which is part of reporting it.
+    It is the same twice.  Metadynamics suggests otherwise and it was written
+    here that way, wrongly: three goes at one pair of structures gave 5.755
+    kcal/mol every time, to the digit, and four goes at another gave 43.7.
+    xtb seeds it fixed.
+
+    What does move it is which two structures it is given.  The same reaction
+    from a slightly different reactant complex gave 5.755 and 3.3 -- so a
+    barrier from this is a statement about the two ends as much as about the
+    reaction, and the RMSD below is what says the second end was reached at
+    all.  Within its runs xtb keeps the lowest barrier it found, which makes
+    the number an upper bound over the paths it tried.
 
     Returns ``{'ok', 'barrier', 'back', 'reaction', 'ts', 'points', 'rmsd',
     'seconds', 'status'}``.  *rmsd* is how near the path actually came to the
@@ -1838,6 +1899,21 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
         return {'ok': False,
                 'status': ('A path needs two structures of the same molecule; '
                            f'these have {len(here)} and {len(there)} atoms.')}
+    # And in the same order.  A path is a walk from atom 1 to atom 1 and atom
+    # 2 to atom 2; given the same molecule built twice, the two orderings
+    # differ and there is no walk between them at all -- xtb answers "no path
+    # found", which reads as "these do not react" and is not what happened.
+    mine = [line.split()[0] for line in here]
+    yours = [line.split()[0] for line in there]
+    if mine != yours:
+        first = next((n for n, (a, b) in enumerate(zip(mine, yours)) if a != b),
+                     0)
+        return {'ok': False,
+                'status': ('A path walks atom 1 to atom 1, so the two '
+                           'structures have to be the same molecule in the '
+                           f'same order -- atom {first + 1} is {mine[first]} '
+                           f'in one and {yours[first]} in the other. Build the '
+                           'second one from the first rather than separately.')}
 
     started = time.perf_counter()
     folder = Path(tempfile.mkdtemp(prefix='delfin-path-'))
@@ -2260,6 +2336,13 @@ def optimize_with_gfn(
                 energy = float(found.group(1))
             except ValueError:
                 energy = None
+        gap = None
+        told_gap = _GAP_RE.search(output)
+        if told_gap:
+            try:
+                gap = float(told_gap.group(1))
+            except ValueError:
+                gap = None
         free = None
         wrong_way = None
         if free_energy:
@@ -2360,7 +2443,7 @@ def optimize_with_gfn(
             # handed back -- but not as though it were finished.
             return {
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
-            'imaginary': wrong_way, 'method': key,
+            'imaginary': wrong_way, 'gap': gap, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet, 'solvation_model': model,
@@ -2371,7 +2454,7 @@ def optimize_with_gfn(
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
-            'imaginary': wrong_way, 'method': key,
+            'imaginary': wrong_way, 'gap': gap, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet, 'solvation_model': model,

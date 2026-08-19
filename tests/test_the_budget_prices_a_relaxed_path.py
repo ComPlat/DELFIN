@@ -2056,9 +2056,12 @@ def test_xtb_finds_its_own_way_between_the_two_ends_of_a_scan():
     of the same reaction put its highest point at +6.3 and 2.36.  Two methods
     that share no machinery, agreeing.
 
-    It is metadynamics, so it is not the same twice: xtb keeps the best of its
-    runs and the best is the lowest, which makes the barrier an upper bound
-    that comes down as more are run.
+    It is the same twice, which was written here the other way round and was
+    wrong: three goes at one pair gave 5.755 kcal/mol to the digit, and four
+    at another gave 43.7.  xtb seeds it fixed.  What moves the number is which
+    two structures it is given -- the same reaction from a slightly different
+    reactant complex gave 5.755 and 3.3 -- so a barrier from this is a
+    statement about the two ends as much as about the reaction.
     """
     import math
 
@@ -2164,3 +2167,181 @@ def test_the_path_says_whether_what_it_found_is_a_transition_state():
     assert 'a saddle ' in source
     # And where it goes next, since xtb has no saddle optimiser at all.
     assert 'Refine it with OPTTS in the ORCA Builder.' in source
+
+
+#: cis- and trans-2-butene, relaxed under GFN2.  The plainest reaction there
+#: is, and the one a scan cannot do.
+_CIS_BUTENE = """12
+cis-2-butene
+C            1.53845380780890        0.47156751190810        0.24815151049525
+C            0.72259292978383       -0.62984247261506       -0.34631766873247
+C           -0.59683088037401       -0.72716870418064       -0.39216635686013
+C           -1.60437468580189        0.23974033726461        0.13894193453797
+H            2.17838880916630        0.91117649333040       -0.51685933694657
+H            2.18667179300093        0.07139161982068        1.02769435533968
+H            0.92355533810252        1.25571935239631        0.67779792380508
+H            1.31338637860703       -1.42624004246114       -0.78248673827834
+H           -1.03299293753579       -1.59931845958150       -0.86402045115136
+H           -2.24747192458536        0.58470382243324       -0.67065093780288
+H           -2.23919720363920       -0.25507502633660        0.87390618327608
+H           -1.14218042453326        1.10334556802157        0.60600958231770
+"""
+
+
+#: And trans, relaxed the same way: 1.5 kcal/mol below cis, which is where
+#: a scan of the torsion never arrives.
+_TRANS_BUTENE = """12
+trans-2-butene, from cis by turning one end
+C            1.52554923621953        0.45392706276874        0.23862932913643
+C            0.72327853899832       -0.65382334827347       -0.35935996805432
+C           -0.59751764029312       -0.70318862646274       -0.37912422524052
+C           -1.39978867651523       -1.81093942967462       -0.97711418435257
+H            2.16442245697151        0.90942661443140       -0.51801711143509
+H            2.17270621886454        0.06940653401115        1.02697214268378
+H            0.87928852393398        1.22065021589986        0.65896630885336
+H            1.29895068609740       -1.45854709844859       -0.79997503795525
+H           -1.17319015647323        0.10153484150752        0.06149079451936
+H           -2.03866596473115       -2.26643618060440       -0.22046950012781
+H           -2.04694150620205       -1.42641991623531       -1.76546095407231
+H           -0.75352744687051       -2.57766461891954       -1.39744649395505
+"""
+
+
+@_needs_xtb
+def test_a_scan_cannot_turn_a_double_bond_and_nothing_can_tell_it_so():
+    """One dihedral does not pin four substituents, and the method cannot
+    describe what is at the top.
+
+    Driving C-C=C-C from cis to trans meets every value it is asked for and
+    turns nothing: measured under GFN2 on a 2-butene, the constraint is met by
+    pyramidalising the carbons -- the C=C goes from 1.327 to 1.477 A and the
+    H-C=C-H dihedral to 113 degrees -- and the walk ends at 180 degrees and
+    +64 kcal/mol above cis, where real trans lies 1.5 *below*.
+
+    And it ends on a genuine minimum: released, that structure does not move
+    at all, 0.00 A and 0.0 kcal/mol.  A twisted alkene is a biradical and a
+    closed-shell single determinant cannot describe one, so GFN2 has a
+    spurious minimum there -- which is a method failure and not something a
+    scan can be taught to notice.  A scan has no target: it drives a
+    coordinate and reports what it reaches, and nothing in it knows what the
+    answer was supposed to be.
+
+    Which is exactly what the path finder does have, and is why the answer to
+    this reaction is to give it the two structures.  This test holds the
+    measurement so the next person does not have to make it again.
+    """
+    part, state, box = _scanned(
+        "hold", structure=_CIS_BUTENE, seconds=900,
+        legs=[{"kind": "dihedral", "atoms": [0, 1, 2, 3], "from": 0.0,
+               "to": 180.0, "steps": 18, "structure": None}])
+    said = part.mol_status.value
+    ends = float(said.split("ending")[1].split(".")[0].strip().lstrip("+"))
+    assert ends > 40.0, said            # nowhere near trans, which is -1.5
+
+    # And it really is a minimum of the method, which is why nothing catches
+    # it: released, it stays.
+    settled = gfn.optimize_with_gfn(box.value, "gfn2", max_steps=400,
+                                    timeout=300)
+    assert settled.get("ok"), settled.get("status")
+    assert gfn.largest_shift(settled["xyz"], box.value) < 0.1, "it stays put"
+
+
+@_needs_xtb
+def test_two_structures_are_a_path_without_a_scan():
+    """A great many questions arrive as two structures the user already has,
+    and a cis/trans isomerisation is the plainest of them.
+
+    Measured: given cis and trans, the path finder answers in under five
+    seconds -- 51 to 55 kcal/mol forward, trans 1.5 below cis, within 0.01 A
+    RMSD of what it was aiming at, and an estimated transition state near 85
+    degrees, which is where a twisted alkene is.  Against the textbook, the
+    isomerisation wants about 480 C and this says about 440.
+    """
+    cis = gfn.optimize_with_gfn(_CIS_BUTENE, "gfn2", max_steps=400,
+                                timeout=300)
+    assert cis.get("ok"), cis.get("status")
+    trans = gfn.optimize_with_gfn(_TRANS_BUTENE, "gfn2", max_steps=400,
+                                  timeout=300)
+    assert trans.get("ok"), trans.get("status")
+    # The real one, which is below cis -- a scan of the torsion never gets
+    # here at all.
+    assert (trans["energy"] - cis["energy"]) * 627.5095 < 0.0
+
+    found = gfn.walk_the_path(cis["xyz"], trans["xyz"], "gfn2", points=40,
+                              timeout=600)
+    assert found.get("ok"), found.get("status")
+    assert 40.0 < found["barrier"] < 75.0, found
+    assert found["rmsd"] is not None and found["rmsd"] < 0.1, found
+
+    here = gfn.coordinates_of(found["ts"])
+    twist = abs(gfn._dihedral(
+        [(here[3 * i], here[3 * i + 1], here[3 * i + 2]) for i in range(4)],
+        0, 1, 2, 3))
+    assert 60.0 < twist < 120.0, twist
+
+
+def test_a_path_can_be_marked_one_structure_at_a_time():
+    """The finder needs a start and an end and cannot invent either.  A scan
+    leaves both; two structures the user has are marked one at a time."""
+    source = EDITOR_SOURCE
+    assert 'submit_path_from_btn = widgets.Button(' in source
+    assert "description='Path from here'" in source
+    assert "state['path_from'] = xyz" in source
+    assert 'submit_path_from_btn.on_click(on_submit_path_from)' in source
+    # The marked pair wins over a scan's ends: it is the one the user set on
+    # purpose, and an earlier scan should not quietly take its place.
+    assert 'if marked and here and marked.strip() != here.strip():' in source
+    assert "ends = state.get('scan_ends')" in source
+    # And with neither, what to do is said rather than "run a scan first".
+    assert 'Press Path from here on one of ' in source
+
+
+def test_the_method_says_when_it_has_stopped_being_able_to_answer():
+    """A closed-shell single determinant describes two electrons in one
+    orbital.  At the top of a bond-breaking barrier they are not in one, and
+    the energy that comes back is about a state the method cannot represent.
+
+    That cannot be fixed here -- it is what the method is.  It can be
+    noticed, because the frontier gap says so: measured under GFN2 on a
+    2-butene, 5.28 eV at the cis minimum and 2.42 at the twisted transition
+    state, where GFN2 also invents a minimum 64 kcal/mol above cis that real
+    trans lies 1.5 below.  A barrier quoted without that is a number somebody
+    will use.
+
+    Both tests, because either alone misses a case: a molecule that starts
+    with a small gap is not suddenly in trouble, and one whose gap halves on
+    the way up is, even if what it falls to still sounds respectable.
+    """
+    # A comfortable gap, and nothing to say.
+    assert gfn.method_is_out_of_its_depth(5.28) == ''
+    assert gfn.method_is_out_of_its_depth(4.0, 5.28) == ''
+    # Halved on the way up: said, with both numbers.
+    fell = gfn.method_is_out_of_its_depth(2.42, 5.28)
+    assert 'frontier gap is 2.4 eV' in fell, fell
+    assert 'down from 5.3' in fell, fell
+    assert 'worth checking open-shell' in fell, fell
+    # Small on its own, with nothing to compare against.
+    assert 'frontier gap is 1.2 eV' in gfn.method_is_out_of_its_depth(1.2)
+    # And nothing to read is nothing to say, rather than a warning about None.
+    assert gfn.method_is_out_of_its_depth(None) == ''
+    assert gfn.method_is_out_of_its_depth('') == ''
+
+
+@_needs_xtb
+def test_the_gap_is_read_from_the_run_that_was_going_to_happen_anyway():
+    """No extra calculation for it: every xtb run prints it."""
+    got = gfn.optimize_with_gfn(_ETHANE, "gfn2", timeout=300, optimise=False)
+    assert got.get("ok"), got.get("status")
+    assert got.get("gap") is not None
+    # An ethane is nowhere near the edge of anything.
+    assert got["gap"] > gfn.GAP_IS_SMALL, got["gap"]
+    assert gfn.method_is_out_of_its_depth(got["gap"]) == ''
+
+
+def test_the_path_says_it_where_the_barrier_is_reported():
+    """Beside the number it is about, not in a log."""
+    source = EDITOR_SOURCE
+    assert "state['path_depth'] = _gfn.method_is_out_of_its_depth(" in source
+    assert "shape.get('gap'), start.get('gap'))" in source
+    assert "if state.get('path_depth'):" in source
+    assert "lines.append(state['path_depth'])" in source
