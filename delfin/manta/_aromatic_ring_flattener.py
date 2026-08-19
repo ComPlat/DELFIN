@@ -55,7 +55,17 @@ def _detect_aromatic_rings(
 ) -> List[Tuple[int, ...]]:
     """Geometric 5/6-membered C/N/O/S rings with aromatic-range mean bond
     length.  Saturated rings (mean bond ~1.54) and metal-containing rings
-    are excluded.  Returns canonical sorted ring tuples."""
+    are excluded.  Returns canonical sorted ring tuples.
+
+    EINE QUELLE (19.08.2026): das sp3-Verbot steht in ``_arom_planarize`` und wird
+    hier GEHOLT, nicht kopiert.  Der Mittelwert oben laesst ein Oxazolin durch und
+    dieser Zwilling wuerde es genauso verflachen; drei unabhaengige Kopien desselben
+    Kriteriums sind genau die Bauart, an der schon einmal nur eine von ihnen
+    repariert wurde.  Vorgabe des Schalters AUS -> byte-identisch."""
+    from delfin.manta._arom_planarize import (
+        ring_carries_sp3_centre as _has_sp3, sp3_veto_enabled as _veto_on,
+    )
+    _sp3_veto = _veto_on()
     n = len(syms)
     heavy_nbrs: List[List[int]] = [
         [j for j in nbrs[i]
@@ -95,6 +105,8 @@ def _detect_aromatic_rings(
             continue
         if (sum(bond_lens) / len(bond_lens)) >= _AROMATIC_BOND_MAX:
             continue  # saturated ring — leave its (correct) pucker alone
+        if _sp3_veto and _has_sp3(syms, nbrs, ring):
+            continue  # traegt ein sp3-Zentrum -> kein Aromat, nicht verflachen
         out.append(ring)
     return out
 
