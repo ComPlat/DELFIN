@@ -602,6 +602,76 @@ def test_the_hand_guides_the_climb_and_never_restrains_it():
     assert "state['climb_run'] = None" in source
 
 
+@_needs_xtb
+def test_the_button_climbs_and_the_drag_reaches_it(tmp_path):
+    """The real part, driven the way a mouse drives it.
+
+    Everything above tests the method; this tests the wiring, because the
+    wiring is what a source-reading test cannot see.  A real editor is built,
+    the toggle is pressed, and then the browser's own field is written the way
+    the page writes it -- a ``DELFIN drag-follow`` frame while the mouse is
+    down and a ``DELFIN drag-end`` when it is let go.  The climb has to stop
+    for the hand, take the structure the hand made, remember where that
+    structure came from, and get to the saddle.
+
+    Measured: from the bare complex it goes nowhere; interrupted by the drag it
+    converges to 2.315 A on both forming bonds with one imaginary mode near
+    -394, and that is what is left in the coordinate box.
+    """
+    import time as clock
+
+    pytest.importorskip('ipywidgets')
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    for name in ('calc', 'archive', 'office'):
+        (tmp_path / name).mkdir()
+    room = DashboardContext(calc_dir=tmp_path / 'calc',
+                            archive_dir=tmp_path / 'archive',
+                            office_dir=tmp_path / 'office')
+    room.run_js = lambda _script: None
+    state = {}
+    box = widgets.Textarea(value=_COMPLEX)
+    part = structure_editor.build(
+        room, state=state, coords_widget=box, viewer_height=560,
+        schedule_ui_update=lambda call, *a, **k: call(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None)
+    state['current_xyz_for_copy'] = {'content': _COMPLEX}
+    part.submit_ff_dd.value = 'gfn2'
+
+    part.submit_climb_btn.value = True
+    began = clock.time()
+    while not state.get('climb_showing') and clock.time() - began < 60:
+        clock.sleep(0.02)
+    assert state.get('climb_run') is not None, 'the climb never started'
+
+    # The hand: down, then let go somewhere else.  The page names the atoms it
+    # is holding in the comment line, which is what tells the climb a hand has
+    # arrived at all.
+    moved = _dragged(0.95).splitlines()
+    part.submit_manip_sync.value = '\n'.join(
+        [moved[0], 'DELFIN drag-follow held=10,11'] + moved[2:])
+    assert state.get('climb_was'), 'the climb did not remember where it stood'
+    part.submit_manip_sync.value = '\n'.join(
+        [moved[0], 'DELFIN drag-end'] + moved[2:])
+
+    began = clock.time()
+    while state.get('climb_run') is not None and clock.time() - began < 300:
+        clock.sleep(0.05)
+    part.submit_climb_btn.value = False
+    assert state.get('climb_run') is None, 'the climb never finished'
+
+    one, two = _forming(_where(box.value))
+    assert 2.25 < one < 2.40 and abs(one - two) < 0.03, (one, two)
+    assert _rmsd(_where(box.value), _where(_ORCA_SADDLE)) < 0.05
+    said = part.mol_status.value
+    assert 'transition state' in said, said
+    assert 'cm-1' in said, said
+
+
 def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
     """Every write to the box rebuilds the viewer from nothing.
 
