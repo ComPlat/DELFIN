@@ -947,10 +947,15 @@ def test_the_scan_controls_belong_to_the_method_that_can_run_them():
     """Left visible under UFF or PM7 a whole scan could be armed, with the line
     saying "or press Run scan" -- an instruction that cannot work -- and the
     refusal arrived only on the press."""
-    body = EDITOR_SOURCE.split("submit_thermal_btn.layout.display = '' if xtb")[1]
+    body = EDITOR_SOURCE.split("def _refresh_method_controls")[1]
     body = body.split("\n    def ")[0]
     assert "submit_scan_btn.layout.display = '' if xtb else 'none'" in body
     assert "submit_scan_run_btn" in body
+    # The budget and the pull are decided elsewhere, because they answer to
+    # the hand as well as to the method and one function has to hold both
+    # rules or each refresh undoes the other.
+    assert "_refresh_hand_controls()" in body
+    assert "submit_thermal_btn.layout.display" not in body
 
 
 def test_holding_a_value_is_a_step_of_its_own():
@@ -993,7 +998,7 @@ def test_a_hold_that_names_nothing_is_not_priced():
     source = EDITOR_SOURCE
     assert 'count = len(_gfn.atom_lines(current))' in source
     assert 'stale = bool(holding) and not any(' in source
-    assert "pricing = bool(submit_thermal_btn.value) and not stale" in source
+    assert "pricing = _thermal_live() and not stale" in source
     # Nothing is charged, nothing is remembered, and the wall does not run.
     assert 'if not stale:\n' in source
     assert 'if pricing:' in source
@@ -2625,20 +2630,61 @@ def test_the_geometry_that_survives_a_drag_is_one_the_temperature_can_reach():
     begin = start["xyz"]
     ceiling = thermal_ceiling(298.15, _THERMAL_SECONDS)
 
-    for hand in ("pull", "move"):
-        part = _budgeted(begin, kelvin=298.15, hand=hand)
-        kept = _dragged_apart(part, begin, far=2.0)
-        # The page asked for a C-C at 3.52 A.  What is left is a bond.
-        assert _apart(kept, 0, 1) < 2.0, (hand, _apart(kept, 0, 1))
-        spent = _costs(kept, part.state["thermal_e0"])
-        # Room for the rigid hand's own placement, which moves single atoms
-        # and is bounded by the slip refusal rather than by zero.
-        assert spent <= ceiling + 2.0, f"{hand}: {spent:+.1f} of {ceiling:.1f}"
-        # And the box says which structure this is rather than wearing a claim
-        # that was written for coordinates it no longer has.
-        said = kept.splitlines()[1].lower()
-        assert said.startswith(("within the budget", "past the budget",
-                                "back to the last")), said
+    part = _budgeted(begin, kelvin=298.15, hand="pull")
+    kept = _dragged_apart(part, begin, far=2.0)
+    # The page asked for a C-C at 3.52 A.  What is left is a bond.
+    assert _apart(kept, 0, 1) < 2.0, _apart(kept, 0, 1)
+    spent = _costs(kept, part.state["thermal_e0"])
+    assert spent <= ceiling + 2.0, f"{spent:+.1f} of {ceiling:.1f}"
+    # And the box says which structure this is rather than wearing a claim
+    # that was written for coordinates it no longer has.
+    said = kept.splitlines()[1].lower()
+    assert said.startswith(("within the budget", "past the budget",
+                            "back to the last")), said
+
+
+@_needs_xtb
+def test_the_placing_hand_is_not_measured_and_does_not_pretend_to_be():
+    """The same drag under the other hand, and it is not refused at all.
+
+    That is the point of the change and it is a loss as well as a fix, so it
+    is written down rather than left to be discovered.  Under a placing hand
+    the atom goes where the cursor puts it -- that is what placing *is*, it is
+    what building a structure needs, and it was asked for -- and the budget
+    cannot make an exact statement about it, because what is kept afterwards
+    is not the geometry that was priced: measured at 1.4 kcal/mol, +16.8
+    priced against +18.2 kept, bounded by _SLIP_LOOSE at 0.25 A rather than by
+    zero, and whether the wall landed before the next message came down to a
+    race between xtb at 70-170 ms and a page reporting every 16-120 ms.
+
+    So it does not act there and it is not on screen there.  A user who wants
+    a placing hand that cannot pull the molecule apart has Keep bonds, which
+    reads the bonding off what came back and takes the step back if it
+    changed, and which is deliberately not tied to either hand.
+    """
+    from delfin.dashboard.structure_editor import (
+        _THERMAL_SECONDS, thermal_ceiling)
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    assert start.get("ok"), start.get("status")
+    begin = start["xyz"]
+    ceiling = thermal_ceiling(298.15, _THERMAL_SECONDS)
+
+    part = _budgeted(begin, kelvin=298.15, hand="move")
+    assert part._thermal_live() is False, "nothing reads the switch here"
+    _dragged_apart(part, begin, far=2.0)
+
+    # Nothing was priced and nothing was refused.  The same drag under a pull
+    # reported "+28.9 kcal/mol -- past the 22.3 this structure has at 298.15
+    # K" and handed a C-C of 1.66 A back; here the line is the follow alone.
+    said = part.state.get("gfn_last_status") or ""
+    assert "following the drag" in said, said
+    for claim in ("kcal/mol", f"{ceiling:.1f}", "budget"):
+        assert claim not in said, (claim, said)
+    # And the wall never ran, so there is no geometry it is holding on to and
+    # no maximum it is carrying.
+    for key in ("thermal_good", "thermal_peak", "thermal_good_peak"):
+        assert key not in part.state, key
 
 
 @_needs_xtb
@@ -2922,3 +2968,148 @@ def test_a_budget_that_cannot_price_a_drag_does_not_stand_there_lit_up():
     assert "if submit_thermal_btn.value:" in off
     assert "submit_thermal_btn.value = False" in off
     assert "has gone off with it" in off
+
+
+# ---------------------------------------------------------------------------
+# The budget belongs to the hand that pulls
+# ---------------------------------------------------------------------------
+
+#: N-nitrosodimethylamine, relaxed with GFN2.  Its N-N rotation is a hindered
+#: one with two equivalent minima and a real barrier between them, which is
+#: what makes it the right shape for the tests further down; here it is only
+#: a molecule with more than three atoms in it.
+_NITROSAMINE = """11
+N-nitrosodimethylamine, GFN2
+C           -1.22971478919819       -0.31972219379423       -0.51910745579444
+N            0.00850736080694        0.31228920818566       -0.15895433968563
+C            0.90811938305689       -0.39664942551853        0.72445895670150
+N            0.23961345405570        1.48707421451206       -0.66313769413187
+O            1.29756115077536        2.04026454534117       -0.37046935361620
+H           -1.82543404722282       -0.52752067104412        0.37221337786934
+H           -1.77713038457114        0.35492985087427       -1.17340843733348
+H           -1.04033128224138       -1.26021920368146       -1.04149064049211
+H            0.42830215177442       -0.57816072484367        1.68695792258498
+H            1.20393443451672       -1.34726557367726        0.27934610102296
+H            1.78657156674635        0.23497897436250        0.86359255823555
+"""
+
+
+def _editor(text):
+    """One structure editor over a coordinate box of its own.
+
+    Built here rather than reached through a tab: what the wall does is the
+    part's, and the tab hands out only the widgets it places.
+    """
+    import tempfile
+
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ("calc", "archive", "office"):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / "calc", archive_dir=room / "archive",
+                           office_dir=room / "office")
+    ctx.run_js = lambda _script: None
+    state = {}
+    part = structure_editor.build(
+        ctx, state=state, coords_widget=widgets.Textarea(value=text),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
+    return part, state
+
+
+def _shown(widget):
+    return (widget.layout.display or "") != "none"
+
+
+def test_the_budget_goes_with_the_hand_that_pulls():
+    """A budget prices what is kept, and a placing hand does not keep it.
+
+    Under a pull the geometry that was priced is the geometry that is kept:
+    the answer is laid back onto the atoms the hand never touched, which moves
+    nothing chemical.  Under a placing hand the held atoms are put back where
+    the cursor had them afterwards, and that is a second geometry -- measured
+    at 1.4 kcal/mol, +16.8 priced against +18.2 kept, bounded by _SLIP_LOOSE
+    at 0.25 A rather than by zero.  Whether a drag was stopped in time then
+    came down to a race between xtb at 70-170 ms and a page reporting every
+    16-120 ms.  A budget that cannot be made exact under one hand should not
+    claim to be a budget there.
+
+    So it disappears with that hand and comes back with the other, and while
+    it is out of sight nothing reads it.  The switch keeps its value across
+    the change: a hand is switched constantly while working, and measuring the
+    anchor again on every switch is a calculation nobody asked for.
+    """
+    part, _state = _editor(_NITROSAMINE)
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_hand_dd.value = "pull"
+    part.submit_thermal_btn.value = True
+
+    group = (part.submit_thermal_btn, part.submit_temperature,
+             part.submit_thermal_relax, part.submit_thermal_anchor_btn)
+    assert all(_shown(w) for w in group)
+    assert _shown(part.submit_pull_slider)
+    assert part._thermal_live() is True
+
+    part.submit_hand_dd.value = "move"
+    assert not any(_shown(w) for w in group), "it has nothing exact to say here"
+    assert not _shown(part.submit_pull_slider), "a placement has no force"
+    assert part._thermal_live() is False, "and nothing reads it while it is off"
+    assert part.submit_thermal_btn.value is True, "the setting is not thrown away"
+
+    # A refresh that belongs to the method must not put them back.  It used to:
+    # the pull slider was shown unconditionally there, so choosing a method
+    # while placing an atom brought back a control with nothing to act on.
+    part._refresh_method_controls()
+    assert not any(_shown(w) for w in group)
+    assert not _shown(part.submit_pull_slider)
+
+    part.submit_hand_dd.value = "pull"
+    assert all(_shown(w) for w in group), "and back with the hand it belongs to"
+    assert _shown(part.submit_pull_slider)
+    assert part._thermal_live() is True
+
+
+def test_the_placing_hand_keeps_everything_that_still_works():
+    """A control wrongly hidden is as bad as one wrongly shown.
+
+    Placing an atom exactly where it is meant to go is what building a
+    structure is, and no force can do it -- the whole point of a force is that
+    the chemistry gets a say.  So only what a force is needed for goes.
+    """
+    part, _state = _editor(_NITROSAMINE)
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_hand_dd.value = "move"
+
+    # How far the structure moves for how far the mouse moves is a property of
+    # dragging, not of what dragging does.
+    assert _shown(part.submit_sens_slider)
+    # Keep bonds judges what a step did to the bonding; a rigid hand can put an
+    # atom anywhere at all, so if anything it needs it more.
+    assert _shown(part.submit_topology_btn)
+    # A scan drives its own ramp of forces and never reads the hand's slider,
+    # so it walks the same path whichever hand is chosen.
+    assert _shown(part.submit_scan_btn)
+    assert "submit_pull_slider" not in EDITOR_SOURCE.split(
+        "def _push_target(")[1].split("\n        def ")[0]
+
+    # Strength is how many steps the browser's own field takes per animation
+    # frame -- the relaxation, not the hand -- and the rest of a structure
+    # settles round a placed atom exactly as it settles round a pulled one.
+    part.submit_ff_dd.value = "uff"
+    part.submit_hand_dd.value = "move"
+    assert _shown(part.submit_strength_slider)
+
+    # And the rule is in one place, so the method's refresh and the hand's
+    # cannot undo one another.
+    body = EDITOR_SOURCE.split("def _refresh_hand_controls")[1].split(
+        "\n    def ")[0]
+    for spare in ("submit_sens_slider", "submit_topology_btn",
+                  "submit_scan_btn", "submit_strength_slider"):
+        assert spare not in body, spare
+
