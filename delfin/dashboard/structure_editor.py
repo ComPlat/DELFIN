@@ -2096,7 +2096,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '       and drops what was computed past it.  A rule that quietly\n'
             '       sped the playback back up would take that away. */\n'
             '    var n=play.queue.length;\n'
-            '    if(play.pace) return play.pace;\n'
+            '    /* Zero is not a very small delay -- it is "as fast as this\n'
+            '       machine can", and the loop below takes the whole queue in\n'
+            '       one go for it.  The top of the slider means that, and so\n'
+            '       does a hand on the structure: a drag is not a replay, and\n'
+            '       a frame held back during one is a frame the picture is\n'
+            '       behind the hand by.  Queued and then dropped at the\n'
+            '       release, which is what it did, that is the springing back\n'
+            '       the user sees -- and why it looks more alive once the\n'
+            '       mouse is up. */\n'
+            '    if(play.held) return 0;\n'
+            '    if(play.pace!==undefined&&play.pace!==null) return play.pace;\n'
             '    if(n>60) return 8;\n'
             '    if(n>25) return 20;\n'
             '    if(n>10) return 35;\n'
@@ -2473,6 +2483,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    if(play.queue.length){\n'
             '      if(!play.started) play.started=now;\n'
             '      var ms=stepMs();\n'
+            '      if(ms<=0){\n'
+            '        /* Everything that has arrived, this frame.  The picture\n'
+            '           is then never behind what has been computed, which is\n'
+            '           what the top of the slider promises and what a drag\n'
+            '           needs whatever the slider says. */\n'
+            '        var was=play.last;\n'
+            '        play.shown=(play.shown||0)+play.queue.length;\n'
+            '        play.last=play.queue[play.queue.length-1];\n'
+            '        play.queue=[];\n'
+            '        show(was,play.last,1);\n'
+            '        play.started=now;\n'
+            '        window.requestAnimationFrame(frame); return;\n'
+            '      }\n'
             '      var t=(now-play.started)/ms;\n'
             '      if(t>=1){\n'
             '        /* However many steps are due, and the clock moves on by\n'
@@ -7515,7 +7538,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Frames a second on the slider, milliseconds a frame on the page: the
         user thinks in speed and the player counts in delay.
         """
-        pace = max(1, int(round(1000.0 / max(1, int(submit_play_speed.value)))))
+        # The top of the slider is not a speed, it is "keep up": zero, which
+        # the page reads as "take everything that has arrived, this frame".
+        # At 60 it was one frame per animation frame, so a burst of thirty
+        # answers put the picture half a second behind and it never caught up.
+        asked = int(submit_play_speed.value)
+        pace = (0 if asked >= int(submit_play_speed.max)
+                else max(1, int(round(1000.0 / max(1, asked)))))
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinGfnPlay&&window.__delfinGfnPlay['
@@ -7528,11 +7557,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if change.get('name') != 'value':
             return
         _push_play_speed()
+        asked = int(submit_play_speed.value)
         _set_mol_status(
-            f'The optimisation is drawn at {int(submit_play_speed.value)} '
-            'frame(s) a second. Slower lets the calculation run ahead of the '
-            'picture -- take hold of an atom and the frame you are looking at '
-            'is the one that is kept.')
+            'The picture keeps up with the calculation: every frame is drawn '
+            'as soon as it arrives.'
+            if asked >= int(submit_play_speed.max) else
+            f'The optimisation is drawn at {asked} frame(s) a second. Slower '
+            'lets the calculation run ahead of the picture -- take hold of an '
+            'atom and the frame you are looking at is the one that is kept. '
+            'Dragging always keeps up, whatever this says.')
 
     def on_submit_thermal(change):
         """Switching the budget on anchors it; switching it off forgets."""

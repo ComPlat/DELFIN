@@ -1332,6 +1332,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 ffActive: false,
                 settleOnRelease: true,
                 pullShare: DEFAULT_PULL_SHARE,
+                ffFading: null,
                 pinned: [],
                 ffFrameMs: 16,
                 picks: [],
@@ -3406,14 +3407,63 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         return ffPullApply(scopeKey);
     }
+    //: How fast the hand lets go, as a share kept per frame.
+    //
+    //: Not at once.  A structure held out of shape by a force and then let go
+    //: of in one frame springs -- the field answers the whole strain in a
+    //: single step, and what the user sees is a snap.  It ends in the same
+    //: place either way, because the place is the nearest minimum; the
+    //: difference is whether the way there can be watched.
+    //:
+    //: A fifth off each frame is gone in about twenty of them, a third of a
+    //: second, which is slow enough to read and quick enough not to feel like
+    //: the hand is still attached.
+    var PULL_FADES_BY = 0.8;
+    //: Below this the pull is doing nothing anyone can see, so it stops.
+    var PULL_IS_OVER = 0.02;
+
     function ffLetGo(scopeKey) {
         var state = getState(scopeKey);
         if (!state.ffPull) return;
+        // Handed to the fade rather than dropped.  What it holds is what the
+        // hand held; only the strength comes down.
+        state.ffFading = {want: state.ffPull.want, share: 1.0};
         state.ffPull = null;
-        ffTether(scopeKey, []);
+        if (!ffEnabled(state)) {
+            // Nothing here is going to run a relaxation to fade into: under a
+            // server method the kernel owns the frames and there is no field
+            // on the page to ease off against.
+            state.ffFading = null;
+            ffTether(scopeKey, []);
+        }
         drawPull(scopeKey);
         var viewer = getViewer(scopeKey);
         if (viewer) { try { viewer.render(); } catch (e) {} }
+    }
+
+    // One step of letting go, run from the relaxation itself so the structure
+    // is answering a hand that is getting weaker rather than one that has
+    // vanished.
+    function ffFadeStep(scopeKey) {
+        var state = getState(scopeKey);
+        var fading = state.ffFading;
+        if (!fading) return;
+        fading.share *= PULL_FADES_BY;
+        if (fading.share < PULL_IS_OVER) {
+            state.ffFading = null;
+            ffTether(scopeKey, []);
+            return;
+        }
+        var viewer = getViewer(scopeKey);
+        if (!viewer) { state.ffFading = null; ffTether(scopeKey, []); return; }
+        var k = pullConstant(state) * pullOver(scopeKey, viewer) * fading.share;
+        var list = [];
+        for (var i = 0; i < fading.want.length; i++) {
+            var w = fading.want[i];
+            list.push({atom: w.atom, k: k, reach: PULL_REACH,
+                       x: w.x, y: w.y, z: w.z});
+        }
+        ffTether(scopeKey, list);
     }
 
     // The band between the atom and where the hand has it.
@@ -3524,6 +3574,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         if (!viewer) return false;
         var t0 = nowMs();
+        if (state.ffFading) ffFadeStep(scopeKey);
         try {
             var out = window.__delfinFF.step(
                 scopeKey, ffReadPositions(viewer), state.ffFrameMs || 16);
@@ -3587,6 +3638,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         state.ffBusy = true;
         state.ffBusySince = nowMs();
+        if (state.ffFading) ffFadeStep(scopeKey);
         var t0 = nowMs();
         var positions = ffReadPositions(viewer);
         var sent = ffAskWorker(

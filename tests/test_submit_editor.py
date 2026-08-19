@@ -2290,3 +2290,43 @@ def test_the_band_moves_at_the_rate_of_the_hand():
     assert 'viewer.render()' not in _body('drawPull')
     # And a new viewer starts with no band left over from the old one.
     assert 'state.pullShapes = [];' in _body('onViewerReady')
+
+
+def test_the_hand_lets_go_over_a_few_frames_rather_than_at_once():
+    """A structure held out of shape and then released in one frame springs.
+
+    The field answers the whole strain in a single step, and what the user
+    sees is a snap -- which is the same thing they see when the budget's wall
+    fires, and the same complaint.  It ends in the same place either way,
+    because the place is the nearest minimum; the difference is whether the
+    way there can be watched.
+
+    A fifth off each frame is gone in about twenty of them, a third of a
+    second: slow enough to read, quick enough not to feel like the hand is
+    still attached.
+    """
+    assert 'var PULL_FADES_BY = 0.8;' in EDITOR
+    assert 'var PULL_IS_OVER = 0.02;' in EDITOR
+
+    # Letting go hands the pull to the fade rather than dropping it, and what
+    # it holds is what the hand held -- only the strength comes down.
+    go = _body('ffLetGo')
+    assert 'state.ffFading = {want: state.ffPull.want, share: 1.0};' in go
+    assert 'state.ffPull = null;' in go
+    # Unless there is no field here to ease off against, which is a server
+    # method: there the kernel owns the frames and nothing on the page runs.
+    assert 'if (!ffEnabled(state)) {' in go
+    assert 'ffTether(scopeKey, []);' in go
+
+    fade = _body('ffFadeStep')
+    assert 'fading.share *= PULL_FADES_BY;' in fade
+    assert 'if (fading.share < PULL_IS_OVER) {' in fade
+    # The same clamp and the same over-factor as a live pull, so the hand on
+    # the way out is the hand that was there, weaker.
+    assert 'pullConstant(state) * pullOver(scopeKey, viewer) * fading.share' in fade
+    assert 'reach: PULL_REACH' in fade
+
+    # Stepped from the relaxation itself, so the structure is answering a hand
+    # that is getting weaker rather than one that has vanished.
+    assert 'if (state.ffFading) ffFadeStep(scopeKey);' in _body('ffRelaxFrame')
+    assert 'if (state.ffFading) ffFadeStep(scopeKey);' in _body('ffRelaxAsync')
