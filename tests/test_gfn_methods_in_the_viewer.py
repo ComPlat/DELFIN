@@ -2754,12 +2754,17 @@ def test_a_run_that_ends_lands_the_picture_on_its_last_frame(player_js):
 
 def test_a_burst_is_not_played_at_the_pace_of_a_followed_hand(player_js):
     """A follow arrives one answer at a time and is drawn over the gap between
-    them; a relaxation arrives in bursts, and those keep the backlog rules."""
+    them; a relaxation arrives in bursts, and those keep the backlog rules.
+
+    What keeps them apart is the length of the queue, not the order of the
+    two rules: the follow rule asks for three or fewer, and the backlog rules
+    for more than ten, so no queue reaches both.  The order that does matter
+    is the follow rule against the slider, and that is a rule above.
+    """
     step = player_js.split("function stepMs(){")[1].split("\n  }")[0]
     assert "if(n>60) return 8;" in step
-    assert step.index("if(n>10) return 35;") < step.index("play.gap"), (
-        "the backlog rules come first"
-    )
+    assert "if(n>25) return 20;" in step
+    assert "if(n>10) return 35;" in step
     assert "play.follow&&play.gap&&n<=3" in step
 
 
@@ -5444,6 +5449,10 @@ const root = {
 };
 
 const drawn = [];
+// When each of those was drawn.  Smoothness is not how many frames come out
+// but how evenly they are spaced and how far the picture moves in each one,
+// and neither can be read off the values alone.
+const stamps = [];
 const notes = [];
 let pushes = 0;
 let pending = null;
@@ -5456,7 +5465,7 @@ global.window = {
   HTMLInputElement: FakeField,
   _submitManipStateByScope: {},
   __delfinSubmitManip: {
-    setPositions(scope, out) { drawn.push(out[0]); return true; },
+    setPositions(scope, out) { drawn.push(out[0]); stamps.push(now); return true; },
     pushXyz() { pushes += 1; return true; },
     setThermalWall() {},
   },
@@ -5499,7 +5508,7 @@ for (tick = 0; tick < spec.ticks; tick += 1) {
 }
 
 process.stdout.write(JSON.stringify({
-  drawn, pushes, notes,
+  drawn, stamps, pushes, notes,
   play: { seen: play.seen, run: play.run, shown: play.shown,
           queue: play.queue.length, pace: play.pace,
           stopped: play.stopped || 0 },
@@ -5978,3 +5987,203 @@ def test_the_pace_rides_with_the_frames_as_well_as_on_its_own():
     assert "if(data&&data.pace!==undefined&&data.pace!==null)" in source
     # and the player is built already holding it
     assert "pace:' + json.dumps(_play_pace())" in source
+
+
+# ---------------------------------------------------------------------------
+# a hand being followed, timed
+# ---------------------------------------------------------------------------
+#
+# Smoothness is not the number of frames that come out.  It is the spacing of
+# the draws and how far the picture moves in each one: a molecule redrawn
+# every 17 ms moving a seventh of a step glides, and the same path redrawn
+# every 117 ms moving a whole step is the same information delivered as a
+# series of jerks.  So these turn the clock by hand and read the timestamps.
+
+#: How far apart a followed answer really lands.  Measured follow steps on a
+#: small molecule are 70-170 ms and never even; a whole drag is about half a
+#: second of them.
+_FOLLOW_GAPS = (70, 120, 95, 170, 140, 80, 110, 160, 90, 130,
+                105, 150, 75, 115, 165, 85, 125, 100, 145, 78)
+
+_FRAME_MS = 1000.0 / 60.0
+
+
+def _at(ms):
+    """Which animation frame a moment in milliseconds falls on."""
+    return int(round(ms / _FRAME_MS))
+
+
+def _spacing(stamps):
+    """Milliseconds from one draw to the next."""
+    return [b - a for a, b in zip(stamps, stamps[1:])]
+
+
+def _motion(drawn):
+    """How far the picture moved in each draw, in frames of the trajectory."""
+    return [abs(b - a) for a, b in zip(drawn, drawn[1:])]
+
+
+def _follow_writes(pace, held=False, gaps=_FOLLOW_GAPS):
+    """The events a followed hand makes: one new frame at a time, unevenly."""
+    events = [{'tick': 0, 'follow': True, 'grab': held}]
+    window = _Window(1)
+    at = 0.0
+    for i, gap in enumerate(gaps):
+        at += gap
+        payload = window.push(i + 1)
+        payload['follow'] = 1
+        payload['pace'] = pace
+        events.append({'tick': _at(at), 'payload': payload})
+    return events
+
+
+@_needs_node
+def test_a_followed_hand_is_drawn_across_the_interval_whatever_the_slider_says(
+        player_program, tmp_path):
+    """One answer at a time is spread over the wait for the next one.
+
+    The slider says how fast to walk a path that has already been computed.
+    A hand being followed has no such path: it is paced by how fast xtb
+    answers, and no setting makes xtb answer faster.  When the slider reached
+    this case first it decided it, and at the top of the slider -- which is
+    zero, "take everything that has arrived now" -- every raw answer was
+    drawn the instant it landed.
+
+    Driven in node over one synthetic drag, twenty single answers 70-170 ms
+    apart, the same events for both settings::
+
+        rule reached first        draws   spacing         moved per draw
+        the slider, at Speed 60      20   117 ms +- 31    1.0 frame
+        the arrival gap             138    17.5 ms +- 9   0.14 frame
+
+    The second is the cadence this keeps.  It is also the one the player had
+    whenever the pace failed to reach it -- which, before the pace rode on
+    the frames, was most of the time but not all of it, because the channel
+    that carried it raced the start-up script.  Driven over the same drag,
+    that old player gave 17.5 ms +- 9 when the race was lost and 117 ms +- 31
+    when it was won: the same code, two different molecules to watch, decided
+    by something no one could see.  Which is worth knowing when someone says
+    it used to be calmer and is no longer sure.
+
+
+    The trajectory is still walked strictly forwards: no frame of it is drawn
+    out of order.  The drawn position between two frames can settle back by a
+    little, because the interval it is spread over is an average that is
+    re-measured on every answer, and a longer measurement moves the fraction
+    of the way there down.  Measured, once in a twenty-answer drag and by
+    0.032 of a step -- and by exactly the same amount in the player from
+    before, so it is the cadence being restored and not something added.
+    """
+    import statistics
+
+    for pace in (83, 0):                      # Speed 12, and Speed 60
+        got = _drive(tmp_path, player_program, _follow_writes(pace),
+                     ticks=200)
+        spacing = _spacing(got['stamps'])
+        moved = _motion(got['drawn'])
+        assert len(got['drawn']) > 100, (pace, len(got['drawn']))
+        assert statistics.fmean(spacing) < 25, (pace, spacing)
+        # Nothing stands still except the wait for the very first answer.
+        assert max(spacing[1:]) <= 40, (pace, spacing)
+        assert max(moved) < 0.5, (pace, max(moved))
+        # And none of what was fixed with the pace is given up for it.
+        reached = _reached(got['drawn'])
+        assert _never_goes_back(reached), got['drawn']
+        assert sorted(set(reached)) == list(range(len(set(reached)))), reached
+        assert min(b - a for a, b in zip(got['drawn'], got['drawn'][1:])) \
+            > -0.05, got['drawn']
+        # What a grab would hand the kernel is never a frame nobody has seen.
+        assert got['play']['shown'] <= len(set(reached)), got['play']
+
+
+@_needs_node
+def test_a_hand_on_the_structure_is_shown_each_answer_as_it_lands(
+        player_program, tmp_path):
+    """A drag is not smoothed, and that is deliberate rather than an oversight.
+
+    Measured over the same twenty answers with the mouse down: twenty draws,
+    one whole frame each, 117 ms apart -- the snappiest thing the player
+    does, and identical in the player from before the pace reached the page,
+    so it is not what changed.
+
+    It is left that way because the drag pushes the *viewer's* coordinates
+    back to the kernel about ten times a second as the structure the next
+    xtb round starts from.  A position halfway between two answers would go
+    over as a geometry and be computed on.  An in-between may be drawn; it
+    may not be kept.
+    """
+    got = _drive(tmp_path, player_program, _follow_writes(0, held=True),
+                 ticks=200)
+    assert len(got['drawn']) == len(_FOLLOW_GAPS), got['drawn']
+    assert set(_motion(got['drawn'])) == {1}, got['drawn']
+    assert got['pushes'] > 0, "the drag never asked for an answer"
+
+
+@_needs_node
+def test_the_top_of_the_slider_still_empties_a_burst_as_fast_as_it_arrives(
+        player_program, tmp_path):
+    """Speed 60 means the arrival rate, and a burst is where that is tested.
+
+    A relaxation pours out frames far faster than any screen shows them.
+    Driven at 12000 frames a second for a second: 11600 drawn, 12210 a
+    second.  The player from before the pace reached the page drew 181 of
+    them -- 125 a second -- because it fell through to a fixed 8 ms a frame.
+    Putting the followed hand above the slider must not cost that, and does
+    not: a burst is not one answer at a time, so it never reaches that rule.
+    """
+    events = [{'tick': 0, 'follow': False, 'grab': False}]
+    window = _Window(1)
+    per_tick = 200                                   # 12000 frames a second
+    ticks = 60
+    for tick in range(1, ticks):
+        payload = window.push(tick * per_tick)
+        payload['pace'] = 0
+        events.append({'tick': tick, 'payload': payload})
+
+    got = _drive(tmp_path, player_program, events, ticks=ticks + 30)
+    assert got['play']['shown'] > 10000, got['play']
+    assert _never_goes_back(got['drawn'])
+
+
+@_needs_node
+def test_a_follow_that_outruns_the_picture_is_paced_by_the_slider_again(
+        player_program, tmp_path):
+    """Three in the queue is the whole guard, and it needs no other.
+
+    While the picture keeps up with the arrivals the queue cannot grow past a
+    frame or two.  The moment they outrun it -- a settle that computed twelve
+    cycles between writes, a scan, a climb -- the queue grows past three and
+    the slider has it back.  Twelve frames arriving every 100 ms with the
+    slider at twelve a second: 240 frames offered, 37 drawn over 3.2 s, which
+    is the rate that was asked for and not the rate they arrived at.  The
+    player from before the pace reached the page drew 218 of them, because a
+    pace it never received left it on the backlog rules.
+    """
+    events = [{'tick': 0, 'follow': True, 'grab': False}]
+    window = _Window(1)
+    at = 0.0
+    for i in range(20):
+        at += 100
+        payload = window.push((i + 1) * 12)
+        payload['follow'] = 1
+        payload['pace'] = 83                          # twelve a second
+        events.append({'tick': _at(at), 'payload': payload})
+
+    got = _drive(tmp_path, player_program, events, ticks=200)
+    assert got['play']['seen'] == 240, got['play']
+    assert 20 <= got['play']['shown'] <= 40, got['play']
+    assert _never_goes_back(got['drawn'])
+
+
+def test_the_slider_is_not_asked_about_a_hand_being_followed():
+    """The order of the rules is the fix, so it is held in place here.
+
+    Below the slider the follow rule was unreachable at the top of the
+    slider, which is zero: "take everything now" answered first, and every
+    answer was drawn the instant it landed.
+    """
+    source = SUBMIT_SOURCE
+    step = source.split("function stepMs()")[1].split("function inScope")[0]
+    assert (step.index("play.follow&&play.gap&&n<=3")
+            < step.index("if(play.pace!==undefined")), \
+        "the slider reaches a followed hand before the arrival gap does"
