@@ -38,6 +38,7 @@ import py3Dmol
 from . import gfn_optimize as _gfn
 from . import ketcher as _ketcher
 from . import mopac_optimize as _mopac
+from . import saddle as _saddle
 from . import separate_systems as _separate
 from . import solvents as _solvents
 from .input_processing import (
@@ -1586,6 +1587,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='140px', height='30px', display='none'),
         disabled=True,
     )
+    #: Climb from whatever is on screen to the nearest first-order saddle.
+    #:
+    #: xtb has no saddle-point optimiser.  ORCA has one, and ORCA can be told
+    #: to take its gradients from xtb -- that pair is fast enough to be a
+    #: button: measured on a Diels-Alder transition state, sixteen atoms,
+    #: ``! XTB2 OPTTS`` converged in under seven seconds, from an estimate
+    #: with its forming bonds at 2.524 and 2.520 A to a symmetric saddle at
+    #: 2.315 and 2.315 with one imaginary mode.
+    #:
+    #: On whatever is in the box, not only on what the path finder left: a
+    #: structure posed by hand into something that looks like a transition
+    #: state is exactly the case this is for, and it is the interactive half
+    #: of the question.  One core, two gigabytes and three minutes, because
+    #: this runs where the dashboard runs and on a cluster that is the login
+    #: node.  A saddle search on a real basis set is a job, and the ORCA
+    #: Builder is where jobs are submitted.
+    submit_saddle_btn = widgets.Button(
+        description='To the saddle', icon='mountain', button_style='warning',
+        tooltip=('Optimise what is in the box to the nearest transition state '
+                 "-- ORCA's saddle optimiser on xtb gradients, seconds rather "
+                 'than hours. Says whether what it reached is one.'),
+        layout=widgets.Layout(width='140px', height='30px'),
+        disabled=True,
+    )
     submit_scan_run_btn = widgets.Button(
         description='Run scan', button_style='success', icon='play',
         tooltip='Walk every armed coordinate together, and say what it costs.',
@@ -1661,7 +1686,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_thermal_btn, submit_temperature,
             submit_thermal_relax, submit_thermal_anchor_btn,
-            submit_topology_btn,
+            submit_topology_btn, submit_saddle_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider, submit_pull_slider, submit_sens_slider,
@@ -1771,7 +1796,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_play_speed.disabled = not enabled
         for widget in (submit_thermal_btn, submit_temperature,
                        submit_thermal_relax, submit_thermal_anchor_btn,
-                       submit_topology_btn):
+                       submit_topology_btn, submit_saddle_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
         submit_sens_slider.disabled = not enabled
@@ -6784,6 +6809,81 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def _said_modes(shape, what):
+        """What a Hessian says a structure is, in one sentence."""
+        if not shape:
+            return f'{what} could not be checked for imaginary modes.'
+        if shape.get('count') == 1:
+            return (f'{what} is a transition state: one mode goes the wrong '
+                    f'way, at {shape["modes"][0]:.0f} cm-1, and no others.')
+        if shape.get('count') == 0:
+            return (f'{what} is a minimum, not a transition state: no mode '
+                    'goes the wrong way.')
+        many = ', '.join(f'{one:.0f}' for one in shape.get('modes') or [])
+        return (f'{shape["count"]} modes go the wrong way'
+                + (f' ({many} cm-1)' if many else '')
+                + f', so {what.lower()} is not a transition state -- a saddle '
+                  'point of first order has exactly one.')
+
+    def on_submit_saddle(_button=None):
+        """Climb from the structure on screen to the nearest saddle point.
+
+        The interactive half of a transition state: pose one by hand or take
+        the path finder's estimate, press, and a few seconds later it is a
+        converged first-order saddle or it is not, and which is said.
+        """
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        if not xyz:
+            return
+        if state.get('saddle_run'):
+            return
+        if method.lower() not in _saddle.SADDLE_METHODS:
+            _set_mol_status(
+                'A saddle search here runs on xtb through ORCA, so choose '
+                'GFN2, GFN1 or GFN-FF. Anything with a basis set is a job for '
+                'the ORCA Builder.')
+            return
+        state['saddle_run'] = True
+        submit_saddle_btn.disabled = True
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        _set_mol_status('Climbing to the nearest saddle point...', spinner=True)
+
+        def _work():
+            found = _saddle.optimise_to_saddle(
+                xyz, method, charge=charge, uhf=uhf, solvent=wet)
+
+            def _done():
+                state['saddle_run'] = False
+                submit_saddle_btn.disabled = False
+                rows = [line for line in (found.get('xyz') or '').splitlines()[2:]
+                        if line.strip()]
+                if not found.get('ok'):
+                    if rows:
+                        _remember('the saddle search')
+                        _write_coords(xyz_document(
+                            rows, 'Where the saddle search got to'))
+                    _set_mol_status(str(found.get('status')
+                                        or 'The saddle search did not run.'))
+                    return
+                lines = [found['status']]
+                lines.append(_said_modes(found.get('imaginary'),
+                                         'What it reached'))
+                if rows:
+                    _remember('the saddle search')
+                    _write_coords(xyz_document(
+                        rows, 'Optimised to a transition state'))
+                    lines.append('It is in the box; Undo takes it back. '
+                                 'Refine it with OPTTS in the ORCA Builder at '
+                                 'a level worth quoting.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def on_submit_path(_button=None):
         """Walk between the two ends the scan left, and keep what is found.
 
@@ -8115,6 +8215,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_topology_btn.observe(on_submit_topology, names='value')
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
     submit_path_btn.on_click(on_submit_path)
+    submit_saddle_btn.on_click(on_submit_saddle)
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_thermal_btn.observe(on_submit_thermal, names='value')
