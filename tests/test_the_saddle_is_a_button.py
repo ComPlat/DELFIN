@@ -455,6 +455,11 @@ def test_a_mode_too_shallow_to_believe_is_not_taken_for_a_saddle():
     assert shallow['first_order'] is False, shallow
     assert 'not one on this evidence' in shallow['lines'][0]
     assert '-40 cm-1' in shallow['lines'][0]
+    # And not named one either.  The name is what goes into the coordinate
+    # box, and a box that says "transition state" over a structure the
+    # sentence has just refused is where the refusal would be lost.
+    assert shallow['name'] == \
+        'a stationary point with one shallow mode the wrong way'
 
     deep = saddle.verdict({'count': 1, 'modes': [-393.53],
                            'real': [119.3, 173.44]})

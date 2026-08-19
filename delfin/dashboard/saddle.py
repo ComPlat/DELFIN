@@ -250,6 +250,7 @@ def verdict(shape: Optional[Dict[str, Any]],
     # what it is.
     listed = ', '.join(f'{one:.0f}' for one in modes[:max(0, order)])
     lines: List[str] = []
+    name = _named(order)
 
     if order == FIRST_ORDER:
         deepest = modes[0] if modes else None
@@ -264,6 +265,11 @@ def verdict(shape: Optional[Dict[str, Any]],
                 'it will call a transition state, so it is not one on this '
                 'evidence.')
             first = False
+            # And not called one anywhere else either.  The name goes into
+            # the coordinate box, and a box that says "transition state" over
+            # a structure the sentence has just refused is where the refusal
+            # would be lost.
+            name = 'a stationary point with one shallow mode the wrong way'
         else:
             lines.append(
                 f'{what} is a transition state: one mode goes the wrong way'
@@ -317,7 +323,7 @@ def verdict(shape: Optional[Dict[str, Any]],
             f'cm-1, summing to under the {FLAT_PAIR:.0f} cm-1 AutoMeKin '
             'refuses -- flat enough in those directions to be a saddle of '
             'higher order in all but name.')
-    return {'order': order, 'first_order': first, 'name': _named(order),
+    return {'order': order, 'first_order': first, 'name': name,
             'lines': lines}
 
 
