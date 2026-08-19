@@ -733,9 +733,9 @@ class Climb:
         measured choice rather than a careful one: carried across a drag it
         still reaches the same saddle, but in 62 steps against 15, because a
         Bofill update repairs a Hessian one step at a time and a hand moves
-        further in one gesture than a climb does in twenty.  Half a second
-        once, on the mouse being let go, is cheaper than 47 gradients and a
-        picture that wanders on the way.
+        further in one gesture than a climb does in twenty.  Six tenths of a
+        second once, on the mouse being let go, is cheaper than 47 gradients
+        and a picture that wanders on the way.
         """
         found = _elements(xyz_text)
         if found is None:
@@ -781,9 +781,9 @@ class Climb:
     def step(self) -> Dict[str, Any]:
         """One gradient, one P-RFO step, one Bofill update.
 
-        Measured at 12 ms for sixteen atoms with the in-process engine, of
-        which 6 are the gradient -- eighty a second, so the picture and not
-        the calculation is what limits how fast this can be shown.
+        Measured at about 10 ms for sixteen atoms with the in-process engine,
+        of which 6 are the gradient -- a hundred a second, so the picture and
+        not the calculation is what limits how fast this can be shown.
 
         A step can also come back refused, having moved nothing: see
         :meth:`_back_out`.  It still cost a gradient, and the caller should
