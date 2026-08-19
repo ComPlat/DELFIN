@@ -35,6 +35,7 @@ import ipywidgets as widgets
 
 import py3Dmol
 
+from . import climb as _climb
 from . import gfn_optimize as _gfn
 from . import ketcher as _ketcher
 from . import mopac_optimize as _mopac
@@ -1697,6 +1698,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='140px', height='30px'),
         disabled=True,
     )
+    #: The same climb, slowed down enough to put a hand in the middle of it.
+    #:
+    #: ORCA's OptTS is a press and cannot be anything else: measured, a
+    #: three-step burst of it costs 2.7 to 3.1 s for sixteen atoms and 2.5 of
+    #: those are ORCA starting up, so a saddle search made of repeated ORCA
+    #: runs is two orders of magnitude away from a drag.  :mod:`climb` is the
+    #: same method -- P-RFO with eigenvector following on a Bofill-updated
+    #: Hessian -- walking on xtb gradients here, at 10 ms a step, and that is
+    #: fast enough to watch and to interrupt.
+    #:
+    #: What the hand does to it is the point.  Grab an atom while this is
+    #: running and the climb stops rather than fighting, because a saddle of a
+    #: restrained surface is not a saddle of the real one: measured, climbing
+    #: with both forming bonds held at 2.45 A converges, and the point it
+    #: converges to has a true gradient 130 times the convergence threshold and
+    #: *two* imaginary modes, -637 and -50.
+    #:
+    #: When the mouse is let go the climb starts again from the structure that
+    #: was made -- and takes the direction of the drag as the mode to follow,
+    #: which is what actually helps.  From the same dragged geometry, climbing
+    #: the mode the hand pointed at reaches the Diels-Alder saddle in 39 steps
+    #: at 2.315 A; climbing the lowest mode instead walks back down to the
+    #: van-der-Waals complex 0.43 A away with no imaginary mode at all.
+    submit_climb_btn = widgets.ToggleButton(
+        value=False, description='Climb to TS', icon='hand-rock',
+        tooltip=('Walk to a transition state a step at a time, on xtb '
+                 'gradients. Drag an atom while it runs to point it at the '
+                 'reaction you mean; it carries on from where you let go.'),
+        layout=widgets.Layout(width='140px', height='30px'),
+        disabled=True,
+    )
     submit_scan_run_btn = widgets.Button(
         description='Run scan', button_style='success', icon='play',
         tooltip='Walk every armed coordinate together, and say what it costs.',
@@ -1773,6 +1805,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_thermal_btn, submit_temperature,
             submit_thermal_relax, submit_thermal_anchor_btn,
             submit_topology_btn, submit_saddle_btn,
+            submit_climb_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider, submit_hand_dd, submit_pull_slider,
@@ -1884,6 +1917,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         for widget in (submit_thermal_btn, submit_temperature,
                        submit_thermal_relax, submit_thermal_anchor_btn,
                        submit_topology_btn, submit_saddle_btn,
+                       submit_climb_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
@@ -7730,6 +7764,164 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'leaves both.')
             return None
         return ends
+    def _climb_verdict(shape, steps, seconds):
+        """What a climb reached, said the way the press next door says it."""
+        lines = [f'The climb stopped after {steps} steps ({seconds:.1f} s).']
+        count = int(shape.get('count') or 0)
+        if count == 1:
+            lines[0] = (f'Climbed to a transition state in {steps} steps '
+                        f'({seconds:.1f} s).')
+            lines.append(f'One mode goes the wrong way, at '
+                         f'{shape["modes"][0]:.0f} cm-1, and no others.')
+        elif count == 0:
+            lowest = shape.get('lowest')
+            lines.append(
+                'No mode goes the wrong way, so this is a minimum and not a '
+                'transition state'
+                + (f' -- the softest is {lowest:.0f} cm-1.' if lowest
+                   else '.'))
+        else:
+            many = ', '.join(f'{one:.0f}' for one in shape.get('modes') or [])
+            lines.append(
+                f'{count} modes go the wrong way ({many} cm-1), so this is a '
+                'saddle of higher order -- a transition state has exactly '
+                'one.')
+        return lines
+
+    def on_submit_climb(change=None):
+        """Walk to a transition state slowly enough to be interrupted.
+
+        The same method ORCA's OptTS uses, run here on xtb gradients so that
+        each step costs about ten milliseconds instead of the three seconds a
+        fresh ORCA needs to start.  That is the whole reason this exists
+        beside the press: a press cannot be dragged in the middle of.
+
+        A drag suspends it rather than fighting it, and what the drag leaves
+        behind is where it starts again -- with the direction of the drag as
+        the mode to climb.  See :func:`on_submit_manip_sync`, which is where a
+        drag reaches this.
+        """
+        if change is not None and change.get('name') != 'value':
+            return
+        if not submit_climb_btn.value:
+            state['climb_run'] = None       # the loop reads this and stops
+            return
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        if not xyz:
+            submit_climb_btn.value = False
+            return
+        if method.lower() not in _climb.CLIMB_METHODS:
+            submit_climb_btn.value = False
+            _set_mol_status(
+                'An interactive climb runs on xtb, so choose GFN2, GFN1 or '
+                'GFN-FF. Anything with a basis set is a job for the ORCA '
+                'Builder.')
+            return
+        token = object()
+        state['climb_run'] = token
+        state.pop('climb_hand', None)
+        state.pop('climb_was', None)
+        run_id = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = run_id
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        _remember('the climb to a transition state')
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
+        _set_mol_status('Climbing to a transition state; drag an atom to '
+                        'point it somewhere...', spinner=True)
+        walked: list = []
+        sent = [0, 0, 0.0]                  # window start, window end, when
+
+        def _push(final=False):
+            """Hand the path over while the climb is still walking it.
+
+            The same window the optimiser's own streaming uses: each write
+            starts where the *previous* one started, so every frame goes out
+            twice and none is lost to a read that landed between two writes.
+            Held to about forty milliseconds apart because the climb makes a
+            hundred frames a second and no page is asked to look that often.
+            """
+            now = time.time()
+            if not final and (len(walked) <= sent[1]
+                              or now - sent[2] < 0.04):
+                return
+            start, sent[0], sent[1], sent[2] = sent[0], sent[1], len(walked), now
+            fresh = [list(one) for one in walked[start:]]
+
+            def _write(rows=fresh, first=start, last=bool(final)):
+                if state.get('gfn_run') != run_id:
+                    return
+                payload = {'run': run_id, 'from': first, 'follow': 1,
+                           'frames': rows}
+                if last:
+                    payload['final'] = 1
+                submit_gfn_frame.value = json.dumps(payload)
+
+            schedule_ui_update(_write)
+
+        def _work():
+            began = time.time()
+            walk = None
+            try:
+                walk = _climb.Climb(xyz, method, charge=charge, uhf=uhf,
+                                    solvent=wet)
+                walk.start()
+                while state.get('climb_run') is token:
+                    hand = state.pop('climb_hand', None)
+                    if hand is not None:
+                        # The user has just made a structure.  Start again
+                        # from it, aimed along the way they moved it.
+                        schedule_ui_update(
+                            _set_mol_status,
+                            'Carrying on from where you let go...',
+                            spinner=True)
+                        walk.took(hand.get('xyz') or '',
+                                  aimed_from=hand.get('was'))
+                        walked.clear()
+                        sent[0] = sent[1] = 0
+                        continue
+                    outcome = walk.step()
+                    state['climb_showing'] = walk.xyz()
+                    walked.append(walk.frame())
+                    _push()
+                    if outcome.get('converged'):
+                        break
+                _push(final=True)
+                shape = walk.verdict()
+                steps, seconds = walk.steps, time.time() - began
+                rows = [line for line in walk.xyz().splitlines()[2:]
+                        if line.strip()]
+            except Exception as trouble:            # noqa: BLE001
+                shape, rows = None, []
+                steps, seconds = 0, time.time() - began
+                state['climb_error'] = str(trouble)
+            finally:
+                if walk is not None:
+                    walk.close()
+
+            def _done():
+                if state.get('climb_run') is token:
+                    state['climb_run'] = None
+                submit_climb_btn.value = False
+                if shape is None:
+                    _set_mol_status('The climb could not run: '
+                                    + str(state.pop('climb_error', '')))
+                    return
+                if rows:
+                    _write_coords(xyz_document(
+                        rows, 'Climbed towards a transition state'), drawn=True)
+                lines = _climb_verdict(shape, steps, seconds)
+                lines.append('Undo takes the whole climb back. Refine it with '
+                             'OPTTS in the ORCA Builder at a level worth '
+                             'quoting.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def on_submit_path_from(_button=None):
         """Mark what is on screen as where a path starts.
@@ -9247,6 +9439,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     holding = [int(n) for n in word[5:].split(',')
                                if n.strip().lstrip('-').isdigit()]
             _gfn_follow_step(new_xyz, holding)
+            # A climb does not fight a hand.  Where the structure stood when
+            # the hand first arrived is remembered, because the difference
+            # between then and where it is let go is the direction the user
+            # asked for -- and that direction, not the pull itself, is what
+            # guides the climb.  See :func:`on_submit_climb`.
+            if (state.get('climb_run') is not None
+                    and not state.get('climb_was')):
+                state['climb_was'] = state.get('climb_showing')
         if (drag_ended and state.get('poly_applied')
                 and state.get('poly_metal') is not None):
             # Only a real end of a drag, not the twice-a-second heartbeat the
@@ -9307,6 +9507,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # starts from.
             _interrupt_gfn()
             _arm_gfn_restart()
+            # And a running climb takes the structure that was just made,
+            # aimed along the way it was made.  A restrained saddle is not a
+            # saddle, so the pull is never part of the climb: measured, a climb
+            # on a surface with the forming bonds held converged onto a point
+            # with two imaginary modes and a true gradient 130 times the
+            # threshold, while the same climb resumed after the hand let go
+            # reached the real saddle in 39 steps.
+            if state.get('climb_run') is not None:
+                state['climb_hand'] = {
+                    'xyz': xyz_document(coord_rows, 'Where the hand left it'),
+                    'was': state.pop('climb_was', None),
+                }
         elif state.get('optimize_run') is not None:
             # Not an edit, and something is optimising.  The browser's own
             # field reports where it has got to twice a second and once more
@@ -9395,6 +9607,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_path_saddle_btn.on_click(on_submit_path_to_saddle)
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
+    submit_climb_btn.observe(on_submit_climb, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_thermal_btn.observe(on_submit_thermal, names='value')
