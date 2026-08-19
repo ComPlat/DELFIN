@@ -339,10 +339,26 @@ def test_a_bond_being_made_is_held_however_far_off_it_is():
     assert set(held[0]["atoms"]) == {3, 0}
 
 
-def test_without_a_before_there_is_nothing_to_compare():
-    """The first answer of a drag has no previous geometry, and says so."""
+def test_the_first_answer_of_a_drag_turns_rather_than_stretches():
+    """It has no previous geometry to compare against, so something has to
+    stand in -- and the nearest contact is the wrong thing.
+
+    For an atom in a chain the nearest contact is the bond it hangs on, which
+    is the one coordinate a drag must not drive: a hand below what a bond
+    holds can only stretch one by a tenth of an angstrom, and one above it
+    tears the molecule.  Measured on a 2,4-hexadiene, a chain carbon dragged
+    1.75 A: 0.09 A of movement with the pull, and three bonds broken with the
+    rigid hand.
+
+    What moves a group is the torsion about the bond one further in, with the
+    grabbed atom as its outer end -- turning that swings it through an arc,
+    where turning about its own attachment bond would spin the group and
+    leave the atom where it was.  Which is what every conformer generator
+    drives, and what GOAT freezes bonds in order to leave free.
+    """
     held = gfn.contacts_holding(_BUTANE, [3], most=2)
-    assert all(one["kind"] == "distance" for one in held)
+    assert held and all(one["kind"] == "dihedral" for one in held), held
+    assert held[0]["atoms"][0] == 3, held
 
 
 def test_the_atom_under_the_hand_stays_under_the_hand():
@@ -400,7 +416,7 @@ def test_the_follow_prices_the_relaxation_it_ran():
     assert "_gfn.contacts_holding(" in EDITOR_SOURCE
     # And the held contacts go into the run that follows the drag, or the
     # relaxation would still be free to undo it.
-    assert "constraints=constraints + contacts" in EDITOR_SOURCE
+    assert "constraints=keeping + contacts" in EDITOR_SOURCE
 
 
 def test_a_held_follow_is_given_the_cycles_to_get_anywhere():
@@ -1919,7 +1935,7 @@ def test_the_topology_watch_is_the_one_a_conformer_search_uses():
     import math
 
     assert gfn.BOND_STARTS_AT == 1.3
-    assert gfn.BOND_STOPS_AT > gfn.BOND_STARTS_AT
+    assert not hasattr(gfn, 'BOND_STOPS_AT'), 'one threshold, like GOAT'
 
     was = gfn.bond_graph(_BROMOBENZENE)
     rows = [line.split() for line in gfn.atom_lines(_BROMOBENZENE)]
@@ -1933,13 +1949,17 @@ def test_the_topology_watch_is_the_one_a_conformer_search_uses():
         here = gfn.coordinates_of(text)
         return math.dist(here[0:3], here[18:21])
 
-    # Stretched well past where a bond is first called one, and still held:
-    # that is the band, and it is what stops the flicker.
-    inside = pulled(0.7)
-    assert span(inside) > gfn.BOND_STARTS_AT * 1.96, span(inside)
+    # Inside the threshold, and held.
+    inside = pulled(0.4)
+    assert span(inside) < gfn.BOND_STARTS_AT * 1.96, span(inside)
     assert gfn.graph_holds(was, inside)[0], span(inside)
 
-    # Clearly gone, and said by name.
+    # Past it, and gone -- said by name, and by the same measure that accepted
+    # the one above.  Two measures and one wall is not a wall: accepting at
+    # 1.4 and reporting at 1.3 let a bond stretch across several accepted
+    # steps, and what came back was a geometry already broken by the stricter
+    # one.  Measured on a 2,4-hexadiene with the rigid hand, five steps:
+    # three bonds broken without the wall, and one broken *with* it.
     torn = pulled(1.4)
     holds, said = gfn.graph_holds(was, torn)
     assert not holds, (span(torn), said)

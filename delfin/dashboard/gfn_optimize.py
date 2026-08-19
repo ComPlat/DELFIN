@@ -38,7 +38,8 @@ from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'constraint_input', 'contacts_holding', 'graph_changed',
-           'graph_holds', 'method_is_out_of_its_depth', 'push_constant',
+           'bonds_to_freeze', 'graph_holds', 'method_is_out_of_its_depth',
+           'push_constant', 'turn_for',
            'restraint_energy', 'walk_the_path',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
@@ -1029,6 +1030,23 @@ def as_pushes(entries: Any, reference: Any, force: float,
         return far if kind == 'distance' else math.degrees(far
                                                            / BOHR_IN_ANGSTROM)
 
+    def _apart(kind, wanted, stands):
+        """How far apart two values of this coordinate are.
+
+        A torsion is periodic and 350 degrees away is ten degrees away.
+        Subtracted plainly -- as this did -- a hand near the far side of a
+        turn reads as being most of a circle out, the strength that carries
+        the excess goes up by a factor of thirty, and what comes back is
+        whatever an optimiser does with an absurd restraint.  Measured on a
+        2,4-hexadiene, the same drag at three settings: 0.268 A at four
+        tenths of a bond, 0.089 at one whole one and 0.111 at three.  A
+        stronger hand moving an atom less is not physics.
+        """
+        gap = float(wanted) - float(stands)
+        if kind == 'dihedral':
+            gap = (gap + 180.0) % 360.0 - 180.0
+        return gap
+
     # How far the hand has run ahead of the structure, in reaches.  Read off
     # the coordinate the hand is driving, since that is the one it is pulling.
     far = PUSH_REACH if reach is None else float(reach)
@@ -1039,7 +1057,7 @@ def as_pushes(entries: Any, reference: Any, force: float,
                 continue
             try:
                 stands = value_of(reference, entry)
-                gap = abs(float(entry.get('value')) - float(stands))
+                gap = abs(_apart(leads, entry.get('value'), stands))
             except (TypeError, ValueError, Exception):
                 continue
             over = max(over, gap / _span(leads, far))
@@ -1063,9 +1081,10 @@ def as_pushes(entries: Any, reference: Any, force: float,
             except Exception:
                 now = None
         if now is not None:
-            gap = wanted - now
+            gap = _apart(kind, wanted, now)
             if abs(gap) > span:
-                wanted = now + math.copysign(span, gap)
+                gap = math.copysign(span, gap)
+            wanted = now + gap
         out.append({'kind': kind,
                     'atoms': [int(i) for i in (entry.get('atoms') or ())],
                     'mode': 'push',
@@ -1333,20 +1352,24 @@ def _is_a_bond(where, radius, i, j, slack: float = 1.25) -> bool:
 #: this is the same question and a conformer search is where it has been
 #: thought about hardest.
 #:
-#: The second one is what a *drag* needs and a conformer search does not.  A
-#: bond sitting on the threshold flickers from one answer to the next, ten
-#: times a second, so a single number makes the wall fire on a molecule that
-#: is not changing at all and the drag sticks for no reason.  A bond that was
-#: there has to be clearly gone before it counts as broken, and one that was
-#: not has to be clearly there.  Between the two nothing is decided, which is
-#: what a threshold with hysteresis is for.
-#: The band has to be wider than the wobble and narrower than a bond that
-#: is really going.  Measured between two follow answers, a bond length
-#: moves by two to five hundredths of an angstrom; and for a C-Br, whose
-#: radii come to 1.960, these two put the band at 2.548 to 2.744 A -- two
-#: tenths wide, and a C-Br at 2.80 is called broken, which it is.
+#: One number, which is what the established procedures use.  GOAT keeps the
+#: bonds a structure came with against that threshold; CREST takes the input
+#: structure as its reference and discards what has changed against it.
+#:
+#: A second, looser one was tried here -- a bond that was there had to be
+#: clearly gone before it counted as broken -- on the grounds that a bond
+#: resting on the threshold would flicker from one answer to the next.  It
+#: does not pay for itself: accepting at 1.4 and reporting at 1.3 lets a bond
+#: stretch across several accepted steps and then hands back a geometry that
+#: is already broken by the stricter measure.  Measured on a 2,4-hexadiene
+#: with the rigid hand, five steps: three bonds broken without the wall, and
+#: one broken *with* it.  Two measures and one wall is not a wall.
+#:
+#: Flicker is not a problem a threshold has to solve anyway.  A step whose
+#: bonding differs is refused and the next one is tried; refusing one frame
+#: of a drag that was not really changing costs a tenth of a second and
+#: nothing else.
 BOND_STARTS_AT = 1.3
-BOND_STOPS_AT = 1.4
 
 
 def bond_graph(xyz_text: str, slack: float = BOND_STARTS_AT) -> frozenset:
@@ -1377,34 +1400,46 @@ def bond_graph(xyz_text: str, slack: float = BOND_STARTS_AT) -> frozenset:
 def graph_holds(before: Any, xyz_text: str) -> tuple:
     """Whether *xyz_text* still has the bonds *before* had, and what changed.
 
-    Returns ``(holds, said)``.  Judged with hysteresis: a remembered bond is
-    still one out to :data:`BOND_STOPS_AT`, and a new one counts only inside
-    :data:`BOND_STARTS_AT`.  Between the two nothing is decided, which is what
-    keeps a bond resting on the threshold from flickering the answer several
-    times a second and stopping a drag that is not changing anything.
+    Returns ``(holds, said)``.  One threshold, judged the same way for a bond
+    that was there and one that was not -- see :data:`BOND_STARTS_AT` for why
+    the two it had are worse than the one it has.
     """
     rows = [line.split() for line in atom_lines(xyz_text)]
     if not rows:
         return True, ''
+    now = bond_graph(xyz_text)
+    was = frozenset(tuple(sorted(one)) for one in (before or ()))
+    if now == was:
+        return True, ''
+    return False, graph_changed(was, now, [str(r[0]) for r in rows])
+
+
+def bonds_to_freeze(xyz_text: str) -> list:
+    """Every bond, as a held value, so a relaxation cannot break one.
+
+    GOAT's ``FREEZEBONDS``, which is on by default while it pushes a structure
+    uphill: the way not to break a bond is not to let it move.  Refusing the
+    step afterwards is the backstop and not the method -- measured on a
+    2,4-hexadiene, refusing alone still let one bond go, because a bond can
+    stretch across several accepted steps and the geometry handed back is
+    then the last of those.
+
+    Held at the length it has, which is what makes this cost nothing: the
+    value is already met, so the restraint does no work until something tries
+    to change it.
+    """
+    rows = [line.split() for line in atom_lines(xyz_text)]
+    if not rows:
+        return []
     from delfin.atom_mapping import cov_radius
 
     where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
     radius = [cov_radius(str(r[0])) for r in rows]
-    was = {tuple(sorted(one)) for one in (before or ())}
-    gone, made = [], []
-    for i in range(len(rows)):
-        for j in range(i + 1, len(rows)):
-            span = math.dist(where[i], where[j]) / (radius[i] + radius[j])
-            if (i, j) in was:
-                if span > BOND_STOPS_AT:
-                    gone.append((i, j))
-            elif span < BOND_STARTS_AT:
-                made.append((i, j))
-    if not gone and not made:
-        return True, ''
-    symbols = [str(r[0]) for r in rows]
-    return False, graph_changed(
-        was, (was - set(gone)) | set(made), symbols)
+    held = []
+    for i, j in sorted(bond_graph(xyz_text)):
+        held.append({'kind': 'distance', 'atoms': [i, j], 'mode': 'fix',
+                     'value': math.dist(where[i], where[j])})
+    return held
 
 
 def graph_changed(before: Any, after: Any, symbols: Any = None) -> str:
@@ -1478,6 +1513,64 @@ def _lever(where, i, b, c) -> float:
     rel = [where[i][n] - where[b][n] for n in range(3)]
     along = sum(one * two for one, two in zip(rel, axis))
     return math.sqrt(max(0.0, sum(one * one for one in rel) - along * along))
+
+
+def turn_for(where, radius, grabbed, held) -> list:
+    """The soft coordinate a hand on *grabbed* would really be moving.
+
+    A bond is the wrong thing for a drag to drive.  It is the one coordinate
+    that must not give, so a hand on it either does nothing -- a force below
+    what a bond holds can only stretch one by a tenth of an angstrom -- or
+    tears the molecule, if it is above.  Measured on a 2,4-hexadiene, a chain
+    carbon dragged 1.75 A: 0.09 A of movement with the pull, and three bonds
+    broken with the rigid hand.
+
+    What moves is torsions.  That is what every conformer generator drives --
+    RDKit's embedding, CREST's sampling, GOAT, which freezes bonds precisely
+    in order to leave them free -- and it is what the user asked for in the
+    first place: bond lengths hold, and the angles and torsions react.
+
+    So: the torsion about the bond *one further in* than the one the grabbed
+    atom hangs on, with the grabbed atom as its outer end -- turning that
+    swings it through an arc.  Turning about its own attachment bond would
+    spin the group and leave the atom where it was, which is why the bond it
+    sits on is not the one to use.
+
+    Nothing, when there is no such torsion, and then the caller keeps the
+    contact it had.  Which is right: a whole methyl leaving the other half of
+    an ethane has no torsion between the two, and the C-C bond really is the
+    coordinate that describes that drag.  A bond is only the wrong answer
+    where a better one exists.
+    """
+    if not grabbed:
+        return []
+    inside = set(held or ()) | set(grabbed)
+    for i in sorted(grabbed):
+        near = [n for n in range(len(where))
+                if n != i and _is_a_bond(where, radius, i, n)]
+        # A terminal atom has no torsion that moves it: a hydrogen sits on
+        # its bond, and turning about that bond leaves it exactly where it
+        # was.  Pulled at, what changes is the bond and nothing else -- which
+        # is the case the hold on "the neighbour it is leaving" was written
+        # for, and it stays that.
+        if len(near) < 2:
+            continue
+        for b in near:
+            if b in grabbed:
+                continue
+            onward = [n for n in range(len(where))
+                      if n not in (i, b) and n not in inside
+                      and _is_a_bond(where, radius, b, n)]
+            for c in onward:
+                far = [n for n in range(len(where))
+                       if n not in (i, b, c) and n not in inside
+                       and _is_a_bond(where, radius, c, n)]
+                if far:
+                    d = far[0]
+                    return [{'kind': 'dihedral', 'atoms': [i, b, c, d],
+                             'value': _dihedral(where, i, b, c, d),
+                             'mode': 'drag'}]
+    return []
 
 
 def with_their_terminals(where, radius, dragged) -> set:
@@ -1601,10 +1694,24 @@ def contacts_holding(
     then = _snapshot(was, len(where))
     if then is None:
         # The first answer of a drag has nothing to compare against, so the
-        # nearest contact stands in.
-        near = min(((math.dist(where[i], where[j]), i, j)
-                    for i in grabbed for j in outside))
-        span, i, j = near
+        # nearest contact stands in -- unless that contact is a *bond*.
+        #
+        # A bond is the one coordinate a drag must not drive: a hand below
+        # what a bond holds can only stretch one by a tenth of an angstrom,
+        # and one above it tears the molecule.  Measured on a 2,4-hexadiene, a
+        # chain carbon dragged 1.75 A: 0.09 A of movement with the pull, three
+        # bonds broken with the rigid hand.  What moves a group there is a
+        # torsion; see :func:`turn_for`.
+        #
+        # A contact that is *not* a bond is a different matter and is exactly
+        # right: two fragments closing on each other -- a Diels-Alder, an SN2
+        # -- have no torsion between them, and the distance is the reaction.
+        span, i, j = min(((math.dist(where[i], where[j]), i, j)
+                          for i in grabbed for j in outside))
+        if _is_a_bond(where, radius, i, j):
+            turning = turn_for(where, radius, grabbed, held)
+            if turning:
+                return turning
         return [{'kind': 'distance', 'atoms': [i, j], 'value': span,
                  'mode': 'drag'}]
 
