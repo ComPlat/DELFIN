@@ -2018,15 +2018,21 @@ def test_reset_goes_to_the_structure_that_was_loaded(tab):
     refs['coords_widget'].value = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
     refs['submit_cmd_sync'].value = 'addatom:1:C,3.0,0.0,0.0'
     refs['submit_cmd_sync'].value = 'addatom:2:N,5.0,0.0,0.0'
-    assert len(_atoms(refs)) > 3
+    built = len(_atoms(refs))
+    assert built > 3
 
     refs['submit_reset_btn'].click()
     assert len(_atoms(refs)) == 3
     assert refs['editor_state']['history'][0]['what'] == (
         'the structure as it was loaded')
-    # And what Reset undid is one more thing that happened: the first entry is
-    # kept so somebody who pressed it by accident can still get back.
-    assert len(refs['editor_state']['history']) == 1
+    # And what Reset undid is one more thing that happened, so it is the last
+    # entry: somebody who pressed it by accident presses Undo and their work
+    # is back.  The history used to be cut to its first entry here, which is
+    # the state Reset had just gone to -- so Undo landed on it and said there
+    # was nothing more to take back.
+    assert refs['editor_state']['history'][-1]['what'] == 'the reset'
+    refs['submit_manip_undo_btn'].click()
+    assert len(_atoms(refs)) == built, 'Reset threw the structure away for good'
 
 
 def test_a_step_is_recorded_before_it_happens_not_after(tab):
