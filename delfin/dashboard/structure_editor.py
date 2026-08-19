@@ -7028,12 +7028,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         The interactive half of a transition state: pose one by hand or take
         the path finder's estimate, press, and a few seconds later it is a
         converged first-order saddle or it is not, and which is said.
+
+        Watched while it climbs, and stoppable, which the same press does.  A
+        minimisation that is following the wrong thing fails and says so; a
+        climb does not -- it succeeds at arriving somewhere nobody wanted, and
+        the only way to know that is early is to watch it happen.
         """
+        if state.get('saddle_run'):
+            # The same button, because there is only one thing to want while
+            # it climbs.  What it reached is kept.
+            state['saddle_stop'] = True
+            _set_mol_status('Stopping the climb...', spinner=True)
+            return
         xyz = _current_xyz()
         method = str(submit_ff_dd.value)
         if not xyz:
-            return
-        if state.get('saddle_run'):
+            _set_mol_status('There is no structure to climb from.')
             return
         if method.lower() not in _saddle.SADDLE_METHODS:
             _set_mol_status(
@@ -7042,19 +7052,66 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'the ORCA Builder.')
             return
         state['saddle_run'] = True
-        submit_saddle_btn.disabled = True
+        state['saddle_stop'] = False
+        # The picture belongs to this climb and to nothing else.  A number the
+        # page has not seen yet, so whatever was queued from before cannot
+        # play out over it.
+        state['saddle_frame_run'] = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = state['saddle_frame_run']
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
+        submit_saddle_btn.description = 'Stop'
+        submit_saddle_btn.icon = 'stop'
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
         _set_mol_status('Climbing to the nearest saddle point...', spinner=True)
 
         def _work():
+            sent = [0]
+
+            def _watch(walked, energies):
+                """Every accepted step, as it is accepted.
+
+                Down the frame channel and not into the box: a write to the
+                box rebuilds the viewer from nothing, and a climb of thirty
+                steps would be thirty rebuilds.  The energy comes with the
+                geometry because ORCA puts it on the comment line, so the
+                status can say where the climb is as well as show it.
+                """
+                if state.get('gfn_run') != state.get('saddle_frame_run'):
+                    return
+                for n in range(sent[0], len(walked)):
+                    schedule_ui_update(
+                        lambda text=json.dumps({
+                            'run': state.get('saddle_frame_run'),
+                            'from': n,
+                            'follow': 1,
+                            'frames': [[round(float(v), 4)
+                                        for v in walked[n]]],
+                        }): setattr(submit_gfn_frame, 'value', text))
+                sent[0] = len(walked)
+                climbed = None
+                if len(energies) > 1 and None not in (energies[0],
+                                                      energies[-1]):
+                    climbed = (energies[-1] - energies[0]) * _HARTREE_TO_KCAL
+                schedule_ui_update(
+                    _set_mol_status,
+                    f'Climbing: step {len(walked)}'
+                    + (f', {climbed:+.1f} kcal/mol from where it started.'
+                       if climbed is not None else '.'),
+                    spinner=True)
+
             found = _saddle.optimise_to_saddle(
-                xyz, method, charge=charge, uhf=uhf, solvent=wet)
+                xyz, method, charge=charge, uhf=uhf, solvent=wet,
+                on_frame=_watch,
+                should_stop=lambda: bool(state.get('saddle_stop')))
 
             def _done():
                 state['saddle_run'] = False
-                submit_saddle_btn.disabled = False
+                state['saddle_stop'] = False
+                submit_saddle_btn.description = 'To the saddle'
+                submit_saddle_btn.icon = 'mountain'
                 rows = [line for line in (found.get('xyz') or '').splitlines()[2:]
                         if line.strip()]
                 if not found.get('ok'):
