@@ -3512,8 +3512,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
 
-    def _write_coords(text, drawn=False):
+    def _write_coords(text, drawn=False, run=None):
         """Put a geometry in the box, and say whether the picture has it.
+
+        *run* is the run number the geometry was computed under, for anything
+        that answers from a thread. A run whose number has moved on is about a
+        structure that is no longer on screen -- Undo or Reset put an older one
+        there, or an edit did -- and its answer is refused rather than written.
+        Without this, pressing Undo while xtb was minimising gave the geometry
+        back for the few seconds the run had left to go and then lost it again,
+        which from outside is a button that does nothing.
 
         *drawn* raises the flag the host's update_view consumes: the playback
         has already drawn this geometry, so redrawing it would rebuild the
@@ -3529,6 +3537,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         them back does.  So a write that changes nothing lowers the flag rather
         than raising it.
         """
+        if run is not None and int(state.get('gfn_run', 0)) != int(run):
+            return False
         if coords_widget.value == text:
             state['manip_inflight'] = False
             return False
@@ -3833,6 +3843,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     lines = [line for line in outcome['xyz'].splitlines()[2:]
                              if line.strip()]
                     if lines:
+                        # Remembered here rather than at the press, the way the
+                        # saddle search does it: the press only asks, and until
+                        # the answer arrives there is nothing to take back.
+                        # Without it, taking an anchor from a relaxed structure
+                        # replaced the geometry and left no entry for it.
+                        _remember('measuring the budget from a relaxed structure')
                         _write_coords(xyz_document(
                             lines, 'Relaxed, and the budget measured from here'))
                 if moved_on:
@@ -4170,7 +4186,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # and Submit read, and it has to be true whether or not a
                     # frame happened to land.
                     _write_coords(xyz_document(lines, f'Settled with {label}'),
-                                  drawn=True)
+                                  drawn=True, run=run)
                 # Not converged and the switch is still down: keep going.  That
                 # is what makes this a relaxation rather than a single push.
                 # It ends three ways -- converged, standing still, or out of
@@ -5063,7 +5079,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         pass
                     _write_coords(
                         xyz_document(lines, 'Optimised in DELFIN viewer'),
-                        drawn=played[0])
+                        drawn=played[0], run=run_id)
                 done = count - len(failures)
                 # "1 of 1 frame(s)" is a count of a thing there is one of, and
                 # it cost the line the width that pushed it onto a second row.
@@ -5176,6 +5192,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     def _apply_internal_now():
         """Put the selection at the value in the box, and leave it selected."""
+        # The browser is about to move the atoms, so this is the last moment
+        # the structure before the move exists anywhere. Set went into no
+        # history at all: turning a dihedral by hand and pressing Undo took
+        # back whatever had been done before the turn and left the turn
+        # standing.
+        #
+        # One entry for the sweep, not one per press: with Set on, an arrow
+        # key comes through here every time it repeats.
+        picked = tuple(state.get('picked') or ())
+        if len(picked) in _CONSTRAINT_KINDS:
+            # Only where there is something to set. With nothing selected the
+            # browser moves no atom, and an entry for it is a press of Undo
+            # that appears to do nothing.
+            _remember(f'setting {_describe_selection(picked)}',
+                      gesture=('set', picked))
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
@@ -5350,8 +5381,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not atoms:
             return
         index = atoms[0]
-        overrides = dict(state.get('hyb_overrides') or {})
         chosen = submit_hyb_dd.value or ''
+        # A type is what the field builds its angles from, so typing an atom
+        # sp2 flattens the centre around it as surely as pulling on it would.
+        _remember(f'typing {len(atoms)} atom(s) {chosen}' if chosen
+                  else f'letting {len(atoms)} atom(s) back to the perceived type')
+        overrides = dict(state.get('hyb_overrides') or {})
         for atom in atoms:
             if chosen:
                 overrides[atom] = chosen
@@ -5436,6 +5471,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             )
             return
         position = (int(state.get('poly_arrangement_index') or 0) + 1) % len(arrangements)
+        # Before the arrangement changes. Turn moves no coordinate itself --
+        # it says which vertex each ligand belongs on, and the field walks
+        # them there over the next second -- so there was nothing for Undo to
+        # find, and pressing it took back the step before instead while the
+        # ligands went on moving into the arrangement it was meant to undo.
+        _remember(f'turning to arrangement {position + 1}')
         state['poly_arrangements'] = arrangements
         state['poly_arrangement_index'] = position
         state['poly_assignment'] = arrangements[position]
@@ -5470,6 +5511,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             i for i, name in derived.items()
             if (state.get('hyb_overrides') or {}).get(i) != name
         ]
+        _remember(f'typing {len(derived)} carbon(s) from their partners')
         overrides = dict(state.get('hyb_overrides') or {})
         overrides.update(derived)
         state['hyb_overrides'] = overrides
@@ -5498,6 +5540,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     _HISTORY_LIMIT = 200
 
     _CONSTRAINT_KINDS = {2: 'distance', 3: 'angle', 4: 'dihedral'}
+
+    def _describe_selection(indices):
+        """What a set of picked atoms describes, for a line about it."""
+        kind = _CONSTRAINT_KINDS.get(len(indices or ()))
+        return f'the {kind}' if kind else 'the selection'
 
     def _describe_constraint(entry):
         symbols = []
@@ -5718,6 +5765,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status('Select exactly two atoms to change a bond.')
             return
         pair = (min(indices), max(indices))
+        # Before anything is changed, and for every way through this: with
+        # Adjust H on the structural path below records the step itself, and
+        # with it off nothing did -- so drawing a bond, cutting one, or
+        # correcting a perception went into no history at all and Undo walked
+        # straight past to whatever had been done before it. Two presses of a
+        # button that does not undo the thing that was just done are worse
+        # than a button that says it has nothing to take back. The structural
+        # path's own entry lands on this same state and is folded into it.
+        _remember(f'{"drawing" if connect else "cutting"} the bond between '
+                  f'{pair[0]} and {pair[1]}')
         # A bond drawn where there was none costs both ends a valence, and with
         # Adjust H on the hydrogen standing in its way goes: two methanes
         # bonded at the carbons are ethane, not C2H8. With it off nothing goes,
@@ -5912,7 +5969,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
 
-    def _remember(what):
+    def _structure_marks():
+        """Everything about the structure the coordinates do not say.
+
+        A held value, a bond drawn or cut by hand, an atom typed sp2, a
+        polyhedron and the arrangement its ligands sit in: none of them is a
+        coordinate, and every one of them decides what the field does with the
+        coordinates next. Undo used to put back three of these and leave the
+        rest standing, so taking back "type this carbon sp2" gave the geometry
+        back and kept the typing -- and the field pulled the structure into the
+        shape the typing asks for all over again.
+
+        Whatever an action can change belongs in here, or Undo does not undo
+        that action.
+        """
+        return {
+            'bond_edits': dict(state.get('bond_edits') or {}),
+            'hand_bonds': dict(state.get('hand_bonds') or {}),
+            'constraints': [dict(one)
+                            for one in (state.get('constraints') or [])],
+            'hyb_overrides': dict(state.get('hyb_overrides') or {}),
+            'poly_applied': state.get('poly_applied'),
+            'poly_metal': state.get('poly_metal'),
+            'poly_assignment': (dict(state['poly_assignment'])
+                                if state.get('poly_assignment') else None),
+            'poly_arrangements': [dict(one) for one
+                                  in (state.get('poly_arrangements') or [])],
+            'poly_arrangement_index': int(
+                state.get('poly_arrangement_index') or 0),
+        }
+
+    def _remember(what, gesture=None):
         """Put the state as it is now into the history, under a name.
 
         One history for everything the viewer can do, and one entry per
@@ -5925,18 +6012,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         Called *before* the thing it names happens, because what is worth
         keeping is the state that is about to be left.
+
+        *gesture* names a continuous adjustment rather than a single act.
+        Holding an arrow key with Set on turns a dihedral half a degree per
+        press, and each press is a change of the structure: recorded one by
+        one, a two-second sweep is two hundred entries and Undo creeps back
+        through it half a degree at a time. Presses that carry the same
+        gesture are therefore one step, ended by any other action -- which is
+        what a run of typing is in a text editor, and a sweep is the same
+        thing.
         """
         history = list(state.get('history') or [])
-        current = coords_widget.value
-        # The same picture *and* the same held values.  Judged on the picture
-        # alone, a Hold was never a step of its own -- it changes no
+        entry = dict(_structure_marks(),
+                     coords=coords_widget.value,
+                     what=str(what),
+                     gesture=gesture)
+        last = history[-1] if history else None
+        # The same picture *and* everything held with it.  Judged on the
+        # picture alone, a Hold was never a step of its own -- it changes no
         # coordinate -- so Undo walked straight past it, wiped it on the way,
         # and reported whatever it did land on.  Hold, then a scan, then Undo
         # took back two actions on one press and named one of them.
-        same = (history and history[-1].get('coords') == current
-                and history[-1].get('constraints')
-                == list(state.get('constraints') or []))
-        if same:
+        same = last is not None and all(
+            last.get(key) == value for key, value in entry.items()
+            if key not in ('what', 'gesture'))
+        carrying_on = (gesture is not None and last is not None
+                       and last.get('gesture') == gesture)
+        if same or carrying_on:
             # Two actions from the same picture are one step back, and the
             # step is named after the first of them: going back to that state
             # undoes everything since, and the earliest is what the user would
@@ -5944,21 +6046,66 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # was loaded" the first time anything happened at all.
             pass
         else:
-            history.append({
-                'coords': current,
-                'bond_edits': dict(state.get('bond_edits') or {}),
-                'hand_bonds': dict(state.get('hand_bonds') or {}),
-                'constraints': list(state.get('constraints') or []),
-                'what': str(what),
-            })
+            history.append(entry)
         # The first entry is the structure as it arrived and is never dropped:
         # it is what Reset goes back to, and a long session must not lose it.
         if len(history) > _HISTORY_LIMIT:
             history = history[:1] + history[-(_HISTORY_LIMIT - 1):]
         state['history'] = history
 
+    def _stop_what_is_running():
+        """End everything in flight: it is about a structure that has gone.
+
+        Undo and Reset are the two places where the structure on screen is
+        replaced by one the user chose rather than one a calculation made, and
+        both used to leave the calculation running. xtb went on minimising the
+        geometry from before the press and wrote its answer into the box a few
+        seconds later, over the structure that had just been put back -- so
+        the press looked as though it had done nothing at all, and the only
+        clue was that the coordinates were an optimisation's rather than the
+        ones that had been there.
+
+        Three things had to be told, and the run number tells all three: the
+        page plays frames tagged with the run they belong to, the workers
+        check it before writing an answer, and a fresh number belongs to no
+        run at all. The generation counter goes with it, which is what an
+        armed settle stands down on.
+
+        Returns the sentence to add to the line saying so, or ``''``.
+        """
+        _gfn_new_generation()
+        # Which frame the picture stood on belonged to a run that is over.
+        # Left behind it is a plausible index into a path nobody is walking,
+        # and the interrupted run would write that frame over the structure
+        # being put back.
+        state.pop('gfn_shown_frame', None)
+        running = state.get('optimize_run') is not None
+        scanning = bool(state.get('scan_run'))
+        if scanning:
+            state['scan_stop'] = True
+        if not _interrupt_gfn():
+            # No optimisation to end, but a settle or a scan may still have
+            # frames to push. A run number the page has never seen resets the
+            # player and makes every one of them stale.
+            blank = int(state.get('gfn_run', 0)) + 1
+            state['gfn_run'] = blank
+            submit_gfn_frame.value = json.dumps({'run': blank, 'frames': []})
+        else:
+            # The switch goes back up with the run. It is not coming back by
+            # itself -- nothing restarts it, because what replaced the
+            # structure was the user asking for an older one.
+            state.pop('optimize_interrupted', None)
+            for switch in (submit_optimize_btn, submit_optimize_all_btn):
+                if switch.value:
+                    switch.value = False
+        if running or scanning:
+            return (' The calculation that was running was about the '
+                    'structure you took back, so it stopped.')
+        return ''
+
     def _restore(entry, note):
-        """Put a remembered state back on screen."""
+        """Put a remembered state back on screen, and stop what is not."""
+        aside = _stop_what_is_running()
         state['structure_edit_inflight'] = True
         _mark_structure_edit()
         # Before the write, because the write rebuilds the picture and the
@@ -5970,11 +6117,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         finally:
             state['structure_edit_inflight'] = False
         state['bond_edits'] = dict(entry.get('bond_edits') or {})
-        state['constraints'] = list(entry.get('constraints') or [])
+        state['constraints'] = [dict(one)
+                                for one in (entry.get('constraints') or [])]
+        state['hyb_overrides'] = dict(entry.get('hyb_overrides') or {})
+        state['poly_applied'] = entry.get('poly_applied')
+        state['poly_metal'] = entry.get('poly_metal')
+        # Copied out rather than handed over: what the history holds has to
+        # survive being put back and changed again, or the second Undo returns
+        # what the first one restored.
+        assignment = entry.get('poly_assignment')
+        state['poly_assignment'] = dict(assignment) if assignment else None
+        state['poly_arrangements'] = [dict(one) for one
+                                      in (entry.get('poly_arrangements') or [])]
+        state['poly_arrangement_index'] = int(
+            entry.get('poly_arrangement_index') or 0)
+        # The dropdown as well, quietly: it is what says which polyhedron is
+        # being held, and left showing the one that was just taken back it
+        # would put it on again at the next thing the user touched.
+        state['poly_quiet'] = True
+        try:
+            submit_poly_dd.value = entry.get('poly_applied') or ''
+        except Exception:
+            pass
+        finally:
+            state['poly_quiet'] = False
         state['perceived'] = None
         state['perceived_for'] = None
         _refresh_constraints()
-        _set_mol_status(note)
+        _refresh_poly_turn()
+        _set_mol_status(note + aside)
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
 
@@ -6370,6 +6541,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if len(indices) != 2 or metal is None:
             _set_mol_status('Select two ligands of one metal to exchange them.')
             return
+        # The line below promises that Undo puts them back, and until this was
+        # here it did not: the exchange happens in the browser, arrives as a
+        # geometry, and nothing recorded the arrangement it replaced -- so
+        # Undo took back whatever had been done before the swap instead.
+        _remember(f'exchanging the ligands at {indices[0]} and {indices[1]}')
         state['poly_assignment'] = None
         _ensure_manip_bootstrap()
         _run_manip_js(
@@ -7099,7 +7275,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if rows:
                         _write_coords(xyz_document(
                             rows, 'Scanned to the next minimum'
-                            if state.get('scan_arrived') else 'Scanned'))
+                            if state.get('scan_arrived') else 'Scanned'),
+                            run=state.get('scan_frame_run'))
                     _set_mol_status(*_scan_verdict(path, steps))
 
                 schedule_ui_update(_done)
@@ -7491,6 +7668,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         position, entry = _selected_constraint()
         if entry is None:
             return
+        # A pull settles at a compromise and a fix is met exactly, so this
+        # moves the structure -- and it armed the relaxation that moves it
+        # without leaving anywhere to come back to.
+        _remember(f'holding {_describe_constraint(entry)} as '
+                  f'{submit_hold_mode.value}')
         held = list(state.get('constraints') or [])
         held[position] = dict(entry, mode=submit_hold_mode.value)
         state['constraints'] = held
@@ -7504,6 +7686,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Editing in the viewer is a one-way street otherwise: undo takes back
         one step at a time, and a structure that has been pulled apart over
         twenty of them has no way home short of pasting the coordinates again.
+
+        And it is itself one more step, so Undo takes it back. It used to be
+        the one action in the editor with no way back at all: an hour of work
+        went at a press, and the history was cut to its first entry so that
+        Undo -- which had been the way home from every other mistake -- landed
+        on the structure Reset had just gone to and reported that there was
+        nothing more to take back.
         """
         # The first thing in the history is the structure as it arrived. It
         # was a second remembered place before, set in the render path, and
@@ -7515,16 +7704,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not pristine:
             _set_mol_status('Nothing to go back to yet.')
             return
+        # Everything as it stands, before any of it is cleared. The write at
+        # the bottom goes through the host's own "this is a structure I have
+        # not seen" path -- which is what re-renders and re-perceives, and
+        # what puts the toolbar back to its defaults -- and that path throws
+        # the history away and seeds a new one. So it is taken back out
+        # afterwards rather than being left to survive a write that is meant
+        # to clear everything else.
+        _remember('the reset')
+        kept = list(state.get('history') or [])
+        aside = _stop_what_is_running()
         state['constraints'] = []
         state['scan_legs'] = []
         state['bond_edits'] = {}
         state['hand_bonds'] = {}
         state['hyb_overrides'] = {}
         state['structure_undo'] = []
-        # The history goes back to its first entry rather than being thrown
-        # away: what Reset undid is one more thing that happened, and a user
-        # who presses it by accident has to be able to come back.
-        state['history'] = history[:1] if history else []
         state['poly_applied'] = None
         state['poly_metal'] = None
         state['poly_assignment'] = None
@@ -7557,11 +7752,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             update_view()
         else:
             coords_widget.value = pristine
+        # The way back, put in after the write that cleared it. The first
+        # entry of what is kept is the structure as it arrived, which is where
+        # this has just gone; the last is everything as it stood a moment ago,
+        # which is what Undo now returns to.
+        state['history'] = kept
+        state.pop('history_seed_pending', None)
         _refresh_constraints()
-        _set_mol_status('Back to the structure as it was loaded.')
+        _set_mol_status('Back to the structure as it was loaded. '
+                        'Undo brings back what was here.' + aside)
 
     def on_submit_constraint_del(_button=None):
         key = submit_constraint_dd.value or ''
+        if not key:
+            return
+        # Letting go of a held value lets the structure move again, and
+        # setting one is a step -- so releasing one has to be, or Undo could
+        # take back the holding and never the letting go.
+        _remember('releasing the polyhedron' if key == 'poly'
+                  else 'letting go of a held value')
         if key == 'poly':
             state['poly_applied'] = None
             state['poly_metal'] = None
@@ -7589,6 +7798,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def on_submit_poly_changed(change):
         if change.get('name') != 'value' or state.get('poly_quiet'):
             return
+        # Putting a polyhedron on pulls the donors onto its vertices, which is
+        # as much a change of the structure as dragging them there by hand.
+        _remember(f'the {submit_poly_dd.label} polyhedron'
+                  if submit_poly_dd.value else 'releasing the polyhedron')
         state['poly_applied'] = submit_poly_dd.value or None
         state['poly_assignment'] = None
         if state['poly_applied']:
@@ -9250,13 +9463,34 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # one its parameters were worked out for.
         structure_changed()
 
+    def _isomer_stepped_to(index):
+        """Show another of the structures a conversion produced.
+
+        And start its history: a different isomer is a different molecule, and
+        the entries behind it belong to the one that was on screen a moment
+        ago. Stepping is quiet -- it draws the structure itself rather than
+        letting the write do it -- so the host's own "this is a structure I
+        have not seen" path never runs, and Undo after a step put the previous
+        isomer's geometry over this one. They need not even have the same
+        number of atoms.
+
+        Only the stepper does this. An optimisation of every frame hands its
+        results back through the same shower, and there the entry from before
+        the run is exactly what Undo has to reach.
+        """
+        _show_isomer_at_index(index)
+        state['history'] = []
+        _remember('the structure as it was loaded')
+        # And what Reset goes back to, for the same reason.
+        state['pristine_coords'] = coords_widget.value
+
     def handle_isomer_prev(button):
         if state['isomers']:
-            _show_isomer_at_index(state['isomer_index'] - 1)
+            _isomer_stepped_to(state['isomer_index'] - 1)
 
     def handle_isomer_next(button):
         if state['isomers']:
-            _show_isomer_at_index(state['isomer_index'] + 1)
+            _isomer_stepped_to(state['isomer_index'] + 1)
 
     def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False,
                                  quality_mode=None, seeds_override=None,
