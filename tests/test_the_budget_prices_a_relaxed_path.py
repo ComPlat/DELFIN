@@ -958,9 +958,17 @@ def test_holding_a_value_is_a_step_of_its_own():
     coordinate -- so Undo walked straight past it, wiped it on the way, and
     reported whatever it did land on.  Hold, then a scan, then Undo took back
     two actions on one press and named one of them."""
-    body = EDITOR_SOURCE.split("def _remember(what)")[1].split("\n    def ")[0]
-    assert "history[-1].get('constraints')" in body
-    assert "list(state.get('constraints') or [])" in body
+    # What an entry carries is gathered in one place now, and the holds are
+    # part of it.
+    marks = EDITOR_SOURCE.split("def _structure_marks(")[1].split("\n    def ")[0]
+    assert "'constraints': [dict(one)" in marks
+    assert "state.get('constraints') or []" in marks
+    # And two entries are the same only when everything they carry is the
+    # same -- not only the picture.  Compared on coordinates alone, a Hold
+    # was never a step: it changes none.
+    body = EDITOR_SOURCE.split("def _remember(what")[1].split("\n    def ")[0]
+    assert "entry = dict(_structure_marks()," in body
+    assert "last.get(key) == value for key, value in entry.items()" in body
     hold = EDITOR_SOURCE.split("def on_submit_hold(")[1].split("\n    def ")[0]
     assert "_remember(f'holding" in hold
 

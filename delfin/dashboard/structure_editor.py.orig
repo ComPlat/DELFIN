@@ -7606,20 +7606,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 """
                 if state.get('gfn_run') != state.get('saddle_frame_run'):
                     return
-                climb_run = state.get('saddle_frame_run')
                 for n in range(sent[0], len(walked)):
-                    # Asked again at the write.  An ORCA step is long
-                    # enough for the run to have been replaced between
-                    # the answer and the moment this reaches the field,
-                    # and a frame that arrives after the page has moved
-                    # on is a climb drawn over whatever replaced it.
                     schedule_ui_update(
-                        lambda text=_frame_payload(
-                            climb_run, **{'from': n, 'follow': 1,
-                                          'frames': [[round(float(v), 4)
-                                                      for v in walked[n]]]}),
-                        r=climb_run: setattr(submit_gfn_frame, 'value', text)
-                        if _frame_run_is_current(r) else None)
+                        lambda text=json.dumps({
+                            'run': state.get('saddle_frame_run'),
+                            'from': n,
+                            'follow': 1,
+                            'frames': [[round(float(v), 4)
+                                        for v in walked[n]]],
+                        }): setattr(submit_gfn_frame, 'value', text))
                 sent[0] = len(walked)
                 climbed = None
                 if len(energies) > 1 and None not in (energies[0],
