@@ -5260,3 +5260,50 @@ def test_without_the_budget_the_hand_is_the_users_alone(bare_editor):
     source = EDITOR_SOURCE
     assert 'value=0.4, min=0.0, max=3.0, step=0.05,' in source
     assert 'var DEFAULT_PULL_SHARE = 0.4;' in submit_manip_bootstrap_js()
+
+
+def test_moving_an_atom_and_pulling_on_one_are_both_offered(bare_editor):
+    """Two questions, so two settings -- not one behaviour that replaced
+    another.
+
+    Moving is the older hand and it is not a worse one: the atom goes exactly
+    where the cursor puts it and the rest settles around it.  That is what
+    placing something *is*, and it is the right tool for building -- putting a
+    ligand where you want it, closing a ring, setting up a geometry to start
+    from.  A force cannot do that, because the whole point of a force is that
+    the chemistry gets a say.
+
+    Pulling is the right tool for asking: drag, and how far the atom gets is
+    the answer.
+    """
+    part, _state = bare_editor
+    hand, force = part.submit_hand_dd, part._pull_force
+
+    # Pulling: the slider is the hand and it is on screen.
+    hand.value = 'pull'
+    part.submit_pull_slider.value = 0.4
+    assert force() == pytest.approx(0.4 * 110.0, rel=0.01)
+    assert part.submit_pull_slider.layout.display == ''
+
+    # Moving: not a force at all, which is what None says -- the coordinate is
+    # set and whoever is calculating is told to meet it.
+    hand.value = 'move'
+    assert force() is None
+    # And the slider belongs to the other hand, so it goes away with it.
+    assert part.submit_pull_slider.layout.display == 'none'
+    # The page is told the same thing, and by the same number it uses itself:
+    # zero is the rigid hand there as it is here, so the two sides never
+    # disagree about which one is in the user's hand.
+    assert part._hand_share() == 0.0
+    hand.value = 'pull'
+    assert part._hand_share() == pytest.approx(0.4)
+
+    source = EDITOR_SOURCE
+    assert 'submit_hand_dd = widgets.Dropdown(' in source
+    assert "('move the atom', 'move')" in source
+    assert 'def on_submit_hand_changed(change):' in source
+    assert "submit_hand_dd.observe(on_submit_hand_changed" in source
+    # Every place that tells the page about the hand goes through the one
+    # function, or one of them would keep sending the slider on its own.
+    assert source.count('setPullStrength(') == 3
+    assert source.count('_hand_share()') == 4

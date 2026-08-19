@@ -1160,6 +1160,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='200px'),
         disabled=True,
     )
+    #: Which kind of hand this is.
+    #:
+    #: Moving is the older behaviour and it is not a worse one: the atom goes
+    #: exactly where the cursor puts it and the rest of the structure settles
+    #: around it.  That is what placing something *is*, and it is the right
+    #: tool for building -- putting a ligand where you want it, closing a ring,
+    #: setting up a geometry to start from.  A force cannot do that, because
+    #: the whole point of a force is that the chemistry gets a say.
+    #:
+    #: Pulling is the newer one, and it is the right tool for asking: drag,
+    #: and how far the atom gets is the answer.  They are two questions, so
+    #: they are two settings rather than one behaviour that replaced another.
+    submit_hand_dd = widgets.Dropdown(
+        options=[('pull with a force', 'pull'), ('move the atom', 'move')],
+        value='pull',
+        tooltip=('Pull: the atom follows as far as the chemistry allows, and '
+                 'how far that is is the answer. Move: the atom goes where '
+                 'the cursor puts it and the rest settles around it, which is '
+                 'what building a structure wants.'),
+        layout=widgets.Layout(width='158px'),
+        disabled=True,
+    )
     #: How hard the hand pulls, as a share of a bond.
     #:
     #: Dragging used to set the atom's coordinates: the hand won absolutely,
@@ -1689,8 +1711,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_topology_btn, submit_saddle_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
-            submit_strength_slider, submit_pull_slider, submit_sens_slider,
-            submit_play_speed,
+            submit_strength_slider, submit_hand_dd, submit_pull_slider,
+            submit_sens_slider, submit_play_speed,
             submit_fs_row_break,
             submit_optimize_btn, submit_optimize_all_btn,
             submit_relax_btn, submit_auto_btn, submit_settle_btn,
@@ -1793,6 +1815,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_relax_btn.disabled = not enabled
         submit_strength_slider.disabled = not enabled
         submit_pull_slider.disabled = not enabled
+        submit_hand_dd.disabled = not enabled
         submit_play_speed.disabled = not enabled
         for widget in (submit_thermal_btn, submit_temperature,
                        submit_thermal_relax, submit_thermal_anchor_btn,
@@ -2641,6 +2664,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         and no force ceiling can prevent that.  The two are different jobs and
         this is only the first of them.
         """
+        if str(submit_hand_dd.value) == 'move':
+            # The rigid hand: the coordinate is set and whoever is calculating
+            # is told to meet it.  Not a force at all, which is what None says.
+            return None
         share = float(submit_pull_slider.value or 0.0)
         if share <= 0:
             return None
@@ -2672,6 +2699,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 state.pop('thermal_spent', None)
                 return False
         return True
+
+    def _hand_share():
+        """What the page should make of the slider, given which hand it is.
+
+        Zero is the rigid hand there as it is here, so the two sides never
+        disagree about which one is in the user's hand.
+        """
+        if str(submit_hand_dd.value) != 'pull':
+            return 0.0
+        return float(submit_pull_slider.value or 0.0)
 
     def _pull_most():
         """The hardest the hand may ever pull.  Nothing, now, ever.
@@ -4013,7 +4050,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'window.__delfinSubmitManip.setOptimizerStrength('
             f'{json.dumps(submit_scope_id)},{int(submit_strength_slider.value)});'
             'window.__delfinSubmitManip.setPullStrength('
-            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)},'
+            f'{json.dumps(submit_scope_id)},{_hand_share()},'
             f'{json.dumps(_pull_most())});'
             # Re-applied with the rest, so a reload keeps the feel the user set.
             'window.__delfinSubmitManip.setDragSensitivity('
@@ -7377,7 +7414,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setPullStrength('
-            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)},'
+            f'{json.dumps(submit_scope_id)},{_hand_share()},'
             f'{json.dumps(_pull_most() if active else None)});'
         )
         for widget in (submit_temperature, submit_thermal_relax,
@@ -7534,6 +7571,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 pass
         _refresh_scan()
 
+    def on_submit_hand_changed(change):
+        """Moving or pulling.  The slider belongs to one of them."""
+        if change.get('name') != 'value':
+            return
+        pulling = str(submit_hand_dd.value) == 'pull'
+        submit_pull_slider.layout.display = '' if pulling else 'none'
+        _set_mol_status(
+            'Dragging pulls: the atom follows as far as the chemistry allows.'
+            if pulling else
+            'Dragging moves: the atom goes where you put it and the rest '
+            'settles around it.')
+        on_submit_pull_changed({'name': 'value'})
+
     def on_submit_pull_changed(change):
         if change.get('name') != 'value':
             return
@@ -7541,7 +7591,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setPullStrength('
-            f'{json.dumps(submit_scope_id)},{float(submit_pull_slider.value)},'
+            f'{json.dumps(submit_scope_id)},{_hand_share()},'
             f'{json.dumps(_pull_most())});'
         )
 
@@ -8211,6 +8261,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_label_size.observe(on_submit_label_size, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_pull_slider.observe(on_submit_pull_changed, names='value')
+    submit_hand_dd.observe(on_submit_hand_changed, names='value')
     submit_scan_stop_at.observe(on_submit_scan_stop_at, names='value')
     submit_topology_btn.observe(on_submit_topology, names='value')
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
