@@ -609,14 +609,18 @@ def test_the_hand_guides_the_climb_and_never_restrains_it():
     """A restrained saddle is not a saddle, and this is measured rather than
     argued.
 
-    Climbing on the surface with both forming bonds restrained to 2.45 A at
-    200 kcal/mol/A^2 converges, in the sense that the gradient of the
-    restrained surface vanishes -- and the point it converges to has a true
-    gradient of 2.2e-2 (130 times the convergence threshold) and *two*
-    imaginary modes, -637 and -50.  At 50 kcal/mol/A^2 it does not converge at
-    all.  Leaving the editor's own push on instead of a fixed restraint is
-    worse still: a push is a constant force, so it does not stop at a saddle,
-    it drives past one.
+    Measured on the Diels-Alder, climbing on surfaces with both forming bonds
+    restrained at 200 kcal/mol/A^2.  Held at 2.20 A the climb ends 0.53 A from
+    the saddle with a true gradient of 4.2e-2 -- 138 times the threshold it
+    thinks it met -- and *two* imaginary modes, -628 and -42.  Held at 2.60 A
+    it converges in five steps onto a point 0.11 A away with no imaginary mode
+    at all, which is a minimum.  Held at 2.45 A and only 50 kcal/mol/A^2 it
+    converges onto a first-order saddle 0.66 A away that is a different saddle.
+    Unrestrained, the same climb takes 11 steps and lands 0.006 A from ORCA.
+
+    Leaving the editor's own push on instead of a fixed restraint is worse
+    still: a push is a constant force, so it does not stop at a saddle, it
+    drives past one.
 
     So the hand is never part of the climb.  While the mouse is down the climb
     is suspended; when it is let go the climb starts again from the structure

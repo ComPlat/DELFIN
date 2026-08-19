@@ -1710,10 +1710,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #:
     #: What the hand does to it is the point.  Grab an atom while this is
     #: running and the climb stops rather than fighting, because a saddle of a
-    #: restrained surface is not a saddle of the real one: measured, climbing
-    #: with both forming bonds held at 2.45 A converges, and the point it
-    #: converges to has a true gradient 130 times the convergence threshold and
-    #: *two* imaginary modes, -637 and -50.
+    #: restrained surface is not a saddle of the real one.  Measured on the
+    #: Diels-Alder, climbing with both forming bonds held: at 2.20 A it ends
+    #: 0.53 A from the saddle with *two* imaginary modes and a true gradient
+    #: 138 times the convergence threshold, and at 2.60 A it converges in five
+    #: steps onto a point with no imaginary mode at all.  Unrestrained, the
+    #: same climb takes 11 steps and lands 0.006 A from where ORCA lands.
     #:
     #: When the mouse is let go the climb starts again from the structure that
     #: was made -- and takes the direction of the drag as the mode to follow,
@@ -9510,10 +9512,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # And a running climb takes the structure that was just made,
             # aimed along the way it was made.  A restrained saddle is not a
             # saddle, so the pull is never part of the climb: measured, a climb
-            # on a surface with the forming bonds held converged onto a point
-            # with two imaginary modes and a true gradient 130 times the
-            # threshold, while the same climb resumed after the hand let go
-            # reached the real saddle in 39 steps.
+            # on a surface with the forming bonds held converges onto points
+            # with two imaginary modes or with none, half an angstrom from the
+            # real saddle, while the same climb resumed after the hand let go
+            # reaches it in 39 steps.
             if state.get('climb_run') is not None:
                 state['climb_hand'] = {
                     'xyz': xyz_document(coord_rows, 'Where the hand left it'),
