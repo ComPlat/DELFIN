@@ -1974,7 +1974,7 @@ def test_the_follow_runs_one_process_at_a_time_and_takes_the_newest(editor):
     assert "state.get('gfn_follow_busy')" in follow
     assert "state.pop('gfn_follow_xyz', None)" in follow, "the newest wins"
     assert "relax_steps(" in follow and "_GFN_FOLLOW_CYCLES" in follow
-    assert "constraints=constraints" in follow, (
+    assert "constraints=keeping + contacts" in follow, (
         "a value held on screen is held while the molecule follows too"
     )
 
@@ -2492,14 +2492,20 @@ def test_a_pulled_atom_gets_as_far_as_the_force_allows(editor):
     """The same drag twice, with two strengths of hand.
 
     A carbon of a propane is asked half an angstrom straight out along its
-    own C-C, which is asking the bond to stretch.  Measured under GFN-FF, one
-    follow step from 1.1600 with the wish at 1.6600: a hand at a tenth of a
-    bond reaches 1.2071, and one at three bonds' worth reaches 1.2566 -- twice
-    as far, and neither of them anywhere near the wish.
+    own C-C, and what answers is not the bond.
 
-    A step is five to twenty cycles, not a minimisation, so a drag is many of
-    these and what they do accumulates; what one of them shows is the balance,
-    which is the mechanism.
+    A drag is driven through the torsion that swings the grabbed atom, not
+    through the bond it hangs on -- a bond is the one coordinate that must not
+    give.  A torsion is soft, so both hands turn it as far as the reach allows
+    and land in the same place: measured under GFN-FF, one follow step from
+    1.1600 with the wish at 1.6600, a tenth of a bond reaches 1.2056 and three
+    whole ones 1.2065.
+
+    Which is the point rather than a shortcoming.  Where the coordinate is
+    soft enough to be turned, every reasonable setting turns it; what the
+    strength decides is what happens where it is *not* -- whether a bond
+    gives, which test_a_force_below_the_bond_settles_and_one_above_it_breaks
+    measures.
 
     Nothing refuses the drag.  Nothing has to: the force is applied, the
     chemistry answers it, and how far the atom gets *is* the answer.  Which
@@ -2550,12 +2556,15 @@ def test_a_pulled_atom_gets_as_far_as_the_force_allows(editor):
 
     gentle = follow(0.1)
     hard = follow(3.0)
-    # Neither arrives.  That is what a force does instead of a placement, and
-    # the rigid hand -- the test above -- puts it at the wish to the digit.
+    # Both moved it, and neither arrives: the rigid hand -- the test above --
+    # puts it at the wish to the digit, and this is a rotation, not a
+    # placement.
+    assert gentle - was > 0.02, (was, gentle)
     assert wished - gentle > 0.35, (gentle, wished)
-    assert wished - hard > 0.3, (hard, wished)
-    # And the strong hand gets substantially further in the same step.
-    assert (hard - was) > 1.5 * (gentle - was), (was, gentle, hard)
+    assert wished - hard > 0.35, (hard, wished)
+    # And they land in the same place, because a torsion is soft and both
+    # hands are steeper than it.
+    assert abs(hard - gentle) < 0.05, (gentle, hard)
 
 
 @_needs_xtb

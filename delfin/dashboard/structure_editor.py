@@ -2818,6 +2818,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # spent; there is nothing left to compute.  So the answer
                     # is handed straight back until the hand comes in again,
                     # which costs no xtb at all and is perfectly still.
+                    # And the same for the bonding, for the same reason.
+                    #
+                    # A rigid hand asking for a place that breaks a bond and a
+                    # wall that will not have it are two answers to one
+                    # question, and they were both being drawn: the page moved
+                    # the atom, the answer came back and put it home, and the
+                    # next mouse move did it again.  On screen that is a
+                    # trajectory, a spring back, and another trajectory -- the
+                    # motion twice over, several times a second.
+                    #
+                    # Once it is clearly refusing, it stands still: no xtb, no
+                    # frames, and the line already says which two settings are
+                    # disagreeing.
+                    if (int(state.get('topology_refused') or 0) >= 3
+                            and submit_topology_btn.value):
+                        schedule_ui_update(
+                            _set_mol_status,
+                            *_gfn_status_lines(state.get('gfn_last_status')),
+                            spinner=True)
+                        continue
                     if _still_spent(current, holding):
                         schedule_ui_update(
                             _set_mol_status,
@@ -2897,6 +2917,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             holding=state.get('thermal_holding'))
                         if ((pricing or pull is not None)
                             and not _mopac.is_mopac_method(method)) else [])
+                    # Keep bonds, the way GOAT keeps them: frozen while the
+                    # structure is being pushed, rather than the step refused
+                    # afterwards.  The way not to break a bond is not to let
+                    # it move -- measured on a 2,4-hexadiene, refusing alone
+                    # still let one go, because a bond stretches across
+                    # several accepted steps and what is handed back is the
+                    # last of those.
+                    #
+                    # Only under the rigid hand.  A push needs a soft force
+                    # constant and xtb takes one for the whole block, so with
+                    # a pull these would make the hand a hold; a pull does not
+                    # tear anything anyway, and the wall stays the backstop
+                    # for it.
+                    keeping = list(constraints)
+                    if (submit_topology_btn.value and pull is None
+                            and not _mopac.is_mopac_method(method)):
+                        walking = {tuple(sorted(one['atoms']))
+                                   for one in contacts
+                                   if len(one.get('atoms') or ()) == 2}
+                        keeping += [
+                            one for one in _gfn.bonds_to_freeze(current)
+                            if tuple(sorted(one['atoms'])) not in walking]
                     if pull is not None and contacts:
                         contacts = _gfn.as_pushes(
                             contacts, state.get('thermal_was') or current,
@@ -2929,7 +2971,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             cycles=(_THERMAL_FOLLOW_CYCLES if pricing
                                     else _GFN_FOLLOW_CYCLES),
                             timeout=30.0,
-                            constraints=constraints + contacts, solvent=wet,
+                            constraints=keeping + contacts, solvent=wet,
                             solvation_model=model,
                             topology=_gfn_topology_dir(current),
                         )
@@ -3025,7 +3067,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # instead, it was a whole extra xtb process on every
                         # step of every drag.
                         bias = _gfn.restraint_energy(
-                            outcome['xyz'], constraints + contacts, _value_in)
+                            outcome['xyz'], keeping + contacts, _value_in)
                         priced = (
                             dict(outcome, energy=float(outcome['energy']) - bias)
                             if bias is not None else
@@ -3235,6 +3277,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         settled = kept
                         said = (f'{said} Held: that step {changed}, and the '
                                 f'bonding is being kept.')
+                        # A rigid hand and Keep bonds are asking for different
+                        # things, and when the cursor wants a place that
+                        # breaks a bond one of them has to lose.  Keeping the
+                        # bonding wins, and then nothing moves at all -- which
+                        # on screen is indistinguishable from a drag that is
+                        # not working.  Counted, so it is said rather than
+                        # merely happening.
+                        refused = int(state.get('topology_refused') or 0) + 1
+                        state['topology_refused'] = refused
+                        if refused >= 3 and pull is None:
+                            said = (f'{said} Three steps running -- the hand '
+                                    f'is set to move the atom, which is '
+                                    f'asking for a place that breaks a bond. '
+                                    f'Pull instead, or turn Keep bonds off.')
+                        # The box as well as the picture, or letting go keeps
+                        # the structure whose bonding was refused.
                         rows = [line for line in kept.splitlines()[2:]
                                 if line.strip()]
                         if rows:
@@ -3244,6 +3302,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                     rows, 'Kept: the bonding would have '
                                           'changed'),
                                 True)
+                    else:
+                        state['topology_refused'] = 0
                     # What the next answer measures the hand against: the
                     # geometry this one handed back, not the one it was
                     # handed.  Against the latter the difference holds the
@@ -5927,6 +5987,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
 
         if verb == 'grabbed':
+            # A new grab is a new question: whatever the bonding wall
+            # refused about the last one says nothing about this one.
+            _forget_topology_refusals()
             # A hand on the structure. The step is recorded here rather than
             # when it is let go of, because by then the coordinate box already
             # holds what the drag made -- the relaxation pushes into it while
@@ -7508,6 +7571,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_scan_whole.button_style = (
             'info' if submit_scan_whole.value else '')
 
+    def _forget_topology_refusals(_change=None):
+        """A new grab is a new question, so the count starts again."""
+        state['topology_refused'] = 0
+
     def on_submit_topology(change):
         """Keep bonds, switched on or off.
 
@@ -7522,6 +7589,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_topology_btn.button_style = 'info' if on else ''
         for key in ('topology_graph', 'topology_for', 'topology_good'):
             state.pop(key, None)
+        _forget_topology_refusals()
         if not on:
             _set_mol_status('Bonds are free to make and break again.')
             return
