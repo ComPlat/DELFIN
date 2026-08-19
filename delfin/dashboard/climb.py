@@ -294,6 +294,13 @@ class _InProcess:
                                    np.asarray(bohr, dtype=float),
                                    charge=float(charge), uhf=int(uhf))
             self.calc.set_verbosity(VERBOSITY_MUTED)
+            # GFN-FF writes a page of force-field setup from the Fortran side
+            # straight to the process's own stdout, and muting the verbosity
+            # does not stop it -- it lands in the kernel's log where no widget
+            # can catch it.  ``set_output`` is the API for that and it is not
+            # used here: bound to a file, the very next ``update`` came back
+            # "Update of molecular structure failed" and every climb stopped.
+            # A page in a log once per climb is the better of the two.
             if solvent:
                 try:
                     from xtb.utils import get_solvent
