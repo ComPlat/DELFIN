@@ -264,6 +264,51 @@ def thermal_temperature(kcal, seconds=_THERMAL_SECONDS):
     return 0.5 * (low + high)
 
 
+#: What the ceiling is, and what is held against it.
+#:
+#: The ceiling out of :func:`thermal_ceiling` is a free energy of activation:
+#: the dG that Eyring inverts.  What a drag is priced with is an electronic
+#: energy -- the difference between two relaxed points on the surface the
+#: method describes -- and the two are not the same quantity.  They differ by
+#: T*dS, and the size of that is not a detail that can be waved away:
+#:
+#:   * While the drag leaves the structure in as many separate pieces as it
+#:     found it, dS is small.  A torsion, an angle, a ring turning over: what
+#:     is lost from the vibrations at one end is found at the other, and the
+#:     two numbers agree closely.
+#:   * Where the drag changes how many pieces there are, dS is large and it
+#:     has a sign.  Taking something apart releases translation and rotation,
+#:     so T*dS is of order ten kcal/mol at room temperature and the electronic
+#:     price is *too strict* -- the wall refuses something the temperature
+#:     would in fact pay for.  Bringing two things together is the same number
+#:     the other way round, and there it is too lenient.
+#:
+#: Nothing here corrects for it, and that is a decision rather than an
+#: oversight.  The exact answer is a Hessian, and a Hessian per drag step
+#: cannot be afforded: measured here under GFN2, a numerical Hessian costs
+#: 0.69 s on 21 atoms and 3.90 s on 62, against 58 and 321 ms for the single
+#: point beside it -- twelve times the cost at both sizes, and it would have
+#: to be taken on every answer of a control that reports several times a
+#: second.  A cheap correction would have to guess dS, and the only guess
+#: available is how many pieces the structure is in -- which is read off a
+#: distance threshold, and that threshold is the one already written down as
+#: flickering in a crowded coordination sphere.  It would also depend on a
+#: standard state nothing in this editor knows, and it is exactly the case
+#: where the method itself is least reliable.  A number invented there would
+#: be worse than the gap it papered over.
+#:
+#: So the gap is said rather than filled, and a scan answers it properly: with
+#: its energy set to G it takes three Hessians -- the start, the highest point
+#: and the end -- and its verdict is then a free energy against a free energy.
+_THERMAL_QUANTITY_SHORT = (
+    'The ceiling is a free energy; a drag is priced with an electronic '
+    'energy. The two part company where a drag changes how many separate '
+    'pieces the structure is in -- of order ten kcal/mol at room temperature, '
+    'strict for taking something apart and lenient for putting it together. '
+    'Run a scan with its energy set to G for the free-energy answer.'
+)
+
+
 def scale_for_px(px):
     """The scale factor that makes a digit *px* pixels tall."""
     try:
@@ -1009,7 +1054,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         tooltip=(
             'Measure every change against what this structure can actually do '
             'at the temperature below. The energy is read from the relaxation '
-            'that already runs while you drag, so it costs nothing.'
+            'that already runs while you drag, so it costs nothing. It goes '
+            'with the pulling hand: under a placing hand what is kept is not '
+            'exactly what was priced, so it is not offered there. '
+            + _THERMAL_QUANTITY_SHORT
         ),
         layout=widgets.Layout(width='96px', height='30px', display='none'),
         disabled=True,
@@ -4399,7 +4447,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 _set_mol_status(
                     f'{note}. At {float(submit_temperature.value):g} K '
                     f'this structure has {ceiling:.1f} kcal/mol to spend '
-                    f'within {_timescale_label()}.{note_after}')
+                    f'within {_timescale_label()}.{note_after}',
+                    _THERMAL_QUANTITY_SHORT)
 
             schedule_ui_update(_done)
 
@@ -9135,7 +9184,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _set_mol_status(
             f'At {float(submit_temperature.value):g} K this structure has '
             f'{ceiling:.1f} kcal/mol to spend within {_timescale_label()}.'
-            + told + (f' {spent}' if spent else ''))
+            + told + (f' {spent}' if spent else ''),
+            # On its own row here, and only here: this is a press of the
+            # temperature box, not a drag, so nothing is being aimed at while
+            # the row appears.  The drag's own line never gains a second row
+            # -- it stands above the viewer.
+            _THERMAL_QUANTITY_SHORT)
 
     def on_submit_sens_changed(change):
         if change.get('name') != 'value':

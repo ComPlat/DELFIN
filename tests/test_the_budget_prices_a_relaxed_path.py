@@ -3214,6 +3214,10 @@ def test_the_wall_refuses_on_the_highest_point_the_drag_has_been_at():
     said = part._thermal_note(at(0.0))
     assert "went through +32.2" in said, said
     assert state["thermal_over"] == "path"
+    # And the sentence about what was done says the same thing, so the two
+    # halves of the line cannot disagree about why the structure sprang back.
+    assert "Past the budget on the way here, so the last " in EDITOR_SOURCE
+    assert "state.get('thermal_over') == 'path'" in EDITOR_SOURCE
 
 
 def test_an_excursion_that_is_taken_back_stops_refusing():
@@ -3381,4 +3385,47 @@ def test_a_drag_that_stays_cheap_is_never_taken_back():
         _armed(part, state, here, anchor, T=298.15)
         assert all(part._thermal_wall(x, e, []) is None for x, e in path), (
             leg, kcal)
+
+
+def test_the_drag_is_priced_with_an_electronic_energy_and_says_so():
+    """The ceiling is a dG; what is held against it is a dE.
+
+    They part company by T*dS.  While the drag leaves the structure in as many
+    separate pieces as it found it that is small -- a torsion, an angle, a ring
+    turning over -- and the two agree closely.  Where the number of pieces
+    changes it is large and signed: taking something apart releases
+    translation and rotation, so T*dS is of order ten kcal/mol at room
+    temperature and the budget is too strict there; putting two things
+    together is the same number the other way round and it is too lenient.
+
+    Nothing corrects for it, and that is a decision.  A Hessian per drag step
+    is not affordable -- measured under GFN2, 0.69 s on 21 atoms and 3.90 s on
+    62, against 58 and 321 ms for the single point beside it, twelve times the
+    cost at both sizes and one per answer of a control that reports several
+    times a second -- and the
+    only cheap guess at dS is how many pieces the structure is in, which is
+    read off the same distance threshold already written down as flickering in
+    a crowded coordination sphere, depends on a standard state nothing here
+    knows, and is exactly the case where the method itself is least reliable.
+    An invented number would be worse than the gap it papered over.
+
+    So the gap is said.  And it is said in words that assume no chemistry:
+    every kind of system is computed here.
+    """
+    from delfin.dashboard.structure_editor import _THERMAL_QUANTITY_SHORT as note
+
+    assert "free energy" in note and "electronic" in note
+    assert "scan" in note, "and where the free-energy answer can be had"
+    # Universal: no class of compound, no reaction type, no element.
+    for word in ("bond", "molecule", "amide", "ring", "metal", "alkene",
+                 "organic", "protein", "carbon"):
+        assert word not in note.lower(), word
+
+    source = EDITOR_SOURCE
+    # On the button, and on both lines that quote the ceiling.
+    assert "+ _THERMAL_QUANTITY_SHORT" in source
+    assert source.count("_THERMAL_QUANTITY_SHORT") >= 4
+    # And the scan is where a free energy really is taken, at the three places
+    # it is both affordable and meaningful.
+    assert "is taking three Hessians for the free " in source
 
