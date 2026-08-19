@@ -7907,7 +7907,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The saddle search',
+                          guards={'saddle_run': False})
 
     def _offer_the_path():
         """There are two ends now, so both ways of walking between them show.
@@ -8270,7 +8271,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The walk and the climb after it',
+                          guards={'chain_run': False})
 
     def on_submit_path(_button=None):
         """Walk between the two ends the scan left, and keep what is found.
