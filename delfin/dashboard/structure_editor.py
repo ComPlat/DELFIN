@@ -8502,8 +8502,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # third of a second -- and a hand can land inside it; writing
                 # the climb's geometry then would take back an edit that came
                 # afterwards, which is the one thing an editor may never do.
-                interrupted = state.pop('climb_hand', None) is not None
-                state.pop('climb_hand_down', None)
+                #
+                # A hand still *on* the structure counts the same, and that is
+                # the toggle being switched off in the middle of a drag: the
+                # climb stops where it stood and what it was holding is older
+                # than what the mouse is doing.
+                interrupted = (state.pop('climb_hand', None) is not None
+                               or bool(state.pop('climb_hand_down', None)))
                 state.pop('climb_was', None)
                 if shape is None:
                     _set_mol_status('The climb could not run: '
