@@ -103,6 +103,11 @@ _ENERGY_RE = re.compile(r'TOTAL ENERGY\s+(-?\d+\.\d+)')
 #: What xtb prints when it has been given a Hessian to work from.  The msRRHO
 #: free energy at whatever temperature the $thermo block asked for.
 _FREE_ENERGY_RE = re.compile(r'TOTAL FREE ENERGY\s+(-?\d+\.\d+)')
+#: How many modes go the wrong way, which is what says whether a structure is
+#: a minimum, a transition state, or neither.  xtb counts them itself, against
+#: a cutoff of its own, so this is read rather than worked out again.
+_IMAGINARY_RE = re.compile(r'#\s*imaginary freq\.\s+(\d+)')
+_EIGVAL_RE = re.compile(r'eigval\s*:\s*(.+)')
 _VERSION_RE = re.compile(r'xtb version\s+([0-9.]+)')
 # What the run says it did, taken from its own output rather than from the
 # flags we passed: an xtb that ignored a flag would otherwise be indisting-
@@ -2256,6 +2261,7 @@ def optimize_with_gfn(
             except ValueError:
                 energy = None
         free = None
+        wrong_way = None
         if free_energy:
             told = _FREE_ENERGY_RE.search(output)
             if told:
@@ -2263,6 +2269,26 @@ def optimize_with_gfn(
                     free = float(told.group(1))
                 except ValueError:
                     free = None
+            counted = _IMAGINARY_RE.search(output)
+            if counted:
+                # And the modes themselves, most negative first: "one
+                # imaginary frequency" is what a transition state has, and
+                # *which* one is what says it is the right transition state.
+                seen = []
+                for row in _EIGVAL_RE.finditer(output):
+                    for word in row.group(1).split():
+                        try:
+                            seen.append(float(word))
+                        except ValueError:
+                            pass
+                # Distinct values: xtb prints the list more than once, and
+                # the same mode twice reads as two of them.  How many there
+                # are is xtb's own count against its own cutoff, and is not
+                # worked out again here.
+                wrong_way = {
+                    'count': int(counted.group(1)),
+                    'modes': sorted({one for one in seen if one < -5.0})[:4],
+                }
         seconds = time.perf_counter() - started
 
         if relaxed is None:
@@ -2333,7 +2359,8 @@ def optimize_with_gfn(
             # The geometry is still better than the one that went in, so it is
             # handed back -- but not as though it were finished.
             return {
-                'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free, 'method': key,
+                'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
+            'imaginary': wrong_way, 'method': key,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet, 'solvation_model': model,
@@ -2343,7 +2370,8 @@ def optimize_with_gfn(
                            + solvent_note(wet, model) + held_note(held)),
             }
         return {
-            'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free, 'method': key,
+            'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
+            'imaginary': wrong_way, 'method': key,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet, 'solvation_model': model,
