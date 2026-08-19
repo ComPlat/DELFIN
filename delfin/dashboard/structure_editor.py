@@ -725,7 +725,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                          ('current_xyz_for_copy', {'content': None}),
                          # The tab's own busy flag, if it has one; a conversion
                          # asks after both before it says the page is idle.
-                         ('batch_preview_busy', False)):
+                         ('batch_preview_busy', False),
+                         # What is running in the background right now, as
+                         # {token: what it is}. Non-empty means the spinner
+                         # belongs on screen, whatever any status line says.
+                         ('busy_jobs', {})):
         state.setdefault(_key, _value)
 
     # The status line lies ON the picture, along its bottom edge, rather than
@@ -1842,6 +1846,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
 
     def _set_mol_status(*lines, spinner=False):
+        """Say what the editor is doing, in both copies of the status line.
+
+        *spinner* says at the call site that this message is about work in
+        flight. It no longer decides anything: whether the ring turns is
+        decided by whether a worker is registered as running. Work that this
+        editor does not start a thread for registers itself instead --
+        _begin_round_trip, for a question put to the browser -- which is an
+        override that says what is running rather than a flag that asserts it.
+
+        It used to be the only thing that decided, and it defaulted to off --
+        113 writes to it and 23 of them asking for it -- so a progress line
+        written from inside a running worker ("step 12 of 40") turned the ring
+        off, and the editor looked finished while xtb was still running.
+        Someone who believes a calculation has stopped starts dragging into
+        it, and then two things are moving the same structure.
+
+        Giving it back its force as a floor was tried and measured to be
+        wrong the other way round: the last frame of a drag arrives as a
+        queued message asking for the ring, so a floor set by that message
+        outlived the worker and the ring turned for good over a calculation
+        that had finished. A ring nothing can stop is the same lie as one
+        that never starts, so the registry is the only authority.
+        """
+        del spinner
+        # Remembered, because the ring can come and go without anybody writing
+        # a new line: a worker starting or ending re-renders what is already
+        # there rather than inventing a message for it.
+        state['mol_status_lines'] = tuple(lines)
+        _render_mol_status()
+
+    def _render_mol_status():
+        """Draw the remembered status line at the spinner state that holds now."""
+        lines = state.get('mol_status_lines') or ()
+        spinner = _busy_now()
         # Both copies always say the same thing; which one is on screen is the
         # overlay's business, not the caller's.
         rendered = [html.escape(str(line)) for line in lines if line not in (None, '')]
@@ -1872,9 +1910,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # trajectory, a result.  Asking for coordinates is not work, and in
         # fullscreen there is a structure on screen to look at, so the prompt
         # would be a permanent line saying nothing.
+        #
+        # The ring is not part of that: a prompt written while something is
+        # running would otherwise take the ring off the overlay and leave it
+        # in the inline line, and a spinner in one copy and none in the other
+        # is the same bug seen from one side.
         prompt = any('enter XYZ' in str(line) or 'Load a structure' in str(line)
                      for line in lines)
-        mol_status_fs.value = '' if prompt else rendered_html
+        if not prompt:
+            mol_status_fs.value = rendered_html
+        elif spinner_html:
+            mol_status_fs.value = (
+                "<div style='font-family: monospace; white-space: pre-wrap; "
+                "font-size: 13px; line-height: 1.35;'>"
+                f"{spinner_html}</div>")
+        else:
+            mol_status_fs.value = ''
 
     def _clear_mol_status():
         # Both copies, the way _set_mol_status writes both. Clearing only the
@@ -1882,8 +1933,127 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # structure)..." long after the structure was on screen: the finished
         # view comes through here, and in fullscreen that stale line was the
         # only thing the user had to go by.
-        mol_status.value = ''
-        mol_status_fs.value = ''
+        #
+        # Through the same renderer, so that clearing the words does not clear
+        # the ring: this is called from the middle of a conversion (the MANTA
+        # loader takes the viewer over) and from every redraw, and a structure
+        # arriving is not the same event as the work being over.
+        _set_mol_status()
+
+    # --- what is running, and therefore whether the ring is on screen -------
+    #
+    # The spinner used to be an argument of each status message: 113 writes to
+    # the status line and 23 of them asked for it, so the other ninety turned
+    # it off, including progress lines written from inside a worker that was
+    # still running. That is not a list of missed call sites, it is the wrong
+    # owner -- the ring is a fact about whether anything is running, and no
+    # status message is in a position to know that. So the workers say, and
+    # the renderer reads.
+    _busy_serial = [0]
+
+    def _busy_now():
+        return bool(state.get('busy_jobs'))
+
+    def _busy_begin(what):
+        """Say that background work has started, and show it."""
+        _busy_serial[0] += 1
+        token = _busy_serial[0]
+        state.setdefault('busy_jobs', {})[token] = str(what)
+        _render_mol_status()
+        return token
+
+    def _busy_end(token):
+        """Say that a piece of background work is over.
+
+        Called from the worker's own thread, so the redraw is handed to the
+        interface rather than done here.
+        """
+        jobs = state.get('busy_jobs') or {}
+        if jobs.pop(token, None) is None:
+            return
+        # One turn of the interface behind, so that work handing over to more
+        # work does not blink. An optimisation that has not converged presses
+        # itself again from the callback that reports the round, and that
+        # press arrives one turn after this one -- rendered immediately, the
+        # ring went out and came back between two rounds of a press that never
+        # stopped. Late is the safe direction: the ring stays up a fraction
+        # longer than the work, never a fraction less.
+        schedule_ui_update(lambda: schedule_ui_update(_render_mol_status))
+
+    #: How long a question asked of the browser is given before the ring is
+    #: taken down anyway. Reading a drawing takes milliseconds; a frame that
+    #: has been folded away or reloaded never answers at all, and a ring that
+    #: nothing can stop says a calculation is running when none is.
+    _ROUND_TRIP_LEASH = 20.0
+
+    def _end_round_trip(name):
+        """The browser answered -- or something else made the question moot."""
+        token = state.pop(f'{name}_round_trip', None)
+        if token is not None:
+            _busy_end(token)
+
+    def _begin_round_trip(name, what, seconds=_ROUND_TRIP_LEASH):
+        """A question asked of the page, which is work with no thread behind it.
+
+        The drawing comes back through a hidden box the page writes into, so
+        between the press and the answer there is no worker to count and the
+        editor was, as far as the ring knew, idle -- while it was in fact
+        waiting on something that may take a while or never come.
+        """
+        _end_round_trip(name)
+        token = _busy_begin(what)
+        state[f'{name}_round_trip'] = token
+
+        def _leash():
+            time.sleep(seconds)
+            if state.get(f'{name}_round_trip') == token:
+                state.pop(f'{name}_round_trip', None)
+                _busy_end(token)
+
+        # Not through _start_background: a leash is not work, and counting it
+        # as work would hold the ring up for exactly as long as the leash.
+        threading.Thread(target=_leash, daemon=True).start()
+
+    def _start_background(work, what, *, guards=None, remember_in=None):
+        """Run *work* on a thread, with the ring up for exactly its life.
+
+        Every background worker in this editor goes through here, so the ring
+        is on from before the thread starts until after the work returns --
+        whatever any status line written in between happens to say.
+
+        The count is lowered in a ``finally``. A worker that raises used to
+        leave the ring turning for good: none of the fourteen threads was
+        wrapped, and each of them cleared its own run flag inside a callback
+        that an exception skips. *guards* are the state keys that finishing
+        step would have cleared, given as {key: value}, so a failure leaves
+        the editor pressable again rather than convinced a run is still going.
+
+        *remember_in* is a state key the thread itself is put under before it
+        starts, for the one caller that waits on the previous run to be gone
+        before it doubles up on a shared login node.
+        """
+        token = _busy_begin(what)
+
+        def _run():
+            try:
+                work()
+            except Exception as exc:            # noqa: BLE001 - reported, not swallowed
+                for key, value in (guards or {}).items():
+                    state[key] = value
+                schedule_ui_update(
+                    _set_mol_status,
+                    f'{what} stopped on an error: {exc.__class__.__name__}: '
+                    f'{exc}')
+            finally:
+                _busy_end(token)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        if remember_in is not None:
+            # Before it starts, not after: the next press reads this key to
+            # find the run it has to wait for.
+            state[remember_in] = thread
+        thread.start()
+        return thread
 
     def _ensure_manip_bootstrap():
         # Once per page, not once per editor. The script is 159 KiB and does
@@ -3608,7 +3778,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             finally:
                 state['gfn_follow_busy'] = False
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The relaxation under the hand')
 
     #: Letting go with Settle on.  More cycles than a follow step, because
     #: nothing is being held any more and the structure should reach somewhere
@@ -4064,7 +4234,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The energy this budget measures from')
 
     def _timescale_label():
         """The window the ceiling is quoted over, said in words."""
@@ -4229,7 +4399,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return          # the structure it was armed for is history
             schedule_ui_update(_gfn_settle_now)
 
-        threading.Thread(target=_wait, daemon=True).start()
+        _start_background(_wait, 'The settle after the release',
+                          guards={'gfn_settle_armed': False})
 
     def _gfn_settle_now():
         if state.get('gfn_follow'):
@@ -4455,7 +4626,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The settle',
+                          guards={'gfn_settle_busy': False})
 
     def _enable_live_forcefield():
         """Assign UFF parameters for the geometry now in the viewer.
@@ -4742,7 +4914,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['gfn_restart_armed'] = False
             schedule_ui_update(_restart_gfn)
 
-        threading.Thread(target=_wait, daemon=True).start()
+        _start_background(_wait, 'The optimisation waiting to restart',
+                          guards={'gfn_restart_armed': False})
 
     def _arm_gfn_minimise():
         """Go down to a minimum once the changing has stopped.
@@ -4769,7 +4942,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['gfn_minimise_armed'] = False
             schedule_ui_update(_minimise_now)
 
-        threading.Thread(target=_wait, daemon=True).start()
+        _start_background(_wait, 'The minimisation waiting to start',
+                          guards={'gfn_minimise_armed': False})
 
     def _minimise_now():
         if not submit_auto_btn.value:
@@ -5401,9 +5575,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_apply)
 
-        worker = threading.Thread(target=_work, daemon=True)
-        state['optimize_thread'] = worker
-        worker.start()
+        _start_background(_work, 'The optimisation',
+                          guards={'optimize_run': None},
+                          remember_in='optimize_thread')
 
     def _clear_selection():
         """Drop the picks so the next constraint starts from a clean set."""
@@ -7587,7 +7761,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
                 schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The scan')
 
     def _said_modes(shape, what, advise=True):
         """What a Hessian says a structure is, in sentences.
@@ -7923,7 +8097,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The saddle search',
+                          guards={'saddle_run': False, 'saddle_stop': False})
 
     def on_submit_path_from(_button=None):
         """Mark what is on screen as where a path starts.
@@ -8232,7 +8407,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The path search',
+                          guards={'path_run': False})
 
     def _scan_verdict(path, steps):
         """What the walk found, and the temperature it would take.
@@ -9141,7 +9317,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The install',
+                          guards={'xtb_installing': False})
 
     def _refresh_method_controls():
         """Show what the chosen method can do, and nothing else.
@@ -10510,7 +10687,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 result=result,
             )
 
-        threading.Thread(target=_worker, daemon=True).start()
+        _start_background(_worker, 'The conversion')
 
     def _convert_smiles(*, apply_uff: bool):
         _start_smiles_conversion(apply_uff=apply_uff, quick=False)
@@ -10750,7 +10927,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_ask)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The lookup of the newest Ketcher',
+                          guards={'draw_installing': False})
 
     def on_submit_draw_update(_button=None):
         """Fetch the newest build -- the first time, or over an older one."""
@@ -10787,7 +10965,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             schedule_ui_update(_done)
 
-        threading.Thread(target=_work, daemon=True).start()
+        _start_background(_work, 'The Ketcher download',
+                          guards={'draw_installing': False})
 
     def on_submit_draw_get(_button=None):
         """Ask the editor for what has been drawn.
@@ -10796,7 +10975,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         downstream here reads structures with RDKit, and a SMILES RDKit wrote
         is one RDKit will certainly read back.
         """
-        _set_mol_status('Reading the drawing...', spinner=True)
+        _set_mol_status('Reading the drawing...')
+        _begin_round_trip('draw_get', 'The drawing coming back')
         ctx.run_js(
             "(function(){\n"
             f"  var scope={json.dumps(submit_scope_id)};\n"
@@ -10836,6 +11016,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         raw = submit_draw_sync.value or ''
         if '\n' not in raw:
             return
+        _end_round_trip('draw_get')
         molfile = raw.split('\n', 1)[1]
         if molfile.startswith('!'):
             trouble = molfile[1:]

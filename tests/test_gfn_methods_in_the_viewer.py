@@ -563,9 +563,9 @@ def test_fullscreen_gets_the_status_line_because_it_gets_the_picture():
     from delfin.dashboard import tab_orca_builder, tab_submit
 
     setter = SUBMIT_SOURCE.split(
-        "def _set_mol_status")[1].split("\n    def ")[0]
+        "def _render_mol_status")[1].split("\n    def ")[0]
     assert "mol_status.value = rendered_html" in setter
-    assert "mol_status_fs.value = '' if prompt else rendered_html" in setter, (
+    assert "mol_status_fs.value = rendered_html" in setter, (
         "a tab that still places the twin has to get the same text"
     )
 
@@ -915,12 +915,16 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
 
     said = "g-xTB is following the drag: 15 step(s), 973 ms each."
     state["gfn_last_status"] = said
+    # The follow is running, which is what puts the ring on the line: it is a
+    # fact about the worker, not about which of the two ends wrote last.
+    token = part._busy_begin("the relaxation under the hand")
     part._set_mol_status(*part._gfn_status_lines(said), spinner=True)
     from_kernel = part.mol_status.value
 
     part.submit_cmd_sync.value = "gfnplay:7:received 15 frames"
     from_page = part.mol_status.value
 
+    part._busy_end(token)
     for name, html_value in (("kernel", from_kernel), ("page", from_page)):
         assert html_value.count("<br>") == 0, f"{name}: more than one row"
         assert "delfin-busy" in html_value, f"{name}: no spinner"
@@ -1200,9 +1204,12 @@ def test_fullscreen_is_not_told_to_enter_coordinates(editor):
     from delfin.dashboard import tab_submit
 
     source = SUBMIT_SOURCE
-    setter = source.split("def _set_mol_status")[1].split("\n    def ")[0]
+    setter = source.split("def _render_mol_status")[1].split("\n    def ")[0]
     assert "'enter XYZ' in str(line)" in setter
-    assert "mol_status_fs.value = '' if prompt else rendered_html" in setter
+    assert "mol_status_fs.value = ''" in setter
+    # The ring is not part of what the prompt drops: a spinner in one copy and
+    # none in the other is the same bug seen from one side.
+    assert "elif spinner_html:" in setter
 
 
 def test_the_player_arrives_with_the_startup_scripts(tmp_path):
@@ -1473,7 +1480,7 @@ def test_only_one_of_them_runs_at_a_time(editor):
     assert "other.value = False" in handler
     # and the frames of a set are walked in one loop, not started side by side
     assert "for position, item in enumerate(targets):" in handler
-    assert "threading.Thread" in handler and handler.count("threading.Thread") == 1
+    assert handler.count("_start_background(") == 1
 
 
 def test_only_all_takes_the_whole_set(editor):
