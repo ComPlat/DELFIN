@@ -5853,16 +5853,22 @@ def test_a_write_from_a_run_the_page_has_left_is_refused(
 
 
 def test_every_frame_writer_asks_whether_its_run_is_still_the_one():
-    """Four writers, and three of them never asked.
+    """Five writers, and four of them never asked at the write.
 
-    A hand being followed, the settle after a release and the scan each keep
-    the run number they were given when they started, and each goes on
-    answering for as long as xtb takes -- which is long enough for the run to
-    have been replaced by another, or abandoned outright.  Only the
-    optimisation checked.
+    A hand being followed, the settle after a release, the scan and the
+    saddle climb each keep the run number they were given when they started,
+    and each goes on answering for as long as xtb or ORCA takes -- which is
+    long enough for the run to have been replaced by another, or abandoned
+    outright.  Only the optimisation checked.
+
+    The climb is the one that looks as if it asks and does not: its guard is
+    read in the worker thread, and the write it schedules lands later still.
+    A step is seconds; the run can move in between, and the frame is then a
+    climb drawn over whatever replaced it.
     """
     source = SUBMIT_SOURCE
-    for name in ("_gfn_follow_step", "_gfn_settle_now", "on_submit_scan_run("):
+    for name in ("_gfn_follow_step", "_gfn_settle_now", "on_submit_scan_run(",
+                 "on_submit_saddle("):
         body = source.split(f"def {name}")[1].split("\n    def ")[0]
         assert "_frame_run_is_current(" in body, f"{name} writes without asking"
     optimise = source.split(
