@@ -5690,7 +5690,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 perceived = _perception_for(xyz)
             except Exception:
                 perceived = None
-        if perceived is not None and len(indices) == 1:
+        # A polyhedron is a set of restraints in the browser's own field, so
+        # it is only offered where that field is the one running.  Under a
+        # server method it was offered, accepted, and reported as "the donors
+        # are pulled onto it" while the same press took the field off the page.
+        on_the_server = _server_method()
+        if (perceived is not None and len(indices) == 1
+                and not on_the_server):
             try:
                 from .molecule_forcefield import polyhedron_options
                 options = polyhedron_options(perceived, indices[0])
@@ -5706,7 +5712,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_poly_dd.disabled = True
             state['poly_offer_metal'] = None
             # Say why, when a single atom was picked and could have qualified.
-            if perceived is not None and len(indices) == 1:
+            # Never under a server method: there the offer is absent because
+            # the method has no use for it, and blaming the coordination
+            # number would send the user looking for a table that is not the
+            # reason.
+            if (perceived is not None and len(indices) == 1
+                    and not on_the_server):
                 index = indices[0]
                 symbol = perceived.symbols[index]
                 if index in set(perceived.metal_indices or ()):
@@ -5749,6 +5760,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         is busywork. Metals are dropped from the selection rather than
         blocking it -- RDKit's UFF has no types for one at all, so its bonds
         and angles come from the geometry either way.
+
+        Not offered at all under a server method: a type is what the browser's
+        field builds its parameters from, and xtb and MOPAC have no such thing
+        to be told. See :func:`_refresh_method_controls` for what was measured.
         """
         metals = set(perceived.metal_indices or ()) if perceived else set()
         # An index the structure no longer has: the browser pushes its picks
@@ -5758,7 +5773,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         chosen = [
             i for i in indices
             if i not in metals and 0 <= i < len(perceived.symbols)
-        ] if perceived else []
+        ] if perceived and not _server_method() else []
         if not chosen:
             submit_hyb_dd.layout.display = 'none'
             submit_hyb_dd.disabled = True
@@ -5840,12 +5855,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         An octahedron has nothing to turn -- every vertex is the same, and
         which ligand is trans to which is what Swap is for. A trigonal
         bipyramid has two kinds, so which pair is axial is a real choice.
+
+        And never under a server method, where an arrangement is a rearranged
+        set of restraints for a field that is not running.
         """
         geometry = state.get('poly_applied')
         metal = state.get('poly_metal')
         perceived = state.get('perceived')
         turnable = False
-        if geometry and metal is not None and perceived is not None:
+        if (geometry and metal is not None and perceived is not None
+                and not _server_method()):
             try:
                 from .molecule_forcefield import polyhedron_vertex_classes
                 donors = len(perceived.neighbours()[int(metal)])
@@ -8911,9 +8930,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['topology_good'] = xyz
         method = str(submit_ff_dd.value)
         # Where it already holds, say so rather than let it look like it is
-        # doing something.  GFN-FF reads its bonding once and keeps it, and
-        # the browser's field is assigned its terms once.
-        already = ('' if _gfn.is_gfn_method(method) and method != 'gfnff'
+        # doing something.  GFN-FF reads its bonding once and keeps it, so
+        # under it the wall has nothing left to refuse.
+        #
+        # It used to be said for everything that was not GFN2 and its
+        # relatives, which put it under the PM methods as well -- and that is
+        # not true of them: MOPAC decides the bonding from the electrons like
+        # any other semiempirical method, and the wall reads what came back
+        # and takes the step away exactly as it does under GFN2.  The sentence
+        # told the user the switch they had just pressed does nothing, while
+        # it was working.
+        already = ('' if method != 'gfnff'
                    else f' {_server_label(method)} already keeps its bonding, '
                         'so this changes nothing under it.')
         _set_mol_status(
@@ -9023,6 +9050,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         pulling = str(submit_hand_dd.value) == 'pull'
         submit_pull_slider.layout.display = '' if pulling else 'none'
+        if state.get('hand_quiet'):
+            # The method took the hand away or gave it back, which is the
+            # toolbar following the choice that was just made.  The page still
+            # has to be told below; the line belongs to that choice and says
+            # so already, and a second sentence about the hand would land on
+            # top of it.
+            on_submit_pull_changed({'name': 'value'})
+            return
         _set_mol_status(
             'Dragging pulls: the atom follows as far as the chemistry allows.'
             if pulling else
@@ -9349,6 +9384,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         chosen = submit_ff_dd.value
         server = _server_method()
         xtb = _gfn.is_gfn_method(chosen)
+        mopac = _mopac.is_mopac_method(chosen)
         # Charge and spin: the server engines are told both, the browser's
         # field has no notion of either.
         submit_gfn_charge.layout.display = '' if server else 'none'
@@ -9360,13 +9396,46 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Strength is how many steps the browser's field takes per animation
         # frame, and that field does not run under a server method.
         submit_strength_slider.layout.display = 'none' if server else ''
-        # Shown under both.  It used to be hidden under a server method on
-        # the grounds that the pull was the browser field's -- which is
-        # precisely why dragging under GFN went on setting coordinates: the
-        # one place where the budget and the scan live was the one place the
-        # hand was still absolute.  xtb answers it now, through the internal
-        # coordinates the hand is changing.
-        submit_pull_slider.layout.display = ''
+        # Which hands there are.
+        #
+        # A pull is a force on an internal coordinate, so it needs an engine
+        # that can be told to hold one: the browser's own field can, and xtb
+        # can through its constrain block -- that is why the slider is no
+        # longer hidden under a server method, which was what left dragging
+        # under GFN setting coordinates outright.  MOPAC takes no held
+        # internals from this editor at all, so there the pull has nothing to
+        # act on and the follow step falls through to the rigid hand.
+        #
+        # Measured on an ethane with one hydrogen dragged 0.60 A along x, the
+        # hand set to pull: GFN2 left the atom 0.44 A short of where the
+        # cursor asked, which is the chemistry having its say, and PM7 put it
+        # exactly there -- 0.0000 A from the cursor, the same geometry the
+        # move hand gives to the last decimal.  Offering "pull with a force"
+        # under MOPAC is offering the move hand under another name, and the
+        # difference is invisible from the outside.  So under MOPAC there is
+        # one hand, and the box says one.
+        pulling = ('pull with a force', 'pull')
+        moving = ('move the atom', 'move')
+        state['hand_quiet'] = True
+        try:
+            if mopac:
+                if str(submit_hand_dd.value) == 'pull':
+                    # Given back on the way out, so a detour through PM7 does
+                    # not quietly cost the hand the user was working with.
+                    state['hand_was_a_pull'] = True
+                submit_hand_dd.options = [moving]
+            else:
+                submit_hand_dd.options = [pulling, moving]
+                if state.pop('hand_was_a_pull', False):
+                    submit_hand_dd.value = 'pull'
+        finally:
+            state['hand_quiet'] = False
+        # The slider is the pull's own setting, so it goes where the pull
+        # goes.  Shown unconditionally it came back on every change of method
+        # -- pick the move hand under UFF, switch to GFN2, and there it was
+        # again, offering to set the strength of a hand that is not in use.
+        submit_pull_slider.layout.display = (
+            '' if str(submit_hand_dd.value) == 'pull' else 'none')
         # The thermal budget needs an energy per follow step, and that is
         # xtb's: MOPAC's follow reports a heat of formation, which is not the
         # same quantity and cannot be differenced against an xtb anchor.
@@ -9390,6 +9459,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     f'{_server_label(submit_ff_dd.value)} cannot walk a scan '
                     '-- that is xtb\'s. The armed legs are kept for when you '
                     'come back to a GFN method.')
+        # Where a path can start.  Both ends of it are walked by xtb's own
+        # path finder, and Find the path refuses anything else -- but Path
+        # from here asked nothing at all: under UFF it took the press, said
+        # "marked as the start of a path", and put Find the path on the
+        # toolbar, which then answered "a path needs xtb: choose a GFN
+        # method".  Two presses to be told the first one could not have
+        # worked.  The mark itself survives the change of method, the way an
+        # armed scan does: it describes two structures, not a program.
+        submit_path_from_btn.layout.display = '' if xtb else 'none'
+        # The saddle search is ORCA driving xtb, and the pair is asked for by
+        # name: the methods ORCA has a keyword for are the ones this can run,
+        # which is not the whole GFN family -- g-xTB is a build of its own and
+        # ORCA cannot drive it.  Read from the table the run itself reads, so
+        # the button and the refusal cannot drift apart.
+        submit_saddle_btn.layout.display = (
+            '' if str(chosen).lower() in _saddle.SADDLE_METHODS else 'none')
+        # Keep bonds works by watching what a follow step hands back and
+        # taking back the ones that made or broke a bond -- so it needs a
+        # follow step, and that is the kernel's, which runs for a server
+        # method and for nothing else.  Under UFF the drag never leaves the
+        # browser: _begin_gfn_follow answers no, the wall is never consulted,
+        # and the switch was a switch with nothing behind it.
+        #
+        # Its value is left where it stands rather than switched off, for the
+        # same reason as Auto: nothing reads it under a browser method, and
+        # taking the toolbar away should not also take the setting.
+        submit_topology_btn.layout.display = '' if server else 'none'
         if not xtb and submit_thermal_btn.value:
             submit_thermal_btn.value = False
         for widget in (submit_temperature, submit_thermal_relax,
@@ -9423,6 +9519,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # browser method its value is what the page settles by, so it has to
         # be off in fact and not merely out of sight.
         submit_auto_btn.layout.display = '' if server else 'none'
+        # Types, and the hybridisation box beside it.
+        #
+        # An atom type is a force-field idea and reaches the force field and
+        # nothing else: every UFF parameter at a centre follows from its type,
+        # so overruling one is how a double bond perception missed is put
+        # back.  A server method has no such thing to overrule -- xtb and
+        # MOPAC work the shape out from the electrons, every step -- and the
+        # override never leaves the kernel.
+        #
+        # Driven on an ethene drawn long enough that the double bond is not
+        # perceived, both carbons forced to sp2: under UFF and MMFF94 the
+        # press hands a fresh set of parameters to the page, and under GFN-FF,
+        # GFN2 and PM7 the same press takes the field *off* the page and hands
+        # over nothing -- while the line said "2 carbons typed from their
+        # partners ... 2 changed".  A report of a change that reached no
+        # calculation is the worst of the three ways a control can fail here,
+        # so the control goes where the change cannot land.
+        submit_hyb_auto_btn.layout.display = 'none' if server else ''
+        # The polyhedron is the same story with a different name: choosing one
+        # installs a set of restraints pulling the donors onto its vertices,
+        # and those restraints are terms in the browser's field.  Under a
+        # server method the same choice said "the donors are pulled onto it"
+        # and took the field off the page instead.  Turn goes with it -- it
+        # steps between arrangements of a polyhedron that is not acting.
+        #
+        # Swap stays.  It is not a restraint but an edit: the page rotates the
+        # two ligands onto each other's directions there and then, which is a
+        # geometry every engine is handed afterwards.
+        if server:
+            for widget in (submit_hyb_dd, submit_poly_dd,
+                           submit_poly_turn_btn):
+                widget.layout.display = 'none'
+                widget.disabled = True
         # A method without solvation gets no solvent box: a control that can
         # only produce a refusal is worse than no control.  Which models and
         # which solvents a method does have is the solvents module's answer,

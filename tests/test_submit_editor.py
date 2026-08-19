@@ -2590,3 +2590,358 @@ def test_every_background_worker_is_started_through_the_one_place():
     assert sorted(started) == ["_leash", "_run"], (
         f"a background worker bypasses _start_background: {started}")
     assert "_start_background(" in _EDITOR_PY
+
+
+# ---------------------------------------------------------------------------
+# the toolbar shows what the chosen method can do, and nothing else
+# ---------------------------------------------------------------------------
+#: What the method box offers, in the order it offers it: two force fields
+#: that run in the browser, three that run xtb on the server, three that run
+#: MOPAC there.
+_METHODS = ('uff', 'mmff94', 'gfnff', 'gfn2', 'gxtb', 'pm6d3h4', 'pm6', 'pm7')
+_BROWSER = ('uff', 'mmff94')
+_XTB = ('gfnff', 'gfn2', 'gxtb')
+_MOPAC = ('pm6d3h4', 'pm6', 'pm7')
+
+_ETHANE = """8
+ethane
+C  0.000  0.000  0.765
+C  0.000  0.000 -0.765
+H  1.019  0.000  1.163
+H -0.510 -0.883  1.163
+H -0.510  0.883  1.163
+H  1.019  0.000 -1.163
+H -0.510 -0.883 -1.163
+H -0.510  0.883 -1.163
+"""
+
+#: Ethene with its double bond drawn long, so perception reads it as single
+#: and both carbons come back sp3 -- the case Types exists for.
+_ETHENE = """6
+ethene, drawn long enough that the double bond is not perceived
+C  0.000  0.000  0.780
+C  0.000  0.000 -0.780
+H  0.930  0.000  1.320
+H -0.930  0.000  1.320
+H  0.930  0.000 -1.320
+H -0.930  0.000 -1.320
+"""
+
+#: A six-coordinate centre, with the donors far enough out that perception
+#: finds all six of them.
+_COMPLEX = """7
+a six-coordinate centre
+Fe  0.000  0.000  0.000
+F   2.000  0.000  0.000
+F  -2.000  0.000  0.000
+F   0.000  2.000  0.000
+F   0.000 -2.000  0.000
+F   0.000  0.000  2.000
+F   0.000  0.000 -2.000
+"""
+
+
+@pytest.fixture
+def editor(tmp_path):
+    """One structure editor over a coordinate box of its own.
+
+    Built rather than read: what a control does under a method is a property
+    of the running editor, and the source says only what it means to do.
+    """
+    pytest.importorskip('ipywidgets')
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    for name in ('calc', 'archive', 'office'):
+        (tmp_path / name).mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / 'calc',
+                           archive_dir=tmp_path / 'archive',
+                           office_dir=tmp_path / 'office')
+    sent = []
+    ctx.run_js = sent.append
+    state = {}
+
+    def build(text=_ETHANE):
+        box = widgets.Textarea(value=text)
+        part = structure_editor.build(
+            ctx, state=state, coords_widget=box, viewer_height=560,
+            schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+            update_view=lambda *a, **k: None,
+            get_smiles_charge=lambda *a, **k: None)
+        state['current_xyz_for_copy'] = {'content': text}
+        # What a loaded structure does to the toolbar, so the test drives the
+        # editor a user would be looking at rather than an empty one.
+        part._set_manip_toolbar_enabled(True)
+        part.sent = sent
+        return part
+
+    return build
+
+
+def _visible(widget):
+    return str(getattr(widget.layout, 'display', '') or '') != 'none'
+
+
+def _said(part):
+    return ' '.join(re.sub('<[^>]+>', ' ', part.mol_status.value or '').split())
+
+
+def test_a_type_is_a_force_fields_idea_and_is_offered_where_one_runs(editor):
+    """Types, and the hybridisation box beside it, under all eight methods.
+
+    An atom type is what a force field builds its parameters from: forcing a
+    carbon to sp2 types it C_2 and its angles come back at 120 degrees, which
+    is how a double bond that perception missed is put back. The methods that
+    run on the server have no such thing to be told -- xtb and MOPAC work the
+    shape out from the electrons at every step -- so the override has nowhere
+    to land.
+
+    Driven, on an ethene drawn long enough that the double bond is not
+    perceived, both carbons typed from their partners: under UFF and MMFF94
+    the press hands a fresh parameter set to the page, and under GFN-FF, GFN2
+    and PM7 the same press hands over ``setForceField(scope, null)`` -- the
+    field taken off -- while the status line said "2 carbons typed from their
+    partners ... 2 changed". A report of a change that reached no calculation
+    is the worst of the ways a control can fail, and it is why this is hidden
+    rather than left to refuse on the press. Where the press lands is the test
+    below; this one is only about which methods offer it at all.
+    """
+    part = editor(_ETHENE)
+    for method in _METHODS:
+        part.submit_ff_dd.value = method
+        wanted = method in _BROWSER
+        assert _visible(part.submit_hyb_auto_btn) is wanted, method
+        # And the box does not come back with a selection, which is what
+        # showed it: picking two carbons under GFN2 offered the override again.
+        part.submit_pick_sync.value = '0,1'
+        assert _visible(part.submit_hyb_dd) is wanted, method
+        part.submit_pick_sync.value = ''
+
+
+def test_a_type_forced_under_a_server_method_reached_nothing(editor):
+    """The measurement the rule above rests on.
+
+    Kept as a test of its own because it is the fact rather than the
+    consequence: if a server method ever does start reading the override, this
+    is what will say so.
+
+    On the ethene above, so the press has a real correction to make rather
+    than a type to confirm.
+    """
+    pytest.importorskip('rdkit')
+    call = re.compile(r'window\.__delfinSubmitManip\.setForceField\('
+                      r'"[^"]*",(.{0,8})', re.S)
+
+    def where_it_landed(method):
+        part = editor(_ETHENE)
+        part.submit_ff_dd.value = method
+        part.sent.clear()
+        part.state['hyb_overrides'] = {}
+        part.on_submit_hyb_auto()
+        return [m.group(1).startswith('null')
+                for script in part.sent for m in call.finditer(script)]
+
+    for method in _BROWSER:
+        assert where_it_landed(method) == [False], (
+            f'{method} must be handed the parameters the types produced')
+    for method in ('gfnff', 'gfn2') + _MOPAC:
+        assert where_it_landed(method) == [True], (
+            f'{method} takes the field off instead, so the types went nowhere')
+
+
+def test_the_polyhedron_is_offered_where_its_restraints_can_act(editor):
+    """A polyhedron is a set of restraints, and they are terms in one field.
+
+    Choosing one installs pulls that draw the donors onto its vertices, and
+    those pulls live in the browser's own field. Driven on a six-coordinate
+    centre under GFN2 and PM7, choosing an octahedron said "the donors are
+    pulled onto it" and handed the page ``setForceField(scope, null)`` in the
+    same breath -- the field taken off, the promise unkept.
+
+    Turn goes with it: it steps between arrangements of a polyhedron that is
+    not acting. Swap stays, because it is not a restraint but an edit -- the
+    page rotates the two ligands onto each other's directions there and then,
+    and every engine is handed the geometry that results.
+    """
+    part = editor(_COMPLEX)
+    for method in _METHODS:
+        part.submit_ff_dd.value = method
+        part.submit_pick_sync.value = '0'
+        wanted = method in _BROWSER
+        assert _visible(part.submit_poly_dd) is wanted, method
+        if not wanted:
+            # And no explanation blaming the coordination number, which would
+            # send the user looking for a table that is not the reason.
+            assert 'polyhedron table' not in _said(part), method
+        part.submit_pick_sync.value = ''
+
+
+def test_the_saddle_search_is_offered_where_orca_can_drive_the_method(editor):
+    """It is ORCA's optimiser on xtb's gradients, and ORCA is told which
+    method by name -- so the ones it can run are the ones ORCA has a keyword
+    for.
+
+    That is not the whole GFN family: g-xTB is a build of its own and ORCA
+    cannot drive it. Pressed under any of the other six, the button answered
+    "a saddle search here runs on xtb through ORCA, so choose GFN2, GFN1 or
+    GFN-FF" -- six of the eight methods offering a button that could only
+    refuse.
+
+    Read from the table the run itself reads, so the button and the refusal
+    cannot drift apart.
+    """
+    from delfin.dashboard import saddle as _saddle
+
+    part = editor()
+    for method in _METHODS:
+        part.submit_ff_dd.value = method
+        assert _visible(part.submit_saddle_btn) is (
+            method in _saddle.SADDLE_METHODS), method
+    # Which, for the methods this box offers, is these two and no others.
+    assert [m for m in _METHODS if m in _saddle.SADDLE_METHODS] == [
+        'gfnff', 'gfn2']
+
+
+def test_path_from_here_no_longer_promises_a_path_nothing_can_walk(editor):
+    """Both ends of a path are walked by xtb's own path finder.
+
+    Find the path always refused anything else; Path from here asked nothing
+    at all. Driven under UFF: the first press was accepted -- "marked as the
+    start of a path (8 atoms) ... press Find the path" -- and put Find the
+    path on the toolbar, and the second press answered "a path needs xtb:
+    choose a GFN method". Two presses to be told the first could not have
+    worked.
+
+    The mark itself survives a change of method, the way an armed scan does:
+    it describes two structures, not a program.
+    """
+    part = editor()
+    for method in _METHODS:
+        part.submit_ff_dd.value = method
+        assert _visible(part.submit_path_from_btn) is (method in _XTB), method
+
+
+def test_keep_bonds_is_offered_where_a_step_can_be_taken_back(editor):
+    """The switch works by watching what a follow step hands back.
+
+    xtb cannot be told to hold a topology, so a step that made or broke a bond
+    is replaced by the last one that did not -- which needs a follow step, and
+    that is the kernel's. It runs for a server method and for nothing else:
+    under UFF the drag never leaves the browser, ``_begin_gfn_follow`` answers
+    no, and the wall is never consulted. Measured that way, with Dynamik Opt
+    on and the switch down: False under UFF, True under GFN2 and PM7.
+    """
+    part = editor()
+    for method in _METHODS:
+        part.submit_ff_dd.value = method
+        assert _visible(part.submit_topology_btn) is (
+            method not in _BROWSER), method
+    # And the value is left where it stands rather than switched off, so a
+    # detour through UFF does not cost the setting.
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_topology_btn.value = True
+    part.submit_ff_dd.value = 'uff'
+    assert part.submit_topology_btn.value is True
+    part.submit_ff_dd.value = 'gfn2'
+    assert _visible(part.submit_topology_btn)
+
+
+def test_keep_bonds_does_not_tell_a_pm_user_it_changes_nothing(editor):
+    """The sentence was said for everything that was not GFN2 and its
+    relatives, which put it under the PM methods too.
+
+    It is not true of them. MOPAC decides the bonding from the electrons like
+    any other semiempirical method, and the wall reads what came back and
+    takes the step away exactly as it does under GFN2. The line told the user
+    that the switch they had just pressed does nothing, while it was working.
+
+    GFN-FF is the one that really does keep its bonding -- it reads its
+    topology once -- and it is the one that still says so.
+    """
+    for method, keeps in (('gfnff', True), ('gfn2', False), ('pm7', False)):
+        part = editor()
+        part.submit_ff_dd.value = method
+        part.submit_topology_btn.value = True
+        assert ('already keeps its bonding' in _said(part)) is keeps, method
+
+
+def test_the_pull_hand_is_not_offered_where_it_is_a_placement(editor):
+    """Two hands, and under MOPAC only one of them exists.
+
+    A pull is a force on an internal coordinate, so it needs an engine that
+    can be told to hold one: the browser's field can, and xtb can through its
+    constrain block. MOPAC takes no held internals from this editor at all, so
+    the follow step falls through to the rigid hand.
+
+    Measured on an ethane with one hydrogen dragged 0.60 A along x, the hand
+    set to pull: GFN2 left the atom 0.4399 A short of where the cursor asked,
+    which is the chemistry having its say, and PM7 put it 0.0000 A from the
+    cursor -- the same geometry the move hand gives, to the last decimal.
+    "Pull with a force" under MOPAC was the move hand under another name, and
+    the difference was invisible from the outside.
+    """
+    part = editor()
+    for method in _METHODS:
+        part.submit_ff_dd.value = method
+        offered = [value for _label, value in part.submit_hand_dd.options]
+        assert offered == (['move'] if method in _MOPAC
+                           else ['pull', 'move']), method
+        if method in _MOPAC:
+            assert part.submit_hand_dd.value == 'move'
+            assert not _visible(part.submit_pull_slider)
+
+
+def test_a_detour_through_a_pm_method_gives_the_hand_back(editor):
+    """Switching methods is something a user does constantly, and it must not
+    cost a setting each time.
+
+    The pull is taken away under MOPAC because it cannot act there; it is
+    handed back on the way out, which is a different thing from it never
+    having been taken.
+    """
+    part = editor()
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_hand_dd.value = 'pull'
+    part.submit_ff_dd.value = 'pm7'
+    assert part.submit_hand_dd.value == 'move'
+    part.submit_ff_dd.value = 'gfn2'
+    assert part.submit_hand_dd.value == 'pull'
+    assert _visible(part.submit_pull_slider)
+
+
+def test_the_pull_slider_belongs_to_the_hand_and_not_to_the_method(editor):
+    """It was shown unconditionally, so it came back on every change of
+    method: pick the move hand under UFF, switch to GFN2, and there it was
+    again -- a control for setting the strength of a hand that is not in use.
+    """
+    part = editor()
+    part.submit_ff_dd.value = 'uff'
+    part.submit_hand_dd.value = 'move'
+    assert not _visible(part.submit_pull_slider)
+    part.submit_ff_dd.value = 'gfn2'
+    assert not _visible(part.submit_pull_slider)
+    assert part.submit_hand_dd.value == 'move'
+    part.submit_hand_dd.value = 'pull'
+    assert _visible(part.submit_pull_slider)
+
+
+def test_a_hidden_control_stays_hidden_when_a_structure_loads(editor):
+    """Two owners for one attribute is how a control comes back under a method
+    that cannot run it.
+
+    ``_set_manip_toolbar_enabled`` writes ``disabled`` over the whole toolbar
+    every time a structure arrives, so a method-based *disable* would be
+    undone by the next load. The method rule uses ``display`` for that reason,
+    and this is the check that the two do not fight.
+    """
+    part = editor()
+    part.submit_ff_dd.value = 'pm7'
+    hidden = [part.submit_saddle_btn, part.submit_path_from_btn,
+              part.submit_hyb_auto_btn]
+    assert not any(_visible(w) for w in hidden)
+    part._set_manip_toolbar_enabled(False)
+    part._set_manip_toolbar_enabled(True)
+    assert not any(_visible(w) for w in hidden), (
+        'a structure loading must not bring back what the method cannot use')
