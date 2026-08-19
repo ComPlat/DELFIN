@@ -677,14 +677,25 @@ def test_a_loose_hold_stops_the_drag_rather_than_only_saying_so():
     On a palladium pushed at head on the hold went 0.7 A loose and the drag
     carried on regardless, the picture showing a bromide 1.27 A from the metal
     while the price belonged to a structure where it had got out of the way.
+
+    These two refuse at any temperature, so they are not the budget refusing
+    and they are no longer said as though they were. Measured on a butane
+    turned about its middle bond, the line read "+0.0 of 22.3 kcal/mol
+    available at 298.15 K. Past the budget, so the last structure that was
+    inside it is back." -- which sends a reader to the temperature box to fix
+    something that is not there.
     """
     follow = EDITOR_SOURCE.split("def _thermal_wall(")[1].split("def ")[0]
     assert "def _thermal_wall" not in follow
     assert "if spent <= ceiling and not refuse:" in follow
     body = EDITOR_SOURCE.split("state['thermal_now'] = priced.get('energy')")[1]
     body = body.split("state['gfn_last_status'] = said")[0]
-    assert "refuse=(slipped > _SLIP_LOOSE) or crowded" in body
+    assert "aside = (slipped > _SLIP_LOOSE) or crowded" in body
+    assert "refuse=aside" in body
     assert "else current)[0]" in body
+    # And the two are told apart where the refusal is reported.
+    assert "'So the last structure that was measured and '" in body
+    assert "'Past the budget, so the last structure that '" in body
 
 
 def test_the_line_says_how_steep_it_is():
@@ -1378,7 +1389,7 @@ H            1.93775123027231        1.04166818908956       -0.88181350880857
 """
 
 
-def _a_part():
+def _a_part(structure=_ETHANE):
     """One structure editor, built over a coordinate box of its own."""
     import tempfile
 
@@ -1395,10 +1406,123 @@ def _a_part():
                            office_dir=room / "office")
     ctx.run_js = lambda _script: None
     return structure_editor.build(
-        ctx, state={}, coords_widget=widgets.Textarea(value=_ETHANE),
+        ctx, state={}, coords_widget=widgets.Textarea(value=structure),
         viewer_height=560,
         schedule_ui_update=lambda func, *a, **k: func(*a, **k),
         update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
+
+
+def _budgeted(structure, kelvin=298.15, hand="pull"):
+    """One editor with a thermal budget on it, anchored on that structure.
+
+    The anchor is an xtb run of its own and it is taken in a thread, so this
+    waits for it: without one there is no budget at all and every assertion
+    below would be about a ceiling that was never in force.
+    """
+    import time
+
+    part = _a_part(structure)
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.value = hand
+    part.submit_temperature.value = kelvin
+    part.submit_thermal_btn.value = True
+    began = time.time()
+    while part.state.get("thermal_e0") is None and time.time() - began < 300:
+        time.sleep(0.05)
+    assert part.state.get("thermal_e0") is not None, "the anchor never landed"
+    return part
+
+
+def _drag_message(xyz, note):
+    """A geometry as the page sends one, with the reason on the comment line."""
+    rows = gfn.atom_lines(xyz)
+    return f"{len(rows)}\n{note}\n" + "\n".join(rows)
+
+
+def _shifted(xyz, indices, dx):
+    """*xyz* with those atoms shifted along x -- the mouse's own wish."""
+    from delfin.dashboard.structure_editor import xyz_line
+
+    here = gfn.coordinates_of(xyz)
+    rows = []
+    for i, line in enumerate(gfn.atom_lines(xyz)):
+        at = [here[3 * i], here[3 * i + 1], here[3 * i + 2]]
+        if i in indices:
+            at[0] += dx
+        rows.append(xyz_line(line.split()[0], *at))
+    return f"{len(rows)}\nmoved\n" + "\n".join(rows)
+
+
+def _quiet(state, seconds=300.0):
+    """Wait until the follow has answered everything it was sent."""
+    import time
+
+    end = time.time() + seconds
+    while time.time() < end:
+        if (not state.get("gfn_follow_busy")
+                and state.get("gfn_follow_xyz") is None):
+            return
+        time.sleep(0.02)
+    raise AssertionError("the follow never came back")
+
+
+def _turned_about_x(xyz, indices, degrees):
+    """*xyz* with those atoms turned about the x axis.
+
+    The chains here are laid along x, so this is the gesture of taking hold of
+    one end and turning it -- the hand driving a torsion rather than a bond.
+    """
+    import math
+
+    from delfin.dashboard.structure_editor import xyz_line
+
+    here = gfn.coordinates_of(xyz)
+    angle = math.radians(degrees)
+    rows = []
+    for i, line in enumerate(gfn.atom_lines(xyz)):
+        x, y, z = here[3 * i], here[3 * i + 1], here[3 * i + 2]
+        if i in indices:
+            y, z = (y * math.cos(angle) - z * math.sin(angle),
+                    y * math.sin(angle) + z * math.cos(angle))
+        rows.append(xyz_line(line.split()[0], x, y, z))
+    return f"{len(rows)}\nturned\n" + "\n".join(rows)
+
+
+def _apart(xyz, i, j):
+    import math
+
+    here = gfn.coordinates_of(xyz)
+    return math.dist(here[3 * i:3 * i + 3], here[3 * j:3 * j + 3])
+
+
+def _costs(xyz, anchor):
+    """What that geometry costs against the anchor, in kcal/mol."""
+    from delfin.dashboard.structure_editor import _HARTREE_TO_KCAL
+
+    got = gfn.optimize_with_gfn(xyz, "gfn2", timeout=300, optimise=False)
+    assert got.get("energy") is not None, got.get("status")
+    return (float(got["energy"]) - float(anchor)) * _HARTREE_TO_KCAL
+
+
+def _dragged_apart(part, begin, far=2.0):
+    """Pull the far methyl of an ethane out, one page message at a time.
+
+    Absolute coordinates, the way the browser sends them: its model is where
+    the cursor has taken the atom, not where the last answer put it.
+    """
+    part._begin_gfn_follow()
+    part._arm_thermal_leash()
+    methyl = {1, 5, 6, 7}
+    step = far / 8.0
+    for n in range(1, 9):
+        part.submit_manip_sync.value = _drag_message(
+            _shifted(begin, methyl, step * n), "DELFIN drag-follow held=1,5,6,7")
+        _quiet(part.state)
+    part.submit_manip_sync.value = _drag_message(
+        _shifted(begin, methyl, far), "DELFIN drag-end")
+    _quiet(part.state)
+    return part.coords_widget.value
 
 
 def _scanned(how, steps=20, seconds=600, structure=None, legs=None,
@@ -1892,7 +2016,10 @@ def test_the_bonds_are_kept_by_taking_the_step_back():
     assert 'kept, changed = _topology_wall(settled)' in source
     assert 'bonding is being kept.' in source
     # The box as well as the picture, or letting go keeps the broken one.
-    assert "'Kept: the bonding would have '" in source
+    # One write at the end of the step now, whichever of the three things
+    # happened to it, so that the box is never left holding a geometry no
+    # answer produced.
+    assert "why = 'Kept: the bonding would have changed'" in source
     # It belongs to this molecule and no other.
     assert "state.get('topology_for') != who" in source
     # And where it already holds, it says so instead of looking busy.
@@ -2411,3 +2538,338 @@ def test_a_scan_says_when_the_method_has_run_out_of_depth():
     # the screen of somebody working on a different one.
     for word in ("butene", "alkene", "cis", "trans", "Diels"):
         assert word not in said, (word, said)
+
+
+@_needs_xtb
+def test_the_geometry_that_survives_a_drag_is_one_the_temperature_can_reach():
+    """The ceiling is about what is *kept*, and it was about nothing at all.
+
+    Measured before this held, on an ethane whose far methyl is dragged out at
+    298 K with 22.3 kcal/mol to spend under a pull: the box was left holding
+    the page's own coordinates on every message of the drag, at +15.8, +45.3,
+    +74.8, +99.1, +116.9, +129.0 and +136.7 kcal/mol, and at +141.2 once the
+    hand let go -- while the line underneath read "+16.2 of 22.3 kcal/mol
+    available at 298.15 K".
+
+    The two numbers are about two different molecules.  The price belongs to
+    the structure xtb relaxed under the hand, and under a pull that structure
+    comes most of the way back -- the relaxed answers really did go +0.1,
+    +1.1, +0.2, +4.0, +6.8, +12.2, +16.2 -- while the page's model is simply
+    where the cursor is.  Priced one and kept the other, the ceiling had
+    nothing to refuse: the wall wrote the box only when it said no, and the
+    next message from the page wrote over it.
+
+    Which is also the whole of "sometimes it works at room temperature".
+    Under the rigid hand the wall fires early and the follow then stands still
+    rather than shake, so from the first refusal onwards nothing was
+    calculating at all while the mouse went on writing -- +141.2 kcal/mol
+    again, with the status line frozen at "+16.8 of 22.3 available".  Whether
+    a drag was stopped came down to whether the last message to land was the
+    wall's or the page's, which is a race between xtb at a tenth of a second
+    and a hand.
+    """
+    from delfin.dashboard.structure_editor import (
+        _THERMAL_SECONDS, thermal_ceiling)
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    assert start.get("ok"), start.get("status")
+    begin = start["xyz"]
+    ceiling = thermal_ceiling(298.15, _THERMAL_SECONDS)
+
+    for hand in ("pull", "move"):
+        part = _budgeted(begin, kelvin=298.15, hand=hand)
+        kept = _dragged_apart(part, begin, far=2.0)
+        # The page asked for a C-C at 3.52 A.  What is left is a bond.
+        assert _apart(kept, 0, 1) < 2.0, (hand, _apart(kept, 0, 1))
+        spent = _costs(kept, part.state["thermal_e0"])
+        # Room for the rigid hand's own placement, which moves single atoms
+        # and is bounded by the slip refusal rather than by zero.
+        assert spent <= ceiling + 2.0, f"{hand}: {spent:+.1f} of {ceiling:.1f}"
+        # And the box says which structure this is rather than wearing a claim
+        # that was written for coordinates it no longer has.
+        said = kept.splitlines()[1].lower()
+        assert said.startswith(("within the budget", "past the budget",
+                                "back to the last")), said
+
+
+@_needs_xtb
+def test_the_same_drag_goes_through_at_a_temperature_that_can_pay_for_it():
+    """A ceiling that refuses everything is not a ceiling either.
+
+    The identical sequence of messages at 1500 K, where the hour buys 117.0
+    kcal/mol instead of 22.3.  The step that was refused at room temperature
+    -- the relaxed structure at +23.5 -- is kept here, and the bond is
+    stretched further than room temperature would ever allow.
+    """
+    from delfin.dashboard.structure_editor import (
+        _THERMAL_SECONDS, thermal_ceiling)
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    begin = start["xyz"]
+    cold = thermal_ceiling(298.15, _THERMAL_SECONDS)
+    hot = thermal_ceiling(1500.0, _THERMAL_SECONDS)
+    assert hot > 100.0 > cold
+
+    part = _budgeted(begin, kelvin=1500.0, hand="pull")
+    kept = _dragged_apart(part, begin, far=2.0)
+    spent = _costs(kept, part.state["thermal_e0"])
+    # Past what room temperature would have allowed, and inside what this
+    # temperature does.
+    assert spent > cold - 5.0, f"{spent:+.1f} kcal/mol"
+    assert spent <= hot, f"{spent:+.1f} of {hot:.1f}"
+    assert _apart(kept, 0, 1) > _apart(begin, 0, 1) + 0.2
+
+
+@_needs_xtb
+def test_a_turn_the_temperature_allows_is_not_refused_for_a_body_slide():
+    """A held value is an internal coordinate, so the molecule may sit where
+    it likes.
+
+    xtb meets the dihedral it was given and is then free to place the whole
+    structure anywhere that meets it, so the answer comes back turned and slid
+    bodily away from the cursor.  That slide was being measured as a loose
+    hold and refused at 0.25 A -- on a butane turned about its middle bond it
+    reached 0.27 while the price stood at +0.0 of 22.3 kcal/mol, so the
+    temperature was allowing the turn and the drag stopped anyway.  Worse, the
+    line said "Past the budget", which sends a reader to the temperature box
+    to fix something that is not there.
+
+    Laid back on as a rigid body first -- which costs nothing, an energy does
+    not depend on where a molecule is -- the residue is 0.005 A.
+    """
+    start = gfn.optimize_with_gfn(_ANTI_BUTANE, "gfn2", max_steps=400,
+                                  timeout=300)
+    assert start.get("ok"), start.get("status")
+    begin = start["xyz"]
+    end = (0, 4, 5, 6)
+    # The gesture: that end of the chain turned about the axis the chain lies
+    # along, which is what a hand on a terminal methyl does.
+    turned = _turned_about_x(begin, end, 20.0)
+    held = gfn.contacts_holding(turned, list(end), most=3, was=begin)
+    assert held, "a turned methyl has something to hold"
+    out = gfn.relax_steps(turned, method="gfn2", cycles=20, timeout=120,
+                          constraints=held)
+    assert out.get("ok"), out.get("status")
+
+    raw = gfn.hold_atoms_at(out["xyz"], turned, end)
+    slid = gfn.largest_shift(raw, out["xyz"])
+    laid = gfn.settle_onto(out["xyz"], turned, end)
+    residue = gfn.largest_shift(gfn.hold_atoms_at(laid, turned, end), laid)
+    # The body's own freedom is the larger part by far, and it is not a
+    # shortfall in the hold.
+    assert slid > residue * 5, (slid, residue)
+    assert residue < 0.05, residue
+    # And it is the residue the editor measures.
+    body = EDITOR_SOURCE.split("state['thermal_now'] = priced.get('energy')")[1]
+    body = body.split("state['gfn_last_status'] = said")[0]
+    assert "slipped = (_gfn.largest_shift(reached, laid)" in body
+
+
+@_needs_xtb
+def test_a_scan_hands_back_a_structure_the_temperature_can_reach():
+    """The walk is reported whole; what is left in the box is not.
+
+    A scan is asked to drive a coordinate wherever it is told, and saying how
+    high the path went and what temperature would cross it is the answer it
+    exists to give.  Leaving that geometry in the box is a different thing --
+    it is the structure the user carries on from, and at this temperature they
+    cannot get to it.  Otherwise the one place the ceiling is enforced can be
+    walked round by pressing a different button.
+
+    Measured on an ethane C-C walked from 1.52 to 3.0 A at 298 K: the walk
+    ends at +114.0 kcal/mol against the anchor, and the box is left holding
+    the last point that was inside the 22.3 available -- a C-C at 1.767 A
+    costing +13.6.
+    """
+    import time
+
+    from delfin.dashboard.structure_editor import (
+        _THERMAL_SECONDS, thermal_ceiling)
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    begin = start["xyz"]
+    part = _budgeted(begin, kelvin=298.15)
+    ceiling = thermal_ceiling(298.15, _THERMAL_SECONDS)
+    part.state["scan_legs"] = [
+        {"kind": "distance", "atoms": [0, 1], "from": 1.52, "to": 3.0,
+         "steps": 12, "structure": None},
+    ]
+    part.submit_scan_how.value = "hold"
+    part.on_submit_scan_run()
+    began = time.time()
+    while part.state.get("scan_run") and time.time() - began < 600:
+        time.sleep(0.05)
+    assert not part.state.get("scan_run"), "the scan never finished"
+
+    # It went a long way past what the hour buys at this temperature.
+    assert part.state.get("scan_walled") is not None
+    assert part.state["scan_walled"] > 3 * ceiling, part.state["scan_walled"]
+    kept = part.coords_widget.value
+    assert _apart(kept, 0, 1) < 2.2, _apart(kept, 0, 1)
+    assert _costs(kept, part.state["thermal_e0"]) <= ceiling
+    assert kept.splitlines()[1].startswith("Scanned, and back to the last")
+
+
+@_needs_xtb
+def test_a_settle_that_goes_downhill_is_not_refused():
+    """The release answers to the ceiling too, and must not block the ordinary
+    case.
+
+    A relaxation goes downhill, so this ordinarily has nothing to refuse --
+    which is exactly why it is asked rather than assumed: a value the user is
+    holding is restored on every step of one, and restoring one is uphill.
+    Measured on an ethane anchored while strained, C-C 1.721 A: the settle
+    takes it to 1.522 at -10.8 kcal/mol against the anchor, and goes into the
+    box.
+    """
+    import time
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    strained = _shifted(start["xyz"], {1, 5, 6, 7}, 0.20)
+    part = _a_part(strained)
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_thermal_relax.value = False      # anchor on the strain itself
+    part.submit_temperature.value = 298.15
+    part.submit_thermal_btn.value = True
+    began = time.time()
+    while part.state.get("thermal_e0") is None and time.time() - began < 300:
+        time.sleep(0.05)
+    assert part.state.get("thermal_e0") is not None
+
+    part.submit_settle_btn.value = True
+    part._gfn_settle_now()
+    began = time.time()
+    while part.state.get("gfn_settle_busy") and time.time() - began < 300:
+        time.sleep(0.05)
+    kept = part.coords_widget.value
+    assert kept.splitlines()[1].startswith("Settled with")
+    assert _apart(kept, 0, 1) < _apart(strained, 0, 1) - 0.1
+    assert _costs(kept, part.state["thermal_e0"]) < 0.0
+
+
+def test_every_claim_this_editor_writes_can_be_taken_back():
+    """A comment the editor wrote is replaced when the coordinates change.
+
+    Only the ones in ``_EDITOR_COMMENTS`` are; anything else in that line
+    belongs to the user and is carried over whatever happens underneath it.
+    So a claim this file writes and forgets to register becomes a sentence
+    about a geometry that is no longer there, with nothing anywhere saying so:
+    measured, "Past the budget: back to the last structure that was inside it"
+    stood above a torn ethane at +141.2 kcal/mol, because the page's next
+    message wrote its own coordinates under the comment it found.
+
+    Read off the source rather than listed here, so that writing a new one and
+    not registering it fails in this file rather than in a coordinate box.
+    """
+    import ast
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.structure_editor import _is_editor_comment
+
+    def literals(node):
+        """The comment a call writes, however that argument is built.
+
+        An f-string keeps its fixed parts and stands a letter in for whatever
+        is interpolated: "Settled with {label}" is registered as "settled with
+        " and would not match its own leading fragment, which strips to
+        "settled with" and loses the space that makes the prefix mean
+        something.
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, ast.JoinedStr):
+            return [''.join(
+                one.value if isinstance(one, ast.Constant) else 'X'
+                for one in node.values)]
+        if isinstance(node, ast.IfExp):
+            return literals(node.body) + literals(node.orelse)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return literals(node.left)
+        return []
+
+    tree = ast.parse(open(structure_editor.__file__, encoding="utf-8").read())
+    written = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", "") != "xyz_document":
+            continue
+        if len(node.args) < 2:
+            continue
+        written.extend(literals(node.args[1]))
+    assert len(written) >= 9, written
+    for one in written:
+        assert _is_editor_comment(one), one
+
+
+def test_the_temperature_does_not_set_the_hand_and_no_longer_says_it_does():
+    """It once did, and the docstring went on saying so long after it stopped.
+
+    The hand was derived from the ceiling over a reach, which needs a length
+    no temperature supplies: sized as a distance it was too weak to turn a
+    torsion, so a molecule could not be put into its own conformers at exactly
+    the temperature that certainly allows it.  What a temperature limits is
+    the energy of what is kept, and the wall is what enforces that.
+    """
+    part = _a_part()
+    part.submit_hand_dd.value = "pull"
+    part.submit_pull_slider.value = 0.4
+    for kelvin in (150.0, 298.15, 1500.0):
+        part.submit_temperature.value = kelvin
+        assert part._pull_force() == pytest.approx(0.4 * gfn.A_BOND_HOLDS)
+    part.submit_pull_slider.value = 0.8
+    assert part._pull_force() == pytest.approx(0.8 * gfn.A_BOND_HOLDS)
+    # Nothing caps it at any temperature, which is the same statement.
+    assert part._pull_most() is None
+
+    body = EDITOR_SOURCE.split("def _pull_force():")[1]
+    body = body.split("\n    def ")[0]
+    assert "submit_temperature" not in body
+    assert "the temperature sets it" not in body.lower()
+    assert "the temperature does not come into it" in body.lower()
+
+
+def test_the_page_does_not_write_its_own_coordinates_under_a_budget():
+    """While something is pricing the drag, the box belongs to it.
+
+    The page's model is where the cursor is, and it landed in the box on every
+    message of every drag with nothing on that path ever asking what it cost.
+    The wall ran a moment behind in a thread of its own and wrote the box only
+    when it refused -- so the geometry that survived a drag was the one thing
+    that had never been priced.
+    """
+    source = EDITOR_SOURCE
+    assert "walled = ((dragging or released)" in source
+    assert "and state.get('gfn_follow')" in source
+    # An undo is not a drag: it hands back a geometry that was already there,
+    # so held to the budget it would be answered with the very structure it is
+    # undoing.
+    assert "released = drag_ended" in source
+    assert "and _thermal_budget()[0] is not None)" in source
+    assert "if walled:" in source
+    assert "_keep_the_priced_geometry()" in source
+    # The follow writes what it priced, every step, rather than only when it
+    # refuses -- otherwise nothing writes the box and the page fills the gap.
+    assert "why = ('Within the budget at '" in source
+    assert "_write_coords, xyz_document(rows, why), True)" in source
+    # And the wall is asked about the geometry that will survive the step.
+    assert "came_back = _thermal_wall(\n                            reached," in source
+
+
+def test_a_budget_that_cannot_price_a_drag_does_not_stand_there_lit_up():
+    """The page only reports a drag while the relaxation switch is down.
+
+    Without those messages nothing runs, the ceiling has nothing to compare
+    against, and it would sit there refusing nothing at all -- which is worse
+    than being off, because it is off and says it is on.  So the two go on
+    together and off together, and the line says which.
+    """
+    source = EDITOR_SOURCE
+    on = source.split("def on_submit_thermal(change):")[1].split("\n    def ")[0]
+    assert "if _server_method() and not submit_relax_btn.value:" in on
+    assert "submit_relax_btn.value = True" in on
+    off = source.split("def on_submit_relax_toggle(change):")[1]
+    off = off.split("\n    def ")[0]
+    assert "if submit_thermal_btn.value:" in off
+    assert "submit_thermal_btn.value = False" in off
+    assert "has gone off with it" in off

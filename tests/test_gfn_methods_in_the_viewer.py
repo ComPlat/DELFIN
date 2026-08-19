@@ -4944,10 +4944,15 @@ def test_the_budget_prices_the_geometry_the_user_made(bare_editor):
     assert "state['thermal_now'] = priced.get('energy')" in follow
     # Two refusals ride along with the budget now: a hold that does not
     # determine the drag, and a contact squeezed inside two thirds of a bond.
+    # Neither is the temperature refusing, so they are named apart from it.
     assert "came_back = _thermal_wall(" in follow
-    assert "refuse=(slipped > _SLIP_LOOSE) or crowded" in follow
-    # And what it hands back is what gets drawn.
-    assert "if came_back is not None:\n                        settled = came_back" in follow
+    assert "aside = (slipped > _SLIP_LOOSE) or crowded" in follow
+    assert "refuse=aside" in follow
+    # And the wall is asked about the geometry that will survive the step --
+    # not about the page's model, whose energy belongs to nothing that was
+    # calculated. What it hands back is what gets drawn and what gets kept.
+    assert "reached," in follow
+    assert "settled = came_back if came_back is not None else reached" in follow
 
 
 def test_every_field_the_page_reads_is_on_the_page(editor):
@@ -5221,15 +5226,18 @@ def test_the_page_sends_the_wish_and_draws_the_answer(bare_editor):
     source = EDITOR_SOURCE
     assert "if(st&&st.ffPull) return [];" in source
     # And the kernel lays its answer onto what is *not* held, so the molecule
-    # stays where it is and only what was pulled has moved.
-    assert 'settled = _gfn.settle_onto(' in source
+    # stays where it is and only what was pulled has moved.  Worked out before
+    # the budget is asked about the step, because the budget has to be asked
+    # about the geometry that is going to survive it.
+    assert 'laid = _gfn.settle_onto(' in source
+    assert 'reached = laid' in source
     assert 'rest = [i for i in range(count) if i not in grabbed]' in source
 
     # Only where there is something to push, though.  The answer owning the
     # atom and no force acting on it is a free relaxation drawn over the drag,
     # which undoes it on every step -- so with no coordinate to push, or under
     # a method that has none to give, the hand stays a placement.
-    assert 'elif pull is not None and contacts:' in source
+    assert 'if pull is not None and contacts:' in source
     assert ('pull = (_pull_force()\n'
             '                            if not stale '
             'and not _mopac.is_mopac_method(method)\n'
